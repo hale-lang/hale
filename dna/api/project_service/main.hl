@@ -18,6 +18,7 @@ import ".." as api;
 import "../../ui" as ui;
 import "../../core" as dna;
 import "../../operations" as ops;
+import "../../../iris/process_identity" as identity;
 
 const USAGE: String = "hale dna head: expected <port 1..65535> <api-binary> [<api-port> = 8793] [<project-root>], with HALE_BIN naming the compiler by an absolute path";
 
@@ -46,14 +47,44 @@ fn private_dir(path: String) -> Bool {
     return dna::run_tool("sh\n-c\numask 077 && mkdir -p \"$1\"\nsh\n" + path).code == 0;
 }
 
-// The pid in `head.pid` when it is alive and not this process, else -1.
+// What `head.pid` holds for this process: `<pid> <start ticks>`, the
+// ticks its `/proc/<pid>/stat` gives; `<pid>` alone where
+// there is no `/proc` (macOS).
+fn head_pid_line() -> String {
+    let process = identity::Identity { };
+    let pid = std::process::pid();
+    let ticks = process.start_ticks(pid);
+    return to_string(pid) + (if len(ticks) > 0 { " " + ticks } else { "" }) + "\n";
+}
+
+// The pid in `head.pid` when it is a live head other than this process,
+// else -1. A pid answering `kill -0` is not enough: the state directory
+// outlives the process (the habitat's `face-state` outlives its
+// container), and a pid the dead head held is soon someone else's — in a
+// fresh pid namespace, often one of the processes that start beside the
+// head. So the holder counts only while its start ticks are the ones
+// recorded beside its pid. A file with no ticks (written where there is
+// no `/proc`, or by a head before them) is taken on `kill -0` alone.
 fn other_head(state_dir: String) -> Int {
-    let text = dna::trim_nl(std::io::fs::read_file(state_dir + "/head.pid") or "");
+    let text = std::str::trim(std::io::fs::read_file(state_dir + "/head.pid") or "");
     if len(text) == 0 { return -1; }
-    let pid = std::str::parse_int(text) or - 1;
+    let sp = std::str::index_of(text, " ");
+    let pid = std::str::parse_int(if sp < 0 { text } else { text[0..sp] }) or - 1;
+    let recorded = if sp < 0 { "" } else { std::str::trim(text[(sp + 1)..len(text)]) };
     if pid <= 0 || pid == std::process::pid() { return -1; }
     if dna::run_tool("kill\n-0\n" + to_string(pid)).code != 0 { return -1; }
+    let process = identity::Identity { };
+    if len(recorded) > 0 && process.start_ticks(pid) != recorded { return -1; }
     return pid;
+}
+
+// Removes `head.pid` when it is still this process's (a head that ends
+// leaves no claim on the state directory behind it).
+fn release_head_pid(state_dir: String) {
+    let path = state_dir + "/head.pid";
+    if (std::io::fs::read_file(path) or "") == head_pid_line() {
+        std::io::fs::unlink(path) or discard;
+    }
 }
 
 // An attach the head submits to itself: the browser's own request
@@ -351,15 +382,15 @@ fn main() {
             std::process::exit(2);
         }
     }
-    std::io::fs::write_file(
-        state_dir + "/head.pid",
-        to_string(std::process::pid()) + "\n",
-    ) or discard;
+    std::io::fs::write_file(state_dir + "/head.pid", head_pid_line()) or discard;
     let boot = Startup { cfg: cfg };
     let fatal = boot.prepare(if count > 4 { project_root } else { "" });
     if len(fatal) > 0 {
         eprintln(fatal);
+        release_head_pid(state_dir);
         std::process::exit(2);
     }
     serve(cfg, boot.banner(), auth);
+    // drained (SIGTERM): the next head over this state finds no claim
+    release_head_pid(state_dir);
 }

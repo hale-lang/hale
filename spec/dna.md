@@ -6694,6 +6694,18 @@ is `outcome_unknown` when the verb reaches beyond this machine, never
 `failed`; the head appends nothing to any record itself. It is
 trusted-local and refuses an `oidc` project.
 
+One head holds a state directory at a time. It claims it in
+`head.pid`, `<pid> <start ticks>` (the process's start time, field 22
+of `/proc/<pid>/stat`; the pid alone where there is no `/proc`), and a
+head that starts over a claim whose process is alive with those start
+ticks exits 2 (`hale dna head: already running at <url> (pid <pid>)`).
+A claim whose pid is gone, or now belongs to a process that started at
+other ticks — the state directory outlives the head, and the habitat's
+`face-state` outlives the container whose pid namespace gave the pid —
+is stale, and the head replaces it; a claim with no ticks is taken on
+the pid being alive. A head that drains (SIGTERM) or fails to prepare
+its state removes its own claim.
+
 **Faces (Phase 3).** A face is a role an application fills: the browser's
 door to the organism. This slice has one, the **standard face**
 (`dna/face/standard`), which the toolchain ships and grafts as it grafts

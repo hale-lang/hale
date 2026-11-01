@@ -47,7 +47,7 @@ and by the tests under `dna/api/project_service/tests`.
 
 ```text
 STATE = ${HALE_DNA_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head}
-STATE/head.pid  head.url                     the head holding this state, and where it listens
+STATE/head.pid  head.url                     the head holding this state (`<pid> <start ticks>`), and where it listens
 STATE/projects.jsonl  receipts.jsonl         the registry and the receipt journal, append-only
 STATE/runs/<command_id>/{script.sh,run.pid,run.exit,run.log,run.cmd}
 STATE/children/<api|body>.{pid,exit,log,cmd}

@@ -1,0 +1,110 @@
+// dna/api/project_service/tests/head_pid_test.hl — the head's claim on its
+// state directory, `head.pid`.
+//
+// The state directory outlives the head: the habitat's `face-state`
+// survives `hale habitat down`, and the next container's head reads the
+// claim a dead one left. In a fresh pid namespace the dead head's pid is
+// soon another live process's (one of those started beside the head), and
+// a head that took any pid answering `kill -0` for a running head refused
+// to start, over and over. The claim is `<pid> <start ticks>`: a live head
+// still refuses a second one over its state; a claim whose pid is now some
+// other process's is stale, and the head serves; a head that drains
+// removes its claim.
+//
+// Silent on stdout: a passing fixture prints nothing.
+
+import "./fixture" as fixture;
+import "../../../core" as dna;
+
+// A second head over `state`: it must refuse at once, before it binds.
+fn second_head(f: fixture::HeadFixture) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        30,
+        "env\nHOME=" + f.home + "\nHALE_DNA_HEAD_STATE=" + f.state
+            + "\nHALE_DNA_TRUSTED_LOCAL=1\nHALE_DNA_DISCOVER=off\n" + std::env::var("HALE_HEAD_BIN")
+            + "\n" + to_string(dna::free_port(7)) + "\n" + std::env::var("HALE_HEAD_API_BIN")
+            + "\n0",
+    );
+}
+
+fn claim(f: fixture::HeadFixture) -> String {
+    return std::io::fs::read_file(f.state + "/head.pid") or "";
+}
+
+fn main() {
+    let root = dna::scratch_root("head-pid");
+    let f = fixture::HeadFixture { root: root };
+    f.start();
+
+    // the live head's claim names it, and refuses a second head
+    let first = std::str::trim(claim(f));
+    let sp = std::str::index_of(first, " ");
+    std::test::assert_eq_str(
+        if sp < 0 { first } else { first[0..sp] },
+        to_string(f.head.pid),
+        "head.pid names the running head: " + first,
+    );
+    let proc = std::io::fs::file_exists("/proc/self/stat");
+    std::test::assert(!proc || sp > 0, "head.pid carries the head's start ticks: " + first);
+    let refused = second_head(f);
+    std::test::assert_eq_int(refused.code, 2, "a second head is refused: " + refused.stderr);
+    std::test::assert(
+        std::str::contains(refused.stderr, "already running at ")
+            && std::str::contains(refused.stderr, "(pid " + to_string(f.head.pid) + ")"),
+        "naming the running head: " + refused.stderr,
+    );
+
+    // the head dies without draining; its pid then belongs to some other
+    // live process (stood in for by a sleep): the claim as the dead head
+    // left it, with the sleep's pid in its place
+    let killed = dna::run_tool("kill\n-KILL\n" + to_string(f.head.pid));
+    let mut state = -2;
+    let deadline = std::time::now() + dna::wait_secs(15);
+    while state == -2 && std::time::now() <= deadline {
+        state = std::process::try_wait(f.head) or - 1;
+        if state == -2 { std::time::sleep(20ms); }
+    }
+    std::test::assert(state != -2, "the killed head is reaped");
+    f.head.pid = -1;
+    f.stop_head();
+    let left = claim(f);
+    std::test::assert(len(left) > 0, "a killed head leaves its claim");
+    let other = std::process::spawn("sleep\n60") or std::process::Child { };
+    std::test::assert(other.pid > 0, "an unrelated process is running");
+    if proc {
+        let at = std::str::index_of(left, " ");
+        std::io::fs::write_file(
+            f.state + "/head.pid",
+            to_string(other.pid) + (if at < 0 { "\n" } else { left[at..len(left)] }),
+        ) or discard;
+        // the next head serves over the stale claim (`start` fails the test
+        // if it exits instead: "already running ... (pid <the sleep>)")
+        f.start();
+        std::test::assert(
+            !std::str::contains(f.log(), "already running"),
+            "the stale claim is not a running head: " + f.log(),
+        );
+    } else {
+        // no /proc (macOS): a claim is its pid alone, taken on `kill -0`
+        f.start();
+    }
+
+    // a drained head leaves no claim
+    let sent = dna::run_tool("kill\n-TERM\n" + to_string(f.head.pid));
+    state = -2;
+    let until = std::time::now() + dna::wait_secs(15);
+    while state == -2 && std::time::now() <= until {
+        state = std::process::try_wait(f.head) or - 1;
+        if state == -2 { std::time::sleep(20ms); }
+    }
+    std::test::assert_eq_int(state, 0, "the drained head exits 0: " + f.log());
+    f.head.pid = -1;
+    std::test::assert(
+        !std::io::fs::file_exists(f.state + "/head.pid"),
+        "a drained head removes head.pid: " + claim(f),
+    );
+
+    std::process::kill(other) or discard;
+    f.stop();
+    dna::scratch_done(root);
+}
