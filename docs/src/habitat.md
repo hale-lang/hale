@@ -75,7 +75,7 @@ Beside each node exporter runs a container exporter (cAdvisor, the container `ha
 
 ### Reflexes and Alerts
 
-An organism declares what it watches for in its readings as reflexes, under `[dna.reflex.<name>]` in its manifest: a PromQL condition, how long it must hold, a severity and a summary. They render to standard Prometheus alerting rules, so the same declarations work in a habitat and in a heart you run yourself. Every habitat watches its machines' disks by default: one more than 90% full for ten minutes, or one that fills within a day at its recent rate. The operator face's **alerts** screen shows what is firing, and what is about to.
+An organism declares what it watches for in its readings as reflexes, under `[dna.reflex.<name>]` in its manifest: a PromQL condition, how long it must hold, a severity and a summary. They render to standard Prometheus alerting rules, so the same declarations work in a habitat and in a heart you run yourself. Every habitat watches its machines' disks, memory and CPU by default: a disk more than 90% full for ten minutes, or one that fills within a day at its recent rate; memory more than 90% in use for fifteen minutes; CPUs more than 90% busy for fifteen minutes. The operator face's **alerts** screen shows what is firing, and what is about to.
 
 ### An Organism's Own Host Commands (`organism place`)
 

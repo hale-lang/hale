@@ -157,7 +157,7 @@ fn grafana_and_readings(up: String, face: String, linux: Bool) -> Bool {
     std::test::assert(
         std::str::contains(
             up,
-            "reflexes 2 watched by its senses' store (disk-filling, disk-full-within-a-day;",
+            "reflexes 4 watched by its senses' store (cpu-saturated, disk-filling, disk-full-within-a-day, memory-pressure;",
         ),
         "up says what the habitat's reflexes are: " + up,
     );
