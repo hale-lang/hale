@@ -17,7 +17,10 @@
 //!   services, applied there, from the compose file at its root.
 //!
 //! A service that declares no limit counts 0, as one whose limit does not
-//! read as a size does.
+//! read as a size does. On a Mac, docker runs in a VM the Mac gives all of
+//! its memory to, whatever its containers use: there the habitat holds the
+//! VM's memory (`docker info`'s, read with the host's facts) when it is more
+//! than the limits (`hosted::reserved_total`).
 
 use std::collections::BTreeMap;
 

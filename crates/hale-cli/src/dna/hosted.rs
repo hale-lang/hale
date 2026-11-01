@@ -201,7 +201,10 @@ Darwin)
   xcode-select -p >/dev/null 2>&1 && echo "have clang" && echo "have zlib"
   for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$b" ] && {{ echo "pkg brew $b"; break; }}; done
   for o in /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3; do [ -f "$o/include/openssl/ssl.h" ] && {{ echo "have openssl"; break; }}; done
-  [ "$(uname -m)" = arm64 ] && echo "fact apple-silicon" ;;
+  [ "$(uname -m)" = arm64 ] && echo "fact apple-silicon"
+  # docker on a Mac runs in a VM (Docker Desktop, Colima, OrbStack), whose
+  # memory is the Mac's whatever its containers use
+  m=$(docker info --format '{{{{.MemTotal}}}}' 2>/dev/null) && [ -n "$m" ] && echo "vm-memory $m" ;;
 *)
   command -v clang >/dev/null 2>&1 && echo "have clang"
   [ -f /usr/include/openssl/ssl.h ] && echo "have openssl"
@@ -234,6 +237,8 @@ pub(super) struct Facts {
     pub facts: Vec<String>,
     /// the toolchains already installed, by version
     pub toolchains: Vec<String>,
+    /// the memory of the VM docker runs in there (a Mac's), 0 for none
+    pub vm_memory: u64,
 }
 
 pub(super) fn facts(out: &str) -> Facts {
@@ -249,6 +254,7 @@ pub(super) fn facts(out: &str) -> Facts {
             "pkg" => f.pkg = v.split_once(' ').map(|(m, p)| (m.to_string(), p.to_string())),
             "fact" => f.facts.push(v),
             "toolchain" => f.toolchains.push(v),
+            "vm-memory" => f.vm_memory = v.parse().unwrap_or(0),
             _ => {}
         }
     }
@@ -550,9 +556,19 @@ pub(super) fn run_script(dir: &str, argv: &[String], hale: &str, root: bool, sud
 
 /// What the plan says of the habitat's share of `host`'s memory: its own
 /// services' limits (`own`) and its organisms' allocations' there.
-fn reserve_line(host: &str, own: u64, organisms: u64) -> String {
+/// What the habitat holds of a host's memory: its containers' limits there
+/// (`own`, `organisms`), or, where docker runs in a VM (`vm`, a Mac's), the
+/// whole VM when it is more, since the Mac gives the VM all of it.
+pub(super) fn reserved_total(own: u64, organisms: u64, vm: u64) -> u64 {
+    (own + organisms).max(vm)
+}
+
+fn reserve_line(host: &str, own: u64, organisms: u64, vm: u64) -> String {
     use super::reserved::{mib, RESERVED_ENV};
-    let total = own + organisms;
+    let total = reserved_total(own, organisms, vm);
+    if vm > own + organisms {
+        return format!("{} on {host}: the VM docker runs in there, which holds the habitat's containers ({} of their limits), handed as {RESERVED_ENV}={total}", mib(vm), mib(own + organisms));
+    }
     let what = match (own > 0, organisms > 0) {
         (false, false) => format!("the habitat runs nothing on {host} that declares a memory limit"),
         (true, false) => format!("{} on {host}: the habitat's own services' memory limits", mib(total)),
@@ -1057,7 +1073,7 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
     for s in &skipped {
         println!("{:<8}{s}", "skips");
     }
-    println!("{:<8}{}", "reserve", reserve_line(&shown, own, organisms));
+    println!("{:<8}{}", "reserve", reserve_line(&shown, own, organisms, f.vm_memory));
     if !service.is_empty() {
         println!("{:<8}{service}, {} on {shown}", "service", if platform == "macos" { "a launchd service in the system domain" } else { "a systemd unit" });
     }
@@ -1089,7 +1105,7 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
         }
     }
     super::progress(&format!("running {organism}'s `{name}` on {shown}"));
-    let script = run_script(&dir, &argv, &hale, cmd.root, "sudo", &habitat_name(), &revision, own + organisms, &vault, &secrets);
+    let script = run_script(&dir, &argv, &hale, cmd.root, "sudo", &habitat_name(), &revision, reserved_total(own, organisms, f.vm_memory), &vault, &secrets);
     at.run(&script, None, tty)?;
     println!("{:<8}{organism}'s `{name}` {} on {shown}", "done", if install { "placed" } else { "taken off" });
     if !service.is_empty() {
@@ -1121,6 +1137,21 @@ fn service_state(out: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_macs_docker_vm_is_held_whole() {
+        // a Mac whose docker VM is 12 GiB, its containers' limits 1920 MiB:
+        // the VM is what the habitat holds there
+        let f = super::facts("home /Users/r\nos Darwin\narch arm64\nvm-memory 12884901888\n");
+        assert_eq!(f.vm_memory, 12 << 30);
+        assert_eq!(super::reserved_total(1920 << 20, 0, f.vm_memory), 12 << 30);
+        let line = super::reserve_line("rack-a.lan", 1920 << 20, 0, f.vm_memory);
+        assert!(line.contains("12288 MiB on rack-a.lan: the VM docker runs in there") && line.contains("(1920 MiB of their limits)") && line.ends_with("=12884901888"), "{line}");
+        // no VM (Linux), or a VM smaller than the limits: the limits
+        assert_eq!(super::reserved_total(1920 << 20, 512 << 20, 0), (1920 + 512) << 20);
+        assert_eq!(super::reserved_total(3 << 30, 0, 2 << 30), 3 << 30);
+        assert_eq!(super::facts("os Linux\n").vm_memory, 0);
+    }
+
     #[test]
     fn the_habitats_own_machine_answers_to_its_name() {
         let pointer = serde_json::json!({ "host": "habitat-box.lab.lan", "name": "h" });
@@ -1335,9 +1366,9 @@ readers = ["api"]
 
     #[test]
     fn the_plan_names_the_habitats_share_of_the_host() {
-        assert_eq!(reserve_line("gpu", 0, 0), "the habitat runs nothing on gpu that declares a memory limit, handed as HALE_DNA_HOST_RESERVED_BYTES=0");
-        assert_eq!(reserve_line("gpu", 0, 512 << 20), "512 MiB on gpu: the memory limits of its organisms' allocations there, handed as HALE_DNA_HOST_RESERVED_BYTES=536870912");
-        assert_eq!(reserve_line("local", 1920 << 20, 128 << 20), "2048 MiB on local: the habitat's own services' memory limits (1920 MiB) and its organisms' allocations' there (128 MiB), handed as HALE_DNA_HOST_RESERVED_BYTES=2147483648");
+        assert_eq!(reserve_line("gpu", 0, 0, 0), "the habitat runs nothing on gpu that declares a memory limit, handed as HALE_DNA_HOST_RESERVED_BYTES=0");
+        assert_eq!(reserve_line("gpu", 0, 512 << 20, 0), "512 MiB on gpu: the memory limits of its organisms' allocations there, handed as HALE_DNA_HOST_RESERVED_BYTES=536870912");
+        assert_eq!(reserve_line("local", 1920 << 20, 128 << 20, 0), "2048 MiB on local: the habitat's own services' memory limits (1920 MiB) and its organisms' allocations' there (128 MiB), handed as HALE_DNA_HOST_RESERVED_BYTES=2147483648");
     }
 
     #[test]
