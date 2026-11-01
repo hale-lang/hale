@@ -319,7 +319,13 @@ pub(super) fn graft_host(name: &str) -> Result<Option<serde_json::Value>, String
     if name == "local" {
         return Ok(Some(local_graft_host(&local_habitat_project())));
     }
-    let h = latest(&rows_of(&genome_dir()), "habitat.host").remove(name).ok_or_else(|| format!("no host `{name}` was added (`hale habitat host add {name}`)"))?;
+    let Some(h) = latest(&rows_of(&genome_dir()), "habitat.host").remove(name) else {
+        // the habitat's own machine by the name it is reached at
+        if super::hosted::names_own_machine(name, super::remote::pointer().as_ref()) {
+            return Ok(Some(local_graft_host(&local_habitat_project())));
+        }
+        return Err(format!("no host `{name}` was added (`hale habitat host add {name}`; the habitat's own machine is `--host local`, or its own name)"));
+    };
     if h["state"] != "ready" {
         return Err(format!("host `{name}` is {}: `hale habitat host probe {name}` checks it again", h["state"].as_str().unwrap_or("not ready")));
     }

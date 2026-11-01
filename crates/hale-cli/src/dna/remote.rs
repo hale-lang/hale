@@ -936,6 +936,12 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
     } else {
         Vec::new()
     };
+    // the machines that joined from themselves: nothing logs in there, so
+    // only this one, when it is one, is tidied (its exporters, its
+    // placements); the others keep what runs there
+    let joined: Vec<String> = hosts.iter().filter(|h| h["provider"] == "joined").filter_map(|h| h["name"].as_str().map(str::to_string)).collect();
+    let joined_here: Option<String> = joined.iter().find(|n| super::hosted::is_this_machine(n)).cloned();
+    let hosts: Vec<serde_json::Value> = hosts.into_iter().filter(|h| h["provider"] != "joined").collect();
     // the services the habitat placed on its hosts: taken off from this
     // machine, over the person's own login, before the habitat there (and
     // the organisms their commands answer to) is gone
@@ -948,6 +954,7 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
     } else {
         (Vec::new(), Vec::new())
     };
+    let placed: Vec<super::placements::Placement> = placed.into_iter().filter(|pl| !joined.contains(&pl.host) || joined_here.as_deref() == Some(pl.host.as_str())).collect();
     if confirm && !placed.is_empty() {
         let name = p["name"].as_str().unwrap_or("");
         println!("first, from this machine, over your SSH login (the habitat there then plans the rest and asks for its name again):");
@@ -991,6 +998,13 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
         if !super::readings::node_exporter_off() {
             println!("  - and from this machine, over your SSH login: the habitat's node exporter off {} and off each host below, where it installed one", t.host);
         }
+        for n in &joined {
+            if joined_here.as_deref() == Some(n.as_str()) {
+                println!("  - and here, on {n} (joined from itself): the habitat's exporters off this machine");
+            } else {
+                println!("  - {n} joined from itself, and nothing logs in there: what runs there stays (`hale habitat organism unplace` and `hale habitat host remove {n}` run there take it off first)");
+            }
+        }
         for h in &hosts {
             let user = h["user"].as_str().unwrap_or("");
             if is_habitat_user(user) {
@@ -1004,6 +1018,12 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
         // gone there whole: the pointer goes last
         match remote_state(&t, &m) {
             Ok((_, _, identity)) if identity.is_empty() => {
+                // this machine, when it joined from itself: its exporters off
+                if joined_here.is_some() {
+                    for l in super::readings::remove_here() {
+                        println!("{l}");
+                    }
+                }
                 // the hosts whose note this machine acted on
                 let mut done: Vec<String> = Vec::new();
                 for h in &hosts {
@@ -1389,12 +1409,60 @@ pub(super) fn run_there(p: &serde_json::Value, verb: &str, args: &[&str]) -> Exi
 /// and its progress print here as they happen, and at a terminal the person
 /// confirms the plan there. `--no-head`: it acts itself, never through the
 /// head, which would take the plan as it stands and ask no one.
+/// A graft's `--host <h>` and `--own <part>=<h>` as the habitat's machine
+/// reads them (`hosted::host_key` here, then the habitat's own machine
+/// said as `local` there); the rest as given.
+fn graft_hosts_said_there(p: &serde_json::Value, args: &[String]) -> Result<Vec<String>, String> {
+    let mut hosts: Option<Vec<serde_json::Value>> = None;
+    let mut said = |h: &str| -> Result<String, String> {
+        super::hosted::host_key(h, Some(p), || {
+            if hosts.is_none() {
+                let v = super::sapling::head_call("Commands::hosts", serde_json::json!({ "limit": 500 }))?;
+                hosts = Some(v["hosts"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default());
+            }
+            Ok(hosts.clone().unwrap_or_default())
+        })
+    };
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--host" && i + 1 < args.len() {
+            out.push(a.clone());
+            out.push(said(&args[i + 1])?);
+            i += 2;
+            continue;
+        }
+        if a == "--own" && i + 1 < args.len() {
+            out.push(a.clone());
+            out.push(match args[i + 1].split_once('=') {
+                Some((part, h)) => format!("{part}={}", said(h)?),
+                None => args[i + 1].clone(),
+            });
+            i += 2;
+            continue;
+        }
+        out.push(a.clone());
+        i += 1;
+    }
+    Ok(out)
+}
+
 pub(super) fn graft_sapling(p: &serde_json::Value, args: &[String]) -> ExitCode {
     let (t, m) = match checked_machine(p, "graft") {
         Ok(tm) => tm,
         Err(code) => return code,
     };
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    // a placement said here means what it means here: `local` is this
+    // machine, the habitat's own machine is `local` there
+    let args = match graft_hosts_said_there(p, args) {
+        Ok(a) => a,
+        Err(why) => {
+            eprintln!("hale habitat graft: {why}");
+            return ExitCode::from(1);
+        }
+    };
     let mut a: Vec<&str> = vec!["graft"];
     a.extend(args.iter().map(String::as_str));
     a.push("--no-head");

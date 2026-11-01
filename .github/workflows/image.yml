@@ -2,7 +2,12 @@ name: image
 
 # Build + push the public Hale toolchain image to GHCR so any repo's CI
 # (including private ones) can compile `.hl` programs without installing
-# LLVM 18 + the Rust toolchain. Mirrors release.yml's trigger: v* tags
+# LLVM 18 + the Rust toolchain, and so `hale habitat up` on a release pulls
+# its habitat image instead of building it. Multi-arch: linux/amd64 and
+# linux/arm64, each built natively on its own runner (no emulation: the
+# toolchain's Rust + LLVM build would take hours under QEMU), pushed by
+# digest, then joined into one manifest list under the version's tags, so
+# an arm64 machine (a Mac's docker VM, an arm64 server) pulls its own. Mirrors release.yml's trigger: v* tags
 # (versioned, stable images) plus manual dispatch for smoke-testing.
 #
 # One-time setup after the first push: open the GHCR package settings for
@@ -32,8 +37,18 @@ permissions:
   packages: write
 
 jobs:
-  build-push:
-    runs-on: ubuntu-24.04
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +61,57 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive tags + labels
+      - name: Labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+
+      # pushed by digest alone: the merge job below names it
+      - name: Build + push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+
+      - name: Keep the digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -58,12 +123,17 @@ jobs:
             type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
             type=raw,value=latest,enable=${{ inputs.version != '' }}
 
-      - name: Build + push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # one manifest list per tag, naming both architectures' digests
+      - name: Join the architectures under the tags
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+
+      - name: Both architectures are there
+        run: |
+          tag="$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          docker buildx imagetools inspect "$tag" | tee /tmp/inspect
+          grep -q 'linux/amd64' /tmp/inspect
+          grep -q 'linux/arm64' /tmp/inspect

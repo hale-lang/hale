@@ -488,7 +488,7 @@ fn main() {
         "an unauthenticated graft is refused: " + no_graft,
     );
     let no_host = row_call(
-        face, "add_host", "fnv1a64:9f59221a3e7c8a2f",
+        face, "add_host", "fnv1a64:d63b078354f77b7a",
         "{\"name\": \"no-such-host.invalid\", \"user\": \"ops\", \"port\": 22}", "",
     );
     std::test::assert(

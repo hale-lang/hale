@@ -161,7 +161,8 @@ export async function refresh() {
       if (cls) dd.className = cls;
       facts.append(dt, dd);
     };
-    if (h.address || h.user) fact("login", (h.user ? h.user + "@" : "") + (h.address || h.name) + (h.port ? ":" + h.port : ""));
+    if (h.provider === "joined") fact("joined", "from itself: the habitat never logs in there, and reaches it on its services' ports alone");
+    else if (h.address || h.user) fact("login", (h.user ? h.user + "@" : "") + (h.address || h.name) + (h.port ? ":" + h.port : ""));
     fact("offers", (h.offers || "nothing yet").split(" ").filter(Boolean).join(", "));
     if (h.os || h.arch) fact("system", [h.os, h.arch].filter(Boolean).join(" "));
     fact("host key", h.fingerprint || "none yet");
