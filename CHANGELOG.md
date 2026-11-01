@@ -8,6 +8,64 @@ behavior.
 
 ## Unreleased
 
+## v0.32.0 — the habitat from published images (2026-11-01)
+
+A released habitat now runs from published images end to end. `hale habitat up` on a release pulls its habitat image for the machine's own architecture (arm64 now included, a Mac's docker VM among them), and an organism that names its images by the revision it is applied at (`HALE_DNA_REVISION`) has them pulled, not built on the host: voice, grafted at a release, comes up with nothing compiled.
+
+**Published images, pulled.** The habitat hands an organism's compose services, host commands and heart migrations `HALE_DNA_REVISION`, the commit its sapling is pinned at; a compose file that names its images by it is applied without `--build`, so compose pulls the revision's image and builds only when none is published. The `ghcr.io/hale-lang/hale` image is published for linux/arm64 as well as linux/amd64.
+
+**Hosts as people use them.** `--host local` is always the machine you type on; the habitat's own machine answers to its own name (`--host rack-a.lan`, or `rack-a`). A person's own machine joins a habitat that runs elsewhere with `hale habitat host join <name>`, run on it: the habitat reaches it on its services' ports (its readings) and never logs in there. `graft --host local` places an organism's services on the habitat's own machine. The home screen links a host's services by the name it was added by.
+
+**The habitat watches more of itself.** Memory and CPU reflexes ship beside the disk ones; `hale habitat status` shows each organism's own services, and a degraded allocation names what is not running; on a Mac the memory a host command is told the habitat holds is the whole docker VM.
+
+**Fixes worth knowing.** A fallible locus member that wrote a String through a record parameter wrote it into its own scratch, so the caller read freed memory after the call (#1832): it lands in the caller's arena now, as an infallible member's always did. A head's `head.pid` left by a container that died no longer blocks the next one (`<pid> <start ticks>`), and a host program whose binaries are built no longer waits on the build lock.
+
+**Breaking changes, measured against v0.31.0:** through a pointer (a habitat `up --host` put on another machine), `--host local` names the machine you type on, not the habitat's: say the habitat's machine by its name (`--host <its name>`), and a person's machine is a host once it joins (`hale habitat host join`). `head.pid` holds `<pid> <start ticks>` on Linux.
+
+The item-level notes follow, one entry per change with every PR reference.
+
+- `hale lsp` goto-definition reaches what the checker resolved: a `std::` fn the stdlib writes in Hale (`std::test::assert`, `std::json::*`), a method call on a locus or a stdlib handle (`c.bump()`, `self.bump()`, `b.append_str(..)`), a local's `let`, a field read and a struct literal's field, and `alias::name` through an import. Each used to answer nothing; an intrinsic stdlib fn still has no Hale definition to jump to (#1786).
+
+- A leg's tool loop names its conversation to the model, the attempt as the chat API's `prompt_cache_key` on every turn, so a provider that pins a conversation to one cache slot (voice) keeps its prompt's prefix warm across turns instead of reading it whole each time; a one-shot call names none (#1811).
+
+- Every run of a host command (`hale habitat organism place|unplace`) is handed `HALE_DNA_HOST_RESERVED_BYTES`, the memory the habitat's own containers on that host may hold: the sum of their compose `mem_limit`s, read from the compose files the habitat wrote on its machine (over the person's login through a pointer). On the habitat's own machine it counts its memory, nerves, senses' store, forge and Grafana (which starts on demand); on any host, the organisms' allocations applied there; `0` when the habitat runs nothing there that declares a limit. `--plan` names it on a `reserve` line. A provider's node subtracts it from the memory it offers models, so a node placed on a host the habitat also runs on does not overcommit it (#1812).
+
+- `std::json::valid` and `valid_object` accept `\u0000` and an unpaired UTF-16 surrogate escape (`\ud800` with no low escape after it, a bare `\udc00`) inside a string. RFC 8259 allows any `\uXXXX`, and producers emit them (a tool output that read a binary file carries them); they were refused, so `{"a":"x\u0000y"}` failed `valid_object`, and what is gated on it (an MCP message, a hub datagram) was turned away. Every reader decodes them as `unescape_string` already did, to U+FFFD (a `String` is NUL-terminated, and a lone surrogate has no UTF-8); a valid pair still combines. Downstream handoff (#1813).
+
+- A repository whose manifest declares a host command (`[dna.host.<command>]`, a node a habitat places on a host) is grafted when its docs name that command in a `Deployment | Runs` row: the ingest reads each host command as a process, run by a `host` deployment, beside compose's services; it refused the graft once the command was no compose service (#1814).
+
+- `http::Rest`'s cross-origin write guard serves a bodiless write whose `Origin` is the request's own: an `http://` or `https://` origin whose authority is the `Host` header, case aside, passes as a listed `cors` origin would. Browsers send `Origin` on same-origin writes too, so a page the exposure serves itself (an admin UI's bodiless `POST /admin/v1/projects/<id>/archive`) was refused `403` unless its own origin was listed. An origin with a path, `null`, another host or port, and an unlisted cross origin are still refused; the media-type check and preflights are unchanged (#1815).
+
+- `hale habitat organism upgrade` on an organism already at its pinned revision names the next step when nothing newer is known: `hale habitat nursery refresh` reads the nursery, `nursery ratify <sapling>` pins what it found.
+
+- The habitat links a service on a host by the name the host was added by (`hale habitat host add <name>`), not the address it resolved to, when the service listens on every interface or on the host's own address: the home screen's UIs, the allocations' links and a host command's `{api_url}`. A service bound to another address is still linked at that address (#1819).
+
+- On macOS, a link that fails because the selected developer tools are older than the SDK clang links against (an older Xcode selected beside newer Command Line Tools: `tapi error: malformed file … unknown architecture`) now says so and names the fix, `sudo xcode-select -s /Library/Developer/CommandLineTools` or updating Xcode, instead of ending at `clang exited with exit status: 1` (#1820).
+
+- `hale habitat graft <sapling> --host local` places the organism's own services on the habitat's own machine, through the `compose` provider in a project of their own, as the spec says: it placed none, so a single-machine habitat never started a grafted organism's services (#1821).
+
+- `hale habitat status` shows each organism's own compose services, where they are placed and in what state, and a services allocation that is not up names what is not running (`1 of 5 running; not running: api (created), nats (created)`) in status, the operator face and a graft's apply (#1822).
+
+- A host's services link by the name it was added by when they bind the address that name resolves to (`HALE_DNA_HOST_LISTEN`, what a host's compose projects are told to bind). #1819 matched only a host recorded by its address, so a host added by name still linked at its IP (#1823).
+
+- `--host local` is always the machine you type on. With the habitat on another machine (`up --host rack-a.lan`), `hale habitat organism place … --host local` and `graft --host local` place on this machine once it is a host of the habitat (its scripts run here, with no SSH to yourself), and are refused naming the `hale habitat host add` that makes it one until then. The habitat's own machine answers to its own name, whole or by its first label (`--host rack-a.lan`, `--host rack-a`), and output names it instead of `local` (#1824).
+
+- `hale habitat host join <name>`, run on a machine joining a habitat that runs elsewhere, records it as a `joined` host the habitat never logs in to: no key, no account, no SSH. The habitat reaches it on its services' ports alone (it scrapes the exporters `join` installs), placements there run from the machine itself (`--host local` on it), and `host remove` drops its entry without touching it over SSH. `--host local` from a machine that points at a habitat elsewhere names `host join` when the machine is no host yet (#1825).
+
+- On a Mac, the memory a host command is told the habitat holds (`HALE_DNA_HOST_RESERVED_BYTES`) is the whole VM docker runs in when that is more than the containers' limits: the Mac gives the VM all of it, so a voice node there no longer offers models memory the habitat's VM takes (#1826).
+
+- Every habitat now watches its machines' memory and CPU beside their disks: `memory-pressure` (over 90% of memory in use for 15 minutes, on Linux's and a Mac's exporter alike) and `cpu-saturated` (over 90% busy for 15 minutes) join `disk-filling` and `disk-full-within-a-day` as default reflexes. A genome's `[dna.reflex.<name>]` of the same name replaces one (#1827).
+
+- The habitat hands an organism's compose services, host commands and heart migrations `HALE_DNA_REVISION`, the commit its sapling is pinned at. A compose file that names its images by it (`image: …:${HALE_DNA_REVISION:-dev}` beside `build:`) is applied without `--build`, so a released organism's published images are pulled instead of built on the host (#1828).
+
+- The `ghcr.io/hale-lang/hale` image is published for linux/arm64 as well as linux/amd64 (one manifest list, each architecture built natively), so `hale habitat up` on a release pulls its habitat image on an arm64 machine, a Mac's docker VM included, instead of building it.
+
+- `hale dna head` no longer refuses to start over a stale `head.pid` whose pid now belongs to another process. The claim is `<pid> <start ticks>` and counts as a running head only while that pid is alive with those start ticks (the pid alone, on `kill -0`, where there is no `/proc`), and a head that drains removes it. The habitat's `face` keeps its head's state across `hale habitat down`, so its next container's head often found the old pid held by a neighbouring process, exited 2 "already running", and was restarted into the same refusal until `hale habitat up` gave up waiting on the face (#1830).
+
+- `hale dna` and `hale iris` use a program already built in the toolchain cache without waiting on the cache's build lock: a host start no longer waits, silently, behind `hale dna head` building its own seeds into the same cache. Each build now lands at its path by a rename once complete, only a missing program is built under the lock, and a `hale` that has to wait for it says so (#1831).
+
+- A `fallible(E)` locus member that writes a heap value through a record parameter (`fn resolve(r: Req) fallible(E) { r.model = ...; }`) now writes it into the caller's arena, as an infallible member has since #1767. Before, the value was made in the member's per-call scratch, which its return frees, so the caller's record read freed memory once the next call reused it (#1832).
+
 ## v0.31.0 — the habitat's own models (2026-10-30)
 
 A habitat now runs an application end to end on its own machines, and that application can be every organism's model. voice, grafted from its nursery, places its node on a GPU host, serves a local model, and becomes the model backend of every organism the habitat holds, the habitat's own included, with no person minting a key and no OpenAI placeholder left in any organism.
