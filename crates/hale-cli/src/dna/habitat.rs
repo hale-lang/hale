@@ -1897,12 +1897,18 @@ pub(super) fn run_heart_migrations(root: &Path) -> Result<Vec<String>, String> {
     // assumed up; an upgrade that just restarted the nerves for new
     // passwords waits for them here
     let handed = handover(root, false)?;
+    // the commit the organism's checkout is at: a migration that runs a
+    // published build of itself names it (`HALE_DNA_REVISION`)
+    let revision = Command::new("git").arg("-C").arg(root).args(["rev-parse", "HEAD"]).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
     let mut out = Vec::new();
     for m in migrations {
         let mut cmd = Command::new(&m.command[0]);
         cmd.args(&m.command[1..]).current_dir(root);
         for (k, v) in &handed {
             cmd.env(k, v);
+        }
+        if !revision.is_empty() {
+            cmd.env("HALE_DNA_REVISION", &revision);
         }
         let shown = m.command.join(" ");
         let ran = match cmd.output() {

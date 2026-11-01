@@ -178,6 +178,9 @@ fn services_render(body: String) -> dna::Render {
     } else {
         ""
     };
+    // the commit its checkout is at (a sapling's revision; "" outside git)
+    let head = dna::run_tool("git\n-C\n" + r.dir + "\nrev-parse\nHEAD");
+    let revision = if head.code == 0 { dna::trim_nl(head.stdout) } else { "" };
     // each of its services labelled as the habitat's, for the organism it is
     return dna::Render {
         project: r.project,
@@ -191,7 +194,26 @@ fn services_render(body: String) -> dna::Render {
         vault: if len(organism) >= 12 { dna::reader_vault_dir(organism[0..12]) } else { "" },
         // the habitat's name: an organism's own services are the habitat's
         habitat: dna::habitat_name_here(),
+        // the commit its checkout is at, and whether its compose file names
+        // its images by it
+        revision: revision,
+        by_revision: len(revision) > 0 && names_revision(r.dir, r.files),
     };
+}
+
+// Whether a compose file of `files` (lines, relative to `dir`) names
+// `${HALE_DNA_REVISION}`: its images are the revision's own.
+fn names_revision(dir: String, files: String) -> Bool {
+    let mut rest = files + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let f = std::str::trim(rest[0..nl]);
+        rest = rest[(nl + 1)..len(rest)];
+        if len(f) == 0 { continue; }
+        let text = std::io::fs::read_file(dir + "/" + f) or "";
+        if std::str::contains(text, "${HALE_DNA_REVISION") { return true; }
+    }
+    return false;
 }
 
 // One allocation brought to where its row places it: withdrawn where it was

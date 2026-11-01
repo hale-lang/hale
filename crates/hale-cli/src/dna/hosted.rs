@@ -520,7 +520,7 @@ fn habitat_name() -> String {
 /// ends, and the directory with them once empty; `sudo` with the
 /// provisioned `hale` by its path when the command needs root.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_script(dir: &str, argv: &[String], hale: &str, root: bool, sudo: &str, habitat: &str, reserved: u64, vault: &str, secrets: &[Handed]) -> String {
+pub(super) fn run_script(dir: &str, argv: &[String], hale: &str, root: bool, sudo: &str, habitat: &str, revision: &str, reserved: u64, vault: &str, secrets: &[Handed]) -> String {
     let mut words: Vec<String> = argv.iter().map(|a| sq(a)).collect();
     if argv.first().map(String::as_str) == Some("hale") {
         words[0] = sq(hale);
@@ -529,6 +529,11 @@ pub(super) fn run_script(dir: &str, argv: &[String], hale: &str, root: bool, sud
     let mut vars: Vec<String> = Vec::new();
     if !habitat.is_empty() {
         vars.push(sq(&format!("{HABITAT_NAME_ENV}={habitat}")));
+    }
+    // the revision the command's source is at (the sapling's pinned
+    // commit): a command that fetches a published build of itself names it
+    if !revision.is_empty() {
+        vars.push(sq(&format!("HALE_DNA_REVISION={revision}")));
     }
     vars.push(sq(&format!("{}={reserved}", super::reserved::RESERVED_ENV)));
     let trap = if secrets.is_empty() {
@@ -1100,7 +1105,7 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
         }
     }
     super::progress(&format!("running {organism}'s `{name}` on {shown}"));
-    let script = run_script(&dir, &argv, &hale, cmd.root, "sudo", &habitat_name(), reserved_total(own, organisms, f.vm_memory), &vault, &secrets);
+    let script = run_script(&dir, &argv, &hale, cmd.root, "sudo", &habitat_name(), &revision, reserved_total(own, organisms, f.vm_memory), &vault, &secrets);
     at.run(&script, None, tty)?;
     println!("{:<8}{organism}'s `{name}` {} on {shown}", "done", if install { "placed" } else { "taken off" });
     if !service.is_empty() {
@@ -1248,7 +1253,7 @@ readers = ["api"]
         held.insert(format!("{prefix}x.tmp"), Some(String::new()));
         h[0].entries = members(&held, &prefix);
         assert_eq!(h[0].labels(), ["home", "work"]);
-        let s = run_script("/d", &["x".into()], "/h", false, "sudo", "", 0, "/v", &h);
+        let s = run_script("/d", &["x".into()], "/h", false, "sudo", "", "", 0, "/v", &h);
         assert!(s.contains(&format!("'{}={prefix}home\n{prefix}work'", crate::dna::secrets::env_var("model-token"))), "{s}");
         assert!(s.contains(&format!("\"$vd\"/{prefix}home \"$vd\"/{prefix}work")), "{s}");
         assert!(Command::new("sh").args(["-n", "-c", &s]).status().unwrap().success(), "{s}");
@@ -1279,7 +1284,7 @@ readers = ["api"]
         assert!(tokens.entries.is_empty(), "an optional family with no member is handed empty");
         assert_eq!(skipped, ["extra: unset (optional), not handed", "tokens: a family with no member (optional), handed empty"]);
         // its variable is set, and empty; the optional slot's is not set at all
-        let s = run_script("/d", &["x".into()], "/h", true, "sudo", "", 0, "/v", &kept);
+        let s = run_script("/d", &["x".into()], "/h", true, "sudo", "", "", 0, "/v", &kept);
         assert!(s.contains(&format!("'{}='", crate::dna::secrets::env_var("tokens"))), "{s}");
         assert!(!s.contains(&crate::dna::secrets::env_var("extra")), "{s}");
         assert!(Command::new("sh").args(["-n", "-c", &s]).status().unwrap().success(), "{s}");
@@ -1372,7 +1377,7 @@ readers = ["api"]
         assert_eq!(vault, "/home/x/.local/share/hale/hosted/voice.vault");
         let secrets = vec![Handed { name: "operator-token".into(), entry: "secret-dna_ab-operator-token".into(), var: crate::dna::secrets::env_var("operator-token"), family: false, optional: false, entries: vec!["secret-dna_ab-operator-token".into()] }];
         let argv: Vec<String> = vec!["hale".into(), "run".into(), "node".into(), "install".into()];
-        let s = run_script("/home/x/.local/share/hale/hosted/voice", &argv, "/usr/local/bin/hale", true, "sudo", "home", 2415919104, &vault, &secrets);
+        let s = run_script("/home/x/.local/share/hale/hosted/voice", &argv, "/usr/local/bin/hale", true, "sudo", "home", "", 2415919104, &vault, &secrets);
         assert!(s.starts_with("cd '/home/x/.local/share/hale/hosted/voice' || exit 1; vd='/home/x/.local/share/hale/hosted/voice.vault'; trap 'rm -f \"$vd\"/secret-dna_ab-operator-token; rmdir \"$vd\" 2>/dev/null' EXIT; "), "{s}");
         // sudo resets the environment: `env` after it hands them over, the
         // habitat's name first, then the habitat's share of the host's memory
@@ -1381,14 +1386,14 @@ readers = ["api"]
         // as the login, the same through env; with no secret, the habitat's
         // name and share alone and no trap; with no name, the share alone
         // (0 when the habitat runs nothing there: always handed)
-        let user = run_script("/d", &argv, "/h", false, "sudo", "home", 0, &vault, &secrets);
+        let user = run_script("/d", &argv, "/h", false, "sudo", "home", "", 0, &vault, &secrets);
         assert!(user.contains("; env 'HALE_DNA_HABITAT_NAME=home' 'HALE_DNA_HOST_RESERVED_BYTES=0' 'HALE_VAULT_DIR=") && !user.contains("sudo"), "{user}");
-        let named = run_script("/d", &argv, "/h", true, "sudo", "home", 0, &vault, &[]);
+        let named = run_script("/d", &argv, "/h", true, "sudo", "home", "", 0, &vault, &[]);
         assert_eq!(named, "cd '/d' || exit 1; sudo env 'HALE_DNA_HABITAT_NAME=home' 'HALE_DNA_HOST_RESERVED_BYTES=0' '/h' 'run' 'node' 'install'");
-        let quoted = run_script("/d", &argv, "/h", false, "sudo", "it's", 0, &vault, &[]);
+        let quoted = run_script("/d", &argv, "/h", false, "sudo", "it's", "", 0, &vault, &[]);
         assert!(Command::new("sh").args(["-n", "-c", &quoted]).status().unwrap().success(), "{quoted}");
         assert!(quoted.contains("env 'HALE_DNA_HABITAT_NAME=it'\\''s' "), "{quoted}");
-        let bare = run_script("/d", &argv, "/h", true, "sudo", "", 0, &vault, &[]);
+        let bare = run_script("/d", &argv, "/h", true, "sudo", "", "", 0, &vault, &[]);
         assert_eq!(bare, "cd '/d' || exit 1; sudo env 'HALE_DNA_HOST_RESERVED_BYTES=0' '/h' 'run' 'node' 'install'");
         // the value goes on stdin, never into the script
         let put = vault_put_script(&vault, "secret-dna_ab-operator-token");

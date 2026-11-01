@@ -166,6 +166,25 @@ fn main() {
         "no preset for a profile that is not built, nor a role the habitat does not know",
     );
 
+    // a render whose images are named by its revision is applied without
+    // `--build` (compose pulls the revision's image, builds only when none
+    // is published); any other is built from its context
+    std::test::assert_eq_str(
+        dna::compose_up_args(dna::Render { project: "p", revision: "abc", by_revision: true }, " "),
+        "up -d --wait",
+        "a revision's images are pulled first",
+    );
+    std::test::assert_eq_str(
+        dna::compose_up_args(dna::Render { project: "p", revision: "abc" }, " "),
+        "up -d --build --wait",
+        "images not named by revision are built",
+    );
+    std::test::assert_eq_str(
+        dna::compose_up_args(dna::Render { project: "p", by_revision: true }, " "),
+        "up -d --build --wait",
+        "no revision known: built",
+    );
+
     // what fills a role, as `docker ps` lines of `<image>|<state> <status>`
     // say: the images once each, the state lines as `container_state` reads
     let seen = dna::seen_containers(
