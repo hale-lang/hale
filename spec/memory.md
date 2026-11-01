@@ -1216,13 +1216,15 @@ Two correctness invariants make this safe:
      would clobber TLS, leaving the epilogue to deep-copy
      into the wrong arena (whichever nested callee was
      called last).
-  3. A record, array or tuple parameter of a method is the
+  3. A record, array or tuple parameter of a method (a
+     `fallible(E)` one and a mode as much as any other) is the
      caller's storage, passed by pointer, so a heap value
      stored under it (`x.b = p`, `x.inner.b = p`, `a[i] = p`,
      a `bounded` field assigned whole) is deep-copied into
      the same entry snapshot of the caller's arena, never
      into the scratch, as a free fn's store lands in its
-     `__caller_arena`. A call the method hands a place under
+     `__caller_arena`. The store stands when the method then
+     fails. A call the method hands a place under
      such a parameter (`self.put(x, p)`, `put_free(x.inner,
      p)`) publishes that snapshot as the callee's caller
      arena instead of the scratch when the callee may write

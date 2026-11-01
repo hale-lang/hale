@@ -414,19 +414,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             payload_ty: payload_ty.clone(),
         });
 
-        // Bind user params under their source-level names.
+        // Bind user params under their source-level names, marked as a
+        // member's own (`Cx::bind_member_params`), as an infallible
+        // member's are: a write through a record parameter lands in the
+        // caller's arena, not this call's scratch (GH #1832).
         let mut scope = Scope::default();
-        for (i, p) in fd.params.iter().enumerate() {
-            let lt = self.type_expr_to_codegen_ty(&p.ty)?;
-            let alloca = self.alloca_for(&lt, &p.name.name)?;
-            let v = func
-                .get_nth_param((i + 1) as u32)
-                .expect("locus method arg index in range");
-            self.builder
-                .build_store(alloca, v)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            scope.locals.insert(p.name.name.clone(), (alloca, lt));
-        }
+        self.bind_member_params(&fd.params, func, &mut scope)?;
 
         let end = self.in_body(fd.id, |cx| cx.lower_block(&fd.body, &mut scope))?;
         if end == BlockEnd::Open {
