@@ -106,6 +106,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat [--head <url>] forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
        hale habitat handover [organism]
        hale habitat [--head <url>] host add <name> [--user <user>] [--port <n>]
+       hale habitat [--head <url>] host join <name>
        hale habitat [--head <url>] host probe <name>
        hale habitat [--head <url>] host remove <name> [--plan]
        hale habitat [--head <url>] organism remove <name> [--plan]
@@ -315,6 +316,12 @@ host add <name>      add a machine on the LAN, by the name it resolves under,
                      into that account. When your login does not reach the
                      machine, what to do there is printed, and the host is
                      pending-key.
+host join <name>     run on a machine joining a habitat that runs on
+                     another: this machine as a host by <name> (a name the
+                     habitat's machine reaches it at). The habitat never logs
+                     in here (no key, no account, no SSH); it reaches it on
+                     its services' ports alone, its exporters installed
+                     here. Placements on it run from here (--host local).
 host probe <name>    probe it again over SSH: what it offers (docker
                      compose, the user's systemd, its OS and architecture);
                      a pending-key host whose key is now authorized is
@@ -745,7 +752,16 @@ pub(super) fn http_surface_call(endpoint: &str, member: &str, payload: &serde_js
 }
 
 fn host(args: &[String]) -> ExitCode {
-    let usage = "usage: hale habitat host add <name> [--user <user>] [--port <n>] | probe <name> | remove <name> [--plan]";
+    let usage = "usage: hale habitat host add <name> [--user <user>] [--port <n>] | join <name> | probe <name> | remove <name> [--plan]";
+    if args.first().map(String::as_str) == Some("join") {
+        return match (args.get(1), args.len()) {
+            (Some(n), 2) if !n.starts_with('-') => host_join(n),
+            _ => {
+                eprintln!("{usage}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if args.first().map(String::as_str) == Some("remove") {
         return match (args.get(1), args.get(2).map(String::as_str), args.len()) {
             (Some(n), None, 2) if !n.starts_with('-') => host_remove(n, false),
@@ -866,6 +882,44 @@ fn host(args: &[String]) -> ExitCode {
         }
     } else if let Some(why) = v["why"].as_str().filter(|w| !w.is_empty()) {
         println!("{:<8}{why}", "note");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `hale habitat host join <name>`, run on the machine joining: this machine
+/// recorded as a host of the habitat on another (`up --host`), by the name
+/// that machine reaches it at, with no key, no account and no SSH login of
+/// the habitat's: the habitat never logs in here. Its scripts run here, from
+/// this machine (`--host local` here), and the habitat reaches it on its
+/// services' ports alone: the exporters installed here are its readings.
+fn host_join(name: &str) -> ExitCode {
+    let Some(pointer) = remote::pointer() else {
+        eprintln!("hale habitat host join {name}: the habitat runs on this machine, which is its own host (`local`); a machine joins a habitat that runs on another");
+        return ExitCode::from(1);
+    };
+    let at = pointer["host"].as_str().unwrap_or("").to_string();
+    if hosted::names_own_machine(name, Some(&pointer)) {
+        eprintln!("hale habitat host join {name}: `{name}` is the habitat's own machine; a machine joins from itself, by its own name");
+        return ExitCode::from(1);
+    }
+    if !hosted::is_this_machine(name) {
+        eprintln!("hale habitat host join {name}: `{name}` does not resolve to this machine here; join by a name {at} reaches this machine at (its DNS name on your network)");
+        return ExitCode::from(1);
+    }
+    let uname = |flag: &str| Command::new("uname").arg(flag).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let v = match host_call("Commands::add_host", serde_json::json!({ "name": name, "joined": true, "os": uname("-s"), "arch": uname("-m") })) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if v["ok"] != serde_json::json!(true) {
+        eprintln!("hale habitat host join {name}: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
+        return ExitCode::from(1);
+    }
+    println!("{:<8}{name} (joined): ready, a host of the habitat on {at}", "host");
+    println!("{:<8}the habitat never logs in here: no key, no account; this machine runs its own placements (`hale habitat organism place <organism> <command> --host local`, here)", "access");
+    println!("{:<8}{at} reaches {name} on its services' ports alone: the exporters below, and what is placed here", "reached");
+    for l in readings::install_here(name) {
+        println!("{l}");
     }
     ExitCode::SUCCESS
 }
@@ -1079,6 +1133,19 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
     // the services placed there: taken off first, from this machine
     let (current, history) = placements::from_head().unwrap_or_default();
     let placed: Vec<placements::Placement> = current.into_iter().filter(|p| p.host == name).collect();
+    // a machine that joined from itself: nothing logs in there, so what is
+    // placed there is taken off there, from it
+    let joined = sapling::head_call("Commands::hosts", serde_json::json!({ "limit": 500 }))
+        .ok()
+        .and_then(|v| v["hosts"].as_str().and_then(|t| serde_json::from_str::<Vec<serde_json::Value>>(t).ok()))
+        .unwrap_or_default()
+        .iter()
+        .any(|h| h["name"] == name && h["provider"] == "joined");
+    let here = joined && hosted::is_this_machine(name);
+    if joined && !here && !placed.is_empty() && !plan_only {
+        eprintln!("hale habitat host remove {name}: {name} joined from itself, and what is placed there is taken off there: run this on {name}");
+        return ExitCode::from(1);
+    }
     println!("the plan to remove the host {name}:");
     for l in placements::plan_lines(&placed) {
         println!("  - {l}");
@@ -1121,6 +1188,19 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
     }
     let h: serde_json::Value = v["host"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
     let field = |k: &str| h[k].as_str().unwrap_or("").to_string();
+    if joined {
+        // no key, no account and no login of the habitat's there: only its
+        // exporters, taken off when this is that machine
+        println!("{:<8}{name} (joined): {}", "host", field("state"));
+        if here {
+            for l in readings::remove_here() {
+                println!("{l}");
+            }
+        } else if !readings::node_exporter_off() {
+            println!("{:<8}the habitat's exporters stay on {name}: `hale habitat host remove {name}` run there takes them off, or remove them there by hand", "note");
+        }
+        return ExitCode::SUCCESS;
+    }
     println!("{:<8}{name} ({}, {}@{}:{}): {}", "host", field("provider"), field("user"), field("address"), h["port"].as_i64().unwrap_or(0), field("state"));
     // the line its authorized_keys took, which the habitat cannot remove,
     // taken off over the person's own login
@@ -2622,7 +2702,11 @@ fn habitat_listen_host() -> String {
 /// recorded at, or `local` on the loopback (as the head's `host_label`).
 pub(super) fn host_label_here() -> String {
     let at = habitat_address();
-    if at == "127.0.0.1" || at == "localhost" { "local".to_string() } else { at }
+    if at != "127.0.0.1" && at != "localhost" {
+        return at;
+    }
+    // a machine that points at a habitat on another: that machine's name
+    remote::pointer().and_then(|p| p["host"].as_str().map(str::to_string)).filter(|h| !h.is_empty()).unwrap_or_else(|| "local".to_string())
 }
 
 /// A host as a person knows it: the habitat's own machine (`local` in its
@@ -3121,6 +3205,13 @@ fn status() -> ExitCode {
     }
     let running = running_services();
     let versions = rows.iter().find_map(|(_, r)| r["root"].as_str().map(PathBuf::from).filter(|p| p.join("hale.toml").is_file())).map(|r| toolchain_versions(&r)).unwrap_or_default();
+    // an organism's own services, as their provider observes them where
+    // they are placed (the head's reading; none when no head answers)
+    let observed: Vec<serde_json::Value> = if rows.iter().any(|(_, r)| r["roles"]["services"].is_object()) {
+        sapling::head_call("Commands::allocations", serde_json::json!({ "limit": 1000 })).ok().and_then(|v| v["allocations"].as_str().and_then(|t| serde_json::from_str(t).ok())).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     for (key, row) in rows {
         println!("allocation {key} ({})", row["root"].as_str().unwrap_or("no organism recorded"));
         for role in ["memory", "nerves", "senses", "database"] {
@@ -3159,8 +3250,25 @@ fn status() -> ExitCode {
             };
             println!("  {role:<7} {service} {state}{whose}{version}{migration}");
         }
+        if row["roles"]["services"].is_object() {
+            println!("  {}", services_status(&format!("{key}/services"), &observed));
+        }
     }
     ExitCode::SUCCESS
+}
+
+/// The status line of an organism's own services (`<key>/services`) from
+/// what the head observes of its allocations: where they are and in what
+/// state, with what is not running named; or that no reading answered.
+fn services_status(allocation: &str, observed: &[serde_json::Value]) -> String {
+    match observed.iter().find(|r| r["allocation"] == allocation) {
+        Some(r) => {
+            let f = |k: &str| r[k].as_str().unwrap_or("").to_string();
+            let detail = f("detail");
+            format!("{:<7} its compose services on {}: {}{}", "services", f("host"), f("state"), if detail.is_empty() { String::new() } else { format!(" ({detail})") })
+        }
+        None => format!("{:<7} its compose services: not observed (the head did not answer, or they are not applied: `hale habitat apply`)", "services"),
+    }
 }
 
 /// The running services of the habitat's project.
@@ -4167,6 +4275,14 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_organisms_services_show_in_status() {
+        let seen = vec![serde_json::json!({ "allocation": "7817e28279f2/services", "host": "laptop", "state": "degraded", "detail": "1 of 5 running; not running: nats (created)" })];
+        let line = super::services_status("7817e28279f2/services", &seen);
+        assert!(line.contains("on laptop: degraded (1 of 5 running; not running: nats (created))"), "{line}");
+        assert!(super::services_status("aaaaaaaaaaaa/services", &seen).contains("not observed"));
+    }
+
     use super::building;
 
     #[test]

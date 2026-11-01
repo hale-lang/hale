@@ -304,7 +304,9 @@ address at `hale habitat migrate <organism>` (a memory started empty holds
 no record, and the organism is grafted again).
 
 **Graft takes a placement**: `hale habitat graft <sapling> --host <name>`
-places the new organism on that host before anything of it is brought up.
+places the new organism on that host before anything of it is brought up;
+`--host local` places it on the habitat's own machine, through the
+`compose` provider, its services in a compose project of their own there.
 Its memory, nerves and senses' store are brought up there by its birth,
 which derives their addresses from there, so its record is born in the
 memory there. Its own services (a `compose.yaml` at its root) are an
@@ -839,6 +841,7 @@ socket), so the habitat's head must be up.
 | `place <key>/<role> <host>` | Places an allocation on a host (`Commands::place_allocation`, above); nothing applies. |
 | `apply [<host>] [--fresh]` | Applies the allocations where they are placed and prints the pulse (`Commands::apply_allocations`, above). |
 | `host add <name> [--user <user>] [--port <n>]` | Adds a machine of the LAN as an `ssh` host (above): prints the host key first seen there and its fingerprint, what it offers, and the habitat's public key with the line its `~/.ssh/authorized_keys` takes. A host already added is refused (`host_exists`), and one where no SSH server answers is not added (`unreachable`). |
+| `host join <name>` | Run on the machine joining, a habitat on another machine (a pointer): records this machine as a `joined` host by `name`, a name the habitat's machine reaches it at, which must resolve to this machine here (refused otherwise, and for the habitat's own machine). The habitat never logs in there: no key, no account, no probe (`host probe` is refused, `joined`); it reaches the machine on its services' ports alone, its exporters (installed here) scraped by `name`. `--host local` on it places here; from anywhere else a placement there is refused. `host remove` drops its entry; what is placed there is taken off there, and its exporters only when run there. |
 | `host probe <name>` | Probes the host again over SSH: a `pending-key` host whose key is now authorized is `ready`, with what it offers. A host that answers with another host key is refused (`host_key_changed`). |
 | `organism remove <name> [--plan]` | Removes an organism the habitat grafted, planned first and confirmed by its name typed back at a terminal (above). |
 | `organism upgrade <name> [--plan]` | Moves an organism grafted from a sapling to the revision the habitat pins now, keeping its record, data and allocations: the revision fetched and its digest checked, its tree moved with its graft's changes carried, its migrations run, its services re-applied, a `habitat.organism.upgraded` row recorded and its placed host commands re-run (§ Nurseries and saplings). |
@@ -1212,18 +1215,28 @@ readers = ["api", "host.node"]
 grafted organism that came from a sapling the habitat pins, and a
 `ready` host or `local`:
 
-- **The habitat's own machine.** `--host local` names the machine the
-  habitat runs on, the host its rows already call `local` (no `host add`
-  makes it, and no SSH to oneself is needed). On a habitat on this
-  machine every script below runs here, with `sh -c`, as the person (sudo
-  asks at this terminal), without this process's `HALE_*` and `LOTUS_*`
-  variables, as a login there starts without them. Through a pointer (a
-  habitat on another machine, `up --host`) it is that machine, reached
-  over the person's login the pointer names (its host, user and SSH
-  port). The scripts, the plan, the inputs and the record are the same as
-  for any host; the plan says which way it is reached. Any other name is
-  a host the habitat added: one it does not hold is refused, naming `hale
-  habitat host add <h>` and `--host local`.
+- **The habitat's own machine, and this one.** `local` is the machine
+  the person types on. On a habitat on this machine it is the habitat's
+  own machine, the host its rows already call `local` (no `host add`
+  makes it, and no SSH to oneself is needed): every script below runs
+  here, with `sh -c`, as the person (sudo asks at this terminal), without
+  this process's `HALE_*` and `LOTUS_*` variables, as a login there starts
+  without them. Through a pointer (a habitat on another machine, `up
+  --host`) `local` is still this machine: the host the habitat added that
+  is it (one whose address resolves to an address of this machine's), its
+  scripts run here, the placement recorded under that host's name; when
+  the habitat added none, it is refused, naming the one `hale habitat host
+  add <name>` that makes it one. The habitat's own machine is then said by
+  its own name, whole or by its first label (`--host rack-a.lan` or
+  `--host rack-a` for a habitat `up --host rack-a.lan`), reached over the
+  person's login the pointer names (its host, user and SSH port), recorded
+  as `local` and said by that name; its default `{id}` is that name's first
+  label. A host the habitat added keeps its own name first. The scripts,
+  the plan, the inputs and the record are the same as for any host; the
+  plan says which way it is reached. Any other name is a host the habitat
+  added: one it does not hold is refused, naming `hale habitat host add
+  <h>`. A graft's `--host` and `--own <part>=<h>` resolve their names the
+  same way, on the machine the person types on.
 
 - **Its source.** The organism's sapling repository at its pinned
   revision, cloned (then fetched) on the host under the login's
@@ -1579,7 +1592,7 @@ organism and the role (`<id>/<role>`), never by a checkout.
 | Row | When | Body |
 |---|---|---|
 | `habitat.allocated <id>/<role>` | the first time a role is provisioned for an organism; for the habitat's own `head` and `face`, at `up` whenever their placement changes | `organism`, `role`, `service`, `project`, `provider`, `host`, `vault` (slots held by name, never a value), and for the head and the face their `address` (`""` while none is assigned) |
-| `habitat.host <name>` | at `up` for `local`, and at `host add`, `host probe` and `host remove` for an `ssh` host, whenever what it says changes | `name`, `provider`, `offers` (space-separated), `state` (`ready`, `pending-key` or `removed`), `address`, `port`, `user`, `host_key` (the public host key first seen, `<type> <base64>`), `fingerprint`, `os`, `arch` |
+| `habitat.host <name>` | at `up` for `local`, at `host add`, `host probe` and `host remove` for an `ssh` host, and at `host join` and `host remove` for a `joined` one, whenever what it says changes | `name`, `provider`, `offers` (space-separated), `state` (`ready`, `pending-key` or `removed`), `address`, `port`, `user`, `host_key` (the public host key first seen, `<type> <base64>`), `fingerprint`, `os`, `arch` |
 | `habitat.policy <role>` | at `up`, whenever the role's provider changes | `role`, `provider`, `profile`, `backends` |
 | `habitat.migrated <id>/<role>` | each time an organism role's schema version moves | `organism`, `role`, `from`, `schema_version` (memory's `MEMORY_SCHEMA_VERSION`, the nerves' `NERVES_STREAM_VERSION`) |
 | `habitat.migrated <id>/<role>` | each run of a heart's declared migration | `organism`, `role`, `command`, `status`, `output` (a heart role carries no version) |

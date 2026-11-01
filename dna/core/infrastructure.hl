@@ -390,11 +390,13 @@ type AllocationState {
     runs: String = "";
 }
 
-// `docker ps` lines of `<image>|<state> <status>`: the state lines
-// `container_state` reads, and the images, each once.
+// `docker ps` lines of `<image>|<state> <status>[|<service>]`: the state
+// lines `container_state` reads, the images, each once, and the services
+// that are not running (`nats (created)`), each once.
 type SeenContainers {
     states: String = "";
     images: String = "";
+    down: String = "";
 }
 
 @bounded_by(lines)
@@ -408,8 +410,23 @@ fn seen_containers(lines: String) -> SeenContainers {
         if len(line) == 0 { continue; }
         let bar = std::str::index_of(line, "|");
         let image = if bar < 0 { "" } else { line[0..bar] };
-        let state = if bar < 0 { line } else { line[(bar + 1)..len(line)] };
+        let after = if bar < 0 { line } else { line[(bar + 1)..len(line)] };
+        // the compose service, when the line names it
+        let bar2 = std::str::index_of(after, "|");
+        let state = if bar2 < 0 { after } else { after[0..bar2] };
+        let service = if bar2 < 0 { "" } else { after[(bar2 + 1)..len(after)] };
         out.states = out.states + (if len(out.states) > 0 { "\n" } else { "" }) + state;
+        // a one-shot that finished (exit 0) is done, never down
+        let finished = std::str::starts_with(state, "exited")
+            && std::str::contains(state, "Exited (0)");
+        if len(service) > 0 && !std::str::starts_with(state, "running") && !finished {
+            let sp = std::str::index_of(state, " ");
+            let word = if sp < 0 { state } else { state[0..sp] };
+            let named = service + " (" + word + ")";
+            if !std::str::contains(out.down, named) {
+                out.down = out.down + (if len(out.down) > 0 { ", " } else { "" }) + named;
+            }
+        }
         if len(image) > 0 && !has_word(out.images, image) {
             out.images = out.images + (if len(out.images) > 0 { " " } else { "" }) + image;
         }
@@ -708,7 +725,8 @@ locus ComposeProvider {
         let ps = run_tool(
             "docker\nps\n-a\n--filter\nlabel=com.docker.compose.project="
                 + (if len(a.project) > 0 { a.project } else { local_habitat_project() })
-                + by_service + "\n--format\n{{.Image}}|{{.State}} {{.Status}}",
+                + by_service
+                + "\n--format\n{{.Image}}|{{.State}} {{.Status}}|{{.Label \"com.docker.compose.service\"}}",
         );
         if ps.code != 0 { return AllocationState { detail: "docker: " + trim_nl(ps.stderr) }; }
         let seen = seen_containers(trim_nl(ps.stdout));
@@ -717,7 +735,7 @@ locus ComposeProvider {
             seen.states,
         );
         st.runs = seen.images;
-        return st;
+        return naming_down(st, seen.down);
     }
 }
 
@@ -772,6 +790,18 @@ fn containers_state(what: String, seen: String) -> AllocationState {
         };
     }
     return AllocationState { detail: "none of " + to_string(n) + " running" };
+}
+
+// `st` with the services that are not running named after its detail,
+// when it is not up (`1 of 5 running; not running: nats (created), …`):
+// what a person looks at next, and `hale habitat apply` says why.
+fn naming_down(st: AllocationState, down: String) -> AllocationState {
+    if st.state == "up" || len(down) == 0 { return st; }
+    return AllocationState {
+        state: st.state,
+        detail: st.detail + "; not running: " + down,
+        runs: st.runs,
+    };
 }
 
 // An allocation served at `address` (`http://<host>:<port>`): up while

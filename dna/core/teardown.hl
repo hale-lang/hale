@@ -197,6 +197,23 @@ fn held_containers(held: HostHoldings, project: String, service: String) -> Int 
 @bounded_by(root)
 fn host_teardown_items(root: String, name: String, rows: Bool, only: String) -> String {
     let h = recorded_host(root, name);
+    // a machine that joined from itself: nothing there is the habitat's to
+    // take down (it never logs in), only its entry
+    if h.provider == "joined" && h.state != "removed" {
+        if !rows { return ""; }
+        return teardown_item(
+            "remote",
+            name,
+            "the host " + name
+                + " (joined from itself; the habitat never logs in there): its entry, marked removed in the habitat's record",
+            "1 row",
+            "yes: `hale habitat host join " + name + "` on it joins it again",
+            "host-removed",
+            name,
+            teardown_host_said(h),
+            TEARDOWN_STEP_ROWS + 1,
+        );
+    }
     if h.provider != "ssh" || h.state == "removed" { return ""; }
     let base = placed_project(name);
     let held = host_holdings(root, h);

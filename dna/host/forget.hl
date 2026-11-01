@@ -564,6 +564,23 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
         hrest = hrest[(sp + 1)..len(hrest)];
         let h = dna::recorded_host(root, name);
         if h.state == "removed" { continue; }
+        if h.provider == "joined" {
+            items = dna::teardown_more(
+                items,
+                dna::teardown_item(
+                    "hosts", name,
+                    name
+                        + " (joined from itself; the habitat never logs in there): its entry, removed with the record; what runs there stays (`hale habitat organism unplace` on it takes a placement off)",
+                    "1 row",
+                    "yes: `hale habitat host join " + name + "` on it joins it again",
+                    "covered",
+                    "",
+                    "",
+                    FORGET_STEP_COVERED,
+                ),
+            );
+            continue;
+        }
         if h.provider != "ssh" {
             items = dna::teardown_more(
                 items,

@@ -30,7 +30,7 @@ fn main() {
 
     // the host is this machine and so is the habitat: the loopback is linked
     std::test::assert_eq_str(
-        api::allocation_links_at(published, "localhost", false, "localhost", true, ""),
+        api::allocation_links_at(published, "localhost", false, "localhost", "", true, ""),
         "[{\"service\": \"api\", \"url\": \"http://localhost:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"http://127.0.0.1:9090\", \"note\": \"\"}]",
         "colocated host and habitat",
     );
@@ -38,25 +38,65 @@ fn main() {
     // is the loopback there: the host is the habitat's machine, which the
     // browser reaches at the declared address, never at its loopback
     std::test::assert_eq_str(
-        api::allocation_links_at(published, "localhost", false, "localhost", true, "rack-a.lan"),
+        api::allocation_links_at(
+            published,
+            "localhost",
+            false,
+            "localhost",
+            "",
+            true,
+            "rack-a.lan",
+        ),
         "[{\"service\": \"api\", \"url\": \"http://rack-a.lan:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"\", \"note\": \"loopback only on localhost\"}]",
         "a remote habitat links its own machine at its declared address",
     );
     // the remote habitat's own `local` host alike
     std::test::assert_eq_str(
-        api::allocation_links_at(published, "local", true, "127.0.0.1", true, "rack-a.lan"),
+        api::allocation_links_at(published, "local", true, "127.0.0.1", "", true, "rack-a.lan"),
         "[{\"service\": \"api\", \"url\": \"http://rack-a.lan:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"\", \"note\": \"loopback only on local\"}]",
         "a remote habitat's local host is reached at its declared address",
     );
     // another host under a remote habitat: at the host's own address
     std::test::assert_eq_str(
-        api::allocation_links_at(published, "rack-b.lan", false, "rack-b.lan", false, "rack-a.lan"),
+        api::allocation_links_at(
+            published,
+            "rack-b.lan",
+            false,
+            "rack-b.lan",
+            "",
+            false,
+            "rack-a.lan",
+        ),
         "[{\"service\": \"api\", \"url\": \"http://rack-b.lan:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"\", \"note\": \"loopback only on rack-b.lan\"}]",
         "another host is linked at its address",
     );
+    // a host added by its name, resolved to an address: a port bound to that
+    // address, or to every interface, links at the name; one bound to
+    // another address of the host links there
+    let bound = "[{\"service\": \"api\", \"port\": \"8080\", \"bind\": \"192.0.2.10\"}, {\"service\": \"all\", \"port\": \"8081\", \"bind\": \"0.0.0.0\"}, {\"service\": \"side\", \"port\": \"8082\", \"bind\": \"192.0.2.99\"}]";
+    std::test::assert_eq_str(
+        api::allocation_links_at(bound, "rack-b.lan", false, "192.0.2.10", "", false, "rack-a.lan"),
+        "[{\"service\": \"api\", \"url\": \"http://rack-b.lan:8080\", \"note\": \"\"}, {\"service\": \"all\", \"url\": \"http://rack-b.lan:8081\", \"note\": \"\"}, {\"service\": \"side\", \"url\": \"http://192.0.2.99:8082\", \"note\": \"\"}]",
+        "a host is linked by the name it was added by, an other address as it is",
+    );
+    // the real shape: a host recorded by its name, its projects told the
+    // address that name resolves to (HALE_DNA_HOST_LISTEN) and bound there
+    std::test::assert_eq_str(
+        api::allocation_links_at(
+            bound,
+            "rack-b.lan",
+            false,
+            "rack-b.lan",
+            "192.0.2.10",
+            false,
+            "rack-a.lan",
+        ),
+        "[{\"service\": \"api\", \"url\": \"http://rack-b.lan:8080\", \"note\": \"\"}, {\"service\": \"all\", \"url\": \"http://rack-b.lan:8081\", \"note\": \"\"}, {\"service\": \"side\", \"url\": \"http://192.0.2.99:8082\", \"note\": \"\"}]",
+        "a port bound to the address the host's name resolves to links at the name",
+    );
     // this machine under a local habitat
     std::test::assert_eq_str(
-        api::allocation_links_at(published, "local", true, "127.0.0.1", true, ""),
+        api::allocation_links_at(published, "local", true, "127.0.0.1", "", true, ""),
         "[{\"service\": \"api\", \"url\": \"http://127.0.0.1:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"http://127.0.0.1:9090\", \"note\": \"\"}]",
         "a local habitat's local host links its loopback",
     );
@@ -67,6 +107,7 @@ fn main() {
         "rack-b.lan",
         false,
         "rack-b.lan",
+        "",
         false,
         "rack-a.lan",
     );
