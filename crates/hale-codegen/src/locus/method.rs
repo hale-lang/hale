@@ -796,28 +796,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.current_fn_skip_exit_drain = elide_scratch;
 
                 let mut scope = Scope::default();
-                self.di_pending_params.clear();
-                for (i, p) in md.params.iter().enumerate() {
-                    let lt = self.type_expr_to_codegen_ty(&p.ty)?;
-                    let alloca = self.alloca_for(&lt, &p.name.name)?;
-                    let v = func
-                        .get_nth_param((i + 1) as u32)
-                        .expect("mode arg index in range");
-                    self.builder
-                        .build_store(alloca, v)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    if self.di.is_some() {
-                        self.di_pending_params.push((
-                            alloca,
-                            p.name.name.clone(),
-                            lt.clone(),
-                        ));
-                    }
-                    scope.locals.insert(p.name.name.clone(), (alloca, lt));
-                    // A member's parameter: the caller's place, whatever it
-                    // is (`Cx::param_place_key`).
-                    scope.locals.insert(Self::param_place_key(&p.name.name), (alloca, CodegenTy::Bytes));
-                }
+                self.bind_member_params(&md.params, func, &mut scope)?;
 
                 // Downstream handoff: implicit block-tail return —
                 // same treatment as fn members above.
@@ -873,6 +852,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// Bind a locus member's user parameters (LLVM slots `1..`, slot 0
+    /// being `self`) under their source names in `scope`, each with the
+    /// mark `Cx::param_place_key` names, so a write through a parameter of
+    /// caller storage lands in the arena that owns it
+    /// (`Cx::member_param_arena`), not in the member's scratch. Every
+    /// member body with user parameters binds them here: a `fn` member, a
+    /// fallible one (GH #1832: its loop once bound them without the mark,
+    /// so its writes through a record parameter landed in the scratch its
+    /// return frees) and a mode.
+    pub(crate) fn bind_member_params(
+        &mut self,
+        params: &[hale_syntax::ast::Param],
+        func: FunctionValue<'ctx>,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        self.di_pending_params.clear();
+        for (i, p) in params.iter().enumerate() {
+            let lt = self.type_expr_to_codegen_ty(&p.ty)?;
+            let alloca = self.alloca_for(&lt, &p.name.name)?;
+            let v = func
+                .get_nth_param((i + 1) as u32)
+                .expect("locus member arg index in range");
+            self.builder
+                .build_store(alloca, v)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            if self.di.is_some() {
+                // Stage-3 DWARF: declared as formal params by the body's
+                // first di_enter_stmt.
+                self.di_pending_params.push((alloca, p.name.name.clone(), lt.clone()));
+            }
+            scope.locals.insert(p.name.name.clone(), (alloca, lt));
+            // A member's parameter: the caller's place, whatever it is
+            // (`Cx::param_place_key`).
+            scope.locals.insert(Self::param_place_key(&p.name.name), (alloca, CodegenTy::Bytes));
+        }
+        Ok(())
+    }
+
     /// A user `fn` member's body (not a fallible one), into `func`: the
     /// method itself, or its fused clone (GH #1530, `fused_dest`).
     pub(crate) fn lower_user_fn_member_body(
@@ -922,30 +939,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_fn_skip_exit_drain = elide_scratch;
 
         let mut scope = Scope::default();
-        self.di_pending_params.clear();
-        for (i, p) in fd.params.iter().enumerate() {
-            let lt = self.type_expr_to_codegen_ty(&p.ty)?;
-            let alloca = self.alloca_for(&lt, &p.name.name)?;
-            let v = func
-                .get_nth_param((i + 1) as u32)
-                .expect("locus method arg index in range");
-            self.builder
-                .build_store(alloca, v)
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            if self.di.is_some() {
-                // Stage-3 DWARF: declared as formal params by
-                // the body's first di_enter_stmt.
-                self.di_pending_params.push((
-                    alloca,
-                    p.name.name.clone(),
-                    lt.clone(),
-                ));
-            }
-            scope.locals.insert(p.name.name.clone(), (alloca, lt));
-            // A member's parameter: the caller's place, whatever it
-            // is (`Cx::param_place_key`).
-            scope.locals.insert(Self::param_place_key(&p.name.name), (alloca, CodegenTy::Bytes));
-        }
+        self.bind_member_params(&fd.params, func, &mut scope)?;
 
         // m42: gate subscribed bus-handler bodies on the
         // __quarantined flag at entry. m41b (m45-followup-2

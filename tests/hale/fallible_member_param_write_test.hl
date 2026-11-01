@@ -1,0 +1,83 @@
+// GH #1832: a fallible locus member that writes through a record
+// parameter writes into the caller's record, as an infallible member
+// does (#1767). Before, the fallible member made the value in its own
+// per-call scratch, which its return frees: the caller read the right
+// bytes until the next call reused the freed chunk, then read that
+// call's bytes instead. Each check reads the field after a call that
+// allocates (`churn`), so a value left in a freed scratch shows.
+
+type Req { model: String = ""; alias: String = ""; }
+type ApiError { message: String = ""; }
+
+locus Backend {
+    fn pick(r: Req, n: Int) fallible(ApiError) {
+        r.alias = "alias-" + to_string(n);
+    }
+}
+
+locus Svc {
+    params { backend: Backend = Backend { }; }
+
+    // The issue's shape: the write is all the member does.
+    fn resolve(r: Req) fallible(ApiError) {
+        r.model = "coder-" + to_string(42);
+    }
+
+    // A write, then a failure: the write stands.
+    fn resolve_then_fail(r: Req, n: Int) fallible(ApiError) {
+        r.model = "tried-" + to_string(n);
+        fail ApiError { message: "no seat for " + r.model };
+    }
+
+    // A result as well as the write.
+    fn resolve_len(r: Req, n: Int) -> Int fallible(ApiError) {
+        r.model = "sized-" + to_string(n);
+        return len(r.model);
+    }
+
+    // A fallible member called from another member, and a cross-locus
+    // fallible call, each handed the record.
+    fn serve(r: Req) fallible(ApiError) {
+        self.resolve(r) or raise;
+        self.backend.pick(r, 7) or raise;
+    }
+
+    fn churn() -> Int {
+        let mut s = "";
+        let mut i = 0;
+        while i < 100 {
+            s = s + "x";
+            i = i + 1;
+        }
+        return len(s);
+    }
+}
+
+fn main() {
+    let s = Svc { };
+
+    let r = Req { model: "small" };
+    s.resolve(r) or { println("resolve failed"); };
+    std::test::assert_eq_str(r.model, "coder-42", "read right after the call");
+    std::test::assert_eq_int(s.churn(), 100, "the churn ran");
+    std::test::assert_eq_str(r.model, "coder-42", "read after another call allocates");
+
+    let f = Req { };
+    let mut failed = "";
+    s.resolve_then_fail(f, 3) or { failed = err.message; };
+    std::test::assert_eq_int(s.churn(), 100, "the churn ran");
+    std::test::assert_eq_str(failed, "no seat for tried-3", "the failure");
+    std::test::assert_eq_str(f.model, "tried-3", "a write before a fail stands");
+
+    let l = Req { };
+    let n = s.resolve_len(l, 12) or 0;
+    std::test::assert_eq_int(s.churn(), 100, "the churn ran");
+    std::test::assert_eq_int(n, 8, "the result");
+    std::test::assert_eq_str(l.model, "sized-12", "a write beside a result");
+
+    let v = Req { };
+    s.serve(v) or { println("serve failed"); };
+    std::test::assert_eq_int(s.churn(), 100, "the churn ran");
+    std::test::assert_eq_str(v.model, "coder-42", "through a member's `or raise`");
+    std::test::assert_eq_str(v.alias, "alias-7", "through another locus's member");
+}

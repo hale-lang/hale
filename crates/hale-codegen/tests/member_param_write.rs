@@ -35,6 +35,7 @@ mod build_opts;
 /// `bag`.
 const PROGRAM: &str = r#"
 type Inner { b: Bytes; }
+type E { message: String = ""; }
 type Bag { b: Bytes; s: String; inner: Inner; pair: (Int, String); items: bounded[Bytes; 4]; }
 
 fn fresh(n: Int) -> Bytes {
@@ -536,5 +537,124 @@ fn a_caller_above_a_carrier_relay_outlives_both() {
     s.top(bag, fresh(5));
     println("chain=", std::hex::encode(bag.b));"#,
         &["block=6162", "if=616263", "match=61626364", "chain=6162636465"],
+    );
+}
+
+/// GH #1832: a fallible member (`fn put(x: Bag, p: Bytes) fallible(E)`)
+/// writes through a record parameter into the caller's record, as an
+/// infallible one does. Before, its parameters were bound without the
+/// member-parameter mark, so each write was cloned into its per-call
+/// scratch, which its return frees under the caller's record. The same
+/// for every shape the infallible member covers: a String and a Bytes
+/// field, a nested path, a whole record, a tuple, an array element, a
+/// `bounded` field assigned whole, a write then a `fail`, and a fallible
+/// member with a result.
+#[test]
+fn a_fallible_member_writing_through_a_record_parameter_outlives_the_method() {
+    asan_clean(
+        "fallible",
+        r#"fn put(x: Bag, p: Bytes) fallible(E) { x.b = p; }
+    fn name(x: Bag, s: String) fallible(E) { x.s = s; }
+    fn grow(x: Bag, s: String) fallible(E) { x.s += s; }
+    fn deep(x: Bag, p: Bytes) fallible(E) { x.inner.b = p; }
+    fn whole(x: Bag, p: Bytes) fallible(E) { x.inner = Inner { b: p }; }
+    fn pair(x: Bag, n: Int) fallible(E) { x.pair = (n, "p" + to_string(n)); }
+    fn slot(a: [Bytes; 2], p: Bytes) fallible(E) { a[1] = p; }
+    fn take(x: Bag, y: Bag) fallible(E) { x.items = y.items; }
+    fn put_then_fail(x: Bag, p: Bytes) fallible(E) {
+        x.b = p;
+        fail E { message: "after-" + to_string(len(p)) };
+    }
+    fn put_len(x: Bag, p: Bytes) -> Int fallible(E) {
+        x.b = p;
+        return len(p);
+    }
+    fn churn() -> Int {
+        let mut s = "";
+        let mut i = 0;
+        while i < 100 {
+            s = s + "x";
+            i = i + 1;
+        }
+        return len(s);
+    }"#,
+        r#"s.put(bag, fresh(5)) or { println("failed"); };
+    println("put=", std::hex::encode(bag.b));
+    s.name(bag, "na" + to_string(42)) or { println("failed"); };
+    println("churn=", s.churn());
+    println("name=", bag.s);
+    s.grow(bag, "-g" + to_string(1)) or { println("failed"); };
+    s.grow(bag, "-h" + to_string(2)) or { println("failed"); };
+    println("grow=", bag.s);
+    s.deep(bag, fresh(6)) or { println("failed"); };
+    println("deep=", std::hex::encode(bag.inner.b));
+    s.whole(bag, fresh(3)) or { println("failed"); };
+    println("whole=", std::hex::encode(bag.inner.b));
+    s.pair(bag, 7) or { println("failed"); };
+    println("pair=", bag.pair.1);
+    let a = [b"", b""];
+    s.slot(a, fresh(2)) or { println("failed"); };
+    println("slot=", std::hex::encode(a[1]));
+    let from = Bag { b: b"", s: "", inner: Inner { b: b"" }, pair: (0, "") };
+    push(from.items, fresh(4)) or discard;
+    s.take(bag, from) or { println("failed"); };
+    for e in bag.items {
+        println("items=", std::hex::encode(e));
+    }
+    s.put_then_fail(bag, fresh(3)) or { println("failed=", err.message); };
+    println("put_then_fail=", std::hex::encode(bag.b));
+    let n = s.put_len(bag, fresh(4)) or { 0 };
+    println("put_len=", n, " ", std::hex::encode(bag.b));"#,
+        &[
+            "put=6162636465",
+            "churn=100",
+            "name=na42",
+            "grow=na42-g1-h2",
+            "deep=616263646566",
+            "whole=616263",
+            "pair=p7",
+            "slot=6162",
+            "items=61626364",
+            "failed=after-3",
+            "put_then_fail=616263",
+            "put_len=4 61626364",
+        ],
+    );
+}
+
+/// GH #1832: the record handed on through fallible members: a fallible
+/// member relaying to a fallible writer (`self.put(x, p) or raise`), an
+/// infallible one relaying to a fallible writer, a fallible one relaying
+/// to an infallible writer, and a fallible one handing it to another
+/// locus's method and to a free fn. Each callee writes into the arena the
+/// first member's caller published.
+#[test]
+fn a_record_parameter_handed_on_through_fallible_members_outlives_them() {
+    asan_clean(
+        "fallible_handed_on",
+        r#"fn put(x: Bag, p: Bytes) fallible(E) { x.b = p; }
+    fn put_plain(x: Bag, p: Bytes) { x.b = p; }
+    fn relay(x: Bag, p: Bytes) fallible(E) { self.put(x, p) or raise; }
+    fn relay_plain(x: Bag, p: Bytes) { self.put(x, p) or { println("failed"); }; }
+    fn relay_to_plain(x: Bag, p: Bytes) fallible(E) { self.put_plain(x, p); }
+    fn via_child(x: Bag, p: Bytes) fallible(E) { self.o.put(x, p); }
+    fn via_free(x: Bag, p: Bytes) fallible(E) { put_free(x, p); }"#,
+        r#"s.relay(bag, fresh(7)) or { println("failed"); };
+    println("relay=", std::hex::encode(bag.b));
+    s.relay_plain(bag, fresh(2));
+    println("relay_plain=", std::hex::encode(bag.b));
+    s.relay_to_plain(bag, fresh(3)) or { println("failed"); };
+    println("relay_to_plain=", std::hex::encode(bag.b));
+    s.via_child(bag, fresh(4)) or { println("failed"); };
+    println("via_child=", std::hex::encode(bag.b));
+    s.via_free(bag, fresh(5)) or { println("failed"); };
+    println("via_free=", std::hex::encode(bag.b));"#,
+        &[
+            "relay=61626364656667",
+            "relay_plain=6162",
+            "relay_to_plain=616263",
+            "via_child=61626364",
+            "via_free=6162636465",
+        ],
     );
 }
