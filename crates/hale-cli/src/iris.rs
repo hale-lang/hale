@@ -56,11 +56,14 @@ pub(crate) fn ensure_all_built_in(root: &Path, seeds: &[(&str, &str)], what: &st
     })
 }
 
-/// `hale build <root>/<seed> -o <out>` with THIS binary.
+/// `hale build <root>/<seed> -o <out> --target-cpu native` with THIS
+/// binary. The cache is per machine and what it holds runs here, so it
+/// is built for this host, not for `hale build`'s portable default
+/// (`build_env::host_cache_options` fingerprints exactly this build).
 fn hale_build(root: &Path, seed: &str, out: &Path) -> Result<Command, String> {
     let me = std::env::current_exe().map_err(|e| format!("cannot locate the hale binary: {e}"))?;
     let mut build = Command::new(me);
-    build.arg("build").arg(root.join(seed)).arg("-o").arg(out).stdin(Stdio::null()).stdout(Stdio::null());
+    build.arg("build").arg(root.join(seed)).arg("-o").arg(out).args(["--target-cpu", "native"]).stdin(Stdio::null()).stdout(Stdio::null());
     Ok(build)
 }
 

@@ -410,6 +410,60 @@ fn a_recording_carries_the_build_options_it_was_made_under() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `hale build` emits a binary for the portable baseline by default and
+/// `hale run` / `hale replay` build for the host, so a recording made by
+/// a built binary names a CPU the replay's own default is not. The
+/// replay finds the CPU whose identity the recording carries and
+/// rebuilds at it: admitted with no flag, and saying so. An explicit
+/// `--target-cpu native` is not second-guessed, and is refused by the
+/// identity, which is what shows the adoption is not an admission
+/// bypass.
+#[test]
+fn a_built_binarys_recording_replays_at_the_cpu_it_was_built_for() {
+    let dir = workdir("builtcpu");
+    let prog = dir.join("demo.hl");
+    std::fs::write(&prog, "fn main() { let x = 1 + 1; }\n").unwrap();
+    let bin = dir.join("demo-bin");
+    let out = hale().arg("build").arg(&prog).arg("-o").arg(&bin).output().expect("hale build");
+    assert!(out.status.success(), "hale build: {}", String::from_utf8_lossy(&out.stderr));
+    let rec = dir.join("built.halerec");
+    let out = Command::new(&bin).env("LOTUS_OBS_RECORD", &rec).output().expect("run built binary");
+    assert!(out.status.success(), "recorded run failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(rec.is_file(), "the built binary recorded nothing");
+
+    let out = hale().arg("replay").arg(&rec).arg(&prog).output().expect("hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success() && !stderr.contains("different build inputs"),
+        "a `hale build` binary's recording must replay with no flag: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("`--target-cpu baseline` build"),
+        "and the replay says which CPU it rebuilt for: {}",
+        stderr
+    );
+
+    let out = hale()
+        .args(["replay", "--target-cpu", "native"])
+        .arg(&rec)
+        .arg(&prog)
+        .output()
+        .expect("hale replay --target-cpu native");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(1), "an explicit CPU is the one built: {}", stderr);
+    assert!(stderr.contains("different build inputs"), "and the identity refuses it: {}", stderr);
+
+    // A `hale run` recording replays at the host CPU, with nothing said.
+    let run_rec = record(&dir, &prog);
+    let out = hale().arg("replay").arg(&run_rec).arg(&prog).output().expect("hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "a `hale run` recording replays: {}", stderr);
+    assert!(!stderr.contains("--target-cpu"), "at the host CPU, adopting nothing: {}", stderr);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Review round 2, finding 1's canary: an otherwise deterministic
 /// program that publishes to a transport-BOUND topic (a unix
 /// socket here; same class as udp) must be
@@ -2261,8 +2315,14 @@ fn record_built(bin: &Path, rec: &Path) {
     assert!(rec.is_file(), "the built binary recorded nothing");
 }
 
+/// `hale build <target>` at the host CPU, the one `hale run` builds for.
+/// The target CPU is the one option the two verbs default differently
+/// (`build` emits a portable artifact), so the tests below, which hold
+/// a built binary's identity equal to `run`'s, give `build` `run`'s;
+/// `a_built_binarys_recording_replays_at_the_cpu_it_was_built_for`
+/// covers the default.
 fn build(target: &Path) {
-    let out = hale().arg("build").arg(target).output().expect("hale build");
+    let out = hale().arg("build").arg(target).args(["--target-cpu", "native"]).output().expect("hale build");
     assert!(
         out.status.success(),
         "hale build failed: {}",
@@ -2572,7 +2632,7 @@ fn a_csrc_flag_naming_the_manifests_file_is_a_no_op() {
 
     let out = hale()
         .current_dir(&dir)
-        .args(["build", "--csrc", "vendor/shim/glue.c", "app/main.hl"])
+        .args(["build", "--target-cpu", "native", "--csrc", "vendor/shim/glue.c", "app/main.hl"])
         .output()
         .expect("hale build");
     assert!(out.status.success(), "`build --csrc` links once: {}", String::from_utf8_lossy(&out.stderr));

@@ -18,6 +18,40 @@ use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_authors;
 use crate::replay;
 use hale_frontend::snapshot::{LoadError, Snapshot};
+/// The target CPU a replay builds at. `current` is the one its options
+/// name (the flag's, or the host's by default); unless `--target-cpu`
+/// was given (`explicit`), a recording whose execution identity is not
+/// `current`'s but another choice's is replayed at that choice: a
+/// recording of a `hale build` binary (the portable baseline by
+/// default) replays without being told how it was built, and one of a
+/// `hale run` binary is matched by the host's own, first, as before.
+/// `digest_at` is the execution identity this compile would carry at a
+/// CPU. A recording no choice matches keeps `current`, and admission
+/// refuses it as it always has.
+pub(crate) fn recorded_target_cpu(
+    recorded: [u64; 4],
+    explicit: bool,
+    current: hale_codegen::TargetCpu,
+    digest_at: impl Fn(hale_codegen::TargetCpu) -> [u64; 4],
+) -> hale_codegen::TargetCpu {
+    if explicit || recorded == [0; 4] || digest_at(current) == recorded {
+        return current;
+    }
+    hale_codegen::TargetCpu::ALL
+        .into_iter()
+        .filter(|&cpu| cpu != current)
+        .find(|&cpu| digest_at(cpu) == recorded)
+        .unwrap_or(current)
+}
+
+/// `--target-cpu`'s spelling of a choice.
+fn target_cpu_spelling(cpu: hale_codegen::TargetCpu) -> &'static str {
+    match cpu {
+        hale_codegen::TargetCpu::Native => "native",
+        hale_codegen::TargetCpu::X86_64V3 => "baseline",
+    }
+}
+
 /// `hale replay <recording> <program.hl | dir> [--diff [--json]] [--at N]`
 /// — GH #296. Re-runs a recorded execution: the same binary (model
 /// identity checked against the recording header), with the
@@ -269,8 +303,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     // The options are `build`'s and `run`'s (I2): the replay builds, as
     // they do, with the imported packages' `[ffi]` surface beside its
     // flags.
-    let build_options = identity_options(&build_options, &snap, &prog);
-    let options_fp = build_env::options_fingerprint(&build_options);
+    let mut build_options = identity_options(&build_options, &snap, &prog);
     let identity = match model_identity(&snap, resolved, &build_options) {
         Ok(x) => x,
         Err(b) => {
@@ -280,7 +313,29 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     };
     let model_hash = identity.model_hash;
     let obs_ids = identity.obs_ids;
-    let digest = exec_digest(&source_frames(&snap), &options_fp, identity.plan_digest);
+    let frames = source_frames(&snap);
+    // The CPU the recording's binary was built for, when no
+    // `--target-cpu` says: `hale build` defaults to the portable
+    // baseline and `hale run` to the host, and the recording carries
+    // only the digest of its options, so the replay finds the choice
+    // whose identity the recording names and rebuilds at it.
+    let explicit_cpu = build_flags.iter().any(|f| f == "--target-cpu");
+    let cpu = recorded_target_cpu(rec.exec_digest, explicit_cpu, build_options.target_cpu, |cpu| {
+        let mut o = build_options.clone();
+        o.target_cpu = cpu;
+        exec_digest(&frames, &build_env::options_fingerprint(&o), identity.plan_digest)
+    });
+    if cpu != build_options.target_cpu {
+        eprintln!(
+            "hale replay: `{}` was recorded from a `--target-cpu {}` build; \
+             rebuilding for that CPU",
+            rec_path.display(),
+            target_cpu_spelling(cpu)
+        );
+        build_options.target_cpu = cpu;
+    }
+    let options_fp = build_env::options_fingerprint(&build_options);
+    let digest = exec_digest(&frames, &options_fp, identity.plan_digest);
 
     // GH #296 phase 5b (review round): a binding backend with no
     // replay class cannot be suppressed OR injected — replaying or
@@ -695,4 +750,52 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         return result;
     }
     ExitCode::from(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recorded_target_cpu;
+    use hale_codegen::TargetCpu;
+
+    /// A stand-in identity per CPU: the real one frames the options
+    /// fingerprint, whose `cpu=` is the only part that differs here.
+    fn digest(cpu: TargetCpu) -> [u64; 4] {
+        match cpu {
+            TargetCpu::Native => [1, 0, 0, 0],
+            TargetCpu::X86_64V3 => [2, 0, 0, 0],
+        }
+    }
+
+    /// A recording of a `hale build` binary (the portable baseline by
+    /// default) is replayed at the baseline, without `--target-cpu`.
+    #[test]
+    fn a_baseline_recording_is_replayed_at_the_baseline() {
+        let cpu = recorded_target_cpu(digest(TargetCpu::PORTABLE), false, TargetCpu::Native, digest);
+        assert_eq!(cpu, TargetCpu::PORTABLE);
+    }
+
+    /// A recording of a `hale run` binary replays as it always has: at
+    /// the host's CPU, the replay's own default.
+    #[test]
+    fn a_native_recording_keeps_the_native_build() {
+        let cpu = recorded_target_cpu(digest(TargetCpu::Native), false, TargetCpu::Native, digest);
+        assert_eq!(cpu, TargetCpu::Native);
+    }
+
+    /// `--target-cpu` is never second-guessed: the replay builds at what
+    /// it names, and admission says whether the recording is that build.
+    #[test]
+    fn an_explicit_target_cpu_wins() {
+        let cpu = recorded_target_cpu(digest(TargetCpu::PORTABLE), true, TargetCpu::Native, digest);
+        assert_eq!(cpu, TargetCpu::Native);
+    }
+
+    /// A recording no CPU accounts for (other sources, other options)
+    /// and one with no identity at all keep the replay's own CPU, and
+    /// are refused by admission as before.
+    #[test]
+    fn an_unmatched_or_unstamped_recording_keeps_the_default() {
+        assert_eq!(recorded_target_cpu([9, 9, 9, 9], false, TargetCpu::Native, digest), TargetCpu::Native);
+        assert_eq!(recorded_target_cpu([0; 4], false, TargetCpu::Native, digest), TargetCpu::Native);
+    }
 }

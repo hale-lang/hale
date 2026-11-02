@@ -3536,7 +3536,15 @@ the build options are the ones the compiling command was GIVEN
 2026-09-20, GH #904; `run` compiled with the defaults and
 fingerprinted the defaults), so a recording made under `hale run
 --dev` is admitted by `hale replay --dev` and by no default
-replay. `hale build`, `hale run` and `hale replay` compute the
+replay. The target CPU is the one option a replay finds for itself:
+`hale build` defaults to the portable baseline and `hale run` to the
+host CPU, and the recording carries only its identity's digest, so
+without `--target-cpu` a replay whose host-CPU identity is not the
+recording's computes the identity at each other target CPU and, when
+one is the recording's, rebuilds at that CPU (and says so on stderr).
+A recording of a `hale build` binary is admitted by `hale replay` with
+no flag; one of `hale run` matches at the host CPU first, as before;
+an explicit `--target-cpu` is never second-guessed. `hale build`, `hale run` and `hale replay` compute the
 options one way (F.40 phase 4, I2): the command's flags, `--env`'s
 role table (`replay --env` resolves the environment as `run --env`
 does, so a recording made under `--env prod` is admitted by `hale
@@ -4361,19 +4369,33 @@ Defined in `crates/hale-codegen/runtime/lotus_arena.c`
 
 What the compiler emits for a native `hale build`:
 
-- **Host-CPU tuning + O3 by default.** Native builds tune to the
-  host CPU (`target-cpu`/`target-features` from the build
-  machine) and run LLVM's aggressive (O3) pipeline — both the
-  module passes and the backend codegen level. This unlocks
-  autovectorization across all generated code (e.g. AVX-512 on a
-  capable host). **Consequence:** a native binary is **not
-  portable across microarchitectures** — it may use instructions
-  absent on an older CPU.
-- **`--target-cpu native | baseline`.** `native` (default) is the
-  host-tuned build above. `baseline` pins a portable
-  **`x86-64-v3`** target (AVX2 + BMI2 + FMA) for **distributed
-  artifacts** that must run on any modern x86-64 CPU. The
-  emitted module self-describes its subtarget via per-function
+- **O3, and a portable CPU for an artifact.** Native builds run
+  LLVM's aggressive (O3) pipeline — both the module passes and
+  the backend codegen level. `hale build` emits an artifact, so
+  by default it targets the **portable baseline**: `x86-64-v3`
+  (AVX2 + BMI2 + FMA) on x86-64, a generic CPU on aarch64 and
+  every other architecture, and the runtime TUs with it
+  (`-march=x86-64-v3` on x86-64, no `-march` elsewhere). A binary
+  built on one machine runs on any machine of its architecture
+  that meets that floor: tuned to the build machine instead, a
+  binary built on a CI runner took the runner's CPU extensions
+  (SVE on an Arm server, AVX-512 on an x86 one) with it and died
+  with SIGILL on another CPU of the same architecture. `hale run`,
+  `hale test`, `hale bench` and `hale replay` build what they then
+  run here, so they tune to the **host CPU**
+  (`target-cpu`/`target-features` from the build machine, and
+  `-march=native` for the runtime TUs except on macOS), which
+  unlocks autovectorization across all generated code (e.g.
+  AVX-512 on a capable host) and is **not portable across
+  microarchitectures**. So does the build of the toolchain's own
+  cache (`hale iris`, the DNA host), which runs where it is built.
+- **`--target-cpu native | baseline`.** Overrides the command's
+  default. `native` is the host-tuned build; `hale build
+  --target-cpu native` is for a binary that only runs on the
+  machine that built it (or on identical hosts). `baseline` (also
+  spelled `portable` or `x86-64-v3`) is the portable baseline
+  above, for **distributed artifacts**. The emitted module
+  self-describes its subtarget via per-function
   `target-cpu`/`target-features` attributes, so the choice is
   carried into bitcode (it survives LTO).
 - **`LOTUS_LTO=1` — opt-in full-LTO.** Read at *build time*.
