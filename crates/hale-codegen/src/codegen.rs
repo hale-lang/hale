@@ -3023,10 +3023,14 @@ fn link_cross(
         rt_cflags.push("-DLOTUS_OBSERVE=1".into());
     }
     rt_cflags.push("-O2".into());
+    // zig's CPU spelling: `zig cc` reads `-march=x86-64-v3` as the CPU
+    // `x86` with features `64` and `v3`, and refuses it. Reached by
+    // every cross `hale build` for x86-64 since that verb defaults to
+    // the portable baseline.
     if options.target_cpu == TargetCpu::X86_64V3
         && target.arch == crate::target::TargetArch::X86_64
     {
-        rt_cflags.push("-march=x86-64-v3".into());
+        rt_cflags.push("-mcpu=x86_64_v3".into());
     }
     rt_cflags.push(format!("-I{}", sysroot.join("include").display()));
     if prefetch_disabled {
