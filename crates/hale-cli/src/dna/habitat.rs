@@ -273,7 +273,9 @@ apply [<host>]       apply the allocations (of one host, or all) where they
                      only with --fresh, and the habitat's own never.
 nursery add <source> the Board trusts a nursery, a directory or a git
                      repository (the head's Commands::add_nursery), and what
-                     it offers is read into the habitat's record. `refresh`
+                     it offers is read into the habitat's record. A git
+                     source may name a revision (<url>#<tag>); adding one the
+                     Board trusts at another revision re-pins it. `refresh`
                      reads every nursery again (`up` does too): a sapling
                      first seen is pinned, a newer revision of one pinned is
                      filed for the Board and never taken; `ratify <sapling>`

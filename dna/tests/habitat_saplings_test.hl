@@ -478,6 +478,34 @@ fn main() {
             + removed.stderr,
     );
 
+    // ---- a git nursery trusted at one revision and added again at another
+    // is re-pinned: the earlier source retired, the newer the one read
+    let gn = scratch + "/git-nursery";
+    std::io::fs::mkdir(gn) or discard;
+    git(gn, "init\n-q\n-b\nmain");
+    std::io::fs::write_file(gn + "/nursery.toml", "") or discard;
+    git(gn, "add\n-A");
+    git(gn, "commit\n-q\n-m\nn1");
+    git(gn, "tag\nn1");
+    std::io::fs::write_file(gn + "/README.md", "n2\n") or discard;
+    git(gn, "add\n-A");
+    git(gn, "commit\n-q\n-m\nn2");
+    git(gn, "tag\nn2");
+    let gurl = "file://" + dna::trim_nl(dna::run_tool("realpath\n" + gn).stdout);
+    let at1 = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nadd\n" + gurl + "#n1");
+    std::test::assert(
+        at1.code == 0,
+        "the git nursery is trusted at n1: " + at1.stdout + at1.stderr,
+    );
+    let at2 = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nadd\n" + gurl + "#n2");
+    std::test::assert(at2.code == 0, "and added again at n2: " + at2.stdout + at2.stderr);
+    let listed = surface_read(face, "Commands::nurseries", "nurseries");
+    std::test::assert(
+        len(element(listed, "source", gurl + "#n2")) > 0
+            && len(element(listed, "source", gurl + "#n1")) == 0,
+        "the same repository is trusted at the revision named last, alone: " + listed,
+    );
+
     in_dir(scratch, toolchain() + "\nhabitat\ndown");
     dna::scratch_done(scratch);
 }
