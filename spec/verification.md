@@ -2473,7 +2473,8 @@ assume the others in a build:
 
     **What the estimate does NOT cover.** Storage the optimizer
     introduces is invisible to any source-level model — register
-    spills above all. We build `-O3` with `target-cpu=native`, so on
+    spills above all. `hale run` builds `-O3` with `target-cpu=native`
+    (`hale build --target-cpu native` too), so on
     an AVX-512 host a spilled vector register is **64 bytes** against
     a model whose unit is 8, and a vectorized loop can consume
     hundreds of bytes with no source local to explain it. Inlining

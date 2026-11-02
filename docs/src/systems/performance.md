@@ -202,12 +202,15 @@ For live arena residency profiling (`LOTUS_ARENA_RESIDENCY=1`, `LOTUS_ARENA_LOG_
 
 ## Build-Time Optimization Flags
 
-By default, `hale build` compiles native binaries at `-O3` targeting the host CPU architecture (`--target-cpu native`), enabling host-specific SIMD autovectorization (such as AVX2 or AVX-512).
+Native builds compile at `-O3`. Which CPU they are tuned for depends on the command:
+
+- `hale build` emits an artifact, and an artifact travels, so by default it targets the **portable baseline** (`--target-cpu baseline`): `x86-64-v3` (AVX2 + BMI2 + FMA) on x86-64 and a generic CPU on aarch64. A binary built on a CI runner then runs on any machine of the same architecture. Tuned to the runner's own CPU, it can stop with `SIGILL` on another one.
+- `hale run`, `hale test`, `hale bench` and `hale replay` build a binary that runs on this machine right away, so they tune for the host CPU (`--target-cpu native`), enabling host-specific SIMD autovectorization (such as AVX-512 or SVE).
 
 | Option / Variable | Effect | When to Use |
 |---|---|---|
-| `--target-cpu native` *(default)* | Optimizes and vectorizes for the build machine's exact CPU. | Local execution (`hale run`) and homogeneous production hosts. |
-| `--target-cpu baseline` | Targets portable `x86-64-v3` (AVX2 + BMI2 + FMA). | Shipping compiled binaries across mixed hardware fleets. |
+| `--target-cpu baseline` *(default for `hale build`)* | Targets the portable baseline: `x86-64-v3` on x86-64, generic on aarch64. `portable` and `x86-64-v3` are accepted spellings. | Images and binaries that are built in one place and run in another. |
+| `--target-cpu native` *(default for `run`, `test`, `bench`, `replay`)* | Optimizes and vectorizes for the build machine's exact CPU. | A binary that only ever runs on the machine that built it, or on identical hosts (`hale build --target-cpu native`). |
 | `LOTUS_LTO=1` | Enables full Link-Time Optimization across generated code and the C runtime (requires `lld` on `PATH`; links ~3–4x slower). | Release and benchmark builds (`LOTUS_LTO=1 hale build myservice/`). |
 
 ## Runtime Performance Profile

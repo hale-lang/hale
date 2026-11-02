@@ -632,9 +632,10 @@ jobs:
       # build time without carrying it: `clang` (the runtime TUs and the
       # link) and libLLVM (linked dynamically).
       #
-      # `host` is the runner image and the CPU. `hale build` tunes for the
-      # machine it runs on (`-march=native`, and the runtime object cache
-      # assumes it is never shared across machines), and hosted runners
+      # `host` is the runner image and the CPU. The cache's builds tune for
+      # the machine they run on (`hale iris` builds its seeds with
+      # `--target-cpu native`, and the runtime object cache assumes it is
+      # never shared across machines), and hosted runners
       # are not all one CPU model, so a binary built on one could stop
       # with SIGILL on another. The CPU is what clang resolves `native`
       # to, which is what LLVM tunes the Hale code for too. (The face's
@@ -1054,7 +1055,7 @@ jobs:
         # observer, so its build is skipped.
         #
         # The three seeds the tests below spawn are checked and built
-        # (native, as a user builds them) beside the warm rather than
+        # (with `hale build`'s default, as a user builds them) beside the warm rather than
         # after it: each `hale build` is one single-threaded process, and
         # in turn the three took 12 of this job's 26 minutes on a
         # four-core runner (2026-09-26). The script waits for every build
@@ -1209,7 +1210,7 @@ jobs:
       # per host they almost never hit, because the runners of four runs
       # of this PR were znver3, znver4, graniterapids, sapphirerapids and
       # one LLVM 18 has no name for. The browser suite exercises what they
-      # serve, not how fast; face-api still builds and tests them native.
+      # serve, not how fast; face-api builds and tests them as a user does.
       # So the key is the compiler id (see the cli job), the runner image,
       # and every file under dna/ and iris/: the seeds' imports, followed
       # transitively (`hale inputs` on each seed), reach

@@ -76,7 +76,7 @@ Passing a directory (`hale run .`, `hale check .`, `hale build .`) compiles all 
 
 ### Fast Iteration (`--dev`)
 
-By default, `hale build` and `hale run` compile with `-O3` tuned for the host CPU. During rapid edit-compile-run loops, enable the lighter optimization pipeline:
+By default, `hale build` and `hale run` compile with `-O3`: `hale run` tuned for the host CPU, `hale build` for a portable baseline so the binary runs on other machines too (`--target-cpu native` tunes it for the host). During rapid edit-compile-run loops, enable the lighter optimization pipeline:
 
 ```sh
 hale build --dev app.hl

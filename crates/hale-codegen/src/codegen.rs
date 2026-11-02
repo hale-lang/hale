@@ -920,18 +920,37 @@ impl CompileTarget {
 
 /// Backend CPU tuning for the native target. `Native` tunes to the
 /// host (`-march=native`-equivalent: best perf, NOT portable across
-/// microarchitectures). `Baseline` pins a portable modern x86-64
-/// baseline (x86-64-v3: AVX2+BMI2+FMA) for distributed artifacts.
-/// Ignored on the wasm32 target (always generic).
+/// microarchitectures). `X86_64V3` is the portable baseline
+/// ([`TargetCpu::PORTABLE`]) for distributed artifacts: x86-64-v3
+/// (AVX2+BMI2+FMA) on x86-64, generic everywhere else. Ignored on the
+/// wasm32 target (always generic).
+///
+/// The library default is `Native`, what a build that runs where it
+/// compiles wants (`hale run`, `hale test`, the test harness). The CLI
+/// picks per verb: `hale build` emits an artifact, so it defaults to
+/// [`TargetCpu::PORTABLE`] (a binary tuned to a CI runner's CPU dies
+/// with SIGILL on another machine of the same architecture).
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetCpu {
     #[default]
     Native,
-    /// x86-64-v3: AVX2 + BMI2 + FMA. Named for what it actually pins —
+    /// x86-64-v3: AVX2 + BMI2 + FMA on x86-64; generic on aarch64 and
+    /// every other architecture. Named for what it pins on x86-64 —
     /// "Baseline" quietly implied those extensions were a baseline on
     /// every platform, which is false the moment the target is aarch64
-    /// or Windows-on-ARM.
+    /// or Windows-on-ARM. The name is also its spelling in the
+    /// execution identity (`cpu=X86_64V3`), which recordings carry.
     X86_64V3,
+}
+
+impl TargetCpu {
+    /// The portable baseline an artifact meant to travel is built for:
+    /// x86-64-v3 on x86-64, generic elsewhere. `hale build`'s default.
+    pub const PORTABLE: TargetCpu = TargetCpu::X86_64V3;
+
+    /// Every choice, for a caller that has to find the one a build was
+    /// made with (`hale replay` matching a recording's identity).
+    pub const ALL: [TargetCpu; 2] = [TargetCpu::Native, TargetCpu::X86_64V3];
 }
 
 /// Which LTO flavor a build asks for (`BuildOptions::lto`; the CLI

@@ -67,8 +67,9 @@ pub(crate) fn build_options_from(get: impl Fn(&str) -> Option<String>) -> BuildO
 
 /// The options fingerprint of the build the DNA host cache runs, for
 /// its key (`hale_iris::toolchain_hash`, F.40 phase 4, I5). That build
-/// is `hale build <seed>` with no flag, a subprocess that inherits this
-/// process's environment, so its options are [`build_options_from_env`]'s
+/// is `hale build <seed> --target-cpu native` (the cache runs where it
+/// is built), a subprocess that inherits this process's environment, so
+/// its options are [`build_options_from_env`]'s, whose CPU is the host's,
 /// and its fingerprint is [`options_fingerprint`] of them: the function
 /// the execution identity uses, over the same environment. What the
 /// seed's own `[ffi]` adds is embedded source the key already folds.

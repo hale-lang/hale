@@ -196,7 +196,8 @@ The build options are `hale build`'s, with the same meanings, and
 they are part of the execution identity a recording carries: a run
 recorded under `--dev` replays only under `hale replay --dev`.
 
-  --target-cpu <native|baseline>   backend CPU tuning
+  --target-cpu <native|baseline>   backend CPU tuning (default here:
+                                   native, this host)
   --dev                            LLVM O1 instead of the O3 default
   --link <name>                    link a system library (repeatable)
   --csrc <file.c>                  compile and link a C source
@@ -241,10 +242,12 @@ that is not a flag is the target, as in `hale check`:
                                    selects wasm32; with it, a
                                    declaration it contradicts is
                                    refused
-  --target-cpu <native|baseline>   `native` tunes to this host, best
-                                   speed and not portable; `baseline`
-                                   pins a portable x86-64-v3 for an
-                                   artifact that travels
+  --target-cpu <native|baseline>   `baseline` (the default) builds an
+                                   artifact that travels: x86-64-v3 on
+                                   x86-64, generic on aarch64; `native`
+                                   tunes to this host, best speed, for
+                                   a binary that only runs where it is
+                                   built
   -o, --out <path>                 write the artifact to <path> instead
                                    of beside the target (`build` only:
                                    `run` and `replay` execute theirs)
@@ -300,7 +303,10 @@ refused unless the matching flag accepts the gap.
 `replay` recompiles the program, so it takes `hale build`'s options
 too — and must be given the ones the recording was made under, since
 they are part of the execution identity admission checks:
-`--target-cpu`, `--dev`, `--link`, `--csrc`, `--target`.
+`--target-cpu`, `--dev`, `--link`, `--csrc`, `--target`. The target
+CPU is the exception: without `--target-cpu`, a recording of a
+`hale build` binary (built for the portable baseline) is rebuilt at
+the CPU its identity names.
 ",
         "test" => "\
 hale test [file | dir]        compile + run every `*_test.hl` (default: cwd)
