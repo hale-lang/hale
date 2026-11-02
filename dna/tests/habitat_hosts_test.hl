@@ -304,6 +304,17 @@ fn main() {
         "a host is added once: " + again.stdout + again.stderr,
     );
 
+    // ---- a probe of a host still waiting on its key finishes what `add`
+    // began: over the person's login (which reaches no account here), so it
+    // says what to do there, the same line `add` printed
+    let waiting = in_dir(scratch, toolchain() + "\nhabitat\nhost\nprobe\nlocalhost");
+    std::test::assert(
+        waiting.code == 0
+            && std::str::contains(waiting.stdout, "still waiting on the habitat's key")
+            && std::str::contains(waiting.stdout, authorize),
+        "a pending-key probe finishes the setup, or says how: " + waiting.stdout + waiting.stderr,
+    );
+
     // ---- authorized on the machine, the next probe finds it ready, with
     // what it offers
     let auth = dna::run_tool(
