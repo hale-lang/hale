@@ -757,6 +757,13 @@ fn nursery_refused(code: String, why: String) -> NurseryReply {
     return NurseryReply { code: code, why: why };
 }
 
+// The repository a nursery source names: the source without its pinned
+// revision (`<url>#<rev>` → `<url>`).
+fn nursery_repository(source: String) -> String {
+    let at = std::str::index_of(source, "#");
+    return if at < 0 { source } else { source[0..at] };
+}
+
 // A nursery the Board trusts: a `habitat.nursery <source>` row, written by
 // `by`. What it offers is read into the record by the habitat's next act
 // that reads its nurseries (`hale habitat nursery add` runs it at once).
@@ -776,6 +783,32 @@ fn habitat_nursery_add(root: String, a: NurseryAdd, by: String) -> NurseryReply 
     let held = latest.get(source) or LatestRow { };
     if held.at >= 0 && std::json::find_string_field(j.read(held.at).body, "state") == "trusted" {
         return NurseryReply { ok: true, why: "the Board trusts it already" };
+    }
+    // the same repository trusted at another revision is re-pinned: its
+    // earlier source retired, so the nursery is read at the revision named
+    // now, never beside the one named before
+    let base = nursery_repository(source);
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.nursery" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if e.entity == source || nursery_repository(e.entity) != base { continue; }
+        if std::json::find_string_field(e.body, "state") != "trusted" { continue; }
+        let gone = std::json::Builder { };
+        gone.begin_object();
+        gone.string_field("source", e.entity);
+        gone.string_field("kind", std::json::find_string_field(e.body, "kind"));
+        gone.string_field("state", "removed");
+        gone.string_field("repinned", source);
+        gone.end_object();
+        let retired = j.append(j.revision(), "habitat.nursery", e.entity, gone.result());
+        if !retired.ok {
+            return nursery_refused(
+                "record_refused",
+                "the habitat's record refused the row (" + retired.error + ")",
+            );
+        }
     }
     let b = std::json::Builder { };
     b.begin_object();
