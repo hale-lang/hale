@@ -8,6 +8,26 @@ behavior.
 
 ## Unreleased
 
+## v0.32.1 — portable builds and in-place upgrades (2026-11-01)
+
+A patch release from the first lab runs on v0.32.0.
+
+**Portable builds.** `hale build` output now runs on any machine of its architecture: it targets x86-64-v3 on x86-64 and generic code on arm64, where it targeted the build machine's own CPU. An organism's image built on a CI runner no longer dies with an illegal instruction on another CPU (Apple silicon's docker VM, an older server). `hale run`, `test` and `bench` stay native, since they run where they compile, and `--target-cpu native` opts a build back in. A built binary's recording replays at the CPU it was built for.
+
+**In-place upgrades of a pinned release.** `hale habitat nursery add <url>#<tag>` re-pins a repository the Board already trusts, so an organism grafted from a release moves to the next one without a reset: `nursery add <repo>#<tag>`, `nursery refresh`, `nursery ratify <sapling>`, `organism upgrade <sapling>`.
+
+**Hosts that stopped halfway.** `hale habitat host probe` finishes a host left `pending-key` (an interrupted `add`), as `add` would have.
+
+**Breaking-ish, measured against v0.32.0:** `hale build`'s default target CPU is the portable baseline; a program that wants the build machine's CPU says `--target-cpu native`.
+
+The item-level notes follow, one entry per change with every PR reference.
+
+- `hale habitat host probe` finishes a host left `pending-key` (an `add` interrupted, or one whose login did not reach the machine): the habitat's account is made or its key appended over your SSH login, as `add` does it, and the host probed again; until now it had to be removed and added again (#1836).
+
+- `hale habitat nursery add <url>#<revision>` re-pins a git nursery the Board already trusts at another revision: the earlier source is retired, so `nursery refresh` reads the repository at the revision named last and files its newer saplings for `ratify` and `organism upgrade`. Adding the same repository at a new tag used to leave both trusted, the earlier one read first, so an upgrade never saw the new revision (#1837).
+
+- Breaking-ish: `hale build` output is portable by default. It used to be tuned to the build machine's CPU, so a binary built on a CI runner could die with SIGILL on another machine of the same architecture (an arm64 image built on a runner's Arm server CPU, run under Docker on Apple silicon). `hale build` now targets the portable baseline, `--target-cpu baseline` (x86-64-v3 on x86-64, generic on aarch64; `portable` is a new spelling of it), and so does a cross build (`--target <triple>`), which was generic on x86-64 before. Pass `hale build --target-cpu native` for a binary that only runs on the machine that built it. `hale run`, `test`, `bench` and `replay` still tune for the host, and `hale replay` without `--target-cpu` rebuilds at the CPU the recording names, so a recording of a `hale build` binary replays with no flag (#1839).
+
 ## v0.32.0 — the habitat from published images (2026-11-01)
 
 A released habitat now runs from published images end to end. `hale habitat up` on a release pulls its habitat image for the machine's own architecture (arm64 now included, a Mac's docker VM among them), and an organism that names its images by the revision it is applied at (`HALE_DNA_REVISION`) has them pulled, not built on the host: voice, grafted at a release, comes up with nothing compiled.
