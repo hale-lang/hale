@@ -331,7 +331,15 @@ fn habitat_host_probe(root: String, name: String, by: String) -> HostReply {
         let wrote = host_write(root, probed, by);
         if len(wrote) > 0 { return host_refused("record_refused", wrote); }
     }
-    return host_reply(probed, "", probed.why);
+    let mut r = host_reply(probed, "", probed.why);
+    // still waiting on its key: the line to authorize, as `add` answers it,
+    // so the probe can finish what an interrupted `add` began
+    if probed.state == "pending-key" {
+        let public = dna::habitat_public_key(root);
+        r.public_key = public;
+        r.authorize = public;
+    }
+    return r;
 }
 
 // Why `name` is no host the habitat can remove, "" when it is one.

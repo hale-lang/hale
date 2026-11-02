@@ -837,9 +837,18 @@ fn host(args: &[String]) -> ExitCode {
         }
     }
     println!("{:<8}{offers}{}", "offers", if field("os").is_empty() { String::new() } else { format!(" ({} {})", field("os"), field("arch")) });
-    if verb == "add" {
-        println!("{:<8}{} {} (trusted from now on: another key is refused)", "hostkey", field("fingerprint"), field("host_key").split(' ').next().unwrap_or(""));
-        println!("{:<8}{}", "key", v["public_key"].as_str().unwrap_or(""));
+    // a probe of a host still waiting on its key (an `add` interrupted, or
+    // whose login did not reach the machine) finishes it the same way
+    let finishing = verb == "probe" && field("state") == "pending-key" && v["authorize"].as_str().is_some_and(|l| !l.is_empty());
+    let own_user = if verb == "add" { own_user } else { remote::is_habitat_user(&field("user")) };
+    let login_port = if verb == "add" { login_port } else { h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0) };
+    if verb == "add" || finishing {
+        if verb == "add" {
+            println!("{:<8}{} {} (trusted from now on: another key is refused)", "hostkey", field("fingerprint"), field("host_key").split(' ').next().unwrap_or(""));
+            println!("{:<8}{}", "key", v["public_key"].as_str().unwrap_or(""));
+        } else {
+            println!("{:<8}{name} is still waiting on the habitat's key: finishing its setup over your SSH login", "note");
+        }
         if field("state") != "ready" {
             // over the person's own login, as `up --host` reaches a machine:
             // the key appended there, then the host probed again
