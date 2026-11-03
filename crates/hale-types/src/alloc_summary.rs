@@ -5306,9 +5306,9 @@ pub fn unbounded_alloc_diags(
 /// `API_SYNTH_BASE`, where the api binding parses what it generates, or
 /// in a declaration the snapshot's origin rows mark synthesized whose
 /// offset no source file owns. `json_gen` parses its parsers and the api
-/// codecs at offset 0, where their offsets coincide with the first
-/// file's without being its text, so a declaration of those origins
-/// owns no file offset at all. Every other site has one, whoever wrote
+/// codecs in a space of their own past every file (`JSON_SYNTH_BASE`),
+/// and a declaration of those origins owns no file offset wherever its
+/// span lies (a harness may spell one in its source). Every other site has one, whoever wrote
 /// the code that calls it. The check's warnings and the editor's
 /// `hale/allocSummary` both decide with [`AuthorPositions::has`], and
 /// drop nothing else (F.40 phase 2 review F1).
@@ -10148,8 +10148,8 @@ pub(crate) mod tests {
 
     /// F.40 phase 2 review F1: a finding is dropped per site, when the
     /// site has no author position, and for no other reason. A generated
-    /// parser's offsets coincide with the author's file (json_gen parses
-    /// at 0) yet are not its text; source the api binding generates sits
+    /// parser's declaration owns no author offset even where its span is
+    /// one (here the harness spells it in the file); source the api binding generates sits
     /// at `API_SYNTH_BASE`; the author's own fn beside them still reports.
     #[test]
     fn a_site_with_no_author_position_is_dropped_and_nothing_else() {

@@ -1151,3 +1151,143 @@ fn main() {
     assert_eq!(over.len(), 1, "{budget:?}");
     assert!(over[0].contains("`put`"), "{budget:?}");
 }
+
+// ---- a generated codec shares no offset with a file -------------------
+//
+// Reported from hale-lang/voice: a store in one file, written once in a
+// method with no loop, was "a local bound from a place is copied here in
+// a loop", and whether it was depended on the length of a constant in
+// another file. `json_gen` parsed the codecs it generates at offset 0,
+// where their spans coincide with the files' offsets, and the owned-view
+// pass's copies are keyed by span: when a statement of a generated
+// decoder, inside its loop, had exactly the offsets of the author's
+// store, the survey of the decoder took the store's copy for its own.
+// The codecs now parse past every file (`JSON_SYNTH_BASE`).
+
+/// The record whose generated parser the seed calls: the first file.
+const CODEC_FILE: &str = "type Order { id: Int `json:\"id\"`; name: String `json:\"name\"`; }
+fn main() { let o = Order::from_json(\"{}\") or Order { id: 0, name: \"\" }; println(o.id); }
+";
+
+/// The statements of `__json_parse_Order` written inside a loop, as the
+/// generator writes them: each span relative to the start of its
+/// generated source (where it lands when that source is parsed at 0).
+fn generated_loop_statements() -> Vec<(u32, u32)> {
+    use hale_syntax::ast::{Block, ElseBranch, IfStmt, Stmt, TopDecl};
+    fn block(b: &Block, depth: u32, out: &mut Vec<(u32, u32)>) {
+        for s in &b.stmts {
+            if depth > 0 {
+                out.push((s.span().start.0, s.span().end.0));
+            }
+            match s {
+                Stmt::While { body, .. } | Stmt::For { body, .. } => block(body, depth + 1, out),
+                Stmt::Block(b) => block(b, depth, out),
+                Stmt::If(i) => if_stmt(i, depth, out),
+                _ => {}
+            }
+        }
+    }
+    fn if_stmt(i: &IfStmt, depth: u32, out: &mut Vec<(u32, u32)>) {
+        block(&i.then_block, depth, out);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block(b, depth, out),
+            Some(ElseBranch::ElseIf(e)) => if_stmt(e, depth, out),
+            None => {}
+        }
+    }
+    let mut probe = parse_source(CODEC_FILE).expect("parse");
+    let written = probe.items.len();
+    hale_syntax::json_gen::generate_json_parsers(&mut probe);
+    let generated = &probe.items[written..];
+    let origin = generated.iter().map(|d| d.span().start.0).min().expect("the codecs are generated");
+    let mut out = Vec::new();
+    for d in generated {
+        if let TopDecl::Fn(f) = d {
+            if f.name.name == "__json_parse_Order" {
+                block(&f.body, 0, &mut out);
+            }
+        }
+    }
+    assert!(!out.is_empty(), "the generated parser loops");
+    out.into_iter().map(|(s, e)| (s - origin, e - origin)).collect()
+}
+
+/// The second file: a method that writes into a local bound from a field,
+/// once, in no loop, with the write at `at` (the seed's offset) and
+/// `len` bytes long. `None` when the method cannot be laid out there.
+fn store_file(base: u32, at: u32, len: u32, hot: bool) -> Option<String> {
+    let head = format!(
+        "type In {{ k: Int = 0; s: String = \"\"; }}
+type R {{ arr: [In; 2] = [In {{ }}, In {{ }}]; }}
+locus Keeper {{
+    params {{ r: R = R {{ }}; }}
+    {}fn flip(v: Int) -> Int {{
+        let mut k = self.r.arr;
+",
+        if hot { "@hot " } else { "" }
+    );
+    let indent = at.checked_sub(base + head.len() as u32)?;
+    // `k[0].k =` and `v;`, the spaces between making up the length
+    let gap = len.checked_sub(10).filter(|g| *g >= 1)?;
+    Some(format!(
+        "{head}{}k[0].k ={}v;\n        return k[0].k;\n    }}\n    run() {{ println(self.flip(1)); }}\n}}\n",
+        " ".repeat(indent as usize),
+        " ".repeat(gap as usize)
+    ))
+}
+
+#[test]
+fn a_store_at_a_generated_decoders_offsets_is_not_its_copy() {
+    use entries::{check_files, load_files};
+    let base = {
+        let snap = load_files(&[("a.hl", CODEC_FILE), ("b.hl", "fn other() { }\n")], hale_frontend::snapshot::Config::check(true, false));
+        snap.file_bases().iter().find(|(_, p, _)| p.ends_with("b.hl")).expect("b.hl").0
+    };
+    // a statement of the decoder's loop the store can be laid out over
+    let (at, end) = generated_loop_statements()
+        .into_iter()
+        .find(|&(s, e)| store_file(base, s, e - s, true).is_some())
+        .expect("a loop statement past the store's head");
+    for hot in [false, true] {
+        let b = store_file(base, at, end - at, hot).unwrap();
+        let start = base + b.find("k[0].k =").unwrap() as u32;
+        let stmt_end = base + b.find("v;\n").unwrap() as u32 + 2;
+        assert_eq!((start, stmt_end), (at, end), "the store sits at the decoder statement's offsets");
+        let found: Vec<String> = check_files(&[("a.hl", CODEC_FILE), ("b.hl", &b)])
+            .into_iter()
+            .map(|d| d.message)
+            .filter(|m| m.contains("hot-path"))
+            .collect();
+        if !hot {
+            assert!(found.is_empty(), "a store written once in no loop: {found:?}");
+            continue;
+        }
+        // `@hot` reports the store's own copy, once, and not in a loop
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("a local bound from a place is copied here ("), "{found:?}");
+    }
+}
+
+/// Every generated codec lies past every file of its seed.
+#[test]
+fn the_generated_codecs_lie_past_every_file() {
+    let snap = entries::load_files(&[("a.hl", CODEC_FILE)], hale_frontend::snapshot::Config::check(true, false));
+    let mut codecs = 0;
+    for program in snap.programs().values() {
+        for d in hale_syntax::ast::flat_decls(&program.items) {
+            let hale_syntax::ast::TopDecl::Fn(f) = d else { continue };
+            if !f.name.name.starts_with("__json_") {
+                continue;
+            }
+            codecs += 1;
+            let at = f.span.start.0;
+            assert!(hale_syntax::api_names::is_json_synth_pos(at), "`{}` at {at}", f.name.name);
+            assert!(
+                !snap.file_bases().iter().any(|(b, _, l)| hale_syntax::file_owns_offset(*b, *l, at)),
+                "`{}` at {at} lies in a file",
+                f.name.name
+            );
+        }
+    }
+    assert!(codecs >= 2, "the parser and the emitter: {codecs}");
+}

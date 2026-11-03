@@ -2933,6 +2933,20 @@ assume the others in a build:
   instantiated in a loop inside a publish's value or a bare `{ … }`
   block is a finding, and so is one inside an index expression's
   subscript, which the summary walks as it walks any operand.
+
+  **A finding is where its statement is, and nowhere else** (2026-11-03,
+  reported from hale-lang/voice). The copies the owned-view pass adds
+  are found per statement and read back by the statement's span, so a
+  span names one statement of the bundle: the JSON codecs the compiler
+  generates (a record's `from_json` / `to_json`, an api surface's
+  codecs) parse in a space of their own past every file, each
+  program's past every other's, never at a file's offsets. Before, they
+  parsed at offset 0, and a store written once in a method with no loop
+  read as "copied here in a loop" whenever a generated decoder's loop
+  had a statement at exactly its offsets, which an edit anywhere earlier
+  in the bundle could bring about. A diagnostic inside a generated codec
+  names it as that (`in the JSON codecs the compiler generated …`), not
+  a position in a file.
 - **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
   escalation between the default advisory and `@budget`'s counted
   ceiling: `@hot fn` certifies "this is a 10k/s-class path" and (a)

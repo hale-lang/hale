@@ -181,3 +181,29 @@ fn main() {
     }
     assert!(seen > 10, "the dump should carry many spans, saw {}", seen);
 }
+
+/// The JSON codecs `json_gen` generates parse in a space of their own,
+/// past every file, and each program's chunk of a bundle past every
+/// other's: a span is the only key some tables have for a node, so a
+/// generated statement at a file's offsets was the file's statement to
+/// them (reported from hale-lang/voice).
+#[test]
+fn generated_json_codecs_share_no_offset() {
+    use hale_syntax::api_names::{is_json_synth_pos, JSON_SYNTH_BASE};
+    let a = "type A { x: Int `json:\"x\"`; }\nfn main() { let a = A::from_json(\"{}\") or A { x: 0 }; }\n";
+    let b = "type B { y: String `json:\"y\"`; }\nfn f() { let b = B::from_json(\"{}\") or B { y: \"\" }; }\n";
+    let mut pa = parse_source(a).expect("parse");
+    let mut pb = parse_source_at(b, a.len() as u32 + 1).expect("parse");
+    let (na, nb) = (pa.items.len(), pb.items.len());
+    hale_syntax::json_gen::generate_json_parsers_in(&mut [&mut pa, &mut pb]);
+    let window = |items: &[hale_syntax::ast::TopDecl]| {
+        assert!(!items.is_empty(), "the codecs are generated");
+        let start = items.iter().map(|d| d.span().start.0).min().unwrap();
+        let end = items.iter().map(|d| d.span().end.0).max().unwrap();
+        assert!(is_json_synth_pos(start) && is_json_synth_pos(end), "{start}..{end}");
+        (start, end)
+    };
+    let (wa, wb) = (window(&pa.items[na..]), window(&pb.items[nb..]));
+    assert_eq!(wa.0, JSON_SYNTH_BASE, "the first chunk starts the space");
+    assert!(wa.1 < wb.0 || wb.1 < wa.0, "the two programs' chunks overlap: {wa:?} {wb:?}");
+}

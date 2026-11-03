@@ -54,7 +54,7 @@ use crate::symbol::SourceFile;
 ///   here too.
 /// - `ApiSurface`: `api_gen` parses everything it generates at
 ///   `API_SYNTH_BASE`, so any site whose span starts there; and the api
-///   codecs, which `json_gen` parses at 0, by their `__api_decode_` /
+///   codecs, which `json_gen` parses at `JSON_SYNTH_BASE`, by their `__api_decode_` /
 ///   `__api_encode_` prefix (and `__api_pb_decode_` / `__api_pb_encode_`,
 ///   the protobuf ones of a gRPC exposure).
 /// - `OmittedRun`: the `run` `desugar_omitted_run` adds, by its
