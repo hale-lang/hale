@@ -30,7 +30,8 @@ use crate::ast::{
     MatchStmt, OrDisposition, PrimType, Program, Stmt, TopDecl, TypeDeclBody,
     TypeExpr,
 };
-use crate::{parse_source, Span};
+use crate::api_names::{is_json_synth_pos, JSON_SYNTH_BASE};
+use crate::{parse_source_at, Span};
 
 #[derive(Clone, Copy)]
 enum ScalarTy {
@@ -2029,10 +2030,44 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
     }
 }
 
+/// Where the next chunk of generated codecs parses: past the end of every
+/// declaration of `programs` already in the JSON codecs' parse space
+/// ([`JSON_SYNTH_BASE`]), so no two chunks of a bundle, and no chunk and
+/// any file, share an offset. A span is the only key several tables have
+/// for a node (the owned-view pass's copies, the allocation survey's
+/// lookup of them), so two nodes at one offset are one node to them.
+fn next_synth_base<'p>(programs: impl IntoIterator<Item = &'p Program>) -> u32 {
+    programs
+        .into_iter()
+        .flat_map(|p| crate::ast::flat_decls(&p.items))
+        .map(|d| d.span())
+        .filter(|s| is_json_synth_pos(s.start.0))
+        .map(|s| s.end.0 + 1)
+        .max()
+        .unwrap_or(JSON_SYNTH_BASE)
+}
+
 /// Synthesize `__json_parse_<T>` / `__json_to_json_<T>` / `JsonError`,
 /// inject them, then rewrite every `T::from_json(s)` and `T::to_json(o)`
 /// call to the generated function.
+///
+/// One program alone; a bundle's programs go through
+/// [`generate_json_parsers_in`], which keeps their chunks apart.
 pub fn generate_json_parsers(program: &mut Program) {
+    let base = next_synth_base([&*program]);
+    generate_json_parsers_at(program, base);
+}
+
+/// [`generate_json_parsers`] over every program of a bundle, each
+/// program's chunk past every chunk generated before it.
+pub fn generate_json_parsers_in(programs: &mut [&mut Program]) {
+    for i in 0..programs.len() {
+        let base = next_synth_base(programs.iter().map(|p| &**p));
+        generate_json_parsers_at(programs[i], base);
+    }
+}
+
+fn generate_json_parsers_at(program: &mut Program, base: u32) {
     let mut names = HashSet::new();
     collect_json_type_names(&program.items, &mut names);
     let mut types = Vec::new();
@@ -2066,7 +2101,7 @@ pub fn generate_json_parsers(program: &mut Program) {
         }
     }
     if !src.trim().is_empty() {
-        match parse_source(&src) {
+        match parse_source_at(&src, base) {
             Ok(generated) => program.items.extend(mark_synthetic(generated.items)),
             // The generator emits well-formed source; a parse failure is a
             // generator bug, not user error. Say so on stderr and leave the
@@ -2698,7 +2733,8 @@ fn generate_codecs(
     if src.trim().is_empty() {
         return;
     }
-    match parse_source(&src) {
+    let base = next_synth_base(programs.iter().map(|p| &**p));
+    match parse_source_at(&src, base) {
         Ok(generated) => {
             let mut items = mark_synthetic(generated.items);
             splice_defaults(&mut items, &types);

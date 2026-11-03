@@ -53,6 +53,11 @@ pub fn render_located(
             }
         }
     }
+    // A span in the JSON codecs' parse space: a record's generated
+    // `from_json` / `to_json`, or an api surface's codecs.
+    if let Some(note) = json_codec_note(off) {
+        return format!("{}: {} ({note})", d.kind_str(), d.message);
+    }
     // A span in the serve expansion's own parse space (GH #1109, #1417):
     // the source was generated from an `api::serve` site or a hub
     // binding, so no file of the bundle owns it; say that, rather than a
@@ -84,6 +89,16 @@ pub fn render_located(
     }
     let any = sources.values().next().map(|s| s.as_str()).unwrap_or("");
     d.render(any)
+}
+
+/// What an offset in the JSON codecs' parse space
+/// (`hale_syntax::api_names::JSON_SYNTH_BASE`) is: code the compiler
+/// generated, which no file of the bundle owns. `None` for any other
+/// offset. The text and the JSON renderers both say it.
+fn json_codec_note(off: u32) -> Option<String> {
+    hale_syntax::api_names::is_json_synth_pos(off).then(|| {
+        "in the JSON codecs the compiler generated for a record's `from_json` / `to_json` or an api surface".to_string()
+    })
 }
 
 /// Where an offset of the expansion's parse space lies when it is stdlib
@@ -160,7 +175,7 @@ pub fn render_diag_json(
     }
     let message = if in_stdlib {
         format!("{} ({})", d.message, stdlib_note(d.span))
-    } else if let Some(note) = file.is_empty().then(|| appended_source_note(off)).flatten() {
+    } else if let Some(note) = file.is_empty().then(|| appended_source_note(off).or_else(|| json_codec_note(off))).flatten() {
         format!("{} ({note})", d.message)
     } else {
         d.message.clone()

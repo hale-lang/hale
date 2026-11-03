@@ -71,9 +71,9 @@ pub struct Sequence<'a> {
 /// unchanged, so a caller that cannot tell whether its program went
 /// through it (the test harness) may run it again.
 pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
-    for p in programs.iter_mut() {
-        hale_syntax::json_gen::generate_json_parsers(p);
-    }
+    // Each program's parsers in their own parse space, past every file and
+    // every other program's (`JSON_SYNTH_BASE`).
+    hale_syntax::json_gen::generate_json_parsers_in(programs);
     // GH #1417 (R2a): a serve site becomes an exposure, its surface's rows
     // an adapter and its receivers' plumbing (`rpc_expand`).
     // GH #1592 S3: the main locus's observe backends as hidden params.
