@@ -8,6 +8,16 @@ behavior.
 
 ## Unreleased
 
+## v0.32.2 — the verifier fix voice needed (2026-11-03)
+
+A patch release for one checker bug, found by hale-lang/voice.
+
+**`hale verify` no longer reports a hot-path copy that isn't there.** The JSON codecs the compiler generates were parsed as if they began at the bundle's first byte, so their positions overlapped real files' code. Whether a store in one file was taken for a copy inside a generated decoder's loop depended on the length of everything before it: adding a line to an unrelated constant could make `verify` fail on code that had not changed. Generated codecs now sit in a position space of their own, and a diagnostic inside one names the generated code instead of a file.
+
+The item-level notes follow.
+
+- Fix: the hot-path lint no longer reports a store written once, in a method with no loop, as "a local bound from a place is copied here in a loop", with whether it did depending on the length of an unrelated constant earlier in the bundle (reported from hale-lang/voice). The JSON codecs the compiler generates (`from_json` / `to_json`, an api surface's codecs) were parsed at offset 0, so their spans coincided with the files' own, and the copies the owned-view pass records by span were read back for whichever generated statement had the same offsets. The codecs now parse in a space of their own past every file, and a diagnostic inside one is named as generated code instead of a position in a file (#1842).
+
 ## v0.32.1 — portable builds and in-place upgrades (2026-11-01)
 
 A patch release from the first lab runs on v0.32.0.
