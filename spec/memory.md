@@ -932,21 +932,22 @@ class — chunked-class per-coordinatee sub-regions land in m22,
 the recognition-class fixed pool in m23.
 
 **Phase-3 hard byte-cap on `g_bus_payload_arena` (2026-05-19;
-safety net).** The arena now refuses to grow past
+safety net).** The arena refuses to grow past
 `LOTUS_BUS_PAYLOAD_ARENA_CAP` (default 64 MiB, env-overridable
-for capacity-planning experiments). When the cap fires
-`lotus_arena_alloc` returns NULL; one diagnostic line goes to
-stderr identifying the cap event and the arena's name; subsequent
-allocations against the capped arena keep returning NULL.
-Existing callers — BytesBuilder `snapshot()` / `finish()` via the
-alloc-fail sentinel + violate routing, recv_bytes returning
-empty Bytes, `lotus_bytes_create` returning NULL through
-`empty_global` — already surface NULL as degraded service, so the
-cap converts a slow OOM into structural failure that surfaces
-through the F.27 channel. This is the floor for a long-running
-program leaking into the payload arena, not the fix; the fix is
-per-subscriber arena routing for m70 + `__caller_arena` threading
-for the stdlib primitives that land here.
+for capacity-planning experiments). An allocation that would pass
+the cap stops the process: one report goes to stderr naming the
+arena, the bytes it holds, the cap, the size asked for and the
+frames that asked, and the process aborts (SIGABRT). What the arena
+holds was deposited by a producer no owner reclaims, so reaching the
+cap is a leak's end, and the report is where its producer is named.
+Until 2026-11 the allocation returned NULL instead, meant as a
+degraded service mode; most of the arena's callers (a `String`
+clone, a codec's encode, a deserializer) never checked, and a capped
+process died later in a SIGSEGV that blamed one of them
+(hale-lang/voice: an api server, after ~6.5 h). This is the floor for
+a long-running program leaking into the payload arena, not the fix;
+the fix is per-subscriber arena routing for m70 + `__caller_arena`
+threading for the stdlib primitives that land here.
 
 **The operating system refusing memory is not a NULL.** The two
 NULLs above are contracts: a `fixed_size` cell that is full, and an
@@ -1029,6 +1030,26 @@ flight, one chunk each, not the messages. The call arena is not a
 residency target; `LOTUS_BUS_CALL_ARENA_STATS=1` reports what call
 arenas held (opened / live / peak bytes) at exit. Adapter inbound's
 key derivation (GH #1041) decodes into a call arena the same way.
+
+**A codec's encode is transient too (2026-11).** A topic bound
+through a codec (`codec(L { })`, and every topic bound to a
+`ws::Hub`, whose codec the compiler writes) is serialized by the
+codec's `encode`, whose `Bytes` the publish copies into its wire
+buffer and never reads again. The encode inherited whatever caller
+arena the publishing thread had published, and that is often none: a
+free fn's return destroys its frame's arena, and the caller-arena
+TLS with it, so a publish whose payload a free fn built last
+encoded into `g_bus_payload_arena`, one encoded payload per publish,
+never reclaimed. A served hub carrying a node's state on every
+heartbeat reached the cap that way (hale-lang/voice). The encode
+now runs in a call arena of its own (`lotus_bus_codec_arena_enter` /
+`_leave`, the per-call arena above), published as the caller arena
+for the call and freed when the serializer returns. The same sweep
+moved `std::io::tls::recv_bytes` (and the deadline-bounded read the
+https client uses) and `std::crypto::ecdsa_p256_sign` onto the
+caller's arena, as the plain-tcp read already was: each TLS read had
+carved its `max_bytes` from the payload arena, so a long-running
+https client kept every read it made.
 
 Cost: deserialize is invoked once per matching subscriber rather
 than once total. Acceptable for typical fan-out (1–3 subs per

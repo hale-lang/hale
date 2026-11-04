@@ -20,6 +20,7 @@ Set these environment variables when launching a compiled Hale binary to inspect
 | `LOTUS_BUS_LOG_DESERIALIZE_DROP=1` | Unset | Logs frames dropped by the `udp://` reader thread due to missing deserializers or size mismatches. |
 | `LOTUS_BUS_COUNTERS_DUMP=1` | Unset | Prints a summary line per remote binding at process exit: messages/bytes sent and delivered, send failures, link-down drops, `or wait` parks, listener re-arms, and reconnects. |
 | `LOTUS_BUS_QUEUE_CAP=<N>` | `8192` | Bounds the main dispatch queue, each pinned-locus mailbox, and each cooperative pool queue to `N` cells (~4.3 MB per queue at default `8192`). |
+| `LOTUS_BUS_PAYLOAD_ARENA_CAP=<N>` | 64 MiB | Caps the bus payload arena, where a value no owner reclaims ends up. A process that reaches the cap is leaking: it stops with a report naming the arena and the frames that asked (SIGABRT), rather than run on into a crash elsewhere. |
 | `LOTUS_ARENA_RESIDENCY=1` | Unset | Registers every top-level arena (locus regions, global arena, bus payload arena) with a creation backtrace for `std::process::dump_arena_residency()`. |
 | `LOTUS_NO_CHUNK_POOL=1` | Unset (`1` under ASAN) | Returns freed 64 KiB arena chunks directly to `libc` instead of caching them in the thread-local pool, allowing AddressSanitizer to trap `heap-use-after-free` immediately. |
 | `LOTUS_NO_DEBUGINFO=1` | Unset | Strips DWARF debug tables during `hale build`. |

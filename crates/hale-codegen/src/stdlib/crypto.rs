@@ -534,6 +534,8 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         }
         let key_val = self.unpack_view_if_needed(key_val, &key_ty)?;
         let msg_val = self.unpack_view_if_needed(msg_val, &msg_ty)?;
+        // the signature lives in the caller's arena
+        self.emit_set_caller_arena()?;
         let f = self
             .module
             .get_function("lotus_crypto_ecdsa_p256_sign_or_null")

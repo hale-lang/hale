@@ -400,6 +400,8 @@ crates/hale-codegen/tests/bus_large_payload.rs#0 9e9f2e768b5c002b
 crates/hale-codegen/tests/bus_large_payload.rs#1 de6b62fe96d3bb16
 crates/hale-codegen/tests/bus_payload_arena_cap.rs#0 50cc4aa6770ca1d1
 crates/hale-codegen/tests/bus_payload_arena_cap.rs#1 d4275fdcef4d5b13
+crates/hale-codegen/tests/bus_payload_arena_cap.rs#2 260d5f401463961b
+crates/hale-codegen/tests/bus_payload_arena_cap.rs#3 078f1c3f05d5f1e0
 crates/hale-codegen/tests/bus_publish_stack_alloca.rs#0 b8c03d7f90cdf93a
 crates/hale-codegen/tests/bus_publish_stack_alloca.rs#1 b8c03d7f90cdf93a
 crates/hale-codegen/tests/bus_publisher_order.rs#0 555d707c45ea9191
@@ -1593,6 +1595,7 @@ crates/hale-codegen/tests/time_now.rs#3 f21fbc665a9c2254
 crates/hale-codegen/tests/time_now.rs#4 102ad206df1a5025
 crates/hale-codegen/tests/time_return.rs#0 3f7e4e467fa2908c
 crates/hale-codegen/tests/tls_async_io_park.rs#6 e62ad0bdd63f9ed4
+crates/hale-codegen/tests/tls_async_io_park.rs#9 4ed59dc29894d8c6
 crates/hale-codegen/tests/tls_fast_io.rs#0 81110b55437dd3ef
 crates/hale-codegen/tests/tls_fast_io.rs#1 b32b366c8225f102
 crates/hale-codegen/tests/top_level_const.rs#0 f21fbc665a9c2254
