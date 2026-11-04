@@ -87,8 +87,37 @@ cache keeps an unchanged context cheap, and a service that only names an
 image builds nothing. It
 observes a service by its container's state (`running` is up, `running` and
 unhealthy or `restarting` is degraded, anything else or no container is
-down) and the head and the face by whether their address accepts a
-connection. A provider in memory (`MemProvider`) stands in for it in tests.
+down; a one-shot that exited 0 is finished, never down) and the head and
+the face by whether their address accepts a connection. Of a project's
+containers it names each that is not running with the code it last exited
+with and how often docker restarted it (`3 of 4 running; not running: api
+(exited 139)`, `api (restarting, exited 139, 7 restarts)`), and each that
+runs again after docker restarted it (`restarted: api (2 restarts)`, from
+`docker inspect`'s `RestartCount`); one that came back only seconds ago
+(`up 4 seconds`) leaves the allocation degraded, since between two crashes
+a crash loop is running. The `ssh` provider observes the same way, over
+SSH. A provider in memory (`MemProvider`) stands in for it in tests.
+
+**Kept running.** The habitat owns the lifecycle of what it applies, so a
+crash is a restart docker makes, not a service down until someone looks.
+Every long-running service it runs has the restart policy
+`unless-stopped`: the memory, nerves and senses' store of an allocation
+and the forge in the compose files the habitat writes, and an organism's
+own services through the habitat's override (below), unless the
+organism's compose files state a policy of their own (`restart:`, or
+`deploy.restart_policy`), which is left as it is. `unless-stopped` rather
+than `on-failure`: a service that exits 0 when it was not meant to stop is
+brought back too, and so is every service when the host's docker restarts
+(a reboot), where `on-failure` leaves them down; a service the habitat
+stops or withdraws (`hale habitat down`, a move, a removal) stays stopped.
+A **one-shot** — a service another waits on to finish (`depends_on` with
+`condition: service_completed_successfully`, a migration) — gets no
+policy, since running it again after it finished would be wrong; a one-shot
+nothing waits on is read as long-running, so its compose file says
+`restart: "no"`. Docker backs off between restarts, and the observation
+above names a crash loop, so a policy never hides a failing service. The
+habitat's `body` and `face` keep their `on-failure`: their clean exit is a
+drain the habitat asked for.
 
 An allocation on this machine is recorded where it is published,
 `127.0.0.1:<port>`, and each process derives the address it dials from that
@@ -1048,10 +1077,13 @@ organism's own compose services). The habitat writes them into the
 compose files it owns (an allocation's, the forge's, the body and face's,
 Grafana's) and onto the exporters it runs. An organism's own compose
 files are never touched: when its services are applied, the habitat asks
-compose which services those files define and adds an override of its
-own labelling each, kept under `<habitat>/labels/<project>.yaml` and, on
-an SSH host, beside the habitat's copy of the render
-(`.hale-labels.yaml`). A habitat's compose files are rewritten whenever
+compose how it reads those files (`docker compose config --format json`,
+with the environment, else `--no-interpolate`) and adds an override of its
+own labelling each service and giving each long-running one its restart
+policy (**Kept running**, above), kept under
+`<habitat>/labels/<project>.yaml` and, on an SSH host, beside the
+habitat's copy of the render (`.hale-labels.yaml`); the images the files
+name, `${HALE_DNA_REVISION}` among them, are left as they are. A habitat's compose files are rewritten whenever
 their text changes, so compose recreates a service whose labels moved and
 keeps its volume.
 

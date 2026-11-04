@@ -617,32 +617,18 @@ locus SshProvider {
         } else {
             compose_service(a.role, a.instance)
         };
-        // an organism's own services: every container of its project
-        let by_service = if len(service) > 0 {
-            " --filter label=com.docker.compose.service='" + service + "'"
-        } else {
-            ""
-        };
-        let ps = ssh_run(
-            self.root,
-            h,
-            "docker ps -a --filter label=com.docker.compose.project='" + a.project + "'"
-                + by_service
-                + " --format '{{.Image}}|{{.State}} {{.Status}}|{{.Label \"com.docker.compose.service\"}}'",
-            "",
-        );
+        // an organism's own services: every container of its project there,
+        // with how often docker restarted each (`containers_probe`)
+        let ps = ssh_run(self.root, h, containers_probe(a.project, service), "");
         let failed = ssh_failure(ps);
         if len(failed) > 0 { return AllocationState { detail: failed + " (" + a.host + ")" }; }
         if ps.code != 0 {
             return AllocationState { detail: "docker on " + a.host + ": " + trim_nl(ps.stderr) };
         }
-        // what fills it there, as on this machine (`seen_containers`)
-        let seen = seen_containers(trim_nl(ps.stdout));
-        let mut st = containers_state(
+        // what fills it there, as on this machine (`observed_containers`)
+        return observed_containers(
             if len(service) > 0 { service } else { a.project },
-            seen.states,
+            seen_containers(trim_nl(ps.stdout)),
         );
-        st.runs = seen.images;
-        return naming_down(st, seen.down);
     }
 }
