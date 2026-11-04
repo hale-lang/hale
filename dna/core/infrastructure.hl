@@ -280,8 +280,9 @@ type Render {
     // file, a build context, a bind mount's source), shipped with them to a
     // host elsewhere and never passed to compose
     mounted: String = "";
-    // an override labelling each service as the habitat's (`render_labels`),
-    // compose's last file wherever the render is applied; "" for none
+    // an override labelling each service as the habitat's and giving each
+    // long-running one a restart policy (`render_labels`), compose's last
+    // file wherever the render is applied; "" for none
     labels: String = "";
     // the declared secrets its programs read, a line each:
     // `<HALE_SECRET_<NAME>>\t<its entries>` (`program_secrets`); "" for none
@@ -302,23 +303,83 @@ type Render {
 }
 
 // An organism's own compose services labelled as the habitat's
-// (`compose_labels`, role `services`): an override naming each service the
-// render's compose files define, "" when compose reads none. The organism's
-// files are never touched: the override is the habitat's own file.
+// (`compose_labels`, role `services`) and kept running: an override naming
+// each service the render's compose files define (`services_override`), ""
+// when compose reads none. The organism's files are never touched: the
+// override is the habitat's own file. Compose reads them as it applies them
+// (the environment interpolated), else uninterpolated, so a variable only
+// the apply hands (`${X:?}`) does not leave the services unlabelled.
 fn render_labels(render: Render, organism: String) -> String {
-    let listed = run_tool(
-        "docker\ncompose\n" + compose_args(render, "\n") + "\nconfig\n--services",
-    );
-    if listed.code != 0 { return ""; }
+    let base = "docker\ncompose\n" + compose_args(render, "\n") + "\nconfig\n--format\njson";
+    let mut read = run_tool(base);
+    if read.code != 0 { read = run_tool(base + "\n--no-interpolate"); }
+    if read.code != 0 { return ""; }
+    return services_override(read.stdout, compose_labels(organism, "services"));
+}
+
+// The restart policy the habitat gives an organism's long-running service
+// whose compose file states none: brought back after a crash (exit 139 is
+// a restart, not a service down for good) and after the host's docker
+// restarts, never after the habitat stops or withdraws it. Docker backs
+// off between restarts, and `observe` names a service that is restarting,
+// or came back seconds ago, so a crash loop shows as degraded.
+const RESTART_POLICY: String = "unless-stopped";
+
+// The habitat's override of an organism's compose services, from compose's
+// reading of their files (`docker compose config --format json`): each
+// service with `labels` (a `labels:` block at a service's indent), and a
+// long-running one whose files state no restart policy (`restart:`, or
+// `deploy.restart_policy`) given `RESTART_POLICY`. A one-shot (a service
+// another waits on to finish: `condition: service_completed_successfully`,
+// a migration) gets none, since running it again after it finished would
+// be wrong. "" when the text names no service.
+fn services_override(config: String, labels: String) -> String {
+    let services = std::json::find_field_raw(config, "services");
+    if !std::str::starts_with(services, "{") { return ""; }
+    let one_shots = one_shot_services(services);
     let mut out = "";
-    let mut rest = listed.stdout;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let svc = std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
-        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if len(svc) > 0 { out = out + "  " + svc + ":\n" + compose_labels(organism, "services"); }
+    let mut it = std::json::object_first(services);
+    while !it.done {
+        let name = std::json::obj_key_string(it, services);
+        let svc = std::json::obj_value_raw(it, services);
+        out = out + "  " + name + ":\n" + labels;
+        let deploy = std::json::find_field_raw(svc, "deploy");
+        let stated = len(std::json::find_field_raw(svc, "restart")) > 0
+            || (std::str::starts_with(deploy, "{")
+                    && len(std::json::find_field_raw(deploy, "restart_policy")) > 0);
+        if !stated && !has_word(one_shots, name) {
+            out = out + "    restart: " + RESTART_POLICY + "\n";
+        }
+        it = std::json::object_next(it, services);
     }
     return if len(out) > 0 { "services:\n" + out } else { "" };
+}
+
+// The services of a compose config's `services` object that another waits
+// on to finish (`depends_on` with `condition:
+// service_completed_successfully`), space-separated, each once.
+fn one_shot_services(services: String) -> String {
+    let mut out = "";
+    let mut it = std::json::object_first(services);
+    while !it.done {
+        let deps = std::json::find_field_raw(std::json::obj_value_raw(it, services), "depends_on");
+        if std::str::starts_with(deps, "{") {
+            let mut d = std::json::object_first(deps);
+            while !d.done {
+                let dep = std::json::obj_key_string(d, deps);
+                let cond = std::json::find_string_field(
+                    std::json::obj_value_raw(d, deps),
+                    "condition",
+                );
+                if cond == "service_completed_successfully" && !has_word(out, dep) {
+                    out = out + (if len(out) > 0 { " " } else { "" }) + dep;
+                }
+                d = std::json::object_next(d, deps);
+            }
+        }
+        it = std::json::object_next(it, services);
+    }
+    return out;
 }
 
 // Where a render's labelling override is kept on this machine: the
@@ -397,13 +458,40 @@ type AllocationState {
     runs: String = "";
 }
 
-// `docker ps` lines of `<image>|<state> <status>[|<service>]`: the state
-// lines `container_state` reads, the images, each once, and the services
-// that are not running (`nats (created)`), each once.
+// `docker ps` lines of `<image>|<state> <status>[|<service>[|<restarts>]]`
+// (`containers_probe`): the state lines `container_state` reads, the
+// images, each once, the services that are not running, each once, with
+// the code they last exited with and how often docker restarted them
+// (`api (exited 139)`, `api (restarting, exited 139, 7 restarts)`), and the
+// running services docker has restarted (`api (2 restarts)`), those that
+// came back only seconds ago counted as `settling`: a crash loop between
+// two crashes.
 type SeenContainers {
     states: String = "";
     images: String = "";
     down: String = "";
+    restarted: String = "";
+    settling: Int = 0;
+}
+
+// The code a `docker ps` state line says its container last exited with
+// (`exited Exited (139) 3 minutes ago`, `restarting Restarting (139) 2
+// seconds ago`), "" when it names none.
+fn exit_code_of(state: String) -> String {
+    let open = std::str::index_of(state, " (");
+    if open < 0 { return ""; }
+    let rest = state[(open + 2)..len(state)];
+    let close = std::str::index_of(rest, ")");
+    if close < 1 { return ""; }
+    let code = rest[0..close];
+    let n = std::str::parse_int(code) or - 1;
+    return if n >= 0 && to_string(n) == code { code } else { "" };
+}
+
+// `n` restarts, as a service's note says it ("" for none).
+fn restarts_note(n: Int) -> String {
+    if n <= 0 { return ""; }
+    return if n == 1 { "1 restart" } else { to_string(n) + " restarts" };
 }
 
 @bounded_by(lines)
@@ -418,20 +506,58 @@ fn seen_containers(lines: String) -> SeenContainers {
         let bar = std::str::index_of(line, "|");
         let image = if bar < 0 { "" } else { line[0..bar] };
         let after = if bar < 0 { line } else { line[(bar + 1)..len(line)] };
-        // the compose service, when the line names it
+        // the compose service, when the line names it, and how often docker
+        // restarted its container, when the line says
         let bar2 = std::str::index_of(after, "|");
         let state = if bar2 < 0 { after } else { after[0..bar2] };
-        let service = if bar2 < 0 { "" } else { after[(bar2 + 1)..len(after)] };
+        let tail = if bar2 < 0 { "" } else { after[(bar2 + 1)..len(after)] };
+        let bar3 = std::str::index_of(tail, "|");
+        let service = if bar3 < 0 { tail } else { tail[0..bar3] };
+        let restarts = if bar3 < 0 {
+            0
+        } else {
+            std::str::parse_int(std::str::trim(tail[(bar3 + 1)..len(tail)])) or 0
+        };
         out.states = out.states + (if len(out.states) > 0 { "\n" } else { "" }) + state;
         // a one-shot that finished (exit 0) is done, never down
         let finished = std::str::starts_with(state, "exited")
             && std::str::contains(state, "Exited (0)");
-        if len(service) > 0 && !std::str::starts_with(state, "running") && !finished {
+        let running = std::str::starts_with(state, "running");
+        if len(service) > 0 && !running && !finished {
             let sp = std::str::index_of(state, " ");
             let word = if sp < 0 { state } else { state[0..sp] };
-            let named = service + " (" + word + ")";
-            if !std::str::contains(out.down, named) {
+            let code = exit_code_of(state);
+            let how = if len(code) == 0 {
+                word
+            } else if word == "exited" {
+                "exited " + code
+            } else {
+                word + ", exited " + code
+            };
+            let note = restarts_note(restarts);
+            let named = service + " (" + how + (if len(note) > 0 { ", " + note } else { "" }) + ")";
+            if !std::str::contains(", " + out.down, ", " + service + " (") {
                 out.down = out.down + (if len(out.down) > 0 { ", " } else { "" }) + named;
+            }
+        }
+        // running again after docker restarted it: said, and, when it came
+        // back only seconds ago (docker's own `Up 4 seconds`), settling
+        if len(service) > 0 && running && restarts > 0 {
+            let up = state[(std::str::index_of(state, " ") + 1)..len(state)];
+            let recent = std::str::starts_with(up, "Up ") && std::str::contains(up, "second");
+            if recent { out.settling = out.settling + 1; }
+            let named = service + " (" + restarts_note(restarts)
+                + (
+                    if recent {
+                        ", up " + std::str::replace(up[3..len(up)], "Less", "less")
+                    } else {
+                        ""
+                    }
+                )
+                + ")";
+            if !std::str::contains(", " + out.restarted, ", " + service + " (") {
+                out.restarted = out.restarted + (if len(out.restarted) > 0 { ", " } else { "" })
+                    + named;
             }
         }
         if len(image) > 0 && !has_word(out.images, image) {
@@ -439,6 +565,39 @@ fn seen_containers(lines: String) -> SeenContainers {
         }
     }
     return out;
+}
+
+// The shell command that lists the containers of the compose project
+// `project` (of its `service` alone, when it names one) as
+// `seen_containers` reads them: `docker ps`'s
+// `<image>|<state> <status>|<service>`, and how often docker restarted each
+// (`docker inspect`'s `RestartCount`). One line, run by `sh -c` here and
+// as the remote command over SSH; it fails as `docker ps` fails.
+fn containers_probe(project: String, service: String) -> String {
+    let by_service = if len(service) > 0 {
+        " --filter 'label=com.docker.compose.service=" + service + "'"
+    } else {
+        ""
+    };
+    return "out=$(docker ps -a --filter 'label=com.docker.compose.project=" + project + "'"
+        + by_service
+        + " --format '{{.Image}}|{{.State}} {{.Status}}|{{.Label \"com.docker.compose.service\"}}|{{.ID}}') || exit $?; [ -n \"$out\" ] || exit 0; printf '%s\\n' \"$out\" | while IFS= read -r l; do printf '%s|%s\\n' \"${l%|*}\" \"$(docker inspect --format '{{.RestartCount}}' \"${l##*|}\" 2>/dev/null)\"; done";
+}
+
+// What the containers `seen` say of what `what` names
+// (`containers_state`), the services not running named
+// (`naming_down`), and the ones docker restarted said after: a service
+// that came back only seconds ago leaves the whole degraded, since between
+// two crashes a crash loop is running.
+fn observed_containers(what: String, seen: SeenContainers) -> AllocationState {
+    let mut st = naming_down(containers_state(what, seen.states), seen.down);
+    st.runs = seen.images;
+    if len(seen.restarted) == 0 { return st; }
+    return AllocationState {
+        state: if st.state == "up" && seen.settling > 0 { "degraded" } else { st.state },
+        detail: st.detail + "; restarted: " + seen.restarted,
+        runs: st.runs,
+    };
 }
 
 interface Provider {
@@ -729,26 +888,19 @@ locus ComposeProvider {
             }
             return st;
         }
-        // an organism's own services: every container of its project
-        let by_service = if len(service) > 0 {
-            "\n--filter\nlabel=com.docker.compose.service=" + service
-        } else {
-            ""
-        };
+        // an organism's own services: every container of its project, with
+        // how often docker restarted each
         let ps = run_tool(
-            "docker\nps\n-a\n--filter\nlabel=com.docker.compose.project="
-                + (if len(a.project) > 0 { a.project } else { local_habitat_project() })
-                + by_service
-                + "\n--format\n{{.Image}}|{{.State}} {{.Status}}|{{.Label \"com.docker.compose.service\"}}",
+            "sh\n-c\n" + containers_probe(
+                if len(a.project) > 0 { a.project } else { local_habitat_project() },
+                service,
+            ),
         );
         if ps.code != 0 { return AllocationState { detail: "docker: " + trim_nl(ps.stderr) }; }
-        let seen = seen_containers(trim_nl(ps.stdout));
-        let mut st = containers_state(
+        return observed_containers(
             if len(service) > 0 { service } else { a.project },
-            seen.states,
+            seen_containers(trim_nl(ps.stdout)),
         );
-        st.runs = seen.images;
-        return naming_down(st, seen.down);
     }
 }
 

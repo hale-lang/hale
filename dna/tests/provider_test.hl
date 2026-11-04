@@ -240,4 +240,103 @@ fn main() {
         "running Up 1 minute",
         "an up state is as it was",
     );
+
+    // ---- kept running: the habitat's override of an organism's services
+    // (`docker compose config --format json`, as compose reads them): every
+    // service labelled, a long-running one given `restart: unless-stopped`,
+    // a one-shot another waits on to finish given none, and a policy the
+    // files state (`restart`, `deploy.restart_policy`) left as it is
+    let config = "{\"name\": \"voice\", \"services\": {"
+        + "\"api\": {\"depends_on\": {\"migrate\": {\"condition\": \"service_completed_successfully\", \"required\": true}, \"postgres\": {\"condition\": \"service_healthy\"}}, \"environment\": {\"restart\": \"x\"}, \"image\": \"voice-api:abc\"},"
+        + "\"brain\": {\"depends_on\": {\"postgres\": {\"condition\": \"service_started\"}}, \"image\": \"voice-api:abc\", \"restart\": \"no\"},"
+        + "\"migrate\": {\"command\": [\"migrate\"], \"image\": \"voice-api:abc\"},"
+        + "\"nats\": {\"image\": \"nats:2.11-alpine\", \"deploy\": {\"restart_policy\": {\"condition\": \"on-failure\"}}},"
+        + "\"postgres\": {\"image\": \"postgres:17\", \"restart\": \"always\"}}}";
+    let labels = "    labels:\n      hale.role: services\n";
+    std::test::assert_eq_str(
+        dna::one_shot_services(std::json::find_field_raw(config, "services")),
+        "migrate",
+        "a service another waits on to finish is a one-shot",
+    );
+    std::test::assert_eq_str(
+        dna::services_override(config, labels),
+        "services:\n"
+            + "  api:\n" + labels + "    restart: unless-stopped\n"
+            + "  brain:\n" + labels
+            + "  migrate:\n" + labels
+            + "  nats:\n" + labels
+            + "  postgres:\n" + labels,
+        "the long-running service without a policy is kept running; the one-shot and the stated policies are left alone",
+    );
+    std::test::assert_eq_str(
+        dna::services_override("{\"services\": {\"web\": {\"image\": \"w\"}}}", labels),
+        "services:\n  web:\n" + labels + "    restart: unless-stopped\n",
+        "a service nothing says of is long-running",
+    );
+    std::test::assert_eq_str(
+        dna::services_override("not json", labels),
+        "",
+        "no config, no override",
+    );
+
+    // ---- what a crash leaves: the code a service exited with, and how
+    // often docker restarted it (`<image>|<state> <status>|<service>|<restarts>`)
+    std::test::assert_eq_str(
+        dna::exit_code_of("exited Exited (139) 3 minutes ago"),
+        "139",
+        "the exit code",
+    );
+    std::test::assert_eq_str(
+        dna::exit_code_of("running Up 2 minutes (healthy)"),
+        "",
+        "none while running",
+    );
+    let crashed = dna::seen_containers(
+        "postgres:17|running Up 2 hours (healthy)|postgres|0\nvoice-api|exited Exited (139) 5 minutes ago|api|0\nvoice-api|exited Exited (0) 2 hours ago|migrate|0\nnats:2.11-alpine|running Up 2 hours|nats|0\nvoice-api|running Up 2 hours|brain|0",
+    );
+    std::test::assert_eq_str(
+        dna::observed_containers("voice", crashed).detail,
+        "3 of 4 running; not running: api (exited 139)",
+        "an exited long-running service is down with its exit code",
+    );
+    let looping = dna::seen_containers(
+        "postgres:17|running Up 2 hours|postgres|0\nvoice-api|restarting Restarting (139) 3 seconds ago|api|7",
+    );
+    let st = dna::observed_containers("voice", looping);
+    std::test::assert(
+        st.state == "degraded"
+            && st.detail == "1 of 2 running; not running: api (restarting, exited 139, 7 restarts)",
+        "a crash loop between restarts is degraded, its code and count said: " + st.state + " ("
+            + st.detail + ")",
+    );
+    let between = dna::seen_containers(
+        "postgres:17|running Up 2 hours|postgres|0\nvoice-api|running Up 4 seconds|api|8",
+    );
+    let st = dna::observed_containers("voice", between);
+    std::test::assert(
+        st.state == "degraded"
+            && st.detail == "2 running; restarted: api (8 restarts, up 4 seconds)",
+        "and while it runs between two crashes, still degraded: " + st.state + " (" + st.detail
+            + ")",
+    );
+    let recovered = dna::seen_containers(
+        "postgres:17|running Up 2 hours|postgres|0\nvoice-api|running Up 3 hours|api|1",
+    );
+    let st = dna::observed_containers("voice", recovered);
+    std::test::assert(
+        st.state == "up"
+            && st.detail == "2 running; restarted: api (1 restart)"
+            && st.runs == "postgres:17 voice-api",
+        "a service that came back and stayed is up, its restart said: " + st.state + " ("
+            + st.detail + ")",
+    );
+    // the lines the probe prints, for a project's service alone
+    let probe = dna::containers_probe("hale-habitat-voice", "api");
+    std::test::assert(
+        std::str::contains(probe, "label=com.docker.compose.project=hale-habitat-voice")
+            && std::str::contains(probe, "label=com.docker.compose.service=api")
+            && std::str::contains(probe, "{{.RestartCount}}")
+            && !std::str::contains(probe, "\n"),
+        "the probe is one line, filtered to the project and its service: " + probe,
+    );
 }
