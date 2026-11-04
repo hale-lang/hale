@@ -97,10 +97,10 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
     }
     let m = nerves_migrate(c, org);
     // GH #1590: the exchange's stream, its inbox consumer and the card
-    let x = if m.ok { exchange_migrate(c, root, id, org) } else { "" };
+    let x = if m.ok { exchange_migrate(c, root, id, org) } else { ExchangePlacement { } };
     c.close();
     if !m.ok { return fail("nerves migrate: " + m.why); }
-    if len(x) > 0 { return fail("nerves migrate: the exchange: " + x); }
+    if len(x.why) > 0 { return fail("nerves migrate: the exchange: " + x.why); }
     // GH #1653: the version the stream was moved to, which the habitat
     // records for the allocation
     let mut slots = "";
@@ -113,9 +113,19 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
         }
         roles = roles[(sp + 1)..len(roles)];
     }
+    // a word for the operator when the server could not reserve the whole
+    // of the inbox's bound (the CLI prints it on stderr)
+    let smaller = if x.bound < dna::EXCHANGE_MAX_BYTES {
+        "nerves.note=the exchange's inbox is bounded at " + dna::bytes_words(x.bound) + ", not "
+            + dna::bytes_words(dna::EXCHANGE_MAX_BYTES)
+            + ": the nerves' server could reserve no more of its file store (max_file_store); a later migration asks for the whole bound again\n"
+    } else {
+        ""
+    };
     return answer(
         nerves_urls(root, org, url) + "allocation.schema_version="
-            + to_string(dna::NERVES_STREAM_VERSION) + "\nallocation.vault_slots=" + slots + "\n",
+            + to_string(dna::NERVES_STREAM_VERSION) + "\nallocation.vault_slots=" + slots + "\n"
+            + smaller,
     );
 
 }
@@ -169,40 +179,102 @@ type NervesMigration {
     stream: String = "";
 }
 
+// `stream` created with `config`, or an existing one brought to it: ""
+// when it is in place, else JetStream's refusal. A create is refused when
+// the stream is there with another configuration (err_code 10058), and —
+// since nats-server checks a create's reservation before it looks for the
+// stream — when the server's file store cannot reserve the whole of the
+// stream's bound again (10047), though the stream reserves it already: an
+// update reserves only what it adds, so either is answered by one. An
+// update of a stream that is not there (10059) leaves the create's refusal.
+fn stream_put(c: nats::NatsClient, stream: String, config: String) -> String {
+    let made = nats::js_call(c, "$JS.API.STREAM.CREATE." + stream, config) or "";
+    if len(made) > 0 { return ""; }
+    let refused = c.last_error;
+    if !std::str::contains(refused, "10058")
+        && !std::str::contains(refused, dna::JETSTREAM_NO_STORE)
+    {
+        return refused;
+    }
+    let updated = nats::js_call(c, "$JS.API.STREAM.UPDATE." + stream, config) or "";
+    if len(updated) > 0 { return ""; }
+    if std::str::contains(c.last_error, "10059") { return refused; }
+    return c.last_error;
+}
+
 // Create the organization's stream with the owner's connection, or bring
 // an existing one to this configuration. Idempotent.
 fn nerves_migrate(c: nats::NatsClient, org: String) -> NervesMigration {
     let stream = dna::nerves_stream(org);
-    let config = dna::nerves_stream_config(org);
-    let made = nats::js_call(c, "$JS.API.STREAM.CREATE." + stream, config) or "";
-    if len(made) > 0 { return NervesMigration { ok: true, stream: stream }; }
-    // already there with another configuration (err_code 10058): update it
-    if !std::str::contains(c.last_error, "10058") {
-        return NervesMigration { why: c.last_error, stream: stream };
-    }
-    let updated = nats::js_call(c, "$JS.API.STREAM.UPDATE." + stream, config) or "";
-    if len(updated) == 0 { return NervesMigration { why: c.last_error, stream: stream }; }
+    let why = stream_put(c, stream, dna::nerves_stream_config(org));
+    if len(why) > 0 { return NervesMigration { why: nerves_refusal(why, stream), stream: stream }; }
     return NervesMigration { ok: true, stream: stream };
+}
+
+// JetStream's refusal of the organization's stream, with what to do about
+// it when the server's file store is wholly reserved (the stream has no
+// bound of its own, so that is the only way it is refused for storage).
+fn nerves_refusal(why: String, stream: String) -> String {
+    if !std::str::contains(why, dna::JETSTREAM_NO_STORE) { return why; }
+    return dna::nerves_store_refusal(why, "the organization's stream " + stream, 0);
+}
+
+// The exchange's stream as `exchange_stream_place` left it: the bound the
+// server reserved for it, or why there is none.
+type ExchangePlacement {
+    bound: Int = 0;
+    why: String = "";
+}
+
+// The exchange's stream created, or an existing one brought to this
+// configuration, bounded at the most the server's file store can reserve
+// for it: `EXCHANGE_MAX_BYTES`, halved while JetStream refuses the
+// reservation (err_code 10047), down to `EXCHANGE_MIN_BYTES` (see
+// dna/core/nerves.hl, the exchange). An inbox already in place is never
+// made smaller: asking for its own bound again reserves nothing new, so
+// the halving stops there at the latest. Each migration asks for the whole
+// bound first, so an inbox made small grows back once the server has room.
+fn exchange_stream_place(c: nats::NatsClient, org: String, per_sender: Int) -> ExchangePlacement {
+    let stream = dna::exchange_stream(org);
+    let mut bound = dna::EXCHANGE_MAX_BYTES;
+    while bound > 0 {
+        let why = stream_put(c, stream, dna::exchange_stream_config(org, per_sender, bound));
+        if len(why) == 0 { return ExchangePlacement { bound: bound }; }
+        if !std::str::contains(why, dna::JETSTREAM_NO_STORE) {
+            return ExchangePlacement { why: why };
+        }
+        let smaller = dna::exchange_smaller_bound(bound);
+        if smaller == 0 {
+            return ExchangePlacement {
+                why: dna::nerves_store_refusal(why, "the exchange's inbox " + stream, bound),
+            };
+        }
+        bound = smaller;
+    }
+    return ExchangePlacement { why: "the exchange's inbox has no bound to ask for" };
 }
 
 // GH #1590: the record's exchange stream created or brought to this
 // configuration (bounded, refusing what overflows), its inbox consumer,
 // and its card published anew — signed with the record's exchange key, so
-// a peer that reads it can pin that key. "" when done, else why not.
-fn exchange_migrate(c: nats::NatsClient, root: String, id: String, org: String) -> String {
+// a peer that reads it can pin that key. The bound its stream has, or why
+// it is not done.
+fn exchange_migrate(
+    c: nats::NatsClient,
+    root: String,
+    id: String,
+    org: String
+) -> ExchangePlacement {
     let key = dna::ExchangeKey { vault: dna::exchange_key_vault(org) };
     if !key.ready() {
-        return "the vault holds no exchange key (`" + dna::exchange_key_vault(org)
-            + "`; `hale dna upgrade` provisions it)";
+        return ExchangePlacement {
+            why: "the vault holds no exchange key (`" + dna::exchange_key_vault(org)
+                + "`; `hale dna upgrade` provisions it)",
+        };
     }
     let stream = dna::exchange_stream(org);
-    let config = dna::exchange_stream_config(org, dna::exchange_per_sender());
-    let made = nats::js_call(c, "$JS.API.STREAM.CREATE." + stream, config) or "";
-    if len(made) == 0 {
-        if !std::str::contains(c.last_error, "10058") { return c.last_error; }
-        let updated = nats::js_call(c, "$JS.API.STREAM.UPDATE." + stream, config) or "";
-        if len(updated) == 0 { return c.last_error; }
-    }
+    let placed = exchange_stream_place(c, org, dna::exchange_per_sender());
+    if len(placed.why) > 0 { return placed; }
     let mut consumer_why = "";
     nats::js_consumer_create(
         c,
@@ -215,23 +287,29 @@ fn exchange_migrate(c: nats::NatsClient, root: String, id: String, org: String) 
     ) or {
         consumer_why = c.last_error;
     };
-    if len(consumer_why) > 0 { return "its inbox consumer: " + consumer_why; }
+    if len(consumer_why) > 0 {
+        return ExchangePlacement { why: "its inbox consumer: " + consumer_why };
+    }
     let card = key.card(id, genome_root(root));
-    if len(card) == 0 { return "the card could not be signed"; }
+    if len(card) == 0 { return ExchangePlacement { why: "the card could not be signed" }; }
     // one card: the one before goes, so a bounded subject never fills with them
     let purged = nats::js_call(
         c,
         "$JS.API.STREAM.PURGE." + stream,
         "{\"filter\":\"" + dna::exchange_card_subject(org) + "\"}",
     ) or "";
-    if len(purged) == 0 { return "the old card could not be purged: " + c.last_error; }
+    if len(purged) == 0 {
+        return ExchangePlacement { why: "the old card could not be purged: " + c.last_error };
+    }
     let ack = nats::js_publish(
         c,
         dna::exchange_card_subject(org),
         std::bytes::from_string(card),
     ) or nats::PubAck { };
-    if ack.seq == 0 { return "the card could not be published: " + c.last_error; }
-    return "";
+    if ack.seq == 0 {
+        return ExchangePlacement { why: "the card could not be published: " + c.last_error };
+    }
+    return placed;
 }
 
 // Whether the organization is reading its facts: its durable consumer

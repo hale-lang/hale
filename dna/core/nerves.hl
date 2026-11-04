@@ -477,10 +477,26 @@ fn nerves_stream_config(org: String) -> String {
 // `EXCHANGE_PER_SENDER` envelopes of a kind waiting to be drained, and the
 // stream at most `EXCHANGE_MAX_BYTES`, so a connected record cannot flood
 // this one's disk while it is not reading.
+//
+// JetStream reserves a stream's `max_bytes` from its server's file store
+// when it creates the stream, however little the stream holds, and refuses
+// a stream whose bound does not fit what is left (err_code 10047). The
+// store is the server's `max_file_store`, by default three quarters of the
+// disk free under its store directory when it started, and every stream of
+// every account on the server reserves from it: on a small disk, or a
+// habitat's server holding many organizations, 256 MiB is not always
+// there. So the bound is what the server can reserve, at most
+// `EXCHANGE_MAX_BYTES`: halved until it fits, down to
+// `EXCHANGE_MIN_BYTES`, below which the inbox is refused with what to do
+// about it (`exchange_store_refusal`).
 
 const EXCHANGE_DURABLE: String = "exchange";
 const EXCHANGE_PER_SENDER: Int = 10000;
 const EXCHANGE_MAX_BYTES: Int = 268435456;
+const EXCHANGE_MIN_BYTES: Int = 1048576;
+// JetStream's refusal of a stream whose `max_bytes` its file store cannot
+// reserve ("insufficient storage resources available").
+const JETSTREAM_NO_STORE: String = "10047";
 // A fixture's override of the per-sender bound, read by `nerves migrate`.
 const EXCHANGE_PER_SENDER_ENV: String = "HALE_DNA_EXCHANGE_PER_SENDER";
 
@@ -497,7 +513,32 @@ fn exchange_per_sender() -> Int {
     return if n > 0 { n } else { EXCHANGE_PER_SENDER };
 }
 
-fn exchange_stream_config(org: String, per_sender: Int) -> String {
+// The next bound to ask the server for after it could not reserve
+// `bound`: half of it, or 0 when half is below `EXCHANGE_MIN_BYTES`.
+fn exchange_smaller_bound(bound: Int) -> Int {
+    let half = bound / 2;
+    return if half < EXCHANGE_MIN_BYTES { 0 } else { half };
+}
+
+// Bytes as an operator reads them: whole MiB when they are, else bytes.
+fn bytes_words(n: Int) -> String {
+    if n >= 1048576 && n % 1048576 == 0 { return to_string(n / 1048576) + " MiB"; }
+    return to_string(n) + " bytes";
+}
+
+// Why a stream the server's file store could not reserve `bytes` for (0:
+// a stream with no bound, refused because the store is wholly reserved)
+// was refused, and what to do about it: `why` is JetStream's refusal,
+// `what` the stream.
+fn nerves_store_refusal(why: String, what: String, bytes: Int) -> String {
+    let amount = if bytes > 0 { bytes_words(bytes) } else { "any file storage" };
+    return why + ": the nerves' server cannot reserve " + amount + " for " + what
+        + " (JetStream reserves a stream's bound from the server's max_file_store, by default three quarters"
+        + " of the disk free under its store directory when it started, less what its other streams reserve);"
+        + " free disk there, or set max_file_store in the server's `jetstream` block, and restart the server";
+}
+
+fn exchange_stream_config(org: String, per_sender: Int, max_bytes: Int) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("name", exchange_stream(org));
@@ -512,7 +553,7 @@ fn exchange_stream_config(org: String, per_sender: Int) -> String {
     b.string_field("discard", "new");
     b.bool_field("discard_new_per_subject", true);
     b.int_field("max_msgs_per_subject", per_sender);
-    b.int_field("max_bytes", EXCHANGE_MAX_BYTES);
+    b.int_field("max_bytes", max_bytes);
     b.bool_field("allow_direct", true);
     // an envelope delivered again by its id within a week is stored once
     b.int_field("duplicate_window", NERVES_MAX_AGE_SECS * 1000000000);

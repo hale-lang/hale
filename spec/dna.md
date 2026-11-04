@@ -776,7 +776,28 @@ sync.
     `discard_new_per_subject`) and the stream 256 MiB, so a connected
     record cannot flood another's disk while it is not reading, and a
     receiver that drains takes any number. A handoff refused as full
-    records nothing here and says so.
+    records nothing here and says so. JetStream reserves a stream's
+    `max_bytes` from its server's file store when it creates the stream
+    (the server's `max_file_store`, by default three quarters of the disk
+    free under its store directory when it started, shared by every
+    stream of every account on it), and refuses a bound that does not fit
+    what is left (err_code 10047). So the 256 MiB is a ceiling: `nerves
+    migrate` asks for it, halves the bound while the server refuses the
+    reservation, and settles for the first that fits, down to 1 MiB,
+    saying on stderr when the bound it got is below 256 MiB. Each
+    migration asks for the whole 256 MiB first, so an inbox made small
+    grows back once the server has room, and an inbox already in place
+    keeps at least the bound it has: nats-server checks a create's
+    reservation before it looks for the stream, so a stream that exists is
+    brought to its configuration by an update, which reserves only what it
+    adds (this holds for the organization's stream too). A server that
+    cannot reserve even 1 MiB is a refusal of the migration naming the
+    bound, `max_file_store` and freeing disk under the store directory;
+    the organization's stream, which has no bound of its own, is refused
+    the same way when the store is wholly reserved.
+    (2026-11-04: the inbox asked for 256 MiB whatever the server had, so
+    on a small disk, or a server holding many organizations' inboxes, the
+    organism had no nerves at all.)
   - **Receiving.** The receiving record's verbs (`hale dna handoff`,
     `handoff accept`, `handoff sync`) first drain its inbox into memory:
     each envelope addressed to this record, from the sender its subject

@@ -444,6 +444,11 @@ fn nerves_derive(dir: &Path) -> Result<NervesPlan, String> {
 
 fn nerves_roles(dir: &Path, args: &[String]) -> Result<NervesPlan, String> {
     let out = host_run("nerves-migrate", dir, args)?;
+    // a word for the operator: the exchange's inbox bounded below its
+    // whole bound because the server's file store could reserve no more
+    for note in out.lines().filter_map(|l| l.strip_prefix("nerves.note=")) {
+        eprintln!("hale dna nerves: {note}");
+    }
     // GH #1653: a migration into the habitat is recorded in the
     // allocation's row, with the version it moved the stream to
     if let Some(v) = out.lines().find_map(|l| l.strip_prefix("allocation.schema_version=")).and_then(|v| v.trim().parse().ok()) {

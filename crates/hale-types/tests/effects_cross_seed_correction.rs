@@ -263,11 +263,14 @@ fn host() {
     // `habitat_address` and `habitat_apply_verb`, reach imported code (the
     // core's `run_tool` and `ComposeProvider`), so the correction changes them.
     // `secret_value` (a secret's value, piped or typed) adds one row on each
-    // side and reaches nothing imported.
+    // side and reaches nothing imported. The exchange's inbox sized to what
+    // the nerves' server can reserve adds three rows on each side; two of
+    // them, `stream_put` and `exchange_stream_place`, reach pond's NATS
+    // client, as `nerves_migrate` does, so the correction changes them.
     pinned(
         "host",
-        586,
-        595,
+        589,
+        598,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -344,6 +347,7 @@ fn host() {
         edge_admits_here  does={syscall,env,alloc}
         exchange_key  does={syscall,alloc}
         exchange_migrate  does={syscall,block,time,entropy,env,alloc}
+        exchange_stream_place  does={syscall,block,time,entropy,alloc}
         exit_code  does={syscall,block,alloc}
         family_labels_of  does={syscall,block,env,alloc}
         fence_compose_down  does={syscall,block,alloc}
@@ -433,6 +437,7 @@ fn host() {
         senses_up_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         server_conf_rewrite  does={syscall,block,env,alloc}
         signers_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        stream_put  does={syscall,block,time,entropy,alloc}
         sync_record  does={syscall,block,alloc}
         this_host  does={syscall,block,alloc}
         under_node  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
