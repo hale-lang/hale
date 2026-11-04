@@ -60,7 +60,7 @@ The habitat reads every machine it runs on. `hale habitat up` (on this machine, 
 
 The habitat's senses' store (its Prometheus) scrapes each machine as the job `host`, with a `host` label naming the machine. The habitat keeps the target list in step with its hosts: adding or removing a host rewrites it.
 
-A **Grafana** runs behind the face at `/grafana/` (the `dashboards` link in the operator face), signed in as you through the face's own sign-in: there is no Grafana login. Its home dashboard, **Hosts**, shows whether each machine answers, its uptime, CPUs and memory, and over time CPU busy, load per core, memory used, disk used, network and disk throughput, for Linux and macOS machines alike, plus a Linux machine's CPU frequency. `up` and `status` print its address:
+A **Grafana** runs behind the face at `/grafana/` (the `dashboards` link in the operator face), signed in as you through the face's own sign-in: there is no Grafana login. Its home dashboard, **Hosts**, opens on a table with one row per machine: its memory and main disk, each total, in use and free with a gauge of the share used (amber from 75%, red from 90%), and how busy its CPU has been over the last 5 minutes. Below it, it shows whether each machine answers, its uptime, CPUs and memory, and over time CPU busy, load per core, memory used, disk used, network and disk throughput, for Linux and macOS machines alike, plus a Linux machine's CPU frequency. `up` and `status` print its address:
 
 ```text
 grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the face's sign-in; started at its first use, stopped after 15 minutes unused)
