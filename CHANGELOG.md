@@ -8,6 +8,23 @@ behavior.
 
 ## Unreleased
 
+## v0.32.3 — services that stay up (2026-11-04)
+
+A patch release from a long-running service that died in the lab.
+
+**A leak in every codec-bound and hub-bound topic.** A message published on a topic bound through a codec, or to a `ws::Hub`, left its encoded payload in the bus payload arena, which nothing reclaims. A service publishing a node's state to its hub every few seconds filled the arena's 64 MiB cap in about six and a half hours (found by hale-lang/voice). Encoding now runs in an arena of its own, freed on return. `std::io::tls::recv_bytes` leaked into the same arena on every read, and no longer does.
+
+**A full arena stops the process with a report.** Reaching `LOTUS_BUS_PAYLOAD_ARENA_CAP` used to hand callers NULL, which crashed with a segfault and no clue. It now aborts at the allocation, naming the arena, its cap and the frames that asked.
+
+**The habitat keeps services running.** When it applies an organism's compose services, or its own, the habitat gives every long-running service `restart: unless-stopped`, unless the compose file sets a policy of its own. A one-shot another service waits on, like a migration, gets none. `hale habitat status` shows a service's exit code and restart count, and a service that keeps crashing stays `degraded`.
+
+The item-level notes follow.
+
+- The habitat keeps an organism's compose services running: when it applies them (locally or on an SSH host), its override gives every long-running service `restart: unless-stopped` unless the organism's compose file states a policy of its own, and a one-shot another service waits on (`condition: service_completed_successfully`, a migration) gets none. The habitat's own memory, nerves, senses' store and forge get the same policy. `hale habitat status` names what a crash left: `api (exited 139)`, `api (restarting, exited 139, 7 restarts)`, `restarted: api (2 restarts)`, and a service that came back only seconds ago keeps the allocation `degraded`, so a crash loop never reads as up (#1844).
+
+- Fix: a topic bound through a codec, and every topic bound to a `ws::Hub`, no longer leaks each published payload into the bus payload arena (reported from hale-lang/voice, whose api server reached the arena's 64 MiB cap after ~6.5 h of node heartbeats published to its hub). The codec's `encode` ran in whatever caller arena the publishing thread held, which after a free fn's return was none, so the encoded payload went to the program-lifetime payload arena; it now runs in a call arena freed when the publish's serializer returns. `std::io::tls::recv_bytes` (and the https client's reads) and `std::crypto::ecdsa_p256_sign` now allocate in the caller's arena instead of the payload arena, so a long-running https client no longer keeps every read (#1845).
+- Fix: reaching `LOTUS_BUS_PAYLOAD_ARENA_CAP` stops the process with a report naming the arena, its cap and the frames that asked (SIGABRT), instead of handing callers a NULL they dereferenced into a SIGSEGV (#1845).
+
 ## v0.32.2 — the verifier fix voice needed (2026-11-03)
 
 A patch release for one checker bug, found by hale-lang/voice.
