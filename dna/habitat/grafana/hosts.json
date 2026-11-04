@@ -58,6 +58,377 @@
   ],
   "panels": [
     {
+      "id": 12,
+      "type": "table",
+      "title": "Now",
+      "description": "Each machine's memory, main disk and CPU at this moment. Memory in use is all but what Linux says is available, or a Mac's active, wired and compressed pages (as Memory used below); free is the rest. The disk is `/` (a Mac's data volume, `/System/Volumes/Data`), as the unprivileged see it. CPU busy is the share of every core's time not idle over the last 5 minutes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "habitat-senses"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (host) (node_memory_MemTotal_bytes{host=~\"$host\"}) or max by (host) (node_memory_total_bytes{host=~\"$host\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (host) (node_memory_MemTotal_bytes{host=~\"$host\"} - node_memory_MemAvailable_bytes{host=~\"$host\"}) or max by (host) (node_memory_active_bytes{host=~\"$host\"} + node_memory_wired_bytes{host=~\"$host\"} + node_memory_compressed_bytes{host=~\"$host\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (host) (node_memory_MemAvailable_bytes{host=~\"$host\"}) or max by (host) (node_memory_total_bytes{host=~\"$host\"} - (node_memory_active_bytes{host=~\"$host\"} + node_memory_wired_bytes{host=~\"$host\"} + node_memory_compressed_bytes{host=~\"$host\"}))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (host) (100 * (1 - node_memory_MemAvailable_bytes{host=~\"$host\"} / node_memory_MemTotal_bytes{host=~\"$host\"})) or max by (host) (100 * (node_memory_active_bytes{host=~\"$host\"} + node_memory_wired_bytes{host=~\"$host\"} + node_memory_compressed_bytes{host=~\"$host\"}) / node_memory_total_bytes{host=~\"$host\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (host) (node_filesystem_size_bytes{host=~\"$host\", fstype!~\"tmpfs|devtmpfs|overlay|squashfs|ramfs|autofs|nullfs|fuse.*|nfs.*\", mountpoint=~\"/|/System/Volumes/Data\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (host) (node_filesystem_size_bytes{host=~\"$host\", fstype!~\"tmpfs|devtmpfs|overlay|squashfs|ramfs|autofs|nullfs|fuse.*|nfs.*\", mountpoint=~\"/|/System/Volumes/Data\"} - node_filesystem_avail_bytes{host=~\"$host\", fstype!~\"tmpfs|devtmpfs|overlay|squashfs|ramfs|autofs|nullfs|fuse.*|nfs.*\", mountpoint=~\"/|/System/Volumes/Data\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (host) (node_filesystem_avail_bytes{host=~\"$host\", fstype!~\"tmpfs|devtmpfs|overlay|squashfs|ramfs|autofs|nullfs|fuse.*|nfs.*\", mountpoint=~\"/|/System/Volumes/Data\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "H",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (host) (100 * (1 - node_filesystem_avail_bytes{host=~\"$host\", fstype!~\"tmpfs|devtmpfs|overlay|squashfs|ramfs|autofs|nullfs|fuse.*|nfs.*\", mountpoint=~\"/|/System/Volumes/Data\"} / node_filesystem_size_bytes{host=~\"$host\", fstype!~\"tmpfs|devtmpfs|overlay|squashfs|ramfs|autofs|nullfs|fuse.*|nfs.*\", mountpoint=~\"/|/System/Volumes/Data\"}))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "I",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "100 * (1 - avg by (host) (rate(node_cpu_seconds_total{mode=\"idle\", host=~\"$host\"}[5m])))",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "host": 0,
+              "Value #A": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4,
+              "Value #E": 5,
+              "Value #F": 6,
+              "Value #G": 7,
+              "Value #H": 8,
+              "Value #I": 9
+            },
+            "renameByName": {
+              "Value #A": "memory",
+              "Value #B": "memory in use",
+              "Value #C": "memory free",
+              "Value #D": "memory used",
+              "Value #E": "disk",
+              "Value #F": "disk in use",
+              "Value #G": "disk free",
+              "Value #H": "disk used",
+              "Value #I": "CPU busy"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "host",
+            "desc": false
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "align": "auto",
+            "minWidth": 60,
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "memory used"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 75
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "lcd",
+                  "valueDisplayMode": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "disk used"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 75
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "lcd",
+                  "valueDisplayMode": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU busy"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 75
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "lcd",
+                  "valueDisplayMode": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": 1,
       "type": "stat",
       "title": "Answering",
@@ -68,7 +439,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 0,
+        "y": 7,
         "w": 6,
         "h": 4
       },
@@ -145,7 +516,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 0,
+        "y": 7,
         "w": 6,
         "h": 4
       },
@@ -205,7 +576,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 0,
+        "y": 7,
         "w": 6,
         "h": 4
       },
@@ -265,7 +636,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 0,
+        "y": 7,
         "w": 6,
         "h": 4
       },
@@ -325,7 +696,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 4,
+        "y": 11,
         "w": 12,
         "h": 8
       },
@@ -380,7 +751,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 4,
+        "y": 11,
         "w": 12,
         "h": 8
       },
@@ -434,7 +805,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 12,
+        "y": 19,
         "w": 12,
         "h": 8
       },
@@ -489,7 +860,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 12,
+        "y": 19,
         "w": 12,
         "h": 8
       },
@@ -544,7 +915,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 20,
+        "y": 27,
         "w": 12,
         "h": 8
       },
@@ -606,7 +977,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 20,
+        "y": 27,
         "w": 12,
         "h": 8
       },
@@ -668,7 +1039,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 35,
         "w": 24,
         "h": 8
       },

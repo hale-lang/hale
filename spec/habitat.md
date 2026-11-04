@@ -1121,7 +1121,11 @@ window, with each machine's running count. It shows the habitat's
 containers by default (`show`: the habitat's, those carrying
 `hale.habitat`; or everything on the host, which a host's other workloads
 compete with; a placed service is always the habitat's) and filters by
-organism and host, both kinds alike. `Hosts` is its home: whether
+organism and host, both kinds alike. `Hosts` is its home: at its top a
+table, one row a machine, of its memory and main disk (`/`, a Mac's
+`/System/Volumes/Data`), each total, in use and free with a gauge of the
+share used (amber from 75%, red from 90%), and its CPU busy over 5
+minutes, memory in use read as `memory-pressure` reads it; then whether
 each machine answers, its uptime, CPUs and memory, and over time CPU busy,
 load per core, memory used, disk used, network and disk throughput, for
 Linux and macOS alike, and a Linux machine's CPU frequency. Its data is `<habitat>/grafana/data`. The operator

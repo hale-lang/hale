@@ -721,6 +721,45 @@ mod tests {
     }
 
     #[test]
+    fn the_hosts_dashboard_opens_on_each_machines_use_now() {
+        let v: serde_json::Value = serde_json::from_str(HOSTS_DASHBOARD).unwrap();
+        let panels = v["panels"].as_array().unwrap();
+        let top = &panels[0];
+        assert_eq!((top["type"].as_str(), &top["gridPos"]["y"]), (Some("table"), &serde_json::json!(0)), "the table is first");
+        let targets = top["targets"].as_array().unwrap();
+        assert_eq!(targets.len(), 9, "memory, disk: total, in use, free, used; CPU busy");
+        for t in targets {
+            let q = t["expr"].as_str().unwrap();
+            assert!(t["instant"] == true && t["format"] == "table", "{q}");
+            assert!(q.contains("by (host)") && q.contains("host=~\"$host\""), "one row a machine: {q}");
+            assert_eq!(q.matches('(').count(), q.matches(')').count(), "{q}");
+        }
+        // both memory forms, as Memory used reads them, and the disk filter's file systems
+        let exprs: Vec<&str> = targets.iter().map(|t| t["expr"].as_str().unwrap()).collect();
+        for q in &exprs[..4] {
+            assert!(q.contains(" or ") && (q.contains("node_memory_MemTotal_bytes") || q.contains("node_memory_MemAvailable_bytes")), "Linux: {q}");
+            assert!(q.contains("node_memory_total_bytes") || q.contains("node_memory_active_bytes"), "macOS: {q}");
+        }
+        assert!(exprs[4..8].iter().all(|q| q.contains("mountpoint=~\"/|/System/Volumes/Data\"") && q.contains("fstype!~")));
+        assert_eq!(top["transformations"][0]["id"], "merge");
+        assert_eq!(top["transformations"][1]["options"]["excludeByName"]["Time"], true);
+        // nothing overlaps: every panel's cells are its own
+        let mut cells = std::collections::HashSet::new();
+        for p in panels {
+            let g = &p["gridPos"];
+            let (x, y, w, h) = (g["x"].as_u64().unwrap(), g["y"].as_u64().unwrap(), g["w"].as_u64().unwrap(), g["h"].as_u64().unwrap());
+            assert!(x + w <= 24, "{}", p["title"]);
+            for cx in x..x + w {
+                for cy in y..y + h {
+                    assert!(cells.insert((cx, cy)), "{} overlaps another panel", p["title"]);
+                }
+            }
+        }
+        let ids: std::collections::HashSet<_> = panels.iter().map(|p| p["id"].as_u64().unwrap()).collect();
+        assert_eq!(ids.len(), panels.len(), "panel ids are unique");
+    }
+
+    #[test]
     fn the_container_exporter_keeps_only_compose_labels_and_is_shell() {
         let s = containers_script("sudo -n");
         assert!(s.contains("-whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service,hale.habitat,hale.organism,hale.role") && s.contains("-store_container_labels=false"), "{s}");
