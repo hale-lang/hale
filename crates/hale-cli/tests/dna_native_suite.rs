@@ -449,10 +449,83 @@ impl Drop for SliceMemoryDb {
         // Best effort: a database left behind costs a CI runner that is
         // thrown away in minutes nothing, and failing the slice over
         // the cleanup would bury the failure that got us here.
+        //
+        // The streams first, while the database still names whose they
+        // are (the stream of an organization is its schema, uppercased).
+        drop_slice_streams(&self.dsn);
         let sql = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name);
         let out = Command::new("psql").arg(&self.admin).args(["-v", "ON_ERROR_STOP=1", "-c", &sql]).output();
         if !matches!(&out, Ok(o) if o.status.success()) {
             eprintln!("dna slice: could not drop its memory database {} (harmless; it is a scratch database)", self.name);
+        }
+    }
+}
+
+/// The streams of every organization this slice's fixtures made, deleted
+/// from the operator's NATS (`HALE_DNA_NATS_URL_OWNER`) as the slice ends.
+/// The slice's knowledge database is its own and goes with it, but the
+/// nerves' server is shared by every slice of the run, and a fixture that
+/// migrates nerves there and does not drop them left its organization's
+/// stream and its exchange's inbox behind. JetStream reserves each inbox's
+/// bound from the server's file store (spec/dna.md, The bounded inbox), so
+/// what a part's slices left added up until a Mac runner's store, three
+/// quarters of its free disk, could reserve no 256 MiB more (2026-11-03).
+/// Only the organizations whose schemas are in this slice's database are
+/// touched: a stream another slice, or another checkout, is using never is.
+/// A server this cannot reach or speak to unauthenticated is left alone.
+fn drop_slice_streams(dsn: &str) {
+    use std::io::{BufRead, BufReader, Write};
+    let Ok(url) = std::env::var("HALE_DNA_NATS_URL_OWNER") else { return };
+    let Some(addr) = url.strip_prefix("nats://").map(|a| a.rsplit('@').next().unwrap_or(a).trim_end_matches('/').to_string()) else { return };
+    let Ok(out) = Command::new("psql")
+        .arg(dsn)
+        .args(["-At", "-c", r"SELECT nspname FROM pg_namespace WHERE nspname LIKE 'dna\_%'"])
+        .output()
+    else {
+        return;
+    };
+    let streams: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .flat_map(|schema| {
+            let s = schema.to_ascii_uppercase();
+            [format!("{s}_EXCHANGE"), s]
+        })
+        .collect();
+    if streams.is_empty() {
+        return;
+    }
+    let Some(sock) = std::net::ToSocketAddrs::to_socket_addrs(&addr.as_str()).ok().and_then(|mut a| a.next()) else { return };
+    let Ok(mut conn) = std::net::TcpStream::connect_timeout(&sock, std::time::Duration::from_secs(2)) else { return };
+    let _ = conn.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    let Ok(read) = conn.try_clone() else { return };
+    let mut lines = BufReader::new(read);
+    let mut line = String::new();
+    // INFO first; a server that wants credentials says so to the CONNECT
+    if lines.read_line(&mut line).is_err() || !line.starts_with("INFO") {
+        return;
+    }
+    let mut ask = String::from("CONNECT {\"verbose\":false,\"pedantic\":false}\r\nSUB _INBOX.dna_slice_sweep 1\r\n");
+    for s in &streams {
+        ask.push_str(&format!("PUB $JS.API.STREAM.DELETE.{s} _INBOX.dna_slice_sweep 0\r\n\r\n"));
+    }
+    ask.push_str("PING\r\n");
+    if conn.write_all(ask.as_bytes()).is_err() {
+        return;
+    }
+    // every delete answered (gone, or not found), or the wait over
+    let mut answered = 0;
+    while answered < streams.len() {
+        line.clear();
+        match lines.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) if line.starts_with("MSG ") => answered += 1,
+            Ok(_) if line.starts_with("-ERR") => break,
+            Ok(_) if line.starts_with("PING") => {
+                let _ = conn.write_all(b"PONG\r\n");
+            }
+            Ok(_) => {}
         }
     }
 }
@@ -1139,6 +1212,7 @@ fn dna_fixture_set_is_complete() {
             "editing_test.hl",
             "effect_outcomes_test.hl",
             "embedded_provenance_test.hl",
+            "exchange_store_test.hl",
             "extensions_test.hl",
             "face_grafana_on_demand_test.hl",
             "faces_named_page_test.hl",

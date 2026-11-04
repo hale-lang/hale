@@ -1,0 +1,297 @@
+// dna/tests/exchange_store_test.hl — the exchange's inbox takes what the
+// nerves' server can reserve.
+//
+// JetStream reserves a stream's `max_bytes` from its server's file store
+// when it creates the stream, however little the stream holds, and refuses
+// one whose bound does not fit what is left: err_code 10047, "insufficient
+// storage resources available". The store is the server's
+// `max_file_store`, by default three quarters of the disk free under its
+// store directory when it started, and every stream of every account on
+// the server reserves from it. The exchange's inbox asked for 256 MiB
+// whatever the server had, so on a small disk, or a server holding many
+// organizations' inboxes, `nerves migrate` failed and the organism had no
+// nerves at all (macOS CI, from 2026-11-03: a runner with less free disk,
+// a nats-server holding every fixture's inbox).
+//
+// Now the inbox is bounded at what the server can reserve: 256 MiB,
+// halved while JetStream refuses it, down to 1 MiB, below which the
+// migration is refused with what to do about it. The server here is a
+// stand-in JetStream that answers a stream's create and update as
+// nats-server does — a reservation over what its store has left is
+// refused 10047, a create of a stream that exists with another
+// configuration 10058 — so each case is the store's size, not a disk's.
+
+import "../core" as dna;
+import "../host" as host;
+import "../core/pond/realtime/nats" as nats;
+
+const MIB: Int = 1048576;
+
+// The first `n` bytes of `s` past `at`, or "" when fewer arrived.
+fn take(s: String, at: Int, n: Int) -> String {
+    if at + n > len(s) { return ""; }
+    return s[at..(at + n)];
+}
+
+// The `k`th space-separated word of `line`, "" past the end.
+fn word(line: String, k: Int) -> String {
+    let mut rest = std::str::trim(line);
+    let mut i = 0;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let w = if sp < 0 { rest } else { rest[0..sp] };
+        if i == k { return w; }
+        rest = if sp < 0 { "" } else { std::str::trim(rest[(sp + 1)..len(rest)]) };
+        i = i + 1;
+    }
+    return "";
+}
+
+fn js_refusal(code: Int, err_code: Int, description: String) -> String {
+    return "{\"type\":\"io.nats.jetstream.api.v1.stream_create_response\",\"error\":{\"code\":"
+        + to_string(code) + ",\"err_code\":" + to_string(err_code) + ",\"description\":\""
+        + description + "\"}}";
+}
+
+/// A stand-in JetStream with `free` bytes of file store left to reserve,
+/// holding one stream reserving `held` (0: none). It serves one client:
+/// the handshake, its subscriptions, and its requests on the stream API
+/// (anything else is answered with an empty success).
+locus FakeJetStream {
+    params {
+        port: Int = 0;
+        free: Int = 0;
+        held: Int = 0;
+        fd: Int = -1;
+        // the inbox the client's requests are answered on, and its sid
+        inbox: String = "";
+        sid: String = "";
+    }
+    birth() { self.fd = std::io::tcp::__listen_socket("127.0.0.1", self.port); }
+    run() {
+        if self.fd < 0 { return; }
+        // a client that never comes (the fixture failed first) ends the wait
+        std::io::tcp::__set_recv_timeout_ns(self.fd, 30000000000);
+        let conn = std::io::tcp::__accept_one(self.fd);
+        std::io::tcp::__close_fd(self.fd);
+        if conn < 0 { return; }
+        self.serve(conn);
+    }
+
+    // What a stream create or update asking for `max_bytes` is answered.
+    fn stream_api(verb: String, max_bytes: Int) -> String {
+        let ok = "{\"type\":\"io.nats.jetstream.api.v1.stream_create_response\",\"config\":{}}";
+        if verb == "CREATE" {
+            // nats-server checks a create's reservation before it looks for
+            // the stream, so the bound of one that exists is asked for again
+            if max_bytes > self.free {
+                return js_refusal(500, 10047, "insufficient storage resources available");
+            }
+            if self.held > 0 {
+                if max_bytes == self.held { return ok; }
+                return js_refusal(
+                    400,
+                    10058,
+                    "stream name already in use with a different configuration",
+                );
+            }
+            self.free = self.free - max_bytes;
+            self.held = max_bytes;
+            return ok;
+        }
+        if self.held == 0 { return js_refusal(404, 10059, "stream not found"); }
+        if max_bytes > self.free + self.held {
+            return js_refusal(500, 10047, "insufficient storage resources available");
+        }
+        self.free = self.free + self.held - max_bytes;
+        self.held = max_bytes;
+        return ok;
+    }
+
+    fn answer(subject: String, payload: String) -> String {
+        let mut reply = "{\"type\":\"io.nats.jetstream.api.v1.ok\"}";
+        if std::str::starts_with(subject, "$JS.API.STREAM.CREATE.") {
+            reply = self.stream_api("CREATE", std::json::find_int_field(payload, "max_bytes"));
+        } else if std::str::starts_with(subject, "$JS.API.STREAM.UPDATE.") {
+            reply = self.stream_api("UPDATE", std::json::find_int_field(payload, "max_bytes"));
+        }
+        return reply;
+    }
+
+    fn serve(conn: Int) {
+        std::io::tcp::__set_recv_timeout_ns(conn, 200000000);
+        let s = std::io::tcp::Stream { conn_fd: conn, owns_fd: true };
+        s.send(
+            "INFO {\"server_id\":\"fake-jetstream\",\"max_payload\":1048576,\"jetstream\":true}\r\n",
+        ) or discard;
+        let mut buf = "";
+        let mut idle = 0;
+        while idle < 25 {
+            let chunk = s.recv(65536) or "";
+            if len(chunk) == 0 { idle = idle + 1; continue; }
+            idle = 0;
+            buf = buf + chunk;
+            // every whole operation in the buffer
+            let mut more = true;
+            while more {
+                let eol = std::str::index_of(buf, "\r\n");
+                if eol < 0 { more = false; continue; }
+                let line = buf[0..eol];
+                let op = word(line, 0);
+                if op == "PUB" {
+                    // PUB <subject> [reply] <size>, then the payload
+                    let three = len(word(line, 3)) > 0;
+                    let size = std::str::parse_int(
+                        if three { word(line, 3) } else { word(line, 2) },
+                    ) or 0;
+                    let payload = take(buf, eol + 2, size);
+                    if len(payload) < size || len(buf) < eol + 2 + size + 2 {
+                        more = false;
+                        continue;
+                    }
+                    buf = buf[(eol + 2 + size + 2)..len(buf)];
+                    let reply_to = if three { word(line, 2) } else { "" };
+                    if len(reply_to) > 0 && reply_to == self.inbox {
+                        let body = self.answer(word(line, 1), payload);
+                        s.send(
+                            "MSG " + reply_to + " " + self.sid + " " + to_string(len(body)) + "\r\n"
+                                + body + "\r\n",
+                        ) or discard;
+                    }
+                    continue;
+                }
+                buf = buf[(eol + 2)..len(buf)];
+                if op == "PING" { s.send("PONG\r\n") or discard; }
+                if op == "SUB" {
+                    self.inbox = word(line, 1);
+                    self.sid = word(line, 2);
+                }
+            }
+        }
+    }
+}
+
+// A client of the stand-in on `port`.
+fn client(port: Int) -> nats::NatsClient {
+    return nats::NatsClient {
+        url: "nats://127.0.0.1:" + to_string(port),
+        user: "owner",
+        name: "exchange-store-test",
+        timeout: 2s,
+    };
+}
+
+main locus App {
+    params {
+        p_roomy: Int = dna::free_port(0);
+        p_small: Int = dna::free_port(1);
+        p_grows: Int = dna::free_port(2);
+        p_full: Int = dna::free_port(3);
+        p_kept: Int = dna::free_port(4);
+        // room for the whole bound
+        roomy: FakeJetStream = FakeJetStream { port: self.p_roomy, free: 4096 * MIB };
+        // 100 MiB left: the inbox takes 64
+        small: FakeJetStream = FakeJetStream { port: self.p_small, free: 100 * MIB };
+        // an inbox made small before, on a server with room again
+        grows: FakeJetStream = FakeJetStream {
+            port: self.p_grows,
+            free: 300 * MIB,
+            held: 64 * MIB,
+        };
+        // not even the floor left
+        full: FakeJetStream = FakeJetStream { port: self.p_full, free: MIB / 2 };
+        // a store wholly reserved, the inbox's 16 MiB among it: migrated again
+        kept: FakeJetStream = FakeJetStream { port: self.p_kept, free: 0, held: 16 * MIB };
+    }
+    placement { roomy: pinned; small: pinned; grows: pinned; full: pinned; kept: pinned; }
+
+    run() {
+        let org = "exchangestore";
+        std::test::assert(
+            dna::EXCHANGE_MAX_BYTES == 256 * MIB && dna::EXCHANGE_MIN_BYTES == MIB,
+            "the inbox asks for 256 MiB and settles for no less than 1 MiB",
+        );
+
+        // every stand-in's one client connected before anything is asserted,
+        // so none is left waiting for its client when an assertion fails
+        let a = client(self.p_roomy);
+        let b = client(self.p_small);
+        let c = client(self.p_grows);
+        let d = client(self.p_full);
+        let e = client(self.p_kept);
+        let opened = a.open() && b.open() && c.open() && d.open() && e.open();
+        std::test::assert(
+            opened,
+            "the stand-ins answer: " + a.last_error + b.last_error + c.last_error + d.last_error
+                + e.last_error,
+        );
+
+        let whole = host::exchange_stream_place(a, org, 10);
+        a.close();
+        std::test::assert_eq_str(whole.why, "", "a server with room takes the inbox");
+        std::test::assert_eq_int(whole.bound, 256 * MIB, "bounded at the whole 256 MiB");
+
+        let fitted = host::exchange_stream_place(b, org, 10);
+        b.close();
+        std::test::assert_eq_str(
+            fitted.why,
+            "",
+            "a server with 100 MiB left still takes the inbox (it used to refuse it: 10047)",
+        );
+        std::test::assert_eq_int(
+            fitted.bound,
+            64 * MIB,
+            "bounded at the most that fits, halving from 256 MiB",
+        );
+
+        let grown = host::exchange_stream_place(c, org, 10);
+        c.close();
+        std::test::assert_eq_str(
+            grown.why,
+            "",
+            "an inbox made small before is brought to this configuration",
+        );
+        std::test::assert_eq_int(
+            grown.bound,
+            256 * MIB,
+            "and grows back to the whole bound once there is room",
+        );
+
+        let kept = host::exchange_stream_place(e, org, 10);
+        e.close();
+        std::test::assert_eq_str(
+            kept.why,
+            "",
+            "an inbox already in place on a wholly reserved store is migrated again (nats-server refuses its create 10047; the update reserves nothing new)",
+        );
+        std::test::assert_eq_int(kept.bound, 16 * MIB, "and keeps the bound it has");
+
+        let refused = host::exchange_stream_place(d, org, 10);
+        d.close();
+        std::test::assert_eq_int(refused.bound, 0, "no inbox below the floor");
+        std::test::assert(
+            std::str::contains(
+                refused.why,
+                "insufficient storage resources available (err_code 10047)",
+            ),
+            "the refusal carries JetStream's: " + refused.why,
+        );
+        std::test::assert(
+            std::str::contains(refused.why, "cannot reserve 1 MiB for the exchange's inbox"),
+            "names what could not be reserved: " + refused.why,
+        );
+        std::test::assert(
+            std::str::contains(refused.why, "max_file_store")
+                && std::str::contains(refused.why, "free disk"),
+            "and says what to do about it: " + refused.why,
+        );
+
+        // the word an operator reads
+        std::test::assert_eq_str(dna::bytes_words(64 * MIB), "64 MiB", "a bound in MiB");
+        std::test::assert_eq_str(dna::bytes_words(1000), "1000 bytes", "anything else in bytes");
+        std::test::assert_eq_int(dna::exchange_smaller_bound(2 * MIB), MIB, "halved");
+        std::test::assert_eq_int(dna::exchange_smaller_bound(MIB), 0, "never below the floor");
+    }
+}
+
+fn main() { App { }; }

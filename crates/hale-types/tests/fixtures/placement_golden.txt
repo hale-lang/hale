@@ -11772,6 +11772,27 @@ shared	dynamic	sites in the stdlib #c3a51769
 root	App	the entry
 row	App@literal1	App	main	default
 
+== dna/tests/exchange_store_test.hl
+root	App	the entry
+domain	pinned:App@literal1.roomy
+domain	pinned:App@literal1.small
+domain	pinned:App@literal1.grows
+domain	pinned:App@literal1.full
+domain	pinned:App@literal1.kept
+row	App@literal1	App	main	default
+row	App@literal1.full	FakeJetStream	pinned:App@literal1.full	entry	off owner
+row	App@literal1.grows	FakeJetStream	pinned:App@literal1.grows	entry	off owner
+row	App@literal1.kept	FakeJetStream	pinned:App@literal1.kept	entry	off owner
+row	App@literal1.roomy	FakeJetStream	pinned:App@literal1.roomy	entry	off owner
+row	App@literal1.small	FakeJetStream	pinned:App@literal1.small	entry	off owner
+-- dynamic	sites in dna/core/pond/realtime/nats
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdJsonBuilder	on main|unknown (no caller)
+-- dynamic	sites in dna/tests
+dynamic	__StdIoTcpStream	on pinned:App@literal1.full|pinned:App@literal1.grows|pinned:App@literal1.kept|pinned:App@literal1.roomy|pinned:App@literal1.small|unknown (no caller)
+dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
+shared	dynamic	sites in the stdlib #919aadb4
+
 == dna/tests/extensions_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
