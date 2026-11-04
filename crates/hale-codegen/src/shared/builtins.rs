@@ -1555,6 +1555,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[], false),
             None,
         );
+        // declare ptr @lotus_bus_codec_arena_enter(ptr saved_out) and
+        // void @lotus_bus_codec_arena_leave(ptr arena, ptr saved): a
+        // codec binding's encode runs in a call arena of its own
+        self.module.add_function(
+            "lotus_bus_codec_arena_enter",
+            ptr_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_codec_arena_leave",
+            self.context.void_type().fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
         // declare ptr @lotus_caller_arena_owning(ptr snapshot, ptr own)
         self.module.add_function(
             "lotus_caller_arena_owning",

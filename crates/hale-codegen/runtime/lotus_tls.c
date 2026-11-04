@@ -78,12 +78,12 @@ void *lotus_bytes_data(void *b);
 void *lotus_bytes_builder_reserve(void *handle, int64_t n);
 void  lotus_bytes_builder_advance(void *handle, int64_t n);
 
-/* lotus_arena.c exposes the lazy-inited bus payload arena via
- * this getter so we can build Bytes blobs whose lifetime is the
- * program (mirrors the tcp_recv_bytes shape — the returned Bytes
- * must outlive the call frame). */
+/* lotus_arena.c builds a Bytes blob in the caller arena the call
+ * site published (the payload arena when none was), as the plain-tcp
+ * recv_bytes does: the returned Bytes outlive the call frame and die
+ * with the caller's. */
 typedef struct lotus_arena lotus_arena_t;
-lotus_arena_t *lotus_bus_payload_arena_get(void);
+void *lotus_caller_or_global_bytes_create(int64_t len);
 void          *lotus_bytes_create(lotus_arena_t *a, int64_t len);
 
 /* downstream handoff 2026-07-14 (finding 1): async_io timed park, shared
@@ -173,9 +173,7 @@ int64_t lotus_tls_diag_queue_test(int64_t n) {
  * the canonical "empty Bytes" return for error / EOF paths. Inline
  * here because the original is `static` in its TU. */
 static void *lotus_tls__bytes_empty(void) {
-    lotus_arena_t *parena = lotus_bus_payload_arena_get();
-    if (!parena) return NULL;
-    return lotus_bytes_create(parena, 0);
+    return lotus_caller_or_global_bytes_create(0);
 }
 
 typedef struct lotus_tls_entry {
@@ -842,9 +840,11 @@ static void *lotus_tls__recv_bytes(int handle, int max_bytes, int64_t until) {
     SSL *ssl = lotus_tls__handle_ssl(handle);
     if (!ssl) return lotus_tls__bytes_empty();
 
-    lotus_arena_t *parena = lotus_bus_payload_arena_get();
-    if (!parena) return lotus_tls__bytes_empty();
-    void *blob = lotus_bytes_create(parena, (int64_t)max_bytes);
+    /* The caller's arena, as lotus_tcp_recv_bytes does: a read's
+     * buffer used to be carved from the program-lifetime payload
+     * arena, `max_bytes` of it per read, so every HTTPS response a
+     * long-running client read stayed until that arena's cap. */
+    void *blob = lotus_caller_or_global_bytes_create((int64_t)max_bytes);
     if (!blob) return lotus_tls__bytes_empty();
 
     char *body = (char *)lotus_bytes_data(blob);
@@ -1077,7 +1077,7 @@ static void *lotus_ecdsa_p256_sign_or_null(const void *key_b, const void *msg_b)
 
     const BIGNUM *r = NULL, *s = NULL;
     ECDSA_SIG_get0(sig, &r, &s);
-    void *blob = lotus_bytes_create(lotus_bus_payload_arena_get(), 64);
+    void *blob = lotus_caller_or_global_bytes_create(64);
     if (!blob) { ECDSA_SIG_free(sig); return NULL; }
     unsigned char *out = (unsigned char *)lotus_bytes_data(blob);
     /* BN_bn2binpad returns -1 if the value needs more than 32 bytes
@@ -1099,7 +1099,7 @@ static void *lotus_ecdsa_p256_sign_or_null(const void *key_b, const void *msg_b)
  * closed: an empty signature is rejected by any verifier. */
 void *lotus_crypto_ecdsa_p256_sign(const void *key_b, const void *msg_b) {
     void *sig = lotus_ecdsa_p256_sign_or_null(key_b, msg_b);
-    return sig ? sig : lotus_bytes_create(lotus_bus_payload_arena_get(), 0);
+    return sig ? sig : lotus_caller_or_global_bytes_create(0);
 }
 
 /* Exported NULL-returning form backing the fallible(CryptoError)

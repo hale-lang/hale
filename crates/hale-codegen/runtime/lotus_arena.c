@@ -283,7 +283,7 @@ const char *__tsan_default_suppressions(void) {
  * alloc diagnostic for hunting unbounded chunk growth in a
  * long-running daemon. <execinfo.h> is glibc-only; the call
  * sites below #ifdef it out for platforms that lack backtrace(). */
-#if defined(__GLIBC__)
+#if defined(__GLIBC__) || defined(__APPLE__)
 #include <execinfo.h>
 #endif
 /* std::process::rss_bytes (2026-05-21): getrusage for the
@@ -2908,9 +2908,10 @@ lotus_arena_t *lotus_arena_create_subregion(lotus_arena_t *parent) {
  * failing call asked for, the chunk it needed, what the arena already
  * holds, and the address the call came from.
  *
- * NULLs that are part of a contract are NOT this: a `fixed_size` slab
- * that is full and an arena at its `chunk_byte_cap` return NULL to
- * callers that route it. Only the OS refusing memory lands here.
+ * A NULL that is part of a contract is NOT this: a `fixed_size` slab
+ * that is full returns NULL to callers that route it. Only the OS
+ * refusing memory lands here; an arena at its `chunk_byte_cap` stops
+ * the same way with a report of its own (lotus_arena_cap_exhausted).
  *
  * The report is composed on the stack and written with write(2): a
  * process that has just been refused memory cannot count on malloc
@@ -2953,6 +2954,51 @@ static void lotus_arena_oom(const char *what, const lotus_arena_t *a,
     __builtin_trap();
 #endif
 }
+
+/* An arena at its byte cap (`chunk_byte_cap`, which only the bus payload
+ * arena sets): stop, at the call that would have passed it, with a report
+ * that says so. The cap is documented as the end of a leak (spec/memory.md
+ * § m20, "Phase-3 hard byte-cap"), and the process does not go on past it
+ * on NULLs its callers never checked. The report names the arena, what it
+ * holds, the cap and how to raise it, and the frames that asked, so the
+ * producer that deposited without an owner is in the log. */
+__attribute__((noinline, cold, noreturn))
+static void lotus_arena_cap_exhausted(const lotus_arena_t *a, size_t size,
+                                      size_t chunk, void *caller)
+{
+#ifndef __wasm__
+    char buf[1024];
+    int n = snprintf(buf, sizeof buf,
+        "lotus: arena cap hit (%s): %zu / %zu bytes; a request of %zu "
+        "bytes (a chunk of %zu) from the call at %p would pass it. What "
+        "this arena holds was deposited by a producer no owner reclaims: "
+        "a leak, so the process stops here rather than hand the caller a "
+        "NULL. The frames below name the producer; "
+        "LOTUS_BUS_PAYLOAD_ARENA_CAP=<bytes> moves the cap. See "
+        "spec/memory.md \xc2\xa7 m20 / Phase-3 hard byte-cap.\n",
+        lotus_arena_oom_name(a), a ? a->chunk_byte_total : (size_t)0,
+        a ? a->chunk_byte_cap : (size_t)0, size, chunk, caller);
+    if (n > 0) {
+        size_t len = (size_t)n < sizeof buf ? (size_t)n : sizeof buf - 1;
+        ssize_t w = write(2, buf, len);
+        (void)w;
+    }
+#if defined(__GLIBC__) || defined(__APPLE__)
+    void *frames[24];
+    int got = backtrace(frames, 24);
+    if (got > 1) backtrace_symbols_fd(frames + 1, got - 1, 2);
+#endif
+    abort();
+#else
+    (void)a; (void)size; (void)chunk; (void)caller;
+    __builtin_trap();
+#endif
+}
+
+/* Set on the cold path where a SHARED arena met its byte cap, read by
+ * `lotus_arena_alloc`'s locked branch as the refused chunk below is:
+ * the size of the chunk that would have passed the cap. */
+static __thread size_t lotus_arena_capped_chunk;
 
 /* Set on the cold path where the OS refused a chunk of a SHARED arena,
  * read by `lotus_arena_alloc`'s locked branch when the bump returns
@@ -3028,30 +3074,20 @@ static void *lotus_arena_alloc_nolock(lotus_arena_t *a, size_t size, size_t alig
                           ? need
                           : a->default_chunk_size;
         /* Phase-3 safety net: if a byte-cap is set, refuse to
-         * grow the arena past it. Returns NULL; the caller is
-         * responsible for surfacing the failure (the existing
-         * lotus_bytes_alloc_fail_sentinel / empty_global paths
-         * already do this for most stdlib callers; m70
-         * deserialize fns will surface a corrupted payload that
-         * the F.27 routing should pick up). dprintf a one-line
-         * diagnostic on first hit so the cap event is visible
-         * in production logs. */
+         * grow the arena past it. */
         if (a->chunk_byte_cap > 0 &&
             a->chunk_byte_total + cap > a->chunk_byte_cap) {
-            static int diag_emitted = 0;
-            if (!diag_emitted) {
-                diag_emitted = 1;
-                const char *name = a->cap_diag_name
-                    ? a->cap_diag_name : "(unnamed arena)";
-                dprintf(2,
-                    "lotus: arena cap hit (%s): %zu / %zu bytes; "
-                    "subsequent allocations will return NULL. "
-                    "This is a hard cap meant to surface leaks "
-                    "early; investigate which producer is "
-                    "depositing without an owner reclaiming. "
-                    "See spec/memory.md \xc2\xa7 m20 / Phase-2 (4).\n",
-                    name, a->chunk_byte_total, a->chunk_byte_cap);
+            /* The cap is a leak's end, and it ends the process: a NULL
+             * handed back here reached callers that do not expect one
+             * (a String clone, a codec's encode, a deserializer) and the
+             * process died later in a SIGSEGV that blamed them. A shared
+             * arena is inside its lock, and its wrapper reports once the
+             * lock is released; an unshared one reports here. */
+            if (__builtin_expect(!a->shared_concurrent, 1)) {
+                lotus_arena_cap_exhausted(a, size, cap,
+                                          __builtin_return_address(0));
             }
+            lotus_arena_capped_chunk = cap;
             return NULL;
         }
         lotus_arena_chunk_t *fresh = lotus_arena_new_chunk_for(a, cap);
@@ -3107,9 +3143,15 @@ void *lotus_arena_alloc(lotus_arena_t *a, uint64_t size, uint64_t align) {
         void *p = lotus_arena_alloc_nolock(a, size, align);
         pthread_mutex_unlock(&a->subregion_lock);
         /* NULL is rare and mostly contractual (see the out-of-memory note
-         * above); only a chunk the OS refused is fatal, and for a shared
-         * arena it stops HERE, the lock released, this function's return
-         * address being the allocation's caller. */
+         * above); a chunk the OS refused, or one past the arena's byte
+         * cap, is fatal, and for a shared arena it stops HERE, the lock
+         * released, this function's return address being the
+         * allocation's caller. */
+        if (__builtin_expect(p == NULL, 0) && lotus_arena_capped_chunk) {
+            lotus_arena_cap_exhausted(a, (size_t)size,
+                                      lotus_arena_capped_chunk,
+                                      __builtin_return_address(0));
+        }
         if (__builtin_expect(p == NULL, 0) && lotus_arena_refused_chunk) {
             lotus_arena_oom("a chunk was refused", a, (size_t)size,
                             (size_t)align, lotus_arena_refused_chunk,
@@ -28928,6 +28970,31 @@ static void lotus_bus_call_arena_close(lotus_arena_t *a) {
     lotus_bus_call_arena_note(0, held);
 }
 
+/* A codec binding's encode (F.36), run by its synthesized
+ * `__codec_encode_thunk_<Topic>` as the publish's serializer: the
+ * thunk copies the `Bytes` the codec returns into the wire buffer and
+ * nothing reads them again, so they live in a call arena of their own,
+ * published as the caller arena for the call and closed when the thunk
+ * returns. The encode used to inherit whatever caller arena the
+ * publishing thread had published, and a publish from a member the
+ * transport or the bus invoked had published none: every encode then
+ * landed in the program-lifetime payload arena, one encoded payload per
+ * publish, until its cap — a served `std::api::ws::Hub` binding leaked
+ * each event it carried (hale-lang/voice). `*saved` keeps the
+ * caller arena the thunk restores; NULL back when no arena could be
+ * opened, and the encode runs as it did before. */
+lotus_arena_t *lotus_bus_codec_arena_enter(lotus_arena_t **saved) {
+    *saved = lotus_current_caller_arena;
+    lotus_arena_t *a = lotus_bus_call_arena_open();
+    if (a) lotus_current_caller_arena = a;
+    return a;
+}
+
+void lotus_bus_codec_arena_leave(lotus_arena_t *a, lotus_arena_t *saved) {
+    lotus_bus_call_arena_close(a);
+    lotus_current_caller_arena = saved;
+}
+
 static void lotus_bus_remote_fanout_entries(const char *subject,
                                             const void *payload,
                                             size_t payload_size);
@@ -29972,14 +30039,13 @@ static pthread_mutex_t  g_bus_payload_arena_mutex = PTHREAD_MUTEX_INITIALIZER;
  * is set at the only place the arena is created (this helper);
  * all 35+ lazy-init sites in this file go through it. Default
  * 64 MiB; overridable via LOTUS_BUS_PAYLOAD_ARENA_CAP env var (in
- * bytes) for capacity-planning experiments. The cap event is
- * dprintf'd to stderr exactly once per process. Subsequent
- * allocations against the capped arena return NULL; existing
- * callers (snapshot/finish via alloc_fail_sentinel,
- * lotus_bytes_create returning NULL through empty_global,
- * recv_bytes returning empty Bytes) already surface NULL as
- * "empty / failure" so the cap converts an OOM to a degraded
- * service mode rather than a crash. The proper fix
+ * bytes) for capacity-planning experiments. Reaching the cap stops
+ * the process with a report naming the arena and the frames that
+ * asked (lotus_arena_cap_exhausted). It used to hand the caller NULL
+ * and go on, meant as a degraded service mode, but most of the
+ * arena's callers (a String clone, a codec's encode, a deserializer)
+ * never checked, and a capped process died later in a SIGSEGV that
+ * blamed one of them (hale-lang/voice). The proper fix
  * (per-subscriber arena routing for m70 wire-dispatch, plus
  * __caller_arena threading for the stdlib primitives that land
  * here) lives elsewhere; this is the floor. */
@@ -30136,6 +30202,14 @@ void *lotus_bus_payload_arena_alloc(uint64_t size, uint64_t align) {
     void *p = lotus_arena_alloc(g_bus_payload_arena, size, align);
     pthread_mutex_unlock(&g_bus_payload_arena_mutex);
     return p;
+}
+
+/* Test surface, reachable by `@ffi("c")`: deposit `n` bytes in the
+ * payload arena, as a producer no owner reclaims does. Past the cap the
+ * process stops (lotus_arena_cap_exhausted); below it, 1. */
+int64_t lotus_bus_payload_arena_deposit_test(int64_t n) {
+    lotus_arena_t *a = lotus_bus_payload_arena_get();
+    return a && lotus_arena_alloc(a, (uint64_t)n, 8) ? 1 : 0;
 }
 
 /* Wave B: handle-only accessor. Lazy-initializes the bus payload

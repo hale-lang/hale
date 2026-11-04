@@ -251,6 +251,8 @@ impl<'ctx, 'p> IoTlsStdlib<'ctx> for Cx<'ctx, 'p> {
             .builder
             .build_int_truncate(max_val.into_int_value(), i32_t, "tls.rb.max.i32")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // the read's buffer lives in the caller's arena (as tcp's)
+        self.emit_set_caller_arena()?;
         let f = self
             .module
             .get_function("lotus_tls_recv_bytes")

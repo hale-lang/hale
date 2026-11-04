@@ -12135,8 +12135,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///    encode/decode lower to `ptr` — Bytes/TypeRef).
     /// 3. Invokes the user method via `build_call` directly (NOT
     ///    via `lower_locus_method_fallible_call`, to avoid the
-    ///    `emit_set_caller_arena` call — TLS-inherited caller arena
-    ///    is what we want for per-subscriber arena routing).
+    ///    `emit_set_caller_arena` call). Decode inherits the TLS
+    ///    caller arena, which is what per-subscriber arena routing
+    ///    wants; encode publishes a call arena of its own around the
+    ///    call (`lotus_bus_codec_arena_enter` / `_leave`), since its
+    ///    `Bytes` are dead once copied into `dst`.
     /// 4. Branches on the i1 path:
     ///    - encode ok, fits cap: memcpy Bytes body into `dst`,
     ///      return len
@@ -12204,6 +12207,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let enc_out_err = self.builder.build_alloca(ptr_t, "encode.out_err.slot")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
+        // The encode runs in a call arena of its own, published as the
+        // caller arena: what it returns is copied into `dst` below and
+        // never read again, so it is freed when the thunk returns, on
+        // every path. Inherited, the caller arena of a publish from a
+        // member the transport or the bus invoked was none, and every
+        // encode landed in the program-lifetime payload arena.
+        let enc_saved = self.builder.build_alloca(ptr_t, "encode.saved_arena.slot")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let enter_fn = self.module.get_function("lotus_bus_codec_arena_enter")
+            .expect("lotus_bus_codec_arena_enter declared");
+        let leave_fn = self.module.get_function("lotus_bus_codec_arena_leave")
+            .expect("lotus_bus_codec_arena_leave declared");
+        let enc_arena = self.builder
+            .build_call(enter_fn, &[enc_saved.into()], "encode.arena")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value().left()
+            .expect("lotus_bus_codec_arena_enter returns ptr")
+            .into_pointer_value();
+        let leave = |cx: &mut Self| -> Result<(), CodegenError> {
+            let saved = cx.builder.build_load(ptr_t, enc_saved, "encode.saved_arena")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            cx.builder.build_call(leave_fn, &[enc_arena.into(), saved.into()], "")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            Ok(())
+        };
+
         let enc_call = self.builder.build_call(
             encode_fn,
             &[
@@ -12249,6 +12278,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
         };
         self.emit_memcpy_call(enc_dst, body_ptr, bytes_len, "encode.memcpy")?;
+        leave(self)?;
         self.builder.build_return(Some(&bytes_len))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
@@ -12263,10 +12293,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // already re-invokes with a bigger cap when the size comes
         // back over what it passed in.
         self.builder.position_at_end(enc_overflow);
+        leave(self)?;
         self.builder.build_return(Some(&bytes_len))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         self.builder.position_at_end(enc_fail);
+        leave(self)?;
         self.builder.build_return(Some(&neg_one))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
@@ -37369,6 +37401,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (until, u_ty) = self.lower_expr(&args[2], scope)?;
         if u_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!("{cname}: until must be Int, got {u_ty:?}")));
+        }
+        if reads {
+            // the read's buffer lives in the caller's arena
+            self.emit_set_caller_arena()?;
         }
         let f = self.module.get_function(cname).unwrap_or_else(|| panic!("{cname} declared"));
         let ret = self

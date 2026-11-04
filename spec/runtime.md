@@ -593,13 +593,11 @@ allocators).
 
 The single shared **bus payload arena** is the deliberate
 exception to "one owning thread per arena": it is reachable
-concurrently from any pool, because some stdlib primitives
-allocate their result there directly rather than into a
-per-locus arena (e.g. `std::io::tls::recv_bytes`, which always
-targets it regardless of the caller's per-thread scratch). That
-arena therefore carries an internal lock on its bump — two
-pinned loci calling such a primitive at once do not corrupt each
-other's allocations. Per-locus arenas keep the lock-free bump;
+concurrently from any pool, because a primitive whose call site
+published no caller arena allocates its result there instead
+(`lotus_caller_arena_or_global`). That arena therefore carries an
+internal lock on its bump — two pinned loci calling such a
+primitive at once do not corrupt each other's allocations. Per-locus arenas keep the lock-free bump;
 only this one shared arena pays for the lock.
 
 #### Why no "greedy" class
@@ -4612,7 +4610,7 @@ its behavior as described in this document.
 | `LOTUS_ARENA_LOG_BIG_MAX_EVENTS=<N>` | 200 | Caps the log at `<N>` events per process. Default 200. Set to 0 for unlimited (useful when watching low-rate sub-MiB allocation patterns over a long window). |
 | `LOTUS_CHUNK_POOL_STATS=1` | off | Dumps per-thread chunk-pool hit / miss / store / overflow counters to stderr at process exit. Diagnostic for "pool isn't recycling" symptoms — pairs hits vs misses, stores vs overflows. The atexit handler runs on the main thread; counters are `__thread` so the dump is that thread's view. |
 | `LOTUS_GLIBC_ARENA_MAX=<N>` | unset (glibc's own) | Calls `mallopt(M_ARENA_MAX, <N>)` at startup. Caps glibc's per-thread malloc arena count. `1` forces a single arena (max contention, min virtual-address fragmentation); higher `<N>` trades contention for parallelism. Useful belt-and-suspenders against the per-thread arena heap-segment proliferation glibc default tuning can produce on long-running daemons. Unset keeps glibc's default. |
-| `LOTUS_BUS_PAYLOAD_ARENA_CAP=<N>` | 64 MiB | Overrides the lazy-global bus payload arena's byte cap (default 64 MiB). When the cap fires, `lotus_arena_alloc` returns NULL and the existing alloc-fail paths (`empty_global` / `alloc_failed` violation) surface degraded service rather than OOM-killing the process. |
+| `LOTUS_BUS_PAYLOAD_ARENA_CAP=<N>` | 64 MiB | Overrides the lazy-global bus payload arena's byte cap (default 64 MiB). An allocation that would pass the cap stops the process (SIGABRT) with a report naming the arena, what it holds, the cap and the frames that asked: what the arena holds was deposited by a producer no owner reclaims, a leak. |
 | `LOTUS_DRAIN_GRACE_MS=<ms>` | 5000 | How long a SIGINT / SIGTERM drain may take before the runtime re-raises the signal with its default action, ending the process by it (default 5000). Only in a program that reads `self.draining`; see `semantics.md` § "Drain cascade (whole-process)" (GH #1039). |
 | `LOTUS_BUS_TABLE_STATS=1` | off | At teardown, prints `[bus_table] entries=N free=F` to stderr: the registration table's size and how many of its entries a dissolved subscriber left free for a later registration (§ "Bus message router"). A server whose connections each subscribe holds `entries` near its most connections at once. |
 | `LOTUS_BUS_TEST_WALK_STALL_US=N` | off | Test hook: a bus table walk pauses N µs inside an entry's version window, so a test can reuse that entry under it (`bus_registry_reuse_races`). Never set it in production. |

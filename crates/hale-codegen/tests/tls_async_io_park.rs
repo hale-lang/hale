@@ -722,3 +722,52 @@ fn an_https_event_stream_is_read_as_it_arrives_and_its_deadline_holds() {
         assert!((700..1500).contains(&took), "{tag}: the held stream ends at its 800 ms deadline; took {took}: {out}");
     }
 }
+
+/// A TLS read's buffer is the caller's, as a plain-tcp read's is: each
+/// `tls::recv_bytes` used to carve its `max_bytes` from the
+/// program-lifetime payload arena, so a long-running https client kept
+/// every read it ever made until that arena's cap stopped it. 200 requests
+/// read 64 KiB at a time would pass a 1 MiB cap many times over; each
+/// request's reads die with the free fn that made them.
+#[test]
+fn tls_reads_live_in_the_callers_arena_not_the_payload_arena() {
+    let peer = Peer::start(Behaviour { handshake_delay: Duration::ZERO, response_delay: Duration::ZERO, speak: true, read: true });
+    let src = r#"
+        fn fetch(port: Int) -> Bool {
+            let h = std::io::tls::connect("localhost", port) or { return false; };
+            std::io::tls::send_bytes(h, std::bytes::from_string("GET / HTTP/1.0\r\nHost: localhost\r\n\r\n"));
+            let mut got = "";
+            let mut piece = std::str::from_bytes(std::io::tls::recv_bytes(h, 65536));
+            while len(piece) > 0 {
+                got = got + piece;
+                piece = std::str::from_bytes(std::io::tls::recv_bytes(h, 65536));
+            }
+            std::io::tls::close(h);
+            return std::str::ends_with(got, "hello-tls");
+        }
+        fn main() {
+            let port = std::str::parse_int(std::env::arg(1)) or 0;
+            let mut ok = 0;
+            let mut i = 0;
+            while i < 200 {
+                if fetch(port) { ok = ok + 1; }
+                i = i + 1;
+            }
+            println("fetched ok=", ok);
+        }
+    "#;
+    let bin = harness::unique_bin("hale_tls_reads_reclaimed");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin)
+        .arg(peer.port.to_string())
+        .env("SSL_CERT_FILE", &peer.cert)
+        .env("LOTUS_BUS_PAYLOAD_ARENA_CAP", "1048576")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    assert_eq!(field(&stdout, "fetched", "ok"), "200", "{stdout}");
+    assert!(!stderr.contains("arena cap hit"), "TLS reads stayed in the payload arena: {stderr}");
+}
