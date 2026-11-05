@@ -1101,8 +1101,15 @@ organism's store has the same job and an empty directory.
 loopback at the head block's sixth port (`GRAFANA_OFFSET` 5; the block is
 published on macOS but for that port), served under `/grafana/` of the
 face. Its provisioning (`<habitat>/grafana/provisioning`, written at
-every `up`) is the habitat's senses' store as its one data source (uid
-`habitat-senses`) and the habitat's dashboards. `Services` (uid
+every `up`, a file only when its content differs) is the habitat's
+senses' store as its one data source (uid `habitat-senses`) and the
+habitat's dashboards. The dashboards' provider reads its files again every
+10 seconds (`updateIntervalSeconds`), and the home dashboard
+(`GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH`, `hosts.json`) is read at each
+request; a Grafana that `up` leaves running (neither made again nor
+stopped) is restarted when a provisioning file changed, and one `up` makes
+reads them at its start, so a toolchain's changed dashboard is what Grafana
+serves after `up`. An `up` that changed none of them restarts nothing. `Services` (uid
 `hale-containers`, the Containers dashboard it replaced) shows what runs
 where, whatever a host's system: one table and one set of graphs for the
 containers cAdvisor reads (`kind` `container`, with the organism and part

@@ -2896,10 +2896,13 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     // operator's backends hold none)
     let key = dir.file_name().map(|k| k.to_string_lossy().into_owned()).unwrap_or_default();
     let senses = readings::senses_port(&dir, &key);
+    // (whether a dashboard or its source changed: a Grafana this `up`
+    // leaves running is restarted for it, below)
+    let mut provisioning_changed = false;
     let grafana = match senses {
         Some(senses) if !readings::grafana_off() => {
             let reach = if is_macos { "host.docker.internal" } else { "127.0.0.1" };
-            readings::write_provisioning(Path::new(&hab_dir), &format!("http://{reach}:{senses}"))?;
+            provisioning_changed = readings::write_provisioning(Path::new(&hab_dir), &format!("http://{reach}:{senses}"))?;
             Some((base + readings::GRAFANA_OFFSET, readings::grafana_header(Path::new(&hab_dir))?))
         }
         _ => None,
@@ -3013,6 +3016,8 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     };
     std::fs::write(&ports_path, new_ports).map_err(|e| format!("write {}: {e}", ports_path.display()))?;
 
+    // the Grafana running before this `up` touches it, if one is
+    let grafana_before = running_grafana();
     progress("starting body and face compose services");
     let mut cmd = Command::new("env");
     cmd.args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
@@ -3071,6 +3076,30 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         }
     }
 
+    // a Grafana this `up` left running (not made again) whose provisioning
+    // changed: restarted, so it serves the dashboards just written rather
+    // than leaving them to its polling. One this `up` made, or one not
+    // running, reads them at its start; an `up` that changed nothing
+    // restarts nothing.
+    if grafana.is_some() && grafana_restart_due(provisioning_changed, grafana_before.as_deref(), running_grafana().as_deref()) {
+        progress("restarting grafana: its dashboards changed");
+        let ran = Command::new("env")
+            .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
+            .arg(local_habitat_project())
+            .arg("--project-directory")
+            .arg(&dir)
+            .arg("-f")
+            .arg(&compose_path)
+            .arg("-f")
+            .arg(&ports_path)
+            .args(["restart", "grafana"])
+            .output()
+            .map_err(|e| format!("docker compose: {e}"))?;
+        if !ran.status.success() {
+            return Err(format!("docker compose restart grafana: {}", String::from_utf8_lossy(&ran.stderr).trim()));
+        }
+    }
+
     progress("waiting for the habitat's body and face probes");
     // three minutes to answer once the face has what it runs; a face still
     // building the head's programs (a first start, or one after the
@@ -3121,6 +3150,21 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     lines.extend(reflexes_line);
     lines.extend(readings::install_here(&host_label_here()));
     Ok(lines)
+}
+
+/// The habitat's `grafana` container, when one is running: its id.
+fn running_grafana() -> Option<String> {
+    let project = format!("label=com.docker.compose.project={}", local_habitat_project());
+    match docker(&["ps", "-q", "--filter", &project, "--filter", "label=com.docker.compose.service=grafana", "--filter", "status=running"]) {
+        Docker::Answered(ids) => ids.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string),
+        _ => None,
+    }
+}
+
+/// Whether `up` restarts Grafana: its provisioning changed, and the
+/// Grafana running now is the one that ran before (`up` made none again).
+fn grafana_restart_due(changed: bool, before: Option<&str>, now: Option<&str>) -> bool {
+    changed && now.is_some() && now == before
 }
 
 /// Phase 4: the habitat's face (and the head behind it) restarted, after
@@ -4292,6 +4336,22 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::grafana_restart_due;
+
+    #[test]
+    fn grafana_is_restarted_only_for_a_changed_dashboard_it_was_left_running_over() {
+        // changed, and the Grafana that ran before still runs: restarted
+        assert!(grafana_restart_due(true, Some("abc"), Some("abc")));
+        // nothing changed: never
+        assert!(!grafana_restart_due(false, Some("abc"), Some("abc")));
+        // made again by this `up`, or not running (on demand): it reads
+        // the new files at its start
+        assert!(!grafana_restart_due(true, Some("abc"), Some("def")));
+        assert!(!grafana_restart_due(true, None, Some("def")));
+        assert!(!grafana_restart_due(true, Some("abc"), None));
+        assert!(!grafana_restart_due(true, None, None));
+    }
+
     #[test]
     fn an_organisms_services_show_in_status() {
         let seen = vec![serde_json::json!({ "allocation": "7817e28279f2/services", "host": "laptop", "state": "degraded", "detail": "1 of 5 running; not running: nats (created)" })];

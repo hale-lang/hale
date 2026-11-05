@@ -515,8 +515,10 @@ fn getrandom(buf: &mut [u8]) -> Result<(), String> {
 /// Grafana's provisioning under `<habitat>/grafana/provisioning`: the
 /// habitat's senses' store as its one data source, and the habitat's
 /// dashboards. Written at every `up`, so a toolchain's newer dashboard
-/// replaces the last.
-pub(super) fn write_provisioning(hab_dir: &Path, prometheus_url: &str) -> Result<(), String> {
+/// replaces the last; a file is written only when its content differs, and
+/// the answer is whether any changed (or the old Containers dashboard
+/// went), which `up` restarts a Grafana it leaves running for.
+pub(super) fn write_provisioning(hab_dir: &Path, prometheus_url: &str) -> Result<bool, String> {
     let root = hab_dir.join("grafana").join("provisioning");
     let sources = root.join("datasources");
     let boards = root.join("dashboards");
@@ -526,15 +528,28 @@ pub(super) fn write_provisioning(hab_dir: &Path, prometheus_url: &str) -> Result
     let ds = format!(
         "apiVersion: 1\ndatasources:\n  - name: habitat senses\n    uid: habitat-senses\n    type: prometheus\n    access: proxy\n    url: {prometheus_url}\n    isDefault: true\n    editable: false\n    jsonData:\n      timeInterval: 15s\n"
     );
-    std::fs::write(sources.join("habitat.yaml"), ds).map_err(|e| format!("write {}: {e}", sources.display()))?;
-    let provider = "apiVersion: 1\nproviders:\n  - name: habitat\n    folder: habitat\n    type: file\n    disableDeletion: true\n    allowUiUpdates: false\n    options:\n      path: /etc/grafana/provisioning/dashboards\n";
-    std::fs::write(boards.join("habitat.yaml"), provider).map_err(|e| format!("write {}: {e}", boards.display()))?;
-    std::fs::write(boards.join("hosts.json"), HOSTS_DASHBOARD).map_err(|e| format!("write {}: {e}", boards.display()))?;
-    std::fs::write(boards.join("services.json"), SERVICES_DASHBOARD).map_err(|e| format!("write {}: {e}", boards.display()))?;
+    let mut changed = write_if_changed(&sources.join("habitat.yaml"), &ds)?;
+    changed |= write_if_changed(&boards.join("habitat.yaml"), DASHBOARD_PROVIDER)?;
+    changed |= write_if_changed(&boards.join("hosts.json"), HOSTS_DASHBOARD)?;
+    changed |= write_if_changed(&boards.join("services.json"), SERVICES_DASHBOARD)?;
     // the Containers dashboard it replaced, under the same uid: a second
     // file of that uid would be refused
-    let _ = std::fs::remove_file(boards.join("containers.json"));
-    Ok(())
+    changed |= std::fs::remove_file(boards.join("containers.json")).is_ok();
+    Ok(changed)
+}
+
+/// The habitat's dashboards' provider: the files beside it, read again
+/// every ten seconds (Grafana's default, said rather than assumed), so a
+/// running Grafana takes a changed dashboard on its own.
+const DASHBOARD_PROVIDER: &str = "apiVersion: 1\nproviders:\n  - name: habitat\n    folder: habitat\n    type: file\n    disableDeletion: true\n    allowUiUpdates: false\n    updateIntervalSeconds: 10\n    options:\n      path: /etc/grafana/provisioning/dashboards\n";
+
+/// `content` at `path` unless it is there already: whether it was written.
+fn write_if_changed(path: &Path, content: &str) -> Result<bool, String> {
+    if std::fs::read(path).is_ok_and(|had| had == content.as_bytes()) {
+        return Ok(false);
+    }
+    std::fs::write(path, content).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(true)
 }
 
 /// The habitat's `grafana` compose service: in the face's network namespace
@@ -674,6 +689,33 @@ mod tests {
         assert!(!s.contains("ports:"));
         assert!(s.contains("GF_AUTH_BASIC_ENABLED: \"false\""));
         assert!(!s.contains("GF_SECURITY_ADMIN_PASSWORD: \"admin\""));
+    }
+
+    #[test]
+    fn provisioning_says_whether_a_dashboard_changed_and_grafana_polls_its_files() {
+        let d = std::env::temp_dir().join(format!("hale-grafana-provisioning-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let boards = d.join("grafana/provisioning/dashboards");
+        assert!(write_provisioning(&d, "http://127.0.0.1:9090").unwrap(), "a first write changes everything");
+        assert!(!write_provisioning(&d, "http://127.0.0.1:9090").unwrap(), "an `up` that changes nothing says so");
+        let hosts = boards.join("hosts.json");
+        let mtime = std::fs::metadata(&hosts).unwrap().modified().unwrap();
+        assert!(!write_provisioning(&d, "http://127.0.0.1:9090").unwrap());
+        assert_eq!(std::fs::metadata(&hosts).unwrap().modified().unwrap(), mtime, "an unchanged dashboard is not written again");
+        // a toolchain's newer dashboard, or a moved data source: changed
+        std::fs::write(&hosts, "{}").unwrap();
+        assert!(write_provisioning(&d, "http://127.0.0.1:9090").unwrap());
+        assert_eq!(std::fs::read_to_string(&hosts).unwrap(), HOSTS_DASHBOARD);
+        assert!(write_provisioning(&d, "http://127.0.0.1:9091").unwrap());
+        // the Containers dashboard Services replaced, left by an old toolchain
+        std::fs::write(boards.join("containers.json"), "{}").unwrap();
+        assert!(write_provisioning(&d, "http://127.0.0.1:9091").unwrap());
+        assert!(!boards.join("containers.json").exists());
+        assert!(!write_provisioning(&d, "http://127.0.0.1:9091").unwrap());
+        // a running Grafana reads the dashboards' files again on its own
+        let provider = std::fs::read_to_string(boards.join("habitat.yaml")).unwrap();
+        assert!(provider.contains("\n    updateIntervalSeconds: 10\n"), "{provider}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
