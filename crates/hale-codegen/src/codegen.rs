@@ -10587,23 +10587,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // and a SIGTERM drains instead of skipping code the author wrote
         // for it. The standard library's loci (`__Std…`) are not the
         // program's word: their hooks free what the process's end frees.
-        if self.cells.emits(Obligation::DrainTerm)? {
-            let hooked: Vec<String> = self
-                .user_loci
-                .iter()
-                .filter(|(name, info)| {
-                    !name.starts_with("__Std")
-                        && ["drain", "dissolve"]
-                            .iter()
-                            .any(|k| info.methods.contains_key(k) && !info.empty_lifecycle.contains(k))
-                })
-                .map(|(name, _)| name.clone())
-                .collect();
-            for name in hooked {
-                self.reads_draining = true;
-                self.drain_reads_beyond_run.insert(name.clone());
-                self.drain_observer_loci.insert(name);
-            }
+        // (A target no signal reaches has none of the flags written below:
+        // the cells that omit the signal install and the observer counts
+        // leave these names nothing to set.)
+        let hooked: Vec<String> = self
+            .user_loci
+            .iter()
+            .filter(|(name, info)| {
+                !name.starts_with("__Std")
+                    && ["drain", "dissolve"]
+                        .iter()
+                        .any(|k| info.methods.contains_key(k) && !info.empty_lifecycle.contains(k))
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in hooked {
+            self.reads_draining = true;
+            self.drain_reads_beyond_run.insert(name.clone());
+            self.drain_observer_loci.insert(name);
         }
         // GH #1077: the loci that can answer a drain, now every body
         // has lowered.
