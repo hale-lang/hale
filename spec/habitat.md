@@ -895,7 +895,11 @@ habitat's directory. The habitat's address, and each organism's, is a block
 of 8 loopback ports recorded in `dna.head.url` (the habitat's in its
 genome's, an organism's in its own, assigned at its graft); the face is the
 block's base and the head the next port (`http://127.0.0.1:<head_port>`,
-recorded on the `habitat.profile` row and in `<habitat>/head.url`). The
+recorded on the `habitat.profile` row and in `<habitat>/head.url`). A block
+is never assigned over a port that listens on every interface of the
+machine: the senses' scrape endpoints (9464 to 9466) and the machine's node
+and container exporters (`:9100`, `:9338`; a block held over one keeps the
+exporter from binding, and the machine's readings down while it is held). The
 face's index lists the organisms the record grafted, with their state and
 the addresses of their faces and heads. A habitat started under
 `HALE_DNA_TRUSTED_LOCAL=1` serves its face without the stub provider, as a

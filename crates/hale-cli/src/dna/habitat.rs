@@ -2573,14 +2573,19 @@ pub(crate) fn loopback_port(url: &str) -> Option<u16> {
     (port >= 1 && u32::from(port) + u32::from(HEAD_BLOCK) <= 65535).then_some(port)
 }
 
-/// The fixed ports a body's senses scrape endpoints listen on, every
-/// interface, beside the habitat's head and face (`dna/core/senses.hl`:
-/// spine, node, head). A head block is never placed over them: on the
-/// host's network the body holds them, and a face given one could not bind.
-const SENSES_PORTS: [u16; 3] = [9464, 9465, 9466];
+/// The fixed ports that listen on every interface of the habitat's machine
+/// beside its head and face: a body's senses scrape endpoints
+/// (`dna/core/senses.hl`: spine, node, head) and the machine's node and
+/// container exporters (`readings`). A head block is never placed over
+/// them: whichever binds second cannot. A face given a senses port could
+/// not bind; a block held over an exporter's port leaves the exporter
+/// restarting on its bind and the machine's readings down for as long as
+/// the block is held (a habitat's API child on `127.0.0.1:9338` keeps
+/// cAdvisor off `:9338`).
+const FIXED_PORTS: [u16; 5] = [9464, 9465, 9466, readings::NODE_EXPORTER_PORT, readings::CADVISOR_PORT];
 
-fn overlaps_senses(base: u16) -> bool {
-    SENSES_PORTS.iter().any(|p| *p >= base && u32::from(*p) < u32::from(base) + u32::from(HEAD_BLOCK))
+fn overlaps_fixed(base: u16) -> bool {
+    FIXED_PORTS.iter().any(|p| *p >= base && u32::from(*p) < u32::from(base) + u32::from(HEAD_BLOCK))
 }
 
 fn block_free(base: u16) -> bool {
@@ -2600,7 +2605,7 @@ fn head_block(root: &Path, taken: &[u16]) -> Result<u16, String> {
     let start = u32::from(u16::from_be_bytes([h[0], h[1]])) % 200;
     for i in 0..blocks {
         let base = HEAD_BLOCK_FROM + (((start + i) % blocks) as u16) * HEAD_BLOCK;
-        if taken.iter().any(|t| t.abs_diff(base) < HEAD_BLOCK) || overlaps_senses(base) || !block_free(base) {
+        if taken.iter().any(|t| t.abs_diff(base) < HEAD_BLOCK) || overlaps_fixed(base) || !block_free(base) {
             continue;
         }
         let ok = Command::new("git").arg("-C").arg(root).args(["config", "--local", "dna.head.url", &format!("http://127.0.0.1:{base}")]).status().is_ok_and(|s| s.success());
@@ -4446,11 +4451,16 @@ mod tests {
         assert!(first_ipv4("::1").is_err());
     }
 
-    /// A head block never covers the senses' fixed scrape ports.
+    /// A head block never covers the senses' fixed scrape ports, nor the
+    /// machine's node and container exporters'.
     #[test]
-    fn a_head_block_is_never_placed_over_the_senses_ports() {
-        assert!(overlaps_senses(9464) && overlaps_senses(9459) && overlaps_senses(9466));
-        assert!(!overlaps_senses(9456) && !overlaps_senses(9467) && !overlaps_senses(8800));
+    fn a_head_block_is_never_placed_over_the_fixed_ports() {
+        assert!(overlaps_fixed(9464) && overlaps_fixed(9459) && overlaps_fixed(9466));
+        assert!(!overlaps_fixed(9456) && !overlaps_fixed(9467) && !overlaps_fixed(8800));
+        // the blocks head_block places (8 apart from 8800) that would hold
+        // :9100 (the commands' port) and :9338 (the API child's)
+        assert!(overlaps_fixed(9096) && overlaps_fixed(9336));
+        assert!(!overlaps_fixed(9088) && !overlaps_fixed(9104) && !overlaps_fixed(9328) && !overlaps_fixed(9344));
     }
 
     /// An organism removed and another grafted under its name: the name
