@@ -208,10 +208,24 @@ fn grafana_and_readings(up: String, face: String, linux: Bool) -> Bool {
         std::time::sleep(2s);
         cseen = fetch(cookie, cquery);
     }
+    let read_containers = std::str::contains(cseen.stdout, "\"job\":\"containers\"")
+        && std::str::contains(cseen.stdout, "\"1\"]");
+    // a scrape that never succeeds says why: the store's last error for
+    // the target, the exporter's container, and what holds its port
+    let why = if read_containers { "" } else {
+        "\nthe store's target: "
+            + fetch(
+                cookie,
+                face
+                    + "/grafana/api/datasources/proxy/uid/habitat-senses/api/v1/targets?scrapePool=containers",
+            ).stdout + "\nthe exporter and its port:\n"
+            + dna::run_tool(
+                "sh\n-c\ndocker ps -a --filter name=^hale-cadvisor$ --format '{{.Names}} {{.Status}}'; docker inspect -f 'restart count {{.RestartCount}}' hale-cadvisor; docker logs --tail 8 hale-cadvisor 2>&1; ss -ltnp 'sport = :9338' 2>&1\nsh\n",
+            ).stdout
+    };
     std::test::assert(
-        std::str::contains(cseen.stdout, "\"job\":\"containers\"")
-            && std::str::contains(cseen.stdout, "\"1\"]"),
-        "the habitat's senses read this machine's containers: " + cseen.stdout,
+        read_containers,
+        "the habitat's senses read this machine's containers: " + cseen.stdout + why,
     );
     return std::str::contains(up, "a container of the habitat's (hale-node-exporter)");
 }
