@@ -1636,16 +1636,16 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[],
         consumers: &[
             consumer_at("check (the nested-long-running-child rule reads the long-running column)", CHECK, "check_nested_long_running_child"),
-            consumer_at("check (the starvation and birth-order laws read the never-returns column)", CHECK, "never_returns"),
+            consumer_at("check (the starvation, birth-order and drain-hook laws read the never-returns column)", CHECK, "never_returns"),
         ],
         invariants: &[
             "two definitions, two columns of the flow rows' run row (`flows::RunRow`), named in spec/runtime.md § Typecheck enforcement: long-running is a `run()` body with a statement of its own (a nested child's `run()` completes before its parent's begins, so any body delays the parent, whether or not it returns), never-returns is a terminal `while` with no exit whose condition never flips false (only such a body starves the cells a pool runs after it); every body that never returns is long-running, not the converse, and a child whose `run()` is `std::time::sleep(1min)` keeps the long-running-child error",
-            "the checker surveys the flow rows once per check and the three rules read the columns; none decides either question itself; a stdlib locus, whose body the checker does not see, is both when it is on the known-long-running allowlist (`KNOWN_LONG_RUNNING_STDLIB_LOCI`)",
+            "the checker surveys the flow rows once per check and the four rules read the columns; none decides either question itself; a stdlib locus, whose body the checker does not see, is both when it is on the known-long-running allowlist (`KNOWN_LONG_RUNNING_STDLIB_LOCI`)",
         ],
         missing: Missing::Hole,
-        tests: &["crates/hale-types/tests/birth_order_trap.rs", "crates/hale-codegen/tests/birth_order_trap.rs", "crates/hale-codegen/tests/nested_long_running_child.rs", "crates/hale-types/src/flows.rs (long_running_and_never_returns_are_two_columns)"],
+        tests: &["crates/hale-types/tests/birth_order_trap.rs", "crates/hale-types/tests/drain_hook_behind_endless_run.rs", "crates/hale-codegen/tests/birth_order_trap.rs", "crates/hale-codegen/tests/nested_long_running_child.rs", "crates/hale-types/src/flows.rs (long_running_and_never_returns_are_two_columns)"],
         spec: &["spec/semantics.md", "spec/runtime.md § Typecheck enforcement"],
-        owned: &[site(CHECK, "check_pool_starvation"), site(CHECK, "check_birth_order")],
+        owned: &[site(CHECK, "check_pool_starvation"), site(CHECK, "check_birth_order"), site(CHECK, "check_drain_hook_behind_endless_run")],
         seams: &[Seam { symbol: "run_statically_nonreturning(", allowed: &[("crates/hale-types/src/flows.rs", 2)] }],
     },
     Family {
@@ -2744,6 +2744,16 @@ pub const RULES: &[Rule] = &[
         gist: "a root params field whose never-returning `run()` runs inline on main, so the params after it are never born (warning, at the first such field)",
         family: "flows",
         evaluator: Some(site(CHECK, "check_birth_order")),
+        state: State::Canonical,
+    },
+    Rule {
+        id: "verification/structural/drain-hook-behind-endless-run",
+        title: "Drain hook behind an endless run",
+        // The flow rows' "never returns" column; the locus's `drain()` hook, its `run()` body and the fns and methods that body calls (for a `draining` read) are read off the declarations.
+        reads: Reads::Rows(&["flows"]),
+        gist: "a `drain()` hook on a locus whose `run()` never returns and never reads `draining`, itself or through a fn it calls, so a SIGTERM's drain never reaches the hook (warning, at the hook, the witness the loop)",
+        family: "flows",
+        evaluator: Some(site(CHECK, "check_drain_hook_behind_endless_run")),
         state: State::Canonical,
     },
     Rule {

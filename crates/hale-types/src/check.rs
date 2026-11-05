@@ -1580,6 +1580,10 @@ pub fn check_bundle_rules(
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
     check_accept_release(bundle, flows, &mut diags);
+    // GH #1838: a `drain()` hook its locus's endless `run()` keeps from
+    // running — a SIGTERM's drain never reaches it.
+    let rows = DrainHookRows { bundle, flows };
+    diags.extend(Law { rule: DRAIN_HOOK, eval: check_drain_hook_behind_endless_run }.diags(&rows));
     // A `@form(lru_cache)` eviction hook that puts into its own cache.
     check_lru_hook_puts(bundle, inputs.alloc_summary, &mut diags);
     // Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
@@ -3999,6 +4003,140 @@ fn check_scope_local_subscriber_on_classic_pool(rows: &ScopeLocalSubscriberRows<
 }
 /// The birth-order trap.
 const BIRTH_ORDER: RuleId = RuleId::registered("verification/structural", "birth-order-trap");
+
+/// GH #1838: a drain hook behind an endless `run()`.
+const DRAIN_HOOK: RuleId = RuleId::registered("verification/structural", "drain-hook-behind-endless-run");
+
+/// What the drain-hook law reads: the bundle's locus declarations (their
+/// hooks and bodies, and the free fns a `run()` calls), and the flow rows'
+/// "never returns" column.
+#[derive(Clone, Copy)]
+struct DrainHookRows<'r, 'a> {
+    bundle: &'r Bundle<'a>,
+    flows: &'r crate::flows::FlowRows,
+}
+
+/// GH #1838: a `drain()` hook its locus's `run()` keeps from ever running.
+///
+/// A hook runs at teardown, and teardown follows `run()`. A `run()` that
+/// statically never returns (the flow rows' "never returns" column: a
+/// terminal `while` with no exit whose condition never flips false) and
+/// never reads `draining` — not in its own body, and not in a fn or method
+/// of the program it calls, transitively — cannot answer the drain a
+/// SIGTERM raises: the drain's grace runs out and the signal ends the
+/// process with the hook unrun (spec/semantics.md § "Drain cascade
+/// (whole-process)"). Reported at the hook, the loop its witness. A locus
+/// of the standard library's (`__Std…`), and a hook with an empty body,
+/// are left alone; a `run()` that can end, or reads `draining`, is never
+/// reported.
+fn check_drain_hook_behind_endless_run(rows: &DrainHookRows<'_, '_>, out: &mut Vec<Violation>) {
+    use crate::listener_window::{visit_block, Visited};
+    let DrainHookRows { bundle, flows } = *rows;
+    // The program's free fns, by name, a module's included: what a bare
+    // call in a `run()` reaches.
+    let mut free_fns: BTreeMap<&str, &FnDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            if let TopDecl::Fn(f) = item {
+                free_fns.entry(f.name.name.as_str()).or_insert(f);
+            }
+        });
+    }
+    // Whether `body`, or a fn or method of `decl`'s it calls (transitively),
+    // reads `draining`, on any receiver: the read GH #1077 counts.
+    fn reads_draining<'a>(
+        body: &'a Block,
+        decl: &'a LocusDecl,
+        free_fns: &BTreeMap<&str, &'a FnDecl>,
+        seen: &mut BTreeSet<(bool, &'a str)>,
+    ) -> bool {
+        let mut found = false;
+        let mut callees: Vec<(bool, &'a str)> = Vec::new();
+        visit_block(body, &mut |v| {
+            let Visited::Expr(e) = v else { return };
+            match e {
+                Expr::Field { name, .. } if name.name == "draining" => found = true,
+                Expr::Call { callee, .. } => match callee.as_ref() {
+                    Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
+                        if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+                    {
+                        callees.push((true, name.name.as_str()));
+                    }
+                    Expr::Ident(id) => {
+                        callees.push((true, id.name.as_str()));
+                        callees.push((false, id.name.as_str()));
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        });
+        if found {
+            return true;
+        }
+        for (method, name) in callees {
+            if !seen.insert((method, name)) {
+                continue;
+            }
+            let callee_body = if method {
+                decl.members.iter().find_map(|m| match m {
+                    LocusMember::Fn(f) if f.name.name == name => Some(&f.body),
+                    _ => None,
+                })
+            } else {
+                free_fns.get(name).map(|f| &f.body)
+            };
+            if callee_body.is_some_and(|b| reads_draining(b, decl, free_fns, seen)) {
+                return true;
+            }
+        }
+        false
+    }
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
+            if l.name.name.starts_with("__Std") {
+                return;
+            }
+            let Some(drain) = l.members.iter().find_map(|m| match m {
+                LocusMember::Lifecycle(lc)
+                    if lc.kind == LifecycleKind::Drain
+                        && !lc.synthesized
+                        && !crate::lifecycle::body_is_empty(&lc.body) =>
+                {
+                    Some(lc)
+                }
+                _ => None,
+            }) else {
+                return;
+            };
+            let Some(endless) = never_returns(flows, l) else { return };
+            let Some(run) = l.members.iter().find_map(|m| match m {
+                LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run => Some(&lc.body),
+                _ => None,
+            }) else {
+                return;
+            };
+            if reads_draining(run, l, &free_fns, &mut BTreeSet::new()) {
+                return;
+            }
+            out.push(
+                Violation::warning(
+                    DRAIN_HOOK,
+                    drain.span,
+                    format!(
+                        "locus `{}`: this `drain()` runs only when `run()` returns, and `run()` never \
+                         reads `self.draining`: read it in the loop (`while !self.draining {{ … }}`) \
+                         so a SIGTERM reaches this hook. As written, a SIGTERM or SIGINT waits out \
+                         the drain's grace and then ends the process with the hook unrun",
+                        l.name.name
+                    ),
+                )
+                .step(endless, "this loop never ends, and nothing it runs reads `self.draining`"),
+            );
+        });
+    }
+}
 
 /// What the starvation and birth-order laws read: where each params
 /// field of the deployed root runs (the placement table's rows,

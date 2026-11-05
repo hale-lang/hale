@@ -14928,7 +14928,9 @@ static void lotus_drain_on_signal(int sig) {
  * instantiation and out at its arena destroy. A `draining` read in
  * code the program never runs (an imported package's receive loop)
  * turned the drain on for the whole program; with no such instance
- * live, nothing can answer it, and the grace is only a wait. */
+ * live, nothing can answer it, and the grace is only a wait. GH #1838:
+ * a locus that declares a `drain()` or `dissolve()` hook is counted
+ * the same way — the drain's teardown is what runs its hook. */
 static int64_t g_drain_observers = 0;
 static int64_t g_drain_mode = 0;   /* 1: counted observers; 2: always */
 
@@ -15137,7 +15139,7 @@ static size_t lotus_drain_waiting_on(char *buf, size_t cap) {
         any_pool = 1;
     }
     if (!any_pool) LOTUS_APPEND("no cooperative pool");
-    LOTUS_APPEND("; live loci that read draining:");
+    LOTUS_APPEND("; live loci that can answer a drain:");
     int any_locus = 0;
     for (size_t i = 0; i < LOTUS_DRAIN_NAMES_MAX; i++) {
         const char *l = __atomic_load_n(&g_drain_names[i].label, __ATOMIC_ACQUIRE);
