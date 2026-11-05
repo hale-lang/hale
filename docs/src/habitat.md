@@ -60,7 +60,7 @@ The habitat reads every machine it runs on. `hale habitat up` (on this machine, 
 
 The habitat's senses' store (its Prometheus) scrapes each machine as the job `host`, with a `host` label naming the machine. The habitat keeps the target list in step with its hosts: adding or removing a host rewrites it.
 
-A **Grafana** runs behind the face at `/grafana/` (the `dashboards` link in the operator face), signed in as you through the face's own sign-in: there is no Grafana login. Its home dashboard, **Hosts**, opens on a table with one row per machine: its memory and main disk, each total, in use and free with a gauge of the share used (amber from 75%, red from 90%), and how busy its CPU has been over the last 5 minutes. Below it, it shows whether each machine answers, its uptime, CPUs and memory, and over time CPU busy, load per core, memory used, disk used, network and disk throughput, for Linux and macOS machines alike, plus a Linux machine's CPU frequency. `up` and `status` print its address:
+A **Grafana** runs behind the face at `/grafana/` (the `dashboards` link in the operator face), signed in as you through the face's own sign-in: there is no Grafana login. Its home dashboard, **Hosts**, opens on a table with one row per machine: its memory and main disk, each total, in use and free with a gauge of the share used (amber from 75%, red from 90%), how busy its CPU has been over the last 5 minutes, and its NVIDIA GPUs: how busy, their memory and memory in use, temperature and power draw (blank on a machine without one). Below it, it shows whether each machine answers, its uptime, CPUs and memory, and over time CPU busy, load per core, memory used, disk used, network and disk throughput, for Linux and macOS machines alike, plus a Linux machine's CPU frequency. `up` and `status` print its address:
 
 ```text
 grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the face's sign-in; started at its first use, stopped after 15 minutes unused)
@@ -71,7 +71,13 @@ Grafana runs only while someone uses it. `up` creates its service without starti
 
 Beside each node exporter runs a container exporter (cAdvisor, the container `hale-cadvisor`; on a Mac, inside docker's VM), and Grafana's **Services** dashboard shows what runs where, whatever a machine's system: every container on every machine with the organism and part it is, its image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window, and in the same table and graphs every service the habitat placed on a host with `organism place` (kind `systemd` or `launchd`), read from its own readings: whether it answers (one that does not shows as down), its uptime, memory and CPU. Every container the habitat runs is labelled `hale.habitat`, `hale.organism` and `hale.role` (an organism's own compose services through an override of the habitat's, never by editing its files), so the dashboard shows the habitat's containers by default, organism by organism, with **show: everything on the host** for whatever else a machine runs beside them.
 
-`HALE_DNA_NODE_EXPORTER=off` (both exporters) and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
+A Linux machine with an NVIDIA GPU (where `nvidia-smi -L` lists one) also runs a GPU exporter, `nvidia_gpu_exporter` (the container `hale-gpu-exporter` on `:9835`, its image pinned by digest), which reads `nvidia-smi` through docker's NVIDIA runtime, so the machine needs the NVIDIA Container Toolkit; without it, the install says so and runs none. Macs and machines without such a GPU run none and say nothing of it. The senses scrape it as the job `gpus`: the hosts whose probe found a GPU (a host added before this release is looked at again by `hale habitat host probe <name>`), a machine that joins with one, and the habitat's own machine while an exporter answers there. A GPU whose memory is the machine's (a GB10's) reports no memory of its own, and the Now table leaves its GPU memory blank rather than invent one: its use shows in the machine's memory columns.
+
+```text
+gpus    gpu-box: nvidia_gpu_exporter 1.17.0 on :9835, a container of the habitat's (hale-gpu-exporter)
+```
+
+`HALE_DNA_NODE_EXPORTER=off` (all three exporters) and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
 
 ### Reflexes and Alerts
 

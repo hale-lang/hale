@@ -40,7 +40,7 @@ habitat's allocations on its hosts: every provider implements the core's
 
 | Verb | What it does |
 |---|---|
-| `offers(host)` | the host as the provider produces it: its name, the provider, what it offers (`compose`, `systemd-user`), or why it cannot be reached |
+| `offers(host)` | the host as the provider produces it: its name, the provider, what it offers (`compose`, `systemd-user`, `nvidia-gpu`), or why it cannot be reached |
 | `allocate(role, instance)` | a role (`memory`, `nerves`, `senses`, `database`, `broker`, `head`, `face`) of an instance (an organism's record key) allocated, on no host yet: the service that holds it and the offer its host must make |
 | `place(allocation, host)` | the allocation placed on the host, or refused, naming the offer the host lacks |
 | `apply(host, render)` | a render applied on the host; until a fleet's render exists, a render is what `hale deploy render --backend compose` writes (a compose project, its directory, its files and the services to bring up) |
@@ -272,7 +272,8 @@ from the row, the host's name its alias, `StrictHostKeyChecking=yes`),
 and a host that answers with another key is refused
 (`host_key_changed`). What a host offers is probed over SSH: `compose`
 when docker compose answers there, `systemd-user` when the user's systemd
-does, and its OS and architecture. A host that does not accept the
+does, `nvidia-gpu` when `nvidia-smi -L` lists a GPU there, and its OS and
+architecture. A host that does not accept the
 habitat's key yet is `pending-key`, and `hale habitat host probe <name>`
 moves it to `ready` once it does. The provider applies a render by copying
 its files to `~/.hale/habitat/<project>/<render directory>` on the host
@@ -870,7 +871,7 @@ socket), so the habitat's head must be up.
 | `place <key>/<role> <host>` | Places an allocation on a host (`Commands::place_allocation`, above); nothing applies. |
 | `apply [<host>] [--fresh]` | Applies the allocations where they are placed and prints the pulse (`Commands::apply_allocations`, above). |
 | `host add <name> [--user <user>] [--port <n>]` | Adds a machine of the LAN as an `ssh` host (above): prints the host key first seen there and its fingerprint, what it offers, and the habitat's public key with the line its `~/.ssh/authorized_keys` takes. A host already added is refused (`host_exists`), and one where no SSH server answers is not added (`unreachable`). |
-| `host join <name>` | Run on the machine joining, a habitat on another machine (a pointer): records this machine as a `joined` host by `name`, a name the habitat's machine reaches it at, which must resolve to this machine here (refused otherwise, and for the habitat's own machine). The habitat never logs in there: no key, no account, no probe (`host probe` is refused, `joined`); it reaches the machine on its services' ports alone, its exporters (installed here) scraped by `name`. `--host local` on it places here; from anywhere else a placement there is refused. `host remove` drops its entry; what is placed there is taken off there, and its exporters only when run there. |
+| `host join <name>` | Run on the machine joining, a habitat on another machine (a pointer): records this machine as a `joined` host by `name`, a name the habitat's machine reaches it at, which must resolve to this machine here (refused otherwise, and for the habitat's own machine). The habitat never logs in there: no key, no account, no probe (`host probe` is refused, `joined`); it reaches the machine on its services' ports alone, its exporters (installed here) scraped by `name`, and its GPUs' among them when `nvidia-smi -L` lists one here (the one offer a joining machine states, `nvidia-gpu`; any other it names is not taken). `--host local` on it places here; from anywhere else a placement there is refused. `host remove` drops its entry; what is placed there is taken off there, and its exporters only when run there. |
 | `host probe <name>` | Probes the host again over SSH: a `pending-key` host whose key is now authorized is `ready`, with what it offers. One still waiting on its key has its setup finished the way `host add` does it (the habitat's account made, or the key appended, over the person's own login), then probed again; when that login does not reach the machine, what to do there is printed. A host that answers with another host key is refused (`host_key_changed`). |
 | `organism remove <name> [--plan]` | Removes an organism the habitat grafted, planned first and confirmed by its name typed back at a terminal (above). |
 | `organism upgrade <name> [--plan]` | Moves an organism grafted from a sapling to the revision the habitat pins now, keeping its record, data and allocations: the revision fetched and its digest checked, its tree moved with its graft's changes carried, its migrations run, its services re-applied, a `habitat.organism.upgraded` row recorded and its placed host commands re-run (§ Nurseries and saplings). |
@@ -1051,6 +1052,33 @@ the node exporter is; `HALE_DNA_NODE_EXPORTER=off` turns both off. The store
 scrapes it as the job `containers` from `senses.d/containers/*.json` (every 15 s, waiting up to 14 s for cAdvisor's answer, which renders every container's series and outlasts the store's default 5 s on a busy machine; `up` gives a job an earlier toolchain wrote the same timeout),
 which `up` adds to the habitat's store configuration when it has none.
 
+**GPUs too.** A Linux machine with an NVIDIA GPU (`nvidia-smi -L` lists
+one) also runs a GPU exporter: `nvidia_gpu_exporter` 1.17.0
+(`utkuozdemir/nvidia_gpu_exporter`, the plain image, which reads
+`nvidia-smi`, pinned by its tag and the digest of the release's image
+index, so docker refuses any other content) as the container
+`hale-gpu-exporter`, on the host's network on `:9835`, given the GPU by
+docker's NVIDIA runtime (`--gpus all`, the `utility` capability, which
+puts the host's `nvidia-smi` into it). It is installed, found (an
+exporter already answering on `:9835` with `nvidia_smi_` readings is
+scraped as it is), replaced (labelled `lang.hale.gpu-exporter=<image>
+<habitat>`) and removed where and when the node exporter is;
+`HALE_DNA_NODE_EXPORTER=off` turns it off with the others. A machine
+without such a GPU, and every Mac, runs none, and its install says
+nothing; one whose docker cannot give a container the GPU (no NVIDIA
+Container Toolkit) says so and runs none. The store scrapes it as the job
+`gpus` (every 15 s) from `senses.d/gpus/*.json`, which `up` adds to its
+configuration when it has none: `gpus/hosts.json`, which the head writes
+from the `habitat.host` rows that offer `nvidia-gpu` (below), and
+`gpus/local.json`, the habitat's own machine, which `up` writes while a
+GPU exporter answers there (as its install found it; the run inside the
+habitat's image on a machine reached with `--host`, which installs
+nothing, while docker there runs the habitat's GPU exporter or has the
+NVIDIA runtime) and removes otherwise. Its series are the exporter's
+`nvidia_smi_*`, each labelled with the GPU's `uuid`; a field
+`nvidia-smi` reports as `[N/A]` is not exported (a GB10, whose memory is
+the machine's, reports no memory of its own).
+
 **Placed services too.** A service an organism's host command left on a
 host (§ Host commands) whose declaration names `readings` is scraped
 where it serves them, never polled: when the head records the placement
@@ -1093,7 +1121,10 @@ renamed into it is seen): `up` writes `hosts.json` (and `containers/targets.json
 (`host.docker.internal:9100`, the store's container reaching it over the
 host gateway) when there is none, and the head rewrites it whole from the
 `habitat.host` rows whenever one is written (`add_host`, `probe_host`) and
-after a host's removal, each host at `<address>:9100`. A grafted
+after a host's removal, each host at `<address>:9100`, and
+`gpus/hosts.json` beside it, each host that offers `nvidia-gpu` at
+`<address>:9835` (a host probed before its GPU was looked for is listed
+once `host probe` finds it). A grafted
 organism's store has the same job and an empty directory.
 
 **Grafana is behind the face.** `up` makes the compose service `grafana`
@@ -1132,7 +1163,12 @@ organism and host, both kinds alike. `Hosts` is its home: at its top a
 table, one row a machine, of its memory and main disk (`/`, a Mac's
 `/System/Volumes/Data`), each total, in use and free with a gauge of the
 share used (amber from 75%, red from 90%), and its CPU busy over 5
-minutes, memory in use read as `memory-pressure` reads it; then whether
+minutes, memory in use read as `memory-pressure` reads it, and its
+NVIDIA GPUs: busy (their average utilization), memory and memory in use
+(their framebuffers summed, shown only when every GPU of the machine
+reports its own: a GB10's is blank, its memory the machine's), the
+hottest's temperature and their power draw summed, blank on a machine
+without one; then whether
 each machine answers, its uptime, CPUs and memory, and over time CPU busy,
 load per core, memory used, disk used, network and disk throughput, for
 Linux and macOS alike, and a Linux machine's CPU frequency. Its data is `<habitat>/grafana/data`. The operator

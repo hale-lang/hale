@@ -1057,7 +1057,7 @@ pub(super) fn forget(plan_only: bool) -> ExitCode {
     }
     print_plan(&plan.items, &name);
     if !super::readings::node_exporter_off() {
-        println!("  - and the habitat's node and container exporters off this machine, where it installed them (an exporter it found is left)");
+        println!("  - and the habitat's node, container and GPU exporters off this machine, where it installed them (an exporter it found is left)");
     }
     if !plan.started.is_empty() {
         println!("(the habitat's memories were stopped, and were started to read the records)");
