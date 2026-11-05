@@ -8,6 +8,24 @@ behavior.
 
 ## Unreleased
 
+## v0.32.4 — nerves on a small disk, and the machines at a glance (2026-11-05)
+
+A patch release from a week of lab runs.
+
+**Nerves on a small disk.** A habitat's nerves server holds every organism's streams, and JetStream reserves each stream's bound from its store when the stream is made, however little it holds. The exchange's inbox asked for a fixed 256 MiB, so a machine with little free disk, or a habitat with enough organisms, left a newly grafted organism without nerves (`insufficient storage resources available`). The inbox now takes what the server can reserve, up to 256 MiB and down to 1 MiB, and grows back when there is room. Below that floor the migration says what to free or raise. An existing stream survives a full store.
+
+**The machines at a glance.** The habitat's Hosts dashboard opens on a compact table, one row a machine: memory and main disk, each with total, in use, free and a gauge of the share used, and how busy the CPU is.
+
+**Dashboards that change with the toolchain.** `up` writes the habitat's Grafana provisioning only when it changed, Grafana re-reads its dashboard files every ten seconds, and a Grafana left running over a changed dashboard is restarted. A newer toolchain's dashboards are what Grafana shows after `up`.
+
+The item-level notes follow.
+
+- The habitat's **Hosts** dashboard opens on a compact table, one row a machine: its memory and main disk, each total, in use and free with a gauge of the share used (amber from 75%, red from 90%), and its CPU busy over 5 minutes, for Linux and macOS machines alike.
+
+- Fix: `hale dna nerves migrate` (and the habitat's migrate) no longer fails with `jetstream: insufficient storage resources available (err_code 10047)` on a nerves server with little free disk or many organizations. JetStream reserves a stream's `max_bytes` from the server's file store (`max_file_store`, by default three quarters of the free disk when the server started), and the exchange's inbox always asked for 256 MiB. That is now a ceiling: the bound halves until the server can reserve it, down to 1 MiB, and stderr says when it is smaller. Below 1 MiB the migration is refused with an error naming `max_file_store` and what to free. An organization's streams that already exist are now migrated again on a fully reserved store, by an update that reserves nothing new (nats-server checks a create's reservation before it looks for the stream) (#1848).
+
+- The habitat's Grafana serves a dashboard that a toolchain changed once `up` has run. `up` writes a provisioning file only when its content differs. The dashboards' provider reads its files again every 10 seconds (`updateIntervalSeconds`, now set explicitly). `up` restarts a Grafana it leaves running when one of the files changed. An `up` that changed nothing restarts nothing.
+
 ## v0.32.3 — services that stay up (2026-11-04)
 
 A patch release from a long-running service that died in the lab.
