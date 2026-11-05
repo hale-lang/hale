@@ -894,7 +894,11 @@ habitat's directory. The habitat's address, and each organism's, is a block
 of 8 loopback ports recorded in `dna.head.url` (the habitat's in its
 genome's, an organism's in its own, assigned at its graft); the face is the
 block's base and the head the next port (`http://127.0.0.1:<head_port>`,
-recorded on the `habitat.profile` row and in `<habitat>/head.url`). The
+recorded on the `habitat.profile` row and in `<habitat>/head.url`). A block
+is never assigned over a port that listens on every interface of the
+machine: the senses' scrape endpoints (9464 to 9466) and the machine's node
+and container exporters (`:9100`, `:9338`; a block held over one keeps the
+exporter from binding, and the machine's readings down while it is held). The
 face's index lists the organisms the record grafted, with their state and
 the addresses of their faces and heads. A habitat started under
 `HALE_DNA_TRUSTED_LOCAL=1` serves its face without the stub provider, as a
@@ -1101,8 +1105,15 @@ organism's store has the same job and an empty directory.
 loopback at the head block's sixth port (`GRAFANA_OFFSET` 5; the block is
 published on macOS but for that port), served under `/grafana/` of the
 face. Its provisioning (`<habitat>/grafana/provisioning`, written at
-every `up`) is the habitat's senses' store as its one data source (uid
-`habitat-senses`) and the habitat's dashboards. `Services` (uid
+every `up`, a file only when its content differs) is the habitat's
+senses' store as its one data source (uid `habitat-senses`) and the
+habitat's dashboards. The dashboards' provider reads its files again every
+10 seconds (`updateIntervalSeconds`), and the home dashboard
+(`GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH`, `hosts.json`) is read at each
+request; a Grafana that `up` leaves running (neither made again nor
+stopped) is restarted when a provisioning file changed, and one `up` makes
+reads them at its start, so a toolchain's changed dashboard is what Grafana
+serves after `up`. An `up` that changed none of them restarts nothing. `Services` (uid
 `hale-containers`, the Containers dashboard it replaced) shows what runs
 where, whatever a host's system: one table and one set of graphs for the
 containers cAdvisor reads (`kind` `container`, with the organism and part
