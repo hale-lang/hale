@@ -1013,7 +1013,7 @@ mod tests {
         }
         assert_eq!(outcome_of("x\nhale-gpus: skip docker gives no container the GPU\n"), "skip docker gives no container the GPU");
         assert_eq!(gpus_line("box", "none no NVIDIA GPU"), None, "a machine with no GPU says nothing of one");
-        assert!(gpus_line("box", "ours").unwrap().starts_with(&format!("gpus    box: nvidia_gpu_exporter {GPU_EXPORTER_VERSION} on :9835")));
+        assert!(gpus_line("box", "ours").unwrap().starts_with(&format!("{:<8}box: nvidia_gpu_exporter {GPU_EXPORTER_VERSION} on :9835", "gpus")), "the line's word, in the column the node's and containers' lines use");
         assert!(gpus_line("box", "theirs").unwrap().ends_with("scraped as it is"));
         assert!(gpus_answer("ours") && gpus_answer("theirs") && !gpus_answer("skip x") && !gpus_answer("none Darwin") && !gpus_answer(""));
         assert!(lists_a_gpu("GPU 0: NVIDIA GB10 (UUID: GPU-0)\n") && !lists_a_gpu("No devices were found\n") && !lists_a_gpu(""));
