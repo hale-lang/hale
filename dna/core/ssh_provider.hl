@@ -10,7 +10,8 @@
 // takes. Host keys are checked strictly: the one first seen when the host
 // was added is kept in its row and is the only one trusted after it, so a
 // changed key refuses. What a host offers is probed over SSH: docker
-// compose, the user's systemd, the OS and the architecture. A host that has
+// compose, the user's systemd, an NVIDIA GPU (`nvidia-gpu`: `nvidia-smi -L`
+// lists one), the OS and the architecture. A host that has
 // not authorized the habitat's key yet is `pending-key`, and a later probe
 // moves it on. A render is applied by copying its files to a directory of
 // the allocation's on the host and running compose there; an allocation is
@@ -230,7 +231,7 @@ fn ssh_probe(root: String, h: Host) -> Host {
     let r = ssh_run(
         root,
         h,
-        "uname -s; uname -m; if docker compose version >/dev/null 2>&1; then echo compose; fi; if systemctl --user show-environment >/dev/null 2>&1; then echo systemd-user; fi",
+        "uname -s; uname -m; if docker compose version >/dev/null 2>&1; then echo compose; fi; if systemctl --user show-environment >/dev/null 2>&1; then echo systemd-user; fi; if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then echo nvidia-gpu; fi",
         "",
     );
     let failed = ssh_failure(r);

@@ -33,6 +33,10 @@ type HostAdd {
     joined: Bool = false;
     os: String = "";
     arch: String = "";
+    // what it offers that the habitat reads, as the machine itself says it:
+    // `nvidia-gpu` (an NVIDIA GPU, whose exporter its senses scrape); any
+    // other word is not taken from a joining machine
+    offers: String = "";
 }
 
 type HostNamed { name: String = ""; }
@@ -128,41 +132,54 @@ fn host_write(root: String, h: dna::Host, by: String) -> String {
 }
 
 // The node exporters' port on every machine (`hale habitat up` and `host
-// add` install one there, or find one), and the container exporters'.
+// add` install one there, or find one), the container exporters', and the
+// GPU exporters' (on a Linux machine with an NVIDIA GPU).
 const NODE_EXPORTER_PORT: Int = 9100;
 const CADVISOR_PORT: Int = 9338;
+const GPU_EXPORTER_PORT: Int = 9835;
 
 // What the habitat's senses' store scrapes of its machines: its own (the
 // store's container reaches it over the host gateway) and each host it
 // added and has not removed, each labelled `host`: their node exporters
-// (`senses.d/hosts.json`) and their container exporters
-// (`senses.d/containers/targets.json`). Each file is written whole beside
-// and renamed over the last (the store reads them as they change); a
-// habitat with no allocation of its own yet has nowhere to write them.
+// (`senses.d/hosts.json`), their container exporters
+// (`senses.d/containers/targets.json`), and the GPU exporters of the hosts
+// that offer an NVIDIA GPU (`senses.d/gpus/hosts.json`; the habitat's own
+// machine is `up`'s to write beside it, `gpus/local.json`). Each file is
+// written whole beside and renamed over the last (the store reads them as
+// they change); a habitat with no allocation of its own yet has nowhere to
+// write them.
 fn host_targets_write(root: String) {
     let dir = dna::allocation_dir(root);
     if len(dir) == 0 || !std::io::fs::file_exists(dir + "/senses.d") { return; }
-    host_targets_file(root, dir + "/senses.d", "hosts.json", NODE_EXPORTER_PORT);
+    host_targets_file(root, dir + "/senses.d", "hosts.json", NODE_EXPORTER_PORT, "");
     if !std::io::fs::file_exists(dir + "/senses.d/containers") {
         std::io::fs::mkdir(dir + "/senses.d/containers") or discard;
     }
-    host_targets_file(root, dir + "/senses.d/containers", "targets.json", CADVISOR_PORT);
+    host_targets_file(root, dir + "/senses.d/containers", "targets.json", CADVISOR_PORT, "");
+    if !std::io::fs::file_exists(dir + "/senses.d/gpus") {
+        std::io::fs::mkdir(dir + "/senses.d/gpus") or discard;
+    }
+    host_targets_file(root, dir + "/senses.d/gpus", "hosts.json", GPU_EXPORTER_PORT, "nvidia-gpu");
     // and the services placed on them (habitat_placed.hl)
     placement_targets_refresh(root);
 }
 
-// The machines at `port`, as one file_sd file `name` in `at`.
-fn host_targets_file(root: String, at: String, name: String, port: Int) {
+// The machines at `port`, as one file_sd file `name` in `at`: every
+// machine, the habitat's own first, or, when `offering` names an offer, only
+// the hosts that offer it (never the habitat's own, which no row states).
+fn host_targets_file(root: String, at: String, name: String, port: Int, offering: String) {
     let b = std::json::Builder { };
     b.begin_array();
-    b.begin_object();
-    b.begin_array_field("targets");
-    b.string_value("host.docker.internal:" + to_string(port));
-    b.end_array();
-    b.begin_object_field("labels");
-    b.string_field("host", dna::host_label("local"));
-    b.end_object();
-    b.end_object();
+    if len(offering) == 0 {
+        b.begin_object();
+        b.begin_array_field("targets");
+        b.string_value("host.docker.internal:" + to_string(port));
+        b.end_array();
+        b.begin_object_field("labels");
+        b.string_field("host", dna::host_label("local"));
+        b.end_object();
+        b.end_object();
+    }
     let j = habitat_journal(root);
     let latest = habitat_latest(j, "habitat.host");
     let mut i = 0;
@@ -174,6 +191,7 @@ fn host_targets_file(root: String, at: String, name: String, port: Int) {
         if h.state == "removed"
             || (h.provider != "ssh" && h.provider != "joined")
             || len(h.address) == 0
+            || (len(offering) > 0 && !dna::has_word(h.offers, offering))
         {
             continue;
         }
@@ -296,6 +314,7 @@ fn habitat_host_join(root: String, a: HostAdd, by: String) -> HostReply {
         port: 0,
         os: a.os,
         arch: a.arch,
+        offers: if dna::has_word(a.offers, "nvidia-gpu") { "nvidia-gpu" } else { "" },
     };
     if had.provider == "joined" && had.state != "removed"
         && dna::host_row_body(had) == dna::host_row_body(h)

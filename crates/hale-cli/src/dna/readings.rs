@@ -10,6 +10,10 @@
 //! own binary under launchd (a LaunchAgent in a person's GUI session, else
 //! a LaunchDaemon), since docker there runs in a VM and a container would
 //! read the VM.
+//!
+//! A Linux machine with an NVIDIA GPU runs a GPU exporter beside them:
+//! `nvidia_gpu_exporter`, a container given the GPU by docker's NVIDIA
+//! runtime, reading `nvidia-smi`.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -47,6 +51,20 @@ pub(super) const CADVISOR_PORT: u16 = 9338;
 const CADVISOR_NAME: &str = "hale-cadvisor";
 const CADVISOR_LABEL: &str = "lang.hale.cadvisor";
 const CONTAINERS_OUTCOME: &str = "hale-containers:";
+
+/// The GPU exporter a Linux machine with an NVIDIA GPU runs beside its node
+/// exporter: nvidia_gpu_exporter 1.17.0, the image's plain (`exec`) flavor,
+/// which reads `nvidia-smi` (the NVIDIA runtime puts the host's into the
+/// container), by its tag and the digest of the release's image index
+/// (Docker Hub's and GHCR's agree), so docker refuses any other content.
+/// On the exporter's own port. A machine with no such GPU (every Mac) runs
+/// none.
+pub(super) const GPU_EXPORTER_VERSION: &str = "1.17.0";
+pub(super) const GPU_EXPORTER_IMAGE: &str = "utkuozdemir/nvidia_gpu_exporter:1.17.0@sha256:b085013de2828d7045c80f6af3db030b69fd81c14a43384c77652f74ad87971c";
+pub(super) const GPU_EXPORTER_PORT: u16 = 9835;
+const GPU_EXPORTER_NAME: &str = "hale-gpu-exporter";
+const GPU_EXPORTER_LABEL: &str = "lang.hale.gpu-exporter";
+const GPUS_OUTCOME: &str = "hale-gpus:";
 
 /// The Grafana the habitat runs behind its face.
 pub(super) const GRAFANA_IMAGE: &str = "grafana/grafana:13.3.0";
@@ -228,7 +246,7 @@ printf '{OUTCOME} %s\n' "$gone"
 
 /// The outcome a script's output ends with ("" when it said none).
 pub(super) fn outcome_of(text: &str) -> String {
-    text.lines().rev().find_map(|l| { let l = l.trim_end_matches('\r'); l.strip_prefix(OUTCOME).or_else(|| l.strip_prefix(CONTAINERS_OUTCOME)) }).map(|o| o.trim().to_string()).unwrap_or_default()
+    text.lines().rev().find_map(|l| { let l = l.trim_end_matches('\r'); l.strip_prefix(OUTCOME).or_else(|| l.strip_prefix(CONTAINERS_OUTCOME)).or_else(|| l.strip_prefix(GPUS_OUTCOME)) }).map(|o| o.trim().to_string()).unwrap_or_default()
 }
 
 /// The container exporter installed where the script runs, through
@@ -275,6 +293,84 @@ if docker info >/dev/null 2>&1; then d=docker; else d="$S docker"; fi
 if [ -n "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; then $d rm -f "$n" >/dev/null && printf '{CONTAINERS_OUTCOME} removed\n'; else printf '{CONTAINERS_OUTCOME} none\n'; fi
 "#
     )
+}
+
+/// The GPU exporter installed where the script runs, on Linux with an
+/// NVIDIA GPU (`nvidia-smi -L` lists one), through whatever docker the login
+/// reaches: its last line says `ours`, `theirs` (something else already
+/// answers on its port with GPU readings), `skip <why>` (a GPU docker gives
+/// no container: no NVIDIA Container Toolkit) or `none <why>` (no such GPU,
+/// or not Linux). The container is labelled with its image and the habitat,
+/// so an install replaces one made otherwise.
+pub(super) fn gpus_script(sudo: &str) -> String {
+    let n = GPU_EXPORTER_NAME;
+    let l = GPU_EXPORTER_LABEL;
+    let img = GPU_EXPORTER_IMAGE;
+    let p = GPU_EXPORTER_PORT;
+    let want = format!("{img} {}", super::habitat_label());
+    let labels = docker_labels("exporter");
+    format!(
+        r#"set -e
+S="{sudo}"; n={n}; l={l}; img={img}; p={p}; want="{want}"
+said() {{ printf '{GPUS_OUTCOME} %s\n' "$*"; }}
+readings() {{ if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 5 "http://127.0.0.1:$p/metrics"; elif command -v wget >/dev/null 2>&1; then wget -qO- -T 5 "http://127.0.0.1:$p/metrics"; fi; }}
+[ "$(uname -s)" = Linux ] || {{ said "none $(uname -s)"; exit 0; }}
+if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then said "none no NVIDIA GPU"; exit 0; fi
+if docker info >/dev/null 2>&1; then d=docker; elif $S docker info >/dev/null 2>&1; then d="$S docker"; else said "skip docker does not answer this login"; exit 0; fi
+if [ "$($d inspect -f '{{{{.State.Running}}}} {{{{index .Config.Labels "'$l'"}}}}' "$n" 2>/dev/null)" = "true $want" ]; then said ours; exit 0; fi
+if ! $d inspect "$n" >/dev/null 2>&1 && readings 2>/dev/null | grep -q '^nvidia_smi_'; then said theirs; exit 0; fi
+$d rm -f "$n" >/dev/null 2>&1 || true
+if ! why=$($d run -d --name "$n" --label "$l=$want" {labels} --restart unless-stopped --net host \
+  --gpus all -e NVIDIA_DRIVER_CAPABILITIES=utility "$img" --web.listen-address=":$p" 2>&1 >/dev/null); then
+  $d rm -f "$n" >/dev/null 2>&1 || true
+  said "skip docker gives no container the GPU (the NVIDIA Container Toolkit): $(printf '%s\n' "$why" | tail -n 1)"; exit 0
+fi
+said ours
+"#
+    )
+}
+
+/// The habitat's GPU exporter removed where the script runs (one it did not
+/// start is never touched): `removed` or `none`.
+pub(super) fn gpus_remove_script(sudo: &str) -> String {
+    let n = GPU_EXPORTER_NAME;
+    let l = GPU_EXPORTER_LABEL;
+    format!(
+        r#"S="{sudo}"; n={n}; l={l}
+[ "$(uname -s)" = Linux ] || {{ printf '{GPUS_OUTCOME} none\n'; exit 0; }}
+if docker info >/dev/null 2>&1; then d=docker; else d="$S docker"; fi
+if [ -n "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; then $d rm -f "$n" >/dev/null && printf '{GPUS_OUTCOME} removed\n'; else printf '{GPUS_OUTCOME} none\n'; fi
+"#
+    )
+}
+
+/// What a GPU exporter's install did, as `up` and `host add` say it: no
+/// line for a machine with no NVIDIA GPU (`none`).
+pub(super) fn gpus_line(on: &str, outcome: &str) -> Option<String> {
+    let said = match outcome.split_once(' ').map_or((outcome, ""), |(a, b)| (a, b)) {
+        ("none", _) => return None,
+        ("ours", _) => format!("nvidia_gpu_exporter {GPU_EXPORTER_VERSION} on :{GPU_EXPORTER_PORT}, a container of the habitat's ({GPU_EXPORTER_NAME})"),
+        ("theirs", _) => format!("a GPU exporter already answers on :{GPU_EXPORTER_PORT}: scraped as it is"),
+        ("skip", why) => format!("no GPU exporter: {why}"),
+        _ => format!("no GPU exporter: the install said nothing it did ({outcome:?})"),
+    };
+    Some(format!("{:<8}{on}: {said}", "gpus"))
+}
+
+/// Whether this machine is Linux with an NVIDIA GPU (`nvidia-smi -L`
+/// lists one), as an SSH host's probe asks it.
+pub(super) fn nvidia_gpu_here() -> bool {
+    cfg!(target_os = "linux") && Command::new("nvidia-smi").arg("-L").stdin(Stdio::null()).stderr(Stdio::null()).output().is_ok_and(|o| o.status.success() && lists_a_gpu(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// Whether `nvidia-smi -L` listed a GPU.
+fn lists_a_gpu(listed: &str) -> bool {
+    listed.lines().any(|l| l.starts_with("GPU "))
+}
+
+/// Whether an install's outcome leaves a GPU exporter answering there.
+fn gpus_answer(outcome: &str) -> bool {
+    matches!(outcome.split(' ').next(), Some("ours" | "theirs"))
 }
 
 /// What a container exporter's install did, as `up` and `host add` say it.
@@ -339,15 +435,17 @@ pub(super) fn sudo_word(tty: bool) -> &'static str {
     }
 }
 
-/// The habitat's own machine's exporters (its node's and its containers'),
-/// installed here unless the run says not to.
-pub(super) fn install_here(label: &str) -> Vec<String> {
+/// This machine's exporters (its node's, its containers' and its GPUs'),
+/// installed here unless the run says not to: what each did, and whether
+/// a GPU exporter answers here now (`None` when none was installed: the
+/// run said not to).
+pub(super) fn install_here(label: &str) -> (Vec<String>, Option<bool>) {
     if node_exporter_off() {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
-    super::progress("installing the node and container exporters on this machine");
-    vec![
+    super::progress("installing the node, container and GPU exporters on this machine");
+    let mut lines = vec![
         match run_here(&install_script(sudo_word(tty))) {
             Ok(o) => install_line(label, &o),
             Err(why) => format!("{:<8}{label}: no exporter: {why}", "node"),
@@ -356,13 +454,25 @@ pub(super) fn install_here(label: &str) -> Vec<String> {
             Ok(o) => containers_line(label, &o),
             Err(why) => format!("containers {label}: no container exporter: {why}"),
         },
-    ]
+    ];
+    let gpus = match run_here(&gpus_script(sudo_word(tty))) {
+        Ok(o) => {
+            lines.extend(gpus_line(label, &o));
+            gpus_answer(&o)
+        }
+        Err(why) => {
+            lines.push(format!("{:<8}{label}: no GPU exporter: {why}", "gpus"));
+            false
+        }
+    };
+    (lines, Some(gpus))
 }
 
-/// Both exporters installed on `host` over the person's login, as `up
-/// --host`, `host add` and `host probe` do it.
+/// The exporters installed on `host` over the person's login, as `up
+/// --host`, `host add` and `host probe` do it (its GPUs' only where it has
+/// an NVIDIA GPU).
 pub(super) fn install_over(host: &str, user: Option<&str>, port: Option<u16>) -> Vec<String> {
-    vec![
+    let mut lines = vec![
         match super::remote::login_script(host, user, port, install_script) {
             Ok(o) => install_line(host, &o),
             Err(why) => format!("{:<8}{host}: no exporter: {why}", "node"),
@@ -371,14 +481,19 @@ pub(super) fn install_over(host: &str, user: Option<&str>, port: Option<u16>) ->
             Ok(o) => containers_line(host, &o),
             Err(why) => format!("containers {host}: no container exporter: {why}"),
         },
-    ]
+    ];
+    match super::remote::login_script(host, user, port, gpus_script) {
+        Ok(o) => lines.extend(gpus_line(host, &o)),
+        Err(why) => lines.push(format!("{:<8}{host}: no GPU exporter: {why}", "gpus")),
+    }
+    lines
 }
 
-/// Both of the habitat's exporters taken off `host` over the person's login:
-/// what was removed, or why not.
+/// The habitat's exporters taken off `host` over the person's login: what
+/// was removed, or why not.
 pub(super) fn remove_over(host: &str, user: Option<&str>, port: Option<u16>) -> Vec<String> {
     let mut out = Vec::new();
-    for (what, script) in [("node exporter", remove_script as fn(&str) -> String), ("container exporter", containers_remove_script)] {
+    for (what, script) in [("node exporter", remove_script as fn(&str) -> String), ("container exporter", containers_remove_script), ("GPU exporter", gpus_remove_script)] {
         match super::remote::login_script(host, user, port, script) {
             Ok(o) if o == "removed" => out.push(format!("the habitat's {what} is removed from {host}")),
             Ok(_) => {}
@@ -396,7 +511,7 @@ pub(super) fn remove_here() -> Vec<String> {
     }
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
     let mut out = Vec::new();
-    for (what, script) in [("node exporter", remove_script(sudo_word(tty))), ("container exporter", containers_remove_script(sudo_word(tty)))] {
+    for (what, script) in [("node exporter", remove_script(sudo_word(tty))), ("container exporter", containers_remove_script(sudo_word(tty))), ("GPU exporter", gpus_remove_script(sudo_word(tty)))] {
         match run_here(&script) {
             Ok(o) if o == "removed" => out.push(format!("the habitat's {what} is removed from this machine")),
             Ok(_) => {}
@@ -431,6 +546,59 @@ pub(super) fn seed_targets(allocation: &Path, label: &str) -> Result<(), String>
         std::fs::write(&file, format!("{text}\n")).map_err(|e| format!("write {}: {e}", file.display()))?;
     }
     Ok(())
+}
+
+/// The habitat's own machine among the GPU exporters the store scrapes:
+/// `senses.d/gpus/local.json` (`host.docker.internal`, labelled `host`)
+/// while one answers there, and no file while none does. The head writes
+/// the hosts' beside it (`gpus/hosts.json`), from the hosts that offer an
+/// NVIDIA GPU. `answers` is what this run's install said; a run that
+/// installed nothing (the habitat's run inside its image on a machine
+/// reached over SSH, whose exporters the person's login installs) asks
+/// docker there instead (`gpu_exporter_expected_here`). Whether the file
+/// changed.
+pub(super) fn gpu_target_here(allocation: &Path, label: &str, answers: Option<bool>) -> Result<bool, String> {
+    let dir = allocation.join("senses.d").join("gpus");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let file = dir.join("local.json");
+    if !answers.unwrap_or_else(gpu_exporter_expected_here) {
+        return Ok(std::fs::remove_file(&file).is_ok());
+    }
+    let text = serde_json::to_string_pretty(&serde_json::json!([
+        { "targets": [format!("host.docker.internal:{GPU_EXPORTER_PORT}")], "labels": { "host": label } }
+    ]))
+    .unwrap_or_default();
+    write_if_changed(&file, &format!("{text}\n"))
+}
+
+/// Whether docker here runs the habitat's GPU exporter, or could give one
+/// the GPU (its NVIDIA runtime is registered: the exporter's install,
+/// which the person's login runs after the habitat's `up` there, finds a
+/// GPU to read).
+fn gpu_exporter_expected_here() -> bool {
+    let docker = |args: &[&str]| Command::new("docker").args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let name = format!("name=^{GPU_EXPORTER_NAME}$");
+    let label = format!("label={GPU_EXPORTER_LABEL}");
+    !docker(&["ps", "-aq", "--filter", &name, "--filter", &label]).trim().is_empty() || runtimes_offer_nvidia(&docker(&["info", "--format", "{{json .Runtimes}}"]))
+}
+
+/// Whether `docker info`'s runtimes (as JSON) name NVIDIA's.
+fn runtimes_offer_nvidia(runtimes: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(runtimes.trim()).ok().and_then(|v| v.as_object().map(|m| m.contains_key("nvidia"))).unwrap_or(false)
+}
+
+/// The store's scrape job of the machines' GPUs, from `senses.d/gpus/`,
+/// added to its configuration when it has none: whether it was.
+pub(super) fn ensure_gpus_job(allocation: &Path) -> Result<bool, String> {
+    let conf = allocation.join("senses.yml");
+    let Ok(text) = std::fs::read_to_string(&conf) else { return Ok(false) };
+    if text.contains("job_name: gpus") || !text.contains("scrape_configs:\n") {
+        return Ok(false);
+    }
+    let job = "  # The machines' NVIDIA GPUs (nvidia_gpu_exporter), labelled `host`, from senses.d/gpus/.\n  - job_name: gpus\n    scrape_interval: 15s\n    file_sd_configs:\n      - files: [\"/etc/prometheus/senses.d/gpus/*.json\"]\n";
+    let text = text.replacen("scrape_configs:\n", &format!("scrape_configs:\n{job}"), 1);
+    std::fs::write(&conf, text).map_err(|e| format!("write {}: {e}", conf.display()))?;
+    Ok(true)
 }
 
 /// The store's scrape job of the machines' containers, from
@@ -657,7 +825,7 @@ mod tests {
 
     #[test]
     fn both_scripts_are_shell() {
-        for script in [install_script("sudo"), install_script("sudo -n"), remove_script("sudo -n")] {
+        for script in [install_script("sudo"), install_script("sudo -n"), remove_script("sudo -n"), gpus_script("sudo -n"), gpus_remove_script("sudo -n")] {
             let ok = std::process::Command::new("sh").args(["-n", "-c", &script]).status().expect("sh");
             assert!(ok.success(), "{script}");
         }
@@ -769,7 +937,7 @@ mod tests {
         let top = &panels[0];
         assert_eq!((top["type"].as_str(), &top["gridPos"]["y"]), (Some("table"), &serde_json::json!(0)), "the table is first");
         let targets = top["targets"].as_array().unwrap();
-        assert_eq!(targets.len(), 9, "memory, disk: total, in use, free, used; CPU busy");
+        assert_eq!(targets.len(), 14, "memory, disk: total, in use, free, used; CPU busy; GPU busy, memory, memory in use, temperature, power");
         for t in targets {
             let q = t["expr"].as_str().unwrap();
             assert!(t["instant"] == true && t["format"] == "table", "{q}");
@@ -783,6 +951,22 @@ mod tests {
             assert!(q.contains("node_memory_total_bytes") || q.contains("node_memory_active_bytes"), "macOS: {q}");
         }
         assert!(exprs[4..8].iter().all(|q| q.contains("mountpoint=~\"/|/System/Volumes/Data\"") && q.contains("fstype!~")));
+        // the GPU columns, by nvidia_gpu_exporter's own names (its METRICS.md
+        // and its recorded scrapes, a GB10's among them, which has no memory
+        // series: the memory columns are blank there, never a made-up number)
+        assert!(exprs[9].starts_with("100 * avg by (host) (nvidia_smi_utilization_gpu_ratio{"), "{}", exprs[9]);
+        for (q, m) in [(exprs[10], "nvidia_smi_memory_total_bytes"), (exprs[11], "nvidia_smi_memory_used_bytes")] {
+            // a host's memory only when every GPU of it reports its own
+            assert!(q.starts_with(&format!("sum by (host) ({m}{{")) && q.contains(&format!("count by (host) ({m}{{")) && q.contains("== count by (host) (nvidia_smi_gpu_info{"), "{q}");
+        }
+        assert!(exprs[12].contains("max by (host) (nvidia_smi_temperature_gpu{") && exprs[13].contains("sum by (host) (nvidia_smi_power_draw_watts{"));
+        let names = &top["transformations"][1]["options"]["renameByName"];
+        let order = &top["transformations"][1]["options"]["indexByName"];
+        for (i, (r, n)) in [("J", "GPU busy"), ("K", "GPU memory"), ("L", "GPU memory in use"), ("M", "GPU temperature"), ("N", "GPU power")].into_iter().enumerate() {
+            assert_eq!((names[format!("Value #{r}")].as_str(), order[format!("Value #{r}")].as_u64()), (Some(n), Some(10 + i as u64)), "{r}");
+        }
+        let unit = |n: &str| top["fieldConfig"]["overrides"].as_array().unwrap().iter().find(|o| o["matcher"]["options"] == n).and_then(|o| o["properties"].as_array().unwrap().iter().find(|p| p["id"] == "unit")).map(|p| p["value"].clone());
+        assert_eq!((unit("GPU busy"), unit("GPU temperature"), unit("GPU power")), (Some("percent".into()), Some("celsius".into()), Some("watt".into())));
         assert_eq!(top["transformations"][0]["id"], "merge");
         assert_eq!(top["transformations"][1]["options"]["excludeByName"]["Time"], true);
         // nothing overlaps: every panel's cells are its own
@@ -811,6 +995,99 @@ mod tests {
             assert!(std::process::Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
         }
         assert_eq!(outcome_of("x\nhale-containers: ours\n"), "ours");
+    }
+
+    #[test]
+    fn the_gpu_exporter_pins_its_image_and_is_shell() {
+        let s = gpus_script("sudo -n");
+        assert!(GPU_EXPORTER_IMAGE.starts_with(&format!("utkuozdemir/nvidia_gpu_exporter:{GPU_EXPORTER_VERSION}@sha256:")) && GPU_EXPORTER_IMAGE.len() == "utkuozdemir/nvidia_gpu_exporter:@sha256:".len() + GPU_EXPORTER_VERSION.len() + 64);
+        assert!(s.contains(&format!("img={GPU_EXPORTER_IMAGE};")) && s.contains(&format!("p={GPU_EXPORTER_PORT};")), "{s}");
+        assert!(s.contains("--gpus all -e NVIDIA_DRIVER_CAPABILITIES=utility \"$img\" --web.listen-address=\":$p\""), "{s}");
+        assert!(s.contains(&format!("want=\"{GPU_EXPORTER_IMAGE} {}\"", super::super::habitat_label())), "one made by another habitat, or from another image, is replaced: {s}");
+        assert!(s.contains("--label hale.organism=habitat --label 'hale.role=exporter'"), "{s}");
+        assert!(s.contains("'{{.State.Running}} {{index .Config.Labels \"'$l'\"}}'"), "{s}");
+        let r = gpus_remove_script("sudo");
+        assert!(r.contains("--filter \"label=$l\""), "only the habitat's own is removed: {r}");
+        for script in [s, gpus_script("sudo"), r] {
+            assert!(std::process::Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
+        }
+        assert_eq!(outcome_of("x\nhale-gpus: skip docker gives no container the GPU\n"), "skip docker gives no container the GPU");
+        assert_eq!(gpus_line("box", "none no NVIDIA GPU"), None, "a machine with no GPU says nothing of one");
+        assert!(gpus_line("box", "ours").unwrap().starts_with(&format!("{:<8}box: nvidia_gpu_exporter {GPU_EXPORTER_VERSION} on :9835", "gpus")), "the line's word, in the column the node's and containers' lines use");
+        assert!(gpus_line("box", "theirs").unwrap().ends_with("scraped as it is"));
+        assert!(gpus_answer("ours") && gpus_answer("theirs") && !gpus_answer("skip x") && !gpus_answer("none Darwin") && !gpus_answer(""));
+        assert!(lists_a_gpu("GPU 0: NVIDIA GB10 (UUID: GPU-0)\n") && !lists_a_gpu("No devices were found\n") && !lists_a_gpu(""));
+        assert!(runtimes_offer_nvidia("{\"io.containerd.runc.v2\":{\"path\":\"runc\"},\"nvidia\":{\"path\":\"nvidia-container-runtime\"}}\n"));
+        assert!(!runtimes_offer_nvidia("{\"runc\":{\"path\":\"runc\"}}") && !runtimes_offer_nvidia(""));
+    }
+
+    /// The GPU exporter's install run against stand-ins for `uname`,
+    /// `nvidia-smi`, `curl` and `docker` (the docker one records what it
+    /// was asked): its outcome, and docker's arguments.
+    fn gpus_run(case: &str, os: &str, gpu: bool, run_ok: bool) -> (String, String) {
+        let d = std::env::temp_dir().join(format!("hale-gpus-{}-{case}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let log = d.join("docker.log");
+        let stub = |name: &str, body: &str| {
+            use std::os::unix::fs::PermissionsExt;
+            let f = d.join(name);
+            std::fs::write(&f, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        stub("uname", &format!("echo {os}"));
+        stub("nvidia-smi", if gpu { "echo 'GPU 0: NVIDIA GB10 (UUID: GPU-0)'" } else { "echo 'No devices were found'; exit 6" });
+        stub("curl", "exit 7");
+        let run = if run_ok { "echo 0123abc" } else { "echo 'docker: Error response from daemon: could not select device driver \"\" with capabilities: [[gpu]]' >&2; exit 125" };
+        stub("docker", &format!("echo \"$*\" >> '{}'\ncase \"$1\" in info|rm) exit 0 ;; inspect) exit 1 ;; run) {run} ;; esac", log.display()));
+        let out = std::process::Command::new("sh").args(["-c", &gpus_script("sudo -n")]).env("PATH", format!("{}:/usr/bin:/bin", d.display())).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let said = (outcome_of(&String::from_utf8_lossy(&out.stdout)), std::fs::read_to_string(&log).unwrap_or_default());
+        std::fs::remove_dir_all(&d).ok();
+        said
+    }
+
+    #[test]
+    fn the_gpu_exporter_runs_only_where_an_nvidia_gpu_is_and_docker_can_give_it() {
+        assert_eq!(gpus_run("mac", "Darwin", false, true), ("none Darwin".to_string(), String::new()), "a Mac runs none, and docker is never asked");
+        assert_eq!(gpus_run("nogpu", "Linux", false, true), ("none no NVIDIA GPU".to_string(), String::new()));
+        let (said, asked) = gpus_run("gpu", "Linux", true, true);
+        assert_eq!(said, "ours");
+        let run = asked.lines().find(|l| l.starts_with("run ")).expect("docker run");
+        assert!(run.contains(&format!("--name hale-gpu-exporter --label lang.hale.gpu-exporter={GPU_EXPORTER_IMAGE} ")) && run.contains(&format!("--net host --gpus all -e NVIDIA_DRIVER_CAPABILITIES=utility {GPU_EXPORTER_IMAGE} --web.listen-address=:9835")), "{run}");
+        // no NVIDIA Container Toolkit: said, and nothing is left behind
+        let (said, asked) = gpus_run("notoolkit", "Linux", true, false);
+        assert!(said.starts_with("skip docker gives no container the GPU (the NVIDIA Container Toolkit): docker: Error response from daemon: could not select device driver"), "{said}");
+        assert_eq!(asked.lines().last(), Some("rm -f hale-gpu-exporter"), "{asked}");
+    }
+
+    #[test]
+    fn the_habitats_own_machine_is_among_the_gpus_while_one_answers_there() {
+        let d = std::env::temp_dir().join(format!("hale-gpus-local-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let local = d.join("senses.d/gpus/local.json");
+        assert!(!gpu_target_here(&d, "box", Some(false)).unwrap() && !local.exists(), "none: no file");
+        assert!(gpu_target_here(&d, "box", Some(true)).unwrap());
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&local).unwrap()).unwrap();
+        assert_eq!(v, serde_json::json!([{ "targets": ["host.docker.internal:9835"], "labels": { "host": "box" } }]));
+        assert!(!gpu_target_here(&d, "box", Some(true)).unwrap(), "unchanged: not written again");
+        assert!(gpu_target_here(&d, "box", Some(false)).unwrap() && !local.exists(), "gone with the exporter");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn the_gpus_job_is_added_once() {
+        let d = std::env::temp_dir().join(format!("hale-gpus-job-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("senses.yml"), "global:\n  scrape_interval: 5s\nscrape_configs:\n  - job_name: spine\n").unwrap();
+        assert!(ensure_gpus_job(&d).unwrap());
+        assert!(!ensure_gpus_job(&d).unwrap(), "once");
+        let t = std::fs::read_to_string(d.join("senses.yml")).unwrap();
+        assert!(t.contains("  - job_name: gpus\n    scrape_interval: 15s\n    file_sd_configs:\n      - files: [\"/etc/prometheus/senses.d/gpus/*.json\"]\n") && t.contains("  - job_name: spine"), "{t}");
+        let e = d.join("none");
+        std::fs::create_dir_all(&e).unwrap();
+        assert!(!ensure_gpus_job(&e).unwrap(), "no configuration yet: nothing");
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]

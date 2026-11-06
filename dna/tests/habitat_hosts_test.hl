@@ -203,6 +203,38 @@ fn main() {
         std::str::contains(targets, "joined-box.lan:9100"),
         "its node exporter is scraped by the name it joined by: " + targets,
     );
+    // a joined machine with an NVIDIA GPU says so: its GPU exporter is
+    // scraped beside its node's (and of what it says it offers, the GPU is
+    // all a joining machine is taken at its word on); one without is not
+    let gpu_joined = surface_call(
+        face,
+        "Commands::add_host",
+        "{\"name\": \"gpu-box.lan\", \"joined\": true, \"os\": \"Linux\", \"arch\": \"aarch64\", \"offers\": \"compose nvidia-gpu\"}",
+    );
+    let gh = host_in(face, "gpu-box.lan", "ready", 30);
+    std::test::assert(
+        std::json::find_string_field(gh, "offers") == "nvidia-gpu",
+        "a joined machine offers its GPU and nothing else it claims: " + gpu_joined + " / " + gh,
+    );
+    let gpus = std::io::fs::read_file(dna::allocation_dir(genome) + "/senses.d/gpus/hosts.json")
+    or "";
+    std::test::assert(
+        std::str::contains(gpus, "gpu-box.lan:9835")
+            && !std::str::contains(gpus, "joined-box.lan")
+            && !std::str::contains(gpus, "host.docker.internal"),
+        "the GPUs scraped are the hosts that offer one (the habitat's own machine is `up`'s): "
+            + gpus,
+    );
+    let gone = in_dir(scratch, toolchain() + "\nhabitat\nhost\nremove\ngpu-box.lan");
+    std::test::assert(
+        gone.code == 0
+            && !std::str::contains(
+                std::io::fs::read_file(dna::allocation_dir(genome) + "/senses.d/gpus/hosts.json")
+                or "",
+                "gpu-box.lan",
+            ),
+        "a removed host's GPUs are scraped no more: " + gone.stdout + gone.stderr,
+    );
     let probed = surface_call(face, "Commands::probe_host", "{\"name\": \"joined-box.lan\"}");
     std::test::assert(
         std::str::contains(probed, "\"code\": \"joined\"")

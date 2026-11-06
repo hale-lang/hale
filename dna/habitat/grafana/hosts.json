@@ -61,7 +61,7 @@
       "id": 12,
       "type": "table",
       "title": "Now",
-      "description": "Each machine's memory, main disk and CPU at this moment. Memory in use is all but what Linux says is available, or a Mac's active, wired and compressed pages (as Memory used below); free is the rest. The disk is `/` (a Mac's data volume, `/System/Volumes/Data`), as the unprivileged see it. CPU busy is the share of every core's time not idle over the last 5 minutes.",
+      "description": "Each machine's memory, main disk, CPU and NVIDIA GPUs at this moment. Memory in use is all but what Linux says is available, or a Mac's active, wired and compressed pages (as Memory used below); free is the rest. The disk is `/` (a Mac's data volume, `/System/Volumes/Data`), as the unprivileged see it. CPU busy is the share of every core's time not idle over the last 5 minutes. The GPU columns are a Linux machine's NVIDIA GPUs, as nvidia_gpu_exporter reads `nvidia-smi`: busy is their average utilization, memory their framebuffers summed, temperature the hottest's, power their draw summed. A machine with no such GPU (a Mac) leaves them blank, and so does a GPU that reports no memory of its own (one sharing the machine's memory, as a GB10 does): its memory is the machine's, in the memory columns.",
       "datasource": {
         "type": "prometheus",
         "uid": "habitat-senses"
@@ -162,6 +162,56 @@
           "expr": "100 * (1 - avg by (host) (rate(node_cpu_seconds_total{mode=\"idle\", host=~\"$host\"}[5m])))",
           "format": "table",
           "instant": true
+        },
+        {
+          "refId": "J",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "100 * avg by (host) (nvidia_smi_utilization_gpu_ratio{host=~\"$host\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "K",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "sum by (host) (nvidia_smi_memory_total_bytes{host=~\"$host\"}) and on (host) (count by (host) (nvidia_smi_memory_total_bytes{host=~\"$host\"}) == count by (host) (nvidia_smi_gpu_info{host=~\"$host\"}))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "L",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "sum by (host) (nvidia_smi_memory_used_bytes{host=~\"$host\"}) and on (host) (count by (host) (nvidia_smi_memory_used_bytes{host=~\"$host\"}) == count by (host) (nvidia_smi_gpu_info{host=~\"$host\"}))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "M",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (host) (nvidia_smi_temperature_gpu{host=~\"$host\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "N",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "sum by (host) (nvidia_smi_power_draw_watts{host=~\"$host\"})",
+          "format": "table",
+          "instant": true
         }
       ],
       "transformations": [
@@ -185,7 +235,12 @@
               "Value #F": 6,
               "Value #G": 7,
               "Value #H": 8,
-              "Value #I": 9
+              "Value #I": 9,
+              "Value #J": 10,
+              "Value #K": 11,
+              "Value #L": 12,
+              "Value #M": 13,
+              "Value #N": 14
             },
             "renameByName": {
               "Value #A": "memory",
@@ -196,7 +251,12 @@
               "Value #F": "disk in use",
               "Value #G": "disk free",
               "Value #H": "disk used",
-              "Value #I": "CPU busy"
+              "Value #I": "CPU busy",
+              "Value #J": "GPU busy",
+              "Value #K": "GPU memory",
+              "Value #L": "GPU memory in use",
+              "Value #M": "GPU temperature",
+              "Value #N": "GPU power"
             }
           }
         }
@@ -410,6 +470,96 @@
                   "mode": "lcd",
                   "valueDisplayMode": "text"
                 }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GPU busy"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 75
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "lcd",
+                  "valueDisplayMode": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GPU temperature"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "celsius"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GPU power"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "watt"
+              },
+              {
+                "id": "decimals",
+                "value": 0
               }
             ]
           },

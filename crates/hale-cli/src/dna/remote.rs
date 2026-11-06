@@ -797,7 +797,7 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
         out.push(format!("{:<8}{face}{}", "grafana", super::readings::GRAFANA_PATH));
     }
     if !super::readings::node_exporter_off() {
-        super::progress(&format!("installing the node and container exporters on {host}, over your SSH login"));
+        super::progress(&format!("installing the node, container and GPU exporters on {host}, over your SSH login"));
         out.extend(super::readings::install_over(host, user, port));
     }
     Ok(out)

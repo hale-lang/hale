@@ -833,7 +833,7 @@ fn host(args: &[String]) -> ExitCode {
     if verb == "probe" && field("state") == "ready" && !readings::node_exporter_off() {
         let login = if remote::is_habitat_user(&field("user")) { None } else { Some(field("user")) };
         let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
-        progress(&format!("checking the node and container exporters on {name}, over your SSH login"));
+        progress(&format!("checking the node, container and GPU exporters on {name}, over your SSH login"));
         for l in readings::install_over(&name, login.as_deref(), port) {
             println!("{l}");
         }
@@ -876,7 +876,7 @@ fn host(args: &[String]) -> ExitCode {
                             if !readings::node_exporter_off() {
                                 // the machine's readings, over the same login the account was made over
                                 let login = if own_user { None } else { Some(field("user")) };
-                                progress(&format!("installing the node and container exporters on {name}, over your SSH login"));
+                                progress(&format!("installing the node, container and GPU exporters on {name}, over your SSH login"));
                                 for l in readings::install_over(&name, login.as_deref(), if own_user { login_port } else { port }) {
                                     println!("{l}");
                                 }
@@ -918,7 +918,10 @@ fn host_join(name: &str) -> ExitCode {
         return ExitCode::from(1);
     }
     let uname = |flag: &str| Command::new("uname").arg(flag).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let v = match host_call("Commands::add_host", serde_json::json!({ "name": name, "joined": true, "os": uname("-s"), "arch": uname("-m") })) {
+    // what it offers that the habitat reads: an NVIDIA GPU, whose exporter
+    // its senses then scrape here (as an SSH host's probe finds one)
+    let offers = if readings::nvidia_gpu_here() { "nvidia-gpu" } else { "" };
+    let v = match host_call("Commands::add_host", serde_json::json!({ "name": name, "joined": true, "os": uname("-s"), "arch": uname("-m"), "offers": offers })) {
         Ok(v) => v,
         Err(code) => return code,
     };
@@ -929,7 +932,7 @@ fn host_join(name: &str) -> ExitCode {
     println!("{:<8}{name} (joined): ready, a host of the habitat on {at}", "host");
     println!("{:<8}the habitat never logs in here: no key, no account; this machine runs its own placements (`hale habitat organism place <organism> <command> --host local`, here)", "access");
     println!("{:<8}{at} reaches {name} on its services' ports alone: the exporters below, and what is placed here", "reached");
-    for l in readings::install_here(name) {
+    for l in readings::install_here(name).0 {
         println!("{l}");
     }
     ExitCode::SUCCESS
@@ -2926,7 +2929,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let reflexes_line = if senses.is_some() {
         let manifest = std::fs::read_to_string(genome.join("hale.toml")).unwrap_or_default();
         // (and the job of the machines' containers, beside its machines')
-        let moved = reflexes::write_habitat_rules(&dir, &key, &manifest)? | readings::ensure_containers_job(&dir)? | readings::ensure_services_job(&dir)?;
+        let moved = reflexes::write_habitat_rules(&dir, &key, &manifest)? | readings::ensure_containers_job(&dir)? | readings::ensure_services_job(&dir)? | readings::ensure_gpus_job(&dir)?;
         if moved {
             let _ = Command::new("env")
                 .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
@@ -3153,7 +3156,10 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     }
     lines.extend(grafana_note);
     lines.extend(reflexes_line);
-    lines.extend(readings::install_here(&host_label_here()));
+    let (installed, gpus) = readings::install_here(&host_label_here());
+    lines.extend(installed);
+    // this machine among the GPUs its senses scrape, as the install found it
+    readings::gpu_target_here(&dir, &host_label_here(), gpus)?;
     Ok(lines)
 }
 
