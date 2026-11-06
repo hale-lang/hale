@@ -807,6 +807,15 @@ pub struct BuildOptions {
     /// A Homebrew OpenSSL prefix for the macOS link
     /// (`LOTUS_OPENSSL_PREFIX`, then `OPENSSL_ROOT_DIR`).
     pub openssl_prefix: Option<std::path::PathBuf>,
+    /// macOS: the SDK the host clang compiles the runtime and links
+    /// against, handed to it as `SDKROOT`. The CLI fills it when
+    /// `SDKROOT` is unset and the default SDK is one the selected
+    /// linker cannot read (an older Xcode selected beside newer Command
+    /// Line Tools); `None` leaves clang's own choice.
+    pub macos_sdkroot: Option<std::path::PathBuf>,
+    /// macOS: the SDKs the CLI tried and the selected linker refused,
+    /// named by a link that fails the same way.
+    pub macos_sdks_unreadable: Vec<std::path::PathBuf>,
 }
 
 impl BuildOptions {
@@ -850,6 +859,8 @@ impl BuildOptions {
             target_glibc: Default::default(),
             target_sysroot: Default::default(),
             openssl_prefix: Default::default(),
+            macos_sdkroot: Default::default(),
+            macos_sdks_unreadable: Default::default(),
         }
     }
 }
@@ -1105,9 +1116,16 @@ pub(crate) fn compile_cached_runtime_object_with(
     RT_CACHE_VERSION.hash(&mut h);
     // The host `clang` hashes as it always has, so every cached object
     // on disk stays valid; only another compiler changes the key.
-    if cc.len() != 1 || cc[0] != "clang" {
+    let host_clang = cc.len() == 1 && cc[0] == "clang";
+    if !host_clang {
         cc.hash(&mut h);
         cc_version.hash(&mut h);
+    }
+    // An SDK chosen for the host clang moves the key; with none chosen
+    // the key is what it always was.
+    let sdkroot = options.macos_sdkroot.as_ref().filter(|_| host_clang);
+    if let Some(sdk) = sdkroot {
+        sdk.hash(&mut h);
     }
     source.hash(&mut h);
     for f in cflags {
@@ -1141,7 +1159,11 @@ pub(crate) fn compile_cached_runtime_object_with(
         CodegenError::Link(format!("write runtime {stem} C: {e}"))
     })?;
     let obj_tmp = dir.join(format!("lotus-rt-{stem}-{key:016x}.{pid}.{nonce}.o"));
-    let status = Command::new(&cc[0])
+    let mut compile = Command::new(&cc[0]);
+    if let Some(sdk) = sdkroot {
+        compile.env("SDKROOT", sdk);
+    }
+    let status = compile
         .args(&cc[1..])
         .arg("-c")
         .args(cflags)
@@ -2495,6 +2517,9 @@ fn build_resolved_lowered(
         Vec::new()
     };
     let mut clang = Command::new("clang");
+    if let Some(sdk) = &options.macos_sdkroot {
+        clang.env("SDKROOT", sdk);
+    }
     clang
         .arg(&main_input)
         .arg(&arena_o)
@@ -2711,7 +2736,7 @@ fn build_resolved_lowered(
             Ok(())
         } else {
             let hint = if target_spec.is_macos() {
-                macos_sdk_mismatch_hint(&stderr, macos_developer_dir().as_deref())
+                macos_sdk_mismatch_hint(&stderr, macos_developer_dir().as_deref(), &options.macos_sdks_unreadable)
             } else {
                 None
             };
@@ -2724,22 +2749,38 @@ fn build_resolved_lowered(
     publish_output(linked, &out_tmp, output_path)
 }
 
+/// Whether a macOS link's stderr says the linker could not read the SDK
+/// it was handed (`tapi error: malformed file` … `unknown architecture`
+/// in a `.tbd`): the selected developer tools are older than the SDK.
+/// The CLI's SDK probe asks the same question of its trial links.
+pub fn macos_linker_cannot_read_sdk(stderr: &str) -> bool {
+    stderr.contains("tapi error") && stderr.contains("unknown architecture")
+}
+
 /// Why a macOS link failed, when the cause is the machine's developer
 /// tools rather than the program: the selected toolchain's linker cannot
 /// read the SDK clang chose (`tapi error: malformed file` … `unknown
 /// architecture` in a `.tbd`), which happens when Xcode is selected
 /// (`xcode-select -p`) but the default SDK is a newer Command Line Tools'
-/// one. A plain C program fails to link the same way there.
-fn macos_sdk_mismatch_hint(stderr: &str, developer_dir: Option<&str>) -> Option<String> {
-    if !(stderr.contains("tapi error") && stderr.contains("unknown architecture")) {
+/// one. A plain C program fails to link the same way there. `tried` is
+/// every SDK the CLI found its linker refusing when it looked for one it
+/// reads (none of them did, or the link would have been handed it).
+fn macos_sdk_mismatch_hint(stderr: &str, developer_dir: Option<&str>, tried: &[PathBuf]) -> Option<String> {
+    if !macos_linker_cannot_read_sdk(stderr) {
         return None;
     }
     let selected = match developer_dir {
         Some(d) => format!("the selected developer tools (`xcode-select -p`: {d})"),
         None => "the selected developer tools (`xcode-select -p`)".to_string(),
     };
+    let tried = if tried.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> = tried.iter().map(|p| p.display().to_string()).collect();
+        format!(" (no installed SDK links with their linker: hale tried {})", names.join(", "))
+    };
     Some(format!(
-        "{selected} are older than the macOS SDK clang linked against, and their linker cannot read it; \
+        "{selected} are older than the macOS SDK clang linked against, and their linker cannot read it{tried}; \
          select tools that match it (`sudo xcode-select -s /Library/Developer/CommandLineTools`, or \
          update Xcode), or set SDKROOT to an SDK they read (under \
          /Library/Developer/CommandLineTools/SDKs)"
@@ -38578,10 +38619,14 @@ mod tests {
     #[test]
     fn macos_sdk_mismatch_is_named() {
         let tapi = "ld: tapi error: malformed file\n/SDKs/MacOSX27.0.sdk/usr/lib/libSystem.B.tbd:4:20: error: unknown architecture\n";
-        let hint = super::macos_sdk_mismatch_hint(tapi, Some("/Applications/Xcode.app/Contents/Developer")).unwrap();
+        let hint = super::macos_sdk_mismatch_hint(tapi, Some("/Applications/Xcode.app/Contents/Developer"), &[]).unwrap();
         assert!(hint.contains("/Applications/Xcode.app/Contents/Developer") && hint.contains("sudo xcode-select -s") && hint.contains("SDKROOT"), "{hint}");
         // any other link failure is left as clang said it
-        assert_eq!(super::macos_sdk_mismatch_hint("ld: symbol(s) not found for architecture arm64", None), None);
+        assert_eq!(super::macos_sdk_mismatch_hint("ld: symbol(s) not found for architecture arm64", None, &[]), None);
+        // the SDKs the CLI tried are named
+        let tried = [std::path::PathBuf::from("/SDKs/MacOSX27.0.sdk"), std::path::PathBuf::from("/X/SDKs/MacOSX26.2.sdk")];
+        let hint = super::macos_sdk_mismatch_hint(tapi, None, &tried).unwrap();
+        assert!(hint.contains("hale tried /SDKs/MacOSX27.0.sdk, /X/SDKs/MacOSX26.2.sdk"), "{hint}");
     }
 
     use super::*;

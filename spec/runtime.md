@@ -4443,6 +4443,26 @@ What the compiler emits for a native `hale build`:
   codegen.
 - **`wasm32` is unaffected** — it stays `generic`/O2 (the browser
   bundle is size/compat-sensitive).
+- **macOS: an SDK the selected linker reads.** The runtime compile
+  and the link run the host `clang`, which links against the newest
+  macOS SDK `xcrun` finds with the linker of the developer tools
+  `xcode-select` (or `DEVELOPER_DIR`) selects. When those disagree —
+  an older Xcode selected beside newer Command Line Tools, whose SDK
+  that linker cannot read (`tapi error: malformed file … unknown
+  architecture`) — every link would fail. With `SDKROOT` unset, the
+  CLI keeps the default SDK when it lives under the linker's own
+  developer directory, probing nothing; otherwise it links a trivial
+  program against it, and if the linker refuses it, tries the SDKs
+  under the linker's own developer directory, newest first, then the
+  Command Line Tools' ones, and hands the first that links to every
+  host `clang` of the build as `SDKROOT` (`macos_sdkroot`). The answer
+  is cached beside the runtime objects, keyed by the linker binary and
+  the default SDK, so the trial links run once per toolchain. An
+  explicit `SDKROOT` is used as given. When no installed SDK links,
+  the build's link fails naming the SDKs tried, the selected
+  developer tools and the fixes: `sudo xcode-select -s
+  /Library/Developer/CommandLineTools`, updating Xcode, or `SDKROOT`.
+  Other hosts are untouched.
 
 ## Build-time and toolchain environment
 
@@ -4487,6 +4507,7 @@ build.
 | `HALE_TARGET_SYSROOT` | `target_sysroot` | The sysroot a cross build finds OpenSSL, zlib and the shim in. | `<cache>/hale/sysroot/<triple>` |
 | `XDG_CACHE_HOME`, `HOME` | `cache_dir` | Where compiled runtime objects are cached, content-addressed: `$XDG_CACHE_HOME/hale/runtime`, else `~/.cache/hale/runtime`. An empty value is skipped. | else `<tmp>/hale-runtime-cache-<pid>`, a directory of that process's own |
 | `LOTUS_OPENSSL_PREFIX`, `OPENSSL_ROOT_DIR` | `openssl_prefix` | macOS: a Homebrew OpenSSL prefix (the first whose `include/openssl/ssl.h` exists) for the link. | the standard brew locations |
+| `SDKROOT` | `macos_sdkroot` | macOS: the SDK the host clang compiles and links against. Set, it is used as given; unset, the CLI picks one the selected linker reads (see *Native codegen defaults*), and the SDKs it found unreadable go in `macos_sdks_unreadable` for the link's failure to name. | clang's default, unless the linker cannot read it |
 | `LOTUS_NO_DEBUGINFO` | none: the CLI supplies no `debug` sources | Opt out of DWARF line tables for the Hale code (the runtime C always carries `-g`). | off |
 | `HALE_API_TOKEN` | none | The bearer `hale watch`, `admin` and `mcp --app` present to an HTTP or hub exposure when `--token` is not given; empty is unset. | no bearer |
 | `HALE_API_BEARER` | none | The bearer `hale api describe` and `hale api call` (and their short forms `hale describe`, `hale call`) present to an HTTP exposure when `--bearer` is not given; over a socket the caller is the peer's kernel credentials and the variable is ignored; empty is unset. | no bearer |
