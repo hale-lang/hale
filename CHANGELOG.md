@@ -8,6 +8,27 @@ behavior.
 
 ## Unreleased
 
+## v0.32.5 — hooks that answer a signal, GPUs in the senses (2026-11-05)
+
+**A `drain()` hook answers SIGTERM** (#1838, found by hale-lang/voice). A locus that declares `drain()` or `dissolve()` counts as able to answer a drain, as a reader of `self.draining` does, so a signal starts the drain cascade and the hook runs at teardown. Before, a program whose loop never read `draining` died at the signal and skipped the hook its author wrote for that moment. A new warning, *drain hook behind an endless run*, points at a `drain()` that can only run when a `run()` that never returns returns: read `self.draining` in the loop.
+
+**The habitat reads its GPUs.** A Linux machine with an NVIDIA GPU runs a GPU exporter beside its node exporter, and the Hosts dashboard's top table shows each machine's GPU use, temperature, power and, where the GPU reports it, memory. A machine whose GPU shares system memory (a GB10) reports no GPU memory, and the cells stay blank.
+
+**A program's requirements, from its code** (RFC #1835, first slice). `hale check --dump-requirements` states the secrets a program reads and where, and `check` warns when the code and `hale.toml`'s `[dna.secrets]` disagree. Drift is a warning this release.
+
+**Exporters keep their ports.** A habitat's block of loopback ports could land on the container or node exporter's fixed port, and that machine's readings stayed down for as long as the habitat lived. Blocks now step past them.
+
+The item-level notes follow.
+
+- A habitat's or graft's block of loopback ports is never placed over the machine's node and container exporters' ports (`:9100`, `:9338`), as it already was not over the senses' ports. A block based at 9336 held cAdvisor's port, so cAdvisor restarted on its bind and the machine's containers read as down while `up` said it had installed the exporter.
+
+- **A declared `drain()` or `dissolve()` hook now answers SIGTERM** (GH #1838, reported from hale-lang/voice). A locus of the program that declares either hook counts as able to answer a drain, as a reader of `self.draining` does (GH #1077), so SIGINT / SIGTERM drain the program instead of ending it at the signal: a `run()` that ends on the drain returns, teardown runs the hook, and the process exits 0. Before, a program whose only answer to a drain was its hook died with 143 and the hook never ran. A hook still runs only once `run()` returns, so `hale check` warns on a `drain()` whose locus's `run()` never returns and never reads `self.draining` ("this `drain()` runs only when `run()` returns … read it in the loop"); `hale verify` fails on it. The standard library's own loci are not counted for their hooks. The drain-grace record now lists the "live loci that can answer a drain".
+
+- The habitat reads its machines' NVIDIA GPUs. A Linux machine where `nvidia-smi -L` lists a GPU runs `nvidia_gpu_exporter` 1.17.0 beside its node exporter. It runs as the container `hale-gpu-exporter` on `:9835`, its image pinned by digest, and docker's NVIDIA runtime gives it the GPU. It is installed, replaced and removed wherever and whenever the node exporter is. A Mac, or a machine without such a GPU, runs none. The senses scrape it as the new job `gpus` (`senses.d/gpus/`): the hosts that offer `nvidia-gpu` (the SSH probe and `host join` now report one), and the habitat's own machine while an exporter answers there. The Hosts dashboard's Now table adds GPU busy, GPU memory and memory in use, temperature and power, blank on a machine without a GPU. A GPU that reports no memory of its own leaves the memory cells blank; a GB10 does this because its memory is the machine's. A host added before this release gets its GPU exporter at its next `hale habitat host probe`.
+
+- **`hale check --dump-requirements`** emits the **requirements artifact** beside the topology artifact: what a program needs from its environment, derived from its code (schema `hale.requirements` 1.0). It states secrets for now: every `HALE_SECRET_<NAME>` read is the declared secret `<name>`, a `std::secret` locus's literal `vault:`, `env_var:` or `key_file:` is a secret by that name, and a computed source is listed as `unnamed`, each with where it is read (#1835, slice 1).
+- A program under a `[dna]` manifest is now held to its `[dna.secrets]`: `hale check` **warns** on a secret read but undeclared, read by a program its `readers` do not name, read as a family when it is none, or declared for the program but never read (at the manifest's line). A warning this release, refused in a later one; `hale verify` fails on it as on any advisory.
+
 ## v0.32.4 — nerves on a small disk, and the machines at a glance (2026-11-05)
 
 A patch release from a week of lab runs.
