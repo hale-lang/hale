@@ -540,23 +540,13 @@ fn habitat_side(s: &Standing, m: &Move, plan: bool) -> Result<String, String> {
                 sapling::record(&[json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": nb.to_string() })]).map_err(finish)?;
             }
             super::progress(&format!("re-applying {key}/services on {host}: its images are built from {}", m.to.revision));
-            let lines = match sapling::head_call("Commands::apply_allocations", json!({ "host": host, "fresh": false })) {
-                Ok(v) => {
-                    let ok = v["ok"] == json!(true);
-                    let lines = sapling::applied_lines(&v);
-                    if !ok {
-                        for l in &lines {
-                            println!("{l}");
-                        }
-                        return Err(finish(format!("{key}/services was not applied on {host}")));
-                    }
-                    lines
-                }
-                Err(e) if e.contains("deadline") => sapling::follow_apply(&format!("{key}/services"), &host).map_err(finish)?,
-                Err(e) => return Err(finish(e)),
-            };
-            for l in lines {
+            // the head applies in a process of its own, followed to its end
+            let applied = sapling::apply_followed(&host, false).map_err(finish)?;
+            for l in &applied.lines {
                 println!("{l}");
+            }
+            if !applied.ok {
+                return Err(finish(format!("{key}/services was not applied on {host}")));
             }
         }
         None => println!("{:<8}no services allocation (its graft placed none on a host)", "apply"),

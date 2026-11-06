@@ -385,54 +385,15 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "vault": [] });
     record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
     let mut out = vec![format!("{:<8}its services ({key}/services) on {shown}", "placed")];
-    match head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false })) {
-        Ok(v) => out.extend(applied_lines(&v)),
-        // a first build of its images on the host outlives the head's
-        // deadline; the apply goes on in the head's keeping, so the graft
-        // follows the allocation until its provider observes it
-        Err(e) if e.contains("deadline") => out.extend(follow_apply(&format!("{key}/services"), &shown)?),
-        Err(e) => return Err(e),
-    }
+    // a first pull or build of its images on the host takes minutes: the
+    // head applies in a process of its own, and the graft follows it
+    out.extend(apply_followed(host, false)?.lines);
     Ok(out)
-}
-
-/// An apply that outlived the head's deadline, followed through the
-/// allocation's state as its provider observes it: a line when it is up or
-/// degraded, a heartbeat while it is building, refused after half an hour.
-pub(super) fn follow_apply(allocation: &str, host: &str) -> Result<Vec<String>, String> {
-    let begun = std::time::Instant::now();
-    let mut said = begun;
-    loop {
-        // the head's API is busy with the very apply this follows (its
-        // images building on the host): a read that outlives the head's
-        // deadline is asked again, within the half hour
-        let v = match head_call("Commands::allocations", serde_json::json!({ "limit": 1000 })) {
-            Ok(v) => v,
-            Err(e) if busy_head(&e) => serde_json::Value::Null,
-            Err(e) => return Err(e),
-        };
-        let rows: Vec<serde_json::Value> = v["allocations"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
-        if let Some(r) = rows.iter().find(|r| r["allocation"] == allocation) {
-            let state = r["state"].as_str().unwrap_or("");
-            if state == "up" || state == "degraded" {
-                return Ok(vec![format!("{:<8}{allocation} on {host}: {state} ({})", "applied", r["detail"].as_str().unwrap_or(""))]);
-            }
-        }
-        if begun.elapsed() > std::time::Duration::from_secs(1800) {
-            return Err(format!("{allocation} on {host} is not up after half an hour: `hale habitat status` shows what its provider sees, `hale habitat apply` tries again"));
-        }
-        if said.elapsed() >= std::time::Duration::from_secs(20) {
-            let t = begun.elapsed().as_secs();
-            super::progress(&format!("still applying {allocation} on {host} ({}m {:02}s): its images are building there", t / 60, t % 60));
-            said = std::time::Instant::now();
-        }
-        std::thread::sleep(std::time::Duration::from_secs(3));
-    }
 }
 
 /// Whether `why` (a head call's failure) is the head too busy to answer in
 /// time, which a follower asks again, rather than a refusal.
-fn busy_head(why: &str) -> bool {
+pub(super) fn busy_head(why: &str) -> bool {
     why.contains("deadline") || why.contains("did not answer")
 }
 
@@ -452,6 +413,185 @@ pub(super) fn applied_lines(v: &serde_json::Value) -> Vec<String> {
         out.push(format!("{:<8}{note}", "note"));
     }
     out
+}
+
+/// What an apply came to, as its follower read it: whether every allocation
+/// it touched applied, whether the habitat's own memory or nerves moved (its
+/// face restarts on the new address), and the lines that say so.
+pub(super) struct Applied {
+    pub ok: bool,
+    pub restart: bool,
+    pub lines: Vec<String>,
+}
+
+impl Applied {
+    /// An apply's reply (`Commands::apply_allocations` as an older head
+    /// answers it, or the outcome `Commands::apply_log` hands back).
+    fn of(v: &serde_json::Value) -> Applied {
+        Applied { ok: v["ok"] == serde_json::json!(true), restart: v["restart"] == serde_json::json!(true), lines: applied_lines(v) }
+    }
+}
+
+/// The habitat's allocations applied on `host` ("" for every host) through
+/// the head, followed to the apply's end: the head starts it in a process of
+/// its own and answers at once (`Commands::apply_allocations`, its id and its
+/// log), and the follower pages that log (`Commands::apply_log`), saying what
+/// it is applying as it goes, until it ends and hands back what it came to. A
+/// head older than this toolchain answers the apply itself: that answer. An
+/// apply already running is followed instead, and said so.
+pub(super) fn apply_followed(host: &str, fresh: bool) -> Result<Applied, String> {
+    let v = match head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": fresh })) {
+        Ok(v) => v,
+        Err(e) if busy_head(&e) => return follow_unanswered(host),
+        Err(e) => return Err(e),
+    };
+    let Some(id) = v["apply"].as_str().filter(|s| !s.is_empty()).map(str::to_string) else {
+        if v["ok"] != serde_json::json!(true) && v["code"].as_str().is_some_and(|c| !c.is_empty() && c != "not_applied") {
+            return Err(format!("the head did not start the apply: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or("")));
+        }
+        return Ok(Applied::of(&v));
+    };
+    let other = v["code"] == "applying";
+    let mut a = follow_apply_log(&id)?;
+    if other {
+        a.lines.insert(0, format!("{:<8}an apply was running already ({id}): it was followed to its end, and what it came to is below; `hale habitat apply` again applies what it left", "note"));
+        a.ok = false;
+    }
+    Ok(a)
+}
+
+/// An apply a head older than this toolchain ran inside its request, which
+/// outlived the head's deadline: it goes on in the head's keeping, and that
+/// head serves its commands one at a time, so the first read it answers again
+/// is after the apply ended. What each provider observes then of every
+/// allocation placed on `host` (every host for ""): up or degraded is
+/// applied; the apply's own refusals are not known this way.
+fn follow_unanswered(host: &str) -> Result<Applied, String> {
+    let begun = std::time::Instant::now();
+    let mut said = begun;
+    loop {
+        match head_call("Commands::allocations", serde_json::json!({ "limit": 1000 })) {
+            Ok(v) => {
+                let rows: Vec<serde_json::Value> = v["allocations"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+                return Ok(unanswered_outcome(&rows, host));
+            }
+            Err(e) if busy_head(&e) => {}
+            Err(e) => return Err(e),
+        }
+        if begun.elapsed() > std::time::Duration::from_secs(3600) {
+            return Err("the head has not answered for an hour since the apply: `hale habitat status` shows what each provider sees".to_string());
+        }
+        if said.elapsed() >= std::time::Duration::from_secs(20) {
+            let t = begun.elapsed().as_secs();
+            super::progress(&format!("still applying ({}m {:02}s): the habitat's head applies inside its request and answers when it ends", t / 60, t % 60));
+            said = std::time::Instant::now();
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+}
+
+/// What `follow_unanswered` says of the allocation `rows` the head answered
+/// once the apply ended: each placeable one placed on `host` ("" for every
+/// host), with what its provider observes; applied when every one is up or
+/// degraded.
+fn unanswered_outcome(rows: &[serde_json::Value], host: &str) -> Applied {
+    let mut lines = vec![format!("{:<8}the habitat's head is older than this toolchain: it applied inside its request, which outlived its deadline; what each provider observes now:", "note")];
+    let mut ok = true;
+    for r in rows {
+        let f = |k: &str| r[k].as_str().unwrap_or("").to_string();
+        if !["memory", "nerves", "senses", "services"].contains(&f("role").as_str()) || (!host.is_empty() && f("host") != host) {
+            continue;
+        }
+        let state = f("state");
+        if state != "up" && state != "degraded" {
+            ok = false;
+        }
+        lines.push(format!("{:<8}{} on {}: {} ({})", "state", f("allocation"), super::shown_host(&f("host")), if state.is_empty() { "down" } else { &state }, f("detail")));
+    }
+    Applied { ok, restart: false, lines }
+}
+
+/// The apply `id` the head started, followed through `Commands::apply_log`
+/// to its end: each allocation it starts on said as progress, a heartbeat
+/// while one takes long, and what it came to. An apply that ended without
+/// saying what it came to is refused with what its log says.
+fn follow_apply_log(id: &str) -> Result<Applied, String> {
+    let begun = std::time::Instant::now();
+    let mut said = begun;
+    let mut from = 0u64;
+    let mut text = String::new();
+    let mut current = String::new();
+    loop {
+        let v = match head_call("Commands::apply_log", serde_json::json!({ "apply": id, "from": from })) {
+            Ok(v) => v,
+            Err(e) if busy_head(&e) => serde_json::Value::Null,
+            Err(e) => return Err(e),
+        };
+        if !v.is_null() {
+            if v["ok"] != serde_json::json!(true) {
+                return Err(format!("the head's log of the apply {id}: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or("")));
+            }
+            let page = v["text"].as_str().unwrap_or("");
+            text.push_str(page);
+            from = v["next"].as_u64().unwrap_or(from);
+            for l in page.lines() {
+                if let Some(what) = l.strip_prefix("applying ") {
+                    super::progress(&format!("applying {what}"));
+                    current = what.to_string();
+                    said = std::time::Instant::now();
+                }
+            }
+            if v["done"] == serde_json::json!(true) {
+                let outcome: serde_json::Value = v["outcome"].as_str().and_then(|o| serde_json::from_str(o).ok()).unwrap_or_default();
+                if outcome.get("ok").is_none() {
+                    let tail: Vec<&str> = text.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect();
+                    let exit = v["exit"].as_i64().unwrap_or(-1);
+                    return Err(format!("the apply {id} ended (exit {exit}) without saying what it came to; its last lines:\n{}", tail.join("\n")));
+                }
+                return Ok(Applied::of(&outcome));
+            }
+        }
+        if begun.elapsed() > std::time::Duration::from_secs(3600) {
+            return Err(format!("the apply {id} has not ended after an hour: `hale habitat status` shows what each provider sees"));
+        }
+        if said.elapsed() >= std::time::Duration::from_secs(20) {
+            let t = begun.elapsed().as_secs();
+            let what = if current.is_empty() { String::new() } else { format!(" {current}") };
+            super::progress(&format!("still applying{what} ({}m {:02}s): a first pull or build of its images takes minutes", t / 60, t % 60));
+            said = std::time::Instant::now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(if begun.elapsed().as_secs() < 10 { 500 } else { 2000 }));
+    }
+}
+
+/// `hale habitat apply --no-head`: the apply itself, in this process (what
+/// the head's `Commands::apply_allocations` starts): the host verb
+/// `habitat-allocations-apply` with the habitat's record, saying what it
+/// applies as it goes (its stderr), then a line per allocation. Its outcome,
+/// the verb's JSON object, is written to `reply` when one is named (the
+/// head's `Commands::apply_log` hands it back) before this exits.
+fn apply_here(host: &str, fresh: bool, reply: Option<&str>) -> Result<Applied, String> {
+    let genome = genome_dir();
+    let (mut cmd, _) = crate::dna::host_command("habitat-allocations-apply", &genome)?;
+    if !host.is_empty() {
+        cmd.arg(host);
+    }
+    if fresh {
+        cmd.arg("--fresh");
+    }
+    let out = cmd.stderr(std::process::Stdio::inherit()).output().map_err(|e| format!("hale dna habitat-allocations-apply: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|_| {
+        if out.status.success() {
+            format!("the apply answered no outcome: {}", stdout.trim())
+        } else {
+            "the apply failed (its lines above say why)".to_string()
+        }
+    })?;
+    if let Some(path) = reply {
+        std::fs::write(path, format!("{v}\n")).map_err(|e| format!("write {path}: {e}"))?;
+    }
+    Ok(Applied::of(&v))
 }
 
 /// The head's `Commands::graft` for `name` on `host`, when the head answers,
@@ -635,30 +775,36 @@ pub(super) fn place_cmd(args: &[String]) -> std::process::ExitCode {
 /// `hale habitat apply [<host>] [--fresh]`: the habitat's allocations
 /// applied where they are placed, and the pulse after; when its own memory
 /// or nerves moved, its face (and the head behind it) restarted on the new
-/// address.
+/// address. The head runs the apply in a process of its own and this follows
+/// it (`apply_followed`); `--no-head` is that process, the apply itself
+/// (`--reply <file>`: where it writes what it came to, for the head).
 pub(super) fn apply_cmd(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
-    let parsed = verb_args(args, &[], &["--fresh"]).filter(|a| a.words.len() <= 1);
+    let parsed = verb_args(args, &["--reply"], &["--fresh", "--no-head"]).filter(|a| a.words.len() <= 1);
     let Some(a) = parsed else {
         eprintln!("usage: hale habitat apply [<host>] [--fresh]");
         return ExitCode::from(2);
     };
     let fresh = a.has("--fresh");
     let host = a.words.first().cloned().unwrap_or_default();
-    match head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": fresh })) {
+    let reply = a.value("--reply");
+    let here = a.has("--no-head");
+    let applied = if here { apply_here(&host, fresh, (!reply.is_empty()).then_some(reply.as_str())) } else { apply_followed(&host, fresh) };
+    match applied {
         Ok(v) => {
-            for l in applied_lines(&v) {
+            for l in &v.lines {
                 println!("{l}");
             }
             // the habitat's own memory or nerves moved: its head and face
-            // pick the new address up on their next start
-            if v["restart"] == serde_json::json!(true) {
+            // pick the new address up on their next start (the follower's
+            // to do: the process the head started runs in its face)
+            if v.restart && !here {
                 match restart_face() {
                     Ok(line) => println!("{line}"),
                     Err(e) => println!("{:<8}the habitat's face did not restart: {e}", "note"),
                 }
             }
-            if v["ok"] == serde_json::json!(true) {
+            if v.ok {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(1)
@@ -810,6 +956,49 @@ mod tests {
         assert!(busy_head("the habitat's head refused Commands::allocations: the project's API did not answer within the head's deadline"));
         assert!(busy_head("the habitat's head did not answer: connection reset"));
         assert!(!busy_head("the habitat's head refused Commands::allocations: unauthenticated"));
+    }
+
+    // what an apply came to is read the same from an older head's answer and
+    // from the outcome a newer head's log hands back
+    #[test]
+    fn an_apply_outcome_reads_ok_restart_and_its_lines() {
+        let v = serde_json::json!({ "ok": false, "code": "not_applied", "why": "", "restart": true, "applied": "[{\"allocation\":\"k/memory\",\"host\":\"local\",\"provider\":\"compose\",\"ok\":false,\"why\":\"memory_holds_rows: apply with --fresh\",\"state\":\"up\"},{\"allocation\":\"k/services\",\"host\":\"local\",\"provider\":\"compose\",\"ok\":true,\"why\":\"\",\"state\":\"up\"}]" });
+        let a = Applied::of(&v);
+        assert!(!a.ok && a.restart);
+        assert_eq!(a.lines, vec!["refused k/memory on local: memory_holds_rows: apply with --fresh".to_string(), "applied k/services on local (compose): up".to_string()]);
+        assert!(Applied::of(&serde_json::json!({ "ok": true, "applied": "[]" })).ok);
+    }
+
+    // through an older head that applied inside its request, the follower
+    // says what each provider observes of the placeable allocations on the
+    // host once the head answers again, and applied only when each is up
+    #[test]
+    fn an_unanswered_apply_reports_what_each_provider_observes() {
+        let rows = vec![
+            serde_json::json!({ "allocation": "k/services", "role": "services", "host": "local", "state": "up", "detail": "applied" }),
+            serde_json::json!({ "allocation": "k/senses", "role": "senses", "host": "local", "state": "", "detail": "senses-k is not created" }),
+            serde_json::json!({ "allocation": "k/forge", "role": "forge", "host": "local", "state": "up", "detail": "answers" }),
+            serde_json::json!({ "allocation": "j/services", "role": "services", "host": "rack", "state": "up", "detail": "applied" }),
+        ];
+        let a = unanswered_outcome(&rows, "local");
+        assert!(!a.ok, "a placeable allocation is down");
+        assert!(a.lines[0].starts_with("note    the habitat's head is older than this toolchain"));
+        assert_eq!(a.lines.len(), 3, "the forge is not placeable, and rack's are another host's: {:?}", a.lines);
+        assert!(a.lines[2].contains("k/senses on ") && a.lines[2].contains(": down (senses-k is not created)"));
+        let up = unanswered_outcome(&rows[..1], "");
+        assert!(up.ok && up.lines.len() == 2);
+    }
+
+    // `hale habitat apply` takes one host, --fresh, and the head's own
+    // --no-head --reply <file>
+    #[test]
+    fn apply_takes_the_heads_own_flags() {
+        let args: Vec<String> = ["local", "--fresh", "--no-head", "--reply", "/tmp/x.reply"].iter().map(|s| s.to_string()).collect();
+        let a = verb_args(&args, &["--reply"], &["--fresh", "--no-head"]).unwrap();
+        assert_eq!(a.words, vec!["local".to_string()]);
+        assert!(a.has("--fresh") && a.has("--no-head"));
+        assert_eq!(a.value("--reply"), "/tmp/x.reply");
+        assert!(verb_args(&["--reply".to_string()], &["--reply"], &[]).is_none(), "--reply names a file");
     }
 
 

@@ -315,3 +315,379 @@ fn reach_url(url: String) -> String {
     let port = if colon < 0 { "" } else { hostport[colon..len(hostport)] };
     return lead + user + reach_host(host) + port + tail;
 }
+
+// ---- the apply (phase 4) ----------------------------------------------------
+//
+// The habitat's allocations applied where their rows place them: what
+// `Commands::apply_allocations` starts, run to its end by the host verb
+// `habitat-allocations-apply` (`hale habitat apply --no-head`) in a process
+// of its own, never inside the head's request (an apply pulls and builds an
+// organism's images on its host, which takes minutes, and the head's
+// commands are served one at a time). The record's index of the latest row
+// per entity lives here with it, which the head's reads share.
+
+// The roles a placement moves: the servers an organism's allocations run,
+// and its own services. A heart's database and broker are tenants of its
+// memory and nerves, and move with them; the habitat's head and face run
+// with its body.
+const PLACEABLE_ROLES: String = "memory nerves senses services";
+
+// Where the latest row of a kind is, for each entity: the record's index.
+type LatestRow {
+    entity: String = "";
+    at: Int = -1;
+}
+
+@form(hashmap)
+locus LatestRows {
+    capacity { pool rows of LatestRow indexed_by entity; }
+}
+
+// The index of the latest `kind` row of each entity in `j`.
+@bounded_by(j)
+fn habitat_latest(j: Journal, kind: String) -> LatestRows {
+    let latest = LatestRows { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        // an organism removed (its graft's and its allocations' latest rows
+        // say `"state": "removed"`) is the record's history alone: no row of
+        // it holds (a host keeps its `removed` state, which its readers say)
+        if e.kind == kind {
+            let gone = kind != "habitat.host"
+                && std::json::find_string_field(e.body, "state") == "removed";
+            latest.set(LatestRow { entity: e.entity, at: if gone { -2 } else { i } });
+        }
+        i = i + 1;
+    }
+    return latest;
+}
+
+// Whether the row at `i` is its entity's latest.
+fn habitat_holds(latest: LatestRows, entity: String, i: Int) -> Bool {
+    let r = latest.get(entity) or LatestRow { };
+    return r.at == i;
+}
+
+// What an apply came to: whether every allocation it touched applied, the
+// refusal's code, a note for the person, whether the habitat's own memory or
+// nerves moved (its head and face read their addresses at their start), and
+// per allocation: allocation, host, provider, ok, why, state, detail (a JSON
+// array).
+type HabitatApplied {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    restart: Bool = false;
+    applied: String = "[]";
+}
+
+// `r` as the JSON object the head's `Commands::apply_log` hands back.
+fn habitat_applied_json(r: HabitatApplied) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.bool_field("ok", r.ok);
+    b.string_field("code", r.code);
+    b.string_field("why", r.why);
+    b.bool_field("restart", r.restart);
+    b.string_field("applied", r.applied);
+    b.end_object();
+    return b.result();
+}
+
+// The `--placement` export: every allocation row as `{instance, host,
+// provider, role}`, the shape `hale deploy render` takes.
+@bounded_by(j)
+fn placement_export(j: Journal, latest: LatestRows) -> String {
+    let out = std::json::Builder { };
+    out.begin_array();
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        let host = std::json::find_string_field(e.body, "host");
+        if len(host) == 0 { continue; }
+        out.begin_object();
+        out.string_field("instance", e.entity);
+        out.string_field("host", host);
+        out.string_field("provider", std::json::find_string_field(e.body, "provider"));
+        out.string_field("role", std::json::find_string_field(e.body, "role"));
+        out.end_object();
+    }
+    out.end_array();
+    return out.result();
+}
+
+// The render of an organism's own services (`role` `services`): its compose
+// file, in the project its placement names, handed the habitat's name and
+// the secrets its programs read.
+fn services_render(body: String) -> Render {
+    let r = Render {
+        project: std::json::find_string_field(body, "project"),
+        dir: std::json::find_string_field(body, "render_dir"),
+        files: std::json::find_string_field(body, "render_files"),
+        mounted: std::json::find_string_field(body, "render_mounted"),
+    };
+    // the secrets its programs read ([dna.secrets.<name>] in its manifest),
+    // named for the organism it is; a declaration the toolchain refuses
+    // hands none
+    let organism = std::json::find_string_field(body, "organism");
+    let declared = declared_secrets(r.dir);
+    let secrets = if declared.ok && len(organism) >= 12 {
+        program_secrets(declared.lines, schema_for(organism))
+    } else {
+        ""
+    };
+    // the commit its checkout is at (a sapling's revision; "" outside git)
+    let head = run_tool("git\n-C\n" + r.dir + "\nrev-parse\nHEAD");
+    let revision = if head.code == 0 { trim_nl(head.stdout) } else { "" };
+    // each of its services labelled as the habitat's, for the organism it is,
+    // and each long-running one kept running (`services_override`)
+    return Render {
+        project: r.project,
+        dir: r.dir,
+        files: r.files,
+        mounted: r.mounted,
+        labels: render_labels(r, organism_label(r.dir)),
+        secrets: secrets,
+        // the organism's reader vault, whatever its programs read now: an
+        // empty set is reconciled there too
+        vault: if len(organism) >= 12 { reader_vault_dir(organism[0..12]) } else { "" },
+        // the habitat's name: an organism's own services are the habitat's
+        habitat: habitat_name_here(),
+        // the commit its checkout is at, and whether its compose file names
+        // its images by it
+        revision: revision,
+        by_revision: len(revision) > 0 && names_revision(r.dir, r.files),
+    };
+}
+
+// Whether a compose file of `files` (lines, relative to `dir`) names
+// `${HALE_DNA_REVISION}`: its images are the revision's own.
+fn names_revision(dir: String, files: String) -> Bool {
+    let mut rest = files + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let f = std::str::trim(rest[0..nl]);
+        rest = rest[(nl + 1)..len(rest)];
+        if len(f) == 0 { continue; }
+        let text = std::io::fs::read_file(dir + "/" + f) or "";
+        if std::str::contains(text, "${HALE_DNA_REVISION") { return true; }
+    }
+    return false;
+}
+
+// One allocation brought to where its row places it: withdrawn where it was
+// applied when that is elsewhere (a memory that was applied only with
+// `fresh`), its data forgotten there first when `fresh`, applied, kept,
+// observed, and recorded. The reply's entry, and whether the habitat's own
+// memory or nerves moved.
+fn apply_one(
+    root: String,
+    j: RecordJournal,
+    entity: String,
+    body: String,
+    fresh: Bool,
+    out: std::json::Builder
+) -> Bool {
+    let slash = std::str::index_of(entity, "/");
+    let key = entity[0..slash];
+    let role = std::json::find_string_field(body, "role");
+    let host = std::json::find_string_field(body, "host");
+    let provider = std::json::find_string_field(body, "provider");
+    let was = placed_on(key, role);
+    let marked = std::io::fs::file_exists(placed_path(key, role));
+    let target = AppliedOn {
+        host: if len(host) == 0 { "local" } else { host },
+        provider: provider,
+        address: if host == "local" || len(host) == 0 {
+            ""
+        } else {
+            recorded_host(root, host).address
+        },
+        project: if (host == "local" || len(host) == 0) && role != "services" {
+            local_habitat_project()
+        } else {
+            std::json::find_string_field(body, "project")
+        },
+    };
+    // an organism's own services never applied are applied nowhere yet
+    // (applied here, a marker says so)
+    let moved = was.host != target.host && (role != "services" || marked);
+    let mut ok = true;
+    let mut why = "";
+    if moved && role == "memory" && key == allocation_key(root) {
+        ok = false;
+        why = "habitat_record: the habitat's own memory holds its record, the one that places everything: it is not moved (a moved memory starts empty, and there is no migration)";
+    } else if moved && role == "memory" && !fresh {
+        ok = false;
+        why = "memory_holds_rows: the memory on " + was.host
+            + " holds the organism's record, and a moved memory starts empty on its new host (there is no migration): apply with --fresh to start it empty there";
+    }
+    if ok && moved {
+        let gone = if role == "services" {
+            let mut r = services_render(body);
+            r.project = was.project;
+            if was.host == "local" {
+                ComposeProvider { }.withdraw("local", r)
+            } else {
+                SshProvider { root: root }.withdraw(was.host, r)
+            }
+        } else {
+            placed_withdraw(key, role, was)
+        };
+        // nothing ran there yet is nothing to take down; any other failure
+        // stops the move: the allocation stays where it was applied, and
+        // the failure is the apply's outcome
+        if !gone.ok && !std::str::contains(gone.why, "no such service") {
+            ok = false;
+            why = "withdrawal_failed: it was not withdrawn from " + was.host + " ("
+                + trim_nl(gone.why) + "), so it stays there and nothing was applied on "
+                + target.host;
+        }
+        if ok && fresh && role != "services" {
+            let forgot = placed_forget(key, role, target);
+            if forgot.code != 0 {
+                ok = false;
+                why = "fresh_reset_failed: its data on " + target.host + " was not forgotten ("
+                    + trim_nl(forgot.stderr) + "), so nothing was applied there";
+            }
+        }
+    }
+    let applied = if !ok {
+        RenderApplied { why: why }
+    } else if role == "services" {
+        let kept = place_cache(key, role, target);
+        if target.host == "local" {
+            ComposeProvider { }.apply("local", services_render(body))
+        } else {
+            SshProvider { root: root }.apply(target.host, services_render(body))
+        }
+    } else {
+        let kept = place_cache(key, role, target);
+        placed_apply(key, role)
+    };
+    if ok && !applied.ok {
+        // the placement it was applied at stays the one in force (and one
+        // never applied stays never applied)
+        if marked {
+            let back = place_cache(key, role, was);
+        } else {
+            std::io::fs::unlink(placed_path(key, role)) or discard;
+        }
+    }
+    let a = Allocation {
+        role: role,
+        instance: key,
+        provider: provider,
+        host: target.host,
+        project: target.project,
+        // a part the habitat's own server holds for it is observed as that
+        // server (an organism reusing the habitat's memory has no
+        // `memory-<key>` of its own, and its pulse is the habitat's)
+        service: if role == "services" {
+            ""
+        } else if (role == "memory" || role == "nerves") && part_held_by_habitat(key, role) {
+            compose_service(role, allocation_key(root))
+        } else {
+            compose_service(placed_role(role), key)
+        },
+        placed: true,
+    };
+    let seen = if !applied.ok {
+        AllocationState { detail: applied.why }
+    } else if target.host == "local" {
+        if role == "services" {
+            AllocationState { state: "up", detail: "applied" }
+        } else {
+            ComposeProvider { }.observe(a)
+        }
+    } else if role == "services" {
+        AllocationState { state: "up", detail: "applied" }
+    } else {
+        SshProvider { root: root }.observe(a)
+    };
+    let row = std::json::Builder { };
+    row.begin_object();
+    row.string_field("host", target.host);
+    row.string_field("provider", provider);
+    row.bool_field("ok", applied.ok);
+    row.string_field("why", applied.why);
+    row.string_field("state", seen.state);
+    row.bool_field("fresh", fresh && moved);
+    if applied.ok { row.field("published", applied.published); }
+    row.end_object();
+    let recorded = j.append(j.revision(), "habitat.applied", entity, row.result());
+    out.begin_object();
+    out.string_field("allocation", entity);
+    // the host as a person knows it: the habitat's own machine by the name
+    // it is reached at, not the `local` its rows branch on
+    out.string_field("host", host_label(target.host));
+    out.string_field("provider", provider);
+    out.bool_field("ok", applied.ok);
+    out.string_field("why", applied.why);
+    out.string_field("state", seen.state);
+    out.string_field("detail", seen.detail);
+    out.end_object();
+    return applied.ok;
+}
+
+fn habitat_apply_run(root: String, only_host: String, fresh: Bool) -> HabitatApplied {
+    let j = RecordJournal { repo: root, author: "api" };
+    let moved_record = j.refresh();
+    let latest = habitat_latest(j, "habitat.allocated");
+    // the seam: the rows as the `--placement` file a render takes
+    let habitat_dir = local_habitat_dir();
+    std::io::fs::write_file(
+        habitat_dir + "/placement.json",
+        placement_export(j, latest),
+    ) or discard;
+    let own = allocation_key(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    let mut all_ok = true;
+    let mut restart = false;
+    let mut moved_any = false;
+    let n = j.revision();
+    let mut i = 0;
+    while i < n {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        let role = std::json::find_string_field(e.body, "role");
+        if !has_word(PLACEABLE_ROLES, role) { continue; }
+        if std::json::find_string_field(e.body, "provider") == "operator" { continue; }
+        let host = std::json::find_string_field(e.body, "host");
+        let slash = std::str::index_of(e.entity, "/");
+        let key = e.entity[0..slash];
+        let was = placed_on(key, role).host;
+        // one host's: what is placed there, and what leaves it
+        if len(only_host) > 0 && host != only_host && was != only_host { continue; }
+        let moved = was != (if len(host) == 0 { "local" } else { host });
+        // what it is doing, as it goes: a first build of an organism's
+        // images on its host takes minutes, and whoever follows the apply
+        // reads this
+        eprintln(
+            "applying ",
+            e.entity,
+            " on ",
+            host_label(if len(host) == 0 { "local" } else { host }),
+        );
+        if !apply_one(root, j, e.entity, e.body, fresh, out) { all_ok = false; }
+        if moved && key == own && (role == "memory" || role == "nerves") { restart = true; }
+        if moved && key != own && (role == "memory" || role == "nerves") { moved_any = true; }
+    }
+    out.end_array();
+    return HabitatApplied {
+        ok: all_ok,
+        code: if all_ok { "" } else { "not_applied" },
+        why: if moved_any {
+            "an organism whose memory or nerves moved derives the new address at `hale habitat migrate <organism>`; a memory started empty holds no record, and the organism is grafted again"
+        } else {
+            ""
+        },
+        restart: restart,
+        applied: out.result(),
+    };
+}

@@ -1,0 +1,101 @@
+// dna/api/tests/habitat_apply_test.hl — the head's apply runs outside its
+// request, and a graft through the head names the host it was asked for.
+//
+// `Commands::apply_allocations` starts the apply in a process of its own
+// and answers at once: an apply takes minutes, and the head serves its
+// commands one at a time, so an apply inside its request held every other
+// command behind it and outlived the head's deadline. One apply runs at a
+// time: while one runs, a second is answered with the running one's id. Its
+// log (`Commands::apply_log`) is read by the apply's id, never by a path
+// the caller supplies, and once it ends hands back what it came to, or
+// `{}` when its process stopped before it said. A graft the head runs names
+// the host the command named, `local` included: without it, the habitat's
+// own machine placed no services of a sapling's own.
+import ".." as api;
+import "../../core" as dna;
+
+fn write(path: String, text: String) {
+    std::io::fs::write_file(path, text) or discard;
+    std::test::assert_eq_str(std::io::fs::read_file(path) or "", text, "wrote " + path);
+}
+
+fn main() {
+    // ---- a graft names its host, `local` too
+    std::test::assert_eq_str(
+        api::graft_args("voice", "local", true),
+        "voice\n--no-head\n--host\nlocal",
+        "a graft on this machine places its services here",
+    );
+    std::test::assert_eq_str(
+        api::graft_args("voice", "rack-a", false),
+        "voice\n--no-head\n--host\nrack-a\n--no-library",
+        "a graft on another host",
+    );
+    std::test::assert_eq_str(
+        api::graft_args("voice", "", true),
+        "voice\n--no-head",
+        "a graft that names no host places nothing",
+    );
+
+    // ---- an apply's log, read by its id
+    let dir = dna::local_habitat_dir() + "/applies";
+    std::test::assert_eq_int(dna::run_tool("mkdir\n-p\n" + dir).code, 0, "the applies' directory");
+    let unknown = api::habitat_apply_log(api::ApplyLogAsk { apply: "apply-1" });
+    std::test::assert_eq_str(unknown.code, "not_found", "no apply of that id was started");
+    let outside = api::habitat_apply_log(api::ApplyLogAsk { apply: "/etc/passwd" });
+    std::test::assert_eq_str(outside.code, "invalid_apply", "a path is not an apply's id");
+    let climbing = api::habitat_apply_log(api::ApplyLogAsk { apply: "../grafts/voice" });
+    std::test::assert_eq_str(climbing.code, "invalid_apply", "nor a path out of the directory");
+
+    // one that ended, and said what it came to: the log and the outcome
+    let ended = dir + "/apply-2.log";
+    write(ended, "applying shop/services on local\napplied shop/services on local (compose): up\n");
+    write(ended + ".exit", "0\n");
+    write(
+        ended + ".reply",
+        "{\"ok\":true,\"code\":\"\",\"why\":\"\",\"restart\":false,\"applied\":\"[]\"}\n",
+    );
+    let done = api::habitat_apply_log(api::ApplyLogAsk { apply: "apply-2" });
+    std::test::assert(done.ok && done.done && done.exit == 0, "the apply ended: " + done.why);
+    std::test::assert(
+        std::str::starts_with(done.text, "applying shop/services on local\n"),
+        "its log from the start: " + done.text,
+    );
+    std::test::assert_eq_int(done.next, len(done.text), "and where the next page starts");
+    std::test::assert(
+        std::json::find_bool_field(done.outcome, "ok"),
+        "what it came to: " + done.outcome,
+    );
+    // by the path the command answered, exactly
+    let by_path = api::habitat_apply_log(api::ApplyLogAsk { apply: ended, from: done.next });
+    std::test::assert(by_path.ok && by_path.done && len(by_path.text) == 0, "read by its own path");
+
+    // one whose process is gone without an exit status: ended, no outcome
+    let stopped = dir + "/apply-3.log";
+    write(stopped, "applying shop/services on local\n");
+    let gone = dna::run_tool("sh\n-c\nsh -c 'exit 0' & p=$!; wait $p; echo $p");
+    write(stopped + ".pid", dna::trim_nl(gone.stdout) + "\n");
+    let cut = api::habitat_apply_log(api::ApplyLogAsk { apply: "apply-3" });
+    std::test::assert(cut.ok && cut.done && cut.exit == -1, "a stopped apply has ended");
+    std::test::assert_eq_str(cut.outcome, "{}", "without saying what it came to");
+
+    // ---- one at a time: a running apply is answered, not started again
+    let running = dir + "/apply-4.log";
+    write(running, "applying shop/services on local\n");
+    let live = dna::run_tool("sh\n-c\nsleep 60 >/dev/null 2>&1 & echo $!");
+    let pid = dna::trim_nl(live.stdout);
+    write(running + ".pid", pid + "\n");
+    write(dir + "/running", "apply-4\n");
+    let busy = api::habitat_apply(".", api::ApplyAsk { host: "" });
+    std::test::assert(
+        !busy.ok && busy.code == "applying" && busy.apply == "apply-4" && busy.log == running,
+        "a second apply follows the running one: " + busy.code + " " + busy.apply,
+    );
+    let follow = api::habitat_apply_log(api::ApplyLogAsk { apply: "apply-4" });
+    std::test::assert(follow.ok && !follow.done, "the running one has not ended");
+    std::test::assert_eq_int(dna::run_tool("kill\n" + pid).code, 0, "its process stops");
+
+    // ---- a host is one word
+    let bad = api::habitat_apply(".", api::ApplyAsk { host: "a b" });
+    std::test::assert_eq_str(bad.code, "invalid_host", "a host is one word");
+}

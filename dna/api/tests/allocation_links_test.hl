@@ -151,11 +151,11 @@ fn main() {
         "shop/services",
         "{\"host\":\"rack-b.lan\",\"ok\":false,\"why\":\"withdraw failed\"}",
     );
-    let kept = api::habitat_latest_applied(j).get("shop/services") or api::LatestRow { };
+    let kept = api::habitat_latest_applied(j).get("shop/services") or dna::LatestRow { };
     std::test::assert_eq_int(kept.at, 0, "a failed apply leaves the last that took");
     applied(j, "shop/services", "{\"host\":\"rack-b.lan\",\"ok\":true,\"published\":[]}");
     applied(j, "shop/services", "{\"host\":\"rack-b.lan\",\"ok\":false,\"why\":\"apply failed\"}");
-    let empty = api::habitat_latest_applied(j).get("shop/services") or api::LatestRow { };
+    let empty = api::habitat_latest_applied(j).get("shop/services") or dna::LatestRow { };
     std::test::assert_eq_int(empty.at, 2, "a successful empty publication replaces it");
     std::test::assert_eq_str(
         std::json::find_field_raw(j.read(empty.at).body, "published"),

@@ -1104,6 +1104,10 @@ fn naming_down(st: AllocationState, down: String) -> AllocationState {
     };
 }
 
+// How long the observation of an address waits for its listener to accept:
+// one on the loopback or the LAN accepts at once.
+const OBSERVE_DIAL: Duration = 2s;
+
 // An allocation served at `address` (`http://<host>:<port>`): up while
 // something accepts connections there. The loopback is reached as this
 // process reaches this machine's (`loopback_host`); the habitat's declared
@@ -1123,9 +1127,18 @@ fn observe_address(address: String) -> AllocationState {
     let port = std::str::parse_int(hostport[(colon + 1)..len(hostport)]) or 0;
     if port < 1 || port > 65535 { return AllocationState { detail: "no port in " + address }; }
     let local = host == "127.0.0.1" || host == "localhost";
-    let mut fd = std::io::tcp::connect(if local { loopback_host() } else { host }, port) or - 1;
+    // each dial bounded: an address that drops what is sent to it held a
+    // plain connect for the kernel's ~2 min of SYN retransmits, and with it
+    // the read that observes (the head serves its commands one at a time,
+    // so every command behind it waited too)
+    let mut fd = std::io::tcp::connect_within(
+        if local { loopback_host() } else { host },
+        port,
+        OBSERVE_DIAL,
+    )
+    or - 1;
     if fd < 0 && !local && host == declared_address() {
-        fd = std::io::tcp::connect(loopback_host(), port) or - 1;
+        fd = std::io::tcp::connect_within(loopback_host(), port, OBSERVE_DIAL) or - 1;
     }
     if fd < 0 { return AllocationState { detail: "nothing answers at " + address }; }
     std::io::tcp::close_fd(fd);

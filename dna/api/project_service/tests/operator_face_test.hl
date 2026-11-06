@@ -325,7 +325,7 @@ fn main() {
     );
     std::test::assert_eq_int(no_graft.status, 401, "graft without a session: " + no_graft.body);
     let no_apply = row_call(
-        face, "", "apply_allocations", "fnv1a64:1925b45215c6bc4b",
+        face, "", "apply_allocations", "fnv1a64:d588e13c1d53a78e",
         "{\"host\": \"\", \"fresh\": false}",
     );
     std::test::assert_eq_int(no_apply.status, 401, "apply_allocations without a session");
@@ -487,13 +487,37 @@ fn main() {
         std::str::contains(placed_row.body, "\"ok\":true"),
         "place_allocation places on a ready host: " + placed_row.body,
     );
-    let pulse = row_call(
-        face, jar, "apply_allocations", "fnv1a64:1925b45215c6bc4b",
+    // apply through the row: it answers at once with the apply's id, and
+    // its log (`Commands::apply_log`) ends with the pulse
+    let started = row_call(
+        face, jar, "apply_allocations", "fnv1a64:d588e13c1d53a78e",
         "{\"host\": \"rack-a.lan\", \"fresh\": false}",
     );
     std::test::assert(
-        pulse.status == 200 && std::str::contains(pulse.body, "\"applied\""),
-        "apply_allocations answers the pulse: " + pulse.body,
+        started.status == 200 && std::str::contains(started.body, "\"code\":\"started\""),
+        "apply_allocations answers at once with the apply it started: " + started.body,
+    );
+    let apply = std::json::find_string_field(started.body, "apply");
+    let mut pulse = row_call(
+        face, jar, "apply_log", "fnv1a64:88c5c59c84c94784",
+        "{\"apply\": \"" + apply + "\", \"from\": 0}",
+    );
+    let mut waited = 0;
+    while waited < 240 && !std::json::find_bool_field(pulse.body, "done") {
+        std::time::sleep(500ms);
+        pulse = row_call(
+            face, jar, "apply_log", "fnv1a64:88c5c59c84c94784",
+            "{\"apply\": \"" + apply + "\", \"from\": 0}",
+        );
+        waited = waited + 1;
+    }
+    std::test::assert(
+        pulse.status == 200 && std::json::find_bool_field(pulse.body, "done")
+            && std::str::contains(
+                std::json::find_string_field(pulse.body, "outcome"),
+                "\"applied\"",
+            ),
+        "the apply's log ends with the pulse: " + pulse.body,
     );
 
     // graft through the row: it answers at once with its log, and the log

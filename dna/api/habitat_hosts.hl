@@ -181,12 +181,12 @@ fn host_targets_file(root: String, at: String, name: String, port: Int, offering
         b.end_object();
     }
     let j = habitat_journal(root);
-    let latest = habitat_latest(j, "habitat.host");
+    let latest = dna::habitat_latest(j, "habitat.host");
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "habitat.host" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if e.kind != "habitat.host" || !dna::habitat_holds(latest, e.entity, i - 1) { continue; }
         let h = dna::host_of_row(e.body);
         if h.state == "removed"
             || (h.provider != "ssh" && h.provider != "joined")
@@ -217,13 +217,15 @@ fn host_targets_file(root: String, at: String, name: String, port: Int, offering
 @bounded_by(root)
 fn host_allocations(root: String, name: String) -> String {
     let j = habitat_journal(root);
-    let latest = habitat_latest(j, "habitat.allocated");
+    let latest = dna::habitat_latest(j, "habitat.allocated");
     let mut out = "";
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "habitat.allocated" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if e.kind != "habitat.allocated" || !dna::habitat_holds(latest, e.entity, i - 1) {
+            continue;
+        }
         if std::json::find_string_field(e.body, "host") == name {
             out = out + (if len(out) > 0 { " " } else { "" }) + e.entity;
         }

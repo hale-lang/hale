@@ -152,13 +152,13 @@ fn placement_of_row(body: String) -> PlacementRecord {
 // The latest `habitat.placed` or `habitat.unplaced` row of each placement
 // in `j`.
 @bounded_by(j)
-fn placements_latest(j: dna::Journal) -> LatestRows {
-    let latest = LatestRows { };
+fn placements_latest(j: dna::Journal) -> dna::LatestRows {
+    let latest = dna::LatestRows { };
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
         if e.kind == "habitat.placed" || e.kind == "habitat.unplaced" {
-            latest.set(LatestRow { entity: e.entity, at: i });
+            latest.set(dna::LatestRow { entity: e.entity, at: i });
         }
         i = i + 1;
     }
@@ -180,7 +180,7 @@ fn habitat_placements(root: String) -> PlacementRows {
         let e = j.read(i);
         i = i + 1;
         if e.kind != "habitat.placed" && e.kind != "habitat.unplaced" { continue; }
-        if !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if !dna::habitat_holds(latest, e.entity, i - 1) { continue; }
         all.value(e.body);
         if e.kind == "habitat.placed" { held.value(e.body); }
     }
@@ -295,7 +295,7 @@ fn placement_targets_write(root: String, organism: String, command: String, id: 
     while i < j.revision() {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "habitat.placed" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if e.kind != "habitat.placed" || !dna::habitat_holds(latest, e.entity, i - 1) { continue; }
         let p = placement_of_row(e.body);
         if p.organism != organism || p.command != command || p.id != id { continue; }
         let h = placement_host(root, p.host);

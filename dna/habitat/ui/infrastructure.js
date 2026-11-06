@@ -2,7 +2,8 @@
 // allocated (role, instance, provider, host, and the state its provider
 // observes), the policy that says which provider a role is allocated by,
 // a host picker per allocation (place_allocation) and apply
-// (apply_allocations), which answers the pulse: what each provider
+// (apply_allocations), which starts the apply and answers at once; its log
+// (apply_log) is followed until it ends with the pulse: what each provider
 // observes after it. Moving a memory that holds a record is refused until
 // the person confirms starting it empty (a re-apply with fresh).
 import {
@@ -12,6 +13,7 @@ import {
   commandsHosts,
   commandsPlaceAllocation,
   commandsApplyAllocations,
+  commandsApplyLog,
 } from "./head-client.js";
 import { hostLabel } from "./host-label.js";
 
@@ -94,11 +96,42 @@ function showPulse(reply) {
   }
 }
 
+// Follow the apply `id` the head started (Commands::apply_log), saying
+// what it is applying, until it ends: what it came to, or null.
+async function followApply(id) {
+  let from = 0;
+  let text = "";
+  for (let tries = 0; tries < 2000; tries++) {
+    let out;
+    try { out = await commandsApplyLog({ endpoint }, { apply: id, from }); } catch { out = null; }
+    if (out && out.kind === "result" && out.value.ok) {
+      text += out.value.text;
+      from = out.value.next;
+      const doing = text.split("\n").filter((l) => l.startsWith("applying ")).pop();
+      if (doing) outcome(doing);
+      if (out.value.done) {
+        try { return JSON.parse(out.value.outcome || "{}"); } catch { return {}; }
+      }
+    } else if (out && out.kind === "result") {
+      return { ok: false, code: out.value.code, why: out.value.why };
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return null;
+}
+
 async function apply(fresh) {
   $("apply-confirm").hidden = true;
+  $("apply-all").disabled = true;
   const out = await commandsApplyAllocations({ endpoint }, { host: "", fresh });
-  if (out.kind !== "result") { outcome(refusedText(out)); return; }
-  const r = out.value;
+  if (out.kind !== "result") { $("apply-all").disabled = false; outcome(refusedText(out)); return; }
+  let r = out.value;
+  if (r.apply) {
+    outcome(r.code === "applying" ? r.why : "applying");
+    r = (await followApply(r.apply)) || { ok: false, code: "not_ended", why: "the apply did not end while this page followed it" };
+    if (!("ok" in r)) r = { ok: false, code: "no_outcome", why: "the apply ended without saying what it came to" };
+  }
+  $("apply-all").disabled = false;
   showPulse(r);
   const applied = parse(r.applied);
   const needsFresh = !fresh && applied.find((p) => !p.ok && (p.why || "").includes("--fresh"));
