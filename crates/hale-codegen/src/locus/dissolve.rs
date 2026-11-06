@@ -274,6 +274,40 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 None => self.drain_read_outside_locus = true,
             }
             let proc_raw = self.emit_process_draining_load("draining.process")?;
+            // A read that sees the process drain tells the runtime: the
+            // run() it runs in has seen it, so its later waits (a final
+            // flush's pacing after its loop) run their length instead
+            // of being cut (`lotus_drain_seen`; spec/semantics.md §
+            // Drain cascade, step 2). A call only while a drain is up.
+            {
+                let func = self
+                    .builder
+                    .get_insert_block()
+                    .and_then(|b| b.get_parent())
+                    .expect("a draining read is lowered inside a function");
+                let zero = i64_t.const_int(0, false);
+                let up = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::NE, proc_raw, zero, "draining.up")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let seen_bb = self.context.append_basic_block(func, "draining.seen");
+                let after_bb = self.context.append_basic_block(func, "draining.after");
+                self.builder
+                    .build_conditional_branch(up, seen_bb, after_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(seen_bb);
+                let seen = self
+                    .module
+                    .get_function("lotus_drain_seen")
+                    .expect("lotus_drain_seen declared");
+                self.builder
+                    .build_call(seen, &[], "")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unconditional_branch(after_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(after_bb);
+            }
             self.builder
                 .build_or(raw, proc_raw, "draining.any")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?

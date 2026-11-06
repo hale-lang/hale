@@ -5281,11 +5281,30 @@ SIGINT or SIGTERM:
    reaches its check: such a `std::time::sleep` returns at its next
    100 ms slice (at once, on an `async_io` pool), and a
    deadline-bounded park on an `async_io` pool — a `recv` with a
-   timeout — reports its timeout. A wait begun after the drain — a
-   `drain()` or `dissolve()` body pacing a flush — runs its full
-   length. A receive blocked in the kernel on a pinned or classic
-   thread returns at its own timeout, not earlier; an untimed wait
-   (a plain `recv`) is not interrupted.
+   timeout — reports its timeout. A timed wait that **begins during
+   the drain** in the `run()` of a locus whose code reads `draining`
+   (one of the program's own; a standard-library locus's bodies run in
+   their caller's frame) returns at once the same way, until that `run()` has read
+   `draining` as `true`: a `while !self.draining { work();
+   std::time::sleep(30s); }` loop that was in `work()` when the
+   signal landed reaches its check instead of sleeping the full 30 s
+   into the grace. The `run()` includes what it calls; a handler is
+   not part of it (one delivered inside the run()'s sleep neither
+   takes its cut nor ends it by reading `draining`). On an `async_io`
+   pool such a park is resumed before the pool's shutdown abandons
+   what is still parked, so the `run()` returns and is joined. Every
+   other wait begun after the drain runs its full length: a `drain()`
+   or `dissolve()` body pacing a flush, a `run()` pacing a final
+   flush after its loop has seen the drain, a handler, and the
+   `run()` of a locus that never reads `draining`. A drain raised
+   again later (a second tree's, then a signal's) cuts a `run()` that
+   saw the first one until it reads `draining` again. A receive
+   blocked in the kernel on a pinned or classic thread returns at its
+   own timeout, not earlier; an untimed wait (a plain `recv`) is not
+   interrupted. (2026-11-06: a sleep begun during the drain ran its
+   full length wherever it was made, so the loop above outlasted the
+   5 s grace and died by the signal, exit 143, with its hooks unrun;
+   reported from hale-lang/voice.)
 3. The process's listeners stop: every named listener's socket is
    shut down (as `std::io::tcp::stop(name)` does), so each accept
    loop — a `std::http::Server`'s, a `std::io::tcp::Listener`'s, the

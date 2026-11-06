@@ -5324,6 +5324,15 @@ row	__StdTextStringSink@main1	__StdTextStringSink	main	default
 row	__StdTextStdoutSink@main1	__StdTextStdoutSink	main	default
 row	__StdTextStringSink@main2	__StdTextStringSink	main	default
 
+== crates/hale-codegen/tests/sleep_begun_during_drain.rs#8546c97a
+root	App	the entry
+row	App@literal1	App	main	default
+
+== crates/hale-codegen/tests/sleep_begun_during_drain.rs#bfb5e78d
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.f	Flusher	main	default
+
 == crates/hale-codegen/tests/sleep_drains_bus.rs#8e58d259
 root	App	the entry
 domain	pinned:App@literal1.pub_

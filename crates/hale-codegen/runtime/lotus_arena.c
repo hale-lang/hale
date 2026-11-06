@@ -2100,6 +2100,68 @@ static inline int lotus_process_draining(void) {
     return __atomic_load_n(&lotus_process_draining_flag, __ATOMIC_ACQUIRE) != 0;
 }
 
+/* What a drain does to a timed wait (spec/semantics.md § "Drain
+ * cascade (whole-process)", step 2). A timed wait in progress when the
+ * drain begins returns early (the wait's own snapshot: `sleep`'s entry
+ * load, a park's `park_pre_drain`). One that BEGINS during the drain
+ * returns at once too when it is made in the `run()` of a locus that
+ * reads `self.draining`, until that run() has read it as true: a
+ * `while !self.draining { work(); sleep(30s); }` loop that was mid-work
+ * when the signal landed starts its sleep after the drain, and before
+ * 2026-11-06 that sleep ran its full length, outlasted the grace, and
+ * the process died by the signal with its hooks unrun (reported from
+ * hale-lang/voice). Every other wait begun during the drain runs its
+ * length: a run() pacing a final flush after its loop has seen the
+ * drain, a `drain()` / `dissolve()` body, a handler, and a run() that
+ * never reads `draining` (it keeps running, at its own pace).
+ *
+ * The run() is a wait frame, entered and left by codegen around its
+ * body (inline loads and stores of `lotus_wait_frame`, no call, so a
+ * body pays nothing at its entry and the IR's call count does not
+ * move: `ir_size_band.rs`), what it calls included; a
+ * `drain()` / `dissolve()` body is a frame that cuts nothing extra, so
+ * a hook a watching run() reaches does not inherit its cut. The frame
+ * word is thread-local, and a coroutine's own across a park
+ * (`lotus_reclaim_ctx_t` carries it):
+ *   0     no extra cut: no frame (a handler, `fn main`), a hook, or the
+ *         run() of a locus that never reads `draining`;
+ *   1     a watching run() that has not seen the drain;
+ *   g + 2 a watching run() that saw the drain of generation g.
+ * The generation moves at every raise, so a run() that saw a tree's
+ * drain is cut again by a later signal's until it looks again. */
+static int64_t g_drain_gen = 0;
+/* Exported: codegen reads and writes it at a body's entry and returns. */
+__thread int64_t lotus_wait_frame = 0;
+#define t_wait_frame lotus_wait_frame
+
+static inline void lotus_drain_gen_bump(void) {
+    __atomic_fetch_add(&g_drain_gen, 1, __ATOMIC_RELEASE);
+}
+
+static inline int64_t lotus_drain_seen_word(void) {
+    return __atomic_load_n(&g_drain_gen, __ATOMIC_ACQUIRE) + 2;
+}
+
+/* Whether the drain cuts a wait begun in frame state `frame`, beyond
+ * the in-progress cut every timed wait takes. */
+static inline int lotus_drain_cuts_frame(int64_t frame) {
+    if (frame == 0 || !lotus_process_draining()) return 0;
+    return frame != lotus_drain_seen_word();
+}
+
+/* A read of `draining` answered true on the process flag: a watching
+ * run() it runs in has seen this drain. Elsewhere it marks nothing. */
+void lotus_drain_seen(void) {
+    if (t_wait_frame != 0) t_wait_frame = lotus_drain_seen_word();
+}
+
+/* `std::time::sleep`'s check, at its entry and after each slice, while
+ * a drain is up and the sleep began during it: 1 when the drain ends
+ * the sleep here. */
+int64_t lotus_drain_cuts_wait(void) {
+    return lotus_drain_cuts_frame(t_wait_frame);
+}
+
 /* A locus's on_failure never runs before its params are settled
  * (spec/semantics.md § "on_failure(c, err)"). A child can fail while
  * its parent is still setting params: a cooperative child's run()
@@ -9348,17 +9410,31 @@ typedef void (*lotus_handler_fn)(void *self, void *payload);
  * every handler call goes through this: the flag is cleared across it
  * and restored after, and whatever runs while the exporter yields
  * records its events as the program's. */
+/* A handler is its own wait frame (`t_wait_frame`, at "What a drain
+ * does to a timed wait"): one delivered inside a run()'s sleep slice or
+ * park drain neither inherits that run()'s drain cut nor marks it as
+ * having seen the drain by a `draining` read of its own. A run() cell
+ * delivered through here enters its own frame in its body. */
 #if LOTUS_OBSERVE
 static __thread int t_events_drainer = 0;
 #define LOTUS_CALL_HANDLER(fn, self, payload)                                  \
     do {                                                                       \
         int lotus_saved_drainer_ = t_events_drainer;                           \
+        int64_t lotus_saved_frame_ = t_wait_frame;                             \
         t_events_drainer = 0;                                                  \
+        t_wait_frame = 0;                                                      \
         ((lotus_handler_fn)(fn))((self), (payload));                           \
+        t_wait_frame = lotus_saved_frame_;                                     \
         t_events_drainer = lotus_saved_drainer_;                               \
     } while (0)
 #else
-#define LOTUS_CALL_HANDLER(fn, self, payload) ((lotus_handler_fn)(fn))((self), (payload))
+#define LOTUS_CALL_HANDLER(fn, self, payload)                                  \
+    do {                                                                       \
+        int64_t lotus_saved_frame_ = t_wait_frame;                             \
+        t_wait_frame = 0;                                                      \
+        ((lotus_handler_fn)(fn))((self), (payload));                           \
+        t_wait_frame = lotus_saved_frame_;                                     \
+    } while (0)
 #endif
 
 /* Pop and run exactly one cell (single-threaded inline-drain for the
@@ -9569,6 +9645,10 @@ typedef struct lotus_reclaim_ctx {
     int                      flushing;
     lotus_reclaim_owner_t   *owner;
     lotus_reclaim_scope_t   *scope;
+    /* Not reclaim state, but coroutine state saved and put back at the
+     * same points: the wait frame (`t_wait_frame`), so a run() parked on
+     * one coroutine does not lend its frame to the next. */
+    int64_t                  wait_frame;
 } lotus_reclaim_ctx_t;
 
 static inline void lotus_reclaim_ctx_save(lotus_reclaim_ctx_t *c) {
@@ -9579,6 +9659,7 @@ static inline void lotus_reclaim_ctx_save(lotus_reclaim_ctx_t *c) {
     c->flushing = t_reclaim_flushing;
     c->owner    = t_reclaim_owner;
     c->scope    = t_reclaim_scope;
+    c->wait_frame = t_wait_frame;
 }
 
 static inline void lotus_reclaim_ctx_load(const lotus_reclaim_ctx_t *c) {
@@ -9589,6 +9670,7 @@ static inline void lotus_reclaim_ctx_load(const lotus_reclaim_ctx_t *c) {
     t_reclaim_flushing = c->flushing;
     t_reclaim_owner    = c->owner;
     t_reclaim_scope    = c->scope;
+    t_wait_frame       = c->wait_frame;
 }
 
 void *lotus_reclaim_scope_enter(void *owner) {
@@ -11233,10 +11315,18 @@ typedef struct lotus_coro {
     int64_t           park_deadline_ns;
     int               park_timed_out;
     /* GH #1039: 1 when this timed park began before the process
-     * drain did. The drain expires only such parks — a wait already
-     * in progress — never one a `drain()` / `dissolve()` body starts
-     * afterwards to pace a flush. */
+     * drain did: the drain expires such a park, a wait already in
+     * progress. */
     int               park_pre_drain;
+    /* The wait frame the park was made in (`t_wait_frame`): the drain
+     * also expires a park begun during it by a watching run() that has
+     * not seen it (`lotus_drain_cuts_frame`). */
+    int64_t           park_wait_frame;
+    /* How many times the drain's cut resumed this coroutine while its
+     * pool was shutting down (`lotus_coro_drain_due`): bounded, so a
+     * loop that re-parks without ever reading `draining` is abandoned
+     * at the shutdown as before, not resumed forever. */
+    int               park_shutdown_cuts;
     /* Handler invocation parameters captured at coro creation. The
      * thunk reads them after swapcontext and tail-calls the handler. */
     void             *handler;
@@ -14000,6 +14090,8 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->park_deadline_ns = 0;
     c->park_timed_out   = 0;
     c->park_pre_drain   = 0;
+    c->park_wait_frame  = 0;
+    c->park_shutdown_cuts = 0;
     c->handler     = cell->handler;
     c->self_ptr    = cell->self_ptr;
     /* Payload ownership is taken only once this slot is certain to run
@@ -14130,6 +14222,7 @@ int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
     c->park_deadline_ns = deadline_ns;
     c->park_timed_out   = 0;
     c->park_pre_drain   = !lotus_process_draining();
+    c->park_wait_frame  = t_wait_frame;
     /* Link onto parked head — single-threaded access (only the
      * worker touches this list), no lock needed. */
     c->next = p->parked_head;
@@ -14190,6 +14283,7 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
     c->park_deadline_ns = lotus_now_mono_ns() + ns;
     c->park_timed_out   = 0;
     c->park_pre_drain   = !lotus_process_draining();
+    c->park_wait_frame  = t_wait_frame;
     c->next = p->parked_head;
     p->parked_head = c;
     /* Same caller-arena snapshot discipline as the fd park: the
@@ -14593,6 +14687,17 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
  *
  * Returns 0 on shutdown-with-empty-queue-and-no-parked; 1 after a
  * cell or wakeup advanced state (caller loops). */
+/* GH #1039: whether the drain ends parked coroutine `c`'s timed park
+ * now: a park already in progress when the drain began, or one begun
+ * during it by a watching run() that has not seen it
+ * (`lotus_drain_cuts_frame`). An untimed park (a plain accept) never. */
+#define LOTUS_SHUTDOWN_DRAIN_CUTS_MAX 64
+static inline int lotus_coro_drain_due(const lotus_coro_t *c, int draining) {
+    return c->park_deadline_ns > 0
+        && ((draining && c->park_pre_drain)
+            || lotus_drain_cuts_frame(c->park_wait_frame));
+}
+
 static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
     int replaying = lotus_replay_note_consume && lotus_replay_active;
     /* GH #296 phase 6: a replaying pool is schedule-driven by the
@@ -14616,7 +14721,28 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
      * sent waits (lotus_local_queued). */
     if (!cell_pending) lotus_local_queued_clear();
 
+    /* A timed park the drain cuts is resumed before the shutdown
+     * abandons anything: the run() parked in it is on its way to its
+     * `while !self.draining` check and its return, the step the
+     * teardown's join waits for. Without this a run() whose sleep began
+     * during the drain (it was mid-work at the signal) parked after its
+     * pool's shutdown was already set, was abandoned in that sleep, and
+     * never returned (2026-11-06; reported from hale-lang/voice). Each
+     * coroutine gets LOTUS_SHUTDOWN_DRAIN_CUTS_MAX such resumes, so one
+     * that re-parks without ever reading `draining` is abandoned below
+     * as before. */
+    int shutdown_drain_due = 0;
     if (shutdown_set && !cell_pending) {
+        int draining_at_shutdown = lotus_process_draining();
+        for (lotus_coro_t *dc = p->parked_head; dc; dc = dc->next) {
+            if (dc->park_shutdown_cuts < LOTUS_SHUTDOWN_DRAIN_CUTS_MAX
+                && lotus_coro_drain_due(dc, draining_at_shutdown)) {
+                shutdown_drain_due = 1;
+                break;
+            }
+        }
+    }
+    if (shutdown_set && !cell_pending && !shutdown_drain_due) {
         /* 2026-05-30 wakeable park: shutting down with no more cells, but
          * coros may still be parked. We do NOT resume them to unwind: a
          * forever-loop run() (the stdlib Listener / http Server
@@ -14679,14 +14805,13 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
                         || dc->park_deadline_ns < min_deadline)) {
                     min_deadline = dc->park_deadline_ns;
                 }
-                if (draining_now && dc->park_deadline_ns > 0
-                    && dc->park_pre_drain) {
+                if (lotus_coro_drain_due(dc, draining_now)) {
                     drain_due = 1;
                 }
             }
-            /* GH #1039: a timed park that began before the drain is
-             * due now — don't sleep toward a deadline the sweep below
-             * will treat as passed. */
+            /* GH #1039: a timed park the drain cuts is due now — don't
+             * sleep toward a deadline the sweep below will treat as
+             * passed. */
             if (drain_due) {
                 timeout_ms = 0;
             } else if (min_deadline > 0) {
@@ -14764,20 +14889,23 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
          * re-parked (mutating the list) before yielding back. */
         for (;;) {
             int64_t now = lotus_now_mono_ns();
-            /* GH #1039: the drain expires every TIMED park that was
-             * already in progress when it began — a `sleep` returns
-             * and a deadline-bounded recv reports its timeout, so a
-             * `while !self.draining` loop gets to its check. A park
-             * begun after the drain (a flush's pacing) runs its full
-             * length; an untimed park (a plain accept) stays parked. */
+            /* GH #1039: the drain expires every TIMED park already in
+             * progress when it began, and one begun during it by a
+             * watching run() that has not seen it yet — a `sleep`
+             * returns and a deadline-bounded recv reports its timeout,
+             * so a `while !self.draining` loop gets to its check. Any
+             * other park begun after the drain (a flush's pacing) runs
+             * its full length; an untimed park (a plain accept) stays
+             * parked. */
             int draining = lotus_process_draining();
             lotus_coro_t *expired = NULL;
             lotus_coro_t **epp = &p->parked_head;
             while (*epp) {
                 lotus_coro_t *ec = *epp;
-                if (ec->park_deadline_ns > 0
-                    && ((draining && ec->park_pre_drain)
-                        || now >= ec->park_deadline_ns)) {
+                int cut = lotus_coro_drain_due(ec, draining);
+                if (cut || (ec->park_deadline_ns > 0
+                            && now >= ec->park_deadline_ns)) {
+                    if (cut && shutdown_set) ec->park_shutdown_cuts++;
                     *epp = ec->next;
                     expired = ec;
                     break;
@@ -15165,6 +15293,7 @@ static void *lotus_drain_watcher(void *arg) {
         lotus_drain_die_by((int)g_drain_signal);
         _exit(128 + (int)g_drain_signal);
     }
+    lotus_drain_gen_bump();
     __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_SIGNAL, __ATOMIC_RELEASE);
     /* A server stops accepting and drains what it accepted. */
     lotus_tcp_stop_all_listeners();
@@ -15281,6 +15410,7 @@ int64_t lotus_drain_observer_step(int64_t op, int64_t instance) {
  * only builds its tree, one bound before the drain and one bound
  * after alike (spec/semantics.md § Drain cascade). */
 void lotus_tree_drain_raise(void) {
+    lotus_drain_gen_bump();
     __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_TREE, __ATOMIC_RELEASE);
 #if LOTUS_HAVE_ASYNC_IO
     for (size_t i = 0; i < g_coop_pool_count; i++) {
@@ -35677,6 +35807,7 @@ static void lotus_unwind_run(void) {
  * teardown is already running (an assertion in a `dissolve()` it runs is
  * a no-op). */
 void lotus_test_fail_unwind(void) {
+    lotus_drain_gen_bump();
     __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_TEST, __ATOMIC_RELEASE);
     if (!lotus_unwind_on_main()) {
         /* Main's state is main's: ask, and read nothing of it. */

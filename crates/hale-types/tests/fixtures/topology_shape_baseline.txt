@@ -1411,6 +1411,8 @@ crates/hale-codegen/tests/sibling_field_forward_ref.rs#1 0d7dee68f9aae9d5
 crates/hale-codegen/tests/sink_polymorphism.rs#0 9ccc42764bb223d8
 crates/hale-codegen/tests/sink_polymorphism.rs#1 9ccc42764bb223d8
 crates/hale-codegen/tests/sink_polymorphism.rs#2 43c17842f6eb846a
+crates/hale-codegen/tests/sleep_begun_during_drain.rs#3 2f77f88d6e593134
+crates/hale-codegen/tests/sleep_begun_during_drain.rs#4 dd4662942852e5f5
 crates/hale-codegen/tests/sleep_drains_bus.rs#0 027fd41739e0aa8f
 crates/hale-codegen/tests/sleep_drains_bus.rs#1 bebfc88da4622325
 crates/hale-codegen/tests/spsc_ring.rs#0 f21fbc665a9c2254
