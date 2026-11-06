@@ -5283,7 +5283,8 @@ SIGINT or SIGTERM:
    deadline-bounded park on an `async_io` pool — a `recv` with a
    timeout — reports its timeout. A timed wait that **begins during
    the drain** in the `run()` of a locus whose code reads `draining`
-   returns at once the same way, until that `run()` has read
+   (one of the program's own; a standard-library locus's bodies run in
+   their caller's frame) returns at once the same way, until that `run()` has read
    `draining` as `true`: a `while !self.draining { work();
    std::time::sleep(30s); }` loop that was in `work()` when the
    signal landed reaches its check instead of sleeping the full 30 s

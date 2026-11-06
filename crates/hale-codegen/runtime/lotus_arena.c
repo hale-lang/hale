@@ -2116,7 +2116,9 @@ static inline int lotus_process_draining(void) {
  * never reads `draining` (it keeps running, at its own pace).
  *
  * The run() is a wait frame, entered and left by codegen around its
- * body (`lotus_wait_frame_enter` / `_leave`), what it calls included; a
+ * body (inline loads and stores of `lotus_wait_frame`, no call, so a
+ * body pays nothing at its entry and the IR's call count does not
+ * move: `ir_size_band.rs`), what it calls included; a
  * `drain()` / `dissolve()` body is a frame that cuts nothing extra, so
  * a hook a watching run() reaches does not inherit its cut. The frame
  * word is thread-local, and a coroutine's own across a park
@@ -2128,7 +2130,9 @@ static inline int lotus_process_draining(void) {
  * The generation moves at every raise, so a run() that saw a tree's
  * drain is cut again by a later signal's until it looks again. */
 static int64_t g_drain_gen = 0;
-static __thread int64_t t_wait_frame = 0;
+/* Exported: codegen reads and writes it at a body's entry and returns. */
+__thread int64_t lotus_wait_frame = 0;
+#define t_wait_frame lotus_wait_frame
 
 static inline void lotus_drain_gen_bump(void) {
     __atomic_fetch_add(&g_drain_gen, 1, __ATOMIC_RELEASE);
@@ -2143,19 +2147,6 @@ static inline int64_t lotus_drain_seen_word(void) {
 static inline int lotus_drain_cuts_frame(int64_t frame) {
     if (frame == 0 || !lotus_process_draining()) return 0;
     return frame != lotus_drain_seen_word();
-}
-
-/* A `run()` (watches = 1 when its locus reads `draining`) or a
- * `drain()` / `dissolve()` (watches = 0) body begins; the frame it
- * replaces comes back, for `_leave`. */
-int64_t lotus_wait_frame_enter(int64_t watches) {
-    int64_t prev = t_wait_frame;
-    t_wait_frame = watches ? 1 : 0;
-    return prev;
-}
-
-void lotus_wait_frame_leave(int64_t prev) {
-    t_wait_frame = prev;
 }
 
 /* A read of `draining` answered true on the process flag: a watching

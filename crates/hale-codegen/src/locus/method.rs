@@ -37,6 +37,18 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// The runtime's thread-local wait-frame word, `lotus_wait_frame`
+    /// (`lotus_arena.c`, "What a drain does to a timed wait").
+    fn wait_frame_global(&mut self) -> inkwell::values::GlobalValue<'ctx> {
+        if let Some(g) = self.module.get_global("lotus_wait_frame") {
+            return g;
+        }
+        let g = self.module.add_global(self.context.i64_type(), None, "lotus_wait_frame");
+        g.set_linkage(inkwell::module::Linkage::External);
+        g.set_thread_local(true);
+        g
+    }
+
     /// A `run()`, `drain()` or `dissolve()` body is a wait frame
     /// (spec/semantics.md § Drain cascade, step 2). The run() of a locus
     /// that reads `draining` watches the drain: a timed wait it (or what
@@ -49,13 +61,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `lower_program` writes its initializer. The frame it replaces is
     /// the value returned, put back at every return
     /// ([`Self::emit_wait_frame_leaves`]). `None` for the other hooks,
-    /// and where no drain reaches the program (`DrainTerm` omitted).
+    /// where no drain reaches the program (`DrainTerm` omitted), and for
+    /// the standard library's loci (`__Std…`): their bodies run in their
+    /// caller's frame, so the stdlib's ~60 loci, compiled into every
+    /// program whether it builds them or not, add nothing to the floor
+    /// (`ir_size_band.rs`).
     fn emit_wait_frame_enter(
         &mut self,
         kind: &str,
         locus: &str,
     ) -> Result<Option<inkwell::values::IntValue<'ctx>>, CodegenError> {
-        if !matches!(kind, "run" | "drain" | "dissolve") {
+        if !matches!(kind, "run" | "drain" | "dissolve") || locus.starts_with("__Std") {
             return Ok(None);
         }
         if !self.cells.emits(hale_types::capability::Obligation::DrainTerm)? {
@@ -81,18 +97,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         } else {
             i64_t.const_zero()
         };
-        let enter = self
-            .module
-            .get_function("lotus_wait_frame_enter")
-            .expect("lotus_wait_frame_enter declared");
+        let frame = self.wait_frame_global();
         let prev = self
             .builder
-            .build_call(enter, &[watches.into()], "wait.frame.prev")
+            .build_load(i64_t, frame.as_pointer_value(), "wait.frame.prev")
             .map_err(e)?
-            .try_as_basic_value()
-            .left()
-            .expect("returns i64")
             .into_int_value();
+        self.builder.build_store(frame.as_pointer_value(), watches).map_err(e)?;
         Ok(Some(prev))
     }
 
@@ -106,10 +117,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         prev: Option<inkwell::values::IntValue<'ctx>>,
     ) -> Result<(), CodegenError> {
         let Some(prev) = prev else { return Ok(()) };
-        let leave = self
-            .module
-            .get_function("lotus_wait_frame_leave")
-            .expect("lotus_wait_frame_leave declared");
+        let frame = self.wait_frame_global();
         for bb in func.get_basic_blocks() {
             let Some(term) = bb.get_terminator() else { continue };
             if term.get_opcode() != inkwell::values::InstructionOpcode::Return {
@@ -117,7 +125,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             self.builder.position_before(&term);
             self.builder
-                .build_call(leave, &[prev.into()], "")
+                .build_store(frame.as_pointer_value(), prev)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         Ok(())

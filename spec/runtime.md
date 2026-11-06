@@ -658,10 +658,11 @@ delivering) when it began before the drain, or when
 `lotus_drain_cuts_wait` says the drain cuts a wait begun during it
 (`semantics.md` § "Drain cascade (whole-process)", step 2). That
 answer is the thread's **wait frame**: codegen enters one at the top
-of every `run()`, `drain()` and `dissolve()` body
-(`lotus_wait_frame_enter`, 1 for the `run()` of a locus whose code
-reads `draining`, else 0) and puts the previous one back at each
-return; every handler call (`LOTUS_CALL_HANDLER`) runs in frame 0;
+of every `run()`, `drain()` and `dissolve()` body of a program's own
+loci (a store to the thread-local `lotus_wait_frame`, no call: 1 for
+the `run()` of a locus whose code reads `draining`, else 0) and puts
+the previous one back at each return (a standard-library locus's bodies run in their caller's
+frame); every handler call (`LOTUS_CALL_HANDLER`) runs in frame 0;
 a coroutine carries its own across a park; a `draining` read that
 sees the process drain marks a watching frame as having seen this
 drain's generation (`lotus_drain_seen`). A watching frame that has
