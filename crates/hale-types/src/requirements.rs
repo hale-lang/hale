@@ -341,8 +341,15 @@ pub fn secrets(reads: &SecretReads, place: &dyn Fn(Span) -> Option<Place>) -> Ve
 
 /// The requirements artifact (spec/verification.md § "The requirements
 /// artifact"): `program` the checked program (its directory's name), each
-/// secret with its readers (that program), and the unnamed reads.
-pub fn render_json(program: &str, secrets: &[Secret], unnamed: &[(Place, Kind, String)]) -> String {
+/// secret with its readers (`readers`: the names the manifest's `readers`
+/// give the checked program for it, its directory's or a host command's
+/// `host.<command>`), and the unnamed reads.
+pub fn render_json(
+    program: &str,
+    secrets: &[Secret],
+    readers: &dyn Fn(&Secret) -> Vec<String>,
+    unnamed: &[(Place, Kind, String)],
+) -> String {
     use crate::topology::quote;
     let place = |p: &Place| format!("\"file\": {}, \"line\": {}, \"col\": {}", quote(&p.file), p.line, p.col);
     let mut out = String::new();
@@ -361,7 +368,8 @@ pub fn render_json(program: &str, secrets: &[Secret], unnamed: &[(Place, Kind, S
         }
         out.push_str(&format!("      \"kind\": {},\n", quote(s.kind.word())));
         out.push_str(&format!("      \"family\": {},\n", s.family));
-        out.push_str(&format!("      \"readers\": [{}],\n", quote(program)));
+        let names: Vec<String> = readers(s).iter().map(|r| quote(r)).collect();
+        out.push_str(&format!("      \"readers\": [{}],\n", names.join(", ")));
         out.push_str("      \"reads\": [");
         for (j, (p, k)) in s.reads.iter().enumerate() {
             out.push_str(if j == 0 { "\n" } else { ",\n" });

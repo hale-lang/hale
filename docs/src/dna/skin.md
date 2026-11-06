@@ -142,7 +142,7 @@ services:
   hale.toml:4:1: warning: `[dna.secrets.operator-token]` names `api` among its readers, but `api` never reads it: no read of `HALE_SECRET_OPERATOR_TOKEN` in its code. (…)
   ```
 
-  A read the program makes by a name it computes at run time is listed in the artifact as `unnamed`. Drift is a warning in this release (and fails `hale verify`, as any advisory does); a later release refuses it, and then writes `[dna.secrets]` from the code ([The requirements artifact](https://github.com/hale-lang/hale/blob/main/spec/verification.md#the-requirements-artifact-gh-1835)).
+  A program a host command runs is that command's reader too: when `[dna.host.node]`'s `install` names the program's directory or a file in it (`hale run node …`, `sh node/install.sh …`), a read in `node` agrees with `readers = ["host.node"]`, and the long-running `node` needs no grant of its own. A read the program makes by a name it computes at run time is listed in the artifact as `unnamed`. Drift is a warning in this release (and fails `hale verify`, as any advisory does); a later release refuses it, and then writes `[dna.secrets]` from the code ([The requirements artifact](https://github.com/hale-lang/hale/blob/main/spec/verification.md#the-requirements-artifact-gh-1835)).
 
 Automated workflow rotation (`secret-rotate@1`) is present in the workflow catalog but rejected at admission because workflows are not permitted to write to `vault`:
 

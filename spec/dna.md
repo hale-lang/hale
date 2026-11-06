@@ -6218,10 +6218,17 @@ readers = ["worker"]
   difference: a secret read but not declared, read by a program its
   `readers` do not name, read as a family's members when it is no family,
   or declared for a program that never reads it (at the table's line in
-  `hale.toml`). Drift is a warning in this version and is refused in a
-  later one, after which the section is written by the checker rather than
-  by hand. What the code cannot say yet stays the declaration's alone:
-  `kind`, `person`, `optional`, and a host command's reading.
+  `hale.toml`). A program a host command runs reads as that command too:
+  a read in the program whose directory the command's `install` or
+  `uninstall` names, itself or a file directly in it (`hale run node …`,
+  `sh node/install.sh …`), is `host.<command>`'s, and either name among
+  its `readers` agrees with it. A host command that names no program's
+  directory runs what the checker cannot tell, so a read whose `readers`
+  name such a command is not compared. Drift is a warning in this version
+  and is refused in a later one, after which the section is written by the
+  checker rather than by hand. What the code cannot say yet stays the
+  declaration's alone: `kind`, `person`, `optional`, and whether a host
+  command's script reads a secret itself.
 
 ### The habitat's models
 

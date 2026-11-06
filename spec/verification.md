@@ -2011,9 +2011,15 @@ per-evaluation: `--workspace` and `--matrix` refuse it.
   and carries it on to code the checker does not follow to a locus. A
   secret's `kind` is the strongest of its reads' (`credential`, then
   `signer`, then `entry`); each read carries its own.
-- **`readers`.** The programs that read it: the checked program. An
-  environment that runs several programs reads each one's artifact and
-  joins them by `source` and `name`.
+- **`readers`.** Who reads it, as a manifest's `readers` name them: the
+  checked program by its directory's name, or `host.<command>` when a
+  host command runs it (§ "Drift against `[dna.secrets]`" below). A
+  declared secret lists the names its declaration gives the program, when
+  it gives any, and otherwise the one it should: the host command's, else
+  the directory's. A secret of any other source, which no declaration
+  narrows, lists all of the program's names. An environment that runs
+  several programs reads each one's artifact and joins them by `source`
+  and `name`.
 - **`reads`.** Each read's place, its file relative to the program's
   directory, sorted.
 - **`unnamed`.** A `std::secret` literal whose source is computed
@@ -2046,12 +2052,26 @@ difference is a **warning** in this version, refused in a later one:
 | a family's prefix read for a secret that is no family | at the first read |
 | a secret whose `readers` name the program, that the program never reads | at the manifest's `[dna.secrets.<name>]` line (`hale.toml:<line>:1`) |
 
+A program goes by every name a manifest's `readers` may give it: its
+directory's, and `host.<command>` for each `[dna.host.<command>]` that
+runs it. A host command runs the program whose directory one of its
+`install` or `uninstall` words names, relative to the manifest's
+directory (where the habitat runs it): the directory itself (`hale run
+node …`) or a file directly in it (`sh node/install.sh …`). A read agrees
+with a declaration naming any of the program's names, and the warning
+for one naming none of them names them all, the host command's first. A
+host command none of whose words names a directory holding a `.hl` file,
+or a file directly in one, runs a program the checker cannot tell: a read
+whose `readers` name such a command is not compared, rather than
+demanding a reader that would hand the secret to the wrong program.
+
 The last is reported only when the check loaded the whole program (a
 seed directory, or a file with no other non-test `.hl` file beside it),
-so a file checked alone never reports its siblings' reads missing. A
-test program (`*_test.hl`) is never compared, and a secret no program
-reads (a person's alone, or a host command's, `host.<command>`) is not
-the program's to read. A declaration the toolchain refuses is one
+so a file checked alone never reports its siblings' reads missing, and
+only for a declaration naming the program by its directory: a host
+command's script may read a secret itself. A test program (`*_test.hl`)
+is never compared, and a secret no program reads (a person's alone, or a
+host command's, `host.<command>`) is not the program's to read. A declaration the toolchain refuses is one
 warning at the manifest, and nothing is compared. `--json` carries a
 warning at the manifest as a record of its own whose `file` is the
 manifest. `hale verify` fails on these as on any advisory.
