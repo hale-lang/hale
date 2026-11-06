@@ -13,7 +13,7 @@ curl -fsSL https://hale-lang.org/install.sh | sh
 ```
 
 - Set `HALE_INSTALL=/custom/dir` to change the installation directory.
-- Set `HALE_VERSION=v0.32.5` to pin a specific version.
+- Set `HALE_VERSION=v0.32.6` to pin a specific version.
 
 ### Manual Archive Installation
 
