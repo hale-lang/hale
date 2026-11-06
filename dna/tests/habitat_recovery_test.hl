@@ -1,0 +1,155 @@
+// dna/tests/habitat_recovery_test.hl — a first `up` whose memory never came
+// up, and the habitat it left recovered: the first run on a machine whose
+// docker had no room left.
+//
+// `hale habitat up --host local` is `up` on this machine (`local` is the
+// machine the person types on, as it is to `graft` and `place`). Its
+// memory's server starts and stops again here because its password file is
+// emptied under it, as a full disk stops `initdb`: `up` fails saying what
+// the container said, its state and its last lines, and names no knob that
+// would not help. The habitat it leaves, its record never born, can still
+// be forgotten: `down --forget --plan` is made from what this machine holds
+// and says so. Once the cause is gone, `up` again converges: the identity
+// whose record never reached memory is drawn again, what was minted for it
+// goes with it, and the habitat is born whole; a third `up` changes nothing.
+// The habitat is this file's own (`hale test` gives each file one). Without
+// docker compose nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `script` (one line) run by `sh -c` in `dir`, with no server of anyone
+// else's named; `$HALE` is the toolchain, `$H` the habitat's directory and
+// `$V` the vault's.
+fn sh_in(dir: String, script: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" || exit 2; unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY; export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE=\"$2\" H=\"$3\" V=\"$4\"; "
+            + script + "\nsh\n" + dir + "\n" + toolchain() + "\n" + dna::local_habitat_dir() + "\n"
+            + std::secret::vault_local_dir(),
+    );
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("habitat_recovery_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_recovery_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let scratch = dna::scratch_root("habitat-recovery");
+    dna::reap_on_exit(scratch);
+    let genome = dna::local_habitat_dir() + "/genome";
+
+    // ---- the first `up`, on `--host local`: its memory's password file is
+    // emptied as soon as it is written, so the server's first start fails
+    // and docker restarts it again and again
+    let first = sh_in(
+        scratch,
+        "( i=0; while [ $i -lt 12000 ]; do for f in \"$H\"/allocations/*/postgres.secrets; do if [ -s \"$f\" ]; then : > \"$f\"; exit 0; fi; done; i=$((i+1)); sleep 0.05; done ) >/dev/null 2>&1 & w=$!; \"$HALE\" habitat up --host local --no-body --name recovery; c=$?; kill $w 2>/dev/null; exit $c",
+    );
+    let said = first.stdout + first.stderr;
+    let key = dna::allocation_key(genome);
+    std::test::assert(
+        first.code != 0 && len(key) == 12,
+        "the first up stops after pinning an identity: " + said,
+    );
+    std::test::assert(
+        !std::str::contains(said, "ssh: ") && !std::str::contains(said, "Could not resolve"),
+        "`--host local` is this machine, reached without SSH: " + said,
+    );
+    std::test::assert(
+        std::str::contains(said, "the memory allocation (memory-" + key + ") did not come up")
+            && std::str::contains(said, "memory-" + key + " is restarting")
+            && std::str::contains(said, "superuser password is not specified"),
+        "the failure says what the memory's container said, its state and its last lines: "
+            + said,
+    );
+    std::test::assert(
+        !std::str::contains(said, "put docker compose on PATH")
+            && !std::str::contains(said, "set HALE_DNA_MEMORY_DSN_OWNER"),
+        "and names no knob that would not help: " + said,
+    );
+
+    // ---- its record was never born: the forget's plan is made from what
+    // this machine holds, and says so
+    let plan = sh_in(scratch, "exec \"$HALE\" habitat down --forget --plan");
+    std::test::assert(
+        plan.code == 0
+            && std::str::contains(plan.stdout, "the habitat's record " + key + "… cannot be read")
+            && std::str::contains(plan.stdout, "this plan is made from what this machine holds"),
+        "a habitat whose record cannot be read is planned from this machine: " + plan.stdout
+            + plan.stderr,
+    );
+    std::test::assert(
+        std::str::contains(plan.stdout, "postgres-owner-" + key)
+            && std::str::contains(plan.stdout, "_memory-" + key + " of ")
+            && std::str::contains(
+                plan.stdout,
+                "the habitat's directory " + dna::local_habitat_dir(),
+            ),
+        "its vault slots, its memory's volume and its directory are in that plan: "
+            + plan.stdout,
+    );
+
+    // ---- the cause goes (the password file holds the vault's again), and
+    // the server comes up as docker restarts it
+    let freed = sh_in(
+        scratch,
+        "cat \"$V/postgres-owner-" + key + "\" > \"$H/allocations/" + key
+            + "/postgres.secrets\" && i=0; while [ $i -lt 120 ]; do docker ps --filter status=running --format '{{.Names}}' | grep -q 'memory-"
+            + key + "' && exit 0; i=$((i+1)); sleep 1; done; exit 1",
+    );
+    std::test::assert_eq_int(freed.code, 0, "the memory runs once its cause is gone");
+
+    // ---- `up` again converges: the identity is drawn again, and nothing
+    // of the first is left in the vault
+    let second = sh_in(scratch, "exec \"$HALE\" habitat up --no-body --name recovery");
+    let born = dna::allocation_key(genome);
+    std::test::assert(
+        second.code == 0
+            && std::str::contains(
+                second.stdout,
+                "resume  the habitat's earlier birth stopped before its record reached memory: born again",
+            )
+            && len(born) == 12
+            && born != key,
+        "the second up births the habitat whole, under an identity drawn again: "
+            + second.stdout + second.stderr,
+    );
+    let left = sh_in(scratch, "ls -A \"$V\" | grep -c '" + key + "' || true");
+    std::test::assert_eq_str(
+        dna::trim_nl(left.stdout),
+        "0",
+        "the first identity's slots are gone from the vault",
+    );
+    std::test::assert(
+        std::io::fs::file_exists(genome + "/.hale/dna/memory.env")
+            && std::io::fs::file_exists(
+                dna::local_habitat_dir() + "/allocations/" + born + "/postgres.secrets",
+            )
+            && !std::io::fs::file_exists(dna::local_habitat_dir() + "/allocations/" + key),
+        "its memory is the new identity's, and the first one's allocation is gone",
+    );
+
+    // ---- and a third `up` changes nothing
+    let third = sh_in(scratch, "exec \"$HALE\" habitat up --no-body --name recovery");
+    std::test::assert(
+        third.code == 0 && !std::str::contains(third.stdout, "born again")
+            && !std::str::contains(third.stdout, "born    ")
+            && dna::allocation_key(genome) == born,
+        "up again is idempotent: " + third.stdout + third.stderr,
+    );
+
+    let down = sh_in(scratch, "exec \"$HALE\" habitat down");
+    std::test::assert_eq_int(down.code, 0, "and down: " + down.stderr);
+    dna::scratch_done(scratch);
+}

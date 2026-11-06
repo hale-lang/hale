@@ -328,7 +328,12 @@ locus ReferenceInfrastructure {
         if !up.ok { return dna::Database { why: up.why }; }
         let hp = self.published(service, "4222");
         if len(hp) == 0 {
-            return dna::Database { why: "cannot read the nerves allocation's port from compose" };
+            return dna::Database {
+                why: dna::with_trouble(
+                    "cannot read the nerves allocation's port from compose",
+                    dna::placed_trouble(dna::allocation_key(self.root), "nerves"),
+                ),
+            };
         }
         return dna::Database { present: true, dsn: "nats://" + hp };
     }
@@ -355,7 +360,12 @@ locus ReferenceInfrastructure {
         if !up.ok { return dna::Database { why: up.why }; }
         let hp = self.published(service, "9090");
         if len(hp) == 0 {
-            return dna::Database { why: "cannot read the senses' store's port from compose" };
+            return dna::Database {
+                why: dna::with_trouble(
+                    "cannot read the senses' store's port from compose",
+                    dna::placed_trouble(dna::allocation_key(self.root), "senses"),
+                ),
+            };
         }
         return dna::Database { present: true, dsn: "http://" + hp };
     }
@@ -730,9 +740,17 @@ fn forgejo_up() -> String {
         return "cannot write " + secret;
     }
     let up = dna::run_tool_timeout(600, argv + "\nup\n-d\n--quiet-pull\nforge");
-    if up.code != 0 { return "the habitat's forge did not come up: " + dna::trim_nl(up.stderr); }
+    if up.code != 0 {
+        return dna::with_trouble(
+            "the habitat's forge did not come up: " + dna::trim_nl(up.stderr),
+            dna::compose_trouble(dna::local_habitat_project(), "forge", ""),
+        );
+    }
     if !forgejo_healthy(120) {
-        return "the habitat's forge did not answer at " + dna::forgejo_address() + " within 120 s";
+        return dna::with_trouble(
+            "the habitat's forge did not answer at " + dna::forgejo_address() + " within 120 s",
+            dna::compose_trouble(dna::local_habitat_project(), "forge", ""),
+        );
     }
     let listed = forgejo_exec("su-exec git forgejo admin user list --admin");
     if std::str::contains(listed.stdout, " " + dna::FORGEJO_ADMIN + " ") { return ""; }

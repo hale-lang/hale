@@ -1979,6 +1979,11 @@ fn service_log_tail(service: &str, n: usize) -> String {
     }
 }
 
+/// `text`'s lines, each indented four spaces.
+fn indented(text: &str) -> String {
+    text.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")
+}
+
 /// The state of `service` in the habitat's compose project when running.
 fn service_status(service: &str) -> Option<String> {
     let project = local_habitat_project();
@@ -2152,10 +2157,13 @@ fn up(args: &[String]) -> ExitCode {
         }
         i += 1;
     }
-    if on_host.is_none() && (ssh_user.is_some() || ssh_port.is_some()) {
-        eprintln!("hale habitat up: `--user` and `--port` are the SSH login of `--host <name>`\n{}", usage_text());
-        return ExitCode::from(2);
-    }
+    let on_host = match up_host(on_host, ssh_user.is_some() || ssh_port.is_some()) {
+        Ok(h) => h,
+        Err(why) => {
+            eprintln!("hale habitat up: {why}\n{}", usage_text());
+            return ExitCode::from(2);
+        }
+    };
     if let Some(host) = on_host {
         if no_body || profile != "local" {
             eprintln!("hale habitat up --host: a habitat on another machine is the `local` profile with its body and face (no `--no-body`)");
@@ -2238,6 +2246,19 @@ fn up(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     ExitCode::SUCCESS
+}
+
+/// The machine `up --host` names: `None` for this one. `local` is the
+/// machine the person types on, as it is to `graft`, `place` and the host
+/// verbs (`hosted::names_own_machine`), so `up --host local` is `up`: a
+/// habitat here, no SSH. `--user` and `--port` are the SSH login of another
+/// machine, refused without one.
+fn up_host(asked: Option<String>, login: bool) -> Result<Option<String>, String> {
+    let host = asked.filter(|h| h != hosted::LOCAL);
+    if host.is_none() && login {
+        return Err("`--user` and `--port` are the SSH login of `--host <name>`, another machine (`local` is this one)".to_string());
+    }
+    Ok(host)
 }
 
 pub(super) fn progress(msg: &str) {
@@ -2396,6 +2417,7 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
             // (or its memory was never provisioned): the identity is drawn
             // again, and what was made for it, holding no record, goes
             forget_allocation(&drawn[..12.min(drawn.len())]);
+            forget_identity(genome, &drawn);
             unpin(&manifest)?;
             out.push(format!("{:<8}the habitat's earlier birth stopped before its record reached memory: born again", "resume"));
             out.push(format!("{:<8}the habitat at {} (the one organism with no parent)", "born", genome.display()));
@@ -2528,6 +2550,37 @@ fn forget_allocation(key: &str) {
             .output();
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What the identity `id` left on this machine beside its allocation, once
+/// memory answered that it holds no record of it: the head's DSN derived
+/// from its memory (`.hale/dna/memory.env`, which would otherwise name a
+/// memory the identity drawn next does not own, and refuse that birth's
+/// provisioning), and the vault slots minted for it alone
+/// (`minted_for`), which nothing else names. A slot of the habitat's own,
+/// whatever its record (the forge's administrator, the OIDC client), stays.
+fn forget_identity(genome: &Path, id: &str) {
+    let _ = std::fs::remove_file(genome.join(".hale/dna/memory.env"));
+    let Some(vault) = super::vault_local_dir() else { return };
+    let names: Vec<String> = std::fs::read_dir(&vault).map(|es| es.flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)).collect()).unwrap_or_default();
+    for slot in minted_for(id, &names) {
+        let _ = std::fs::remove_file(vault.join(slot));
+    }
+}
+
+/// The slots of `names` minted for the record `id` alone: each named for
+/// its organization's schema (`dna_<id…>`: memory's roles, the nerves'
+/// accounts, the record's key), and the ones named for its allocation key
+/// (its memory's superuser, its SSH key, its Forgejo token).
+fn minted_for(id: &str, names: &[String]) -> Vec<String> {
+    if id.len() < 40 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Vec::new();
+    }
+    let id = id.to_ascii_lowercase();
+    let schema = format!("dna_{}", &id[..40]);
+    let key = &id[..12];
+    let keyed = [format!("postgres-owner-{key}"), format!("ssh-habitat-{key}"), format!("forgejo-{key}")];
+    names.iter().filter(|n| n.contains(&schema) || keyed.contains(n)).cloned().collect()
 }
 
 /// The record identity taken out of the manifest's `dna` table, every
@@ -3059,7 +3112,10 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     }
     let ran = cmd.output().map_err(|e| format!("docker compose: {e}"))?;
     if !ran.status.success() {
-        return Err(format!("docker compose up -d body face: {}", String::from_utf8_lossy(&ran.stderr).trim()));
+        // what compose answers is rarely the cause: a service that started
+        // and stopped again says it in its own log
+        let said: String = ["body", "face"].iter().filter(|s| service_status(s).is_none()).map(|s| (s, service_log_tail(s, 20))).filter(|(_, t)| !t.is_empty()).map(|(s, t)| format!("\n{s} is not running; its last lines:\n{}", indented(&t))).collect();
+        return Err(format!("docker compose up -d body face: {}{said}", String::from_utf8_lossy(&ran.stderr).trim()));
     }
     // an on-demand Grafana is created (its image pulled) and not started:
     // the face starts it at its first use (`compose start`, which makes
@@ -4348,6 +4404,48 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::grafana_restart_due;
+
+    #[test]
+    fn up_on_host_local_is_up_here() {
+        use super::up_host;
+        // `local` is the machine the person types on: no SSH, a habitat here
+        assert_eq!(up_host(Some("local".into()), false), Ok(None));
+        assert_eq!(up_host(None, false), Ok(None));
+        // another machine is reached over SSH, with its login
+        assert_eq!(up_host(Some("rack-a.lan".into()), true), Ok(Some("rack-a.lan".into())));
+        // a login is another machine's: refused for this one
+        assert!(up_host(Some("local".into()), true).unwrap_err().contains("`local` is this one"));
+        assert!(up_host(None, true).is_err());
+    }
+
+    #[test]
+    fn a_redrawn_identity_takes_only_its_own_slots() {
+        use super::minted_for;
+        let id = "b7db12d6d180241ef192ef198a522c8f0fa42056d2079510984f3334aaaaaaaa";
+        let other = "4d35d015e17d9901b677e13733f4950937039ab6d09e034b3fd8b012f5f4ba0e";
+        let names: Vec<String> = [
+            "postgres-dna_b7db12d6d180241ef192ef198a522c8f0fa42056d2079510984f3_spine",
+            "postgres-dna_b7db12d6d180241ef192ef198a522c8f0fa42056d2079510984f33_head",
+            "nats-dna_b7db12d6d180241ef192ef198a522c8f0fa42056d2079510984f3334-owner",
+            "dna-exchange-dna_b7db12d6d180241ef192ef198a522c8f0fa42056d2079510984f3334",
+            "postgres-owner-b7db12d6d180",
+            "ssh-habitat-b7db12d6d180",
+            "postgres-owner-4d35d015e17d",
+            "nats-dna_4d35d015e17d9901b677e13733f4950937039ab6d09e034b3fd8b012-owner",
+            "forgejo-admin",
+            "oidc-client-dna-local",
+            "forge-token",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mine = minted_for(id, &names);
+        assert_eq!(mine, names[..6].to_vec());
+        assert_eq!(minted_for(other, &names), vec![names[6].clone(), names[7].clone()]);
+        // no identity, or not one: nothing
+        assert!(minted_for("", &names).is_empty());
+        assert!(minted_for("not-an-identity-at-all-not-an-identity-at-all", &names).is_empty());
+    }
 
     #[test]
     fn grafana_is_restarted_only_for_a_changed_dashboard_it_was_left_running_over() {

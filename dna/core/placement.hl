@@ -158,6 +158,15 @@ fn placed_apply(key: String, role: String) -> RenderApplied {
     return SshProvider { root: local_habitat_dir() + "/genome" }.apply(p.host, r);
 }
 
+// What the container of `role` of `key` says when it is not running well
+// (`compose_trouble`): its state and its last lines, on this machine; ""
+// when it runs, or it is placed on another host.
+fn placed_trouble(key: String, role: String) -> String {
+    let p = placed_on(key, role);
+    if p.host != "local" && len(p.host) > 0 { return ""; }
+    return compose_trouble(local_habitat_project(), compose_service(placed_role(role), key), "");
+}
+
 // `role` of `key` taken down where `p` placed it.
 fn placed_withdraw(key: String, role: String, p: AppliedOn) -> RenderApplied {
     let r = placed_render(key, role, p);

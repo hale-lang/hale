@@ -685,6 +685,26 @@ from the bundled nursery, all through the face.
   it (`hale habitat migrate <organism>`).
 - Only a test's habitat is taken down (`sweep`), and any other only by
   `hale habitat down --forget`, planned and confirmed (below).
+- An allocation that does not come up is said in its own words. When
+  compose cannot bring an allocation up, or its server starts and stops
+  again (a full disk stops Postgres's `initdb`; compose's answer and an
+  `exec` refused while the container restarts say nothing of it), the
+  failure carries, for each container of the services it waited on that is
+  restarting, exited with a failure, dead, never started or unhealthy, its
+  state and the last lines it wrote, an older error line first when the
+  retries' lines bury it (`dna::compose_trouble`): memory, nerves, the
+  senses' store, the Forgejo, a tenant's allocations and the habitat's
+  `body` and `face` alike. It names no knob that would not help.
+- `up` after an `up` that failed converges. A birth is resumed from the
+  steps it recorded, and memory decides whether its record was born: an
+  identity whose record never reached memory (its memory never came up,
+  or never had a volume) is drawn again, and what was made for it goes
+  first: its allocation (services and volumes), the head's DSN derived
+  from its memory (`.hale/dna/memory.env`) and the vault slots minted for
+  it alone (memory's roles and superuser, the nerves' accounts, the
+  record's key, its SSH key and Forgejo token; a slot of the habitat's own
+  stays). The `up` after the cause is gone (a disk freed) births the
+  habitat whole, and the next changes nothing.
 
 ## Destroying: plan, then confirm
 
@@ -779,7 +799,15 @@ grouped by what each item is:
 
 The audit reads the records, so a memory of the habitat's project that is
 stopped (a plain `down` stops them) is started for it and stopped again
-when nothing is removed. The confirmation is the habitat's name typed back
+when nothing is removed. A habitat whose record cannot be read (a first
+`up` whose memory never came up, so its record was never born; a memory
+that does not run) is still forgotten: its plan is made from what this
+machine holds, its directory, the compose projects, containers and volumes
+labelled with its project, and the vault slots named for its record's
+identity (`habitat-forget-plan --unrecorded`), and its first item says so,
+naming why the record could not be read and that an organism, a host or a
+placement only the record names is not in it. The confirmation is the
+same. The confirmation is the habitat's name typed back
 at a terminal: when stdin is not one, `--forget` without `--plan` refuses
 (exit 2) and says why; a name that is not the habitat's is refused (exit
 1) and nothing is touched. Executed, what runs on the hosts goes first,
@@ -858,8 +886,8 @@ socket), so the habitat's head must be up.
 
 | Verb | Behaviour |
 |---|---|
-| `up --host <name> [--user <user>] [--port <n>] [--image <tag>] [--backends own\|operator] [--name <name>]` | Runs the habitat on another machine over SSH and keeps a pointer to it here (§ A habitat on another machine). Idempotent. |
-| `up [--no-body] [--image <tag>] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider (one with no server of its own, every part held by the habitat's servers, is reported `held by the habitat's own servers`), migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its compose project (`docker compose up -d`, its image `--image <tag>` or `HALE_HABITAT_IMAGE` when either names one; else, when this machine has no image of this toolchain, the release's published `ghcr.io/hale-lang/hale:<version>` pulled and used when it runs this very toolchain (`hale --version` alike); else built from the embedded `Dockerfile` and `hale.pin`), waiting on their probes: three minutes once the face has what it runs, and while the face's log says it is still building the head's programs (a first start, or one after the toolchain changed) up to twenty minutes; a face or body that does not come up is reported with its last lines of output. `--no-body` births it, brings its backing allocations up and records its placement, and starts no `body` or `face`. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
+| `up --host <name> [--user <user>] [--port <n>] [--image <tag>] [--backends own\|operator] [--name <name>]` | Runs the habitat on another machine over SSH and keeps a pointer to it here (§ A habitat on another machine). Idempotent. `--host local` is this machine, as it is to `graft`, `place` and the host verbs: the same as `up` without `--host`, a habitat here and no SSH (`--user` and `--port`, another machine's login, are refused with it, exit 2). |
+| `up [--no-body] [--image <tag>] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider (one with no server of its own, every part held by the habitat's servers, is reported `held by the habitat's own servers`), migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its compose project (`docker compose up -d`, its image `--image <tag>` or `HALE_HABITAT_IMAGE` when either names one; else, when this machine has no image of this toolchain, the release's published `ghcr.io/hale-lang/hale:<version>` pulled and used when it runs this very toolchain (`hale --version` alike); else built from the embedded `Dockerfile` and `hale.pin`), waiting on their probes: three minutes once the face has what it runs, and while the face's log says it is still building the head's programs (a first start, or one after the toolchain changed) up to twenty minutes; a face or body that does not come up is reported with its last lines of output. `--no-body` births it, brings its backing allocations up and records its placement, and starts no `body` or `face`. Idempotent, and after an `up` that failed as well (§ Long-lived, and only its acts provision). `--profile` takes `local`; any other is refused (exit 2). |
 | `image build [<checkout>]` | Builds the habitat toolchain image from `<checkout>` (`.` by default) using its `Dockerfile`, tagged `hale-habitat:<pin>`, and prints the tag on stdout. |
 | `brief` | Prints the habitat's brief (below): the head's `Commands::brief`, asked over the head's surface as the person this account maps to. |
 | `status` | The habitat, its name, its genome, body and face (its address), its head's MCP endpoint while the face runs, the services placed on its hosts under their hosts (each with its readings endpoint), and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |

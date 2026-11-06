@@ -251,6 +251,60 @@ fn forget_allocation_items(
     return items;
 }
 
+// `habitat-forget-plan --unrecorded`: the record side of the forget plan of
+// a habitat whose record cannot be read (a first `up` whose memory never
+// came up, so its record was never born), from what is named for its
+// identity alone: the vault slots minted for it and the habitat's own. The
+// toolchain adds the rest from this machine (its compose projects,
+// containers and volumes by their label, its directory) and says the plan
+// was made without the record. A JSON array of items.
+@bounded_by(root)
+fn habitat_forget_unrecorded_verb(root: String) -> Answer {
+    let key = dna::allocation_key(root);
+    let id = dna::record_scope(root);
+    if len(key) == 0 { return fail("habitat-forget-plan: the habitat has no record identity"); }
+    let mut items = "";
+    if len(std::env::var("HALE_VAULT_ADDR")) == 0 {
+        let s = forget_organism_slots(root, "\n");
+        let mut mine = s.drawn;
+        mine = forget_slot(mine, dna::FORGEJO_ADMIN_VAULT, "\n");
+        mine = forget_slot(mine, dna::habitat_key_slot(root), "\n");
+        mine = forget_slot(mine, dna::forgejo_vault(key), "\n");
+        mine = forget_slots(mine, dna::vault_slots_prefixed(dna::nerves_vault_prefix(id)), "\n");
+        items = dna::teardown_more(
+            items,
+            forget_vault_item(
+                "",
+                mine,
+                "the habitat's slots (" + std::secret::vault_local_dir() + ")",
+            ),
+        );
+        let kept = forget_slots("", s.kept, "\n" + mine);
+        if len(kept) > 0 {
+            items = dna::teardown_more(
+                items,
+                dna::teardown_item(
+                    "vault", "",
+                    "kept: " + forget_lines_joined(kept)
+                        + " (credentials a person supplied, which the habitat did not mint)",
+                    dna::teardown_plural(forget_line_count(kept), "slot", "slots"), "-", "note",
+                    "", "", FORGET_STEP_COVERED,
+                ),
+            );
+        }
+    } else {
+        items = dna::teardown_more(
+            items,
+            dna::teardown_item(
+                "vault", "",
+                "the vault at HALE_VAULT_ADDR is provisioned out of band: its slots are kept",
+                "-", "-", "note", "", "", FORGET_STEP_COVERED,
+            ),
+        );
+    }
+    return answer("[" + items + "]\n");
+}
+
 // `habitat-forget-plan`: the record side of the habitat's forget plan, a
 // JSON array of items.
 @bounded_by(root)

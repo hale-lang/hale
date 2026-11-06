@@ -339,4 +339,69 @@ fn main() {
             && !std::str::contains(probe, "\n"),
         "the probe is one line, filtered to the project and its service: " + probe,
     );
+
+    // ---- a container that did not come up, in its own words: what a
+    // failure to bring an allocation up says of it
+    std::test::assert(
+        dna::container_troubled("restarting", "Restarting (1) 3 seconds ago")
+            && dna::container_troubled("exited", "Exited (1) 2 minutes ago")
+            && dna::container_troubled("dead", "Dead")
+            && dna::container_troubled("created", "Created")
+            && dna::container_troubled("running", "Up 2 minutes (unhealthy)"),
+        "restarting, failed, dead, never started and unhealthy are troubled",
+    );
+    std::test::assert(
+        !dna::container_troubled("running", "Up 2 minutes (healthy)")
+            && !dna::container_troubled("running", "Up 4 seconds")
+            && !dna::container_troubled("exited", "Exited (0) 2 hours ago"),
+        "running and a finished one-shot are not",
+    );
+    // a full disk: the cause is the server's own line, kept even when the
+    // retry's noise comes after it
+    let full = "The files belonging to this database system will be owned by user \"postgres\".\n"
+        + "\n"
+        + "initdb: error: could not create directory \"/var/lib/postgresql/data/pg_wal\": No space left on device\n"
+        + "initdb: removing contents of data directory \"/var/lib/postgresql/data\"\n";
+    let said = dna::container_trouble(
+        "memory-b7db12d6d180",
+        "restarting",
+        "Restarting (1) 3 seconds ago",
+        full,
+    );
+    std::test::assert(
+        std::str::starts_with(
+            said,
+            "memory-b7db12d6d180 is restarting (Restarting (1) 3 seconds ago); its last lines:\n    The files",
+        )
+            && std::str::contains(
+                said,
+                "\n    initdb: error: could not create directory \"/var/lib/postgresql/data/pg_wal\": No space left on device\n",
+            ),
+        "the container's state and its last lines, indented: " + said,
+    );
+    let mut noisy = full;
+    let mut i = 0;
+    while i < 12 {
+        noisy = noisy + "LOG:  retrying " + to_string(i) + "\n";
+        i = i + 1;
+    }
+    let tail = dna::log_tail_said(noisy, 8);
+    std::test::assert(
+        std::str::starts_with(
+            tail,
+            "    initdb: error: could not create directory \"/var/lib/postgresql/data/pg_wal\": No space left on device\n    …\n    LOG:  retrying 4\n",
+        )
+            && std::str::ends_with(tail, "    LOG:  retrying 11"),
+        "an older error line leads the last lines: " + tail,
+    );
+    std::test::assert_eq_str(
+        dna::container_trouble("nerves-k", "exited", "Exited (1) 1 second ago", "\n\n"),
+        "nerves-k is exited (Exited (1) 1 second ago); it wrote nothing",
+        "a container that wrote nothing says so",
+    );
+    std::test::assert_eq_str(
+        dna::with_trouble("docker compose up failed: x", ""),
+        "docker compose up failed: x",
+        "nothing troubled adds nothing",
+    );
 }
