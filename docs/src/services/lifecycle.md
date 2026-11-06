@@ -248,7 +248,35 @@ main locus App {
 ```
 
 - **Grace period (`LOTUS_DRAIN_GRACE_MS`)**: The runtime allows 5000 ms (configurable via `LOTUS_DRAIN_GRACE_MS`) for loops reading `self.draining` to finish. If the deadline expires, the runtime logs the stuck pool/worker and loci to stderr and terminates the process. Sending a second `SIGINT` terminates immediately.
-- **Immediate exit when idle**: If no live locus checks `self.draining` (or all such `run()` hooks have already returned and hold no active bus subscriptions), `SIGINT`/`SIGTERM` terminates the process immediately without waiting for the grace period.
+- **Immediate exit when idle**: If no live locus checks `self.draining` or declares a `drain()` / `dissolve()` hook (or all such `run()` hooks have already returned and hold no active bus subscriptions), `SIGINT`/`SIGTERM` terminates the process immediately without waiting for the grace period.
+
+### `drain()` Hooks Run After `run()` Returns
+
+Declaring a `drain()` or `dissolve()` hook is enough for a signal to drain the program: a live locus with a hook counts as one that can answer the drain, just as one that reads `self.draining` does. But a hook runs during teardown, and teardown starts only once the locus's `run()` has returned. A `run()` that ends on the drain — it loops on `while !self.draining`, or a sleep it is in is cut short and it returns — lets the hook run. A `run()` that loops forever without reading `self.draining` never returns: the grace period expires and the signal ends the process with the hook unrun.
+
+`hale check` warns about that shape:
+
+```hale
+main locus App {
+    run() {
+        while true { std::time::sleep(200ms); }   // never reads self.draining
+    }
+    drain() { println("drained"); }
+    // warning: this `drain()` runs only when `run()` returns, and `run()`
+    // never reads `self.draining`: read it in the loop
+}
+```
+
+Read the flag in the loop and the hook runs on `SIGTERM`, and the process exits `0`:
+
+```hale
+main locus App {
+    run() {
+        while !self.draining { std::time::sleep(200ms); }
+    }
+    drain() { println("drained"); }
+}
+```
 - **Default `main` wait behavior**: A `main locus` with no `run()` exits as soon as its children complete, except when `main` (or a child server locus beneath it) holds an active `api::Exposure` socket, in which case `main` implicitly waits until the exposure stops or the process drains.
 
 ### Self-Termination (`terminate;`)

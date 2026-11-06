@@ -104,7 +104,7 @@ fn main() { Root { }; }
     // `Root` answered: its loop ended on the drain and its run()
     // returned, so it is no longer one the drain waits on.
     assert!(
-        e.contains("live loci that read draining: none named"),
+        e.contains("live loci that can answer a drain: none named"),
         "names no locus that has already answered: {e}"
     );
     assert_eq!(
@@ -194,7 +194,7 @@ fn main() { Root { }; }
     let e = &ran.stderr;
     assert_eq!(ran.status.signal(), Some(15), "{:?}\n{e}", ran.status);
     assert!(
-        e.contains("waiting_on=\"no cooperative pool; live loci that read draining:"),
+        e.contains("waiting_on=\"no cooperative pool; live loci that can answer a drain:"),
         "{e}"
     );
     assert!(e.contains("`Napper` x1"), "names the pinned locus: {e}");

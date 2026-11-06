@@ -5302,7 +5302,7 @@ writes one record (`runtime.md` § Runtime diagnostics are records:
 the signal — and what the drain was still
 waiting on: each cooperative pool with its mode, whether a worker is
 mid-iteration and in which locus, and how many cells queue behind it,
-then the live loci that read `draining`, by name — restores the
+then the live loci that can answer a drain (below), by name — restores the
 signal's default action and re-raises it — the process dies BY the signal, as it
 would with no runtime at all (a waiting parent sees it killed by
 that signal; a shell reports `128 + signal`) — so a `run()` that
@@ -5310,20 +5310,36 @@ never reads `self.draining` cannot keep a stopped program alive. A
 **second** SIGINT / SIGTERM ends the process the same way at once.
 
 The handling is installed only in a program that reads
-`draining` somewhere. A program that cannot observe a drain keeps
+`draining` somewhere, or one of whose own loci declares a `drain()`
+or `dissolve()` hook (GH #1838). A program that can do neither keeps
 the default action and ends at the signal with `128 + signal`, as
 if the runtime were not there. **What can answer a drain is a live
-instance** of a locus whose own code reads `draining` (GH #1077):
+instance** of a locus whose own code reads `draining` (GH #1077), or
+that declares a `drain()` or `dissolve()` hook with a body (GH #1838):
 the runtime counts each such instance from its instantiation to its
-teardown. A locus whose only `draining` reads are in its own `run()`
+teardown. A hook answers through teardown: the drain's step 5 runs it,
+once the locus's `run()` has returned, so a declared hook runs on a
+signal whenever that `run()` ends on the drain — it loops on
+`while !self.draining`, a sleep it waits in is cut short and it
+returns, a listener it serves is stopped — and not when it never
+returns: the grace runs out and the signal ends the process with the
+hook unrun. The check warns on that shape, a `drain()` on a locus
+whose `run()` never returns and never reads `draining`
+(`verification.md` § "Structural & design rules", "Drain hook behind
+an endless run"). The standard library's own loci (a file, a socket)
+are not counted for their hooks: those free what the process's end
+frees. (Before GH #1838 a hook did not count, so a program whose only
+answer to a drain was its `drain()` ended at the signal with the hook
+unrun.) A locus whose only `draining` reads are in its own `run()`
 is counted out sooner, once that `run()` has returned for good (no
 restart follows) and it has no subscription left to serve — exactly once,
 whichever of that and its teardown comes first (an admitted `run()` can
 outlive its teardown's start) — : a finished
 locus has nothing to drain, so a pinned child that already returned no
 longer holds the drain until its parent tears it down. A read anywhere
-else — a handler, a hook, a method another locus calls — keeps the
-instance counted to its teardown, since it can still answer. A signal
+else — a handler, a hook, a method another locus calls — or a
+declared `drain()` / `dissolve()` hook keeps the instance counted to
+its teardown, since it can still answer. A signal
 that finds none live — the read sits in an imported package the
 program never builds, or every instance that could have answered has
 already finished or ended — takes the signal's default

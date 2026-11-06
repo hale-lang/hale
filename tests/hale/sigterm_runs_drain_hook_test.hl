@@ -1,0 +1,172 @@
+// GH #1838 — SIGTERM reaches a declared `drain()` / `dissolve()` hook.
+//
+// spec/semantics.md § "Drain cascade (whole-process)": a locus that
+// declares a `drain()` or `dissolve()` hook counts as able to answer a
+// drain, as a reader of `draining` does (GH #1077), so the signal
+// handling is installed and the drain runs; the hook runs at teardown,
+// once the locus's `run()` has returned. Before this a program whose only
+// answer to a drain was its hook kept the signal's default action: it
+// died with 143 and the hook never ran (reported from hale-lang/voice).
+//
+// Four child programs, each a `main` locus with a hook that writes a mark
+// file, built with the toolchain running the test (`HALE_BIN`) and sent
+// SIGTERM once up:
+//
+//   - reads:    the issue's program with the fix the check names, `while
+//               !self.draining`: the hook runs and the process exits 0;
+//   - rescued:  a `run()` that reads nothing but ends on the drain (its
+//               sleep is cut short): the hook now runs, exit 0 — this one
+//               died with 143 and no mark before;
+//   - dissolve: the same with a `dissolve()` hook;
+//   - endless:  the issue's program as written (`while true`, no read):
+//               nothing can rescue it, so the grace (300 ms here) runs
+//               out and the signal ends it with the hook unrun. `hale
+//               check` warns about exactly this shape
+//               (crates/hale-types/tests/drain_hook_behind_endless_run.rs).
+
+fn app(mark: String, run: String, hook: String) -> String {
+    return "main locus App {\n"
+        + "    params { mark: String = \"" + mark + "\"; }\n"
+        + "    run() {\n"
+        + "        println(\"up\");\n"
+        + run
+        + "    }\n"
+        + "    " + hook + "() {\n"
+        + "        std::io::fs::write_file(self.mark, \"" + hook + "\") or discard;\n"
+        + "    }\n"
+        + "}\n"
+        + "fn main() { App { }; }\n";
+}
+
+locus Proc {
+    params {
+        child: std::process::Child = std::process::Child { };
+        out: String = "";
+    }
+
+    fn start(argv: String) -> Bool {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        return self.child.pid > 0;
+    }
+
+    fn wait_for(needle: String) -> Bool {
+        let mut i = 0;
+        while i < 1000 {
+            self.out = self.out + (std::process::read_stdout(self.child) or "");
+            if std::str::contains(self.out, needle) {
+                return true;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fn term() {
+        std::process::signal(self.child, 15) or discard;
+    }
+
+    // The exit code once the child has exited (-1 = killed by a
+    // signal), or -2 if it is still running after ~6 s.
+    fn exit_code() -> Int {
+        let mut i = 0;
+        while i < 300 {
+            let code = std::process::try_wait(self.child) or - 3;
+            if code != -2 {
+                return code;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        return -2;
+    }
+}
+
+// Build `name` from `source`, run it under `grace_ms`, SIGTERM it once it
+// is up; return its exit code (-1: died by the signal).
+fn run_and_term(hale: String, dir: String, name: String, source: String, grace_ms: String) -> Int {
+    let src = dir + "/" + name + ".hl";
+    std::io::fs::write_file(src, source) or discard;
+    let built = std::process::run(hale + "\nbuild\n" + src)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+    std::test::assert_eq_int(built.code, 0, name + " builds: " + built.stderr);
+    let p = Proc { };
+    // exec keeps the pid, so the signal reaches the program itself
+    std::test::assert(
+        p.start(
+            "sh\n-c\nLOTUS_DRAIN_GRACE_MS=" + grace_ms + " exec \"$1\"\nsh\n" + dir + "/" + name,
+        ),
+        name + " started",
+    );
+    std::test::assert(p.wait_for("up"), name + " is running: " + p.out);
+    p.term();
+    return p.exit_code();
+}
+
+fn mark_of(path: String) -> String {
+    return std::io::fs::read_file(path) or "";
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let marker = std::io::fs::mktemp("/tmp/hale-1838-", "") or "";
+    std::test::assert(marker != "", "a scratch path");
+    let dir = marker + ".d";
+    std::io::fs::mkdir(dir) or discard;
+
+    let reads = dir + "/reads.mark";
+    let code = run_and_term(
+        hale, dir, "reads",
+        app(reads, "        while !self.draining { std::time::sleep(200ms); }\n", "drain"),
+        "20000",
+    );
+    std::test::assert_eq_int(
+        code,
+        0,
+        "a run() that reads draining ends on SIGTERM and the cascade exits 0",
+    );
+    std::test::assert_eq_str(mark_of(reads), "drain", "its drain() ran");
+
+    let rescued = dir + "/rescued.mark";
+    let code = run_and_term(
+        hale, dir, "rescued",
+        app(rescued, "        std::time::sleep(30s);\n", "drain"),
+        "20000",
+    );
+    std::test::assert_eq_int(
+        code,
+        0,
+        "a hook alone installs the drain: the sleep is cut short, run() returns, exit 0",
+    );
+    std::test::assert_eq_str(mark_of(rescued), "drain", "its drain() ran");
+
+    let dissolved = dir + "/dissolve.mark";
+    let code = run_and_term(
+        hale, dir, "dissolve",
+        app(dissolved, "        std::time::sleep(30s);\n", "dissolve"),
+        "20000",
+    );
+    std::test::assert_eq_int(code, 0, "a dissolve() hook answers a drain too");
+    std::test::assert_eq_str(mark_of(dissolved), "dissolve", "its dissolve() ran");
+
+    let endless = dir + "/endless.mark";
+    let code = run_and_term(
+        hale, dir, "endless",
+        app(endless, "        while true { std::time::sleep(200ms); }\n", "drain"),
+        "300",
+    );
+    std::test::assert_eq_int(
+        code,
+            -1,
+        "a run() that never returns holds the drain past its grace; the signal ends it",
+    );
+    std::test::assert_eq_str(
+        mark_of(endless),
+        "",
+        "and its drain() never ran — the shape `hale check` warns about",
+    );
+
+    let _gone = std::process::run("rm\n-rf\n" + dir + "\n" + marker)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "" };
+}

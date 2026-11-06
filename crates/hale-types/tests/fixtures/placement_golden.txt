@@ -8958,9 +8958,10 @@ shared	Proc@main1	Proc #b18b3dc0
 shared	Proc@main2	Proc #b18b3dc0
 
 == tests/hale/sigterm_no_live_drain_reader_test.hl
--- dynamic	sites in the seed
-dynamic	Proc	on main
-dynamic	__StdProcessChild	on main
+shared	dynamic	sites in the seed #1c3e5704
+
+== tests/hale/sigterm_runs_drain_hook_test.hl
+shared	dynamic	sites in the seed #1c3e5704
 
 == tests/hale/std_secret_test.hl
 root	App	the entry
@@ -20831,6 +20832,10 @@ dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
 == shared sites in the seed #0ae7b8f9
 dynamic	Big	on main
 dynamic	Small	on main
+
+== shared sites in the seed #1c3e5704
+dynamic	Proc	on main
+dynamic	__StdProcessChild	on main
 
 == shared sites in the seed #3636d9ce
 dynamic	__StdApiWsConns	on pool:__api_ws

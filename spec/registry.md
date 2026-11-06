@@ -1220,18 +1220,18 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Producer.** `crates/hale-types/src/flows.rs` · `run_statically_nonreturning`
 
-**Also owned.** `crates/hale-types/src/check.rs` · `check_pool_starvation`; `crates/hale-types/src/check.rs` · `check_birth_order`
+**Also owned.** `crates/hale-types/src/check.rs` · `check_pool_starvation`; `crates/hale-types/src/check.rs` · `check_birth_order`; `crates/hale-types/src/check.rs` · `check_drain_hook_behind_endless_run`
 
-**Consumers.** check (the nested-long-running-child rule reads the long-running column) (`crates/hale-types/src/check.rs` · `check_nested_long_running_child`); check (the starvation and birth-order laws read the never-returns column) (`crates/hale-types/src/check.rs` · `never_returns`)
+**Consumers.** check (the nested-long-running-child rule reads the long-running column) (`crates/hale-types/src/check.rs` · `check_nested_long_running_child`); check (the starvation, birth-order and drain-hook laws read the never-returns column) (`crates/hale-types/src/check.rs` · `never_returns`)
 
 **Invariants.**
 
 - two definitions, two columns of the flow rows' run row (`flows::RunRow`), named in spec/runtime.md § Typecheck enforcement: long-running is a `run()` body with a statement of its own (a nested child's `run()` completes before its parent's begins, so any body delays the parent, whether or not it returns), never-returns is a terminal `while` with no exit whose condition never flips false (only such a body starves the cells a pool runs after it); every body that never returns is long-running, not the converse, and a child whose `run()` is `std::time::sleep(1min)` keeps the long-running-child error
-- the checker surveys the flow rows once per check and the three rules read the columns; none decides either question itself; a stdlib locus, whose body the checker does not see, is both when it is on the known-long-running allowlist (`KNOWN_LONG_RUNNING_STDLIB_LOCI`)
+- the checker surveys the flow rows once per check and the four rules read the columns; none decides either question itself; a stdlib locus, whose body the checker does not see, is both when it is on the known-long-running allowlist (`KNOWN_LONG_RUNNING_STDLIB_LOCI`)
 
 **Missing data.** an unknown is a hole with a stated policy
 
-**Focused tests.** crates/hale-types/tests/birth_order_trap.rs; crates/hale-codegen/tests/birth_order_trap.rs; crates/hale-codegen/tests/nested_long_running_child.rs; crates/hale-types/src/flows.rs (long_running_and_never_returns_are_two_columns)
+**Focused tests.** crates/hale-types/tests/birth_order_trap.rs; crates/hale-types/tests/drain_hook_behind_endless_run.rs; crates/hale-codegen/tests/birth_order_trap.rs; crates/hale-codegen/tests/nested_long_running_child.rs; crates/hale-types/src/flows.rs (long_running_and_never_returns_are_two_columns)
 
 **Spec.** spec/semantics.md; spec/runtime.md § Typecheck enforcement
 
@@ -1729,7 +1729,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 |---|---|
 | `spec/semantics.md` § Type-check rules | 20 |
 | `spec/semantics.md` § Slot restrictions (v1) | 3 |
-| `spec/verification.md` § Structural & design rules | 40 |
+| `spec/verification.md` § Structural & design rules | 41 |
 
 | rule | list | title | gist | family | evaluator | reads | state |
 |---|---|---|---|---|---|---|---|
@@ -1782,6 +1782,7 @@ A registered rule without an evaluator fails the compiler's own build, and `regi
 | verification/structural/role-includes-acyclic | `spec/verification.md` § Structural & design rules | Acyclic role includes | a role reachable from its own `includes` chain (error, at the role's name) | `role_rows` | `crates/hale-types/src/roles.rs` · `role_cycle` | `role_rows` | Canonical |
 | verification/structural/pool-starvation | `spec/verification.md` § Structural & design rules | Pool starvation | two or more never-returning `run()` bodies on one cooperative pool of the deployed root (warning, at the first) | `flows` | `crates/hale-types/src/check.rs` · `check_pool_starvation` | `placement`, `flows` | Canonical |
 | verification/structural/birth-order-trap | `spec/verification.md` § Structural & design rules | Birth-order trap | a root params field whose never-returning `run()` runs inline on main, so the params after it are never born (warning, at the first such field) | `flows` | `crates/hale-types/src/check.rs` · `check_birth_order` | `placement`, `flows` | Canonical |
+| verification/structural/drain-hook-behind-endless-run | `spec/verification.md` § Structural & design rules | Drain hook behind an endless run | a `drain()` hook on a locus whose `run()` never returns and never reads `draining`, itself or through a fn it calls, so a SIGTERM's drain never reaches the hook (warning, at the hook, the witness the loop) | `flows` | `crates/hale-types/src/check.rs` · `check_drain_hook_behind_endless_run` | `flows` | Canonical |
 | verification/structural/dropped-scope-local-delivery | `spec/verification.md` § Structural & design rules | Dropped scope-local delivery | a bus subscriber, or a locus that keeps one (its params defaults, transitively, or a child its bodies accept or store), built and dissolved inside one call that runs on a classic cooperative pool, where every delivery to it is dropped (warning, at the literal) | `alloc_summary` | `crates/hale-types/src/check.rs` · `check_scope_local_subscriber_on_classic_pool` | `alloc_summary`, `top_scope`, `ownership`, `placement` | Canonical |
 | verification/structural/publish-before-subscriber | `spec/verification.md` § Structural & design rules | Publish before its subscriber | a send written, in one body, before a literal building a locus that subscribes to its subject (itself or a locus its params build), which never receives that cell (warning, at the send) | `bus_graph` | `crates/hale-types/src/check.rs` · `check_publish_before_subscriber` | `bus_graph`, `top_scope` | Canonical |
 | verification/structural/hot-path-allocation | `spec/verification.md` § Structural & design rules | Hot-path allocation | an allocation per loop iteration or per bus message (warning; an error under `@hot`, where it also flags `snapshot()` / `finish()` and a whole-struct self-field replace) | `alloc_summary` | `crates/hale-types/src/check.rs` · `check_hot_path_alloc` | `alloc_summary`, `top_scope` | Canonical |

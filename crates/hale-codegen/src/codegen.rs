@@ -3881,14 +3881,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// payload to derive the routing key a listen binding never
     /// received — the same (key_lo, key_hi) the publish site computes.
     key_extractors: BTreeMap<String, inkwell::values::FunctionValue<'ctx>>,
-    /// GH #1039: set when any body lowers a `draining` read. The main
+    /// GH #1039: set when any body lowers a `draining` read (GH #1838:
+    /// or a program's locus declares a `drain()` / `dissolve()` hook). The main
     /// prelude installs the SIGINT / SIGTERM drain only for such a
     /// program — one that cannot observe the drain keeps the default
     /// signal action. Read at the END of `lower_program` (bodies may
     /// lower after the prelude), through `lotus.reads_draining`.
     pub(crate) reads_draining: bool,
     /// GH #1077: the loci whose own code reads `draining` — the ones
-    /// that can answer a drain. Their live instances are counted at
+    /// that can answer a drain — and (GH #1838) those that declare a
+    /// `drain()` or `dissolve()` hook. Their live instances are counted at
     /// run time (`lotus_drain_observer_add`), so a signal that finds
     /// none of them takes the signal's default action instead of
     /// waiting out the grace.
@@ -3899,7 +3901,8 @@ pub(crate) struct Cx<'ctx, 'p> {
     pub(crate) drain_read_outside_locus: bool,
     /// Of `drain_observer_loci`, those whose code reads `draining`
     /// somewhere other than their own `run()` (a handler, a hook, a
-    /// method another locus may call). The rest answer a drain only
+    /// method another locus may call), or declare a `drain()` or
+    /// `dissolve()` hook (GH #1838). The rest answer a drain only
     /// from run(), so an instance of one is counted out as soon as its
     /// run() has returned for good and it has no subscription left to
     /// serve: a finished locus has nothing to drain.
@@ -10576,6 +10579,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         // GH #1039: every body has lowered — tell the prelude's drain
         // install whether anything reads `draining`.
+        // GH #1838: a locus that declares a `drain()` or `dissolve()` hook
+        // can answer a drain as a reader of `draining` can: the drain's
+        // teardown is what runs the hook. Its instances are counted to
+        // their teardown (a hook answers after run() has returned, as a
+        // read outside run() does), so the signal handling is installed
+        // and a SIGTERM drains instead of skipping code the author wrote
+        // for it. The standard library's loci (`__Std…`) are not the
+        // program's word: their hooks free what the process's end frees.
+        // (A target no signal reaches has none of the flags written below:
+        // the cells that omit the signal install and the observer counts
+        // leave these names nothing to set.)
+        let hooked: Vec<String> = self
+            .user_loci
+            .iter()
+            .filter(|(name, info)| {
+                !name.starts_with("__Std")
+                    && ["drain", "dissolve"]
+                        .iter()
+                        .any(|k| info.methods.contains_key(k) && !info.empty_lifecycle.contains(k))
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in hooked {
+            self.reads_draining = true;
+            self.drain_reads_beyond_run.insert(name.clone());
+            self.drain_observer_loci.insert(name);
+        }
         // GH #1077: the loci that can answer a drain, now every body
         // has lowered.
         for name in self.drain_observer_loci.clone() {
