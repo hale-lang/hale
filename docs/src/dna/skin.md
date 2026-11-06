@@ -135,6 +135,14 @@ services:
 - **Handed to host commands**: `hale habitat organism place|unplace` hands a command each secret naming it among its readers, for the run alone ([The Habitat](../habitat.md)). `place` refuses while a required one is unset; `unplace` never does, and goes on without what is missing.
 - **When no program reads any**: the reader vault is reconciled to the empty set, every entry staged before removed; on an SSH host it goes with the project's withdrawal.
 - **Superseded**: a host command's `operator_token` and `{operator_token_file}` input are refused; declare the token as a drawn secret with `host.<command>` among its readers.
+- **Held to the code**: the checker reads the same thing from the program. `hale check <program> --dump-requirements` prints the **requirements artifact**, every secret the program reads (a read of `HALE_SECRET_<NAME>` is the declared secret `<name>`, as are a `std::secret` locus's literal `vault:`, `env_var:` and `key_file:`), with where each is read; and every `hale check` of a program under this `hale.toml` warns where the code and `[dna.secrets]` disagree:
+
+  ```text
+  api/main.hl:12:20: warning: secret `upstream-key` is read here (`HALE_SECRET_UPSTREAM_KEY`), but /…/hale.toml declares no `[dna.secrets.upstream-key]`, so no environment hands it: declare it there (…)
+  hale.toml:4:1: warning: `[dna.secrets.operator-token]` names `api` among its readers, but `api` never reads it: no read of `HALE_SECRET_OPERATOR_TOKEN` in its code. (…)
+  ```
+
+  A read the program makes by a name it computes at run time is listed in the artifact as `unnamed`. Drift is a warning in this release (and fails `hale verify`, as any advisory does); a later release refuses it, and then writes `[dna.secrets]` from the code ([The requirements artifact](https://github.com/hale-lang/hale/blob/main/spec/verification.md#the-requirements-artifact-gh-1835)).
 
 Automated workflow rotation (`secret-rotate@1`) is present in the workflow catalog but rejected at admission because workflows are not permitted to write to `vault`:
 

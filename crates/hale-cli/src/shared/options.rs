@@ -40,6 +40,7 @@ pub(crate) const BUILD_ONLY_FLAGS: &[&str] = &[
 /// evaluations.
 pub(crate) const PER_SEED_FLAGS: &[&str] = &[
     "--dump-topology",
+    "--dump-requirements",
     "--api",
     "--dump-model",
     "--check-topology",
@@ -63,6 +64,8 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--dump-effects-manifest", false),
     ("--dump-resource-budget", false),
     ("--dump-topology", false),
+    // GH #1835: the requirements artifact (the secrets the program reads)
+    ("--dump-requirements", false),
     // GH #1417 (R1): the surface rows' documents: the inventory, one
     // exposure's description for a caller, one surface's projections.
     ("--api", false),

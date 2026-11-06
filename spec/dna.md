@@ -6209,6 +6209,19 @@ readers = ["worker"]
 - **Superseded.** A host command's `operator_token` and its
   `{operator_token_file}` input are refused: the token is a drawn secret
   the seed declares, `host.<command>` among its readers.
+- **Held to the code** (GH #1835). The checker derives the secrets a
+  program reads from its code, the requirements artifact (`hale check
+  --dump-requirements`, spec/verification.md § "The requirements
+  artifact"): a read of `HALE_SECRET_<NAME>` is a read of the declared
+  secret `<name>`. Every `hale check` and `hale verify` of a program under
+  this manifest compares those reads with this section and warns on each
+  difference: a secret read but not declared, read by a program its
+  `readers` do not name, read as a family's members when it is no family,
+  or declared for a program that never reads it (at the table's line in
+  `hale.toml`). Drift is a warning in this version and is refused in a
+  later one, after which the section is written by the checker rather than
+  by hand. What the code cannot say yet stays the declaration's alone:
+  `kind`, `person`, `optional`, and a host command's reading.
 
 ### The habitat's models
 

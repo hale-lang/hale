@@ -85,6 +85,7 @@ crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl 1d500adb8e506048
 crates/hale-cli/tests/fixtures/p3-namespace-method-lib/grid.hl 83dd3572f7c59f69
 crates/hale-cli/tests/fixtures/qualified-type-fwd-app/main.hl cacd1cb351f514df
 crates/hale-cli/tests/fixtures/qualified-type-fwd-lib/main.hl af67c9605fa68550
+crates/hale-cli/tests/fixtures/requirements/api/main.hl d805c188afc9ec6d
 crates/hale-cli/tests/fixtures/run-loop-reclaim/reclaimed.hl 163ab572b34c3cfc
 crates/hale-cli/tests/fixtures/run-loop-reclaim/still_grows.hl 1137b4b1a1d9bdda
 crates/hale-cli/tests/fixtures/sha256-stream/app.hl ec0a30b3147fad21

@@ -1,0 +1,63 @@
+{
+  "schema": "hale.requirements",
+  "version": "1.0",
+  "program": "api",
+  "secrets": [
+    {
+      "name": "model-token",
+      "source": "declared",
+      "variable": "HALE_SECRET_MODEL_TOKEN",
+      "kind": "entry",
+      "family": true,
+      "readers": ["api"],
+      "reads": [
+        { "file": "main.hl", "line": 28, "col": 48, "kind": "entry" }
+      ]
+    },
+    {
+      "name": "operator-token",
+      "source": "declared",
+      "variable": "HALE_SECRET_OPERATOR_TOKEN",
+      "kind": "credential",
+      "family": false,
+      "readers": ["api"],
+      "reads": [
+        { "file": "main.hl", "line": 13, "col": 46, "kind": "credential" }
+      ]
+    },
+    {
+      "name": "upstream-key",
+      "source": "declared",
+      "variable": "HALE_SECRET_UPSTREAM_KEY",
+      "kind": "entry",
+      "family": false,
+      "readers": ["api"],
+      "reads": [
+        { "file": "main.hl", "line": 28, "col": 16, "kind": "entry" }
+      ]
+    },
+    {
+      "name": "forge-token",
+      "source": "vault",
+      "kind": "credential",
+      "family": false,
+      "readers": ["api"],
+      "reads": [
+        { "file": "main.hl", "line": 17, "col": 68, "kind": "credential" }
+      ]
+    },
+    {
+      "name": "SIGNING_KEY",
+      "source": "env",
+      "kind": "signer",
+      "family": false,
+      "readers": ["api"],
+      "reads": [
+        { "file": "main.hl", "line": 15, "col": 61, "kind": "signer" }
+      ]
+    }
+  ],
+  "unnamed": [
+    { "file": "main.hl", "line": 32, "col": 42, "kind": "credential", "field": "vault" }
+  ]
+}
