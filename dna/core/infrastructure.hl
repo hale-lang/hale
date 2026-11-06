@@ -584,6 +584,132 @@ fn containers_probe(project: String, service: String) -> String {
         + " --format '{{.Image}}|{{.State}} {{.Status}}|{{.Label \"com.docker.compose.service\"}}|{{.ID}}') || exit $?; [ -n \"$out\" ] || exit 0; printf '%s\\n' \"$out\" | while IFS= read -r l; do printf '%s|%s\\n' \"${l%|*}\" \"$(docker inspect --format '{{.RestartCount}}' \"${l##*|}\" 2>/dev/null)\"; done";
 }
 
+// ---- a container that did not come up, in its own words --------------------
+//
+// A service compose started that stopped again (a server that cannot write
+// its data directory on a full disk, a password file it cannot read) leaves
+// its cause in its own log, never in compose's answer, nor in an `exec`
+// refused because the container is restarting. A failure to bring an
+// allocation up carries, for each container it waited on that is not running
+// well, its state and the last lines it wrote (`compose_trouble`).
+
+// How many of a troubled container's last lines are said.
+const TROUBLE_LINES: Int = 8;
+
+// Whether a container in docker's `state` (`{{.State}}`: running,
+// restarting, exited, dead, created, paused) with its `status`
+// (`{{.Status}}`) is not running well: restarting, dead, never started,
+// exited with a failure, or running and unhealthy. A one-shot that exited 0
+// is done.
+fn container_troubled(state: String, status: String) -> Bool {
+    if state == "running" { return std::str::contains(status, "(unhealthy)"); }
+    if state == "exited" { return !std::str::starts_with(status, "Exited (0)"); }
+    return state == "restarting" || state == "dead" || state == "created";
+}
+
+// Whether a log line reads as an error.
+fn error_line(line: String) -> Bool {
+    let l = std::str::lower(line);
+    return std::str::contains(l, "error") || std::str::contains(l, "fatal")
+        || std::str::contains(l, "panic") || std::str::contains(l, "denied")
+        || std::str::contains(l, "no space left") || std::str::contains(l, "failed");
+}
+
+// The last `n` lines `logs` holds that are not blank, each indented four
+// spaces, a line each; and before them the last line that reads as an error
+// when it is older than those (a crash loop's cause is often what it said
+// before its retry's noise), with `…` between.
+@bounded_by(logs)
+fn log_tail_said(logs: String, n: Int) -> String {
+    let mut kept = "";
+    let mut count = 0;
+    let mut err = "";
+    let mut err_at = 0 - 1;
+    let mut rest = logs + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = trim_nl(rest[0..nl]);
+        rest = rest[(nl + 1)..len(rest)];
+        if len(std::str::trim(line)) == 0 { continue; }
+        if error_line(line) {
+            err = line;
+            err_at = count;
+        }
+        kept = kept + line + "\n";
+        count = count + 1;
+    }
+    let mut skip = count - n;
+    while skip > 0 {
+        kept = kept[(std::str::index_of(kept, "\n") + 1)..len(kept)];
+        skip = skip - 1;
+    }
+    let mut out = if err_at >= 0 && err_at < count - n { "    " + err + "\n    …\n" } else { "" };
+    while len(kept) > 0 {
+        let nl = std::str::index_of(kept, "\n");
+        out = out + "    " + kept[0..nl] + "\n";
+        kept = kept[(nl + 1)..len(kept)];
+    }
+    return trim_nl(out);
+}
+
+// One troubled container said: `<service> is <state> (<status>)` and the
+// last lines it wrote, indented below.
+fn container_trouble(service: String, state: String, status: String, logs: String) -> String {
+    let said = log_tail_said(logs, TROUBLE_LINES);
+    return service + " is " + state + " (" + status + ")"
+        + (if len(said) > 0 { "; its last lines:\n" + said } else { "; it wrote nothing" });
+}
+
+// Each troubled container (`container_troubled`) of the compose project
+// `project` — of the services `services` names (newline-separated), or, when
+// it names none, of those whose compose working directory is `dir` (every
+// one of the project's when that is "" too) — said by `container_trouble`, a
+// block a line apart; "" when each runs well, or docker does not answer.
+fn compose_trouble(project: String, services: String, dir: String) -> String {
+    if len(project) == 0 { return ""; }
+    let ps = run_tool(
+        "docker\nps\n-a\n--filter\nlabel=com.docker.compose.project=" + project
+            + "\n--format\n{{.ID}}|{{.Label \"com.docker.compose.service\"}}|{{.State}}|{{.Status}}|{{.Label \"com.docker.compose.project.working_dir\"}}",
+    );
+    if ps.code != 0 { return ""; }
+    let wanted = "\n" + services + "\n";
+    let mut out = "";
+    let mut rest = ps.stdout + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let b1 = std::str::index_of(line, "|");
+        if b1 < 0 { continue; }
+        let id = line[0..b1];
+        let t1 = line[(b1 + 1)..len(line)];
+        let b2 = std::str::index_of(t1, "|");
+        if b2 < 0 { continue; }
+        let service = t1[0..b2];
+        let t2 = t1[(b2 + 1)..len(t1)];
+        let b3 = std::str::index_of(t2, "|");
+        if b3 < 0 { continue; }
+        let state = t2[0..b3];
+        let t3 = t2[(b3 + 1)..len(t2)];
+        let b4 = std::str::index_of(t3, "|");
+        let status = if b4 < 0 { t3 } else { t3[0..b4] };
+        let wd = if b4 < 0 { "" } else { t3[(b4 + 1)..len(t3)] };
+        if len(services) > 0 && !std::str::contains(wanted, "\n" + service + "\n") { continue; }
+        if len(services) == 0 && len(dir) > 0 && wd != dir { continue; }
+        if !container_troubled(state, status) { continue; }
+        let logs = run_tool("sh\n-c\ndocker logs --tail 40 \"$1\" 2>&1\nsh\n" + id);
+        out = out + (if len(out) > 0 { "\n" } else { "" })
+            + container_trouble(service, state, status, logs.stdout);
+    }
+    return out;
+}
+
+// `why` with what `trouble` says after it (`compose_trouble`), when it says
+// anything.
+fn with_trouble(why: String, trouble: String) -> String {
+    return if len(trouble) > 0 { why + "\n" + trouble } else { why };
+}
+
 // What the containers `seen` say of what `what` names
 // (`containers_state`), the services not running named
 // (`naming_down`), and the ones docker restarted said after: a service
@@ -827,7 +953,16 @@ locus ComposeProvider {
                 + "\n" + compose_up_args(render, "\n"),
         );
         if up.code != 0 {
-            return RenderApplied { why: "docker compose up failed: " + trim_nl(up.stderr) };
+            return RenderApplied {
+                why: with_trouble(
+                    "docker compose up failed: " + trim_nl(up.stderr),
+                    compose_trouble(
+                        render.project,
+                        render.services,
+                        if len(render.services) > 0 { "" } else { render.dir },
+                    ),
+                ),
+            };
         }
         let config = run_tool(
             wrap + "docker\ncompose\n" + compose_args(render, "\n") + "\nconfig\n--format\njson",

@@ -25,6 +25,26 @@ const OWNER_DSN_ENV: String = "HALE_DNA_MEMORY_DSN_OWNER";
 // naming `hale habitat migrate`. Only the habitat's acts migrate:
 // `hale habitat migrate`, and init and upgrade, which are graft's and the
 // habitat's until graft lands.
+// Why the memory of the organism at `server` cannot be had, `why` as its
+// infrastructure said it, with what its container says when it is not
+// running well (`dna::placed_trouble`): a server that started and stopped
+// again (a full disk, a password file it cannot read) says the cause in its
+// own log, never in the exec refused while it restarted nor in the port
+// compose could not read, for which it then stands.
+fn memory_refusal(server: String, why: String) -> String {
+    let key = dna::allocation_key(server);
+    if len(key) == 0 { return why; }
+    let trouble = dna::placed_trouble(key, "memory");
+    if len(trouble) == 0 { return why; }
+    if std::str::starts_with(why, "the memory allocation did not take the vault's password")
+        || std::str::starts_with(why, "cannot read the memory allocation's port")
+    {
+        return "the memory allocation (" + dna::allocation_service(server, "memory")
+            + ") did not come up:\n" + trouble;
+    }
+    return dna::with_trouble(why, trouble);
+}
+
 fn memory_migrate_verb(root: String, derive: Bool) -> Answer {
     let mut owner = if std::env::var_exists(OWNER_DSN_ENV) {
         std::env::var(OWNER_DSN_ENV)
@@ -41,7 +61,7 @@ fn memory_migrate_verb(root: String, derive: Bool) -> Answer {
         } else {
             infra.knowledge_database(server)
         };
-        if !db.present { return answer("none: " + db.why + "\n"); }
+        if !db.present { return answer("none: " + memory_refusal(server, db.why) + "\n"); }
         owner = db.dsn;
     }
     let who = dna::record_identity_at(root);
@@ -115,7 +135,7 @@ fn database_provision_verb(root: String, derive: Bool) -> Answer {
         } else {
             infra.knowledge_database(server)
         };
-        if !db.present { return answer("none: " + db.why + "\n"); }
+        if !db.present { return answer("none: " + memory_refusal(server, db.why) + "\n"); }
         owner = db.dsn;
     }
     let key = dna::allocation_key(root);

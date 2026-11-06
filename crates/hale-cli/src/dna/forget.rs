@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 
 use super::{
     body_state, docker, face_running, genome_dir, local_habitat_dir, local_habitat_project,
-    memory_volume_exists, name_file, stop_processes, Docker, DEFAULT_HABITAT_NAME,
+    memory_volume_exists, name_file, service_status, stop_processes, Docker, DEFAULT_HABITAT_NAME,
 };
 use crate::dna::{host_run, manifest_pin};
 
@@ -358,7 +358,9 @@ fn start_memories() -> Vec<Started> {
         if !service.starts_with("memory-") {
             continue;
         }
-        if state == "running" {
+        // a crash-looping memory (`restarting`) is docker's to start again,
+        // never this plan's: waiting on it would wait out the deadline
+        if state == "running" || state == "restarting" {
             running.push(service.to_string());
         } else {
             stopped.push((id.to_string(), service.to_string()));
@@ -492,27 +494,54 @@ fn start_memories() -> Vec<Started> {
     started
 }
 
-/// The record side of the plan, asked of the habitat's genome.
+/// The record side of the plan, asked of the habitat's genome. A record
+/// that cannot be read (a first `up` whose memory never came up, so it was
+/// never born, or a memory that does not run) leaves a plan made from what
+/// this machine holds: the vault slots named for the habitat's identity,
+/// asked of the genome (`habitat-forget-plan --unrecorded`), and, from
+/// `audit`, its compose projects, containers and volumes by their label and
+/// its directory; the plan's first item says so.
 fn record_items() -> Result<Vec<Value>, String> {
     let genome = genome_dir();
-    if manifest_pin(&genome.join("hale.toml"))
-        .ok()
-        .flatten()
-        .is_none()
-    {
+    let Some(id) = manifest_pin(&genome.join("hale.toml")).ok().flatten() else {
         return Ok(Vec::new());
-    }
+    };
+    let key = &id[..12.min(id.len())];
+    let parsed = |text: String| serde_json::from_str::<Vec<Value>>(text.trim()).map_err(|e| format!("the habitat's plan did not parse: {e}"));
+    // a memory just started for the plan may not answer at once; one that
+    // does not run never will
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut asked = host_run("habitat-forget-plan", &genome, &[]);
-    while asked.is_err() && std::time::Instant::now() < deadline {
+    while asked.is_err() && std::time::Instant::now() < deadline && service_status(&format!("memory-{key}")).is_some() {
         std::thread::sleep(std::time::Duration::from_millis(1000));
         asked = host_run("habitat-forget-plan", &genome, &[]);
     }
-    let text = asked.map_err(|e| {
-        format!("the habitat's record cannot be read, and the plan is made from it: {e}")
-    })?;
-    serde_json::from_str::<Vec<Value>>(text.trim())
-        .map_err(|e| format!("the habitat's plan did not parse: {e}"))
+    let why = match asked {
+        Ok(text) => return parsed(text),
+        Err(why) => why,
+    };
+    let text = host_run("habitat-forget-plan", &genome, &["--unrecorded".to_string()]).map_err(|e| format!("the habitat's record cannot be read ({why}), nor what is named for its identity: {e}"))?;
+    let mut items = parsed(text)?;
+    items.insert(0, unrecorded_note(key, &why));
+    Ok(items)
+}
+
+/// The plan's note that the record `key` could not be read, and what the
+/// plan was made from instead.
+fn unrecorded_note(key: &str, why: &str) -> Value {
+    item(
+        "habitat",
+        "",
+        format!(
+            "the habitat's record {key}… cannot be read ({}): this plan is made from what this machine holds, the habitat's directory, the compose projects, containers and volumes labelled with its project, and the vault slots named for its record; an organism, a host or a placement only its record names is not in it",
+            redact(why.lines().next().unwrap_or(""))
+        ),
+        "-".into(),
+        "-",
+        "note",
+        String::new(),
+        85,
+    )
 }
 
 fn audit() -> Result<Plan, String> {
@@ -1110,7 +1139,16 @@ pub(super) fn forget(plan_only: bool) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{notes_left, redact};
+    use super::{notes_left, redact, s, unrecorded_note};
+
+    #[test]
+    fn a_plan_made_without_the_record_says_so_and_does_nothing_itself() {
+        let n = unrecorded_note("b7db12d6d180", "habitat-forget-plan: HALE_DNA_MEMORY_DSN_HEAD is not set: the record is memory's, and there is none\nsecond line");
+        assert_eq!((s(&n, "group"), s(&n, "action")), ("habitat", "note"));
+        let what = s(&n, "what");
+        assert!(what.starts_with("the habitat's record b7db12d6d180… cannot be read (habitat-forget-plan: HALE_DNA_MEMORY_DSN_HEAD is not set"), "{what}");
+        assert!(what.contains("made from what this machine holds") && !what.contains("second line"), "{what}");
+    }
 
     #[test]
     fn a_note_acted_on_is_done_and_the_rest_are_kept() {

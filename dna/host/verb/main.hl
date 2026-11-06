@@ -238,8 +238,14 @@ fn main() {
         ans = host::habitat_place_verb(root, host::word(a, 0), memory);
     } else if verb == "habitat-forget-plan" {
         // phase 4 ruling: what `hale habitat down --forget` would remove,
-        // as the habitat's record knows it (dna/host/forget.hl)
-        ans = host::habitat_forget_plan_verb(root);
+        // as the habitat's record knows it (dna/host/forget.hl); with
+        // `--unrecorded`, of a habitat whose record cannot be read, what is
+        // named for its identity alone
+        ans = if host::has_flag(a, "--unrecorded") {
+            host::habitat_forget_unrecorded_verb(root)
+        } else {
+            host::habitat_forget_plan_verb(root)
+        };
     } else if verb == "habitat-teardown-run" {
         // phase 4 ruling: a plan's items that run on a host or write the
         // habitat's record, executed in order (dna/core/teardown.hl)

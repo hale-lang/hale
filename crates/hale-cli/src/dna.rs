@@ -1930,12 +1930,20 @@ fn init_under(app_dir: &Path, library: bool, lineage: Lineage) -> Result<Vec<Str
     // from the same draw beside the allocations in the local habitat, never
     // in the checkout (GH #1653). After the pin (the vault names and the
     // allocations are its record's); before memory, whose roles they are.
-    out.push(organism_secrets(&root, true));
+    let secrets = organism_secrets(&root, true);
+    out.push(secrets.clone());
     // 6e. GH #1590: memory, then the record's first row in it
     match memory_migrate(&root)? {
         MemoryPlan::Roles { .. } => out.push("memory  schema applied; this clone reads and writes the record as its head (.hale/dna/memory.env)".to_string()),
         MemoryPlan::NoDatabase(why) => {
-            return Err(format!("the record is memory's, and there is no memory to keep it in: {why} (set {OWNER_DSN_ENV}, or put docker compose on PATH for the organism's memory allocation in the local habitat)"));
+            // the reason is memory's own (a knob it names where one would
+            // help); secrets that were not provisioned, which this report
+            // would otherwise never print, are said after it
+            let unprovisioned = secrets.strip_prefix("note    ").filter(|s| s.starts_with("the organism's secrets were not provisioned"));
+            return Err(match unprovisioned {
+                Some(note) => format!("the record is memory's, and there is no memory to keep it in: {why}; {note}"),
+                None => format!("the record is memory's, and there is no memory to keep it in: {why}"),
+            });
         }
     }
     match &genesis_body {
