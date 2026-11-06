@@ -82,7 +82,7 @@ fn symbols(o: Obligation) -> &'static [&'static str] {
         Obligation::ObservationIdentity => &["lotus_obs_eager_init", "lotus_obs_topic_shape", "lotus_obs_exec_digest_set"],
         Obligation::SignalInstall => &["lotus_io_init", "lotus_drain_signals_install"],
         Obligation::DrainObserver => &["lotus.observes_drain."],
-        Obligation::DrainTerm => &["lotus_process_draining_flag"],
+        Obligation::DrainTerm => &["lotus_process_draining_flag", "lotus_wait_frame"],
         Obligation::BindingConfig => &["lotus_bus_load_config", "lotus_bus_register_key_extractor"],
         Obligation::PoolJoin => &["lotus_coop_pool_shutdown_all"],
         Obligation::WaitAbort => &["lotus_bus_wait_abort_all"],
@@ -659,6 +659,9 @@ const CELL_READS: &[(&str, &str, usize)] = &[
     (INST, "Obligation::ReplayIngress", 1),
     (INST, "Capability::PoolThreads", 1),
     ("crates/hale-codegen/src/locus/dissolve.rs", "Obligation::DrainTerm", 1),
+    // A run() / drain() / dissolve() body's wait frame
+    // (`emit_wait_frame_enter`): what a drain does to a timed wait.
+    ("crates/hale-codegen/src/locus/method.rs", "Obligation::DrainTerm", 1),
     ("crates/hale-codegen/src/locus/restart.rs", "Obligation::DrainTerm", 1),
     ("crates/hale-codegen/src/stdlib/time.rs", "Obligation::DrainTerm", 1),
 ];
