@@ -269,8 +269,8 @@ fn host() {
     // client, as `nerves_migrate` does, so the correction changes them.
     pinned(
         "host",
-        589,
-        598,
+        591,
+        600,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -385,6 +385,7 @@ fn host() {
         genome_uncandidate  does={syscall,block,alloc}
         habitat_address  does={syscall,block,alloc}
         habitat_apply_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        habitat_forget_unrecorded_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_teardown_run_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_handover_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_key  does={syscall,env,alloc}
@@ -398,6 +399,7 @@ fn host() {
         mapped_key_slots  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         memory_fence_for  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         memory_migrate_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        memory_refusal  does={syscall,block,env,alloc}
         missing_drawn  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         model_key_vault  does={alloc}
         models_verb  does={syscall,block,alloc}
