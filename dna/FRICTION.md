@@ -542,7 +542,7 @@ shape than the one the issue drew.
 **Candidate language requests** (each with a reproducer; none filed
 yet — the fixtures should sit for a while first). *Update 2026-10-12:*
 all three were filed; F.7 (GH #732) and F.3 (GH #730) are FIXED, and
-F.4 (GH #731) is open.
+F.4 (GH #731) is FIXED too (#1543, 2026-10-13).
 
 1. F.4 — `p: perspective(P);` with no initializer means *hold, do not
    designate*. Without it, a dynamic child cannot dispatch through the
