@@ -8,6 +8,28 @@ behavior.
 
 ## Unreleased
 
+## v0.32.6 — a first run that recovers (2026-11-06)
+
+A patch release from a first run of a habitat on a laptop, and from hale-lang/voice's upgrade to v0.32.5.
+
+**A first `up` that fails is recoverable.** On a machine whose Docker disk was full, the habitat's first `up` failed, and every way forward was blocked:
+- **The error hid the cause.** It now shows a waited-on container's state and its last log lines, so a full disk reads `No space left on device` instead of "container is restarting" and an unrelated setting.
+- **A second `up` stopped on a password it never provisioned.** It now clears what the first attempt left for its identity and comes up whole, and a third `up` changes nothing.
+- **`down --forget` could not plan a habitat whose memory never came up.** It now plans from what is on disk, says so, and still asks you to type the habitat's name.
+
+`up --host local` is `up` on this machine, as `--host local` is everywhere else.
+
+**A host command's secrets.** v0.32.5's drift check named a program by its directory, so code a `[dna.host.<name>]` command runs was told to declare a reader the long-running program would then inherit. Such code now answers to `host.<name>` as well, and the check says nothing where it cannot tell which program a host command runs.
+
+The item-level notes follow.
+
+- **Fixed:** the secrets drift check (`hale check` / `hale verify`) named every reading program by its directory, so a read in the program a `[dna.host.<command>]` runs asked for the directory's name among the secret's `readers` even when they rightly said `host.<command>`, and following it would hand the secret to that program run as a service. A program now also reads as `host.<command>` for each host command whose `install` or `uninstall` names its directory or a file directly in it (`hale run node …`, `sh node/install.sh …`), and either name agrees; a read whose `readers` name a host command that names no program's directory is not compared, since the checker cannot tell what it runs. The requirements artifact lists those readers the same way. Reported from hale-lang/voice.
+
+- `hale habitat up --host local` is `up` on this machine (no SSH), as `local` is everywhere else.
+- An allocation that does not come up (memory, nerves, senses, Forgejo, a tenant's, the body and face) is reported with each troubled container's state and last lines, so a full Docker disk reads as Postgres's own `No space left on device`; memory failures no longer suggest unrelated knobs.
+- `hale habitat up` after a first `up` that failed converges: the identity whose record never reached memory is drawn again with its stale memory DSN and minted vault slots removed, instead of stopping on an unprovisioned password.
+- `hale habitat down --forget` works on a habitat whose record cannot be read: the plan is made from what this machine holds (its directory, compose projects and volumes by label, the vault slots named for it) and says so.
+
 ## v0.32.5 — hooks that answer a signal, GPUs in the senses (2026-11-05)
 
 **A `drain()` hook answers SIGTERM** (#1838, found by hale-lang/voice). A locus that declares `drain()` or `dissolve()` counts as able to answer a drain, as a reader of `self.draining` does, so a signal starts the drain cascade and the hook runs at teardown. Before, a program whose loop never read `draining` died at the signal and skipped the hook its author wrote for that moment. A new warning, *drain hook behind an endless run*, points at a `drain()` that can only run when a `run()` that never returns returns: read `self.draining` in the loop.
