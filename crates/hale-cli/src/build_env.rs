@@ -15,7 +15,14 @@ use hale_codegen::{BuildOptions, LtoMode};
 
 /// `BuildOptions` from the process environment.
 pub(crate) fn build_options_from_env() -> BuildOptions {
-    build_options_from(|name| std::env::var(name).ok())
+    let mut o = build_options_from(|name| std::env::var(name).ok());
+    // macOS: an SDK the selected linker reads when `SDKROOT` names none
+    // (`macos_sdk`). Here rather than in `build_options_from`, whose
+    // tests feed it an environment: this one asks the machine.
+    let sdk = crate::macos_sdk::for_host(std::env::var("SDKROOT").ok().as_deref(), &o.cache_dir);
+    o.macos_sdkroot = sdk.sdkroot;
+    o.macos_sdks_unreadable = sdk.unreadable;
+    o
 }
 
 /// The same, over any lookup: what the unit tests below feed it.
@@ -118,8 +125,9 @@ pub(crate) fn options_fingerprint(o: &BuildOptions) -> String {
     // it: they were read from the environment inside codegen) keeps the
     // string it had. Not here: what only narrates or times a build
     // (`dump_ir*`, `di_trace`, `dispatch_trace`, `time_phases`), the
-    // C warnings (`cc_warnings`), which linker runs (`no_lld`), and
-    // where the cache lives (`cache_dir`).
+    // C warnings (`cc_warnings`), which linker runs (`no_lld`) and which
+    // macOS SDK it links against (`macos_sdkroot`), and where the cache
+    // lives (`cache_dir`).
     if o.asan {
         fp.push_str(";asan");
     }

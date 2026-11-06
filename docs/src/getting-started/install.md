@@ -53,7 +53,7 @@ When you run `hale build` or `hale run`, the compiler emits native object code, 
 
 > **Debian/Ubuntu note:** Ensure the binary named `clang` is on your `PATH` (installing `clang-18` alone only provides `/usr/bin/clang-18`; install the `clang` wrapper package as well).
 
-> **macOS note:** the developer tools `xcode-select -p` names must be at least as new as the macOS SDK clang links against. An older Xcode selected beside newer Command Line Tools cannot read their SDK, and every link fails with `tapi error: malformed file … unknown architecture`; `hale` says so and names the fix: `sudo xcode-select -s /Library/Developer/CommandLineTools`, or update Xcode.
+> **macOS note:** clang links against the newest macOS SDK installed, with the linker of the developer tools `xcode-select -p` names. An older Xcode selected beside newer Command Line Tools cannot read their SDK: every link fails with `tapi error: malformed file … unknown architecture`, a plain C program's too. When `SDKROOT` is unset, `hale` notices this once per toolchain and links against an SDK that linker reads (the selected Xcode's own, say), so builds work without you doing anything; an `SDKROOT` you set is used as given. If no installed SDK links, `hale` says so, names the SDKs it tried, and names the fix: `sudo xcode-select -s /Library/Developer/CommandLineTools`, or update Xcode, or set `SDKROOT`.
 
 ---
 

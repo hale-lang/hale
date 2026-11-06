@@ -72,4 +72,5 @@ pub use codegen::{
     stdlib_doc_source, stdlib_path_renames,
     build_resolved, BuildOptions, CodegenError, CompileTarget,
     DebugSourceFile, DebugSources, LtoMode, TargetCpu,
+    macos_linker_cannot_read_sdk,
 };

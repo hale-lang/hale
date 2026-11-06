@@ -34,6 +34,7 @@ use verbs::fleet::run_fleet;
 use verbs::help::{subcommand_help, usage};
 use shared::stale::check_stale_cli;
 mod build_env;
+mod macos_sdk;
 mod deploy;
 mod deployment;
 mod fleet;
