@@ -959,9 +959,6 @@ interface Repository {
     fn dirty_for(seed: String, worktree: String) -> String;
 }
 
-// Local git. `apply` is the ONE method that changes the genome: it
-// carries `genome_apply`, so the law can forbid every path to it
-// except through the assembly's gate.
 // The commit the checkout at `dir` is at: "" outside git, or before its
 // first commit (a sapling's revision, for an organism's services render).
 fn checkout_commit(dir: String) -> String {
@@ -969,6 +966,9 @@ fn checkout_commit(dir: String) -> String {
     return if r.code == 0 { trim_nl(r.stdout) } else { "" };
 }
 
+// Local git. `apply` is the ONE method that changes the genome: it
+// carries `genome_apply`, so the law can forbid every path to it
+// except through the assembly's gate.
 locus LocalGit {
     params {
         repo: String = ".";
