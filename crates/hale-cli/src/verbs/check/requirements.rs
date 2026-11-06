@@ -17,6 +17,16 @@
 //!   beside it), so a file checked alone never reports its siblings' reads
 //!   missing.
 //!
+//! A reader is named as the manifest names it: a program by its directory,
+//! and a host command (`[dna.host.<command>]`) as `host.<command>`. The
+//! program a host command runs is the one whose directory its `install` or
+//! `uninstall` names, itself or a file directly in it (`hale run node …`,
+//! `sh node/install.sh …`), so a read in that program is the host
+//! command's as well as the program's, and either name in `readers`
+//! agrees with it. A host command that names no program's directory runs
+//! a program the checker cannot tell, so a read whose `readers` name such
+//! a command is not judged.
+//!
 //! Drift warns this release and is refused in the next (#1835's migration:
 //! generate, compare, warn, then refuse).
 
@@ -61,7 +71,107 @@ fn placer<'s>(snap: &'s Snapshot, root: PathBuf) -> impl Fn(hale_syntax::Span) -
     }
 }
 
-/// `--dump-requirements`: the artifact.
+/// The names the manifest's `readers` give the checked program: its
+/// directory's, and `host.<command>` for each host command that runs it.
+struct Names {
+    program: String,
+    /// the host commands that run it, by the command's name
+    hosts: Vec<String>,
+    /// the host commands that name no program's directory: what they run
+    /// the checker cannot tell
+    opaque: Vec<String>,
+}
+
+impl Names {
+    /// The checked program's names under `manifest` (none of its host
+    /// commands' when there is no manifest).
+    fn of(target: &Path, manifest: Option<(&Path, &str)>) -> Names {
+        let program = program_name(target);
+        let (hosts, opaque) = match manifest {
+            Some((path, text)) => host_commands(path.parent().unwrap_or(Path::new(".")), text, &seed_dir(target)),
+            None => Default::default(),
+        };
+        Names { program, hosts, opaque }
+    }
+
+    /// Whether a `readers` list names the program, by any of its names.
+    fn named_by(&self, readers: &[String]) -> bool {
+        readers.iter().any(|r| match r.strip_prefix("host.") {
+            Some(cmd) => self.hosts.iter().any(|h| h == cmd),
+            None => *r == self.program,
+        })
+    }
+
+    /// Whether a `readers` list names a host command that may run the
+    /// program for all the checker can tell.
+    fn maybe_named_by(&self, readers: &[String]) -> bool {
+        readers.iter().filter_map(|r| r.strip_prefix("host.")).any(|cmd| self.opaque.iter().any(|h| h == cmd))
+    }
+
+    /// The name a declaration should give it: the host command that runs
+    /// it, else its directory's.
+    fn preferred(&self) -> String {
+        self.hosts.first().map_or_else(|| self.program.clone(), |h| format!("host.{h}"))
+    }
+
+    /// All its names, the host commands' first.
+    fn all(&self) -> Vec<String> {
+        let mut all: Vec<String> = self.hosts.iter().map(|h| format!("host.{h}")).collect();
+        all.push(self.program.clone());
+        all
+    }
+
+    /// All its names, each in backticks, `or` between.
+    fn shown(&self) -> String {
+        self.all().iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(" or ")
+    }
+}
+
+/// The host commands of a manifest (`[dna.host.<command>]`) that run the
+/// program in `seed`, and those that run a program the checker cannot
+/// tell. A command runs the program whose directory one of its `install` or
+/// `uninstall` words names (relative to the manifest's directory, where the
+/// habitat runs it): the directory itself (`hale run node …`) or a file
+/// directly in it (`sh node/install.sh …`). A command none of whose words
+/// names a directory holding a `.hl` file, or a file directly in one, is
+/// opaque: its script may run any program.
+fn host_commands(root: &Path, text: &str, seed: &Path) -> (Vec<String>, Vec<String>) {
+    let (mut runs, mut opaque) = (Vec::new(), Vec::new());
+    let Ok(doc) = toml::from_str::<toml::Table>(text) else { return (runs, opaque) };
+    let Some(cmds) = doc.get("dna").and_then(|d| d.get("host")).and_then(|h| h.as_table()) else { return (runs, opaque) };
+    let program_dir = |d: &Path| {
+        std::fs::read_dir(d).is_ok_and(|es| es.flatten().any(|e| e.path().extension().is_some_and(|x| x == "hl")))
+    };
+    for (name, t) in cmds {
+        let words = ["install", "uninstall"]
+            .iter()
+            .filter_map(|k| t.get(*k).and_then(|v| v.as_array()))
+            .flatten()
+            .filter_map(|w| w.as_str())
+            .filter(|w| !w.is_empty() && !w.starts_with('-') && !w.contains('{') && !Path::new(w).is_absolute());
+        // the program directories its words name
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        for w in words {
+            let Ok(p) = root.join(w).canonicalize() else { continue };
+            let dir = if p.is_dir() { p } else { p.parent().map(Path::to_path_buf).unwrap_or(p) };
+            if program_dir(&dir) {
+                dirs.push(dir);
+            }
+        }
+        if dirs.iter().any(|d| d == seed) {
+            runs.push(name.clone());
+        } else if dirs.is_empty() {
+            opaque.push(name.clone());
+        }
+    }
+    (runs, opaque)
+}
+
+/// `--dump-requirements`: the artifact. A declared secret's readers are the
+/// names the manifest's declaration gives the program for it, when it names
+/// it, else the name it should (the host command that runs it, else its
+/// directory's); any other secret's are all the program's names, which no
+/// declaration narrows.
 pub(crate) fn artifact(target: &Path, snap: &Snapshot) -> String {
     let reads = reads(snap);
     let place = placer(snap, seed_dir(target));
@@ -70,7 +180,20 @@ pub(crate) fn artifact(target: &Path, snap: &Snapshot) -> String {
         reads.unnamed.iter().filter_map(|u| Some((place(u.span)?, u.kind, u.field.clone()))).collect();
     unnamed.sort();
     unnamed.dedup();
-    req::render_json(&program_name(target), &secrets, &unnamed)
+    let manifest = organism_manifest(target);
+    let names = Names::of(target, manifest.as_ref().map(|(p, t)| (p.as_path(), t.as_str())));
+    let declared = manifest.and_then(|(_, t)| crate::dna::secrets::declared(&t).ok()).unwrap_or_default();
+    let readers = |s: &req::Secret| -> Vec<String> {
+        if s.source != Source::Declared {
+            return names.all();
+        }
+        let given: Vec<String> = match declared.get(&s.name) {
+            Some(d) => d.readers.iter().filter(|r| names.named_by(std::slice::from_ref(r))).cloned().collect(),
+            None => Vec::new(),
+        };
+        if given.is_empty() { vec![names.preferred()] } else { given }
+    };
+    req::render_json(&names.program, &secrets, &readers, &unnamed)
 }
 
 /// The manifest that declares the organism the program is part of: the
@@ -151,7 +274,8 @@ pub(crate) fn drift(target: &Path, snap: &Snapshot) -> (Vec<hale_syntax::Diag>, 
             return (at_reads, at_manifest);
         }
     };
-    let program = program_name(target);
+    let names = Names::of(target, Some((&manifest, &text)));
+    let program = names.program.clone();
     let reads = reads(snap);
     let declared_reads: Vec<&req::SecretRead> = reads.named.iter().filter(|r| r.source == Source::Declared).collect();
     // read in code: declared, naming this program, as a family when read as one
@@ -163,19 +287,32 @@ pub(crate) fn drift(target: &Path, snap: &Snapshot) -> (Vec<hale_syntax::Diag>, 
                 "undeclared",
                 format!(
                     "secret `{name}` is read here (`{var}`), but {shown} declares no `[dna.secrets.{name}]`, so no environment \
-                     hands it: declare it there (`kind = \"drawn\"` or `\"slot\"`, `readers = [\"{program}\"]`). Drift between \
-                     the code and the manifest is a warning this release and refused in the next",
+                     hands it: declare it there (`kind = \"drawn\"` or `\"slot\"`, `readers = [\"{preferred}\"]`). Drift \
+                     between the code and the manifest is a warning this release and refused in the next",
                     name = r.name,
+                    preferred = names.preferred(),
                 ),
             ),
-            Some(d) if !d.programs().contains(&program.as_str()) => (
+            // a reader the program is not, by any of its names, unless a
+            // host command it names runs a program the checker cannot tell
+            Some(d) if !names.named_by(&d.readers) && !names.maybe_named_by(&d.readers) => (
                 "reader",
                 format!(
                     "secret `{name}` is read here (`{var}`), but `[dna.secrets.{name}]` ({shown}:{line}) does not name \
-                     `{program}` among its readers: add `\"{program}\"` to its `readers`. Drift between the code and the \
-                     manifest is a warning this release and refused in the next",
+                     {named} among its readers: add `\"{preferred}\"` to its `readers`{runs}. Drift between the code and \
+                     the manifest is a warning this release and refused in the next",
                     name = r.name,
                     line = table_line(&text, &r.name),
+                    named = names.shown(),
+                    preferred = names.preferred(),
+                    runs = match names.hosts.as_slice() {
+                        [] => String::new(),
+                        hosts => format!(
+                            " (`[dna.host.{}]` runs `{program}`: a host command reads as `host.<command>`, and \
+                             `\"{program}\"` would hand it to `{program}` run as a service)",
+                            hosts.join("]`, `[dna.host.")
+                        ),
+                    },
                 ),
             ),
             Some(d) if r.family && !d.family => (
@@ -196,8 +333,9 @@ pub(crate) fn drift(target: &Path, snap: &Snapshot) -> (Vec<hale_syntax::Diag>, 
             at_reads.push(hale_syntax::Diag::warn(r.span, message));
         }
     }
-    // declared for this program, never read by it: only when the whole
-    // program was loaded
+    // declared for this program by its directory, never read by it: only
+    // when the whole program was loaded. A host command's reading is not
+    // the program's to show (its script may read the secret itself)
     if whole_program(target) {
         for (name, d) in &declared {
             if !d.programs().contains(&program.as_str()) || declared_reads.iter().any(|r| &r.name == name) {
