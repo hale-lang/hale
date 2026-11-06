@@ -110,7 +110,7 @@ main locus App {
 ### Slot Constraints & Diagnostics
 
 1. **Program-global singleton slot**: Every `perspective(Router)` handle in the binary references the same underlying slot. If multiple holders designate different implementations at construction, the most recently constructed designation wins program-wide.
-2. **Must be designated before use**: `hale check` rejects any program where a locus holds `perspective(P)` with no initializer unless at least one constructed locus designates `P`. At runtime, calling through an undesignated slot (for example, from an earlier sibling parameter born before the designating parameter) aborts the process naming the perspective.
+2. **Must be designated before use**: the build refuses any program where a locus holds `perspective(P)` with no initializer unless at least one constructed locus designates `P`. At runtime, calling through an undesignated slot (for example, from an earlier sibling parameter born before the designating parameter) aborts the process naming the perspective.
 3. **Methods-only encapsulation**: Callers can only invoke methods declared on the `perspective`. Direct field reads or writes through the slot (`self.router.hits = 0;`) are rejected at compile time.
 4. **No `fallible` calls through slots**: While a `perspective` signature and `serves` implementation must agree on `fallible`, calling a `fallible` method through a `perspective(P)` slot is currently rejected at compile time because perspective dispatch does not propagate a value-error channel.
 

@@ -605,7 +605,10 @@ locus Desk {
 locus Gateway {
     params { wire: Wire = Wire { }; desk: Desk = Desk { }; }
     seam answer(frame: String) -> String {
-        frame -> self.wire.decode -> self.desk -> self.wire.encode;
+        frame
+            -> self.wire.decode
+            -> self.desk
+            -> self.wire.encode;
     }
 }
 
@@ -995,12 +998,18 @@ this list — run the tool:
   `+` chain at the operator, a call or a record literal one argument
   or field per line with a trailing comma, a block written on one
   line one statement per line.
+- A seam is always multi-line, one hop per line, whatever its width
+  and however few its hops: the head on the body's first line, each
+  `->` opening a line one level deeper, `or end;` / `or violate
+  NAME;` and the closing `}` on lines of their own. It is the one
+  shape fmt sets regardless of width, so a seam's line breaks are
+  fmt's, not yours.
 
 **Line structure.** fmt shapes long statements. Write a statement
 on one line and let `hale fmt` break it when it is too wide:
 it breaks every shape one way, so don't hand-wrap, and a line that
 fits it leaves alone (it never joins lines, so where a line that
-fits breaks is still yours). What fmt cannot do is name things, and
+fits breaks is still yours — but for a seam, whose shape is fmt's). What fmt cannot do is name things, and
 one rule of line structure is about names: **a condition of more
 than three terms is extracted into a named predicate**, a `fn` whose
 name says what the terms decide. Four terms wrap into a column fmt
@@ -1861,7 +1870,11 @@ locus Handle {
 locus Front {
     params { p: Parse = Parse { }; h: Handle = Handle { }; }
     // idiomatic: the seam writes the dispatch
-    seam go(x: Int) -> Int { x -> self.p.parse -> self.h; }
+    seam go(x: Int) -> Int {
+        x
+            -> self.p.parse
+            -> self.h;
+    }
     // not this: the same chain written by hand
     fn go_by_hand(x: Int) -> Int {
         return match self.p.parse(x) { A(v) -> self.h.a(v), B(v) -> self.h.b(v), };

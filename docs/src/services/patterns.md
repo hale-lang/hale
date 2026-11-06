@@ -262,7 +262,11 @@ locus Desk {
 locus Gateway {
     params { feed: Feed = Feed { }; wire: Wire = Wire { }; desk: Desk = Desk { }; log: Log = Log { }; }
     seam {
-        self.feed.next() -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write;
+        self.feed.next()
+            -> self.wire.decode
+            -> self.desk
+            -> self.wire.encode
+            -> self.log.write;
         or end;
     }
 }

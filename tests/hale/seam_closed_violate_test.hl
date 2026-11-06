@@ -21,7 +21,12 @@ locus Gate {
         return "f" + to_string(x);
     }
     fn put(s: String) { self.lines = self.lines + s + ";"; }
-    seam { self.next() -> self.decode -> self.put; or violate fuse; }
+    seam {
+        self.next()
+            -> self.decode
+            -> self.put;
+        or violate fuse;
+    }
 }
 
 main locus App {
