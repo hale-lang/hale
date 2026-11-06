@@ -480,6 +480,11 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 (`shape_hash`) alone. Immune");
     println!("                                 to comments moving and to");
     println!("                                 claim renames.");
+    println!("  --dump-requirements[=<path>]    emit the requirements artifact:");
+    println!("                                 the secrets the program reads");
+    println!("                                 (JSON; stdout when bare). Under a");
+    println!("                                 `[dna]` manifest, every check warns");
+    println!("                                 where they drift from `[dna.secrets]`.");
     println!();
     println!("The API surface (spec/api.md):");
     println!("  --api                           print the inventory: every");

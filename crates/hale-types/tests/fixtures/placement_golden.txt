@@ -630,6 +630,17 @@ dynamic	<hole>	on main|unresolved declaration `mat::Grid`	in the seed
 row	Renderer@main1	Renderer	main	default
 dynamic	<hole>	on main|unresolved declaration `gfx::Rect`	in the seed
 
+== crates/hale-cli/tests/fixtures/requirements/api/main.hl#775e09c3
+root	App	the entry
+row	App@entry	App	main	default
+dynamic	__StdSecretCredential	on main	in the seed
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
+-- App@entry.api	Api
+row	~	Api	main	default
+row	~.forge	__StdSecretCredential	main	inherited
+row	~.signer	__StdSecretSigner	main	inherited
+row	~.token	__StdSecretCredential	main	inherited
+
 == crates/hale-cli/tests/fixtures/run-loop-reclaim/reclaimed.hl#843ac14c
 row	Download@main1	Download	main	default
 -- dynamic	sites in the seed

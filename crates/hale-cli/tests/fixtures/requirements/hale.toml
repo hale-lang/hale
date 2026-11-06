@@ -1,0 +1,25 @@
+# GH #1835 (slice 1): an organism whose `api` program reads every secret
+# its manifest declares for it, each the way a program reads one today.
+# `requirements_artifact.rs` holds the requirements artifact of `api/`
+# to `api.requirements.json`, and the check of `api/` to no drift.
+
+[dna]
+needs = ["memory"]
+
+[dna.secrets.operator-token]
+kind    = "drawn"
+readers = ["api"]
+
+[dna.secrets.upstream-key]
+kind    = "slot"
+readers = ["api", "worker"]
+
+[dna.secrets.model-token]
+kind    = "slot"
+family  = true
+readers = ["api"]
+
+# read by a person alone: no program's to read
+[dna.secrets.dashboard]
+kind   = "drawn"
+person = "read"

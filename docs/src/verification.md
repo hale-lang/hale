@@ -121,7 +121,7 @@ claims {
 }
 ```
 
-When a claim fails, `hale check` prints the exact **witness path** in your source identifiers. Topology models can be exported and diffed in CI using `hale check --dump-topology` and `--check-topology <baseline>`. See **[Architectural Claims & Topology Proofs](./claims.md)**.
+When a claim fails, `hale check` prints the exact **witness path** in your source identifiers. Topology models can be exported and diffed in CI using `hale check --dump-topology` and `--check-topology <baseline>`. See **[Architectural Claims & Topology Proofs](./claims.md)**. Beside it, `hale check --dump-requirements` exports what the program needs from its environment: today the secrets it reads, held to a DNA manifest's `[dna.secrets]` ([Declared Secrets](./dna/skin.md#declared-secrets)).
 
 ---
 

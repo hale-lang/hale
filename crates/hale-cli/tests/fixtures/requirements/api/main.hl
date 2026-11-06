@@ -1,0 +1,44 @@
+// GH #1835 (slice 1): the secrets `api` reads, each a way a program reads
+// one today. The checker lists them in the requirements artifact
+// (`hale check --dump-requirements`) and holds the declared ones to the
+// manifest's `[dna.secrets]` (`../hale.toml`).
+
+// a declared secret's variable, named by a const
+const UPSTREAM: String = "HALE_SECRET_UPSTREAM_KEY";
+
+locus Api {
+    params {
+        // a declared secret, read as the locus that presents it
+        token: std::secret::Credential =
+            std::secret::Credential { vault: std::env::var("HALE_SECRET_OPERATOR_TOKEN") };
+        // a key from a variable the environment sets
+        signer: std::secret::Signer = std::secret::Signer { env_var: "SIGNING_KEY" };
+        // a vault entry by its own name
+        forge: std::secret::Credential = std::secret::Credential { vault: "forge-token" };
+        // an entry named at run time: a read the checker cannot name
+        picked: String = "";
+    }
+
+    fn ready() -> Bool {
+        return self.token.ready() && self.signer.ready() && self.forge.ready();
+    }
+
+    // a declared secret's entry, by the const; a family's members' prefix
+    fn entries() -> String {
+        return std::env::var(UPSTREAM) + " " + std::env::var("HALE_SECRET_MODEL_TOKEN_FAMILY");
+    }
+
+    fn picked_ready() -> Bool {
+        return std::secret::Credential { vault: self.picked }.ready();
+    }
+}
+
+main locus App {
+    params { api: Api = Api { }; }
+
+    run() {
+        if self.api.ready() && self.api.picked_ready() {
+            println(self.api.entries());
+        }
+    }
+}

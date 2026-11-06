@@ -532,6 +532,10 @@ specified in [`spec/model.md`](./model.md). This document specifies
 what is CHECKED and what is SERIALISED; that one specifies the IR
 sitting between them.
 
+Beside the topology artifact, `hale check <t> --dump-requirements`
+emits the **requirements artifact**, what the program needs from its
+environment (§ "The requirements artifact" below).
+
 **The topology artifact** (#382 phase 2; schema 1.17):
 `hale check <t> --dump-topology` emits a PROJECTION of the model
 (lossy by construction; see [`spec/model.md`](./model.md)) —
@@ -1926,6 +1930,131 @@ derivation tracking (nothing derived from the key influences a public
 output), control dependence (a constant-time compare still lets the
 *verdict* be published), resource uniqueness (nonce counters, DRBG
 state), and zeroization.
+
+## The requirements artifact (GH #1835)
+
+Beside the topology artifact, which states what a program **is** (the
+model and its law), the checker emits the **requirements artifact**:
+what the program **needs** from whatever environment runs it, derived
+from its code. An environment (a habitat, a compose file, a test
+harness) reads it and binds each need; the hand-written sections of a
+manifest that say the same thing are compared with it and, in time,
+replaced by it. It is built in slices, one kind of need at a time;
+**slice 1 states secrets**, and it is the only kind this version emits.
+
+`hale check <t> --dump-requirements` prints it (stdout when bare,
+`--dump-requirements=<path>` writes the file; a following argument is
+never taken as the path, as with `--dump-topology`). Like the topology
+artifact it is refused, exit 1, for a program that does not typecheck,
+and it changes nothing the check reports or its exit status. It is
+per-evaluation: `--workspace` and `--matrix` refuse it.
+
+```json
+{
+  "schema": "hale.requirements",
+  "version": "1.0",
+  "program": "api",
+  "secrets": [
+    {
+      "name": "operator-token",
+      "source": "declared",
+      "variable": "HALE_SECRET_OPERATOR_TOKEN",
+      "kind": "credential",
+      "family": false,
+      "readers": ["api"],
+      "reads": [
+        { "file": "main.hl", "line": 13, "col": 46, "kind": "credential" }
+      ]
+    },
+    {
+      "name": "SIGNING_KEY",
+      "source": "env",
+      "kind": "signer",
+      "family": false,
+      "readers": ["api"],
+      "reads": [
+        { "file": "main.hl", "line": 15, "col": 61, "kind": "signer" }
+      ]
+    }
+  ],
+  "unnamed": [
+    { "file": "main.hl", "line": 32, "col": 42, "kind": "credential", "field": "vault" }
+  ]
+}
+```
+
+- **`schema`, `version`.** `hale.requirements` and a `major.minor`
+  version, `1.0` here. A minor version adds keys or values a reader may
+  ignore; a major version changes what an existing key means, and a
+  reader refuses a major it does not know. The topology artifact's
+  `schema` is versioned the same way.
+- **`program`.** The checked program, by its directory's name: the name
+  a manifest's `readers` give it (spec/dna.md § Declared secrets).
+- **`secrets`.** Every secret the program reads, one entry per `source`
+  and `name`, sorted by source (`declared`, `vault`, `env`, `file`) and
+  then by name. A secret is **read** where the code names it:
+  - `declared`: a read of `HALE_SECRET_<NAME>` (or a family's
+    `HALE_SECRET_<NAME>_FAMILY`), the variable a declared secret's
+    readers are handed its vault entry in, through `std::env::var` or
+    `std::env::var_exists` with the variable written as a string literal
+    or a const of one, or as `env_var:` of a `std::secret` locus. `name`
+    is the secret's (`HALE_SECRET_OPERATOR_TOKEN` is `operator-token`)
+    and `variable` the one read; `family` is true when the family's
+    prefix variable was read;
+  - `vault`, `env`, `file`: a `std::secret::Credential` or
+    `std::secret::Signer` literal whose `vault:`, `env_var:` or (a
+    `Signer`'s) `key_file:` is a string literal or a const of one, `name`
+    being that string. An empty one names no source and is no read.
+- **`kind`.** How it is read: `credential` or `signer` when a
+  `std::secret` locus presents it (its source reads the variable, or
+  names the entry), `entry` when the program reads only the entry's name
+  and carries it on to code the checker does not follow to a locus. A
+  secret's `kind` is the strongest of its reads' (`credential`, then
+  `signer`, then `entry`); each read carries its own.
+- **`readers`.** The programs that read it: the checked program. An
+  environment that runs several programs reads each one's artifact and
+  joins them by `source` and `name`.
+- **`reads`.** Each read's place, its file relative to the program's
+  directory, sorted.
+- **`unnamed`.** A `std::secret` literal whose source is computed
+  (`vault: self.vault`, `vault: dna::nerves_vault_name(org, "owner")`):
+  a secret the program reads whose name the checker cannot see. It is
+  listed, never left out, so a reader of the artifact knows the list of
+  names is not the whole of what the program reads.
+
+The walk covers every expression the program holds (a body, a param
+default, a const, a field default) in the program's own seeds and the
+seeds it imports. What the code cannot say yet is the manifest's alone:
+whether the value is drawn by the habitat or filled by a person
+(`kind = "drawn"` / `"slot"`), and who may read it (`person`). The next
+slice makes a secret a parameter of the main locus typed by that kind,
+and its reads those parameters.
+
+### Drift against `[dna.secrets]`
+
+A program whose directory has, at or above it (no higher than the
+repository's root, the directory holding `.git`), a `hale.toml` with a
+`[dna]` table is part of the organism that manifest declares, and every
+`hale check` and `hale verify` of it compares its `declared` reads with
+the manifest's `[dna.secrets]` (spec/dna.md § Declared secrets). Each
+difference is a **warning** in this version, refused in a later one:
+
+| difference | where it is reported |
+|---|---|
+| a secret read in code that the manifest does not declare | at the first read, naming the secret, its variable and the manifest |
+| a secret read by a program its declaration's `readers` do not name | at the first read, naming the declaration's table and line |
+| a family's prefix read for a secret that is no family | at the first read |
+| a secret whose `readers` name the program, that the program never reads | at the manifest's `[dna.secrets.<name>]` line (`hale.toml:<line>:1`) |
+
+The last is reported only when the check loaded the whole program (a
+seed directory, or a file with no other non-test `.hl` file beside it),
+so a file checked alone never reports its siblings' reads missing. A
+test program (`*_test.hl`) is never compared, and a secret no program
+reads (a person's alone, or a host command's, `host.<command>`) is not
+the program's to read. A declaration the toolchain refuses is one
+warning at the manifest, and nothing is compared. `--json` carries a
+warning at the manifest as a record of its own whose `file` is the
+manifest. `hale verify` fails on these as on any advisory.
 
 ## Structural & design rules
 

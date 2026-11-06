@@ -673,6 +673,34 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
             None => print!("{}", artifact),
         }
     }
+    // GH #1835 (slice 1): the requirements artifact, beside the topology
+    // artifact and refused as it is: what a program that does not
+    // typecheck reads describes no program. `=<path>` only, as
+    // `--dump-topology`, so a following target is never overwritten.
+    let dump_requirements = argv.iter().any(|a| a == "--dump-requirements");
+    let dump_requirements_to =
+        argv.iter().find_map(|a| a.strip_prefix("--dump-requirements=")).filter(|v| !v.is_empty()).map(str::to_string);
+    if dump_requirements || dump_requirements_to.is_some() {
+        if let Some(d) = checked.iter().find(|d| d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim) {
+            eprintln!(
+                "refusing to emit a requirements artifact: `{}` does not typecheck, so what it reads is not what any \
+                 program reads. Fix the {} first.",
+                target.display(),
+                d.kind_str()
+            );
+            return 1;
+        }
+        let artifact = super::requirements::artifact(target, snap);
+        match &dump_requirements_to {
+            Some(path) => {
+                if let Err(e) = std::fs::write(path, artifact) {
+                    eprintln!("could not write {}: {}", path, e);
+                    return 2;
+                }
+            }
+            None => print!("{}", artifact),
+        }
+    }
     // GH #1417 (R1): the surface rows' documents. Same refusal rule as
     // the artifact; the document is stdout's alone (the check's report is
     // stderr's), so it can be compared byte for byte.
@@ -1113,12 +1141,24 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
     // here covers every pass rather than each remembering.
     hale_types::stdlib_bodies::demangle_imports(&mut diags, import_renames);
     retain_owned_advisories(&mut diags, own_files, file_bases);
-    if !diags.is_empty() {
+    // GH #1835 (slice 1): the secrets the program reads against the
+    // manifest's `[dna.secrets]`. After the ownership filter: a read in an
+    // imported seed is still this program's read.
+    let (at_reads, at_manifest) = super::requirements::drift(target, snap);
+    diags.extend(at_reads);
+    if !diags.is_empty() || !at_manifest.is_empty() {
         for d in &diags {
             if json_mode {
                 println!("{}", render_diag_json(d, file_bases, sources));
             } else {
                 eprintln!("{}", render_located(d, file_bases, sources));
+            }
+        }
+        for w in &at_manifest {
+            if json_mode {
+                println!("{}", w.render_json());
+            } else {
+                eprintln!("{}", w.render());
             }
         }
         // check: warnings print but don't fail; only errors do.
@@ -1128,7 +1168,7 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
                 eprintln!(
                     "verify: {} finding(s) — the discipline gate \
                      fails on advisories too",
-                    diags.len()
+                    diags.len() + at_manifest.len()
                 );
             }
             return 1;

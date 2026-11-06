@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicBool;
 
 pub(crate) mod cli;
 pub(crate) mod matrix;
+pub(crate) mod requirements;
 pub(crate) mod run_impl;
 
 /// GH #476 Change 2: did `hale model dump` ask for the canonical

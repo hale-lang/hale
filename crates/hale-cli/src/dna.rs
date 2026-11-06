@@ -48,7 +48,7 @@ pub(crate) mod habitat;
 mod head;
 mod pack;
 mod provides;
-mod secrets;
+pub(crate) mod secrets;
 mod uis;
 
 /// Where a toolchain before GH #1590 kept the record. Nothing reads it: a
