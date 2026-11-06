@@ -207,30 +207,70 @@ fn api() {
     // only the renames-aware walk sees.
     pinned(
         "api",
-        727,
-        729,
+        734,
+        736,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        CommandAdmission::add_nursery  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        CommandAdmission::brief  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        CommandAdmission::place_allocation  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_30  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_30  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_30  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        CommandAdmission::ratify_sapling  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        CommandAdmission::saplings  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_call_1  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_call_2  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_call_3  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_1  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_10  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_26  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_31  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_37  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_48  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_1  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_10  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_26  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_31  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_37  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_48  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_1  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_10  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_26  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_31  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_37  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_48  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_seam_1  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_seam_2  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_seam_3  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
+        Commands::add_nursery  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::brief  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::place_allocation  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::ratify_sapling  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::saplings  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
         OidcBearer::principal  does={syscall,block,time,env,alloc}
         allocation_links  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         applied_at  does={syscall,env,alloc}
+        applies_dir  does={env,alloc}
+        apply_running  does={syscall,block,alloc}
         habitat_alerts  does={syscall,block,env,alloc}
         habitat_allocate_forge  does={syscall,block,env,alloc}
+        habitat_apply  does={syscall,block,time,env,alloc}
+        habitat_apply_log  does={syscall,block,env,alloc}
+        habitat_brief  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_graft  does={syscall,block,env,alloc}
         habitat_graft_log  does={syscall,env,alloc}
         habitat_host_plan_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        habitat_nursery_add  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_organism_plan_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_organism_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        habitat_place  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        habitat_sapling_ratify  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        habitat_saplings  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         host_removal_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         index_answers  does={syscall,block,env}
         launch_token  does={syscall,block,alloc,stdio}
@@ -242,7 +282,6 @@ fn api() {
         placement_host  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_targets_dir  does={syscall,env,alloc}
-        services_render  does={syscall,block,env,alloc}
         ",
     );
 }
