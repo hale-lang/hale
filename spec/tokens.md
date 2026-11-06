@@ -1046,8 +1046,8 @@ its named alias `span_max`.
 - Numeric literals are recognized greedily up to the first
   non-numeric character (after handling `0x`, `0o`, `0b`
   prefixes, decimal point, exponent, and type suffix).
-- Comments are stripped before parsing (except doc comments,
-  which are attached to the following declaration as metadata).
+- Comments are stripped before parsing, doc comments included:
+  tooling recovers `///` text by position (see Comments above).
 
 ## Reserved character classes
 

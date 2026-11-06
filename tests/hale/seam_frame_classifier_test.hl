@@ -49,7 +49,9 @@ locus Session {
 locus Link {
     params { wire: Wire = Wire { }; session: Session = Session { }; }
     seam classify(frame: Bytes) {
-        frame -> self.wire.decode -> self.session;
+        frame
+            -> self.wire.decode
+            -> self.session;
     }
 }
 
