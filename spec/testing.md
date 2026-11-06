@@ -482,8 +482,9 @@ on their own (graft) honour the marker too);
 for editor integration.
 
 What canonical form means (a token-stream formatter — the author's
-line breaks are PRESERVED, gofmt-style, wherever a line fits; a line
-wider than 100 columns is broken by the width rule below):
+line breaks are PRESERVED, gofmt-style, wherever a line fits, but for
+a seam's, which the shape rule below sets; a line wider than 100
+columns is broken by the width rule below):
 
 - **Indentation** — 4 spaces per bracket depth. A closing bracket
   returns to its opener's line indent; brackets opened together on
@@ -511,7 +512,7 @@ wider than 100 columns is broken by the width rule below):
   whitespace alone are emptied. The value never moves.
 
 **Width.** A line wider than 100 columns is broken, and
-a line that fits is left as written: fmt never joins lines. The width
+a line that fits is left as written: the width rule never joins lines. The width
 counts the code: a trailing `//` comment does not count, nor do the
 lines of a block string's text. A line is broken canonically for its
 shape, the outermost shape first, then each resulting line that
@@ -542,6 +543,31 @@ still does not fit, the same way:
 A line with none of these (a long string literal) stays as it is.
 Wrapping is idempotent because a wrapped line fits: fmt of fmt output
 is a no-op.
+
+**Shape.** One rule holds whatever the width, and it is the one place
+fmt moves the author's line breaks rather than only adding them: a seam
+(spec/semantics.md § Seams) is always multi-line, one hop per line,
+however few hops it has and however short they are. The chain's head
+(the callable form's parameter, the closed form's source) opens the
+body's first line; every pipeline `->` (one at the body's own level,
+followed by its `self` hop) opens a line of its own, one level deeper
+than the head, with the hop's path and the chain's `;` on it; an `or
+end;` or `or violate NAME;` clause and the body's closing `}` stand on
+lines of their own. A line break written inside a hop, or after an
+arrow, goes, and so does a blank line among the hops. The signature's
+return arrow, a `->` inside the head's brackets, and every `->` outside
+a seam are not hops and are left alone. Comments keep their place: one
+trailing a hop stays on its line, and one on a line of its own among the
+hops indents with them.
+
+```hale,fragment
+seam answer(frame: String) -> String {
+    frame
+        -> self.wire.decode
+        -> self.desk
+        -> self.wire.encode;
+}
+```
 
 Safety: the formatter re-lexes its own output and refuses to write
 unless the semantic token stream is byte-identical to the input's

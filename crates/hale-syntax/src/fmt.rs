@@ -33,6 +33,17 @@
 //! what makes wrapping a fixed point: every line it writes fits, or has
 //! nothing left to break.
 //!
+//! Shape: the one rule that holds whatever the width, and so the
+//! formatter's one exception to keeping the author's line breaks. A
+//! seam (`seam { … }`, `seam name(x: T) -> R { … }`) is always
+//! multi-line, one hop per line: its head on the body's first line,
+//! each pipeline `->` opening a line one level deeper, the hop's path
+//! and `;` on that line, an `or end;` / `or violate NAME;` clause and
+//! the closing `}` on lines of their own ([`shape_seams`]). It moves
+//! line breaks before the lines are rendered, so the width rule and the
+//! indentation rules see a seam already in its shape, and it is a fixed
+//! point because the shape it writes is the shape it asks for.
+//!
 //! Token text is always emitted as the RAW source slice (never
 //! re-serialized from the token value), so string escapes, float
 //! spellings, f-strings, and bytes literals round-trip exactly. The
@@ -87,6 +98,9 @@ struct Item {
     newlines_before: usize,
     /// The wrapper found no break for the segment this item starts.
     nobreak: bool,
+    /// An own-line comment among a seam's hops: it indents like the
+    /// hop line after it ([`shape_seams`]).
+    hop: bool,
 }
 
 /// The width a line is held to (spec/testing.md § `hale fmt`).
@@ -117,7 +131,8 @@ fn format_at(source: &str, width: Option<usize>) -> Result<String, FmtError> {
 pub fn wrap_report(source: &str, width: Option<usize>) -> Result<(String, bool), FmtError> {
     let mut fell_back = false;
     let tokens = lex(source).map_err(FmtError::Parse)?;
-    let items = build_stream(source, &tokens);
+    let mut items = build_stream(source, &tokens);
+    shape_seams(&tokens, &mut items);
     let (mut out, mut commas) = emit(source, &tokens, items.clone(), width, true);
     // A trailing comma goes only where the grammar takes one. A
     // construct the token stream cannot tell from a call must not turn
@@ -172,10 +187,175 @@ fn build_stream(source: &str, tokens: &[Token]) -> Vec<Item> {
             elem: Elem::Tok(i),
             newlines_before: nl,
             nobreak: false,
+            hop: false,
         });
         prev_end = tok.span.end.as_usize();
     }
     items
+}
+
+/// Seams are always multi-line, one hop per line — the one rule of
+/// shape that holds whatever the width (spec/testing.md § `hale fmt`).
+/// Inside a seam's body (`seam { … }`, `seam name(x: T) -> R { … }`)
+/// the chain's head starts the body's first line, every pipeline `->`
+/// (a `->` at the body's own level followed by `self`, which is what
+/// the parser takes as a hop) starts a line of its own, the hop's path
+/// and its `;` stay on that line, the `or end;` / `or violate NAME;`
+/// clause is a line of its own, and the closing `}` too. The hop lines
+/// indent one level deeper than the head by the continuation rule (a
+/// line opening with a binary operator), and an own-line comment among
+/// the hops indents with them. A `->` inside the head's brackets, the
+/// signature's return arrow and every `->` outside a seam are left
+/// alone. Comments stay where they are: a break goes before a token,
+/// never between a comment and the code it trails.
+fn shape_seams(tokens: &[Token], items: &mut [Item]) {
+    use TokenKind::*;
+    let mut at = vec![usize::MAX; tokens.len()];
+    for (k, it) in items.iter().enumerate() {
+        if let Elem::Tok(t) = it.elem {
+            at[t] = k;
+        }
+    }
+    let starts_line = |items: &mut [Item], k: usize| {
+        if items[k].newlines_before == 0 {
+            items[k].newlines_before = 1;
+        }
+    };
+    let mut i = 0;
+    while i < tokens.len() {
+        let Some(open) = seam_body(tokens, i) else {
+            i += 1;
+            continue;
+        };
+        let Some(close) = matching_closer(tokens, open) else { return };
+        let mut depth = 0usize;
+        // In a hop or the `or` clause, whose tokens share one line.
+        let mut joined = false;
+        let mut statement_start = true;
+        for t in open + 1..close {
+            let k = at[t];
+            if k == usize::MAX {
+                continue;
+            }
+            let kind = &tokens[t].kind;
+            if depth == 0 {
+                if statement_start {
+                    starts_line(items, k);
+                    joined = matches!(kind, Ident(w) if w == crate::ast::seam_words::OR);
+                    statement_start = false;
+                } else if matches!(kind, Arrow)
+                    && matches!(tokens.get(t + 1).map(|t| &t.kind), Some(KwSelf))
+                {
+                    items[k].newlines_before = 1;
+                    // Own-line comments just above the hop indent with it.
+                    let mut c = k;
+                    while c > 0 && matches!(items[c - 1].elem, Elem::Comment(_)) {
+                        c -= 1;
+                        if items[c].newlines_before > 0 {
+                            items[c].hop = true;
+                        }
+                    }
+                    joined = true;
+                } else if joined && matches!(items[k - 1].elem, Elem::Tok(_)) {
+                    items[k].newlines_before = 0;
+                }
+                if matches!(kind, Semi) {
+                    joined = false;
+                    statement_start = true;
+                }
+            }
+            match kind {
+                LParen | LBracket | LBrace => depth += 1,
+                RParen | RBracket | RBrace => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if at[close] != usize::MAX {
+            starts_line(items, at[close]);
+        }
+        i = close + 1;
+    }
+}
+
+/// The `{` of the seam body that the token at `i` introduces, if it is
+/// a seam's `seam` word at a locus member's position: `seam {` (closed)
+/// or `seam name(…) [-> R] {` (callable).
+fn seam_body(tokens: &[Token], i: usize) -> Option<usize> {
+    use TokenKind::*;
+    if !matches!(&tokens[i].kind, Ident(w) if w == crate::ast::seam_words::SEAM) {
+        return None;
+    }
+    // A member starts after a `{`, `}` or `;`, or after an annotation.
+    let member = i == 0
+        || match tokens[i - 1].kind {
+            LBrace | RBrace | Semi => true,
+            Ident(_) => i >= 2 && matches!(tokens[i - 2].kind, At),
+            RParen => matching_opener(tokens, i - 1).is_some_and(|o| {
+                o >= 2 && matches!(tokens[o - 1].kind, Ident(_)) && matches!(tokens[o - 2].kind, At)
+            }),
+            _ => false,
+        };
+    if !member {
+        return None;
+    }
+    match tokens.get(i + 1).map(|t| &t.kind) {
+        Some(LBrace) => Some(i + 1),
+        Some(Ident(_)) if matches!(tokens.get(i + 2).map(|t| &t.kind), Some(LParen)) => {
+            // The return type, if any, runs to the body's `{`.
+            let mut j = matching_closer(tokens, i + 2)? + 1;
+            let mut depth = 0usize;
+            while j < tokens.len() {
+                match tokens[j].kind {
+                    LBrace if depth == 0 => return Some(j),
+                    LParen | LBracket => depth += 1,
+                    RParen | RBracket => depth = depth.checked_sub(1)?,
+                    Semi | RBrace | LBrace | Eof => return None,
+                    _ => {}
+                }
+                j += 1;
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// The closer of the bracket opened at token `open`.
+fn matching_closer(tokens: &[Token], open: usize) -> Option<usize> {
+    use TokenKind::*;
+    let mut depth = 0usize;
+    for (j, t) in tokens.iter().enumerate().skip(open) {
+        match t.kind {
+            LParen | LBracket | LBrace => depth += 1,
+            RParen | RBracket | RBrace => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The opener of the bracket closed at token `close`.
+fn matching_opener(tokens: &[Token], close: usize) -> Option<usize> {
+    use TokenKind::*;
+    let mut depth = 0usize;
+    for j in (0..=close).rev() {
+        match tokens[j].kind {
+            RParen | RBracket | RBrace => depth += 1,
+            LParen | LBracket | LBrace => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Newlines between `from` and the next emitted element, counting
@@ -244,6 +424,7 @@ fn push_gap_comments(
                 ),
                 newlines_before: nl,
                 nobreak: false,
+                hop: false,
             });
             LAST_COMMENT_END.with(|c| c.set(end));
             pos = end;
@@ -264,6 +445,7 @@ fn push_gap_comments(
                 elem: Elem::Comment(source[pos..end].to_string()),
                 newlines_before: nl,
                 nobreak: false,
+                hop: false,
             });
             LAST_COMMENT_END.with(|c| c.set(end));
             pos = end;
@@ -922,7 +1104,8 @@ impl<'a> Emitter<'a> {
                         // Own-line comment: indent like code. Closers on
                         // the NEXT line shouldn't affect it; use the
                         // normal non-closer rule.
-                        let indent = st.stack.last().map(|(_, li)| *li + 1).unwrap_or(0);
+                        let indent = st.stack.last().map(|(_, li)| *li + 1).unwrap_or(0)
+                            + usize::from(item.hop);
                         out.ws(&"    ".repeat(indent));
                         line_start = false;
                         st.first_line = false;
@@ -1361,6 +1544,7 @@ fn apply_breaks(line: &mut Vec<Item>, a: usize, b: usize, brk: &[usize], commas:
                 elem: Elem::Comma,
                 newlines_before: 0,
                 nobreak: false,
+                hop: false,
             },
         );
     }
@@ -1670,5 +1854,65 @@ mod tests {
             "t".repeat(120)
         );
         assert_eq!(wrap(&src), want);
+    }
+
+    /// Seams are always multi-line, one hop per line, whatever the
+    /// width: the head on the body's first line, each `->` one level
+    /// deeper, and the signature's return arrow left where it is.
+    #[test]
+    fn seam_callable_one_hop_per_line() {
+        let src = "locus C {\n    seam answer(frame: String) -> String {\n        frame -> self.wire.decode -> self.desk -> self.wire.encode;\n    }\n}\n";
+        let want = "locus C {\n    seam answer(frame: String) -> String {\n        frame\n            -> self.wire.decode\n            -> self.desk\n            -> self.wire.encode;\n    }\n}\n";
+        assert_eq!(fmt(src), want);
+        assert_eq!(fmt(want), want, "an already-formatted seam is untouched");
+    }
+
+    /// A seam written on one line, two hops: still multi-line, and its
+    /// `or violate` clause and closing brace on lines of their own.
+    #[test]
+    fn seam_closed_on_one_line_two_hops() {
+        let src = "locus G {\n    seam { self.next() -> self.put; or violate fuse; }\n}\n";
+        let want = "locus G {\n    seam {\n        self.next()\n            -> self.put;\n        or violate fuse;\n    }\n}\n";
+        assert_eq!(fmt(src), want);
+        assert_eq!(fmt(want), want);
+    }
+
+    /// Hops the author wrapped with trailing arrows, a blank line among
+    /// them, and an `or end;` on the chain's line: the canonical shape.
+    #[test]
+    fn seam_trailing_arrows_move_to_the_hop() {
+        let src = "locus C {\n    seam go(x: Int) {\n        x ->\n            self.a ->\n\n        self.b; or end;\n    }\n}\n";
+        let want = "locus C {\n    seam go(x: Int) {\n        x\n            -> self.a\n            -> self.b;\n        or end;\n    }\n}\n";
+        assert_eq!(fmt(src), want);
+    }
+
+    /// Comments between hops keep their place: a trailing one stays on
+    /// its hop's line, an own-line one indents with the hops.
+    #[test]
+    fn seam_comments_between_hops() {
+        let src = "locus C {\n    seam go(x: Int) -> Int {\n        x -> self.a // first\n        // then the handler\n        -> self.b /* last */ -> self.c;\n    }\n}\n";
+        let want = "locus C {\n    seam go(x: Int) -> Int {\n        x\n            -> self.a // first\n            // then the handler\n            -> self.b /* last */\n            -> self.c;\n    }\n}\n";
+        assert_eq!(fmt(src), want);
+        assert_eq!(fmt(want), want);
+    }
+
+    /// A `->` inside the head's brackets is not a hop, nor is any `->`
+    /// outside a seam (a return type, a match arm), nor a `seam` that is
+    /// only a name.
+    #[test]
+    fn seam_leaves_other_arrows_alone() {
+        let src = "locus C {\n    seam {\n        self.pull(match m { A -> 1, _ -> 2 })\n            -> self.sink;\n    }\n    fn f(m: M) -> Int { return match m { A -> 1, _ -> 2 }; }\n}\nfn g(seam: Int) -> Int { let y = h(seam) -> k; return y; }\n";
+        assert_eq!(fmt(src), src);
+    }
+
+    /// Formatting twice is formatting once, at any width.
+    #[test]
+    fn seam_shape_is_a_fixed_point() {
+        let src = "locus C {\n    seam a(x: Int) -> Int { x -> self.p.parse -> self.h; }\n    seam { self.feed.next() -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write; or end; }\n}\n";
+        for w in [20, 60, 100] {
+            let once = format_source_at_width(src, w).expect("formats");
+            assert_eq!(format_source_at_width(&once, w).expect("formats"), once, "width {w}");
+            assert!(once.contains("\n            -> self.h;\n"), "{once}");
+        }
     }
 }
