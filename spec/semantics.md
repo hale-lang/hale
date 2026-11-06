@@ -4193,7 +4193,11 @@ locus Gateway {
         log: Log = Log { };
     }
     seam {
-        self.feed.next() -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write;
+        self.feed.next()
+            -> self.wire.decode
+            -> self.desk
+            -> self.wire.encode
+            -> self.log.write;
         or end;
     }
 }
@@ -4201,7 +4205,10 @@ locus Gateway {
 locus Counter {
     params { wire: Wire = Wire { }; desk: Desk = Desk { }; }
     seam answer(frame: String) -> String {
-        frame -> self.wire.decode -> self.desk -> self.wire.encode;
+        frame
+            -> self.wire.decode
+            -> self.desk
+            -> self.wire.encode;
     }
 }
 ```

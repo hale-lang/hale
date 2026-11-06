@@ -67,17 +67,24 @@ locus App {
         t: Tally = Tally { };
     }
     seam go(x: Int) -> String {
-        x -> self.d.decode -> self.h;
+        x
+            -> self.d.decode
+            -> self.h;
     }
     seam wide(x: Int) -> String {
-        x -> self.d.parse -> self.all.all;
+        x
+            -> self.d.parse
+            -> self.all.all;
     }
     seam store(x: Int) {
-        x -> self.box.put;
+        x
+            -> self.box.put;
     }
     // declared `-> ()`, with a failure routed to a later hop: nothing returns
     seam tally(x: Int) -> () {
-        x -> self.box.take -> self.t;
+        x
+            -> self.box.take
+            -> self.t;
     }
 }
 

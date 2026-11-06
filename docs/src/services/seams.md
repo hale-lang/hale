@@ -46,7 +46,10 @@ locus Desk {
 locus Counter {
     params { wire: Wire = Wire { }; desk: Desk = Desk { }; }
     seam answer(frame: String) -> String {
-        frame -> self.wire.decode -> self.desk -> self.wire.encode;
+        frame
+            -> self.wire.decode
+            -> self.desk
+            -> self.wire.encode;
     }
 }
 
@@ -86,8 +89,8 @@ In the example above, `Wire` knows nothing about `Desk`, and `Desk` knows nothin
 1. **Locus hop coverage**: Every member in the set arriving at `self.desk` must match the parameter type of **exactly one** method on `Desk`. If `Desk::cancel` is omitted, compilation fails at `self.desk`:
    ```text
    type error: `self.desk` has no method taking `Cancel`, which reaches it from `self.wire.decode`: every member has one eater
-               frame -> self.wire.decode -> self.desk -> self.wire.encode;
-                                            ^^^^^^^^^
+                   -> self.desk
+                      ^^^^^^^^^
    ```
    Similarly, if two methods on `Desk` both accept `Cancel`, the compiler rejects the ambiguity naming both methods.
 2. **Method hop coverage**: At a method hop (`self.wire.encode`), every member produced by the preceding hop must be a member of the method parameter's set type (`Outbound`).
@@ -135,7 +138,11 @@ locus Log {
 locus Gateway {
     params { feed: Feed = Feed { }; wire: Wire = Wire { }; desk: Desk = Desk { }; log: Log = Log { }; }
     seam {
-        self.feed.next() -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write;
+        self.feed.next()
+            -> self.wire.decode
+            -> self.desk
+            -> self.wire.encode
+            -> self.log.write;
     }
 }
 ```

@@ -66,7 +66,9 @@ locus Store {
 locus Db {
     params { wire: Wire = Wire { }; store: Store = Store { }; }
     seam apply(frame: String) -> String {
-        frame -> self.wire.decode -> self.store;
+        frame
+            -> self.wire.decode
+            -> self.store;
         or end;
     }
 }
