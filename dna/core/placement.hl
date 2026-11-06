@@ -440,8 +440,7 @@ fn services_render(body: String) -> Render {
         ""
     };
     // the commit its checkout is at (a sapling's revision; "" outside git)
-    let head = run_tool("git\n-C\n" + r.dir + "\nrev-parse\nHEAD");
-    let revision = if head.code == 0 { trim_nl(head.stdout) } else { "" };
+    let revision = checkout_commit(r.dir);
     // each of its services labelled as the habitat's, for the organism it is,
     // and each long-running one kept running (`services_override`)
     return Render {

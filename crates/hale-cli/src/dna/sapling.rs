@@ -989,7 +989,7 @@ mod tests {
         ];
         let a = unanswered_outcome(&rows, "local");
         assert!(!a.ok, "a placeable allocation is down");
-        assert!(a.lines[0].starts_with("note    the habitat's head is older than this toolchain"));
+        assert!(a.lines[0].starts_with(&format!("{:<8}the habitat's head is older than this toolchain", "note")));
         assert_eq!(a.lines.len(), 3, "the forge is not placeable, and rack's are another host's: {:?}", a.lines);
         assert!(a.lines[2].contains("k/senses on ") && a.lines[2].contains(": down (senses-k is not created)"));
         let up = unanswered_outcome(&rows[..1], "");
