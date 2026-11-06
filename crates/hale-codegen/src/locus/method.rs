@@ -37,6 +37,92 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// A `run()`, `drain()` or `dissolve()` body is a wait frame
+    /// (spec/semantics.md § Drain cascade, step 2). The run() of a locus
+    /// that reads `draining` watches the drain: a timed wait it (or what
+    /// it calls) begins during a drain it has not yet read returns at
+    /// once, so its loop reaches its check. Every other run() and the two
+    /// hooks are frames that cut nothing beyond the in-progress cut, so a
+    /// hook a watching run() reaches does not inherit its cut. Whether
+    /// `locus` reads `draining` is known once every body has lowered: the
+    /// private flag `lotus.reads_drain.<locus>` is 0 until the end of
+    /// `lower_program` writes its initializer. The frame it replaces is
+    /// the value returned, put back at every return
+    /// ([`Self::emit_wait_frame_leaves`]). `None` for the other hooks,
+    /// and where no drain reaches the program (`DrainTerm` omitted).
+    fn emit_wait_frame_enter(
+        &mut self,
+        kind: &str,
+        locus: &str,
+    ) -> Result<Option<inkwell::values::IntValue<'ctx>>, CodegenError> {
+        if !matches!(kind, "run" | "drain" | "dissolve") {
+            return Ok(None);
+        }
+        if !self.cells.emits(hale_types::capability::Obligation::DrainTerm)? {
+            return Ok(None);
+        }
+        let i64_t = self.context.i64_type();
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let watches = if kind == "run" {
+            let gname = format!("lotus.reads_drain.{locus}");
+            let g = match self.module.get_global(&gname) {
+                Some(g) => g,
+                None => {
+                    let g = self.module.add_global(i64_t, None, &gname);
+                    g.set_linkage(inkwell::module::Linkage::Private);
+                    g.set_initializer(&i64_t.const_zero());
+                    g
+                }
+            };
+            self.builder
+                .build_load(i64_t, g.as_pointer_value(), "wait.frame.watches")
+                .map_err(e)?
+                .into_int_value()
+        } else {
+            i64_t.const_zero()
+        };
+        let enter = self
+            .module
+            .get_function("lotus_wait_frame_enter")
+            .expect("lotus_wait_frame_enter declared");
+        let prev = self
+            .builder
+            .build_call(enter, &[watches.into()], "wait.frame.prev")
+            .map_err(e)?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64")
+            .into_int_value();
+        Ok(Some(prev))
+    }
+
+    /// Leave the wait frame before every `ret` of the finished body
+    /// `func`: the open end, a `return;`, a `violate` all return through
+    /// one of them. (A body that ends the process leaves nothing to put
+    /// back.)
+    fn emit_wait_frame_leaves(
+        &mut self,
+        func: FunctionValue<'ctx>,
+        prev: Option<inkwell::values::IntValue<'ctx>>,
+    ) -> Result<(), CodegenError> {
+        let Some(prev) = prev else { return Ok(()) };
+        let leave = self
+            .module
+            .get_function("lotus_wait_frame_leave")
+            .expect("lotus_wait_frame_leave declared");
+        for bb in func.get_basic_blocks() {
+            let Some(term) = bb.get_terminator() else { continue };
+            if term.get_opcode() != inkwell::values::InstructionOpcode::Return {
+                continue;
+            }
+            self.builder.position_before(&term);
+            self.builder
+                .build_call(leave, &[prev.into()], "")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// The declaration id of `l`'s closure `name`: the body its
     /// assertion and its duration were typed in.
     fn closure_body(l: &LocusDecl, name: &str) -> hale_syntax::ast::NodeId {
@@ -86,6 +172,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let entry = self.context.append_basic_block(func, "entry");
                 self.builder.position_at_end(entry);
                 self.di_begin_function();
+                let wait_frame = self.emit_wait_frame_enter(kind, &l.name.name)?;
                 let self_ptr = func
                     .get_nth_param(0)
                     .expect("self_ptr param")
@@ -196,6 +283,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.current_method_caller_arena = None;
                 }
                 self.current_fn_skip_exit_drain = prev_skip_drain;
+                self.emit_wait_frame_leaves(func, wait_frame)?;
 
                 self.current_fn = None;
                 self.current_self = None;

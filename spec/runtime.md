@@ -224,7 +224,13 @@ the model: runtime is automatic; stdlib is explicit.
   pool's epoll lets `shutdown_all` unblock a worker sitting in
   `epoll_wait(-1)` (the condvar broadcast can't), so the worker
   returns from the drain and the join completes instead of
-  hanging. The parked coros are then *abandoned* — their stacks
+  hanging. A timed park the process drain cuts (`semantics.md` §
+  "Drain cascade (whole-process)", step 2) is resumed first, so a
+  `run()` whose sleep began during the drain after its pool's
+  shutdown was set reaches its check and returns (each coroutine
+  gets at most 64 such resumes at a shutdown; one that keeps
+  re-parking without reading `draining` is abandoned as the rest).
+  The parked coros are then *abandoned* — their stacks
   freed without resuming them, and a bus handler's delivery released
   with them (its payload buffer and the per-delivery region its
   strings were deserialized into, which has no parent arena to reclaim
@@ -644,6 +650,26 @@ threads, pinned publishers via `lotus_bus_local_dispatch`, etc.
 — right when each sleep returns, without an explicit `yield;`.
 The drain is idempotent, so existing code with `sleep; yield;`
 stays correct.
+
+**The process drain's check.** Each slice begins with a load of
+`lotus_process_draining_flag`; while a drain is up the sleep ends
+there (still taking that slice's bus drain, so a poll loop keeps
+delivering) when it began before the drain, or when
+`lotus_drain_cuts_wait` says the drain cuts a wait begun during it
+(`semantics.md` § "Drain cascade (whole-process)", step 2). That
+answer is the thread's **wait frame**: codegen enters one at the top
+of every `run()`, `drain()` and `dissolve()` body
+(`lotus_wait_frame_enter`, 1 for the `run()` of a locus whose code
+reads `draining`, else 0) and puts the previous one back at each
+return; every handler call (`LOTUS_CALL_HANDLER`) runs in frame 0;
+a coroutine carries its own across a park; a `draining` read that
+sees the process drain marks a watching frame as having seen this
+drain's generation (`lotus_drain_seen`). A watching frame that has
+not seen the current generation is cut; frame 0, and one that has
+seen it, are not. An `async_io` park records the frame it was made
+in (`park_wait_frame`) and the pool's expiry sweep asks the same
+question of it. The calm path is the flag's load; the call is made
+only while a drain is up.
 
 **Every park point delivers, on every pool.** A sleep slice and an
 explicit `yield;` are park points, and a park point inside a
@@ -4048,8 +4074,9 @@ for replay-under-a-different-plan) is the next milestone.
   #1039): the handler writes one byte to a pipe, a watcher thread
   raises the exported `lotus_process_draining_flag` (which every
   `self.draining` read loads, beside the locus's own
-  `__drain_requested`), wakes every `async_io` pool so timed parks
-  that began before the drain expire, and then waits out the grace
+  `__drain_requested`), wakes every `async_io` pool so the timed parks
+  the drain cuts expire (those that began before it, and those a
+  watching `run()` began during it), and then waits out the grace
   (`LOTUS_DRAIN_GRACE_MS`, default 5000); past it the watcher
   prints one line — the signal, and what the drain was still waiting
   on (each started cooperative pool: its mode, whether its worker is

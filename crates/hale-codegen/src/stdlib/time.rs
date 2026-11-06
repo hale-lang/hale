@@ -578,9 +578,18 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
             .build_store(remaining, ns)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         // GH #1039: was the process already draining when this sleep
-        // began? The drain cuts short only a wait IN PROGRESS when it
-        // starts; a sleep begun afterwards (a `drain()` or `dissolve()`
-        // body pacing a flush) sleeps its full length.
+        // began? The drain cuts short every sleep IN PROGRESS when it
+        // starts. One begun afterwards is the runtime's question, asked
+        // at the sleep's entry and after every slice (`chunk_bb`
+        // below): it returns at once in the run() of a locus that reads
+        // `self.draining` until that run() has read it as true, and
+        // runs its length anywhere else (a `drain()` / `dissolve()` body
+        // or a run() pacing a flush after its loop). Before 2026-11-06
+        // the entry snapshot was the whole answer, so a `while
+        // !self.draining { work(); sleep(30s); }` loop that was
+        // mid-`work()` when SIGTERM landed slept the full 30 s, outlasted
+        // the grace and died by the signal with its hooks unrun
+        // (reported from hale-lang/voice).
         let entry_draining = if self.cells.emits(hale_types::capability::Obligation::DrainTerm)? {
             Some(self.emit_process_draining_load("sleep.draining.entry")?)
         } else {
@@ -643,9 +652,72 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
 
-        // chunk_bb (loop header): chunk = clamp(min(remaining, 100ms), 0);
-        // store req from chunk; branch into the EINTR sleep loop.
+        // chunk_bb (loop header): the drain's check, then chunk =
+        // clamp(min(remaining, 100ms), 0); store req from chunk; branch
+        // into the EINTR sleep loop. While the process drains, the sleep
+        // ends here when it was calm at entry (a sleep in progress
+        // returns at its next slice) or when the runtime says the drain
+        // cuts it (`lotus_drain_cuts_wait`: a watching run() that has not
+        // seen the drain, so a sleep it begins during the drain returns
+        // at once). The calm path is the flag's load; the call is made
+        // only while a drain is up. (An async_io sleep parks instead, and
+        // the pool's expiry sweep asks the same of the park.)
         self.builder.position_at_end(chunk_bb);
+        if let Some(at_entry) = entry_draining {
+            let now = self.emit_process_draining_load("sleep.draining")?;
+            let up = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::NE, now, zero64, "sleep.drain.up")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let ask_bb = self.context.append_basic_block(func, "sleep.drain.ask");
+            let slice_bb = self.context.append_basic_block(func, "sleep.slice");
+            self.builder
+                .build_conditional_branch(up, ask_bb, slice_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(ask_bb);
+            let was_calm = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::EQ, at_entry, zero64, "sleep.drain.was_calm")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let cuts_fn = self
+                .module
+                .get_function("lotus_drain_cuts_wait")
+                .expect("lotus_drain_cuts_wait declared");
+            let cuts = self
+                .builder
+                .build_call(cuts_fn, &[], "sleep.drain.cuts")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns i64")
+                .into_int_value();
+            let frame_cut = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::NE, cuts, zero64, "sleep.drain.frame_cut")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let cut = self
+                .builder
+                .build_or(was_calm, frame_cut, "sleep.drain.cut")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // A cut sleep still takes its slice's drain (`drain_bb`,
+            // with nothing left to sleep), so a poll loop the drain cuts
+            // keeps delivering the cells it waits on.
+            let cut_bb = self.context.append_basic_block(func, "sleep.drain.cut");
+            self.builder
+                .build_conditional_branch(cut, cut_bb, slice_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(cut_bb);
+            self.builder
+                .build_store(chunk_slot, zero64)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(remaining, zero64)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(drain_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(slice_bb);
+        }
         let rem_val = self
             .builder
             .build_load(i64_t, remaining, "sleep.rem.cur")
@@ -809,36 +881,6 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
                 "sleep.more",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // GH #1039: a sleep in progress when the process begins to
-        // drain returns at the next slice boundary (<= 100 ms), so a
-        // `while !self.draining { ...; sleep(..) }` loop reaches its
-        // check. (An async_io sleep parks instead; the pool's expiry
-        // sweep resumes it on the drain.)
-        let more = match entry_draining {
-            None => more,
-            Some(at_entry) => {
-                let now = self.emit_process_draining_load("sleep.draining")?;
-                let now_up = self
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::NE, now, zero64, "sleep.drain.up")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let was_calm = self
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::EQ, at_entry, zero64, "sleep.drain.was_calm")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let cut = self
-                    .builder
-                    .build_and(now_up, was_calm, "sleep.drain.cut")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let keep = self
-                    .builder
-                    .build_not(cut, "sleep.drain.keep")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder
-                    .build_and(more, keep, "sleep.more.calm")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            }
-        };
         self.builder
             .build_conditional_branch(more, chunk_bb, done_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

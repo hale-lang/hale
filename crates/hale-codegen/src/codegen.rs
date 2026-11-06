@@ -10601,6 +10601,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             })
             .map(|(name, _)| name.clone())
             .collect();
+        // The loci whose run() watches the drain (their code reads it;
+        // a hook alone does not make a run() watch): the wait frames of
+        // `emit_wait_frame_enter`.
+        for name in &self.drain_observer_loci {
+            if let Some(g) = self.module.get_global(&format!("lotus.reads_drain.{name}")) {
+                g.set_initializer(&self.context.i64_type().const_int(1, false));
+            }
+        }
         for name in hooked {
             self.reads_draining = true;
             self.drain_reads_beyond_run.insert(name.clone());

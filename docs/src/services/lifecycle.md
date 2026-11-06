@@ -224,7 +224,7 @@ self.conn.url = next;                   // mutates existing instance in place; n
 Every locus has a synthetic boolean field `self.draining` (initialized to `false`). When the process receives `SIGINT` (Ctrl-C) or `SIGTERM`, or when `main`'s `run()` returns:
 
 1. `self.draining` becomes `true` across all loci in the program.
-2. Any in-progress `std::time::sleep` inside `run()` wakes immediately so loops conditioned on `while !self.draining` exit without waiting out their timer. (Sleeps executed inside `drain()` or `dissolve()` run for their full duration so final network flushes can pace themselves.)
+2. Any in-progress `std::time::sleep` inside `run()` wakes immediately so loops conditioned on `while !self.draining` exit without waiting out their timer. A sleep that *begins* during the drain in a `run()` that reads `self.draining` returns at once too, until that `run()` has seen `self.draining` as `true` — so a loop that was in the middle of its work when the signal landed does not start a fresh 30 s sleep into the grace period. (Sleeps executed inside `drain()` or `dissolve()`, in a handler, or in `run()` after its loop has seen the drain run for their full duration so final network flushes can pace themselves.)
 3. `drain()` cascades depth-first (deepest children drain first, then their parents).
 4. `dissolve()` executes and arenas are reclaimed leaves-first, after which the process exits with code `0`.
 

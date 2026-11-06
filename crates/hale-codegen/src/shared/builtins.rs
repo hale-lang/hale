@@ -1383,6 +1383,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t2.fn_type(&[i64_t2.into()], false),
             None,
         );
+        // What a drain does to a timed wait (spec/semantics.md § Drain
+        // cascade, step 2): the wait frame of a run() / drain() /
+        // dissolve() body, a `draining` read that saw the drain, and
+        // sleep's check.
+        // declare i64 @lotus_wait_frame_enter(i64 hook)
+        // declare void @lotus_wait_frame_leave(i64 prev)
+        // declare void @lotus_drain_seen()
+        // declare i64 @lotus_drain_cuts_wait()
+        self.module.add_function(
+            "lotus_wait_frame_enter",
+            i64_t2.fn_type(&[i64_t2.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_wait_frame_leave",
+            self.context.void_type().fn_type(&[i64_t2.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_drain_seen",
+            self.context.void_type().fn_type(&[], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_drain_cuts_wait",
+            i64_t2.fn_type(&[], false),
+            None,
+        );
         // GH #255 phase 2 — bounded topics:
         // declare void @lotus_bus_set_sub_bound(ptr subject, ptr self,
         //     i64 shed_bound, i64 shed_policy, i64 refuse_bound)
