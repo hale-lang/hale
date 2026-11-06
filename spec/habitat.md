@@ -298,7 +298,27 @@ and an allocation on the `operator`'s server is never placed.
 
 **Apply** is the Board's command `Commands::apply_allocations` (`{host,
 fresh}`, `hale habitat apply [<host>] [--fresh]`), over every allocation
-or those placed on or leaving one host:
+or those placed on or leaving one host. An apply takes minutes (an
+organism's images are pulled or built on its host) and the head serves its
+commands one at a time, so the command starts it in a process of its own
+(`hale habitat apply --no-head` on the head's own record, the host verb
+`habitat-allocations-apply`)
+and answers at once: `{ok, code: "started", apply, log}`, the apply's id and
+its log (`<habitat>/applies/<id>.log`, its exit status beside it in
+`<log>.exit` and what it came to in `<log>.reply`). One apply runs at a
+time: while one runs the command starts none and answers `code:
+"applying"` with the running one's id and log, to follow.
+`Commands::apply_log` (`{apply, from}`, the Board's like the apply) pages
+the log: `{ok, code, why, text, next, done, exit, outcome}`, `outcome` once
+it is `done` the apply's reply as a JSON object (`{ok, code, why, restart,
+applied}`), and `{}` when it ended without one (its process was stopped). It
+reads only the log of an apply this head started, by its id, and refuses
+any other name or path. `hale habitat apply` is a client of both: it says
+what the apply is applying as it goes and prints the pulse when it ends,
+exiting 0 when every allocation applied; through a head older than its
+toolchain, which applies inside its request, it waits until that head
+answers a read again and prints what each provider observes then. What an
+apply does:
 
 - the allocation rows are exported as the `--placement` file `hale deploy
   render` takes (`<habitat>/placement.json`, `{instance, host, provider,
@@ -399,7 +419,9 @@ takes minutes, and answers at once with its log (`<habitat>/grafts/<name>.log`,
 its exit status beside it in `<log>.exit`); the end of the graft is its
 `habitat.grafted` row. `hale habitat graft <sapling>` is a client of it while
 the head answers, following the log to the exit, and the act itself
-otherwise or with `--no-head` (what the head runs).
+otherwise or with `--no-head` (what the head runs, given the `--host` the
+command named, `local` included: a graft that names no host places no
+services of its own).
 
 The habitat's own infrastructure as a fleet seed, rendered by `hale deploy
 render --placement`, is not built. That renderer renders a fleet's Hale
@@ -981,9 +1003,9 @@ person who does not hold the Board is refused as the row says).
   sign-in stub (inside its `face` service), whose `provider` names the
   product (`forgejo`, `oidc-stub`) and is shown as what fills it; any
   other allocation's provider, as it is. A host picker per allocation calls
-  `Commands::place_allocation`; `apply` calls `Commands::apply_allocations`
-  and shows the pulse, what each provider observes of each allocation
-  after it. A move of a memory that holds a record is refused by the row;
+  `Commands::place_allocation`; `apply` calls `Commands::apply_allocations`,
+  follows the apply through `Commands::apply_log` until it ends, and shows
+  the pulse, what each provider observes of each allocation after it. A move of a memory that holds a record is refused by the row;
   the page shows the refusal's text with a confirm step that applies again
   with `fresh`.
 - **Organisms** (`organisms.js`): the organisms the index lists (name,
@@ -1548,8 +1570,9 @@ lists the allocations (`Commands::allocations`: role, instance, provider,
 host and the state the provider observes) and the policy
 (`Commands::policy`: the provider and profile each role is allocated by).
 Each allocation has a host picker (this machine and the `ready` hosts) that
-calls `Commands::place_allocation`; `apply` calls `Commands::apply_allocations`
-and shows its pulse, what each provider observes of each allocation after it.
+calls `Commands::place_allocation`; `apply` calls `Commands::apply_allocations`,
+follows the apply through `Commands::apply_log` until it ends, and shows its
+pulse, what each provider observes of each allocation after it.
 A move of a memory that holds a record is refused by the row; the page shows
 the refusal's text with a confirm step that applies again with `fresh`.
 

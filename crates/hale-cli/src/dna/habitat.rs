@@ -268,9 +268,13 @@ apply [<host>]       apply the allocations (of one host, or all) where they
                      are placed (Commands::apply_allocations): each one that
                      moved is withdrawn where it ran and brought up where it
                      is placed, by that host's provider, and the pulse after
-                     is printed. A moved memory starts empty on its new
-                     host: a memory that holds its organism's record moves
-                     only with --fresh, and the habitat's own never.
+                     is printed. The head runs the apply in a process of
+                     its own (a first build of an organism's images takes
+                     minutes); this follows it (Commands::apply_log), and
+                     --no-head is that process. A moved memory starts empty
+                     on its new host: a memory that holds its organism's
+                     record moves only with --fresh, and the habitat's own
+                     never.
 nursery add <source> the Board trusts a nursery, a directory or a git
                      repository (the head's Commands::add_nursery), and what
                      it offers is read into the habitat's record. A git

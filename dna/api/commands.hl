@@ -1117,6 +1117,13 @@ locus CommandAdmission {
         if self.personless(ctx) { return ApplyReply { code: "forbidden" }; }
         return habitat_apply(self.root, a);
     }
+    // The log of an apply this head started (habitat_placement.hl), and once
+    // it ends what it came to: read by the apply's id, the Board's like the
+    // apply.
+    fn apply_log(a: ApplyLogAsk, ctx: std::api::Context) -> ApplyLogReply {
+        if self.personless(ctx) { return ApplyLogReply { code: "forbidden" }; }
+        return habitat_apply_log(a);
+    }
     fn graft(a: GraftAsk, ctx: std::api::Context) -> GraftReply {
         if self.personless(ctx) { return GraftReply { code: "forbidden" }; }
         return habitat_graft(self.root, a);
@@ -1320,6 +1327,9 @@ locus Commands {
     fn apply_allocations(a: ApplyAsk, ctx: std::api::Context) -> ApplyReply {
         return self.admission.apply_allocations(a, ctx);
     }
+    fn apply_log(a: ApplyLogAsk, ctx: std::api::Context) -> ApplyLogReply {
+        return self.admission.apply_log(a, ctx);
+    }
     fn graft(a: GraftAsk, ctx: std::api::Context) -> GraftReply {
         return self.admission.graft(a, ctx);
     }
@@ -1482,9 +1492,11 @@ api HeadCommands {
     rpc Commands::uis;
     // The habitat's placement (habitat_placement.hl): an allocation placed
     // on a host ("change a host"), and the allocations applied where they
-    // are placed, with the pulse after. The Board's.
+    // are placed: an apply started in a process of its own, its log paged
+    // and, once it ends, the pulse after. The Board's.
     rpc Commands::place_allocation requires: [owner];
     rpc Commands::apply_allocations requires: [owner];
+    rpc Commands::apply_log requires: [owner];
     // A sapling grafted by name, on a host (habitat_placement.hl). The Board's.
     rpc Commands::graft requires: [owner];
     rpc Commands::graft_log requires: [owner];

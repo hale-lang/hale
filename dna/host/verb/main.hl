@@ -262,6 +262,14 @@ fn main() {
     } else if verb == "habitat-apply" {
         // phase 4: a tenant's allocations brought back by the compose provider
         ans = host::habitat_apply_verb(host::word(a, 0));
+    } else if verb == "habitat-allocations-apply" {
+        // phase 4: the habitat's allocations applied where their rows place
+        // them, every one or those of one host (`hale habitat apply
+        // --no-head`, the process the head's `Commands::apply_allocations`
+        // starts): what each did on stderr as it goes, and what it came to,
+        // a JSON object, as the answer
+        let r = dna::habitat_apply_run(root, host::word(a, 0), host::has_flag(a, "--fresh"));
+        ans = host::answer(dna::habitat_applied_json(r) + "\n");
     } else if verb == "heart-handover" {
         // GH #1653: what the habitat hands a habitat-scoped heart
         ans = host::heart_handover_verb(

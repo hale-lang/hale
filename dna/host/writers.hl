@@ -2839,6 +2839,15 @@ fn codebase_sync(p: Projection, root: String, memory: dna::Memory) -> Answer {
 
 fn forge_sync_genome(p: Projection, root: String, seed: String, memory: dna::Memory) -> Answer {
     let k = forge_kind(root);
+    // a forge allocated with no repository of the organism's on it (the
+    // habitat's own genome: its allocation is the forge server its children
+    // are given repositories on) mirrors none of its reviews, and its
+    // codebases still sync: nothing to say, every tick
+    if (k == "github" || k == "forgejo") && len(dna::forge_allocated(root).repo) == 0
+        && len(std::env::var("HALE_DNA_FORGE")) == 0
+    {
+        return answer("");
+    }
     if k == "github" {
         let branch = genome_branch(root);
         let gh_forge = GitHubForge {

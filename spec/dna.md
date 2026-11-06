@@ -6949,10 +6949,15 @@ calls, over the head's socket (`spec/habitat.md`, Hosts, providers and
 placement). Two more Board rows place and apply the allocations:
 `Commands::place_allocation` (`{allocation, host}`, answering `{ok, code,
 why, allocation}`, the row it wrote) and `Commands::apply_allocations`
-(`{host, fresh}`, answering `{ok, code, why, restart, applied}`, `applied`
-a JSON array of each allocation's `allocation`, `host`, `provider`, `ok`,
-`why`, `state` and `detail`): `hale habitat place` and `hale habitat apply`
-call them (`spec/habitat.md`, Placing and applying).
+(`{host, fresh}`, which starts the apply in a process of its own and
+answers at once `{ok, code, why, restart, applied, apply, log}`, `code`
+`started`, or `applying` with the id of the apply already running), with
+`Commands::apply_log` (`{apply, from}`, answering `{ok, code, why, text,
+next, done, exit, outcome}`), which pages the apply's log and, once it is
+done, hands back what it came to (`outcome`, `{ok, code, why, restart,
+applied}`, `applied` a JSON array of each allocation's `allocation`, `host`,
+`provider`, `ok`, `why`, `state` and `detail`): `hale habitat place` and
+`hale habitat apply` call them (`spec/habitat.md`, Placing and applying).
 Two more reads list the habitat's nurseries and saplings for the operator
 face's organisms screen: `Commands::nurseries` (`source`, `kind`: the
 toolchain's, `bundled`, then each `habitat.nursery` row the Board trusts)

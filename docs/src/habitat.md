@@ -273,7 +273,7 @@ A moved memory starts empty, because nothing migrates. A memory that holds its o
 
 *(To move an allocation to another host before applying: `hale habitat place <key>/<role> <host>`, then `hale habitat apply`. Moving a stateful `memory` allocation across hosts requires `hale habitat apply --fresh`, which initializes a fresh store on the destination host.)*
 
-`voice`'s image downloads the released Hale toolchain itself when it is built (its `Dockerfile`), so the first `apply` needs the network and takes a few minutes; nothing is staged by hand.
+`voice`'s image downloads the released Hale toolchain itself when it is built (its `Dockerfile`), so the first `apply` needs the network and takes a few minutes; nothing is staged by hand. The head runs the apply in a process of its own, so the face and every other command keep answering while it builds; `hale habitat apply` follows it, says which allocation it is applying, and prints the pulse when it ends. One apply runs at a time: a second `apply` while one runs follows the running one and says so.
 
 The operator face's **organisms** screen lists each of `voice`'s allocations with what its services publish: a link where the port is reachable from your machine (`api` opens `voice`'s console, its admin UI served at the api's `/`), and `loopback only on <host>` for a port bound to that host's loopback.
 

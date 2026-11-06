@@ -49,60 +49,23 @@ type PolicyRows {
     policy: String = "[]";
 }
 
-// Where the latest row of a kind is, for each entity: the record's index.
-type LatestRow {
-    entity: String = "";
-    at: Int = -1;
-}
-
-@form(hashmap)
-locus LatestRows {
-    capacity { pool rows of LatestRow indexed_by entity; }
-}
-
-// The index of the latest `kind` row of each entity in `j`.
-@bounded_by(j)
-fn habitat_latest(j: dna::Journal, kind: String) -> LatestRows {
-    let latest = LatestRows { };
-    let mut i = 0;
-    while i < j.revision() {
-        let e = j.read(i);
-        // an organism removed (its graft's and its allocations' latest rows
-        // say `"state": "removed"`) is the record's history alone: no row of
-        // it holds (a host keeps its `removed` state, which its readers say)
-        if e.kind == kind {
-            let gone = kind != "habitat.host"
-                && std::json::find_string_field(e.body, "state") == "removed";
-            latest.set(LatestRow { entity: e.entity, at: if gone { -2 } else { i } });
-        }
-        i = i + 1;
-    }
-    return latest;
-}
-
 // The index of the latest successful `habitat.applied` row of each
 // allocation in `j`: what its services publish is read where it was last
 // applied, and an apply or withdrawal that failed there changed nothing
 // (it records no `published`), so it never replaces the last that took.
 // An apply that took and publishes nothing (`published: []`) does.
 @bounded_by(j)
-fn habitat_latest_applied(j: dna::Journal) -> LatestRows {
-    let latest = LatestRows { };
+fn habitat_latest_applied(j: dna::Journal) -> dna::LatestRows {
+    let latest = dna::LatestRows { };
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
         if e.kind == "habitat.applied" && std::json::find_bool_field(e.body, "ok") {
-            latest.set(LatestRow { entity: e.entity, at: i });
+            latest.set(dna::LatestRow { entity: e.entity, at: i });
         }
         i = i + 1;
     }
     return latest;
-}
-
-// Whether the row at `i` is its entity's latest.
-fn habitat_holds(latest: LatestRows, entity: String, i: Int) -> Bool {
-    let r = latest.get(entity) or LatestRow { };
-    return r.at == i;
 }
 
 fn habitat_cap(limit: Int) -> Int {
@@ -154,14 +117,14 @@ fn habitat_hosts(root: String, limit: Int) -> HostRows {
     let j = habitat_journal(root);
     let out = std::json::Builder { };
     out.begin_array();
-    let latest = habitat_latest(j, "habitat.host");
+    let latest = dna::habitat_latest(j, "habitat.host");
     let cap = habitat_cap(limit);
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() && n < cap {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "habitat.host" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if e.kind != "habitat.host" || !dna::habitat_holds(latest, e.entity, i - 1) { continue; }
         let h = dna::host_of_row(e.body);
         if h.state == "removed" { continue; }
         n = n + 1;
@@ -177,14 +140,14 @@ fn habitat_policy(root: String, limit: Int) -> PolicyRows {
     let j = habitat_journal(root);
     let out = std::json::Builder { };
     out.begin_array();
-    let latest = habitat_latest(j, "habitat.policy");
+    let latest = dna::habitat_latest(j, "habitat.policy");
     let cap = habitat_cap(limit);
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() && n < cap {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "habitat.policy" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if e.kind != "habitat.policy" || !dna::habitat_holds(latest, e.entity, i - 1) { continue; }
         n = n + 1;
         let body = e.body;
         out.begin_object();
@@ -266,7 +229,7 @@ fn observe_row(root: String, a: dna::Allocation) -> dna::AllocationState {
 // observe of its allocations (`down` over `degraded` over `up`), "" when
 // none is observed.
 @bounded_by(j)
-fn organism_pulse(root: String, j: dna::Journal, latest: LatestRows, key: String) -> String {
+fn organism_pulse(root: String, j: dna::Journal, latest: dna::LatestRows, key: String) -> String {
     let mut worst = "";
     let mut i = 0;
     while i < j.revision() {
@@ -275,7 +238,7 @@ fn organism_pulse(root: String, j: dna::Journal, latest: LatestRows, key: String
         if e.kind != "habitat.allocated" || !std::str::starts_with(e.entity, key + "/") {
             continue;
         }
-        if !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if !dna::habitat_holds(latest, e.entity, i - 1) { continue; }
         // its forge and identity are the habitat's services it is given (its
         // Forgejo, its sign-in), observed with the allocations, not its pulse
         let role = std::json::find_string_field(e.body, "role");
@@ -296,7 +259,7 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
     let j = habitat_journal(root);
     let out = std::json::Builder { };
     out.begin_array();
-    let latest = habitat_latest(j, "habitat.allocated");
+    let latest = dna::habitat_latest(j, "habitat.allocated");
     // what each allocation publishes, as its last successful apply read it
     // where it ran (`habitat.applied`'s `published`)
     let applies = habitat_latest_applied(j);
@@ -306,7 +269,9 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
     while i < j.revision() && n < cap {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "habitat.allocated" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if e.kind != "habitat.allocated" || !dna::habitat_holds(latest, e.entity, i - 1) {
+            continue;
+        }
         n = n + 1;
         let entity = e.entity;
         let body = e.body;
@@ -330,7 +295,7 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         out.string_field("state", seen.state);
         out.string_field("detail", seen.detail);
         out.string_field("runs", seen.runs);
-        let last = applies.get(entity) or LatestRow { };
+        let last = applies.get(entity) or dna::LatestRow { };
         let applied_body = if last.at >= 0 { j.read(last.at).body } else { "" };
         out.field(
             "links",
@@ -554,15 +519,15 @@ fn organism_root_of(key: String) -> String {
 fn organism_links(
     root: String,
     j: dna::Journal,
-    allocated: LatestRows,
-    applies: LatestRows,
+    allocated: dna::LatestRows,
+    applies: dna::LatestRows,
     key: String
 ) -> String {
-    let held = allocated.get(key + "/services") or LatestRow { };
+    let held = allocated.get(key + "/services") or dna::LatestRow { };
     if held.at < 0 { return "[]"; }
     let body = j.read(held.at).body;
     let ran = applied_at(allocation_of_row(key + "/services", body));
-    let last = applies.get(key + "/services") or LatestRow { };
+    let last = applies.get(key + "/services") or dna::LatestRow { };
     let applied_body = if last.at >= 0 { j.read(last.at).body } else { "" };
     return allocation_links(
         root,
@@ -600,8 +565,8 @@ fn habitat_uis(root: String, limit: Int) -> UiRows {
     let j = habitat_journal(root);
     let out = std::json::Builder { };
     out.begin_array();
-    let grafted = habitat_latest(j, "habitat.grafted");
-    let allocated = habitat_latest(j, "habitat.allocated");
+    let grafted = dna::habitat_latest(j, "habitat.grafted");
+    let allocated = dna::habitat_latest(j, "habitat.allocated");
     let applies = habitat_latest_applied(j);
     let cap = habitat_cap(limit);
     let mut n = 0;
@@ -609,7 +574,9 @@ fn habitat_uis(root: String, limit: Int) -> UiRows {
     while i < j.revision() && n < cap {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "habitat.grafted" || !habitat_holds(grafted, e.entity, i - 1) { continue; }
+        if e.kind != "habitat.grafted" || !dna::habitat_holds(grafted, e.entity, i - 1) {
+            continue;
+        }
         let named = std::json::find_string_field(e.body, "name");
         let organism = if len(named) > 0 { named } else { e.entity };
         let key = e.entity;
@@ -683,14 +650,14 @@ fn habitat_nurseries(root: String, limit: Int) -> NurseryRows {
     out.string_field("source", "toolchain");
     out.string_field("kind", "bundled");
     out.end_object();
-    let latest = habitat_latest(j, "habitat.nursery");
+    let latest = dna::habitat_latest(j, "habitat.nursery");
     let cap = habitat_cap(limit);
     let mut n = 1;
     let mut i = 0;
     while i < j.revision() && n < cap {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "habitat.nursery" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if e.kind != "habitat.nursery" || !dna::habitat_holds(latest, e.entity, i - 1) { continue; }
         if std::json::find_string_field(e.body, "state") == "removed" { continue; }
         n = n + 1;
         out.begin_object();
@@ -704,8 +671,8 @@ fn habitat_nurseries(root: String, limit: Int) -> NurseryRows {
 
 fn habitat_saplings(root: String, limit: Int) -> SaplingRows {
     let j = habitat_journal(root);
-    let latest = habitat_latest(j, "habitat.sapling");
-    let proposals = habitat_latest(j, "habitat.sapling.proposed");
+    let latest = dna::habitat_latest(j, "habitat.sapling");
+    let proposals = dna::habitat_latest(j, "habitat.sapling.proposed");
     let out = std::json::Builder { };
     out.begin_array();
     let cap = habitat_cap(limit);
@@ -714,11 +681,11 @@ fn habitat_saplings(root: String, limit: Int) -> SaplingRows {
     while i < j.revision() && n < cap {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "habitat.sapling" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if e.kind != "habitat.sapling" || !dna::habitat_holds(latest, e.entity, i - 1) { continue; }
         n = n + 1;
         let b = e.body;
         // a proposal filed after the pin, for another revision, waits
-        let p = proposals.get(e.entity) or LatestRow { };
+        let p = proposals.get(e.entity) or dna::LatestRow { };
         let proposed = if p.at > i - 1 {
             std::json::find_string_field(j.read(p.at).body, "revision")
         } else {
@@ -779,8 +746,8 @@ fn habitat_nursery_add(root: String, a: NurseryAdd, by: String) -> NurseryReply 
     }
     let kind = if std::str::starts_with(source, "/") { "dir" } else { "git" };
     let j = habitat_journal_by(root, by);
-    let latest = habitat_latest(j, "habitat.nursery");
-    let held = latest.get(source) or LatestRow { };
+    let latest = dna::habitat_latest(j, "habitat.nursery");
+    let held = latest.get(source) or dna::LatestRow { };
     if held.at >= 0 && std::json::find_string_field(j.read(held.at).body, "state") == "trusted" {
         return NurseryReply { ok: true, why: "the Board trusts it already" };
     }
@@ -792,7 +759,7 @@ fn habitat_nursery_add(root: String, a: NurseryAdd, by: String) -> NurseryReply 
     while i < j.revision() {
         let e = j.read(i);
         i = i + 1;
-        if e.kind != "habitat.nursery" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if e.kind != "habitat.nursery" || !dna::habitat_holds(latest, e.entity, i - 1) { continue; }
         if e.entity == source || nursery_repository(e.entity) != base { continue; }
         if std::json::find_string_field(e.body, "state") != "trusted" { continue; }
         let gone = std::json::Builder { };
@@ -847,10 +814,10 @@ fn habitat_nursery_add(root: String, a: NurseryAdd, by: String) -> NurseryReply 
 // grafted moves with it.
 fn habitat_sapling_ratify(root: String, name: String, by: String) -> NurseryReply {
     let j = habitat_journal_by(root, by);
-    let pins = habitat_latest(j, "habitat.sapling");
-    let proposals = habitat_latest(j, "habitat.sapling.proposed");
-    let pin = pins.get(name) or LatestRow { };
-    let p = proposals.get(name) or LatestRow { };
+    let pins = dna::habitat_latest(j, "habitat.sapling");
+    let proposals = dna::habitat_latest(j, "habitat.sapling.proposed");
+    let pin = pins.get(name) or dna::LatestRow { };
+    let p = proposals.get(name) or dna::LatestRow { };
     if pin.at < 0 {
         return nursery_refused("not_found", "the habitat pins no sapling `" + name + "`");
     }

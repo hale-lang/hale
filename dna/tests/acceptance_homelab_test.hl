@@ -442,10 +442,23 @@ fn main() {
         done && dna::trim_nl(text_of(glog + ".exit")) == "0",
         "voice is grafted onto the host: " + text_of(glog),
     );
-    let applied = call(sock, "Commands::apply_allocations", "{\"host\": \"localhost\"}");
+    // the apply starts in a process of its own and answers at once; its
+    // log ends with what it came to
+    let started = call(sock, "Commands::apply_allocations", "{\"host\": \"localhost\"}");
+    let alog = std::json::find_string_field(started, "log");
     std::test::assert(
-        std::json::find_bool_field(applied, "ok"),
-        "its allocations are applied on the host: " + applied,
+        std::json::find_bool_field(started, "ok") && len(alog) > 0,
+        "the apply of its allocations on the host starts: " + started,
+    );
+    tries = 0;
+    while !std::io::fs::file_exists(alog + ".exit") && tries < dna::wait_secs(1200) * 2 {
+        std::time::sleep(500ms);
+        tries = tries + 1;
+    }
+    let applied = text_of(alog + ".reply");
+    std::test::assert(
+        dna::trim_nl(text_of(alog + ".exit")) == "0" && std::json::find_bool_field(applied, "ok"),
+        "its allocations are applied on the host: " + applied + text_of(alog),
     );
     let store = dna::local_habitat_dir() + "/saplings/voice";
     let key = dna::allocation_key(store);
