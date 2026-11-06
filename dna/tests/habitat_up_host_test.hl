@@ -377,7 +377,15 @@ fn main() {
     // its head keeps its state in a directory of the organism's own there,
     // not the one every run there shares
     let own_state = home + "/.local/share/hale/state/organisms/" + shipped_id[0..12];
-    let own_kept = std::io::fs::file_exists(own_state)
+    // the face can answer before the head has written its state: wait for
+    // the directory, bounded, rather than look once
+    let mut own_there = std::io::fs::file_exists(own_state);
+    let state_deadline = std::time::now() + dna::wait_secs(60);
+    while answering && !own_there && std::time::now() <= state_deadline {
+        std::time::sleep(1s);
+        own_there = std::io::fs::file_exists(own_state);
+    }
+    let own_kept = own_there
         && !std::io::fs::file_exists(home + "/.local/share/hale/state/hale/dna/head");
     // its run there goes: the container the pointer started for it
     dna::run_tool(
