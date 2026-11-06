@@ -301,7 +301,8 @@ fresh}`, `hale habitat apply [<host>] [--fresh]`), over every allocation
 or those placed on or leaving one host. An apply takes minutes (an
 organism's images are pulled or built on its host) and the head serves its
 commands one at a time, so the command starts it in a process of its own
-(`hale habitat apply --no-head`, the host verb `habitat-allocations-apply`)
+(`hale habitat apply --no-head` on the head's own record, the host verb
+`habitat-allocations-apply`)
 and answers at once: `{ok, code: "started", apply, log}`, the apply's id and
 its log (`<habitat>/applies/<id>.log`, its exit status beside it in
 `<log>.exit` and what it came to in `<log>.reply`). One apply runs at a

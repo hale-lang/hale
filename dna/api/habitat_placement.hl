@@ -202,7 +202,9 @@ fn habitat_apply(root: String, a: ApplyAsk) -> ApplyReply {
     let mut args = "habitat\napply";
     if len(a.host) > 0 { args = args + "\n" + a.host; }
     if a.fresh { args = args + "\n--fresh"; }
-    args = args + "\n--no-head\n--reply\n" + log + ".reply";
+    // on this head's own record: the habitat's genome, or the project a
+    // fixture's head serves
+    args = args + "\n--no-head\n--root\n" + root + "\n--reply\n" + log + ".reply";
     std::io::fs::write_file(dir + "/running", id + "\n") or discard;
     // the act runs as the operator's own command would, detached (as a
     // graft does): none of the head's own memory, nerves or socket reaches

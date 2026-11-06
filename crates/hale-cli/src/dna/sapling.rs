@@ -569,9 +569,14 @@ fn follow_apply_log(id: &str) -> Result<Applied, String> {
 /// `habitat-allocations-apply` with the habitat's record, saying what it
 /// applies as it goes (its stderr), then a line per allocation. Its outcome,
 /// the verb's JSON object, is written to `reply` when one is named (the
-/// head's `Commands::apply_log` hands it back) before this exits.
-fn apply_here(host: &str, fresh: bool, reply: Option<&str>) -> Result<Applied, String> {
-    let genome = genome_dir();
+/// head's `Commands::apply_log` hands it back) before this exits. The
+/// record is `root`'s when one is named (the head's own: the habitat's genome,
+/// or the project a fixture's head serves), else the habitat's genome.
+fn apply_here(host: &str, fresh: bool, reply: Option<&str>, root: Option<&str>) -> Result<Applied, String> {
+    let genome = match root {
+        Some(r) => Path::new(r).canonicalize().map_err(|e| format!("{r}: {e}"))?,
+        None => genome_dir(),
+    };
     let (mut cmd, _) = crate::dna::host_command("habitat-allocations-apply", &genome)?;
     if !host.is_empty() {
         cmd.arg(host);
@@ -777,10 +782,11 @@ pub(super) fn place_cmd(args: &[String]) -> std::process::ExitCode {
 /// or nerves moved, its face (and the head behind it) restarted on the new
 /// address. The head runs the apply in a process of its own and this follows
 /// it (`apply_followed`); `--no-head` is that process, the apply itself
-/// (`--reply <file>`: where it writes what it came to, for the head).
+/// (`--root <dir>`: the head's record; `--reply <file>`: where it writes what
+/// it came to, for the head).
 pub(super) fn apply_cmd(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
-    let parsed = verb_args(args, &["--reply"], &["--fresh", "--no-head"]).filter(|a| a.words.len() <= 1);
+    let parsed = verb_args(args, &["--reply", "--root"], &["--fresh", "--no-head"]).filter(|a| a.words.len() <= 1);
     let Some(a) = parsed else {
         eprintln!("usage: hale habitat apply [<host>] [--fresh]");
         return ExitCode::from(2);
@@ -789,7 +795,8 @@ pub(super) fn apply_cmd(args: &[String]) -> std::process::ExitCode {
     let host = a.words.first().cloned().unwrap_or_default();
     let reply = a.value("--reply");
     let here = a.has("--no-head");
-    let applied = if here { apply_here(&host, fresh, (!reply.is_empty()).then_some(reply.as_str())) } else { apply_followed(&host, fresh) };
+    let root = a.value("--root");
+    let applied = if here { apply_here(&host, fresh, (!reply.is_empty()).then_some(reply.as_str()), (!root.is_empty()).then_some(root.as_str())) } else { apply_followed(&host, fresh) };
     match applied {
         Ok(v) => {
             for l in &v.lines {
@@ -994,7 +1001,7 @@ mod tests {
     #[test]
     fn apply_takes_the_heads_own_flags() {
         let args: Vec<String> = ["local", "--fresh", "--no-head", "--reply", "/tmp/x.reply"].iter().map(|s| s.to_string()).collect();
-        let a = verb_args(&args, &["--reply"], &["--fresh", "--no-head"]).unwrap();
+        let a = verb_args(&args, &["--reply", "--root"], &["--fresh", "--no-head"]).unwrap();
         assert_eq!(a.words, vec!["local".to_string()]);
         assert!(a.has("--fresh") && a.has("--no-head"));
         assert_eq!(a.value("--reply"), "/tmp/x.reply");
