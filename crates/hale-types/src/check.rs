@@ -4023,41 +4023,86 @@ const STATEMENT_SUBSCRIBER: RuleId = RuleId::registered("verification/structural
 /// build was for the hearing alone. A statement-position locus with a
 /// `run()` runs it and hears while it runs, and one with a `birth()`
 /// does its work there (spec/styleguide.md § App locus: statement
-/// literals fire and forget), so neither is reported; nor is the entry
+/// literals fire and forget), so neither is reported; nor is a holder
+/// with neither whose params field holds a child that has a `run()`
+/// (transitively: the statement lives while that child's `run()` runs,
+/// and the subscriber the holder keeps hears meanwhile); nor the entry
 /// (`main locus`), whose life is the program's, nor a literal the free
 /// `fn main()` builds (the root: no enclosing locus can accept it, and
 /// nothing else is alive to publish to it). Reported at the literal,
-/// in any body (a lifecycle hook, a method, a free fn) but a bus
-/// handler's, where type-check rule 20 already refuses an unowned
-/// subscriber, and `fn main`'s, whose literal is the program's root.
-/// Until 2026-11-06 such a program was silent at the check and at run
-/// time (downstream handoff).
+/// in a `birth()` or another hook, a method or a free fn, but not in a
+/// `run()` body (a nested block's included: the runtime keeps a
+/// statement literal there alive while the `run()` runs, so it hears),
+/// not in a bus handler's, where type-check rule 20 already refuses an
+/// unowned subscriber, and not in `fn main`'s, whose literal is the
+/// program's root. Until 2026-11-06 such a program was silent at the
+/// check and at run time (downstream handoff); until 2026-11-07 the
+/// advisory fired on the `run()` and holder shapes, which deliver
+/// (downstream handoff review).
 fn check_subscriber_torn_down_at_its_statement(rows: &ScopeLocalSubscriberRows<'_, '_>, out: &mut Vec<Violation>) {
     use crate::alloc_summary::{AllocKind, EntryKind, Escape};
     use crate::ownership_graph::OwnerResolution;
     let ScopeLocalSubscriberRows { bundle, top, summary, ownership, .. } = *rows;
     // The loci whose author wrote a `birth()` or a `run()` (the omitted
-    // `run` is synthesized, `LifecycleDecl::synthesized`), and the entry.
+    // `run` is synthesized, `LifecycleDecl::synthesized`), the entry,
+    // and the holders: a locus with no `run()` of its own whose params
+    // field holds a child that has one (transitively), since the
+    // statement lives while that child's `run()` runs and the
+    // subscriber it holds hears meanwhile.
     let mut works: BTreeSet<&str> = BTreeSet::new();
+    let mut runs: BTreeSet<&str> = BTreeSet::new();
+    let mut holds: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
-                let written = l.members.iter().any(|m| {
-                    matches!(m, LocusMember::Lifecycle(lc)
-                        if matches!(lc.kind, LifecycleKind::Run | LifecycleKind::Birth) && !lc.synthesized)
-                });
-                if written || l.is_main {
+                let written = |kind: LifecycleKind| {
+                    l.members.iter().any(|m| {
+                        matches!(m, LocusMember::Lifecycle(lc) if lc.kind == kind && !lc.synthesized)
+                    })
+                };
+                if written(LifecycleKind::Run) {
+                    runs.insert(l.name.name.as_str());
+                }
+                if written(LifecycleKind::Run) || written(LifecycleKind::Birth) || l.is_main {
                     works.insert(l.name.name.as_str());
+                }
+                for m in &l.members {
+                    let LocusMember::Params(params) = m else { continue };
+                    for p in &params.params {
+                        let named = match (&p.ty, &p.init) {
+                            (Some(TypeExpr::Named { path, .. }), _) => path.segments.last(),
+                            (None, ParamInit::Value(Expr::Struct { path, .. })) => path.segments.last(),
+                            _ => None,
+                        };
+                        if let Some(child) = named {
+                            holds.entry(l.name.name.as_str()).or_default().insert(child.name.as_str());
+                        }
+                    }
                 }
             }
         });
     }
+    loop {
+        let before = runs.len();
+        for (holder, children) in &holds {
+            if !runs.contains(holder) && children.iter().any(|c| runs.contains(c)) {
+                runs.insert(holder);
+            }
+        }
+        if runs.len() == before {
+            break;
+        }
+    }
+    works.extend(&runs);
     let mut fns: Vec<&crate::alloc_summary::FnSummary> =
         summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
     fns.sort_by_key(|f| f.decl_index);
     let mut kept: Option<BTreeSet<String>> = None;
     for f in fns {
-        if f.entry == Some(EntryKind::BusHandler) {
+        // A statement literal in a `run()` body (a nested block's
+        // included) is kept alive while the `run()` runs and hears
+        // meanwhile; a bus handler's is type-check rule 20's.
+        if matches!(f.entry, Some(EntryKind::BusHandler | EntryKind::Run)) {
             continue;
         }
         // The free `fn main()` builds the program's root: no enclosing
