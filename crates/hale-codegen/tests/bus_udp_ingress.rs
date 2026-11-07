@@ -119,12 +119,17 @@ struct Listener {
 
 impl Listener {
     fn start(name: &str, source: &str) -> Listener {
+        Listener::start_on(name, source, "evt")
+    }
+
+    /// As `start`, binding the subject `subject` to the listener.
+    fn start_on(name: &str, source: &str, subject: &str) -> Listener {
         let sub_bin = harness::unique_bin(&format!("udp_ingress_{name}"));
         build_opts::build_source(source, &sub_bin, &build_opts::options()).expect("build subscriber");
         // an address the subscriber is told before it binds: held, not drawn
         let addr = child::Reserved::new();
         let sub_cfg = harness::unique_bin(&format!("udp_ingress_{name}.conf"));
-        std::fs::write(&sub_cfg, format!("evt = udp://{}:{}:listen\n", addr.host(), addr.port())).expect("sub cfg");
+        std::fs::write(&sub_cfg, format!("{subject} = udp://{}:{}:listen\n", addr.host(), addr.port())).expect("sub cfg");
         let mut sub = Command::new(&sub_bin)
             .env("LOTUS_BUS_CONFIG", &sub_cfg)
             .env("LOTUS_BUS_COUNTERS_DUMP", "1")
@@ -189,10 +194,14 @@ fn got(out: &str) -> Vec<&str> {
 
 /// A counter of the binding's `[bus counters]` line.
 fn counter(stderr: &str, name: &str) -> u64 {
+    counter_of(stderr, "evt", name)
+}
+
+fn counter_of(stderr: &str, subject: &str, name: &str) -> u64 {
     let line = stderr
         .lines()
-        .find(|l| l.contains("[bus counters]") && l.contains("subject=evt"))
-        .unwrap_or_else(|| panic!("no counters line for evt in:\n{stderr}"));
+        .find(|l| l.contains("[bus counters]") && l.contains(&format!("subject={subject} ")))
+        .unwrap_or_else(|| panic!("no counters line for {subject} in:\n{stderr}"));
     line.split_whitespace()
         .find_map(|kv| kv.strip_prefix(&format!("{name}=")))
         .unwrap_or_else(|| panic!("no `{name}=` in: {line}"))
@@ -316,4 +325,49 @@ fn a_bytes_length_that_wraps_its_header_sum_is_dropped() {
     assert_eq!(got(&out), vec!["got tag=1 size=2 tail=9", "got tag=4 size=3 tail=5"], "stdout:\n{out}\nstderr:\n{stderr}");
     assert_eq!(counter(&stderr, "delivered"), 2, "{stderr}");
     assert_eq!(counter(&stderr, "dropped_decode"), 2, "the wrapping length and the -1 length:\n{stderr}");
+}
+
+#[test]
+fn the_wire_decoder_table_keeps_every_payload_type_past_a_thousand() {
+    // reviewer, 2026-11-07: the runtime's local-to-wire decoder table
+    // held 1,024 pairs and fell back to the UNCHECKED local decoder for
+    // the 1,025th payload type, so that type's one-byte frame was
+    // accepted again. The table grows, and a type with no pair is
+    // refused outright, never decoded unchecked. 1,025 one-Int payload
+    // types (plus the stdlib's own), the last one bound to a listener.
+    // The table is filled in the serializer map's order, by type name,
+    // so the names are zero-padded: `P1024` is then the 1,025th pair by
+    // name, the one a 1,024-pair table left out.
+    const TYPES: usize = 1025;
+    let last = TYPES - 1;
+    let mut src = String::new();
+    for i in 0..TYPES {
+        src.push_str(&format!("type P{i:04} {{ n: Int; }}\n"));
+    }
+    src.push_str("locus Sub {\n    bus {\n");
+    for i in 0..TYPES {
+        src.push_str(&format!("        subscribe \"evt{i:04}\" as on{i:04} of type P{i:04};\n"));
+    }
+    src.push_str("    }\n");
+    for i in 0..TYPES {
+        src.push_str(&format!("    fn on{i:04}(p: P{i:04}) {{ println(\"got {i:04} n=\" + to_string(p.n)); }}\n"));
+    }
+    src.push_str("}\n");
+    src.push_str(
+        "main locus App {\n    params { s: Sub = Sub { }; }\n    run() { while !self.draining { std::time::sleep(20ms); } println(\"main run done\"); }\n}\nfn main() { App { }; }\n",
+    );
+    let subject = format!("evt{last:04}");
+    let l = Listener::start_on("many", &src, &subject);
+    let probe = UdpSocket::bind("127.0.0.1:0").expect("probe socket");
+    // one byte: too short for `P<last>`, dropped by the wire decoder
+    l.send(&probe, &[0x07]);
+    // a valid frame: delivered
+    l.send(&probe, &4242i64.to_le_bytes());
+    let want = format!("got {last:04} n=4242");
+    assert!(wait_for_line(&l.lines, &want, Duration::from_secs(10)), "stdout:\n{}", l.lines.lock().unwrap().join("\n"));
+    let (status, _, stderr, out) = l.stop();
+    assert!(status.success(), "{status:?}\nstdout:\n{out}\nstderr:\n{stderr}");
+    assert_eq!(got(&out), vec![want.as_str()], "stdout:\n{out}\nstderr:\n{stderr}");
+    assert_eq!(counter_of(&stderr, &subject, "delivered"), 1, "{stderr}");
+    assert_eq!(counter_of(&stderr, &subject, "dropped_decode"), 1, "the one-byte frame of the last type:\n{stderr}");
 }
