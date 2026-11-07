@@ -200,31 +200,22 @@ pub(crate) fn take_output_flag(
 /// GH #904: `cmd` is the subcommand whose flags these are — `build`,
 /// `run` or `replay`, all three of which compile through here — so
 /// an unknown flag is reported against the command the user typed.
-/// The CPU a verb builds for when `--target-cpu` does not say.
 ///
-/// `hale build` emits an artifact, and an artifact travels: built on a
-/// CI runner, it runs on whatever machine pulls the image, so it is
-/// built for the portable baseline (x86-64-v3 on x86-64, generic on
-/// aarch64). A binary tuned to the runner's CPU took that CPU's
-/// extensions with it and died with SIGILL on another machine of the
-/// same architecture. Every verb that runs what it builds, here, right
-/// after building it (`run`, `replay`, and `test` and `bench`, which
-/// do not come through this parser) keeps the host's own tuning.
-/// `replay` may still adopt the CPU a recording was built for (see
-/// `verbs::replay`).
-pub(crate) fn default_target_cpu(cmd: &str) -> hale_codegen::TargetCpu {
-    match cmd {
-        "build" => hale_codegen::TargetCpu::PORTABLE,
-        _ => hale_codegen::TargetCpu::Native,
-    }
-}
-
+/// Every verb builds for the host CPU unless `--target-cpu` says
+/// otherwise, `hale build` included: a binary is built on the machine
+/// that runs it (the habitat installs the toolchain on each host and
+/// builds there), or for a machine the builder names. The one build
+/// whose destination is unknown, a published image, says
+/// `--target-cpu portable` where it is made. (From 2026-11-02 to this
+/// change `hale build` defaulted to the portable baseline after an
+/// image built on a CI runner's Arm CPU died with SIGILL under Docker
+/// on another; that cost every `hale build` the host's vector width
+/// to protect the one path that already passes the flag.)
 pub(crate) fn parse_build_options(
     cmd: &str,
     args: &[String],
 ) -> Result<hale_codegen::BuildOptions, String> {
     let mut opts = build_env::build_options_from_env();
-    opts.target_cpu = default_target_cpu(cmd);
     // #8 dev profile: `HALE_DEV=1` is the environment spelling of
     // `--dev` below. Read here, with the flag, so every command that
     // compiles honors it identically (GH #904; `run` honored
@@ -330,25 +321,17 @@ pub(crate) fn parse_build_options(
                 opts.target = compile_target(parse_target(v)?);
                 i += 2;
             }
-            // Backend CPU tuning for the native target, over the verb's
-            // default ([`default_target_cpu`]). `native` tunes to the
-            // host (best perf, not portable); `baseline` (or `portable`)
-            // pins the portable baseline for distributed artifacts:
-            // x86-64-v3 on x86-64, generic elsewhere.
+            // Backend CPU tuning for the native target, over the host
+            // default. `native` tunes to the host (best speed, not
+            // portable); `portable` (or `baseline`) pins the portable
+            // baseline for an artifact whose machine is unknown:
+            // x86-64-v3 on x86-64, generic elsewhere; any other word is
+            // one CPU by LLVM's name, for a known machine elsewhere.
             "--target-cpu" => {
                 let v = args.get(i + 1).ok_or_else(|| {
-                    "--target-cpu requires a value (native|baseline)".to_string()
+                    "--target-cpu requires a value (native|portable|<cpu name>)".to_string()
                 })?;
-                opts.target_cpu = match v.as_str() {
-                    "native" => hale_codegen::TargetCpu::Native,
-                    "baseline" | "portable" | "x86-64-v3" => hale_codegen::TargetCpu::PORTABLE,
-                    other => {
-                        return Err(format!(
-                            "--target-cpu: unknown value `{}` (expected native|baseline)",
-                            other
-                        ));
-                    }
-                };
+                opts.target_cpu = parse_target_cpu(v)?;
                 i += 2;
             }
             // #8 dev profile (2026-07-02): LLVM O1 instead of the
@@ -959,6 +942,27 @@ pub(crate) fn flag_value_in(
     Ok(None)
 }
 
+/// `--target-cpu`'s value: `native`, the portable baseline in its three
+/// spellings, or one CPU by LLVM's name. A name is a word of letters,
+/// digits and `-_.+` (`znver5`, `neoverse-v2`, `apple-m3`, `x86-64-v4`);
+/// whether LLVM knows it is the build's to say.
+pub(crate) fn parse_target_cpu(v: &str) -> Result<hale_codegen::TargetCpu, String> {
+    match v {
+        "native" => Ok(hale_codegen::TargetCpu::Native),
+        "baseline" | "portable" | "x86-64-v3" => Ok(hale_codegen::TargetCpu::PORTABLE),
+        name if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+')) =>
+        {
+            Ok(hale_codegen::TargetCpu::Named(name.to_string()))
+        }
+        other => Err(format!(
+            "--target-cpu: `{other}` is not a CPU (native|portable|<LLVM cpu name, e.g. znver5>)"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_build_options, parse_exec_build_options};
@@ -968,26 +972,22 @@ mod tests {
         a.iter().map(|s| s.to_string()).collect()
     }
 
-    /// `hale build` emits an artifact that travels, so with no
-    /// `--target-cpu` it is built for the portable baseline, and its
-    /// execution identity says so.
+    /// Every verb builds for the host with no `--target-cpu`, `build`
+    /// included, and the execution identity says so.
     #[test]
-    fn build_defaults_to_the_portable_baseline() {
+    fn every_verb_defaults_to_the_host() {
         let o = parse_build_options("build", &[]).unwrap();
-        assert_eq!(o.target_cpu, TargetCpu::PORTABLE);
-        assert!(crate::build_env::options_fingerprint(&o).contains(";cpu=X86_64V3;"));
-    }
-
-    /// The verbs that run what they build, here, keep the host's tuning.
-    #[test]
-    fn run_and_replay_default_to_the_host() {
+        assert_eq!(o.target_cpu, TargetCpu::Native);
+        assert!(crate::build_env::options_fingerprint(&o).contains(";cpu=Native;"));
         for cmd in ["run", "replay"] {
             let o = parse_exec_build_options(cmd, &[]).unwrap();
             assert_eq!(o.target_cpu, TargetCpu::Native, "{cmd}");
         }
     }
 
-    /// The flag wins over every verb's default, in each spelling.
+    /// The flag wins over the default, in each spelling; a word that is
+    /// none of them is one CPU by name, and the identity carries the
+    /// name as every recording of a portable build carries `X86_64V3`.
     #[test]
     fn an_explicit_target_cpu_wins() {
         let native = parse_build_options("build", &args(&["--target-cpu", "native"])).unwrap();
@@ -997,7 +997,12 @@ mod tests {
             assert_eq!(o.target_cpu, TargetCpu::PORTABLE, "{spelling}");
             let o = parse_build_options("build", &args(&["--target-cpu", spelling])).unwrap();
             assert_eq!(o.target_cpu, TargetCpu::PORTABLE, "{spelling}");
+            assert!(crate::build_env::options_fingerprint(&o).contains(";cpu=X86_64V3;"));
         }
-        assert!(parse_build_options("build", &args(&["--target-cpu", "znver9"])).is_err());
+        let named = parse_build_options("build", &args(&["--target-cpu", "znver5"])).unwrap();
+        assert_eq!(named.target_cpu, TargetCpu::Named("znver5".to_string()));
+        assert!(crate::build_env::options_fingerprint(&named).contains(";cpu=znver5;"));
+        let err = parse_build_options("build", &args(&["--target-cpu", "zn ver5"])).unwrap_err();
+        assert!(err.contains("is not a CPU"), "{err}");
     }
 }

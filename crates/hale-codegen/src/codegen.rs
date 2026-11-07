@@ -930,18 +930,17 @@ impl CompileTarget {
 }
 
 /// Backend CPU tuning for the native target. `Native` tunes to the
-/// host (`-march=native`-equivalent: best perf, NOT portable across
-/// microarchitectures). `X86_64V3` is the portable baseline
-/// ([`TargetCpu::PORTABLE`]) for distributed artifacts: x86-64-v3
-/// (AVX2+BMI2+FMA) on x86-64, generic everywhere else. Ignored on the
-/// wasm32 target (always generic).
-///
-/// The library default is `Native`, what a build that runs where it
-/// compiles wants (`hale run`, `hale test`, the test harness). The CLI
-/// picks per verb: `hale build` emits an artifact, so it defaults to
-/// [`TargetCpu::PORTABLE`] (a binary tuned to a CI runner's CPU dies
-/// with SIGILL on another machine of the same architecture).
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+/// host (`-march=native`-equivalent: best speed, NOT portable across
+/// microarchitectures) and is the default of every verb, `hale build`
+/// included: a binary is built on the machine that runs it, or for a
+/// machine the builder names. `X86_64V3` is the portable baseline
+/// ([`TargetCpu::PORTABLE`]) for an artifact built in one place to run
+/// on an unknown machine of its architecture: x86-64-v3 (AVX2+BMI2+FMA)
+/// on x86-64, generic everywhere else. `Named` is one CPU by LLVM's
+/// name (`znver5`, `neoverse-v2`, `apple-m3`): a binary built here for
+/// a known host elsewhere. Ignored on the wasm32 target (always
+/// generic).
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub enum TargetCpu {
     #[default]
     Native,
@@ -952,16 +951,80 @@ pub enum TargetCpu {
     /// or Windows-on-ARM. The name is also its spelling in the
     /// execution identity (`cpu=X86_64V3`), which recordings carry.
     X86_64V3,
+    /// One CPU by LLVM's name, given to the Hale module as its
+    /// `target-cpu` (with that CPU's own feature set, no host feature
+    /// added) and to the runtime TUs as `-march=<name>` on x86-64 and
+    /// `-mcpu=<name>` elsewhere. A name LLVM does not know is refused
+    /// by the runtime's compile, which names it. Its spelling in the
+    /// execution identity is the name itself.
+    Named(String),
 }
 
 impl TargetCpu {
     /// The portable baseline an artifact meant to travel is built for:
-    /// x86-64-v3 on x86-64, generic elsewhere. `hale build`'s default.
+    /// x86-64-v3 on x86-64, generic elsewhere (`--target-cpu portable`).
     pub const PORTABLE: TargetCpu = TargetCpu::X86_64V3;
 
-    /// Every choice, for a caller that has to find the one a build was
-    /// made with (`hale replay` matching a recording's identity).
+    /// The choices a `hale replay` can find for itself when a recording
+    /// carries only its identity's digest. A named CPU is not one: its
+    /// replay is told the name with `--target-cpu`.
     pub const ALL: [TargetCpu; 2] = [TargetCpu::Native, TargetCpu::X86_64V3];
+
+    /// The spelling in the execution identity's options half
+    /// (`cpu=…`): `Native` and `X86_64V3` as every recording has carried
+    /// them, a named CPU by its name.
+    pub fn identity(&self) -> &str {
+        match self {
+            TargetCpu::Native => "Native",
+            TargetCpu::X86_64V3 => "X86_64V3",
+            TargetCpu::Named(name) => name,
+        }
+    }
+}
+
+/// The name LLVM gives this machine's CPU (`znver5`, `apple-m3`): what
+/// [`TargetCpu::Native`] tunes a native build for. `generic` for a
+/// model newer than this LLVM; the host's features still apply.
+pub fn host_cpu_name() -> String {
+    TargetMachine::get_host_cpu_name().to_string()
+}
+
+/// Refuses a `--target-cpu <name>` LLVM does not know for the target,
+/// before a target machine is made for it: LLVM has no C API that
+/// lists a target's CPUs, and it aborts the process at a target
+/// machine for an unknown one ("64-bit code requested on a subtarget
+/// that doesn't support it"). The clang the runtime TUs are compiled
+/// with is asked instead (`-march=` on x86-64, `-mcpu=` elsewhere, an
+/// empty translation unit); its refusal names the CPUs it does know,
+/// and that is the message. A clang that is missing or fails for any
+/// other reason says nothing here: the runtime compile reports it.
+fn check_cpu_name(name: &str, target: &crate::target::TargetSpec) -> Result<(), CodegenError> {
+    let flag = if target.arch == crate::target::TargetArch::X86_64 {
+        format!("-march={name}")
+    } else {
+        format!("-mcpu={name}")
+    };
+    let probe = Command::new(resolve_tool("clang"))
+        .args([&format!("--target={}", target.triple), &flag, "-x", "c", "-fsyntax-only", "-"])
+        .stdin(std::process::Stdio::null())
+        .output();
+    let Ok(out) = probe else { return Ok(()) };
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !stderr.contains("unknown target CPU") {
+        return Ok(());
+    }
+    let known = stderr
+        .lines()
+        .find_map(|l| l.split_once("valid target CPU values are:").map(|(_, v)| v.trim().to_string()))
+        .unwrap_or_default();
+    Err(CodegenError::LlvmInit(format!(
+        "--target-cpu {name}: LLVM knows no such CPU for {}{}",
+        target.triple,
+        if known.is_empty() { String::new() } else { format!("; it knows: {known}") }
+    )))
 }
 
 /// Which LTO flavor a build asks for (`BuildOptions::lto`; the CLI
@@ -1546,7 +1609,7 @@ fn build_resolved_lowered(
     let (cpu, features): (String, String) = if is_wasm {
         ("generic".to_string(), String::new())
     } else {
-        match options.target_cpu {
+        match &options.target_cpu {
             TargetCpu::Native if is_foreign => {
                 ("generic".to_string(), String::new())
             }
@@ -1560,6 +1623,13 @@ fn build_resolved_lowered(
                 } else {
                     ("generic".to_string(), String::new())
                 }
+            }
+            // A named CPU describes the machine the binary is for,
+            // host or foreign alike; LLVM's own feature set for that
+            // CPU applies, nothing of the host's.
+            TargetCpu::Named(name) => {
+                check_cpu_name(name, &target_spec)?;
+                (name.clone(), String::new())
             }
         }
     };
@@ -2404,14 +2474,24 @@ fn build_resolved_lowered(
         // targets the host CPU by default on Darwin; correctness is
         // unaffected, only some hand-tuned vectorization is left on the
         // table.
-        if !target_spec.is_wasm() && !target_spec.is_macos() {
-            match options.target_cpu {
-                TargetCpu::Native => rt_cflags.push("-march=native".into()),
-                TargetCpu::X86_64V3 => {
-                    if target_spec.arch == crate::target::TargetArch::X86_64 {
-                        rt_cflags.push("-march=x86-64-v3".into());
-                    }
+        // A named CPU is handed to clang on every platform: `-march=`
+        // is the x86-64 spelling, `-mcpu=` the one for aarch64 and
+        // Darwin.
+        if !target_spec.is_wasm() {
+            let x86 = target_spec.arch == crate::target::TargetArch::X86_64;
+            match &options.target_cpu {
+                TargetCpu::Native if !target_spec.is_macos() => {
+                    rt_cflags.push("-march=native".into())
                 }
+                TargetCpu::X86_64V3 if x86 && !target_spec.is_macos() => {
+                    rt_cflags.push("-march=x86-64-v3".into())
+                }
+                TargetCpu::Named(name) => rt_cflags.push(if x86 {
+                    format!("-march={name}")
+                } else {
+                    format!("-mcpu={name}")
+                }),
+                TargetCpu::Native | TargetCpu::X86_64V3 => {}
             }
         }
     }
@@ -3066,13 +3146,16 @@ fn link_cross(
     }
     rt_cflags.push("-O2".into());
     // zig's CPU spelling: `zig cc` reads `-march=x86-64-v3` as the CPU
-    // `x86` with features `64` and `v3`, and refuses it. Reached by
-    // every cross `hale build` for x86-64 since that verb defaults to
-    // the portable baseline.
-    if options.target_cpu == TargetCpu::X86_64V3
-        && target.arch == crate::target::TargetArch::X86_64
-    {
-        rt_cflags.push("-mcpu=x86_64_v3".into());
+    // `x86` with features `64` and `v3`, and refuses it; a CPU is
+    // `-mcpu=<name>` whatever the architecture. `Native` names the
+    // host's CPU, which describes another machine, so a cross build
+    // at it is generic (GH #970) and hands zig nothing.
+    match &options.target_cpu {
+        TargetCpu::X86_64V3 if target.arch == crate::target::TargetArch::X86_64 => {
+            rt_cflags.push("-mcpu=x86_64_v3".into());
+        }
+        TargetCpu::Named(name) => rt_cflags.push(format!("-mcpu={name}")),
+        TargetCpu::Native | TargetCpu::X86_64V3 => {}
     }
     rt_cflags.push(format!("-I{}", sysroot.join("include").display()));
     if prefetch_disabled {
