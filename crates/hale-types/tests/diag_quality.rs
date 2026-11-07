@@ -884,6 +884,44 @@ fn len_of_a_bounded_is_refused_for_count() {
     assert_eq!(ds.len(), 2, "nothing else: {ds:?}");
 }
 
+/// `len` of a form locus is refused at the check, pointing at the
+/// form's synthesized `len()` (spec/forms.md § Synthesized methods):
+/// `len(x)`'s row admits no locus (spec/types.md § Value builtins), and
+/// the build refused it with no file or line while the check passed it
+/// (downstream handoff). The hint spells the receiver as written: a
+/// local, `self`, or a field chain over one. `v.len()`, and `len` of a
+/// String, pass.
+#[test]
+fn len_of_a_form_locus_is_refused_for_its_len_method() {
+    let ds = diags(
+        r#"
+        @form(vec)
+        locus V { capacity { heap items of String; } }
+        @form(ring_buffer, cap = 4)
+        locus R { capacity { pool events of Int; } }
+        locus Holder {
+            params { v: V = V { }; }
+            fn n() -> Int { return len(self.v); }
+        }
+        fn main() {
+            let v = V { };
+            let r = R { };
+            let a = len(v);
+            let b = len(r);
+            let c = v.len();
+            let d = len("abc");
+            let h = Holder { };
+        }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("`len` does not apply")).collect();
+    assert_eq!(hits.len(), 3, "{ds:?}");
+    assert!(hits[0].contains("`V`") && hits[0].contains("`@form(vec)`") && hits[0].contains("`self.v.len()`"), "{hits:?}");
+    assert!(hits[1].contains("`V`") && hits[1].contains("`v.len()`"), "{hits:?}");
+    assert!(hits[2].contains("`R`") && hits[2].contains("`@form(ring_buffer)`") && hits[2].contains("`r.len()`"), "{hits:?}");
+    assert_eq!(ds.len(), 3, "nothing else: {ds:?}");
+}
+
 /// The one-owner rule (spec/memory.md, invariant 3 of the per-method
 /// scratch reclaim): a call publishes one arena for a callee that may
 /// write through its arguments, so handing it both a record a field of

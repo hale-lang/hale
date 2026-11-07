@@ -95,6 +95,11 @@ fn main() {
 }
 ```
 
+The synthesized set is reached in method position only. The free
+builtin `len(x)` admits no locus (types.md § Value builtins), so
+`len(l)` on a form locus is refused at the check, pointing at
+`l.len()`.
+
 **The user CAN add additional methods** on top of the
 synthesized standard set. Naming a user method that collides
 with a synthesized method (e.g. user writes their own `push`)

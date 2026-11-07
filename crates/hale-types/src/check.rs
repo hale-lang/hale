@@ -18989,6 +18989,22 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The spelling of a receiver for a hint that rewrites a call on it
+    /// in method position: a local, `self`, or a field chain over one;
+    /// `x` for any other shape.
+    fn spell_receiver(e: &Expr) -> String {
+        match e {
+            Expr::Ident(i) => i.name.clone(),
+            Expr::KwSelf(_) => "self".to_string(),
+            Expr::Field { receiver, name, .. } => {
+                let r = Self::spell_receiver(receiver);
+                if r == "x" { r } else { format!("{r}.{}", name.name) }
+            }
+            _ => "x".to_string(),
+        }
+    }
+
+
     /// GH #892: does the program's OWN `fn NAME` answer this call,
     /// ahead of the `bounded[T; N]` intrinsic of the same name?
     ///
@@ -23557,6 +23573,26 @@ impl<'a> Checker<'a> {
                                         t.display()
                                     ),
                                 ));
+                            }
+                            // `len` of a form locus: its length is the
+                            // synthesized `len()` method (spec/forms.md),
+                            // and `len(x)`'s row admits no locus
+                            // (spec/types.md § Value builtins). The
+                            // build refused it with no file or line
+                            // until 2026-11-06 (downstream handoff).
+                            if let Ty::Named(n) = &t {
+                                if let Some(form) = self.locus_decls.get(n.as_str()).and_then(|d| d.form.as_ref()) {
+                                    let recv = Self::spell_receiver(&args[0]);
+                                    self.diags.push(Diag::ty(
+                                        expr.span(),
+                                        format!(
+                                            "`len` does not apply to a `{}`: a `@form({})`'s length is `{}.len()` (spec/forms.md § Synthesized methods)",
+                                            t.display(),
+                                            form.name.name,
+                                            recv
+                                        ),
+                                    ));
+                                }
                             }
                         }
                         // GH #1076: `min` / `max` of two values of one

@@ -1889,7 +1889,13 @@ them from one signature table:
 A call over operands outside its row is typed as unknown: the checker
 names no type for it, and the compiler refuses it where it lowers it. So
 `first(len(s))` instantiates `first<Int>`, and `let n: String =
-len(s)` is a type error at the `let`.
+len(s)` is a type error at the `let`. Two operands outside `len`'s row
+are refused at the check itself, each pointing at the spelling that
+holds: a `bounded[T; N]` (its live count is `count(x)`, § bounded[T;
+N]) and a form locus (its length is the form's synthesized `len()`
+method: "\`len\` does not apply to a \`V\`: a \`@form(vec)\`'s length
+is \`v.len()\`", [forms.md](forms.md) § Synthesized methods), where
+the build refused the form case with no file or line until 2026-11-06.
 
 ### Bare identifiers
 
