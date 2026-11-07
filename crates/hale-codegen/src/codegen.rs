@@ -12658,7 +12658,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // on the tail's own node, so a `return { warm(make(1));
         // make(2) };` cannot hand the caller's ownership to
         // `make(1)` the way the one-shot flag did.
-        for (i, stmt) in block.stmts.iter().enumerate() {
+        // The trailing `match` a tail-less block yields (below) is
+        // lowered as the block's value, not as a statement.
+        let stmts = match (block.tail.as_ref(), block.stmts.split_last()) {
+            (None, Some((Stmt::Match(_), head))) => head,
+            _ => block.stmts.as_slice(),
+        };
+        for (i, stmt) in stmts.iter().enumerate() {
             match self.lower_stmt(stmt, scope)? {
                 BlockEnd::Open => self.note_fresh_locus_local(block, i, scope),
                 BlockEnd::Terminated => {
@@ -12681,10 +12687,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (v, ty) = self.lower_expr(tail, scope)?;
                 Ok((v, ty, BlockEnd::Open))
             }
-            None => Err(CodegenError::Unsupported(
-                "block used as expression has no trailing expression"
-                    .to_string(),
-            )),
+            // A trailing `match` (the block's last statement, no tail)
+            // is the block's value in a block used as one
+            // (spec/semantics.md, `match` is dual-position): its arms'
+            // values merge as a match expression's do. The parser keeps
+            // a trailing `match` a statement (a side-effect `match` at a
+            // fn body's end is the common shape), so the value position
+            // decides, and the check types the block the same way
+            // (`check_block_as_expr`). Until 2026-11-06 a match arm's
+            // block ending in a `match` checked and the build refused it
+            // as a block with no trailing expression, where the same
+            // block ending in `if … else …` built (downstream handoff).
+            None => match block.stmts.last() {
+                Some(Stmt::Match(m)) => self.lower_match_value(m, scope),
+                _ => Err(CodegenError::Unsupported(
+                    "block used as expression has no trailing expression"
+                        .to_string(),
+                )),
+            },
         }
     }
 
@@ -22244,6 +22264,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         m: &MatchStmt,
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        match self.lower_match_value(m, scope)? {
+            (v, ty, BlockEnd::Open) => Ok((v, ty)),
+            (_, _, BlockEnd::Terminated) => Err(CodegenError::Unsupported(
+                "match expression needs at least one arm whose body \
+                 produces a value (every arm body terminated)"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// A `match` whose arms' values merge into one: the match
+    /// expression, and the trailing `match` of a block used as a
+    /// value (`lower_block_as_expr`). `Terminated` when every arm
+    /// ended control flow, with a placeholder the caller never
+    /// selects.
+    fn lower_match_value(
+        &mut self,
+        m: &MatchStmt,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy, BlockEnd), CodegenError> {
         let mut cap = MatchExprCapture {
             arm_values: Vec::new(),
             fallthrough_bb: None,
@@ -22254,11 +22294,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let _ = self.lower_match_core(m, &mut inner, Some(&mut cap))?;
         // The core leaves the builder positioned at `match.after`.
         if cap.arm_values.is_empty() {
-            return Err(CodegenError::Unsupported(
-                "match expression needs at least one arm whose body \
-                 produces a value (every arm body terminated)"
-                    .to_string(),
-            ));
+            let undef = self.context.i32_type().get_undef();
+            return Ok((undef.into(), CodegenTy::Int, BlockEnd::Terminated));
         }
         let result_ty = cap.arm_values[0].1.clone();
         for (_, ty, _) in &cap.arm_values {
@@ -22282,7 +22319,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let zero = Self::zero_basic_value(llvm_ty);
             phi.add_incoming(&[(&zero, fbb)]);
         }
-        Ok((phi.as_basic_value(), result_ty))
+        Ok((phi.as_basic_value(), result_ty, BlockEnd::Open))
     }
 
     /// A defined all-zeroes value of the given LLVM type (null for

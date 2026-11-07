@@ -145,6 +145,19 @@ Phase 2b entry in `spec/stdlib.md`.
   yields the zero value of the result type (`0` / `0.0` /
   `false` / empty for pointer-shaped types), mirroring the
   statement form's silent-no-op fallthrough.
+- **As a block's value** (2026-11-06): a trailing `match` — the last
+  item of a block, with no `;` — stays a statement in the grammar
+  (unlike a trailing `if`, above: a side-effect `match` ends many fn
+  bodies), and is the block's value wherever the block is used as
+  one: a `let`'s block, a match arm's block in a match expression, an
+  `if` expression's arm, an `or { … }` substitute. There it is typed
+  and lowered as a match expression (every arm one type), so
+  `Kind::A -> { let m = n + 1; match m { 1 -> "one", _ -> "many" } }`
+  is an arm of a `String` match. In a block used as a statement (a fn
+  body, a loop body) it stays the statement it reads as. Until
+  2026-11-06 the check passed the arm above and the build refused it
+  as a block with no trailing expression, where the same arm ending
+  in `if … else …` built (downstream handoff).
 
 **An enum-constructor pattern's values** are each a binding, `_` or a
 literal: a nested pattern there (`Op::Pair((a, b))`) is a type error at

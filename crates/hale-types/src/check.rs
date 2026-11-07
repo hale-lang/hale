@@ -15944,14 +15944,25 @@ impl<'a> Checker<'a> {
     /// trailing expression's type. Returns `Ty::Unit` if the block
     /// has no trailing expression (caller decides whether that's an
     /// error — for if-expression arms it is).
+    /// The type of a block used as a value: its tail's, or, with no
+    /// tail, its trailing `match`'s as a match expression (every arm
+    /// one type; spec/semantics.md, `match` is dual-position), as the
+    /// build lowers it (`lower_block_as_expr`). A tail-less block ending
+    /// in anything else is `()`.
     fn check_block_as_expr(&mut self, block: &Block) -> Ty {
         self.locals.push();
-        for stmt in &block.stmts {
+        let trailing_match = match (block.tail.as_ref(), block.stmts.split_last()) {
+            (None, Some((Stmt::Match(m), _))) => Some(m),
+            _ => None,
+        };
+        let stmts = if trailing_match.is_some() { &block.stmts[..block.stmts.len() - 1] } else { &block.stmts[..] };
+        for stmt in stmts {
             self.check_stmt(stmt);
         }
-        let ty = match &block.tail {
-            Some(tail) => self.check_expr(tail),
-            None => Ty::Unit,
+        let ty = match (&block.tail, trailing_match) {
+            (Some(tail), _) => self.check_expr(tail),
+            (None, Some(m)) => self.check_match_core(m, true),
+            (None, None) => Ty::Unit,
         };
         self.locals.pop();
         ty

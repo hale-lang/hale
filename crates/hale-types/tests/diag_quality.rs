@@ -922,6 +922,31 @@ fn len_of_a_form_locus_is_refused_for_its_len_method() {
     assert_eq!(ds.len(), 3, "nothing else: {ds:?}");
 }
 
+/// A block used as a value takes its trailing `match` as its value
+/// (spec/semantics.md, `match` is dual-position: as a block's value), so
+/// the match is checked as an expression there: arms of two types are
+/// refused at the match, and arms with no value leave the block with
+/// none, which the `let` refuses. The same block ending in a tail
+/// expression, and a trailing `match` in a fn body, pass.
+#[test]
+fn a_blocks_trailing_match_is_typed_as_its_value() {
+    let ds = diags(
+        r#"
+        fn tell(n: Int) { println(n); }
+        fn main() {
+            let a = { let m = 1; match m { 1 -> 2, _ -> "s" } };
+            let b = { let m = 1; match m { 1 -> tell(1), _ -> tell(2) } };
+            let c = { let m = 1; match m { 1 -> 2, _ -> 3 } };
+            let d = { let m = 1; m + 1 };
+            match c { 2 -> tell(c), _ -> tell(d) }
+        }
+    "#,
+    );
+    assert_eq!(ds.len(), 2, "{ds:?}");
+    assert!(ds[0].starts_with("match expression arms have mismatched types: `Int` vs `String`"), "{ds:?}");
+    assert!(ds[1].starts_with("let `b` needs a value, and this expression produces none"), "{ds:?}");
+}
+
 /// The one-owner rule (spec/memory.md, invariant 3 of the per-method
 /// scratch reclaim): a call publishes one arena for a callee that may
 /// write through its arguments, so handing it both a record a field of
