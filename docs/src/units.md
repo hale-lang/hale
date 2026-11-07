@@ -209,6 +209,7 @@ fn main() {
 | **Adding two points or identities** | `let p = bid + ask;` / `id + id` | Points only subtract (`ask - bid`) or shift by a quantity (`bid + 1tick`); `distinct Int` has no arithmetic. |
 | **Narrowing without a policy** | `let bad: Money = odd;` | Converting `1/10000 cent` to `cent` divides by `10,000`; add `.in(cent) or floor` or use a `{ round: ... }` boundary type. |
 | **Bare `Int` vs. quantity** | `if d > 0 { ... }` / `let w: Duration = n;` | Quantities only compare with their own kind (`d > 0ns`). Convert `Int` to a quantity by multiplying (`n * 1ms`) and extract a count by dividing (`d / 1ms` or `x / 1cent`). |
+| **`min`/`max` across units** | `min(d, m)` with `d: Duration`, `m: Millis` | `min` and `max` order two values of one quantity (or two points of one origin) at one unit, and are that type: `min(lo, hi)` over two `Millis` is a `Millis`. Convert one side first (`m.in(ns)`, `Millis(d) or floor`). |
 
 ## Auditing Units with `hale check --units`
 

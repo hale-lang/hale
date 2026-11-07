@@ -1883,7 +1883,7 @@ them from one signature table:
 | `len(x)` | a `String` or `Bytes` (or a view of either), a fixed-size array | `Int` |
 | `to_string(x)` | a printable value | `String` |
 | `Int(x)` / `Float(x)` | an `Int` or a `Float` | `Int` / `Float` |
-| `abs(x)`, `min(a, b)`, `max(a, b)` | `Int`, `Float`, `Duration` or `Decimal`, one type throughout | the operands' type |
+| `abs(x)`, `min(a, b)`, `max(a, b)` | `Int`, `Float`, `Duration` or `Decimal`, one type throughout; `min` / `max` also two values of one quantity, or of two points of one origin, at one denomination (spec/units.md § The algebra) | the operands' type |
 | `starts_with(s, p)`, `contains(s, p)` | two `String`s | `Bool` |
 
 A call over operands outside its row is typed as unknown: the checker

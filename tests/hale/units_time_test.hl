@@ -142,6 +142,15 @@ fn main() {
     std::test::assert(t - st == 0ns && st - t == 0ns, "their difference");
     std::test::assert(st + 1ns > t, "a point moves by a quantity");
 
+    // `min` and `max` of two values of one type order them as counts.
+    let lo: Millis = 100ms;
+    let hi: Millis = 250ms;
+    std::test::assert_eq_str(to_string(min(lo, hi)), "100ms", "the lesser of two Millis");
+    std::test::assert_eq_str(to_string(max(lo, hi)), "250ms", "the greater");
+    std::test::assert(min(a, b) == 1ns && max(b, a) == 1ns, "a Duration beside its refinement");
+    std::test::assert(min(t, st + 1ns) == t, "two points of one origin");
+    std::test::assert(max(hdr.send_ns * 1ns, 0ns) == hdr.send_ns * 1ns, "a Duration, as before");
+
     // Bytes are a quantity of their own.
     std::test::assert(4KiB == 4096B, "a KiB is 1024 B");
     std::test::assert(1MiB == 1024KiB, "a MiB is 1024 KiB");

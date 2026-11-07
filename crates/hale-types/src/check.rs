@@ -19638,6 +19638,56 @@ impl<'a> Checker<'a> {
         self.diags.push(d);
     }
 
+    /// GH #1076: why `min` / `max` (`name`) of a value of `l` and one of
+    /// `r`, at least one a quantity or a point, is refused: they order two
+    /// values of one quantity, or of two points of one origin, at one
+    /// denomination (spec/units.md § The algebra). `None` when they are
+    /// such a pair; else the message and a note at each declaration.
+    fn min_max_refusal(&self, name: &str, l: &Ty, r: &Ty) -> Option<(String, Vec<(Span, String)>)> {
+        use crate::unit_quantities::QKind;
+        let (lq, rq) = (self.scalars.quantity(l), self.scalars.quantity(r));
+        let (ln, rn) = (self.scalars.type_display(l), self.scalars.type_display(r));
+        let notes = self.scalars.notes(&[lq.as_ref(), rq.as_ref()]);
+        let why = match (&lq, &rq) {
+            (Some(a), Some(b)) => {
+                let one = a.component == b.component && a.kind == b.kind && (a.kind == QKind::Quantity || a.base == b.base);
+                let at_one = self.scalars.factor(&a.denom, &b.denom) == Some(crate::unit_graph::Ratio::one());
+                if one && at_one {
+                    return None;
+                }
+                let what = if a.component != b.component {
+                    "different quantities".to_string()
+                } else if a.kind != b.kind {
+                    "a quantity and a point".to_string()
+                } else if !one {
+                    "two points of different origins".to_string()
+                } else {
+                    format!("two denominations of `{}`", self.scalars.base_display(a))
+                };
+                format!(
+                    "`{name}` orders two values of one quantity, or of two points of one origin, at one denomination; \
+                     `{ln}` and `{rn}` are {what}: convert one to the other's first (`.in(u)`, `T(…)`)"
+                )
+            }
+            (Some(q), None) | (None, Some(q)) => {
+                let (q_name, other) = if lq.is_some() { (&ln, &rn) } else { (&rn, &ln) };
+                let kind = if q.kind == QKind::Quantity { "a quantity" } else { "a point" };
+                let hint = match (if lq.is_some() { r } else { l }, q.kind) {
+                    (Ty::Prim(PrimType::Int), QKind::Quantity) => {
+                        format!("; a count becomes a quantity by a unit (`n * 1{}`)", self.scalars.unit_hint(q))
+                    }
+                    _ => String::new(),
+                };
+                format!(
+                    "`{name}` orders two values of one type; `{q_name}` is {kind} and `{other}` is not one of its \
+                     values{hint}"
+                )
+            }
+            (None, None) => return None,
+        };
+        Some((why, notes))
+    }
+
     /// GH #1076 (U3): a value of `got` (the expression `value`) into a
     /// place of `want`, either of them a quantity or a point. Two types of
     /// one component and kind (two points of one origin) convert by the
@@ -19754,8 +19804,12 @@ impl<'a> Checker<'a> {
             match crate::unit_quantities::convert_count(n, &scale, policy) {
                 Some(Ok(count)) => row.count = Some(count),
                 Some(Err(())) => self.unit_error(Diag::ty(
-                    *span,
-                    format!("`{written}{unit}` as a count of `{}` overflows an `Int`", row.target),
+                    value.span(),
+                    format!(
+                        "`{}{written}{unit}` as a count of `{}` overflows an `Int`",
+                        if negated { "-" } else { "" },
+                        row.target
+                    ),
                 )),
                 None => {}
             }
@@ -22486,27 +22540,48 @@ impl<'a> Checker<'a> {
                                 }
                             }
                             "abs" | "min" | "max" => {
-                                for a in args {
-                                    let at = self.check_expr(a);
-                                    let numeric = matches!(
-                                        &at,
-                                        Ty::Prim(
-                                            PrimType::Int
-                                                | PrimType::Float
-                                                | PrimType::Duration
-                                                | PrimType::Decimal(_)
-                                        ) | Ty::Unknown
-                                    );
-                                    if !numeric {
-                                        self.diags.push(Diag::ty(
-                                            a.span(),
-                                            format!(
-                                                "`{}` takes numeric operands (Int / Float / \
-                                                 Duration / Decimal), got `{}`",
-                                                id.name,
-                                                at.display()
-                                            ),
-                                        ));
+                                let tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
+                                // GH #1076: `min` and `max` order two values
+                                // of one quantity, or of two points of one
+                                // origin, at one denomination, as a
+                                // comparison does (spec/units.md § The
+                                // algebra), and are that type; anything
+                                // else is refused naming both (downstream
+                                // handoff: two `Millis` were refused as not
+                                // numeric).
+                                let ordered = id.name != "abs" && tys.iter().any(|t| self.scalars.quantity(t).is_some());
+                                if ordered {
+                                    if let [l, r] = tys.as_slice() {
+                                        if let Some((why, notes)) = self.min_max_refusal(&id.name, l, r) {
+                                            let mut d = Diag::ty(expr.span(), why);
+                                            for (at, label) in notes {
+                                                d = d.with_related(at, label);
+                                            }
+                                            self.unit_error(d);
+                                        }
+                                    }
+                                } else {
+                                    for (a, at) in args.iter().zip(&tys) {
+                                        let numeric = matches!(
+                                            at,
+                                            Ty::Prim(
+                                                PrimType::Int
+                                                    | PrimType::Float
+                                                    | PrimType::Duration
+                                                    | PrimType::Decimal(_)
+                                            ) | Ty::Unknown
+                                        );
+                                        if !numeric {
+                                            self.diags.push(Diag::ty(
+                                                a.span(),
+                                                format!(
+                                                    "`{}` takes numeric operands (Int / Float / \
+                                                     Duration / Decimal), got `{}`",
+                                                    id.name,
+                                                    at.display()
+                                                ),
+                                            ));
+                                        }
                                     }
                                 }
                             }
@@ -23484,9 +23559,20 @@ impl<'a> Checker<'a> {
                                 ));
                             }
                         }
-                        crate::builtin_sigs::bare_builtin_sig(&id.name)
-                            .and_then(|sig| sig.result(&arg_tys, |t| self.ty_is_printable(t)))
-                            .unwrap_or(Ty::Unknown)
+                        // GH #1076: `min` / `max` of two values of one
+                        // quantity or point type at one denomination is
+                        // that type (the refusal was said where the
+                        // operands were walked).
+                        let ordered_scalar = matches!(id.name.as_str(), "min" | "max")
+                            && matches!(arg_tys.as_slice(), [l, r]
+                                if self.scalars.quantity(l).is_some() && self.min_max_refusal(&id.name, l, r).is_none());
+                        if ordered_scalar {
+                            arg_tys[0].clone()
+                        } else {
+                            crate::builtin_sigs::bare_builtin_sig(&id.name)
+                                .and_then(|sig| sig.result(&arg_tys, |t| self.ty_is_printable(t)))
+                                .unwrap_or(Ty::Unknown)
+                        }
                     }
                     (_, t) => t,
                 };

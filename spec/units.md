@@ -346,6 +346,7 @@ the checker and, through its rows, by lowering:
 | point `-` point, one origin | the quantity, at the meet |
 | point `±` quantity, quantity `+` point | the point, at the meet |
 | comparison of one quantity, or of two points of one origin | `Bool`, exact at the meet |
+| `min` / `max` of two values of one quantity, or of two points of one origin, at one denomination | that type: the lesser or the greater count; across denominations, quantities, kinds or origins, refused naming both ("convert one to the other's first") |
 | comparison of one identity, of one range, or along a range's widening | `Bool` |
 | a range's arithmetic | its `Int`'s: `b + b` is an `Int` |
 | point `+` point; a quantity `/` a dimensionless quantity; any other product of two quantities; anything across components, across a quantity and a point, with an `Int`, an identity or a range; any arithmetic on an identity; `%` and the bitwise operators | refused, naming both declarations |

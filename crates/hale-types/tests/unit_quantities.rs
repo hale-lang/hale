@@ -1070,3 +1070,59 @@ fn a_negated_literal_converts_at_compile_time() {
     );
 }
 
+/// GH #1076: `min` / `max` of two values of one quantity, or of two
+/// points of one origin, at one denomination, is that type; anything
+/// else is refused naming both (downstream handoff: two `Millis` were
+/// refused as not numeric).
+#[test]
+fn min_and_max_order_two_values_of_one_type() {
+    assert_eq!(
+        errors(
+            "    let lo = min(span(3), 2sec);\n    let hi: Seconds = max(seconds(1sec), seconds(2sec));\n    \
+             let p = min(Instant(span(1)), Instant(span(2)));\n    let m: Money = max(amount(1), 3cent);\n"
+        ),
+        Vec::new()
+    );
+    let refused = |body: &str| errors(body).into_iter().map(|(_, m)| m).collect::<Vec<_>>();
+    assert_eq!(
+        refused("    let x = min(seconds(3sec), span(3));\n"),
+        vec![
+            "`min` orders two values of one quantity, or of two points of one origin, at one denomination; `Seconds` \
+             and `Span` are two denominations of `Span`: convert one to the other's first (`.in(u)`, `T(…)`)"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        refused("    let x = max(amount(1), span(1));\n"),
+        vec![
+            "`max` orders two values of one quantity, or of two points of one origin, at one denomination; `Money` \
+             and `Span` are different quantities: convert one to the other's first (`.in(u)`, `T(…)`)"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        refused("    let x = min(Instant(span(1)), span(1));\n"),
+        vec![
+            "`min` orders two values of one quantity, or of two points of one origin, at one denomination; \
+             `Instant` and `Span` are a quantity and a point: convert one to the other's first (`.in(u)`, `T(…)`)"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        refused("    let x = min(Kelvin(300K), Celsius(0mK));\n"),
+        vec![
+            "`min` orders two values of one quantity, or of two points of one origin, at one denomination; \
+             `Kelvin` and `Celsius` are two points of different origins: convert one to the other's first \
+             (`.in(u)`, `T(…)`)"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        refused("    let x = min(amount(1), 3);\n"),
+        vec![
+            "`min` orders two values of one type; `Money` is a quantity and `Int` is not one of its values; a count \
+             becomes a quantity by a unit (`n * 1cent`)"
+                .to_string()
+        ]
+    );
+}

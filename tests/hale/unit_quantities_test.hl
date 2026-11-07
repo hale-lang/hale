@@ -158,7 +158,14 @@ fn main() {
     std::test::assert(spread == 3tick, "the spread is a quantity of ticks");
     let mid = q.bid + (spread / 2 or floor);
     std::test::assert(mid == Price(101tick), "half a tick does not exist: floor");
-
+    std::test::assert(
+        min(spread, 5tick) == 3tick && max(spread, 5tick) == 5tick,
+        "the lesser and the greater of two quantities",
+    );
+    std::test::assert(
+        min(q.bid, q.ask) == q.bid && max(q.bid, q.ask) == q.ask,
+        "two points of one origin order too",
+    );
     // let mid = (bid + ask) / 2;        // type error: Price + Price
 
     // Money and ratios: the product is exact at the product of the two

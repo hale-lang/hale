@@ -76,7 +76,7 @@ let truncated = Int(3.9);                // 3 (truncates toward zero)
 | Function | Signature | Description |
 |---|---|---|
 | `abs(x)` | `(T) -> T` (builtin) | Absolute value (`Int`, `Float`, `Decimal`, `Duration`) |
-| `min(a, b)` / `max(a, b)` | `(T, T) -> T` (builtin) | Minimum / maximum; returns `NaN` if either `Float` argument is `NaN` |
+| `min(a, b)` / `max(a, b)` | `(T, T) -> T` (builtin) | Minimum / maximum; returns `NaN` if either `Float` argument is `NaN`. `T` may also be a quantity or point type (`min(100ms, lo)` over two `Millis`, two `Price`s); both operands must be one type at one unit |
 | `std::math::int_to_float(n)` | `(Int) -> Float` | Converts `Int` to `Float` (equivalent to `Float(n)`) |
 | `std::math::float_to_int(x)` | `(Float) -> Int` | Truncates `Float` toward zero (equivalent to `Int(x)`) |
 | `std::math::round(x)` | `(Float) -> Int` | Rounds half away from zero (`2.5 -> 3`, `-2.5 -> -3`) |

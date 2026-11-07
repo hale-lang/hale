@@ -20336,14 +20336,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return self.lower_abs(av, &at);
         }
         let (bv, bt) = self.lower_expr(&args[1], scope)?;
-        if at != bt {
+        // GH #1076: two values of one quantity or point type at one
+        // denomination order as their counts (spec/units.md § The
+        // algebra): a program's quantity is the `Int` it counts, and a
+        // `Duration` beside a refinement of it is one count under two
+        // representations (downstream handoff: `min` of two `Millis`
+        // was refused by the check as not numeric).
+        let one_count = crate::conversion::is_quantity_repr(&at) && crate::conversion::is_quantity_repr(&bt);
+        if at != bt && !one_count {
             return Err(CodegenError::Unsupported(format!(
                 "`{}`: operand types must match; got {:?} and {:?}",
                 name, at, bt
             )));
         }
         match at {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Decimal(_) => {
                 let pred = match name {
                     "min" => inkwell::IntPredicate::SLT,
                     "max" => inkwell::IntPredicate::SGT,
