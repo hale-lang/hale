@@ -6907,7 +6907,21 @@ what it `offers`), `Commands::policy` (each `habitat.policy` row: the
 `host`, `service` and `address`, and the `state` its provider observes
 now with the `detail` it saw: `up`, `degraded` or `down` from the
 `compose` provider; `""` for the `operator`'s, which the habitat does not
-observe). The latest row of an entity is the one listed. A host is a
+observe). The latest row of an entity is the one listed. The head serves
+its commands one at a time, so a read that observes is bounded: each ask
+of a provider is (a dial to an address 2 s, docker on the head's machine
+10 s, a login to a host its SSH `ConnectTimeout`), the read observes
+within 12 s, and on a host where one ask took 5 s or more it asks nothing
+more in that read; an allocation the read did not ask of answers what
+was last observed of it, its `detail` saying how long ago and why (`(observed
+4.1 s ago: the read's time ran out before it)`), or `not observed yet`. A
+slow ask is said on the API child's log (`hale dna api: observing
+<allocation> on <host> took <seconds> (<detail>)`). `Commands::index`
+observes each organism's pulse the same way, and every dial the head makes
+to the habitat's memory is bounded too (10 s, never redialled once it runs
+out): a dial that is neither accepted nor refused, which held the read and
+every command behind it for the kernel's two minutes of SYN retransmits,
+now fails the one read that made it. A host is a
 machine the habitat places on (`spec/habitat.md`, Hosts, providers and
 placement), never the program `dna/host`. They are reads any authenticated
 caller the record knows may ask, they write nothing, and the head relays

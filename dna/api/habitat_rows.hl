@@ -225,11 +225,152 @@ fn observe_row(root: String, a: dna::Allocation) -> dna::AllocationState {
     };
 }
 
+// ---- what the providers observe, within a read's time -----------------------
+//
+// Observing an allocation asks its provider where it runs: docker's view of
+// a compose project, a dial to an address, a login over SSH to a host. Each
+// ask is bounded, and the asks add up: a read of every allocation, with a
+// host or an address that does not answer among them, outlived the head's
+// relay deadline (35 s), and the head serves its commands one at a time, so
+// every command queued behind the read outlived it as well. A read observes
+// within `OBSERVE_BUDGET_NS`; on a host where one ask was slow
+// (`OBSERVE_SLOW_NS`) it asks no more in that read. An allocation it has
+// not asked of is answered with what was last observed of it and how long
+// ago, or as not observed yet. Every ask that is slow is said on the API
+// child's log with what it took, so a slow read names its cause.
+
+const OBSERVE_BUDGET_NS: Int = 12000000000;
+const OBSERVE_SLOW_NS: Int = 5000000000;
+
+// What a provider last observed of an allocation, and when (the head's
+// monotonic clock).
+type ObservedReading {
+    allocation: String = "";
+    state: String = "";
+    detail: String = "";
+    runs: String = "";
+    at: Int = 0;
+}
+
+// The latest reading of each allocation; a habitat holds far fewer
+// allocations than the cap, past which the longest unread is let go.
+@form(lru_cache, cap = 512)
+locus ObservedReadings {
+    capacity { pool rows of ObservedReading indexed_by allocation; }
+}
+
+// A host an ask was slow on, and in which read (`Observer.read`).
+type SlowHost {
+    host: String = "";
+    read: Int = 0;
+}
+
+@form(lru_cache, cap = 64)
+locus SlowHosts {
+    capacity { pool rows of SlowHost indexed_by host; }
+}
+
+// The head's observer: the last reading of each allocation, for the life of
+// the API child, and the read in progress (`begin`): its number, its
+// deadline and the hosts it found slow.
+locus Observer {
+    params {
+        readings: ObservedReadings = ObservedReadings { };
+        slow: SlowHosts = SlowHosts { };
+        read: Int = 0;
+        until: Int = 0;
+    }
+    // A read begins: its time is `OBSERVE_BUDGET_NS` from now.
+    fn begin() {
+        self.read = self.read + 1;
+        self.until = std::time::monotonic_ns() + OBSERVE_BUDGET_NS;
+    }
+    // Whether an ask on `host` was slow in this read.
+    fn was_slow(host: String) -> Bool {
+        if !self.slow.contains(host) { return false; }
+        let s = self.slow.get(host) or SlowHost { };
+        return s.read == self.read;
+    }
+    // What `a`'s provider observes of the allocation `key` now, or, when the
+    // read has no time left for it or its host was slow in this read, what
+    // was last observed of it.
+    fn observe(root: String, key: String, a: dna::Allocation) -> dna::AllocationState {
+        let host = if len(a.host) > 0 { a.host } else { "local" };
+        let now = std::time::monotonic_ns();
+        if self.until > 0 && now >= self.until {
+            return last_reading(self.readings, key, now, "the read's time ran out before it");
+        }
+        if self.was_slow(host) {
+            return last_reading(
+                self.readings,
+                key,
+                now,
+                dna::host_label(host) + " was slow to answer in this read",
+            );
+        }
+        let seen = observe_row(root, a);
+        let after = std::time::monotonic_ns();
+        if after - now >= OBSERVE_SLOW_NS {
+            self.slow.put(SlowHost { host: host, read: self.read });
+            eprintln(
+                "hale dna api: observing " + key + " on " + dna::host_label(host) + " took "
+                    + seconds_said(after - now) + " (" + seen.detail + ")",
+            );
+        }
+        self.readings.put(
+            ObservedReading {
+                allocation: key,
+                state: seen.state,
+                detail: seen.detail,
+                runs: seen.runs,
+                at: after,
+            },
+        );
+        return seen;
+    }
+}
+
+// `ns` as a person reads a span: `12.3 s`.
+fn seconds_said(ns: Int) -> String {
+    let tenths = ns / 100000000;
+    return to_string(tenths / 10) + "." + to_string(tenths % 10) + " s";
+}
+
+// What was last observed of the allocation `key` (`readings`), said with
+// how long ago and why it was not asked again (`why`); not observed yet
+// when it never was.
+fn last_reading(
+    readings: ObservedReadings,
+    key: String,
+    now: Int,
+    why: String
+) -> dna::AllocationState {
+    let last = if readings.contains(key) {
+        readings.get(key) or ObservedReading { }
+    } else {
+        ObservedReading { }
+    };
+    if last.at <= 0 {
+        return dna::AllocationState { detail: "not observed yet: " + why + "; the next read asks" };
+    }
+    return dna::AllocationState {
+        state: last.state,
+        detail: last.detail + " (observed " + seconds_said(now - last.at) + " ago: " + why + ")",
+        runs: last.runs,
+    };
+}
+
 // The pulse of the organism keyed `key`: the worst state its providers
 // observe of its allocations (`down` over `degraded` over `up`), "" when
 // none is observed.
 @bounded_by(j)
-fn organism_pulse(root: String, j: dna::Journal, latest: dna::LatestRows, key: String) -> String {
+fn organism_pulse(
+    root: String,
+    j: dna::Journal,
+    latest: dna::LatestRows,
+    key: String,
+    seer: Observer
+) -> String {
     let mut worst = "";
     let mut i = 0;
     while i < j.revision() {
@@ -243,7 +384,11 @@ fn organism_pulse(root: String, j: dna::Journal, latest: dna::LatestRows, key: S
         // Forgejo, its sign-in), observed with the allocations, not its pulse
         let role = std::json::find_string_field(e.body, "role");
         if role == "forge" || role == "identity" { continue; }
-        let seen = observe_row(root, applied_at(allocation_of_row(e.entity, e.body))).state;
+        let seen = seer.observe(
+            root,
+            e.entity,
+            applied_at(allocation_of_row(e.entity, e.body)),
+        ).state;
         if seen == "down" { return "down"; }
         if seen == "degraded" { worst = "degraded"; }
         if seen == "up" && len(worst) == 0 { worst = "up"; }
@@ -255,7 +400,7 @@ fn organism_pulse(root: String, j: dna::Journal, latest: dna::LatestRows, key: S
 // provider observes its own; an allocation on the `operator` backends is
 // the operator's server, adopted, which the habitat does not observe: its
 // state is "" and the detail says so.
-fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
+fn habitat_allocations(root: String, limit: Int, seer: Observer) -> AllocationRows {
     let j = habitat_journal(root);
     let out = std::json::Builder { };
     out.begin_array();
@@ -280,7 +425,7 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         // observed where it runs: where it was last applied, which is where
         // its row places it once the placement is applied
         let ran = applied_at(a);
-        let seen = observe_row(root, ran);
+        let seen = seer.observe(root, entity, ran);
         out.begin_object();
         out.string_field("allocation", entity);
         out.string_field("role", a.role);

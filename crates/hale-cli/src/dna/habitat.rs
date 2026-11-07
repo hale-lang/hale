@@ -3311,6 +3311,17 @@ fn status() -> ExitCode {
         }
         None => println!("{:<8}not assigned: `hale habitat up` assigns its address", "face"),
     }
+    // the head behind the face, and whether it answers its commands: its
+    // read of the allocations is the one the organisms' services are shown
+    // from below, so a head that does not answer says why here
+    let head_read = face_running().map(|_| {
+        let begun = std::time::Instant::now();
+        let read = sapling::head_call("Commands::allocations", serde_json::json!({ "limit": 1000 }));
+        (read, begun.elapsed())
+    });
+    if let (Some(url), Some((read, took))) = (head_flag_or_local_url(), &head_read) {
+        println!("{:<8}{}", "head", head_line(&url, read.as_ref().map(|_| ()).map_err(String::as_str), *took));
+    }
     if face_running().is_some() {
         if let Some(port) = mcp_port() {
             println!("{:<8}mcp://127.0.0.1:{port} (the head's commands over MCP: `hale mcp --app mcp://127.0.0.1:{port}`, the person's ID token in HALE_API_TOKEN)", "mcp");
@@ -3340,7 +3351,7 @@ fn status() -> ExitCode {
     // an organism's own services, as their provider observes them where
     // they are placed (the head's reading; none when no head answers)
     let observed: Vec<serde_json::Value> = if rows.iter().any(|(_, r)| r["roles"]["services"].is_object()) {
-        sapling::head_call("Commands::allocations", serde_json::json!({ "limit": 1000 })).ok().and_then(|v| v["allocations"].as_str().and_then(|t| serde_json::from_str(t).ok())).unwrap_or_default()
+        head_read.and_then(|(read, _)| read.ok()).and_then(|v| v["allocations"].as_str().and_then(|t| serde_json::from_str(t).ok())).unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -3387,6 +3398,16 @@ fn status() -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// `status`'s `head` line: the head at `url`, and whether it answered its
+/// read of the allocations (in `took`) or why not.
+fn head_line(url: &str, read: Result<(), &str>, took: std::time::Duration) -> String {
+    let url = url.trim_end_matches('/');
+    match read {
+        Ok(()) => format!("{url}/ (answers its commands: read the allocations in {:.1} s)", took.as_secs_f64()),
+        Err(why) => format!("{url}/ (did not answer its read of the allocations in {:.1} s: {why})", took.as_secs_f64()),
+    }
 }
 
 /// The status line of an organism's own services (`<key>/services`) from
@@ -4471,6 +4492,15 @@ mod tests {
         let line = super::services_status("7817e28279f2/services", &seen);
         assert!(line.contains("on laptop: degraded (1 of 5 running; not running: nats (created))"), "{line}");
         assert!(super::services_status("aaaaaaaaaaaa/services", &seen).contains("not observed"));
+    }
+
+    #[test]
+    fn status_says_whether_the_head_answers() {
+        let took = std::time::Duration::from_millis(830);
+        assert_eq!(super::head_line("http://127.0.0.1:10057", Ok(()), took), "http://127.0.0.1:10057/ (answers its commands: read the allocations in 0.8 s)");
+        let why = "the habitat's head refused Commands::allocations: the project's API did not answer within the head's deadline";
+        let line = super::head_line("http://127.0.0.1:10057/", Err(why), std::time::Duration::from_secs(35));
+        assert_eq!(line, format!("http://127.0.0.1:10057/ (did not answer its read of the allocations in 35.0 s: {why})"));
     }
 
     use super::building;

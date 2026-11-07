@@ -84,6 +84,16 @@ locus PgConn {
         // free. Validated at open(); an unknown value is rejected.
         sslmode: String = "prefer";
 
+        // connect_timeout_ms — the bound on one dial's TCP connect, in
+        // milliseconds (libpq's `connect_timeout`, in its unit of ours).
+        // A server that neither accepts nor refuses (an address that drops
+        // what is sent to it) held a plain connect for the kernel's ~2 min
+        // of SYN retransmits, and with it whoever opened: a head serving
+        // its commands one at a time held every command behind it. A dial
+        // that runs out is `connect_timeout`, fail-fast: open() does not
+        // redial an address that did not answer. 0 = no bound.
+        connect_timeout_ms: Int = 10000;
+
         sock: Int = -1;
         connected: Bool = false;
 
@@ -179,16 +189,43 @@ locus PgConn {
         // A refused connect is an answer — nothing listens there — and
         // `connect` reports it at once (GH #1030); it gets its own kind,
         // which open() does not retry.
+        // A dial that neither connects nor is refused within
+        // `connect_timeout_ms` is `connect_timeout`, fail-fast as well.
         let mut refused = false;
-        let fd = std::io::tcp::connect(self.host, self.port)
-        or { refused = err.kind == "connection_refused"; -1 };
+        let mut timed_out = false;
+        let fd = if self.connect_timeout_ms > 0 {
+            std::io::tcp::connect_within(self.host, self.port, self.connect_timeout_ms * 1ms)
+            or {
+                refused = err.kind == "connection_refused";
+                timed_out = err.kind == "timeout";
+                    -1
+            }
+        } else {
+            std::io::tcp::connect(self.host, self.port)
+            or { refused = err.kind == "connection_refused"; -1 }
+        };
         if fd < 0 {
             return db::Status {
                 ok: false,
                 err: db::DbError {
-                    kind: if refused { "connection_refused" } else { "open_failed" },
+                    kind: if refused {
+                        "connection_refused"
+                    } else if timed_out {
+                        "connect_timeout"
+                    } else {
+                        "open_failed"
+                    },
                     engine_code: 0,
-                    detail: (if refused { "connection refused by " } else { "connect failed to " })
+                    detail: (
+                        if refused {
+                            "connection refused by "
+                        } else if timed_out {
+                            "no connection within " + to_string(self.connect_timeout_ms)
+                                + " ms to "
+                        } else {
+                            "connect failed to "
+                        }
+                    )
                         + self.host + ":" + to_string(self.port) },
             };
         }

@@ -699,6 +699,9 @@ locus CommandAdmission {
         organization_codec: ops::OrganizationCommandCodec = ops::OrganizationCommandCodec { };
         structure_codec: ops::StructureCommandCodec = ops::StructureCommandCodec { };
         codec: ops::GovernanceCommandCodec = ops::GovernanceCommandCodec { };
+        // what the habitat's providers last observed of each allocation, and
+        // the time a read observing them has (habitat_rows.hl `Observer`)
+        seer: Observer = Observer { };
     }
     birth() { self.reader.root = self.root; }
     // The caller as the record knows them: the person `dna.unix.member`
@@ -1081,7 +1084,8 @@ locus CommandAdmission {
     // read, so any authenticated caller the record knows may ask.
     fn index(a: IndexAsk, ctx: std::api::Context) -> RecordIndex {
         if self.personless(ctx) { return RecordIndex { why: "forbidden" }; }
-        return record_index(self.root, a.limit);
+        self.seer.begin();
+        return record_index(self.root, a.limit, self.seer);
     }
     // The habitat's hosts, allocations and policy (habitat_rows.hl): reads,
     // so any authenticated caller the record knows may ask.
@@ -1091,7 +1095,8 @@ locus CommandAdmission {
     }
     fn allocations(a: HabitatAsk, ctx: std::api::Context) -> AllocationRows {
         if self.personless(ctx) { return AllocationRows { why: "forbidden" }; }
-        return habitat_allocations(self.root, a.limit);
+        self.seer.begin();
+        return habitat_allocations(self.root, a.limit, self.seer);
     }
     fn policy(a: HabitatAsk, ctx: std::api::Context) -> PolicyRows {
         if self.personless(ctx) { return PolicyRows { why: "forbidden" }; }
@@ -1188,7 +1193,7 @@ locus CommandAdmission {
     // with the live state, for the person who asks. A read.
     fn brief(a: HabitatAsk, ctx: std::api::Context) -> HabitatBrief {
         if self.personless(ctx) { return HabitatBrief { why: "forbidden" }; }
-        return habitat_brief(self.root, self.roles.person(ctx.caller), a.limit);
+        return habitat_brief(self.root, self.roles.person(ctx.caller), a.limit, self.seer);
     }
     // Who a habitat act's row is written by: the person the caller maps
     // to, else the caller as the binding named it. Every act of the
