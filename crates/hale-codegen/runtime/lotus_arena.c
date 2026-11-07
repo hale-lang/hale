@@ -26934,6 +26934,12 @@ typedef struct lotus_bus_remote_entry {
     size_t             pend_bytes;
     uint64_t           ctr_buffered_early;
     uint64_t           ctr_dropped_early;
+    /* A wire frame the subject's deserializer refused (-1: shorter
+     * than its type, or a length it announces past its end) is
+     * dropped here and counted, never delivered from whatever the
+     * reader's buffer held before it (downstream handoff,
+     * 2026-11-07). */
+    uint64_t           ctr_dropped_decode;
     volatile int       serve_done;
 } lotus_bus_remote_entry_t;
 
@@ -27764,7 +27770,14 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
             }
             ssize_t struct_size = deserialize(
                 wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
-            if (struct_size <= 0) continue;
+            if (struct_size <= 0) {
+                LOTUS_CTR_BUMP(entry->ctr_dropped_decode);
+                if (lotus_bus_log_deserialize_drop_enabled()) {
+                    { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus reader: drop on `%s` "
+                            "(deserialize returned %zd) — %zd-byte wire payload", entry->subject, struct_size, n); lotus_diag(2, "lotus.bus", lotus_diag_m, ""); }
+                }
+                continue;
+            }
             /* GH #296 phase 5b: capture the VERBATIM wire form with
              * a pinned identity — AFTER the deserialize, so a
              * message this application rejected never enters the
@@ -28204,7 +28217,9 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         }
         /* n == 0 is an empty datagram, an ordinary frame: it takes the
          * decoder path below, which rejects it as a short frame (no
-         * serialized form is empty), and the loop goes on. It used to
+         * struct's form is shorter than its fixed fields and length
+         * prefixes), counted on `dropped_decode`, and the loop goes
+         * on. It used to
          * be the reader's stop sentinel (what shutdown(SHUT_RDWR)
          * produced on Linux), so one empty datagram ended ingress for
          * good and every later datagram went unread, silently
@@ -28230,6 +28245,9 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         ssize_t struct_size = deserialize(
             wire, (size_t)n, struct_buf, sizeof(struct_buf));
         if (struct_size <= 0) {
+            /* Too short for its type (the empty datagram included), or
+             * a length past its end: dropped and counted. */
+            LOTUS_CTR_BUMP(args->entry->ctr_dropped_decode);
             if (lotus_bus_log_deserialize_drop_enabled()) {
                 { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus udp reader: drop on `%s` "
                         "(deserialize returned %zd) — %zd-byte wire payload", args->entry->subject, struct_size, n); lotus_diag(2, "lotus.bus", lotus_diag_m, ""); }
@@ -34202,7 +34220,8 @@ void lotus_bus_remote_destroy_all(void) {
                     "sent=%llu delivered=%llu bytes_sent=%llu "
                     "bytes_delivered=%llu send_failures=%llu "
                     "dropped_lost=%llu waits=%llu rearms=%llu reconnects=%llu "
-                    "seq_gaps=%llu buffered_early=%llu dropped_early=%llu\n",
+                    "seq_gaps=%llu buffered_early=%llu dropped_early=%llu "
+                    "dropped_decode=%llu\n",
                     e->subject, e->kind, e->role,
                     (unsigned long long)e->ctr_msgs_sent,
                     (unsigned long long)e->ctr_msgs_delivered,
@@ -34215,7 +34234,8 @@ void lotus_bus_remote_destroy_all(void) {
                     (unsigned long long)e->ctr_reconnects,
                     (unsigned long long)e->ctr_seq_gaps,
                     (unsigned long long)e->ctr_buffered_early,
-                    (unsigned long long)e->ctr_dropped_early);
+                    (unsigned long long)e->ctr_dropped_early,
+                    (unsigned long long)e->ctr_dropped_decode);
         }
 
         /* Wave B: adapter entries own their protocol lifecycle

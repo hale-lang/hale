@@ -2353,7 +2353,8 @@ acted on. Consequences, all normative:
      explicit wake, a pipe it polls beside its socket, the same
      on Linux and macOS: it reads the datagrams the kernel has
      queued, then ends. An empty datagram is an ordinary frame
-     to it, rejected as too short and counted as a drop, never
+     to it, rejected as too short and counted as a drop
+     (`dropped_decode`; § Payload type below), never
      its stop (2026-11-06, downstream handoff: a zero-byte
      datagram was the reader's stop sentinel — what a
      `shutdown()` of the socket produced on Linux — so one ended
@@ -4592,6 +4593,19 @@ bus payload may carry a struct whose fields are primitives,
 Strings, Bytes, or other nested structs, at any depth. Serialize
 walks the field tree in declaration order; deserialize allocates
 each nested struct in the lazy global payload arena and recurses.
+A frame is decoded only as far as it reaches (2026-11-07, downstream
+handoff): one shorter than its type's minimum encoded size (its
+fixed fields and length prefixes; the empty datagram included) is
+refused before any field is read, and every read after that — a
+fixed field, a length prefix, the bytes a String or Bytes length
+announces, a nested struct's or an array element's fields — is held
+to what remains of the frame after it, never to the frame's whole
+length; a refused frame is dropped by the reader that received it and
+counted (`dropped_decode` in the counters dump), and nothing of the
+reader's previous frame is delivered as part of it. It used to be
+that an empty datagram was delivered as a zero-filled record, one
+after a valid frame replayed that frame, and a one-byte one delivered
+the previous frame with its first byte replaced.
 A payload-free enum field travels as its four-byte tag (so a topic
 `keyed_by` an enum field builds), and a `bounded[T; N]` of scalars or
 such enums and an array of scalars or structs are carried too. An

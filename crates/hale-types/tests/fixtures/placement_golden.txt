@@ -2536,6 +2536,11 @@ row	App@literal1.s	Sub	main	default
 == crates/hale-codegen/tests/bus_udp_ingress.rs#64582bbf
 row	Pub@main1	Pub	main	default
 
+== crates/hale-codegen/tests/bus_udp_ingress.rs#38648fc7
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.s	Sub	main	default
+
 == crates/hale-codegen/tests/bus_udp_transport.rs#b5d4711d
 row	Sub@main1	Sub	main	default
 
