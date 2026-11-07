@@ -803,6 +803,9 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.q	Q	main	default
 
+== crates/hale-cli/tests/check_subscriber_torn_down.rs#9325c3b8
+row	Empire@main1	Empire	main	default
+
 == crates/hale-cli/tests/check_tcp_substrate.rs#ac402bbb
 root	App	the entry
 domain	pool:zero	async_io

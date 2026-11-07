@@ -630,6 +630,7 @@ const PINNED: &[&str] = &[
     "tests/hale/api_binding_test.hl: 0 go, 0 appear; dump 2 tags, 28 reclaim, 0 verdicts",
     "tests/hale/api_codec_call_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_context_test.hl: 0 go, 0 appear; dump 2 tags, 49 reclaim, 0 verdicts",
+    "tests/hale/api_decimal_field_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_encode_linear_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_json_value_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_patch_field_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
