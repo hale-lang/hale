@@ -272,7 +272,10 @@ impl<'a> DrainReadRows<'a> {
         match ty {
             TypeExpr::Named { path, .. } => self.kind_of_name(path),
             TypeExpr::Primitive(..) => Receiver::NotLocus,
-            TypeExpr::Projection { inner, .. } => self.kind_of_type(inner),
+            // A collection or projection of a locus holds that locus.
+            TypeExpr::Projection { inner, .. } | TypeExpr::Array { elem: inner, .. } | TypeExpr::Bounded { elem: inner, .. } => {
+                self.kind_of_type(inner)
+            }
             _ => Receiver::Unknown,
         }
     }
@@ -285,6 +288,33 @@ impl<'a> DrainReadRows<'a> {
             Receiver::NotLocus
         } else {
             Receiver::Unknown
+        }
+    }
+
+    /// The loci that MAY hold `this`, by declared types: a locus whose
+    /// params declare a field whose type is `this` (or a collection or
+    /// projection of it), or a field whose type is such a holder,
+    /// transitively, or a field the rows cannot type (taken as one).
+    fn holders_of(&self, this: &str) -> std::collections::BTreeSet<String> {
+        let mut holders: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        loop {
+            let before = holders.len();
+            for (locus, fields) in &self.fields {
+                if holders.contains(*locus) {
+                    continue;
+                }
+                let holds = fields.values().any(|k| match k {
+                    Receiver::Locus(l) => l == this || holders.contains(l),
+                    Receiver::Unknown => true,
+                    Receiver::NotLocus => false,
+                });
+                if holds {
+                    holders.insert(locus.to_string());
+                }
+            }
+            if holders.len() == before {
+                return holders;
+            }
         }
     }
 
@@ -324,11 +354,15 @@ impl<'a> DrainReadRows<'a> {
     /// calls, transitively, through any receiver that resolves to `decl` —
     /// `self` in its own bodies, a `let` alias of it in its block, a
     /// parameter bound to it (a free fn or another locus's method handed
-    /// the locus and reading `.draining` on it counts), a field path that
-    /// holds one — or that the rows cannot resolve, which is taken as a
-    /// read, as is a call that hands `decl` to a method the rows cannot
-    /// find (the child is then not awaited: the pre-#1869 behaviour, where
-    /// awaiting a run() that watches the drain would hang). A read of
+    /// the locus and reading `.draining` on it counts), a declared field
+    /// path whose type is `decl` (a method of a locus whose params declare
+    /// a field of `decl`'s type, or of a holder of one, transitively, is
+    /// followed, its `self.<field>` resolving to `decl` by the declared
+    /// type: by declared types, not by construction) — or that the rows
+    /// cannot resolve, which is taken as a read, as is a call that hands
+    /// `decl` to a method the rows cannot find (the child is then not
+    /// awaited: the pre-#1869 behaviour, where awaiting a run() that
+    /// watches the drain would hang). A read of
     /// another locus's `draining` (its own `self.draining` in a method
     /// `decl` calls), and a read in a handler, in a `drain()` or
     /// `dissolve()` hook, or in a method the `run()` never reaches, is
@@ -348,7 +382,12 @@ impl<'a> DrainReadRows<'a> {
         }) else {
             return false;
         };
-        let mut walk = Walk { rows: self, this: decl.name.name.clone(), seen: std::collections::BTreeSet::new() };
+        let mut walk = Walk {
+            rows: self,
+            this: decl.name.name.clone(),
+            holders: self.holders_of(&decl.name.name),
+            seen: std::collections::BTreeSet::new(),
+        };
         let env = Env { this: Some(decl.name.name.clone()), names: std::collections::BTreeMap::new() };
         walk.body_reads(run, env)
     }
@@ -382,6 +421,9 @@ struct Env {
 struct Walk<'r, 'a> {
     rows: &'r DrainReadRows<'a>,
     this: String,
+    /// The loci whose declared fields may hold this one
+    /// ([`DrainReadRows::holders_of`]): their methods are followed.
+    holders: std::collections::BTreeSet<String>,
     seen: std::collections::BTreeSet<(Option<String>, String, Vec<Receiver>)>,
 }
 
@@ -463,12 +505,14 @@ impl<'r, 'a> Walk<'r, 'a> {
                                 callees.push((Some(l), name, args.as_slice(), env.clone()));
                             }
                             // Another locus's method, when the call hands it
-                            // this locus (or something unresolved): the read
-                            // may be on that argument. One the rows cannot
-                            // find (a stdlib locus's, a builtin's) that is
-                            // handed this locus is taken as a read.
+                            // this locus (or something unresolved), or when
+                            // its declared fields may hold this locus: the
+                            // read may be on that argument or through
+                            // `self.<field>`. One the rows cannot find (a
+                            // stdlib locus's, a builtin's) that is handed
+                            // this locus is taken as a read.
                             Receiver::Locus(l) => {
-                                if may_hand_this {
+                                if may_hand_this || self.holders.contains(&l) {
                                     if self.rows.methods.get(l.as_str()).and_then(|m| m.get(name)).is_some() {
                                         callees.push((Some(l), name, args.as_slice(), env.clone()));
                                     } else if hands_this {
@@ -478,21 +522,20 @@ impl<'r, 'a> Walk<'r, 'a> {
                             }
                             Receiver::NotLocus => {}
                             // An unresolved receiver: this locus's method of
-                            // the name, and, when the call hands this locus
-                            // (or something unresolved), every locus's; none
-                            // found and this locus handed over is a read.
+                            // the name, every holder's, and, when the call
+                            // hands this locus (or something unresolved),
+                            // every locus's; none found and this locus
+                            // handed over is a read.
                             Receiver::Unknown => {
                                 let mut any = false;
                                 if self.rows.methods.get(self.this.as_str()).and_then(|m| m.get(name)).is_some() {
                                     callees.push((Some(self.this.clone()), name, args.as_slice(), env.clone()));
                                     any = true;
                                 }
-                                if may_hand_this {
-                                    for (l, methods) in &self.rows.methods {
-                                        if *l != self.this.as_str() && methods.contains_key(name) {
-                                            callees.push((Some(l.to_string()), name, args.as_slice(), env.clone()));
-                                            any = true;
-                                        }
+                                for (l, methods) in &self.rows.methods {
+                                    if *l != self.this.as_str() && methods.contains_key(name) && (may_hand_this || self.holders.contains(*l)) {
+                                        callees.push((Some(l.to_string()), name, args.as_slice(), env.clone()));
+                                        any = true;
                                     }
                                 }
                                 if !any && hands_this {

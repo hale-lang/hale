@@ -5381,12 +5381,19 @@ SIGINT or SIGTERM:
    deadline-bounded park on an `async_io` pool — a `recv` with a
    timeout — reports its timeout. A timed wait that **begins during
    the drain** in a `run()` that reads its locus's `draining` — itself,
-   or in a method of its locus or a free fn it calls, transitively,
-   through any receiver that is the locus (`self`, a `let` alias of
-   it, a parameter a free fn binds to it, a field holding one) or
-   that the declarations cannot resolve (taken as a read); a read in
+   or in a method or a free fn it calls, transitively, through any
+   receiver that is the locus by declared type: `self`, a `let` alias
+   of it (in its block), a parameter a method or free fn binds to it
+   (a call on another locus that hands it this locus is followed), or
+   a declared field path whose type is the locus (a call on a locus
+   whose params declare a field of this locus's type, or of a holder
+   of one, transitively — a collection or projection of it included —
+   is followed, and its `self.<field>` is this locus: by declared
+   types, not by construction); a receiver the declarations cannot
+   resolve is taken as a read. A read in
    a handler, in a `drain()` or `dissolve()` hook, or in a method the
-   `run()` never reaches, or of another locus's `draining`, is not the
+   `run()` never reaches, or of another locus's `draining` (a holder's
+   own `self.draining`), is not the
    `run()`'s (one of the program's own
    loci; a standard-library locus's bodies run in
    their caller's frame) — returns at once the same way, until that `run()` has read

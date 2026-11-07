@@ -495,6 +495,90 @@ fn a_run_reading_draining_through_another_locus_or_past_a_shadow_is_not_awaited(
     assert!(pos(&l, "worker done") < pos(&l, "after"), "{}", l.join("\n"));
 }
 
+/// The locus can travel in a holder's declared fields rather than a
+/// call's arguments (reviewer, 2026-11-07): `Watch { target: self }`
+/// with `Watch.stopped()` reading `self.target.draining`, and a two-level
+/// chain (`Watch.holder: Holder`, `Holder.target: Worker`). A method of a
+/// locus whose params declare a field of this locus's type (or of a
+/// holder of one) is followed, its `self.<field>` this locus by declared
+/// type: the flag is 1 and the program ends under the tree drain. The
+/// control: a holder whose method reads only its own `self.draining` is
+/// followed and reads another locus's drain, flag 0, the finite worker
+/// awaited.
+#[test]
+fn a_run_reading_draining_through_a_holders_declared_field_is_not_awaited() {
+    let main = "main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: pinned(core = 0); }
+        }
+        fn main() { App { }; println(\"after\"); }
+        ";
+    let shapes: [(&str, &str); 2] = [
+        ("field", "locus Watch {
+            params { target: Worker; }
+            fn stopped() -> Bool { return self.target.draining; }
+        }
+        locus Worker {
+            run() {
+                let watcher = Watch { target: self };
+                while !watcher.stopped() { std::time::sleep(10ms); }
+                println(\"worker out\");
+            }
+        }
+        "),
+        ("field_chain", "locus Holder {
+            params { target: Worker; }
+        }
+        locus Watch {
+            params { holder: Holder; }
+            fn stopped() -> Bool { return self.holder.target.draining; }
+        }
+        locus Worker {
+            run() {
+                let watcher = Watch { holder: Holder { target: self } };
+                while !watcher.stopped() { std::time::sleep(10ms); }
+                println(\"worker out\");
+            }
+        }
+        "),
+    ];
+    for (tag, loci) in shapes {
+        let src = format!("{loci}{main}");
+        let bin = harness::unique_bin(&format!("tree_drain_reads_{tag}"));
+        let ir = harness::build_source_ir_text(&src, &bin).expect("build");
+        assert!(ir.contains("lotus.reads_drain.Worker = private global i64 1"), "{tag}: the flag is 1:\n{}", ir.lines().filter(|l| l.contains("reads_drain")).collect::<Vec<_>>().join("\n"));
+        let out = run_bounded(&bin, 20, &[]);
+        let _ = std::fs::remove_file(&bin);
+        assert!(out.status.success(), "{tag}: {:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+        let l = lines(&out);
+        assert!(pos(&l, "worker out") < pos(&l, "after"), "{tag}: the drain ended the loop:\n{}", l.join("\n"));
+    }
+
+    let src = format!(
+        "locus Watch {{
+            params {{ target: Worker; }}
+            fn stopped() -> Bool {{ return self.draining; }}
+        }}
+        locus Worker {{
+            run() {{
+                let watcher = Watch {{ target: self }};
+                let mut i = 0;
+                while i < 3 && !watcher.stopped() {{ i = i + 1; std::time::sleep(20ms); }}
+                println(\"worker done\");
+            }}
+        }}
+        {main}"
+    );
+    let bin = harness::unique_bin("tree_drain_reads_field_self");
+    let ir = harness::build_source_ir_text(&src, &bin).expect("build");
+    assert!(ir.contains("lotus.reads_drain.Worker = private global i64 0"), "the holder's own draining:\n{}", ir.lines().filter(|l| l.contains("reads_drain")).collect::<Vec<_>>().join("\n"));
+    let out = run_bounded(&bin, 20, &[]);
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "{:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+    let l = lines(&out);
+    assert!(pos(&l, "worker done") < pos(&l, "after"), "{}", l.join("\n"));
+}
+
 /// The same main locus with a pinned worker that does not read
 /// `draining` beside a pinned child that loops on it: the tree's drain
 /// begins once the worker's `run()` has returned, so the loop sees it
