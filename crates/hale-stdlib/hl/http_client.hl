@@ -521,25 +521,39 @@ fn __http_crlf_at(raw: Bytes, from: Int, end: Int) -> Int {
     return -1;
 }
 
-// Hex chunk-size in [lo, hi), stopping at ';' (chunk-ext) or
-// space; -1 if no hex digits.
+// Hex chunk-size in [lo, hi) (RFC 9112 § 7.1): one to fifteen hex
+// digits, so the size fits an Int, then nothing but whitespace and a
+// chunk extension (`;`, ignored). -1 when there is no digit, a
+// sixteenth, or any other byte after them: `0x5`, `5zz` and a 17-digit
+// size are not sizes (2026-11-07, review of #1869: `v * 16 + d` ran on
+// without a limit and stopped at the first byte that was not hex, so
+// `10000000000000000` wrapped to 0 and read the rest of the body as
+// trailers, `0x5` was 0 and `5zz` was 5 — boundaries a strict parser
+// in front of the Server would not have drawn).
 fn __http_hex_size(raw: Bytes, lo: Int, hi: Int) -> Int {
     let mut v = 0;
     let mut i = lo;
-    let mut any = false;
+    let mut digits = 0;
     while i < hi {
         let ch = std::bytes::at(raw, i) or - 1;
-        if ch == 59 || ch == 32 { break; }
         let mut dgt = -1;
         if ch >= 48 && ch <= 57 { dgt = ch - 48; }
         else if ch >= 97 && ch <= 102 { dgt = ch - 87; }
         else if ch >= 65 && ch <= 70 { dgt = ch - 55; }
         if dgt < 0 { break; }
+        digits = digits + 1;
+        if digits > 15 { return -1; }
         v = v * 16 + dgt;
-        any = true;
         i = i + 1;
     }
-    if !any { return -1; }
+    if digits == 0 { return -1; }
+    // after the digits: whitespace, then an extension or the end
+    while i < hi {
+        let ch = std::bytes::at(raw, i) or - 1;
+        if ch == 59 { return v; }
+        if ch != 32 && ch != 9 { return -1; }
+        i = i + 1;
+    }
     return v;
 }
 
