@@ -38,13 +38,14 @@ Compile and run the server with `hale build`, then query `curl localhost:8080/he
 |---|---|---|
 | `std::http::Request` | `method`, `path`, `version`, `body`, `conn_fd` | Parsed inbound HTTP request. Headers are queried case-insensitively. (`std::http::parse_request` parses raw requests into this type.) |
 | `std::http::Response` | `status`, `body`, `content_type`, `headers`, `takeover`, `takeover_raw` | Outbound HTTP response. Requires `status` and `body`; `content_type` defaults to `"text/plain"`. |
-| `std::http::Server` | `port`, `handler`, `name`, `max_accepts`, `max_connections`, `max_request_bytes`, `too_large` | Owns the listen-accept-parse-dispatch loop. Reassembles `POST` bodies by `Content-Length` across TCP segments. |
+| `std::http::Server` | `port`, `handler`, `name`, `max_accepts`, `max_connections`, `max_request_bytes`, `too_large` | Owns the listen-accept-parse-dispatch loop. Reassembles `POST` bodies by `Content-Length` across TCP segments, and de-chunks a `Transfer-Encoding: chunked` body before the handler sees it. |
 | `std::http::Handler` | `fn handle(req: Request) -> Response;` | Structural interface satisfied automatically by any locus declaring a matching `handle` method. |
 
 ### `std::http::Server` Configuration
 
 - **`max_accepts`**: Bounds the server to `N` requests before returning (useful in tests). By default, the server runs until stopped.
 - **`max_request_bytes`**: Caps the total size of a request including request line, headers, and body (`1 MiB` default, up to `1 GiB` maximum).
+- **Chunked request bodies**: A request sent with `Transfer-Encoding: chunked` (curl's default for a streamed upload, many SDKs' for a body of unknown length) is read to its last chunk and `req.body` is the de-chunked payload; malformed framing, or a body cut off before its last chunk, is answered `400`. The cap below counts the request's bytes on the wire, so a chunked body over it is answered like an over-long `Content-Length`.
 - **`too_large`**: When a request's declared `Content-Length` exceeds `max_request_bytes`, the server replies immediately with `too_large` without reading the request body. Defaults to a plain-text `413 payload too large` response, and can be overridden (for example, `too_large: std::http::Response { status: 413, content_type: "application/json", body: "{\"error\":\"too large\"}" }`).
 
 ### Structural `Handler` Interface

@@ -391,8 +391,15 @@ locus __StdIoTcpConnections {
 // `too_large` (the Server's, `413 payload too large` unless set)
 // before buffering; overflow without a complete header block closes
 // without a response (the framing can't be trusted). Keep-alive stays
-// unsupported (Connection: close);
-// Transfer-Encoding: chunked is not parsed.
+// unsupported (Connection: close). A request body sent as
+// `Transfer-Encoding: chunked` is read to its last chunk and de-chunked
+// with the client's scanner (`__http_scan_chunks`), so the handler sees
+// the payload; the cap counts the request's bytes on the wire, which a
+// de-chunked body never exceeds, so a chunked body over the cap answers
+// `too_large` as an over-cap Content-Length does; malformed framing,
+// or a body cut off before its last chunk, answers 400 (2026-11-06,
+// downstream handoff: the handler saw the raw chunk framing, or an
+// empty body).
 fn __http_handle_one_conn(
     conn_fd: Int,
     h: std::http::Handler,
@@ -415,6 +422,14 @@ fn __http_handle_one_conn(
     let mut header_end = 0 - 1;
     let mut need = 0;
     let mut too_large = false;
+    // a chunked body: its framing is scanned once the bytes so far end
+    // with a blank line (the last chunk's, or its trailers'), so a
+    // request that arrives whole is scanned once
+    let mut chunked = false;
+    let mut chunked_body = b"";
+    let mut chunked_done = false;
+    let mut chunked_bad = false;
+    let mut tail = "";
     // Each pass ends the loop or appends at least one byte, and
     // `max_request` bytes end it: at most max_request + 1 reads, and
     // `max_request` is at most 1 GiB. The ceiling says so where the
@@ -431,7 +446,7 @@ fn __http_handle_one_conn(
             too_large = true;
             break;
         }
-        if header_end >= 0 && total - (header_end + 4) >= need {
+        if header_end >= 0 && !chunked && total - (header_end + 4) >= need {
             break;
         }
         // At the cap and not complete: the rest would be over it.
@@ -460,6 +475,9 @@ fn __http_handle_one_conn(
                 );
                 need = std::str::parse_int(
                     std::http::header(partial, "Content-Length")) or 0;
+                let te = std::str::lower(
+                    std::http::header(partial, "Transfer-Encoding"));
+                chunked = std::str::index_of(te, "chunked") >= 0;
             } else {
                 let n = len(probe);
                 carry = if n > 3 { probe[(n - 3)..n] } else { probe };
@@ -467,6 +485,30 @@ fn __http_handle_one_conn(
         }
         total = total + len(chunk);
         reads = reads + 1;
+        if chunked {
+            // the cap, before the framing is scanned: a request over it
+            // is refused however its bytes were segmented
+            if total > max_request {
+                too_large = true;
+                break;
+            }
+            let t = tail + chunk;
+            let tn = len(t);
+            tail = if tn > 4 { t[(tn - 4)..tn] } else { t };
+            if tail == "\r\n\r\n" {
+                let so_far = buf.snapshot() or std::bytes::from_string("");
+                let sc = __http_scan_chunks(so_far, header_end + 4, total);
+                if sc.bad {
+                    chunked_bad = true;
+                    break;
+                }
+                if sc.complete {
+                    chunked_body = sc.body;
+                    chunked_done = true;
+                    break;
+                }
+            }
+        }
     }
     if header_end < 0 {
         // Never saw a complete header block: close without a
@@ -477,7 +519,28 @@ fn __http_handle_one_conn(
         std::http::write_response(s, too_large_resp);
         return;
     }
-    let raw = std::str::from_bytes(buf.finish() or std::bytes::from_string(""));
+    if chunked && !chunked_done {
+        // malformed chunk framing, or EOF / the timeout before the last
+        // chunk: the body cannot be trusted
+        std::http::write_response(s, std::http::Response {
+            status: 400,
+            content_type: "text/plain",
+            body: if chunked_bad {
+                "malformed chunked request body"
+            } else {
+                "incomplete chunked request body"
+            },
+        });
+        return;
+    }
+    let full = buf.finish() or std::bytes::from_string("");
+    let raw = if chunked {
+        // the header block as it came, then the de-chunked body
+        std::str::from_bytes(std::bytes::slice(full, 0, header_end + 4))
+            + std::str::from_bytes(chunked_body)
+    } else {
+        std::str::from_bytes(full)
+    };
     let mut req = std::http::parse_request(raw);
     req.conn_fd = conn_fd;
     let resp = h.handle(req);

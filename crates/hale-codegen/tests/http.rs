@@ -11,6 +11,8 @@ mod cross_pool_backstop;
 mod docs_server;
 #[path = "http_client.rs"]
 mod http_client;
+#[path = "http_chunked_request.rs"]
+mod http_chunked_request;
 #[path = "http_hello.rs"]
 mod http_hello;
 #[path = "http_request_headers.rs"]
