@@ -69,6 +69,33 @@ fn main() {
     let wide_range: Decimal<8> = std::str::range_parse_decimal(text, 1, len(text) - 1) or 9.0d;
     std::test::assert_eq_str("" + wide_range, "9", "range_parse_decimal refuses it too");
 
+    // An exponent is applied exactly at the scale (2026-11-07): a JSON
+    // reader's spelling of a small number.
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("1e-7") or 9.0d), "0.0000001", "a negative exponent");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("1.50E+1") or 9.0d),
+        "15",
+        "a positive exponent with a fraction");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("125e-2") or 9.0d),
+        "1.25",
+        "an exponent moving the point left");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("0.000000001e2") or 9.0d),
+        "0.0000001",
+        "an exponent moving it right");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("1e-10") or 9.0d),
+        "9",
+        "an exponent landing past the scale is refused");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("1e") or 9.0d), "9", "an exponent with no digits");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("1e99999") or 9.0d), "9", "an exponent past i128");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("0e-99999999999") or 9.0d), "0", "zero at any exponent");
+
     // Garbage substitutes rather than silently yielding a value.
     std::test::assert_eq_str(
         "" + (std::str::parse_decimal("abc") or 0.0d), "0", "letters");

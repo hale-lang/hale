@@ -2804,10 +2804,14 @@ payload picks the consumer mode:
   `bounded[T; N]` or `[T; N]` of any of those as a JSON array (more
   elements than `N` is `too_long`, fewer than a fixed array's
   `too_short`; an absent `bounded` field is empty). A `Decimal<S>`
-  field is a JSON number read at the field's scale, every digit kept; a
-  number with a nonzero digit past the scale (or not a number) is
-  `JsonError { kind: "wrong_type", field }`, never truncated or read as
-  zero (spec/types.md § Decimal<S>). The key is the tag value, else
+  field is a JSON number read at the field's scale, every digit kept,
+  an exponent applied exactly (`1e-7`, `1.50E+1`; 2026-11-07,
+  downstream handoff); a number with a nonzero digit past the scale,
+  one whose mantissa no i128 holds, a spelling that is no JSON number
+  (`+1`, `.5`, `1.`, `01`), or not a number is `JsonError { kind:
+  "wrong_type", field }`, never truncated or read as zero
+  (spec/types.md § Decimal<S>, spec/api.md § Codecs). The key is the
+  tag value, else
   the field name; unmatched keys (and nested objects/arrays under them)
   are skipped. A missing field raises `JsonError { kind: "missing_field",
   field }` unless the field declares a default, which fills it: a
@@ -2815,7 +2819,11 @@ payload picks the consumer mode:
   literal (`= Instrument { sym: "Y", tick: 2 }`, its own fields' defaults
   filling what it leaves out), or any expression a field default may be;
   the codec builds it when the key is absent, exactly as the record's
-  own literal would.
+  own literal would. A key sent as `null` is a key absent (2026-11-07,
+  downstream handoff): the field takes that same default, whatever its
+  shape, or is `missing_field` with none, and a `null` after a value
+  leaves nothing of it (the last of a key sent twice wins); a
+  `std::json::Value` field alone holds `null` as its text.
   `from_json` is `fallible`, so callers must address it. The same tags
   drive emit: `Type::to_json(v) -> String` serializes a value back (bare
   numbers/bools, a Decimal's exact digits at its scale, escaped strings,

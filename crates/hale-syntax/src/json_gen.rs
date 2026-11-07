@@ -759,6 +759,18 @@ fn scalar_value_expr(s: ScalarTy) -> &'static str {
     }
 }
 
+/// The statement that holds the text `[lo, hi)` of `src` to the JSON
+/// number grammar (RFC 8259 § 6, `std::json::number_end`): a Decimal field
+/// or element is read from a JSON number and nothing else, so `1e-7` and
+/// `1.50E+1` are read exactly at the scale while `+1`, `.5`, `1.` and `01`
+/// (which the Decimal parser's literal spelling would admit) are the
+/// field's `wrong_type` (2026-11-07, downstream handoff).
+fn json_number_check(src: &str, lo: &str, hi: &str, key: &str) -> String {
+    format!(
+        "if std::json::number_end({src}, {lo}, {hi}) != {hi} {{ fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}; }}"
+    )
+}
+
 /// The strict reading: a number that does not parse is a wrong type,
 /// and a bool is exactly `true` or `false`.
 fn strict_scalar_value_expr(s: ScalarTy, key: &str) -> String {
@@ -916,10 +928,17 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             f.key.len(),
             f.key
         ));
-        // an optional field's `null` is its absence (the last of a key sent
-        // twice wins, as for any field)
+        // a field's `null` is its absence (2026-11-07, downstream handoff:
+        // the field takes its declared default, whatever its shape, or is
+        // `missing_field` with none, exactly as a key left out; the last
+        // of a key sent twice wins, so a `null` after a value leaves
+        // nothing of it). A `std::json::Value` field holds `null` as its
+        // text, as it holds any value, unless it is optional, where `null`
+        // is its absence as for any optional field; a triple's clear flag
+        // records that `null` was sent.
         let optional = matches!(f.presence, Presence::Tracked(_));
-        if optional {
+        let nullable = optional || !matches!(f.kind, FieldKind::Raw);
+        if nullable {
             // a `null` after an earlier occurrence leaves nothing of it: the
             // field is back at its default (or zero), a list empty
             let reset = match &f.kind {
@@ -929,14 +948,14 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 FieldKind::List { .. } => format!("clear(__h_{}.b);", f.name),
                 FieldKind::Raw => format!("__f_{} = {JSON_VALUE_NULL};", f.name),
             };
+            let unseen = if f.tracks() { format!(" __seen_{} = false;", f.name) } else { String::new() };
             // a triple's field records which: `null` clears it
             let (cleared, set) = match clear_flag(t, &f.name) {
                 Some(_) => (format!(" __null_{} = true;", f.name), format!(" __null_{} = false;", f.name)),
                 None => (String::new(), String::new()),
             };
             b.push_str(&format!(
-                "                if std::str::range_eq(__s, __vs, __ve, \"null\") {{ __seen_{} = false;{cleared} {reset} }} else {{{set}\n",
-                f.name
+                "                if std::str::range_eq(__s, __vs, __ve, \"null\") {{{unseen}{cleared} {reset} }} else {{{set}\n"
             ));
         }
         if strict {
@@ -981,10 +1000,17 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 n = f.name,
                 k = f.key
             )),
-            // A Decimal with a nonzero digit past its field's scale is a
-            // value the field cannot hold: refused in either mode, never
-            // read as zero.
-            FieldKind::Scalar(s) if strict || matches!(s, ScalarTy::Decimal(_)) => b.push_str(&format!(
+            // A Decimal is a JSON number (RFC 8259 § 6: `1e-7` and
+            // `1.50E+1` read exactly at the scale; `+1`, `.5`, `1.` and
+            // `01` are no number) with no nonzero digit past its field's
+            // scale: refused in either mode, never read as zero.
+            FieldKind::Scalar(s @ ScalarTy::Decimal(_)) => b.push_str(&format!(
+                "                    {}\n                    __f_{} = {};\n",
+                json_number_check("__s", "__vs", "__ve", &f.key),
+                f.name,
+                strict_scalar_value_expr(*s, &f.key)
+            )),
+            FieldKind::Scalar(s) if strict => b.push_str(&format!(
                 "                    __f_{} = {};\n",
                 f.name,
                 strict_scalar_value_expr(*s, &f.key)
@@ -1014,7 +1040,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
         if f.tracks() {
             b.push_str(&format!("                    __seen_{} = true;\n", f.name));
         }
-        if optional {
+        if nullable {
             b.push_str("                }\n");
         }
     }
@@ -1353,6 +1379,7 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) ->
         // `range_parse_decimal` takes that scale, and a nonzero digit past it
         // is `wrong_type`, as for a field
         Elem::Scalar(d @ ScalarTy::Decimal(_), _) => {
+            b.push_str(&format!("{ind}{}\n", json_number_check(src, "__es", "__ee", key)));
             b.push_str(&format!(
                 "{ind}let __ev: {} = std::str::range_parse_decimal({src}, __es, __ee) or {wrong};\n",
                 d.type_name()

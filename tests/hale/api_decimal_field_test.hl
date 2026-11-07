@@ -62,4 +62,30 @@ fn main() {
         "px",
         "an element past its scale, named by its own field",
     );
+
+    // a JSON number of any spelling, read exactly at the scale: an exponent
+    // is applied (downstream handoff: a JavaScript client writes a small
+    // number as `1e-7`, and the codec refused every exponent)
+    let e = Order::api_decode(
+        "{\"total\":1.50E+1,\"rate\":1e-7,\"lines\":[{\"sku\":\"a\",\"px\":125e-2}]}",
+    ) or raise;
+    std::test::assert(e.total == 15d, "a positive exponent with a fraction");
+    std::test::assert(e.rate == 0.0000001d, "a negative exponent at scale 18");
+    let el = at(e.lines, 0) or raise;
+    std::test::assert(el.px == 1.25d, "an element's exponent");
+    let big = Order::api_decode("{\"total\":1e2}") or raise;
+    std::test::assert(big.total == 100d, "a bare exponent");
+    refused("{\"total\":1e-3}", "total", "an exponent landing past the scale");
+    // a spelling that is no JSON number is refused, though the Decimal
+    // literal would read some of them
+    refused("{\"total\":+1}", "total", "a leading plus");
+    refused("{\"total\":.5}", "total", "a leading dot");
+    refused("{\"total\":1.}", "total", "a trailing dot");
+    refused("{\"total\":01}", "total", "a leading zero");
+    refused("{\"total\":1e}", "total", "an exponent with no digits");
+    refused(
+        "{\"total\":1,\"lines\":[{\"sku\":\"a\",\"px\":01}]}",
+        "lines",
+        "an element's leading zero makes the element no JSON, refused by the list",
+    );
 }
