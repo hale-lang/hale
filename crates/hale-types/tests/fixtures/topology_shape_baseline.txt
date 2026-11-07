@@ -1331,6 +1331,8 @@ crates/hale-codegen/tests/process_run.rs#5 213ea908f6c456b5
 crates/hale-codegen/tests/process_try_wait.rs#0 6f922f0223f3cb8a
 crates/hale-codegen/tests/process_try_wait.rs#1 6f922f0223f3cb8a
 crates/hale-codegen/tests/process_try_wait.rs#2 d4275fdcef4d5b13
+crates/hale-codegen/tests/publish_in_or_arm.rs#0 a5caebac77343b8f
+crates/hale-codegen/tests/publish_in_or_arm.rs#1 15c65c93513163e4
 crates/hale-codegen/tests/qualified_locus_type_coop_pool.rs#0 f9d6a9af484fc45e
 crates/hale-codegen/tests/rand_primitives.rs#0 8c24b514322697e8
 crates/hale-codegen/tests/rand_primitives.rs#1 5fbdc44a9f9ace2f

@@ -408,6 +408,146 @@ fn collect_topics(items: &[TopDecl], topics: &mut BTreeMap<String, TopicEntry>) 
 
 type Topics = BTreeMap<String, TopicEntry>;
 
+/// Every statement under `b`, innermost first: the block's own, and
+/// every statement of every block nested in them, through statements
+/// (a loop body, an `if` / `match` arm, a nested block) and through
+/// expressions (a block expression, an `or { … }` substitute or `or
+/// fail` payload, a `let`'s or an assignment's value, a call's
+/// argument, a send's value …). `f` sees a statement after its
+/// children, so a rewrite that moves a statement's expressions has
+/// them already rewritten.
+pub(crate) fn each_stmt_mut(b: &mut Block, f: &mut dyn FnMut(&mut Stmt)) {
+    for s in &mut b.stmts {
+        each_stmt_in_stmt_mut(s, f);
+    }
+    if let Some(t) = &mut b.tail {
+        each_stmt_in_expr_mut(t, f);
+    }
+}
+
+fn each_stmt_in_stmt_mut(s: &mut Stmt, f: &mut dyn FnMut(&mut Stmt)) {
+    match s {
+        Stmt::Let { value, .. }
+        | Stmt::LetTuple { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::Fail { value, .. } => each_stmt_in_expr_mut(value, f),
+        Stmt::If(i) => each_stmt_in_if_mut(i, f),
+        Stmt::Match(m) => each_stmt_in_match_mut(m, f),
+        Stmt::For { iter, body, .. } => {
+            each_stmt_in_expr_mut(iter, f);
+            each_stmt_mut(body, f);
+        }
+        Stmt::While { cond, body, .. } => {
+            each_stmt_in_expr_mut(cond, f);
+            each_stmt_mut(body, f);
+        }
+        Stmt::Return(Some(e), _) => each_stmt_in_expr_mut(e, f),
+        Stmt::Block(b) => each_stmt_mut(b, f),
+        Stmt::Recovery { args, .. } => {
+            for a in args {
+                each_stmt_in_expr_mut(a, f);
+            }
+        }
+        Stmt::Violate { payload: Some(p), .. } => each_stmt_in_expr_mut(p, f),
+        Stmt::Send { subject, value, or_disposition, .. } => {
+            each_stmt_in_expr_mut(subject, f);
+            each_stmt_in_expr_mut(value, f);
+            if let Some(OrDisposition::Substitute(e) | OrDisposition::Fail(e, _)) = or_disposition {
+                each_stmt_in_expr_mut(e, f);
+            }
+        }
+        Stmt::ShmWrite { max, body, .. } => {
+            each_stmt_in_expr_mut(max, f);
+            each_stmt_mut(body, f);
+        }
+        Stmt::Expr(e) => each_stmt_in_expr_mut(e, f),
+        Stmt::Return(None, _)
+        | Stmt::Break(_)
+        | Stmt::Continue(_)
+        | Stmt::Yield(_)
+        | Stmt::Terminate(_)
+        | Stmt::Reperspective { .. }
+        | Stmt::Violate { payload: None, .. } => {}
+    }
+    f(s);
+}
+
+fn each_stmt_in_if_mut(i: &mut IfStmt, f: &mut dyn FnMut(&mut Stmt)) {
+    each_stmt_in_expr_mut(&mut i.cond, f);
+    each_stmt_mut(&mut i.then_block, f);
+    if let Some(eb) = &mut i.else_block {
+        match eb.as_mut() {
+            ElseBranch::Else(b) => each_stmt_mut(b, f),
+            ElseBranch::ElseIf(inner) => each_stmt_in_if_mut(inner, f),
+        }
+    }
+}
+
+fn each_stmt_in_match_mut(m: &mut MatchStmt, f: &mut dyn FnMut(&mut Stmt)) {
+    each_stmt_in_expr_mut(&mut m.scrutinee, f);
+    for arm in &mut m.arms {
+        if let Some(g) = &mut arm.guard {
+            each_stmt_in_expr_mut(g, f);
+        }
+        match &mut arm.body {
+            MatchArmBody::Block(b) => each_stmt_mut(b, f),
+            MatchArmBody::Expr(e) => each_stmt_in_expr_mut(e, f),
+        }
+    }
+}
+
+fn each_stmt_in_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Stmt)) {
+    match e {
+        Expr::Call { callee, args, .. } => {
+            each_stmt_in_expr_mut(callee, f);
+            for a in args {
+                each_stmt_in_expr_mut(a, f);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            each_stmt_in_expr_mut(left, f);
+            each_stmt_in_expr_mut(right, f);
+        }
+        Expr::Unary { operand, .. } => each_stmt_in_expr_mut(operand, f),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => each_stmt_in_expr_mut(receiver, f),
+        Expr::Index { receiver, index, .. } => {
+            each_stmt_in_expr_mut(receiver, f);
+            each_stmt_in_expr_mut(index, f);
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            for x in es {
+                each_stmt_in_expr_mut(x, f);
+            }
+        }
+        Expr::Struct { inits, .. } => {
+            for i in inits {
+                each_stmt_in_expr_mut(&mut i.value, f);
+            }
+        }
+        Expr::Block(b) => each_stmt_mut(b, f),
+        Expr::If(i) => each_stmt_in_if_mut(i, f),
+        Expr::Match(m) => each_stmt_in_match_mut(m, f),
+        Expr::Sum(inner, _) | Expr::Prod(inner, _) => each_stmt_in_expr_mut(inner, f),
+        Expr::Approx { left, right, tolerance, .. } => {
+            each_stmt_in_expr_mut(left, f);
+            each_stmt_in_expr_mut(right, f);
+            each_stmt_in_expr_mut(tolerance, f);
+        }
+        Expr::Range { lo, hi, .. } => {
+            each_stmt_in_expr_mut(lo, f);
+            each_stmt_in_expr_mut(hi, f);
+        }
+        Expr::ArrayRepeat { val, .. } => each_stmt_in_expr_mut(val, f),
+        Expr::Or { inner, disposition, .. } => {
+            each_stmt_in_expr_mut(inner, f);
+            if let OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) = disposition {
+                each_stmt_in_expr_mut(e, f);
+            }
+        }
+        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+    }
+}
+
 fn rewrite_items(items: &mut [TopDecl], topics: &Topics, out: &mut Vec<TopicRewrite>) {
     for item in items {
         match item {
@@ -463,69 +603,30 @@ fn rewrite_bus_member(bm: &mut BusMember, topics: &Topics, out: &mut Vec<TopicRe
     }
 }
 
+/// Rewrite every `Foo <- value` under `b` to `"<wire_subject>" <-
+/// value` when `Foo` is a declared topic. The subject is the only
+/// place a topic ident appears in expression position (the typechecker
+/// rejects topic idents elsewhere). The walk is `each_stmt_mut`'s: a
+/// send inside an `or { … }` substitute, a `let`'s value or a call's
+/// argument is rewritten like one at a block's top level. Until
+/// 2026-11-06 the walk stopped at the statement forms, so
+/// `let v = risky() or { Alerts <- Alert { … }; 0 };` checked and
+/// lowering met the bare topic name ("unknown identifier `Alerts`")
+/// (downstream handoff).
 fn rewrite_block(b: &mut Block, topics: &Topics, out: &mut Vec<TopicRewrite>) {
-    for stmt in &mut b.stmts {
-        rewrite_stmt(stmt, topics, out);
-    }
-    if let Some(tail) = &mut b.tail {
-        rewrite_expr(tail, topics, out);
-    }
-}
-
-fn rewrite_stmt(s: &mut Stmt, topics: &Topics, out: &mut Vec<TopicRewrite>) {
-    match s {
-        Stmt::Send { subject, id, .. } => {
-            // Rewrite `Foo <- value` to `"<wire_subject>" <- value`
-            // when `Foo` is a declared topic. Subject is the only
-            // place a topic ident appears in expression position
-            // (typechecker rejects topic idents elsewhere).
-            if let Expr::Ident(ident) = subject {
-                if let Some(entry) = topics.get(&ident.name) {
-                    let span = ident.span;
-                    out.push(TopicRewrite {
-                        site: *id,
-                        written: ident.name.clone(),
-                        wire: entry.wire_subject.clone(),
-                        erased: ident.id,
-                    });
-                    *subject = Expr::Literal(
-                        Literal::String(entry.wire_subject.clone()),
-                        span,
-                    );
-                }
-            }
-        }
-        Stmt::If(if_stmt) => rewrite_if(if_stmt, topics, out),
-        Stmt::Match(m) => rewrite_match(m, topics, out),
-        Stmt::For { body, .. } => rewrite_block(body, topics, out),
-        Stmt::While { body, .. } => rewrite_block(body, topics, out),
-        Stmt::Block(b) => rewrite_block(b, topics, out),
-        Stmt::Expr(e) => rewrite_expr(e, topics, out),
-        _ => {}
-    }
-}
-
-fn rewrite_if(if_stmt: &mut IfStmt, topics: &Topics, out: &mut Vec<TopicRewrite>) {
-    rewrite_block(&mut if_stmt.then_block, topics, out);
-    if let Some(else_branch) = &mut if_stmt.else_block {
-        rewrite_else_branch(else_branch, topics, out);
-    }
-}
-
-fn rewrite_else_branch(eb: &mut ElseBranch, topics: &Topics, out: &mut Vec<TopicRewrite>) {
-    match eb {
-        ElseBranch::Else(b) => rewrite_block(b, topics, out),
-        ElseBranch::ElseIf(if_stmt) => rewrite_if(if_stmt, topics, out),
-    }
-}
-
-fn rewrite_match(m: &mut MatchStmt, topics: &Topics, out: &mut Vec<TopicRewrite>) {
-    for arm in &mut m.arms {
-        match &mut arm.body {
-            MatchArmBody::Block(b) => rewrite_block(b, topics, out),
-            MatchArmBody::Expr(e) => rewrite_expr(e, topics, out),
-        }
-    }
+    each_stmt_mut(b, &mut |s| {
+        let Stmt::Send { subject, id, .. } = s else { return };
+        let Expr::Ident(ident) = subject else { return };
+        let Some(entry) = topics.get(&ident.name) else { return };
+        let span = ident.span;
+        out.push(TopicRewrite {
+            site: *id,
+            written: ident.name.clone(),
+            wire: entry.wire_subject.clone(),
+            erased: ident.id,
+        });
+        *subject = Expr::Literal(Literal::String(entry.wire_subject.clone()), span);
+    });
 }
 
 // ---------------------------------------------------------------
@@ -856,15 +957,6 @@ fn acc_expr(e: &mut Expr, w: &WireLayouts) {
             }
         }
         Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
-    }
-}
-
-fn rewrite_expr(e: &mut Expr, topics: &Topics, out: &mut Vec<TopicRewrite>) {
-    match e {
-        Expr::Block(b) => rewrite_block(b, topics, out),
-        Expr::If(if_stmt) => rewrite_if(if_stmt, topics, out),
-        Expr::Match(m) => rewrite_match(m, topics, out),
-        _ => {}
     }
 }
 
@@ -1304,18 +1396,15 @@ fn intra_rewrite_locus(
     }
 }
 
+/// Rewrite every eligible send under `b` (`intra_rewrite_stmt`), in
+/// every nested block `each_stmt_mut` reaches.
 fn intra_rewrite_block(
     b: &mut Block,
     locus_name: &str,
     eligible: &BTreeMap<String, EligibleRewrite>,
     out: &mut Vec<IntraLocusRewrite>,
 ) {
-    for stmt in &mut b.stmts {
-        intra_rewrite_stmt(stmt, locus_name, eligible, out);
-    }
-    if let Some(tail) = &mut b.tail {
-        intra_rewrite_expr(tail, locus_name, eligible, out);
-    }
+    each_stmt_mut(b, &mut |s| intra_rewrite_stmt(s, locus_name, eligible, out));
 }
 
 /// Build the `self.<chain[0]>.<chain[1]>...(value)` expression
@@ -1392,62 +1481,9 @@ fn intra_rewrite_stmt(
                     });
                     let call_expr = build_chained_call(&rw.access_chain, value_expr, rw.takes_context, send_id, span);
                     *s = Stmt::Expr(call_expr);
-                    return;
                 }
             }
         }
-    }
-    match s {
-        Stmt::If(if_stmt) => intra_rewrite_if(if_stmt, locus_name, eligible, out),
-        Stmt::Match(m) => intra_rewrite_match(m, locus_name, eligible, out),
-        Stmt::For { body, .. } => intra_rewrite_block(body, locus_name, eligible, out),
-        Stmt::While { body, .. } => intra_rewrite_block(body, locus_name, eligible, out),
-        Stmt::Block(b) => intra_rewrite_block(b, locus_name, eligible, out),
-        Stmt::Expr(e) => intra_rewrite_expr(e, locus_name, eligible, out),
-        _ => {}
-    }
-}
-
-fn intra_rewrite_if(
-    if_stmt: &mut IfStmt,
-    locus_name: &str,
-    eligible: &BTreeMap<String, EligibleRewrite>,
-    out: &mut Vec<IntraLocusRewrite>,
-) {
-    intra_rewrite_block(&mut if_stmt.then_block, locus_name, eligible, out);
-    if let Some(eb) = &mut if_stmt.else_block {
-        match eb.as_mut() {
-            ElseBranch::Else(b) => intra_rewrite_block(b, locus_name, eligible, out),
-            ElseBranch::ElseIf(inner) => intra_rewrite_if(inner, locus_name, eligible, out),
-        }
-    }
-}
-
-fn intra_rewrite_match(
-    m: &mut MatchStmt,
-    locus_name: &str,
-    eligible: &BTreeMap<String, EligibleRewrite>,
-    out: &mut Vec<IntraLocusRewrite>,
-) {
-    for arm in &mut m.arms {
-        match &mut arm.body {
-            MatchArmBody::Block(b) => intra_rewrite_block(b, locus_name, eligible, out),
-            MatchArmBody::Expr(e) => intra_rewrite_expr(e, locus_name, eligible, out),
-        }
-    }
-}
-
-fn intra_rewrite_expr(
-    e: &mut Expr,
-    locus_name: &str,
-    eligible: &BTreeMap<String, EligibleRewrite>,
-    out: &mut Vec<IntraLocusRewrite>,
-) {
-    match e {
-        Expr::Block(b) => intra_rewrite_block(b, locus_name, eligible, out),
-        Expr::If(if_stmt) => intra_rewrite_if(if_stmt, locus_name, eligible, out),
-        Expr::Match(m) => intra_rewrite_match(m, locus_name, eligible, out),
-        _ => {}
     }
 }
 

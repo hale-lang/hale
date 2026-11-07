@@ -4971,6 +4971,11 @@ shared	Job@main1	Job #01dd0b0d
 == crates/hale-codegen/tests/process_try_wait.rs#d38b191b
 row	__StdProcessChild@main1	__StdProcessChild	main	default
 
+== crates/hale-codegen/tests/publish_in_or_arm.rs#7593ea63
+-- Worker@main1	Worker
+row	~	Worker	main	default
+row	~.w	Watch	main	inherited
+
 == crates/hale-codegen/tests/qualified_locus_type_coop_pool.rs#9ad24901
 root	App	the entry
 domain	pool:io
