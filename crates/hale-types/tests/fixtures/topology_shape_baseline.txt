@@ -456,6 +456,7 @@ crates/hale-codegen/tests/bus_subscriber.rs#4 f0c623a2e83da3a6
 crates/hale-codegen/tests/bus_subscriber.rs#5 91bc84c0d2fe3d5d
 crates/hale-codegen/tests/bus_udp_ingress.rs#0 1c2a01c0c4719d4f
 crates/hale-codegen/tests/bus_udp_ingress.rs#1 21c0e43606cd5706
+crates/hale-codegen/tests/bus_udp_ingress.rs#2 1c2a01c0c4719d4f
 crates/hale-codegen/tests/bus_udp_transport.rs#0 022d13b35b34d417
 crates/hale-codegen/tests/bus_udp_transport.rs#1 21c0e43606cd5706
 crates/hale-codegen/tests/bus_udp_transport.rs#10 c237bb4720a88922
