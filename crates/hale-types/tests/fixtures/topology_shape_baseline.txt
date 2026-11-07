@@ -41,7 +41,7 @@ crates/hale-cli/tests/env_matrix.rs#2 db15bd17f8200c1b
 crates/hale-cli/tests/ffi_export_reentry.rs#2 14987858efde423b
 crates/hale-cli/tests/fixtures/api_clients/main.hl d22467e4a30cf1d0
 crates/hale-cli/tests/fixtures/api_description/main.hl b3a0d8703c286879
-crates/hale-cli/tests/fixtures/api_shapes/main.hl 5c561890884f23ac
+crates/hale-cli/tests/fixtures/api_shapes/main.hl a6c471120d457190
 crates/hale-cli/tests/fixtures/bounded-annotation/app.hl c1c2e181fb34f20c
 crates/hale-cli/tests/fixtures/bounded-annotation/bounded-by.hl 8f5063eb4b200eb0
 crates/hale-cli/tests/fixtures/bounded-annotation/plain.hl c90bc96e9e961826
@@ -251,6 +251,7 @@ crates/hale-codegen/tests/api_hub.rs#0 ac28682242db6330
 crates/hale-codegen/tests/api_hub_desk.rs#0 f48fb5204747acc8
 crates/hale-codegen/tests/api_hub_rest.rs#0 17a3868b1cac9fda
 crates/hale-codegen/tests/api_mcp.rs#0 0e2fe8f7cb3aea8e
+crates/hale-codegen/tests/api_pb_codec.rs#4 ce3362ff0146deac
 crates/hale-codegen/tests/api_rest.rs#0 dbdd1533220433f5
 crates/hale-codegen/tests/api_rest_conc.rs#0 a59db9bd4befbfd2
 crates/hale-codegen/tests/api_runtime.rs#0 ff3aa8ddd326cb12
