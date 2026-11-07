@@ -21543,6 +21543,18 @@ typedef struct lotus_transport {
     uint64_t recv_seq;    /* last seq seen (0 = none yet) */
     uint64_t recv_origin; /* iris handoff-3: sender origin read off the wire */
     uint64_t seq_gaps;    /* recv'd seq != last+1 occurrences */
+    /* The level a send to a peer that hung up is reported at (2026-11-07,
+     * review of #1869). A binding served by a locus marks itself lost
+     * and the loss is dispatched to its supervisor, so its record is
+     * DEBUG (lotus_diag_peer_level); a binding the environment
+     * configured (LOTUS_BUS_CONFIG, lotus_bus_register_remote) sits
+     * outside the supervision tree and nothing else says its peer is
+     * gone, so its first lost send is WARN and the rest DEBUG.
+     * `hangup_warn` is set on the configured binding's transport;
+     * `hangup_warned` once the WARN was written (exchanged: fanout may
+     * run on any thread). */
+    int      hangup_warn;
+    int      hangup_warned;
 } lotus_transport_t;
 
 /* iris handoff-3 (transport branch): expose the framed wire seq +
@@ -21806,6 +21818,19 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
     return NULL;
 }
 
+/* The record level of a failed send on `t` (review of #1869, finding 7):
+ * the peer hanging up is the DEBUG record every send path writes for it,
+ * except the first time on a transport that asked for a WARN (a
+ * LOTUS_BUS_CONFIG binding, which no locus serves: `hangup_warn`); any
+ * other errno is ERROR. */
+static int lotus_transport_send_level(lotus_transport_t *t, int err) {
+    if (err != EPIPE && err != ECONNRESET) return 3;
+    if (t->hangup_warn
+        && __atomic_exchange_n(&t->hangup_warned, 1, __ATOMIC_ACQ_REL) == 0)
+        return 2;
+    return 4;
+}
+
 int lotus_transport_send(lotus_transport_t *t,
                          const void *buf,
                          size_t len) {
@@ -21833,7 +21858,9 @@ int lotus_transport_send(lotus_transport_t *t,
         hdr[1] = (t->send_seq & 0xFFFFFFFFFFFFULL) | ((o & 0xFFFFULL) << 48);
         if (lotus__transport_write_full(t->conn_fd, hdr, sizeof(hdr)) != 0
             || lotus__transport_write_full(t->conn_fd, buf, len) != 0) {
-            lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
+            int err = errno;
+            lotus_diag_errno(lotus_transport_send_level(t, err), "lotus.bus", "send failed", "lotus_transport_send", err, NULL);
+            errno = err;
             return -1;
         }
         return 0;
@@ -21843,7 +21870,9 @@ int lotus_transport_send(lotus_transport_t *t,
         n = send(t->conn_fd, buf, len, 0);
     } while (n < 0 && errno == EINTR);   /* GH #468: a signal is not a send failure */
     if (n < 0) {
-        lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
+        int err = errno;
+        lotus_diag_errno(lotus_transport_send_level(t, err), "lotus.bus", "send failed", "lotus_transport_send", err, NULL);
+        errno = err;
         return -1;
     }
     return 0;
@@ -28701,6 +28730,10 @@ int lotus_bus_register_remote(const char *subject,
          * fans out through the resulting transport. */
         e->transport = lotus_transport_create(path, role);
         if (!e->transport) goto fail_pop_entry;
+        /* A configured binding no locus serves: nothing marks it lost
+         * when its peer goes away, so its first lost send is a WARN
+         * record (lotus_transport_send_level). */
+        e->transport->hangup_warn = 1;
     }
     return 0;
 
@@ -29552,7 +29585,8 @@ static void lotus_bus_remote_fanout_entries(const char *subject,
                  * fanout may be running anywhere). Non-locus
                  * (LOTUS_BUS_CONFIG) entries keep the logged-only
                  * behavior — they sit outside the supervision
-                 * tree. */
+                 * tree — and that log is a WARN once per binding,
+                 * then DEBUG (lotus_transport_send_level). */
                 e->lost = 1;
                 lotus_bus_transport_mark_lost(e);
             }

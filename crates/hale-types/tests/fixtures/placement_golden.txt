@@ -2049,6 +2049,9 @@ row	Writer@main2	Writer	main	default
 row	Pub@main2	Pub	main	default
 row	Sub@main1	Sub	main	default
 
+== crates/hale-codegen/tests/bus_config.rs#e2e82fed
+row	Pub@main1	Pub	main	default
+
 == crates/hale-codegen/tests/bus_cross_thread_drain.rs#5ba37d6c
 root	App	the entry
 domain	pinned:App@literal1.flood
