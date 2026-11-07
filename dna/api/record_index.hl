@@ -243,11 +243,16 @@ fn index_last_reading(j: dna::Journal, name: String) -> IndexReading {
 }
 
 // Whether something accepts connections on the loopback `url`
-// (`http://127.0.0.1:<port>`): an organism whose face answers is `up`.
+// (`http://127.0.0.1:<port>`): an organism whose face answers is `up`. The
+// dial is bounded as an observation's is (`dna::OBSERVE_DIAL`): the
+// loopback is this machine's as the head reaches it, which from a
+// container is the docker host's gateway, and a plain connect there that
+// is neither accepted nor refused held the read, and every command queued
+// behind it, for the kernel's ~2 min of SYN retransmits.
 fn index_answers(url: String) -> Bool {
     let port = std::str::parse_int(index_after_last(url, ":")) or 0;
     if port < 1 || port > 65535 { return false; }
-    let fd = std::io::tcp::connect(dna::loopback_host(), port) or - 1;
+    let fd = std::io::tcp::connect_within(dna::loopback_host(), port, dna::OBSERVE_DIAL) or - 1;
     if fd < 0 { return false; }
     std::io::tcp::close_fd(fd);
     return true;
@@ -259,7 +264,7 @@ fn index_answers(url: String) -> Bool {
 // worst state its allocations' providers observe now: `up`, `degraded` or
 // `down`; "" when none is observed).
 @bounded_by(j)
-fn index_organisms(root: String, j: dna::Journal, cap: Int) -> String {
+fn index_organisms(root: String, j: dna::Journal, cap: Int, seer: Observer) -> String {
     let out = std::json::Builder { };
     out.begin_array();
     let allocated = dna::habitat_latest(j, "habitat.allocated");
@@ -283,7 +288,7 @@ fn index_organisms(root: String, j: dna::Journal, cap: Int) -> String {
             // phase 4: its declared purpose, taken at its graft, and its
             // pulse, the worst its allocations' providers observe now
             out.string_field("purpose", std::json::find_string_field(e.body, "purpose"));
-            out.string_field("pulse", organism_pulse(root, j, allocated, e.entity));
+            out.string_field("pulse", organism_pulse(root, j, allocated, e.entity, seer));
             out.end_object();
             n = n + 1;
         }
@@ -305,7 +310,7 @@ fn index_reading(result: String) -> String {
     return result;
 }
 
-fn record_index(root: String, limit: Int) -> RecordIndex {
+fn record_index(root: String, limit: Int, seer: Observer) -> RecordIndex {
     let cap = if limit < 1 { 1 } else if limit > 1000 { 1000 } else { limit };
     let j = dna::RecordJournal { repo: root, author: "api" };
     let moved = j.refresh();
@@ -477,7 +482,7 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
         watched: watched.result(),
         contracts: contracts.result(),
         links: links.result(),
-        organisms: index_organisms(root, j, cap),
+        organisms: index_organisms(root, j, cap, seer),
         faces: index_faces(graph, cap),
     };
 }

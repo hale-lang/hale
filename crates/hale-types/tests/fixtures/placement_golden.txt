@@ -5684,6 +5684,9 @@ row	__StdHttpClient@main2	__StdHttpClient	main	default
 row	__StdHttpClient@main3	__StdHttpClient	main	default
 shared	dynamic	sites in the stdlib #1dcc5550
 
+== crates/hale-codegen/tests/tcp_connect_deadline.rs#d9091eae
+dynamic	<hole>	on main|unresolved declaration `pq::PgConn`|unresolved declaration `pq::PgPool`	in the seed
+
 == crates/hale-codegen/tests/tcp_listener.rs#9d4fc3db
 shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
 shared	dynamic	sites in the seed #a76c74f1
@@ -9353,7 +9356,6 @@ dynamic	__lib_dna__api___tasks__TaskWire	on main
 dynamic	__lib_dna__api___upstream__DrainWatch	on main
 dynamic	__lib_dna__api___workflows__WorkflowRead	on main
 dynamic	__lib_dna__api___workflows__WorkflowWire	on main
-dynamic	__lib_dna__core___infrastructure__ComposeProvider	on main
 dynamic	__lib_dna__core___memory_record__MemoryReceipts	on main
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no instance)
@@ -9363,7 +9365,6 @@ dynamic	__lib_dna__core___models__HostedCredential	on main
 dynamic	__lib_dna__core___organization_launch__OrganizationLaunchCodec	on main
 dynamic	__lib_dna__core___placement__LatestRows	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
-dynamic	__lib_dna__core___ssh_provider__SshProvider	on main
 dynamic	__lib_dna__operations___context__HatReader	on main
 dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCodec	on main
 dynamic	__lib_dna__operations___definition_drafts__DefinitionDrafts	on main
@@ -9537,6 +9538,9 @@ row	~.commands.roles.git.store.rows	__lib_dna__core___journal__EventRows	main	in
 row	~.commands.roles.git.store.sigs	__lib_dna__core___journal__Authors	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.roles.git.store.sigs
 row	~.commands.roles.rows	__lib_dna__core___journal__EventRows	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.roles.rows
 row	~.commands.roles.seats	__lib_dna__core___roles__HoldsReader	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.roles.seats
+row	~.commands.seer	__lib_dna__api___habitat_rows__Observer	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.seer
+row	~.commands.seer.readings	__lib_dna__api___habitat_rows__ObservedReadings	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.seer.readings
+row	~.commands.seer.slow	__lib_dna__api___habitat_rows__SlowHosts	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.seer.slow
 row	~.commands.structure_codec	__lib_dna__operations___structure_command__StructureCommandCodec	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.structure_codec
 row	~.commands.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.task_codec
 row	~.commands.wire	__lib_dna__api___commands__CommandWire	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.wire
@@ -9575,6 +9579,9 @@ row	~.roles.git.store.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.roles.git.store.sigs	__lib_dna__core___journal__Authors	main	inherited
 row	~.roles.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.roles.seats	__lib_dna__core___roles__HoldsReader	main	inherited
+row	~.seer	__lib_dna__api___habitat_rows__Observer	main	inherited
+row	~.seer.readings	__lib_dna__api___habitat_rows__ObservedReadings	main	inherited
+row	~.seer.slow	__lib_dna__api___habitat_rows__SlowHosts	main	inherited
 row	~.structure_codec	__lib_dna__operations___structure_command__StructureCommandCodec	main	inherited
 row	~.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	main	inherited
 row	~.wire	__lib_dna__api___commands__CommandWire	main	inherited
@@ -9760,6 +9767,17 @@ shared	dynamic	sites in operations #a4054235
 shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/tests/habitat_apply_test.hl
+
+== dna/api/tests/habitat_observer_test.hl
+-- __lib_dna__api___habitat_rows__Observer@main1	__lib_dna__api___habitat_rows__Observer
+row	~	__lib_dna__api___habitat_rows__Observer	main	default
+row	~.readings	__lib_dna__api___habitat_rows__ObservedReadings	main	inherited
+row	~.slow	__lib_dna__api___habitat_rows__SlowHosts	main	inherited
+-- dynamic	sites in api
+dynamic	__lib_dna__core___infrastructure__ComposeProvider	on main
+dynamic	__lib_dna__core___ssh_provider__SshProvider	on main
+shared	dynamic	sites in core #e23a89c2
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/knowledge_api_test.hl
 hole	KnowledgeCases@main2.f	reuse `f`
@@ -9970,6 +9988,9 @@ row	~.commands.admission.roles.git.store.rows	__lib_dna__core___journal__EventRo
 row	~.commands.admission.roles.git.store.sigs	__lib_dna__core___journal__Authors	main	inherited	built by __lib_dna__api___commands__Commands@main4.admission.roles.git.store.sigs
 row	~.commands.admission.roles.rows	__lib_dna__core___journal__EventRows	main	inherited	built by __lib_dna__api___commands__Commands@main4.admission.roles.rows
 row	~.commands.admission.roles.seats	__lib_dna__core___roles__HoldsReader	main	inherited	built by __lib_dna__api___commands__Commands@main4.admission.roles.seats
+row	~.commands.admission.seer	__lib_dna__api___habitat_rows__Observer	main	inherited	built by __lib_dna__api___commands__Commands@main4.admission.seer
+row	~.commands.admission.seer.readings	__lib_dna__api___habitat_rows__ObservedReadings	main	inherited	built by __lib_dna__api___commands__Commands@main4.admission.seer.readings
+row	~.commands.admission.seer.slow	__lib_dna__api___habitat_rows__SlowHosts	main	inherited	built by __lib_dna__api___commands__Commands@main4.admission.seer.slow
 row	~.commands.admission.structure_codec	__lib_dna__operations___structure_command__StructureCommandCodec	main	inherited	built by __lib_dna__api___commands__Commands@main4.admission.structure_codec
 row	~.commands.admission.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	main	inherited	built by __lib_dna__api___commands__Commands@main4.admission.task_codec
 row	~.commands.admission.wire	__lib_dna__api___commands__CommandWire	main	inherited	built by __lib_dna__api___commands__Commands@main4.admission.wire
@@ -10041,6 +10062,9 @@ row	~.admission.roles.git.store.rows	__lib_dna__core___journal__EventRows	main	i
 row	~.admission.roles.git.store.sigs	__lib_dna__core___journal__Authors	main	inherited
 row	~.admission.roles.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.admission.roles.seats	__lib_dna__core___roles__HoldsReader	main	inherited
+row	~.admission.seer	__lib_dna__api___habitat_rows__Observer	main	inherited
+row	~.admission.seer.readings	__lib_dna__api___habitat_rows__ObservedReadings	main	inherited
+row	~.admission.seer.slow	__lib_dna__api___habitat_rows__SlowHosts	main	inherited
 row	~.admission.structure_codec	__lib_dna__operations___structure_command__StructureCommandCodec	main	inherited
 row	~.admission.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	main	inherited
 row	~.admission.wire	__lib_dna__api___commands__CommandWire	main	inherited
@@ -10295,6 +10319,9 @@ row	~.commands.roles.git.store.rows	__lib_dna__core___journal__EventRows	main	in
 row	~.commands.roles.git.store.sigs	__lib_dna__core___journal__Authors	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.roles.git.store.sigs
 row	~.commands.roles.rows	__lib_dna__core___journal__EventRows	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.roles.rows
 row	~.commands.roles.seats	__lib_dna__core___roles__HoldsReader	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.roles.seats
+row	~.commands.seer	__lib_dna__api___habitat_rows__Observer	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.seer
+row	~.commands.seer.readings	__lib_dna__api___habitat_rows__ObservedReadings	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.seer.readings
+row	~.commands.seer.slow	__lib_dna__api___habitat_rows__SlowHosts	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.seer.slow
 row	~.commands.structure_codec	__lib_dna__operations___structure_command__StructureCommandCodec	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.structure_codec
 row	~.commands.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.task_codec
 row	~.commands.wire	__lib_dna__api___commands__CommandWire	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3.wire
@@ -10319,6 +10346,9 @@ row	~.roles.git.store.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.roles.git.store.sigs	__lib_dna__core___journal__Authors	main	inherited
 row	~.roles.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.roles.seats	__lib_dna__core___roles__HoldsReader	main	inherited
+row	~.seer	__lib_dna__api___habitat_rows__Observer	main	inherited
+row	~.seer.readings	__lib_dna__api___habitat_rows__ObservedReadings	main	inherited
+row	~.seer.slow	__lib_dna__api___habitat_rows__SlowHosts	main	inherited
 row	~.structure_codec	__lib_dna__operations___structure_command__StructureCommandCodec	main	inherited
 row	~.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	main	inherited
 row	~.wire	__lib_dna__api___commands__CommandWire	main	inherited
@@ -10452,7 +10482,6 @@ shared	dynamic	sites in the stdlib #919aadb4
 row	CreateApiCases@main1	CreateApiCases	main	default
 -- dynamic	sites in dna/api
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___infrastructure__ComposeProvider	on main
 dynamic	__lib_dna__core___memory_record__MemoryReceipts	on main|unknown (no instance)
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no instance)
@@ -10460,7 +10489,6 @@ dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main|unknown (no instanc
 dynamic	__lib_dna__core___models__HostedCredential	on main
 dynamic	__lib_dna__core___placement__LatestRows	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main|unknown (no instance)
-dynamic	__lib_dna__core___ssh_provider__SshProvider	on main
 dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main|unknown (no instance)
 dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main|unknown (no instance)
 dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on main|unknown (no instance)
@@ -13681,11 +13709,7 @@ row	__lib_dna__core___infrastructure__MemProvider@main1	__lib_dna__core___infras
 row	__lib_dna__core___infrastructure__MemProvider@main2	__lib_dna__core___infrastructure__MemProvider	main	default
 row	__lib_dna__core___infrastructure__MemProvider@main4	__lib_dna__core___infrastructure__MemProvider	main	default
 row	__lib_dna__core___ssh_provider__SshProvider@main3	__lib_dna__core___ssh_provider__SshProvider	main	default
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in core #e23a89c2
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/published_config_test.hl
@@ -15259,7 +15283,7 @@ shared	Head@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- Head@literal1.bearer	OidcBearer
 row	~	OidcBearer	main	default
 row	~.auth	__lib_dna__ui___main__Ui	main	inherited
-shared	Head@literal1.commands	Commands #b8d39e38
+shared	Head@literal1.commands	Commands #76a335fb
 shared	Head@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
 -- Head@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
@@ -15291,7 +15315,7 @@ row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	Head@literal2.__rpc_h_2	__StdApiHttpListener #80abdd5b
 shared	Head@literal2.__rpc_h_3	__StdApiHttpListener #80abdd5b
 shared	Head@literal2.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
-shared	Head@literal2.commands	Commands #b8d39e38
+shared	Head@literal2.commands	Commands #76a335fb
 shared	Head@literal2.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
 -- Head@literal2.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
@@ -15531,7 +15555,7 @@ shared	PracticeReviewHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- PracticeReviewHead@literal1.bearer	__lib_dna__api___bearer__OidcBearer
 row	~	__lib_dna__api___bearer__OidcBearer	main	default
 row	~.auth	__lib_dna__ui___main__Ui	main	inherited
-shared	PracticeReviewHead@literal1.commands	__lib_dna__api___commands__Commands #6008b315
+shared	PracticeReviewHead@literal1.commands	__lib_dna__api___commands__Commands #231ec108
 shared	PracticeReviewHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
 -- PracticeReviewHead@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
@@ -15582,7 +15606,7 @@ row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	PracticeReviewHead@literal2.__rpc_h_2	__StdApiHttpListener #80abdd5b
 shared	PracticeReviewHead@literal2.__rpc_h_3	__StdApiHttpListener #80abdd5b
 shared	PracticeReviewHead@literal2.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
-shared	PracticeReviewHead@literal2.commands	__lib_dna__api___commands__Commands #6008b315
+shared	PracticeReviewHead@literal2.commands	__lib_dna__api___commands__Commands #231ec108
 shared	PracticeReviewHead@literal2.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
 -- PracticeReviewHead@literal2.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
@@ -16152,7 +16176,7 @@ row	__lib_dna__api___web__WebAssets@main1	__lib_dna__api___web__WebAssets	main	d
 dynamic	__StdSecretCredential	on pool:io	in ui
 shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
 shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
-shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #dbee5355
+shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #83c87156
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
 shared	FixtureHead@literal1.srv	__StdHttpServer #2c83e381
 -- FixtureProvider@main4	FixtureProvider
@@ -16229,7 +16253,7 @@ row	__lib_dna__operations___definitions__NoWorkflowCatalog@main3	__lib_dna__oper
 dynamic	__StdSecretCredential	on pool:io	in ui
 shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
 shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
-shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #dbee5355
+shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #83c87156
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
 shared	FixtureHead@literal1.srv	__StdHttpServer #2c83e381
 shared	dynamic	sites in api #2cae981a
@@ -18011,7 +18035,7 @@ row	~.reg.entries	EntryList	main	inherited
 row	~	Child	main	default
 row	~.v	Ints	main	inherited
 
-== shared Commands #b8d39e38
+== shared Commands #76a335fb
 row	~	Commands	pool:commands	entry	off owner
 row	~.admission	CommandAdmission	pool:commands	inherited
 row	~.admission.attempts	__lib_dna__operations___attempt_command__AttemptCommandCodec	pool:commands	inherited
@@ -18032,6 +18056,9 @@ row	~.admission.roles.git.store.rows	__lib_dna__core___journal__EventRows	pool:c
 row	~.admission.roles.git.store.sigs	__lib_dna__core___journal__Authors	pool:commands	inherited
 row	~.admission.roles.rows	__lib_dna__core___journal__EventRows	pool:commands	inherited
 row	~.admission.roles.seats	__lib_dna__core___roles__HoldsReader	pool:commands	inherited
+row	~.admission.seer	Observer	pool:commands	inherited
+row	~.admission.seer.readings	ObservedReadings	pool:commands	inherited
+row	~.admission.seer.slow	SlowHosts	pool:commands	inherited
 row	~.admission.structure_codec	__lib_dna__operations___structure_command__StructureCommandCodec	pool:commands	inherited
 row	~.admission.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	pool:commands	inherited
 row	~.admission.wire	CommandWire	pool:commands	inherited
@@ -18624,7 +18651,7 @@ row	~.seat_rows	__lib____store__SeatTable	main	inherited
 row	~.seat_state_rows	__lib____store__SeatStateTable	main	inherited
 row	~.window_rows	__lib____store__WindowTable	main	inherited
 
-== shared __lib_dna__api___commands__Commands #6008b315
+== shared __lib_dna__api___commands__Commands #231ec108
 row	~	__lib_dna__api___commands__Commands	pool:commands	entry	off owner
 row	~.admission	__lib_dna__api___commands__CommandAdmission	pool:commands	inherited
 row	~.admission.attempts	__lib_dna__operations___attempt_command__AttemptCommandCodec	pool:commands	inherited
@@ -18645,6 +18672,9 @@ row	~.admission.roles.git.store.rows	__lib_dna__core___journal__EventRows	pool:c
 row	~.admission.roles.git.store.sigs	__lib_dna__core___journal__Authors	pool:commands	inherited
 row	~.admission.roles.rows	__lib_dna__core___journal__EventRows	pool:commands	inherited
 row	~.admission.roles.seats	__lib_dna__core___roles__HoldsReader	pool:commands	inherited
+row	~.admission.seer	__lib_dna__api___habitat_rows__Observer	pool:commands	inherited
+row	~.admission.seer.readings	__lib_dna__api___habitat_rows__ObservedReadings	pool:commands	inherited
+row	~.admission.seer.slow	__lib_dna__api___habitat_rows__SlowHosts	pool:commands	inherited
 row	~.admission.structure_codec	__lib_dna__operations___structure_command__StructureCommandCodec	pool:commands	inherited
 row	~.admission.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	pool:commands	inherited
 row	~.admission.wire	__lib_dna__api___commands__CommandWire	pool:commands	inherited
@@ -18665,7 +18695,7 @@ row	~.knowledge.roles.rows	__lib_dna__core___journal__EventRows	pool:commands	in
 row	~.knowledge.roles.seats	__lib_dna__core___roles__HoldsReader	pool:commands	inherited
 row	~.knowledge.wire	__lib_dna__api___commands__CommandWire	pool:commands	inherited
 
-== shared __lib_dna__api___commands__Commands #dbee5355
+== shared __lib_dna__api___commands__Commands #83c87156
 row	~	__lib_dna__api___commands__Commands	pool:commands	entry	off owner
 row	~.admission	__lib_dna__api___commands__CommandAdmission	pool:commands	inherited
 row	~.admission.attempts	__lib_dna__operations___attempt_command__AttemptCommandCodec	pool:commands	inherited
@@ -18686,6 +18716,9 @@ row	~.admission.roles.git.store.rows	__lib_dna__core___journal__EventRows	pool:c
 row	~.admission.roles.git.store.sigs	__lib_dna__core___journal__Authors	pool:commands	inherited
 row	~.admission.roles.rows	__lib_dna__core___journal__EventRows	pool:commands	inherited
 row	~.admission.roles.seats	__lib_dna__core___roles__HoldsReader	pool:commands	inherited
+row	~.admission.seer	__lib_dna__api___habitat_rows__Observer	pool:commands	inherited
+row	~.admission.seer.readings	__lib_dna__api___habitat_rows__ObservedReadings	pool:commands	inherited
+row	~.admission.seer.slow	__lib_dna__api___habitat_rows__SlowHosts	pool:commands	inherited
 row	~.admission.structure_codec	__lib_dna__operations___structure_command__StructureCommandCodec	pool:commands	inherited
 row	~.admission.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	pool:commands	inherited
 row	~.admission.wire	__lib_dna__api___commands__CommandWire	pool:commands	inherited
@@ -20257,6 +20290,12 @@ dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___exchange__ExchangeKey	on main
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+
+== shared sites in core #e23a89c2
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
 
 == shared sites in core #ee955449
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
