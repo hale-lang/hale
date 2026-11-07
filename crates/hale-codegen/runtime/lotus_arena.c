@@ -26800,6 +26800,7 @@ typedef struct lotus_bus_remote_entry {
     int                udp_fd;
     struct sockaddr_in udp_dest;
     int                udp_is_multicast;
+    int                udp_stop[2];     /* LISTEN: the reader's stop pipe (read, write) */
     /* F.36 Slice 3 (2026-05-28): pluggable codec hooks. Set by
      * `lotus_bus_register_codec` when the binding entry carried
      * a `codec(L { ... })` clause. The encode hook converts a
@@ -26963,6 +26964,8 @@ static lotus_bus_remote_entry_t *lotus_bus_remote_entry_push(
     e->subject = subject_copy;
     e->kind    = kind;
     e->udp_fd  = -1;
+    e->udp_stop[0] = -1;
+    e->udp_stop[1] = -1;
     pthread_mutex_init(&e->pend_lock, NULL);
     g_bus_remote_entries[g_bus_remote_count++] = e;
     return e;
@@ -28010,13 +28013,62 @@ static int lotus_bus_udp_listener_setup(lotus_bus_remote_entry_t *e,
         }
         e->udp_is_multicast = 1;
     }
+    /* The reader's stop (`lotus_bus_udp_reader_stop`): a pipe it polls
+     * beside the socket, so the quiesce and the teardown wake it on
+     * every platform. Darwin does not honour shutdown() on an
+     * unconnected UDP socket, so an idle reader there never woke
+     * ("ingress quiesce: reader(s) still draining after 500 ms", then
+     * the join hung); and the n == 0 that shutdown produced on Linux
+     * was the reader's stop sentinel, which a genuine empty datagram
+     * also is (downstream handoff). */
+    int stop[2];
+    if (pipe(stop) != 0) {
+        lotus_diag_errno(3, "lotus.bus", "stop pipe failed", "lotus_bus udp listener: pipe", errno, NULL);
+        int save = errno;
+        close(fd);
+        errno = save;
+        return -1;
+    }
+#ifdef FD_CLOEXEC
+    (void)fcntl(stop[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(stop[1], F_SETFD, FD_CLOEXEC);
+#endif
+    e->udp_stop[0] = stop[0];
+    e->udp_stop[1] = stop[1];
     e->udp_fd   = fd;
     e->udp_dest = dest;
     return 0;
 }
 
-/* UDP LISTEN reader thread: just the recvfrom + deserialize +
- * local_dispatch loop over the pre-bound fd on the entry. */
+/* Wake the entry's UDP reader out of its poll and have it stop once the
+ * datagrams already queued are read: one byte on its stop pipe.
+ * Idempotent; a reader that has ended ignores it. */
+static void lotus_bus_udp_reader_stop(lotus_bus_remote_entry_t *e) {
+    if (e->udp_stop[1] < 0) return;
+    for (;;) {
+        ssize_t w = write(e->udp_stop[1], "s", 1);
+        if (w < 0 && errno == EINTR) continue;
+        break;
+    }
+}
+
+/* Close the entry's stop pipe, once its reader is joined. */
+static void lotus_bus_udp_stop_close(lotus_bus_remote_entry_t *e) {
+    for (int i = 0; i < 2; i++) {
+        if (e->udp_stop[i] >= 0) {
+            close(e->udp_stop[i]);
+            e->udp_stop[i] = -1;
+        }
+    }
+}
+
+#ifndef MSG_DONTWAIT
+#define MSG_DONTWAIT 0   /* the wasm shim: no reader thread ever runs there */
+#endif
+
+/* UDP LISTEN reader thread: the poll + recvfrom + deserialize +
+ * local_dispatch loop over the pre-bound fd on the entry, until its
+ * stop pipe is written. */
 typedef struct lotus_bus_udp_reader_args {
     lotus_bus_remote_entry_t *entry;
 } lotus_bus_udp_reader_args_t;
@@ -28028,14 +28080,49 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
      * after the join, never before, so the snapshot is stable
      * for this thread's lifetime. */
     int fd = args->entry->udp_fd;
+    int stop_fd = args->entry->udp_stop[0];
 
     char wire_buf[LOTUS_PAYLOAD_MAX];
     char struct_buf[LOTUS_PAYLOAD_MAX];
+    /* The loop waits in poll on the socket and the stop pipe, the same
+     * on Linux and macOS, and reads the socket only when poll reported
+     * it (never blocking in recvfrom, which a readable report that a
+     * checksum failure then voids could otherwise do). Once the stop
+     * is seen, what the kernel has queued is read to EAGAIN, bounded,
+     * through the intact registry, as the quiesce's drain-to-EOF
+     * promises (GH #468), then the thread ends. */
+    int stopping = 0;
+    long after_stop = 0;
     while (1) {
-        ssize_t n = recvfrom(fd, wire_buf, sizeof(wire_buf), 0, NULL, NULL);
+        if (!stopping) {
+            struct pollfd pfd[2];
+            pfd[0].fd = fd;
+            pfd[0].events = POLLIN;
+            pfd[0].revents = 0;
+            pfd[1].fd = stop_fd;
+            pfd[1].events = POLLIN;
+            pfd[1].revents = 0;
+            nfds_t nfds = stop_fd >= 0 ? 2 : 1;
+            int pr = poll(pfd, nfds, -1);
+            if (pr < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            if (nfds == 2 && (pfd[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+                stopping = 1;
+            }
+            if (!(pfd[0].revents & (POLLIN | POLLHUP | POLLERR)) && !stopping) continue;
+        } else if (after_stop++ >= 4096) {
+            break;  /* a flood after the stop: enough */
+        }
+        ssize_t n = recvfrom(fd, wire_buf, sizeof(wire_buf), MSG_DONTWAIT, NULL, NULL);
         if (n < 0) {
             if (errno == EINTR) continue;
-            break;  /* EBADF / ENOTCONN / shutdown-induced */
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (stopping) break;  /* the queue is drained: stop */
+                continue;
+            }
+            break;  /* EBADF and the like: the socket is gone */
         }
         /* iris handoff-3 P11: peel a leading observation seq
          * header if present. Self-describing: magic + the implied
@@ -28057,17 +28144,13 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
                 n -= 16;
             }
         }
-        if (n == 0) {
-            /* Two cases:
-             *   - Legitimate zero-length datagram. Not meaningful
-             *     for the bus router; the wire frame can never be
-             *     empty (it's the serialized form of the user's
-             *     type, which has at least the header bytes).
-             *   - Socket has been shut down by destroy_all
-             *     (shutdown(SHUT_RDWR)).
-             * Either way, exit the loop. */
-            break;
-        }
+        /* n == 0 is an empty datagram, an ordinary frame: it takes the
+         * decoder path below, which rejects it as a short frame (no
+         * serialized form is empty), and the loop goes on. It used to
+         * be the reader's stop sentinel (what shutdown(SHUT_RDWR)
+         * produced on Linux), so one empty datagram ended ingress for
+         * good and every later datagram went unread, silently
+         * (downstream handoff). The stop is the pipe above. */
         lotus_deserialize_fn deserialize =
             lotus_bus_find_deserializer(args->entry->subject);
         if (!deserialize) {
@@ -28597,6 +28680,7 @@ fail_close_udp:
         close(e->udp_fd);
         e->udp_fd = -1;
     }
+    lotus_bus_udp_stop_close(e);
 fail_pop_entry:
     g_bus_remote_count--;
     free(e->subject);
@@ -33961,7 +34045,12 @@ void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
         lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
         if (!e->has_reader_thread) continue;
         if (e->kind == LOTUS_BUS_REMOTE_KIND_UDP) {
-            if (e->udp_fd >= 0) shutdown(e->udp_fd, SHUT_RDWR);
+            /* The reader's explicit stop (its poll's second fd): it
+             * reads what is queued, then ends. shutdown() on the socket
+             * is not it: Darwin ignores one on an unconnected UDP
+             * socket, and the n == 0 it produced on Linux is what an
+             * empty datagram also is. */
+            lotus_bus_udp_reader_stop(e);
             have_ingress = 1;
         } else if (e->kind == LOTUS_BUS_REMOTE_KIND_UNIX) {
             /* Safe to dereference: the reader thread never
@@ -34078,21 +34167,18 @@ void lotus_bus_remote_destroy_all(void) {
             continue;
         }
 
-        /* 2026-05-26 — UDP entries. Two-step shutdown:
-         *   1. shutdown(SHUT_RDWR) unblocks a recvfrom-blocked
-         *      reader thread (close alone doesn't on Linux —
-         *      the file's refcount is still held by the blocked
-         *      thread, so the recvfrom doesn't see EBADF until
-         *      the next call).
-         *   2. pthread_join after the reader's recvfrom returns
-         *      n == 0 (its exit signal).
-         *   3. close releases the fd.
+        /* UDP entries. Three steps:
+         *   1. the stop pipe wakes a reader parked in poll, on Linux
+         *      and macOS alike (close alone does not: the blocked
+         *      thread holds the file's refcount, and Darwin ignores a
+         *      shutdown() on an unconnected UDP socket);
+         *   2. pthread_join once the reader has read what was queued
+         *      and seen the stop;
+         *   3. close releases the socket and the pipe.
          * IP_DROP_MEMBERSHIP is unnecessary pre-close (kernel
          * drops on close). */
         if (e->kind == LOTUS_BUS_REMOTE_KIND_UDP) {
-            if (e->udp_fd >= 0) {
-                shutdown(e->udp_fd, SHUT_RDWR);
-            }
+            lotus_bus_udp_reader_stop(e);
             if (e->has_reader_thread) {
                 pthread_join(e->reader_thread, NULL);
             }
@@ -34100,6 +34186,7 @@ void lotus_bus_remote_destroy_all(void) {
                 close(e->udp_fd);
                 e->udp_fd = -1;
             }
+            lotus_bus_udp_stop_close(e);
             lotus_bus_early_reset(e);
             if (e->subject) free(e->subject);
             free(e);

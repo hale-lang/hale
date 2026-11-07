@@ -21,6 +21,8 @@ mod binding_loss_supervision;
 mod binding_multi_peer;
 #[path = "binding_stream_framing.rs"]
 mod binding_stream_framing;
+#[path = "bus_udp_ingress.rs"]
+mod bus_udp_ingress;
 #[path = "bindings_codec_clause.rs"]
 mod bindings_codec_clause;
 #[path = "bindings_transport_dissolve.rs"]

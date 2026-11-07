@@ -2331,7 +2331,18 @@ acted on. Consequences, all normative:
      `0` disables), loud if exceeded — a silent peer holding a
      connection open cannot stall exit. Wire data arriving
      after the half-close arrived after exit and is outside the
-     contract.
+     contract. A `udp://` listener's reader is stopped by an
+     explicit wake, a pipe it polls beside its socket, the same
+     on Linux and macOS: it reads the datagrams the kernel has
+     queued, then ends. An empty datagram is an ordinary frame
+     to it, rejected as too short and counted as a drop, never
+     its stop (2026-11-06, downstream handoff: a zero-byte
+     datagram was the reader's stop sentinel — what a
+     `shutdown()` of the socket produced on Linux — so one ended
+     ingress for good and every later datagram went unread,
+     silently; and Darwin does not honour `shutdown()` on an
+     unconnected UDP socket, so an idle reader there never woke
+     and the exit waited out the bound, then hung on the join).
 - **Connect-side loss is structural, with reconnection as
   supervision policy (GH #233 steps 3–4).** A send failure on a
   source-declared connect binding marks the entry *lost*
