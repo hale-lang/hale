@@ -102,6 +102,11 @@ int64_t lotus_sock_get_send_timeout_ns(int fd);
  * point of this file waits through it, so the handshake, the reads and the
  * writes park on an async_io pool the way the plain-tcp primitives do. */
 int     lotus_io_wait_fd(int fd, uint32_t events, int64_t deadline_ns);
+/* GH #1858: the drain's stop (lotus_arena.c): whether one is up, and the
+ * wait a blocking read takes before its syscall (0 go on, 1 the stop
+ * ended it, 2 the socket's own timeout passed first). */
+int     lotus_drain_stop_up(void);
+int     lotus_drain_wait_fd(int fd);
 /* Level-triggered epoll event bits; values mirror sys/epoll.h
  * (fallbacks match lotus_arena.c's non-Linux inert defines). */
 #ifndef EPOLLIN
@@ -782,6 +787,15 @@ static int lotus_tls__read_until(int handle, SSL *ssl, char *buf, int max,
         if (until > 0 && (deadline <= 0 || deadline > until)) deadline = until;
     }
     for (;;) {
+        /* GH #1858: a stop (a signal's drain, a failed test's) ends a
+         * blocking read as the peer's close would (0), or the socket's
+         * own timeout passed first (-2). Bytes OpenSSL already holds are
+         * read first. */
+        if (!async && raw_fd >= 0 && SSL_pending(ssl) == 0) {
+            int w = lotus_drain_wait_fd(raw_fd);
+            if (w == 1) return 0;
+            if (w == 2) return -2;
+        }
         int n = SSL_read(ssl, buf, max);
         if (n >= 0) return n;
         int err = SSL_get_error(ssl, n);
@@ -796,6 +810,9 @@ static int lotus_tls__read_until(int handle, SSL *ssl, char *buf, int max,
                 uint32_t ev = (err == SSL_ERROR_WANT_WRITE) ? EPOLLOUT
                                                             : EPOLLIN;
                 if (lotus_io_wait_fd(raw_fd, ev, deadline) == 0) continue;
+                /* GH #1858: a wait with no deadline only a stop ends:
+                 * closed. */
+                if (deadline == 0 && lotus_drain_stop_up()) return 0;
             }
             return -2;
         }

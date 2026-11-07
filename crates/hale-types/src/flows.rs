@@ -44,7 +44,7 @@
 //! its own hands; a read anywhere else (a handler, a hook, a method
 //! only another locus calls) does not.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     Block, ElseBranch, Expr, IfStmt, LValueSeg, LifecycleKind, Literal, LocusDecl, LocusMember,
@@ -300,7 +300,7 @@ fn walk<'a>(
                     span: l.span,
                     long_running: run.is_some_and(|b| !b.stmts.is_empty()),
                     never_returns: run.and_then(|b| run_statically_nonreturning(b, l)),
-                    watches_drain: run.is_some_and(|b| run_reads_draining(b, l, free_fns)),
+                    watches_drain: run.is_some_and(|b| run_reads_draining(b, l, free_fns, &rows.declared.loci)),
                 });
                 let generics: Vec<String> = l.generics.iter().map(|g| g.name.name.clone()).collect();
                 for member in &l.members {
@@ -394,7 +394,7 @@ pub fn free_fns_of<'a>(programs: &[&'a Program]) -> FreeFns<'a> {
     free_fns
 }
 
-/// The bodies `body` calls that the walk follows: a method of `decl`'s
+/// The fns `body` calls that the walk follows: a method of `decl`'s
 /// called on `self` (`self.m()`), and a bare call (`m()`), which may be a
 /// method of `decl`'s or a free fn. A call on another receiver (another
 /// locus's method) is not followed.
@@ -402,7 +402,7 @@ pub fn followed_callees<'a>(
     body: &'a Block,
     decl: &'a LocusDecl,
     free_fns: &FreeFns<'a>,
-) -> Vec<(bool, &'a str, &'a Block)> {
+) -> Vec<(bool, &'a str, &'a hale_syntax::ast::FnDecl)> {
     use crate::listener_window::{visit_block, Visited};
     let mut names: Vec<(bool, &'a str)> = Vec::new();
     visit_block(body, &mut |v| {
@@ -423,26 +423,61 @@ pub fn followed_callees<'a>(
     names
         .into_iter()
         .filter_map(|(method, name)| {
-            let body = if method {
+            let f = if method {
                 decl.members.iter().find_map(|m| match m {
-                    LocusMember::Fn(f) if f.name.name == name => Some(&f.body),
+                    LocusMember::Fn(f) if f.name.name == name => Some(f),
                     _ => None,
                 })
             } else {
-                free_fns.get(name).map(|f| &f.body)
+                free_fns.get(name).copied()
             };
-            body.map(|b| (method, name, b))
+            f.map(|f| (method, name, f))
         })
         .collect()
 }
 
-/// Whether `body` reads `draining` (on any receiver) itself.
-pub fn block_reads_draining(body: &Block) -> bool {
+/// Whether `e` reads a locus's `draining`: `self.draining`, the flag of a
+/// locus reached through `self` (`self.child.draining`), or of a parameter
+/// typed by a declared locus (`fn gate(l: Worker) { l.draining }`). A
+/// record's own field named `draining` read through a local or a
+/// parameter of another type is not the flag.
+fn is_draining_read(e: &Expr, locus_params: &[&str]) -> bool {
+    let Expr::Field { receiver, name, .. } = e else { return false };
+    if name.name != "draining" {
+        return false;
+    }
+    let mut r = receiver.as_ref();
+    loop {
+        match r {
+            Expr::KwSelf(_) => return true,
+            Expr::Field { receiver, .. } => r = receiver.as_ref(),
+            Expr::Ident(id) => return locus_params.contains(&id.name.as_str()),
+            _ => return false,
+        }
+    }
+}
+
+/// The parameters of `params` typed by a declared locus (`loci`, by the
+/// type's last path segment).
+fn locus_typed_params<'a>(params: &'a [hale_syntax::ast::Param], loci: &BTreeSet<String>) -> Vec<&'a str> {
+    params
+        .iter()
+        .filter(|p| match &p.ty {
+            TypeExpr::Named { path, .. } => path.segments.last().is_some_and(|s| loci.contains(&s.name)),
+            _ => false,
+        })
+        .map(|p| p.name.name.as_str())
+        .collect()
+}
+
+/// Whether `body` reads a locus's `draining` itself ([`is_draining_read`];
+/// `locus_params` are its parameters typed by a declared locus).
+pub fn block_reads_draining(body: &Block, locus_params: &[&str]) -> bool {
     use crate::listener_window::{visit_block, Visited};
     let mut found = false;
     visit_block(body, &mut |v| {
-        if let Visited::Expr(Expr::Field { name, .. }) = v {
-            if name.name == "draining" {
+        if let Visited::Expr(e) = v {
+            if is_draining_read(e, locus_params) {
                 found = true;
             }
         }
@@ -451,27 +486,34 @@ pub fn block_reads_draining(body: &Block) -> bool {
 }
 
 /// Whether a `run()` body of `decl`'s, or a fn or method of the program it
-/// calls (transitively, [`followed_callees`]), reads `draining`: the
-/// watches-drain column of the run row. A read only another locus's
-/// method makes (`self.child.stopping()`) is not followed.
-pub fn run_reads_draining<'a>(run: &'a Block, decl: &'a LocusDecl, free_fns: &FreeFns<'a>) -> bool {
-    fn go<'a>(
-        body: &'a Block,
-        decl: &'a LocusDecl,
-        free_fns: &FreeFns<'a>,
-        seen: &mut std::collections::BTreeSet<(bool, &'a str)>,
-    ) -> bool {
-        if block_reads_draining(body) {
-            return true;
-        }
-        for (method, name, callee) in followed_callees(body, decl, free_fns) {
-            if seen.insert((method, name)) && go(callee, decl, free_fns, seen) {
+/// calls (transitively, [`followed_callees`]), reads a locus's `draining`
+/// ([`is_draining_read`]): the watches-drain column of the run row. A read
+/// only another locus's method makes (`self.child.stopping()`) is not
+/// followed. `loci` are the declared loci, which type a parameter that
+/// carries the flag.
+pub fn run_reads_draining<'a>(
+    run: &'a Block,
+    decl: &'a LocusDecl,
+    free_fns: &FreeFns<'a>,
+    loci: &BTreeSet<String>,
+) -> bool {
+    if block_reads_draining(run, &[]) {
+        return true;
+    }
+    let mut seen: BTreeSet<(bool, &'a str)> = BTreeSet::new();
+    let mut stack: Vec<&'a Block> = vec![run];
+    while let Some(body) = stack.pop() {
+        for (method, name, f) in followed_callees(body, decl, free_fns) {
+            if !seen.insert((method, name)) {
+                continue;
+            }
+            if block_reads_draining(&f.body, &locus_typed_params(&f.params, loci)) {
                 return true;
             }
+            stack.push(&f.body);
         }
-        false
     }
-    go(run, decl, free_fns, &mut std::collections::BTreeSet::new())
+    false
 }
 
 // === statically non-returning run(): the never-returns column =====

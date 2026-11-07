@@ -588,13 +588,12 @@ crates/hale-codegen/tests/deferred_slot_per_iteration.rs#0 bb363eab8a6169e0
 crates/hale-codegen/tests/deferred_slot_per_iteration.rs#10 ccb6ea15c6d7e673
 crates/hale-codegen/tests/drain_elision.rs#0 29698b8ca352e498
 crates/hale-codegen/tests/drain_elision.rs#1 e9b3a90b0626e56f
-crates/hale-codegen/tests/drain_grace_names_the_wait.rs#0 176a8e081e20a0c8
+crates/hale-codegen/tests/drain_grace_names_the_wait.rs#0 737c74e0baea4822
 crates/hale-codegen/tests/drain_grace_names_the_wait.rs#1 450fb17a3cfb768f
 crates/hale-codegen/tests/drain_grace_names_the_wait.rs#2 e71d5ceb5a008f46
 crates/hale-codegen/tests/drain_grace_names_the_wait.rs#3 b1ac7ecf3aad6677
 crates/hale-codegen/tests/drain_grace_names_the_wait.rs#4 af4ea4bd8833c093
 crates/hale-codegen/tests/drain_grace_names_the_wait.rs#5 4efdd53de6587d0c
-crates/hale-codegen/tests/drain_grace_names_the_wait.rs#6 0cef5125bae2407e
 crates/hale-codegen/tests/dump_pool_residency.rs#0 6f0d20645d99f4d5
 crates/hale-codegen/tests/dump_pool_residency.rs#1 eff44b364f76e157
 crates/hale-codegen/tests/duration_scalar_arith.rs#0 cfca7a4ec98f5c83

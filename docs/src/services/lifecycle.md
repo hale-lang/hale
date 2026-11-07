@@ -219,65 +219,83 @@ self.conn.url = next;                   // mutates existing instance in place; n
 
 ## Graceful Shutdown, `self.draining`, and `terminate;`
 
-### Signal Handling and `self.draining`
+### Signal Handling: the Runtime Stops Your Loops
 
-Every locus has a synthetic boolean field `self.draining` (initialized to `false`). When the process receives `SIGINT` (Ctrl-C) or `SIGTERM`, or when `main`'s `run()` returns:
+You do not have to write anything for a clean stop. When the process receives `SIGINT` (Ctrl-C) or `SIGTERM`:
 
-1. `self.draining` becomes `true` across all loci in the program.
-2. Any in-progress `std::time::sleep` inside `run()` wakes immediately so loops conditioned on `while !self.draining` exit without waiting out their timer. A sleep that *begins* during the drain in a `run()` that reads `self.draining` returns at once too, until that `run()` has seen `self.draining` as `true` — so a loop that was in the middle of its work when the signal landed does not start a fresh 30 s sleep into the grace period. (Sleeps executed inside `drain()` or `dissolve()`, in a handler, or in `run()` after its loop has seen the drain run for their full duration so final network flushes can pace themselves.)
-3. `drain()` cascades depth-first (deepest children drain first, then their parents).
-4. `dissolve()` executes and arenas are reclaimed leaves-first, after which the process exits with code `0`.
+1. Every `run()` loop that does not read `self.draining` ends **between two iterations**: the compiler puts a drain check at the back-edge of each loop in a `run()` (and in `fn main`), so the iteration that was running finishes and the loop exits there, as a `break` at the end of the iteration would.
+2. Every blocking wait wakes with the answer it already gives when nothing comes: a `std::time::sleep` returns early, an `accept` returns its closed `-1`, a TCP `recv` the empty string a peer's close gives, a UDP `recv` its timeout. The `or` you already wrote covers it.
+3. `run()` returns, `drain()` cascades depth-first (deepest children first), `dissolve()` runs and arenas are reclaimed leaves-first, and the process exits with code `0`.
 
 ```hale
 locus Poller {
+    params { polls: Int = 0; }
     run() {
-        while !self.draining {
+        while true {                 // no draining read: the runtime stops it
+            self.polls = self.polls + 1;
             std::time::sleep(100ms);
         }
     }
-    dissolve() { /* close socket */ }
+    drain() { println("stopped after " + to_string(self.polls) + " polls"); }
 }
 ```
 
-```hale,fragment
-main locus App {
-    params { api: Gateway = Gateway { }; }
-    placement { api: pinned; }
-    run() { while !self.draining { std::time::sleep(100ms); } }
+Every program gets this, and it exits `0` once its hooks have run. (Before, a program that never read `self.draining` died by the signal, exit code 143 for `SIGTERM`, with its hooks unrun; a supervisor or a test that expected 143 now sees 0.)
+
+### Taking Control: Reading `self.draining`
+
+Read `self.draining` in `run()` when you want to decide for yourself when to stop: flush a batch, finish a handshake, then return. Reading it is the opt-in: the compiler then puts **no** drain checks in that locus's loops, and the loops are yours.
+
+```hale
+locus Batcher {
+    params { pending: Int = 0; }
+    run() {
+        while !self.draining {
+            self.pending = self.pending + 1;
+            std::time::sleep(10ms);
+        }
+        std::time::sleep(50ms);      // pace the final flush: runs its full length
+        println("flushed " + to_string(self.pending));
+    }
 }
 ```
 
-- **Grace period (`LOTUS_DRAIN_GRACE_MS`)**: The runtime allows 5000 ms (configurable via `LOTUS_DRAIN_GRACE_MS`) for loops reading `self.draining` to finish. If the deadline expires, the runtime logs the stuck pool/worker and loci to stderr and terminates the process. Sending a second `SIGINT` terminates immediately.
-- **Immediate exit when idle**: If no live locus checks `self.draining` or declares a `drain()` / `dissolve()` hook (or all such `run()` hooks have already returned and hold no active bus subscriptions), `SIGINT`/`SIGTERM` terminates the process immediately without waiting for the grace period.
+What counts is a read in `run()` itself or in a method or fn it calls. A read in a handler, in a `drain()` hook or in a method `run()` never calls does not make the locus manual: its loops are still the runtime's.
+
+Waits still wake for a manual locus, until it has seen the flag: a sleep that *begins* during the drain returns at once until `run()` has read `self.draining` as `true`, so a loop caught mid-work reaches its check instead of starting a fresh 30 s sleep. After that, waits run their full length, so a final flush can pace itself (as do sleeps in `drain()`, `dissolve()` or a handler).
+
+`hale check` says when it cannot see a manual loop stop on the flag:
+
+```hale
+locus Worker {
+    params { stopping: Bool = false; }
+    run() {
+        while !self.stopping {       // warning: this loop reads `draining`
+            std::time::sleep(10ms);  // but I can't see it stop on it
+            if self.draining { self.stopping = true; }
+        }
+    }
+}
+```
+
+It proves the flag in the loop's condition (`while !self.draining`, `while open && !self.draining`), a test first in the body that leads out (`if self.draining { break; }`), and loops that end on their own (`for` over a collection, a condition over a local, an exit no drain test guards). Anything else is a warning, never an error: you chose manual control.
+
+- **Grace period (`LOTUS_DRAIN_GRACE_MS`)**: The runtime allows 5000 ms (configurable via `LOTUS_DRAIN_GRACE_MS`) for the program to finish. If it has not — a manual loop that does not stop, a blocking `@ffi` call, a subprocess it waits for — the runtime logs the stuck pool and worker to stderr and the signal ends the process (exit 143 for `SIGTERM`). A second `SIGINT` terminates immediately.
 
 ### `drain()` Hooks Run After `run()` Returns
 
-Declaring a `drain()` or `dissolve()` hook is enough for a signal to drain the program: a live locus with a hook counts as one that can answer the drain, just as one that reads `self.draining` does. But a hook runs during teardown, and teardown starts only once the locus's `run()` has returned. A `run()` that ends on the drain — it loops on `while !self.draining`, or a sleep it is in is cut short and it returns — lets the hook run. A `run()` that loops forever without reading `self.draining` never returns: the grace period expires and the signal ends the process with the hook unrun.
-
-`hale check` warns about that shape:
+A `drain()` or `dissolve()` hook runs during teardown, once the locus's `run()` has returned. On a signal that is always soon: the runtime ends a `run()` that never reads `self.draining` at its loops' back-edges, and a manual one returns when its own code says so. The hook then runs, and the process exits `0`:
 
 ```hale
 main locus App {
     run() {
-        while true { std::time::sleep(200ms); }   // never reads self.draining
-    }
-    drain() { println("drained"); }
-    // warning: this `drain()` runs only when `run()` returns, and `run()`
-    // never reads `self.draining`: read it in the loop
-}
-```
-
-Read the flag in the loop and the hook runs on `SIGTERM`, and the process exits `0`:
-
-```hale
-main locus App {
-    run() {
-        while !self.draining { std::time::sleep(200ms); }
+        while true { std::time::sleep(200ms); }   // stopped between iterations
     }
     drain() { println("drained"); }
 }
 ```
-- **Default `main` wait behavior**: A `main locus` with no `run()` exits as soon as its children complete, except when `main` (or a child server locus beneath it) holds an active `api::Exposure` socket, in which case `main` implicitly waits until the exposure stops or the process drains. "Complete" means the `run()` of every pinned child that does not read `self.draining` has returned: only then does the tree's drain begin, so a sibling looping on `while !self.draining` keeps serving until the workers are done, and a pinned subscriber declared before such a worker still consumes what the worker publishes in its last moments.
+
+- **Default `main` wait behavior**: A `main locus` with no `run()` exits as soon as its children complete, except when `main` (or a child server locus beneath it) holds an active `api::Exposure` socket, in which case `main` implicitly waits until the exposure stops or the process drains. "Complete" means the `run()` of every pinned child whose `run()` does not read `self.draining` has returned (`main`'s `run()` returning is not a signal: it ends no loop by itself, it only sets `self.draining`): only then does the tree's drain begin, so a sibling looping on `while !self.draining` keeps serving until the workers are done, and a pinned subscriber declared before such a worker still consumes what the worker publishes in its last moments.
 
 ### Self-Termination (`terminate;`)
 

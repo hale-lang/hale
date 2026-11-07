@@ -53,13 +53,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// (spec/semantics.md § Drain cascade, step 2). The run() of a locus
     /// whose run() reads `draining` (itself or through what it calls: the
     /// flow rows' watches-drain column, `LocusInfo::run_watches_drain`)
-    /// watches the drain: a timed wait it (or what it calls) begins
+    /// watches the drain (frame 1): a wait it (or what it calls) begins
     /// during a drain it has not yet read returns at once, so its loop
-    /// reaches its check. Every other run() and the two hooks are frames
-    /// that cut nothing beyond the in-progress cut, so a hook a watching
-    /// run() reaches does not inherit its cut. (GH #1858: a read in a
-    /// handler or a hook used to make the run() watch too.) The frame it
-    /// replaces is the value returned, put back at every return
+    /// reaches its check. Every other run() is one the runtime stops
+    /// (frame -1, GH #1858): a wait it begins during a stop returns at
+    /// once, so it reaches the back-edge where the stop ends its loop.
+    /// The two hooks are frames that cut nothing beyond the in-progress
+    /// cut (0), so a hook a run() reaches does not inherit its cut. The
+    /// frame it replaces is the value returned, put back at every return
     /// ([`Self::emit_wait_frame_leaves`]). `None` for the other hooks,
     /// where no drain reaches the program (`DrainTerm` omitted), and for
     /// the standard library's loci (`__Std…`): their bodies run in their
@@ -79,8 +80,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let i64_t = self.context.i64_type();
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
-        let watches = kind == "run" && self.user_loci.get(locus).is_some_and(|i| i.run_watches_drain);
-        let watches = i64_t.const_int(watches as u64, false);
+        // 1: a run() that watches the drain; -1 (GH #1858): a run() the
+        // runtime stops, whose waits a stop cuts; 0: a hook.
+        let word: i64 = match kind {
+            "run" if self.user_loci.get(locus).is_some_and(|i| i.run_watches_drain) => 1,
+            "run" => -1,
+            _ => 0,
+        };
+        let watches = i64_t.const_int(word as u64, true);
         let frame = self.wait_frame_global();
         let prev = self
             .builder
@@ -170,6 +177,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("self_ptr param")
                     .into_pointer_value();
                 self.current_fn = Some(func);
+                // GH #1858: the loops of a run() the runtime stops (its
+                // run() never reads `draining`) end at their back-edge on
+                // a stop. The standard library's loci keep their own.
+                self.backedge_stop_fn = (kind == "run"
+                    && !l.name.name.starts_with("__Std")
+                    && !info.run_watches_drain
+                    && self.cells.emits(hale_types::capability::Obligation::DrainTerm)?)
+                .then_some(func);
                 // F.27 extension (2026-05-19): lifecycle bodies are
                 // void-returning user-fn contexts from the violate
                 // codegen's perspective. Marking the ret as
@@ -279,6 +294,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
                 self.current_fn = None;
                 self.current_self = None;
+                self.backedge_stop_fn = None;
                 }
             }
         }

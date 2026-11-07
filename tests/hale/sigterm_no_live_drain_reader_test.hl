@@ -1,21 +1,20 @@
 // GH #1077 — a `draining` read nothing live runs does not make SIGTERM
 // wait out the drain grace.
 //
-// spec/semantics.md § "Drain cascade (whole-process)": the drain is for
-// the loci that can answer it. A `self.draining` read anywhere in the
-// compiled program used to turn it on for the whole program — including
-// a read in an imported package the program never builds (a NATS
-// adapter's receive loop). The program then answered SIGTERM by
-// waiting the full grace, with nothing to drain, before dying. Now a
-// signal that finds no live instance of a locus that reads `draining`
-// takes the signal's default action at once, as a program without the
-// read does.
+// spec/semantics.md § "Drain cascade (whole-process)". A `self.draining`
+// read anywhere in the compiled program used to turn the drain on for the
+// whole program — including a read in an imported package the program
+// never builds (a NATS adapter's receive loop) — and the program then
+// answered SIGTERM by waiting the full grace, with nothing to drain,
+// before dying. GH #1077 counted the live loci that could answer and took
+// the signal's default action when none was (143, at once).
 //
-// Two programs import a package whose only locus loops on
-// `self.draining`: one never builds it, one builds it and lets it end
-// before the signal. Both run with a 20 s grace; each must die by the
-// signal well inside it. (A live reader still drains to a clean exit:
-// sigterm_drains_pinned_test.hl.)
+// GH #1858 retired the count: every program drains, and the runtime ends
+// the loop of a `run()` that never reads `draining` at its back-edge. So
+// the same two programs — one that imports a package whose only locus
+// loops on `self.draining` and never builds it, one that builds it and
+// lets it end before the signal — now exit 0 at once, their main loop
+// stopped, still well inside a 20 s grace.
 
 fn lib_source() -> String {
     return "locus Conn {\n"
@@ -106,8 +105,8 @@ fn check(hale: String, dir: String, name: String, source: String) {
     p.term();
     std::test::assert_eq_int(
         p.exit_code(),
-            -1,
-        name + " died by SIGTERM at once, not after the 20 s grace",
+        0,
+        name + " exited 0 at once, its loop stopped, not after the 20 s grace",
     );
 }
 

@@ -163,9 +163,11 @@ the model: runtime is automatic; stdlib is explicit.
 - **`drain()` cascades depth-first.** Calling `drain()` on a
   locus first recursively drains all its children (depth-first),
   waits for them, then drains itself. SIGINT and SIGTERM raise
-  the process's draining flag and call no `drain()`: the `run()`s
-  that read `self.draining` return, and the ordinary teardown
-  follows (§ "Process control", § "Lifecycle obligations",
+  the process's draining flag and call no `drain()`: the runtime ends
+  the loops of every `run()` that does not read `self.draining` at
+  their back-edge and wakes every blocking wait (GH #1858), the
+  `run()`s that read it return by their own code, and the ordinary
+  teardown follows (§ "Process control", § "Lifecycle obligations",
   line 15). A main locus's teardown raises the same drain for its
   tree once its `run()` has returned, before it joins anything
   (line 15). No separate cascade syntax — `drain()` is always
@@ -230,15 +232,19 @@ the model: runtime is automatic; stdlib is explicit.
   shutdown was set reaches its check and returns (each coroutine
   gets at most 64 such resumes at a shutdown; one that keeps
   re-parking without reading `draining` is abandoned as the rest).
+  GH #1858: a signal's stop ends an untimed park the same way (a plain
+  `accept`, a `recv` with no timeout), which then answers its closed
+  outcome, so a `run()` parked in one returns too.
   The parked coros are then *abandoned* — their stacks
   freed without resuming them, and a bus handler's delivery released
   with them (its payload buffer and the per-delivery region its
   strings were deserialized into, which has no parent arena to reclaim
   it; GH #1565: a served call parked in its handler at the drain leaked
-  both) — because a forever-loop `run()`
-  (`while true { accept }`) cannot be cooperatively unwound
-  without the loop checking `self.draining` (a future
-  refinement), and the process is exiting anyway. Per-child
+  both) — because at a shutdown that is not a stop (a tree's drain) a
+  forever-loop `run()` (`while true { accept }`) cannot be
+  cooperatively unwound without the loop checking `self.draining`,
+  and the process is exiting anyway. (Under a signal's stop the
+  back-edge check ends such a loop, GH #1858.) Per-child
   reclamation proper (terminate / flow run-completion) never
   needs this: there the coro returns from `run()` on its own.
 - **Classic-pool blocking-accept shutdown.** A
@@ -662,17 +668,32 @@ of every `run()`, `drain()` and `dissolve()` body of a program's own
 loci (a store to the thread-local `lotus_wait_frame`, no call: 1 for
 a `run()` that reads `draining`, itself or through a fn or method it
 calls — the flow rows' watches-drain column, a read in a handler or a
-hook aside — else 0) and puts
+hook aside; -1 for every other `run()`, and at the top of `fn main`,
+the runs the runtime stops, GH #1858; 0 for a hook) and puts
 the previous one back at each return (a standard-library locus's bodies run in their caller's
 frame); every handler call (`LOTUS_CALL_HANDLER`) runs in frame 0;
 a coroutine carries its own across a park; a `draining` read that
 sees the process drain marks a watching frame as having seen this
 drain's generation (`lotus_drain_seen`). A watching frame that has
-not seen the current generation is cut; frame 0, and one that has
-seen it, are not. An `async_io` park records the frame it was made
-in (`park_wait_frame`) and the pool's expiry sweep asks the same
-question of it. The calm path is the flag's load; the call is made
-only while a drain is up.
+not seen the current generation is cut; a stopped frame (-1) is cut
+by a stop (a signal's drain, a failed test's), not by a tree's drain;
+frame 0, and a watching one that has seen it, are not. An `async_io`
+park records the frame it was made in (`park_wait_frame`) and the
+pool's expiry sweep asks the same question of it; a blocking wait off
+an `async_io` pool asks it at its start (`lotus_drain_wait_mode`). The
+calm path is the flag's load; the call is made only while a drain is
+up.
+
+**Back-edge stops** (GH #1858). In the body of a `run()` whose frame
+is -1 and of `fn main`, codegen puts a latch in front of every loop's
+next iteration (`push_loop_frame`: the target of the body's end and of
+a `continue`): a monotonic load of `lotus_process_draining_flag`, an
+`and` with the stop bits (`LOTUS_DRAIN_SIGNAL | LOTUS_DRAIN_TEST`, the
+runtime's `LOTUS_DRAIN_STOPS`) and a branch weighted cold to the loop's
+exit. No call: the IR's call count does not move, and a spinning loop
+pays one load and one predicted branch per iteration. A manual
+`run()`, a fn or method, a closure and a standard-library locus get no
+latch.
 
 **Every park point delivers, on every pool.** A sleep slice and an
 explicit `yield;` are park points, and a park point inside a
@@ -2725,9 +2746,11 @@ its `KNOWN_OPEN` table, which is empty today.
   each adopted line's fixture against its plan.
 - **Line 15, signals, and the tree drain.** SIGINT and SIGTERM raise
   the process's draining flag, from a watcher thread; nothing on the
-  signal path calls a lifecycle method. The `run()`s that read
-  `self.draining` return, and the ordinary teardown follows, `drain()`
-  and `dissolve()` once each. Shipped (`l15_sigint_flag.hl`).
+  signal path calls a lifecycle method. The loops of a `run()` that
+  does not read `self.draining` end at their back-edge, every blocking
+  wait wakes, the `run()`s that read it return by their own code, and
+  the ordinary teardown follows, `drain()` and `dissolve()` once each
+  (GH #1858). Shipped (`l15_sigint_flag.hl`).
   Teardown follows the ownership tree: once a main locus's `run()`
   has returned, the first step of its teardown, eager or deferred,
   raises the same drain for its tree (`TreeDrain`, the capability
@@ -2739,7 +2762,9 @@ its `KNOWN_OPEN` table, which is empty today.
   child's `run()` that watches the drain returns, so the joins after it
   complete: a pinned or pool-placed child's `while !self.draining`
   loop no longer holds the process once `main`'s `run()` has returned.
-  A `run()` that does not watch it keeps running, as under a signal.
+  A `run()` that does not watch it keeps running: the tree's drain is
+  not a stop, so no back-edge check ends its loops and no untimed wait
+  is woken (a signal's stop does both).
   A main locus with no `run()` (an empty one is the same program)
   raises it, on the eager and the deferred spine alike, only once the
   `run()` of each of its own pinned children that does not read
@@ -4086,22 +4111,29 @@ for replay-under-a-different-plan) is the next milestone.
   `int` exits with that code. Panics exit non-zero.
 - **Signal handling.** SIGINT / SIGTERM begin the whole-process
   drain (`semantics.md` § "Drain cascade (whole-process)", GH
-  #1039): the handler writes one byte to a pipe, a watcher thread
-  raises the exported `lotus_process_draining_flag` (which every
-  `self.draining` read loads, beside the locus's own
-  `__drain_requested`), wakes every `async_io` pool so the timed parks
-  the drain cuts expire (those that began before it, and those a
-  watching `run()` began during it), and then waits out the grace
-  (`LOTUS_DRAIN_GRACE_MS`, default 5000); past it the watcher
-  prints one line — the signal, and what the drain was still waiting
-  on (each started cooperative pool: its mode, whether its worker is
-  mid-iteration and in which locus, its queued cells; the live
-  instances that read `draining`, by locus name) — restores the
+  #1039, GH #1858): the handler writes one byte to a pipe, and a
+  watcher thread raises the stop (`lotus_drain_stop_raise`): the
+  `LOTUS_DRAIN_SIGNAL` bit of the exported
+  `lotus_process_draining_flag` (which every `self.draining` read
+  loads, beside the locus's own `__drain_requested`, and every
+  back-edge check tests, masked to the stop bits, signal and failed
+  test), a byte on the stop pipe every blocking wait off an `async_io`
+  pool polls beside its own fd (`lotus_drain_wait_fd`: an accept, a
+  TCP, TLS or UDP receive), and a wake for every `async_io` pool so the
+  parks the stop cuts are resumed (`lotus_coro_drain_due`). It then
+  stops the named listeners and waits out the grace
+  (`LOTUS_DRAIN_GRACE_MS`, default 5000); past it the watcher prints
+  one line — the signal, and what the drain was still waiting on
+  (each started cooperative pool: its mode, whether its worker is
+  mid-iteration and in which locus, its queued cells) — restores the
   signal's default action and re-raises the signal, so the process
-  dies by it. The pool's `running_label` and the instance names are
-  kept for that line alone; nothing else reads them. A second signal does the same at once.
-  Installed by the main prelude only in a program that reads
-  `draining`; caught with `SA_RESTART`, never blocked, so spawned
+  dies by it. The pool's `running_label` is kept for that line alone;
+  nothing else reads it. A second signal does the same at once.
+  Installed by the main prelude in every program a signal reaches
+  (before GH #1858, only in one that read `draining` or declared a
+  hook, and the watcher took the signal's default action at once when
+  no instance of such a locus was live; the count is gone); caught
+  with `SA_RESTART`, never blocked, so spawned
   subprocesses keep the default disposition. Between a subprocess's
   fork and its exec (`std::process::run` and `spawn`) the child is a
   copy of the program, handlers included, so `lotus_process_fork`
@@ -4110,9 +4142,8 @@ for replay-under-a-different-plan) is the next milestone.
   child before its exec (the dissolve of a `let`-bound `spawn` at the
   end of a `birth` or a param default sends one) ends the child alone,
   never writing the parent's drain pipe. (Before 2026-10-12 it did:
-  the parent's watcher woke to a drain no signal began and, with no
-  live instance reading `draining`, ended the program `_exit(128)`
-  with its buffered output unwritten.)
+  the parent's watcher woke to a drain no signal began and ended the
+  program `_exit(128)` with its buffered output unwritten.)
 - **SIGPIPE globally ignored** (added 2026-05-17, C2). The
   prelude installs `signal(SIGPIPE, SIG_IGN)` once at
   `lotus_io_init` so writes to a closed pipe (subprocess stdin,
@@ -4706,7 +4737,7 @@ its behavior as described in this document.
 | `LOTUS_CHUNK_POOL_STATS=1` | off | Dumps per-thread chunk-pool hit / miss / store / overflow counters to stderr at process exit. Diagnostic for "pool isn't recycling" symptoms — pairs hits vs misses, stores vs overflows. The atexit handler runs on the main thread; counters are `__thread` so the dump is that thread's view. |
 | `LOTUS_GLIBC_ARENA_MAX=<N>` | unset (glibc's own) | Calls `mallopt(M_ARENA_MAX, <N>)` at startup. Caps glibc's per-thread malloc arena count. `1` forces a single arena (max contention, min virtual-address fragmentation); higher `<N>` trades contention for parallelism. Useful belt-and-suspenders against the per-thread arena heap-segment proliferation glibc default tuning can produce on long-running daemons. Unset keeps glibc's default. |
 | `LOTUS_BUS_PAYLOAD_ARENA_CAP=<N>` | 64 MiB | Overrides the lazy-global bus payload arena's byte cap (default 64 MiB). An allocation that would pass the cap stops the process (SIGABRT) with a report naming the arena, what it holds, the cap and the frames that asked: what the arena holds was deposited by a producer no owner reclaims, a leak. |
-| `LOTUS_DRAIN_GRACE_MS=<ms>` | 5000 | How long a SIGINT / SIGTERM drain may take before the runtime re-raises the signal with its default action, ending the process by it (default 5000). Only in a program that reads `self.draining`; see `semantics.md` § "Drain cascade (whole-process)" (GH #1039). |
+| `LOTUS_DRAIN_GRACE_MS=<ms>` | 5000 | How long a SIGINT / SIGTERM drain may take before the runtime re-raises the signal with its default action, ending the process by it (default 5000). Every program a signal reaches has one (GH #1858; before, only one that read `self.draining` or declared a hook); see `semantics.md` § "Drain cascade (whole-process)" (GH #1039). |
 | `LOTUS_BUS_TABLE_STATS=1` | off | At teardown, prints `[bus_table] entries=N free=F` to stderr: the registration table's size and how many of its entries a dissolved subscriber left free for a later registration (§ "Bus message router"). A server whose connections each subscribe holds `entries` near its most connections at once. |
 | `LOTUS_BUS_TEST_WALK_STALL_US=N` | off | Test hook: a bus table walk pauses N µs inside an entry's version window, so a test can reuse that entry under it (`bus_registry_reuse_races`). Never set it in production. |
 | `LOTUS_BUS_TEST_ACCT_STALL_US=N` | off | Test hook: an enqueue pauses N µs between reading a subscriber's incarnation and charging its in-flight count, so a test can reuse the entry under it (`bus_registry_reuse_races`). Never set it in production. |

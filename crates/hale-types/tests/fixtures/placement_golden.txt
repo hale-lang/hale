@@ -2979,7 +2979,7 @@ row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
-== crates/hale-codegen/tests/drain_grace_names_the_wait.rs#4020130d
+== crates/hale-codegen/tests/drain_grace_names_the_wait.rs#d5673e75
 root	Root	the entry
 domain	pool:io
 row	Root@literal1	Root	main	default

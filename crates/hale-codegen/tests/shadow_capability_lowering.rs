@@ -74,14 +74,13 @@ fn tool(name: &str) -> bool {
         .any(|c| Command::new(c).arg("--version").output().is_ok())
 }
 
-/// The runtime calls (or the global, for the drain observer) by which
+/// The runtime calls (or the globals, for the drain term) by which
 /// a module shows an obligation emitted.
 fn symbols(o: Obligation) -> &'static [&'static str] {
     match o {
         Obligation::ReplayIngress => &["lotus_replay_start_ingress"],
         Obligation::ObservationIdentity => &["lotus_obs_eager_init", "lotus_obs_topic_shape", "lotus_obs_exec_digest_set"],
         Obligation::SignalInstall => &["lotus_io_init", "lotus_drain_signals_install"],
-        Obligation::DrainObserver => &["lotus.observes_drain."],
         Obligation::DrainTerm => &["lotus_process_draining_flag", "lotus_wait_frame"],
         Obligation::BindingConfig => &["lotus_bus_load_config", "lotus_bus_register_key_extractor"],
         Obligation::PoolJoin => &["lotus_coop_pool_shutdown_all"],
@@ -646,7 +645,6 @@ const CELL_READS: &[(&str, &str, usize)] = &[
     // observation probes' gate (`obs_live_check`, P3 T7).
     (CG, "Obligation::ObservationIdentity", 3),
     (CG, "Obligation::BindingConfig", 2),
-    (CG, "Obligation::DrainObserver", 1),
     // The five spines' heads and the frame teardown's wait-abort, all
     // through the plan's steps in `emit_teardown_obligations`.
     (CG, "Obligation::IngressQuiesce", 1),
@@ -656,12 +654,16 @@ const CELL_READS: &[(&str, &str, usize)] = &[
     (CG, "Obligation::TreeDrain", 2),
     (CG, "Obligation::PoolJoin", 1),
     (CG, "Obligation::WaitAbort", 1),
+    // GH #1858: `fn main`'s own body is a run the runtime stops (its wait
+    // frame and its loops' back-edge stops).
+    (CG, "Obligation::DrainTerm", 1),
     (INST, "Obligation::ReplayIngress", 1),
     (INST, "Capability::PoolThreads", 1),
     ("crates/hale-codegen/src/locus/dissolve.rs", "Obligation::DrainTerm", 1),
     // A run() / drain() / dissolve() body's wait frame
-    // (`emit_wait_frame_enter`): what a drain does to a timed wait.
-    ("crates/hale-codegen/src/locus/method.rs", "Obligation::DrainTerm", 1),
+    // (`emit_wait_frame_enter`): what a drain does to a timed wait; and
+    // a run()'s loops' back-edge stops (GH #1858).
+    ("crates/hale-codegen/src/locus/method.rs", "Obligation::DrainTerm", 2),
     ("crates/hale-codegen/src/locus/restart.rs", "Obligation::DrainTerm", 1),
     ("crates/hale-codegen/src/stdlib/time.rs", "Obligation::DrainTerm", 1),
 ];
