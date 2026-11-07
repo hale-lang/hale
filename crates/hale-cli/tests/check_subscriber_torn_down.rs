@@ -127,6 +127,22 @@ fn not_when_the_subscriber_declares_a_birth() {
 }
 
 #[test]
+fn not_in_the_free_fn_main() {
+    let text = r#"
+type Tick { n: Int = 0; }
+topic Ticks { payload: Tick; subject: "t"; }
+locus Empire {
+    bus { subscribe Ticks as on_tick; }
+    fn on_tick(t: Tick) { println("tick ", t.n); }
+}
+fn main() { Empire { }; }
+"#;
+    let (ok, out) = check("fn_main", text);
+    assert!(ok, "{out}");
+    assert_eq!(out.matches(FINDING).count(), 0, "the root built by fn main has no locus to accept it:\n{out}");
+}
+
+#[test]
 fn not_when_held_in_a_field() {
     let (ok, out) = check("field", &program("birth", "params { e: Empire = Empire { empire_id: 1 }; }", "", ""));
     assert!(ok, "{out}");

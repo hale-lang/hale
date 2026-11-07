@@ -4022,7 +4022,9 @@ const STATEMENT_SUBSCRIBER: RuleId = RuleId::registered("verification/structural
 /// `run()` runs it and hears while it runs, and one with a `birth()`
 /// does its work there (spec/styleguide.md § App locus: statement
 /// literals fire and forget), so neither is reported; nor is the entry
-/// (`main locus`), whose life is the program's. Reported at the literal,
+/// (`main locus`), whose life is the program's, nor a literal the free
+/// `fn main()` builds (the root: no enclosing locus can accept it, and
+/// nothing else is alive to publish to it). Reported at the literal,
 /// in any body (a lifecycle hook, a method, a free fn) but a bus
 /// handler's, where type-check rule 20 already refuses an unowned
 /// subscriber. Until 2026-11-06 such a program was silent at the check
@@ -4053,6 +4055,12 @@ fn check_subscriber_torn_down_at_its_statement(rows: &ScopeLocalSubscriberRows<'
     let mut kept: Option<BTreeSet<String>> = None;
     for f in fns {
         if f.entry == Some(EntryKind::BusHandler) {
+            continue;
+        }
+        // The free `fn main()` builds the program's root: no enclosing
+        // locus can accept it, and nothing else is alive to publish to
+        // it, so the hearing it misses is nobody's.
+        if f.key.locus.is_none() && f.key.fn_name == "main" {
             continue;
         }
         for s in f.sites.iter().chain(&f.in_place_sites) {
