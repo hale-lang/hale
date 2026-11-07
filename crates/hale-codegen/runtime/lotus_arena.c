@@ -26616,6 +26616,15 @@ int lotus_str_can_parse_float(const char *s) {
  * (`12345678901234567890123456789012.5` at scale 8) came back as a
  * wrong, negative number instead of a refusal.
  */
+/* i128 overflow is checked against these bounds before each step: the
+ * compiler builtins (`__builtin_mul_overflow` on __int128) call
+ * compiler-rt's `__muloti4`, which the wasm32 target does not have, so a
+ * Decimal parse would reach the link undefined there. Signed i128 compare,
+ * multiply and divide by a constant are what the rest of the runtime
+ * already uses on every target. */
+#define LOTUS_I128_MAX ((__int128)(((unsigned __int128)1 << 127) - 1))
+#define LOTUS_I128_MAX_DIV10 (LOTUS_I128_MAX / 10)
+
 static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
     scale = lotus_dec_clamp_scale(scale);
     if (!s) return 0;
@@ -26641,12 +26650,13 @@ static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
                 if (mantissa != 0) pending += 1;  /* a leading zero is nothing */
             } else {
                 for (; pending > 0; pending--) {
-                    if (__builtin_mul_overflow(mantissa, (__int128)10, &mantissa)) return 0;
+                    if (mantissa > LOTUS_I128_MAX_DIV10) return 0;
+                    mantissa *= 10;
                 }
-                if (__builtin_mul_overflow(mantissa, (__int128)10, &mantissa) ||
-                    __builtin_add_overflow(mantissa, (__int128)(c - '0'), &mantissa)) {
-                    return 0;
-                }
+                if (mantissa > LOTUS_I128_MAX_DIV10) return 0;
+                mantissa *= 10;
+                if (mantissa > LOTUS_I128_MAX - (c - '0')) return 0;
+                mantissa += (c - '0');
             }
         } else if (c == '.' && !seen_dot) {
             seen_dot = 1;
@@ -26684,7 +26694,8 @@ static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
         pending += shift;
     }
     for (; pending > 0; pending--) {
-        if (__builtin_mul_overflow(mantissa, (__int128)10, &mantissa)) return 0;
+        if (mantissa > LOTUS_I128_MAX_DIV10) return 0;
+        mantissa *= 10;
     }
     *out = neg ? -mantissa : mantissa;
     return 1;
