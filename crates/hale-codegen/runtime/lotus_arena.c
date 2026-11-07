@@ -27086,11 +27086,49 @@ static lotus_bus_remote_entry_t *lotus_bus_remote_entry_push(
  * dispatches through it before the definition point. */
 static lotus_bus_queue_t *g_bus_queue_for_remote;
 
+/* The wire decoder of a local one (2026-11-07, downstream handoff).
+ * Codegen emits two decoders per payload type: `__deserialize_T`, the
+ * local one every registration and in-process delivery carries
+ * (straight-line: a local cell holds the program's own serializer's
+ * bytes), and `__deserialize_wire_T`, every read held to the frame's
+ * remaining length and a frame shorter than the type refused. The
+ * program's main announces each pair here before anything registers
+ * or reads, and the places foreign bytes come in — the udp and unix
+ * readers, the early-ingress flush, the replay injector — map the
+ * registered local decoder to its wire twin. A decoder with no twin
+ * (an api codec thunk) is used as it is. Written on main before any
+ * thread starts; read-only after. */
+#define LOTUS_BUS_WIRE_DECODER_MAX 1024
+static struct { lotus_deserialize_fn local, wire; }
+    g_bus_wire_decoders[LOTUS_BUS_WIRE_DECODER_MAX];
+static size_t g_bus_wire_decoder_count;
+
+void lotus_bus_wire_decoder(lotus_deserialize_fn local, lotus_deserialize_fn wire) {
+    if (!local || !wire) return;
+    if (g_bus_wire_decoder_count >= LOTUS_BUS_WIRE_DECODER_MAX) {
+        fprintf(stderr, "lotus: more than %d bus payload types; the rest decode wire frames unchecked\n",
+                LOTUS_BUS_WIRE_DECODER_MAX);
+        return;
+    }
+    g_bus_wire_decoders[g_bus_wire_decoder_count].local = local;
+    g_bus_wire_decoders[g_bus_wire_decoder_count].wire = wire;
+    g_bus_wire_decoder_count++;
+}
+
+static lotus_deserialize_fn lotus_bus_wire_decoder_of(lotus_deserialize_fn local) {
+    for (size_t i = 0; i < g_bus_wire_decoder_count; i++) {
+        if (g_bus_wire_decoders[i].local == local) return g_bus_wire_decoders[i].wire;
+    }
+    return local;
+}
+
 /* GH #468 — the shared deserializer lookup both readers used to
  * inline: the FIRST local registration whose (possibly wildcard)
  * pattern matches this binding's concrete subject. By language
  * constraint all entries on one subject share the payload type,
- * so any match works. NULL = nothing registered (yet). */
+ * so any match works. NULL = nothing registered (yet). What comes
+ * back is the WIRE decoder of the registered one (above): every
+ * caller hands it bytes from outside the process. */
 static lotus_deserialize_fn lotus_bus_find_deserializer(
     const char *bound_subject)
 {
@@ -27099,7 +27137,7 @@ static lotus_deserialize_fn lotus_bus_find_deserializer(
         lotus_bus_target_t e_snap_;
         const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], bound_subject, &e_snap_);
         if (!e) continue;
-        return e->deserialize;
+        return lotus_bus_wire_decoder_of(e->deserialize);
     }
     return NULL;
 }
@@ -28526,7 +28564,8 @@ void lotus_replay_start_ingress(void) {
         if (!be) continue;
         if (!be->subject || !be->deserialize) continue;
         g_rp_snap[g_rp_snap_len].subject = be->subject;
-        g_rp_snap[g_rp_snap_len].deserialize = be->deserialize;
+        /* recorded bytes come from outside: the wire decoder */
+        g_rp_snap[g_rp_snap_len].deserialize = lotus_bus_wire_decoder_of(be->deserialize);
         g_rp_snap_len++;
     }
     if (lotus_replay_reserve_anon_floor)

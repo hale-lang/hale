@@ -4613,7 +4613,14 @@ counted (`dropped_decode` in the counters dump), and nothing of the
 reader's previous frame is delivered as part of it. It used to be
 that an empty datagram was delivered as a zero-filled record, one
 after a valid frame replayed that frame, and a one-byte one delivered
-the previous frame with its first byte replaced.
+the previous frame with its first byte replaced. The rule is the
+transport readers' (the `udp://` and `unix://` readers, the
+early-ingress flush, the replay injector): a local cell is not a wire
+frame. In-process delivery — a publish materialized on the owner's
+thread, a cross-pool create cell — holds the program's own
+serializer's bytes and is decoded straight through, unchecked, so a
+create cell's dispatch stays one straight-line block (accept, the
+children's push, then birth, in the text's order).
 A payload-free enum field travels as its four-byte tag (so a topic
 `keyed_by` an enum field builds), and a `bounded[T; N]` of scalars or
 such enums and an array of scalars or structs are carried too. An
