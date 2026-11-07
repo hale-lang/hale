@@ -136,6 +136,46 @@ fn an_instant_crosses_http_as_its_rfc_3339_text_and_a_duration_as_its_nanosecond
 }
 
 #[test]
+fn a_decimal_is_described_as_a_number_at_its_scale_and_crosses_http_with_every_digit() {
+    // downstream handoff: a request with a `price: Decimal<2>` field was
+    // refused by law 5; the api codec now carries it as the record codecs
+    // do (spec/api.md § Codecs)
+    let s = Served::start();
+    let d = run(&["api", "describe", &s.endpoint, "--json"]);
+    assert_eq!(d.code, 0, "{}", d.stderr);
+    let doc = json_of(&d.stdout);
+    assert_eq!(doc["schemas"]["Priced"]["properties"]["price"], json!({"type": "number", "x-hale-type": "Decimal<2>"}));
+    assert_eq!(doc["schemas"]["Priced"]["required"], json!(["price"]));
+    let dir = unique_dir("decimal");
+    let e = hale().args(["api", "export", "--surface", "Shelves", "--out"]).arg(&dir).arg(fixture()).output().expect("export");
+    assert!(e.status.success(), "{}", String::from_utf8_lossy(&e.stderr));
+    let openapi = json_of(&std::fs::read_to_string(dir.join("Shelves.openapi.json")).unwrap());
+    assert_eq!(openapi["components"]["schemas"]["Priced"]["properties"]["price"], json!({"type": "number", "x-hale-type": "Decimal<2>"}));
+    // protobuf carries the digits in a string: proto3 has no decimal
+    let proto = std::fs::read_to_string(dir.join("Shelves.proto")).unwrap();
+    assert!(proto.contains("optional string price = 1; // Hale: Decimal<2>"), "{proto}");
+    // the Hale client declares the field at the server's scale
+    let hl = dir.join("client.hl");
+    let o = hale().args(["api", "client", "--surface", "Shelves", "--lang", "hale", "--out"]).arg(&hl).arg(fixture()).output().expect("hale client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(std::fs::read_to_string(&hl).unwrap().contains("price: Decimal<2>;"));
+    let _ = std::fs::remove_dir_all(&dir);
+    // every digit crosses, at the scale; zeros past it are the same number
+    let o = run(&["api", "call", &s.endpoint, "Library::price", "--json", r#"{"price":12.34}"#]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(json_of(&o.stdout), json!({"price": 12.34, "note": ""}));
+    let o = run(&["api", "call", &s.endpoint, "Library::price", "--json", r#"{"price":-0.50,"note":"half"}"#]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stdout.trim(), r#"{"price":-0.5,"note":"half"}"#, "written as its digits, the fraction's trailing zero dropped");
+    // a nonzero digit past the scale is refused, never truncated; a string is no number
+    for (payload, what) in [(r#"{"price":12.345}"#, "a third place"), (r#"{"price":"12.34"}"#, "a string")] {
+        let o = run(&["api", "call", &s.endpoint, "Library::price", "--json", payload]);
+        assert_eq!(o.code, 2, "{what}: {}", o.stderr);
+        assert_eq!(json_of(&o.stderr)["refusal"], json!({"kind": "malformed", "reason": "wrong_type: price"}), "{what}");
+    }
+}
+
+#[test]
 fn a_list_crosses_http_both_ways_and_one_too_long_is_refused_not_truncated() {
     let s = Served::start();
     let books = r#"[{"id":1,"title":"Dune"},{"id":2,"title":"Emma"}]"#;

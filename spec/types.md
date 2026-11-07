@@ -202,9 +202,10 @@ that disagree on a scale disagree on the contract. The JSON codec
 (`T::to_json` / `T::from_json`, the `json:` tag in spec/semantics.md) writes a
 `Decimal<S>` field as a JSON number with its exact digits and reads it
 back at the field's scale; a number with a nonzero digit past the
-scale is the field's `wrong_type`. An api surface's codecs (JSON,
-protobuf) do not carry a Decimal at any scale (spec/api.md § Codecs):
-a row that names one is refused.
+scale is the field's `wrong_type`. An api surface's codecs carry one
+the same way (spec/api.md § Codecs): JSON as a number at its scale,
+its schema `{"type": "number", "x-hale-type": "Decimal<S>"}`, protobuf
+as its digits in a string.
 
 **Units.** A quantity, an identity and a range count an `Int`
 (spec/units.md), so `quantity Decimal<18> in wei` is refused as

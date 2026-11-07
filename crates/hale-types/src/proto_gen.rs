@@ -218,6 +218,23 @@ fn scalar_of(json: &str) -> Option<Scalar> {
     }
 }
 
+/// The proto3 scalar of a field's JSON kind, read with the Hale type the
+/// schema names: a `Decimal<S>` is a `number` in JSON and its digits in a
+/// `string` on the protobuf wire (proto3 has no decimal; the codec writes
+/// `to_string(d)` and reads it back at the field's scale, spec/api.md §
+/// Codecs).
+fn scalar_for(json: &str, hale_type: &Option<String>) -> Option<Scalar> {
+    if is_decimal(hale_type) {
+        return Some(Scalar::String);
+    }
+    scalar_of(json)
+}
+
+/// Whether a schema's `x-hale-type` names a `Decimal<S>`.
+fn is_decimal(hale_type: &Option<String>) -> bool {
+    hale_type.as_deref().is_some_and(|t| t.starts_with("Decimal<"))
+}
+
 /// A `Time` field's comment: the protobuf codec carries an instant as its
 /// nanoseconds since the epoch (an `int64`, which is all of `Time`), not
 /// as `google.protobuf.Timestamp`, which would be a dependency of every
@@ -259,7 +276,7 @@ fn carried(
             }
         },
         FieldSchema::Scalar { json, hale_type, unit } => {
-            let Some(s) = scalar_of(json) else {
+            let Some(s) = scalar_for(json, hale_type) else {
                 return Err(format!("{member}: the {what} is a `{json}`, which proto3 has no scalar for"));
             };
             let name = wrapper_name(member, what);
@@ -455,7 +472,9 @@ fn refs_of<'a>(f: &'a FieldSchema, out: &mut Vec<&'a str>) {
 /// The type of a value of an enum's variant, or of an enum's message field.
 fn value_ty(f: &FieldSchema, surface: &str, what: &str, extra: &mut Extra) -> Result<Ty, String> {
     match f {
-        FieldSchema::Scalar { json, .. } => scalar_of(json).map(Ty::Scalar).ok_or_else(|| format!("{what}: `{json}` has no proto3 scalar")),
+        FieldSchema::Scalar { json, hale_type, .. } => {
+            scalar_for(json, hale_type).map(Ty::Scalar).ok_or_else(|| format!("{what}: `{json}` has no proto3 scalar"))
+        }
         FieldSchema::Time => Ok(Ty::Scalar(Scalar::Int64)),
         FieldSchema::Ref(n) => Ok(Ty::Message(message_name(n, surface))),
         FieldSchema::Enum { name, variants, .. } => enum_ty(name, variants, surface, extra),
@@ -568,7 +587,7 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
                 return Err(format!("{display}.{key}: an optional field inside an optional field has no proto3 encoding"))
             }
             FieldSchema::Scalar { json, hale_type, unit } => {
-                let Some(s) = scalar_of(json) else {
+                let Some(s) = scalar_for(json, hale_type) else {
                     return Err(format!("{display}.{key}: `{json}` has no proto3 scalar"));
                 };
                 let mut p = field(key, number, Ty::Scalar(s), Label::Optional);
@@ -601,8 +620,8 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
             // payload-free enum each element crosses as
             FieldSchema::Map { key: k, max, of: Some((v, schema)), .. } => {
                 let value = match schema.as_ref() {
-                    FieldSchema::Scalar { json, .. } => {
-                        let Some(s) = scalar_of(json) else {
+                    FieldSchema::Scalar { json, hale_type, .. } => {
+                        let Some(s) = scalar_for(json, hale_type) else {
                             return Err(format!("{display}.{key}: `{json}` has no proto3 scalar"));
                         };
                         Ty::Scalar(s)
@@ -631,7 +650,7 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
                 let bound = if *exact { format!("exactly {max}") } else { format!("at most {max}") };
                 let mut p = match items.as_ref() {
                     FieldSchema::Scalar { json, hale_type, unit } => {
-                        let Some(s) = scalar_of(json) else {
+                        let Some(s) = scalar_for(json, hale_type) else {
                             return Err(format!("{display}.{key}: `{json}` has no proto3 scalar"));
                         };
                         let mut p = field(key, number, Ty::Scalar(s), Label::Repeated);

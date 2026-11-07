@@ -1356,7 +1356,7 @@ fn did_you_mean<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -
 }
 
 /// Why a type a row names has no JSON form (spec/api.md § Codecs: `Int`,
-/// `Float`, `Bool`, `String` and nested structs of the same; an
+/// `Float`, `Bool`, `String`, `Decimal<S>` and nested structs of the same; an
 /// identity, a range and a quantity as their integer, a `Duration` as its
 /// nanoseconds, a `Time` as its RFC 3339 text; a list as a record's
 /// field, `bounded[T; N]` or `[T; N]` of any of those): the
@@ -1377,7 +1377,8 @@ fn json_refusal(
 ) -> Option<(Vec<String>, String)> {
     use crate::topic_identity::TypeClass;
     use hale_syntax::ast::PrimType;
-    let carried = |p: PrimType| matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::String);
+    // a `Decimal<S>` is a JSON number at its scale (spec/api.md § Codecs)
+    let carried = |p: PrimType| matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::String | PrimType::Decimal(_));
     // A list is a field's: `bounded[T; N]` or `[T; N]` (spec/api.md § Codecs),
     // its element carried as a field of its type would be, and never itself a
     // list. A row's whole request or response is never a list (law 5 names it).
@@ -2883,7 +2884,7 @@ impl<'a> Schemas<'a> {
         use hale_syntax::ast::PrimType;
         let json = |p: PrimType| match p {
             PrimType::Int => Some("integer"),
-            PrimType::Float => Some("number"),
+            PrimType::Float | PrimType::Decimal(_) => Some("number"),
             PrimType::Bool => Some("boolean"),
             PrimType::String => Some("string"),
             _ => None,
@@ -2914,6 +2915,12 @@ impl<'a> Schemas<'a> {
             };
         }
         match self.shapes.classify(te) {
+            // a `Decimal<S>` is a number, named with its scale
+            // (`"x-hale-type": "Decimal<2>"`), since a reader that keeps the
+            // digits wants to know how many there are
+            TypeClass::Prim(PrimType::Decimal(scale)) => {
+                FieldSchema::Scalar { json: "number", hale_type: Some(format!("Decimal<{scale}>")), unit: None }
+            }
             TypeClass::Prim(p) => {
                 json(p).map_or(FieldSchema::Unformed, |j| FieldSchema::Scalar { json: j, hale_type: None, unit: None })
             }
