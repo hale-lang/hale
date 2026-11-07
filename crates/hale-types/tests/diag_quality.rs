@@ -1019,6 +1019,65 @@ fn a_stage_less_terminal_on_a_form_locus_names_its_iteration_surface() {
     assert_eq!(ds.len(), 3, "nothing else: {ds:?}");
 }
 
+/// A block used as a value whose trailing `match` leaves without a value
+/// in every arm (spec/semantics.md, `match` as a block's value) is refused
+/// at the block, whatever consumes it: a `let`, a match arm, an `if`
+/// expression's arm, an `or` substitute, a call argument (Int, String,
+/// Bytes), a `return`, an assignment, a record field, a Bool condition, an
+/// operand of `&&` / `||`, a `while` condition, a match guard — the
+/// shapes whose lowering would leave live blocks open after the
+/// divergence (downstream handoff review, 2026-11-07). The judgment is
+/// transitive (an `if … else …` or a nested `match` each of whose
+/// branches leaves, an endless `while true`); a trailing `match` with a
+/// diverging arm beside a valued one is the join case and passes.
+#[test]
+fn a_block_whose_trailing_match_leaves_in_every_arm_is_refused() {
+    let div = "{ match n { 0 -> { return 1; }, _ -> { return 2; } } }";
+    let sdiv = "{ match n { 0 -> { return \"a\"; }, _ -> { return \"b\"; } } }";
+    let bdiv = "{ match n { 0 -> { return true; }, _ -> { return false; } } }";
+    let src = format!(
+        r#"
+        type Rec {{ name: String = ""; }}
+        type E {{ k: Int = 0; }}
+        fn risky(n: Int) -> Int fallible(E) {{ if n > 0 {{ fail E {{ k: n }}; }} return n; }}
+        fn twice(n: Int) -> Int {{ return n * 2; }}
+        fn shout(s: String) -> String {{ return s + "!"; }}
+        fn size(b: Bytes) -> Int {{ return len(b); }}
+        fn via_let(n: Int) -> Int {{ let x = {div}; return x; }}
+        fn via_arm(n: Int) -> Int {{ let x = match n {{ 0 -> {div}, _ -> 3 }}; return x; }}
+        fn via_if(n: Int) -> Int {{ let x = if n > 5 {{ match n {{ 6 -> {{ return 6; }}, _ -> {{ return 7; }} }} }} else {{ 9 }}; return x; }}
+        fn via_or(n: Int) -> Int {{ let x = risky(n) or {{ match err.k {{ 1 -> {{ return 21; }}, _ -> {{ return 22; }} }} }}; return x; }}
+        fn int_arg(n: Int) -> Int {{ let x = twice({div}); return x; }}
+        fn string_arg(n: Int) -> String {{ let x = shout({sdiv}); return x; }}
+        fn bytes_arg(n: Int) -> Int {{ let x = size({div}); return x; }}
+        fn via_return(n: Int) -> Int {{ return {div}; }}
+        fn via_assign(n: Int) -> String {{ let mut s = ""; s = {sdiv}; return s; }}
+        fn via_field(n: Int) -> String {{ let r = Rec {{ name: {sdiv} }}; return r.name; }}
+        fn via_cond(n: Int) -> Int {{ if {div} {{ return 0; }} return 1; }}
+        fn via_and(n: Int, flag: Bool) -> Bool {{ let x = flag && {bdiv}; return x; }}
+        fn via_or_op(n: Int, flag: Bool) -> Bool {{ let x = flag || {bdiv}; return x; }}
+        fn via_while(n: Int) -> Int {{ while {div} {{ return 5; }} return 6; }}
+        fn via_guard(n: Int) -> Int {{ let x = match n {{ 0 if {div} -> 1, _ -> 2 }}; return x; }}
+        fn nested(n: Int) -> Int {{
+            let x = {{ match n {{
+                0 -> {{ if n > 1 {{ return 1; }} else {{ return 2; }} }},
+                1 -> {{ match n {{ 1 -> {{ fail_loop(); return 3; }}, _ -> {{ return 4; }} }} }},
+                _ -> {{ while true {{ fail_loop(); }} }},
+            }} }};
+            return x;
+        }}
+        fn fail_loop() {{ }}
+        fn joined(n: Int) -> Int {{ let x = {{ match n {{ 0 -> {{ return 1; }}, _ -> 3 }} }}; return x; }}
+        fn main() {{ println(joined(1)); }}
+    "#
+    );
+    let ds = diags(&src);
+    let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("this block ends in a `match` whose every arm leaves without a value")).collect();
+    assert_eq!(hits.len(), 16, "{ds:?}");
+    assert!(hits[0].contains("give an arm a value, or end the block with `return`"), "{hits:?}");
+    assert_eq!(ds.len(), 16, "nothing else, and `joined` passes: {ds:?}");
+}
+
 /// The one-owner rule (spec/memory.md, invariant 3 of the per-method
 /// scratch reclaim): a call publishes one arena for a callee that may
 /// write through its arguments, so handing it both a record a field of

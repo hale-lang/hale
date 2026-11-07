@@ -153,8 +153,16 @@ Phase 2b entry in `spec/stdlib.md`.
   `if` expression's arm, an `or { … }` substitute. There it is typed
   and lowered as a match expression (every arm one type), so
   `Kind::A -> { let m = n + 1; match m { 1 -> "one", _ -> "many" } }`
-  is an arm of a `String` match. In a block used as a statement (a fn
-  body, a loop body) it stays the statement it reads as. Until
+  is an arm of a `String` match. The trailing `match` must yield a
+  value in at least one arm: a diverging arm beside a valued one is
+  the join (only the valued arms reach it), but a `match` whose
+  every arm leaves without a value (a `return`, `fail`, `break`, an
+  endless loop, transitively through nested blocks, `if`s and
+  `match`es) makes the block no value at all, and the check refuses
+  the block ("this block ends in a \`match\` whose every arm leaves
+  without a value … give an arm a value, or end the block with
+  \`return\`"). In a block used as a statement (a fn body, a loop
+  body) it stays the statement it reads as. Until
   2026-11-06 the check passed the arm above and the build refused it
   as a block with no trailing expression, where the same arm ending
   in `if … else …` built (downstream handoff).

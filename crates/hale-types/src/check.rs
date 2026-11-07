@@ -10437,6 +10437,75 @@ fn block_always_diverges(b: &Block) -> bool {
     )
 }
 
+/// The refusal of a block used as a value whose trailing `match` leaves
+/// in every arm (`check_block_as_expr`, a match expression's block arm).
+const BLOCK_TRAILING_MATCH_LEAVES: &str = "this block ends in a `match` whose every arm leaves without a value (a `return`, \
+     `fail`, `break` or an endless loop), so the block has no value: give an arm a value, or end the \
+     block with `return` (spec/semantics.md § `match`, as a block's value)";
+
+/// Does this match arm leave without producing a value? An expression
+/// arm is a value; a block arm leaves when `block_leaves` says so.
+fn match_arm_leaves(arm: &MatchArm) -> bool {
+    match &arm.body {
+        MatchArmBody::Expr(_) => false,
+        MatchArmBody::Block(b) => block_leaves(b),
+    }
+}
+
+/// Does this block always leave without producing a value — its last
+/// statement transfers control (`return`, `fail`, `break`, `continue`,
+/// `terminate`, `violate`), or is an `if … else …` / `match` / block
+/// each of whose branches does (transitively), or a `while true` with
+/// no `break` in it? A tail is a value, so a block with one never
+/// leaves. The judgment a block used as a value is held to when it ends
+/// in a `match` (`check_block_as_expr`).
+fn block_leaves(b: &Block) -> bool {
+    if b.tail.is_some() {
+        return false;
+    }
+    match b.stmts.last() {
+        Some(Stmt::Return(..) | Stmt::Fail { .. } | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_) | Stmt::Violate { .. }) => true,
+        Some(Stmt::If(i)) => if_leaves(i),
+        Some(Stmt::Match(m)) => !m.arms.is_empty() && m.arms.iter().all(match_arm_leaves),
+        Some(Stmt::Block(inner)) => block_leaves(inner),
+        Some(Stmt::While { cond: Expr::Literal(Literal::Bool(true), _), body, .. }) => !block_has_break(body),
+        _ => false,
+    }
+}
+
+fn if_leaves(i: &IfStmt) -> bool {
+    block_leaves(&i.then_block)
+        && match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block_leaves(b),
+            Some(ElseBranch::ElseIf(n)) => if_leaves(n),
+            None => false,
+        }
+}
+
+/// A `break` anywhere in `b` (a nested loop's included: conservative,
+/// so a loop with one is never judged endless).
+fn block_has_break(b: &Block) -> bool {
+    b.stmts.iter().any(|s| match s {
+        Stmt::Break(_) => true,
+        Stmt::If(i) => if_has_break(i),
+        Stmt::Match(m) => m.arms.iter().any(|a| match &a.body {
+            MatchArmBody::Block(b) => block_has_break(b),
+            MatchArmBody::Expr(_) => false,
+        }),
+        Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::Block(body) => block_has_break(body),
+        _ => false,
+    })
+}
+
+fn if_has_break(i: &IfStmt) -> bool {
+    block_has_break(&i.then_block)
+        || match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block_has_break(b),
+            Some(ElseBranch::ElseIf(n)) => if_has_break(n),
+            None => false,
+        }
+}
+
 /// itself or can leave.
 fn block_has_flow_control(b: &Block) -> bool {
     b.stmts.iter().any(stmt_has_flow_control)
@@ -16079,6 +16148,20 @@ impl<'a> Checker<'a> {
         }
         let ty = match (&block.tail, trailing_match) {
             (Some(tail), _) => self.check_expr(tail),
+            // A trailing `match` whose every arm leaves without a value
+            // (returns, fails, breaks, loops for ever …, transitively)
+            // is not a value: nothing would reach the join, and the
+            // lowering of the value's consumer (a `&&`'s live false
+            // path, a `while` condition, a match guard) has nowhere to
+            // put what it builds after it (downstream handoff review,
+            // 2026-11-07). The admitted shape yields a value in at least
+            // one arm; a diverging arm beside a valued one is the join
+            // case. Refused at the block, the arms checked as statements.
+            (None, Some(m)) if !m.arms.is_empty() && m.arms.iter().all(match_arm_leaves) => {
+                self.check_match_core(m, false);
+                self.diags.push(Diag::ty(block.span, BLOCK_TRAILING_MATCH_LEAVES.to_string()));
+                Ty::Unknown
+            }
             (None, Some(m)) => self.check_match_core(m, true),
             (None, None) => Ty::Unit,
         };
@@ -17481,6 +17564,17 @@ impl<'a> Checker<'a> {
                 }
                 MatchArmBody::Block(b) => {
                     arm_tys.push(Ty::Unknown);
+                    // A block arm of a match expression is a block used
+                    // as a value: one ending in a `match` whose every
+                    // arm leaves is refused as `check_block_as_expr`
+                    // refuses it (the arm's value would be no value).
+                    if as_expr && b.tail.is_none() {
+                        if let Some(Stmt::Match(inner)) = b.stmts.last() {
+                            if !inner.arms.is_empty() && inner.arms.iter().all(match_arm_leaves) {
+                                self.diags.push(Diag::ty(b.span, BLOCK_TRAILING_MATCH_LEAVES.to_string()));
+                            }
+                        }
+                    }
                     self.check_block(b);
                     Ty::Unknown
                 }
