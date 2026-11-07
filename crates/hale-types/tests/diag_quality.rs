@@ -982,6 +982,43 @@ fn indexing_a_bounded_is_refused_for_at_and_set() {
     assert_eq!(ds.len(), 4, "nothing else: {ds:?}");
 }
 
+/// A stage-less chain terminal on a form locus (`v.sum(0.0d)` on a
+/// `@form(vec)`) gets the hint an array gets, naming the form's
+/// iteration surface (`v.items` for a vec, `m.entries` for a hashmap;
+/// spec/forms.md § Iteration surface): until 2026-11-06 it said only
+/// "no field `sum` on `V`" (downstream handoff). A method the locus
+/// declares is not a terminal and gets no hint.
+#[test]
+fn a_stage_less_terminal_on_a_form_locus_names_its_iteration_surface() {
+    let ds = diags(
+        r#"
+        @form(vec)
+        locus V { capacity { heap items of Decimal; } }
+        type E { k: Int; d: Decimal; }
+        @form(hashmap)
+        locus M { capacity { pool entries of E indexed_by k; } }
+        locus Holder {
+            params { v: V = V { }; }
+            fn total() -> Decimal { return self.v.sum(0.0d); }
+        }
+        fn main() {
+            let v = V { };
+            let m = M { };
+            let a = v.sum(0.0d);
+            let b = m.sum(0.0d);
+            let c = v.items.map(it).sum(0.0d);
+            let h = Holder { };
+        }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("no field `sum`")).collect();
+    assert_eq!(hits.len(), 3, "{ds:?}");
+    assert!(hits[0].contains("`@form(vec)`") && hits[0].contains("`self.v.items.map(it).sum(…)`"), "{hits:?}");
+    assert!(hits[1].contains("`v.items.map(it).sum(…)`"), "{hits:?}");
+    assert!(hits[2].contains("`@form(hashmap)`") && hits[2].contains("`m.entries.map(it).sum(…)`"), "{hits:?}");
+    assert_eq!(ds.len(), 3, "nothing else: {ds:?}");
+}
+
 /// The one-owner rule (spec/memory.md, invariant 3 of the per-method
 /// scratch reclaim): a call publishes one arena for a callee that may
 /// write through its arguments, so handing it both a record a field of

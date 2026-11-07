@@ -24116,6 +24116,33 @@ impl<'a> Checker<'a> {
                                     name.name
                                 );
                             }
+                            // The same terminal on a form locus
+                            // (`v.sum(0.0d)` on a `@form(vec)`): the
+                            // chain anchors on the form's iteration
+                            // surface (spec/forms.md § Iteration
+                            // surface), so the hint names it. Until
+                            // 2026-11-06 only an array or a `bounded`
+                            // got the hint (downstream handoff).
+                            if hint.is_empty() && hale_syntax::chains::is_terminal(&name.name) {
+                                if let Ty::Named(tn) = &rt {
+                                    if let Some(form) = self.locus_decls.get(tn.as_str()).and_then(|d| d.form.as_ref()) {
+                                        let surface = match form.name.name.as_str() {
+                                            "hashmap" => "entries",
+                                            _ => "items",
+                                        };
+                                        hint = format!(
+                                            " — an element chain needs a stage before \
+                                             its terminal, and a `@form({})` is chained \
+                                             through its iteration surface: write \
+                                             `{}.{surface}.map(it).{}(…)` (`map(it)` \
+                                             passes each element through)",
+                                            form.name.name,
+                                            Self::spell_receiver(receiver),
+                                            name.name
+                                        );
+                                    }
+                                }
+                            }
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(
