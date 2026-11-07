@@ -61,6 +61,14 @@ pub(crate) trait BusWire<'ctx> {
         fail_block: inkwell::basic_block::BasicBlock<'ctx>,
         site: &str,
     ) -> Result<(), CodegenError>;
+    fn emit_de_len_fits(
+        &mut self,
+        len: inkwell::values::IntValue<'ctx>,
+        after_prefix: inkwell::values::IntValue<'ctx>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
+        site: &str,
+    ) -> Result<(), CodegenError>;
     fn wire_min_size(&self, t: &CodegenTy) -> u64;
     fn wire_min_size_of_fields(
         &self,
@@ -476,6 +484,39 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             self.emit_ser_memcpy(dst, src, total_iv, site)?;
         } else {
             self.emit_memcpy_call(dst, src, total_iv, site)?;
+            // The wire twin holds the count the storage carries to the
+            // bound: a frame saying more elements than `N` would be a
+            // malformed bounded object delivered (reviewer, 2026-11-07).
+            if let Some((_, fail_block)) = bound {
+                if self.de_checked {
+                    let count = self
+                        .builder
+                        .build_load(i64_t, field_storage_ptr, &format!("{}.count", site))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_int_value();
+                    let too_many = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::UGT,
+                            count,
+                            i64_t.const_int(n, false),
+                            &format!("{}.count.bad", site),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let ok_block = self.context.append_basic_block(
+                        self.builder
+                            .get_insert_block()
+                            .expect("insert block set")
+                            .get_parent()
+                            .expect("block has parent fn"),
+                        &format!("{}.count.ok", site),
+                    );
+                    self.builder
+                        .build_conditional_branch(too_many, fail_block, ok_block)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(ok_block);
+                }
+            }
         }
         let after = self
             .builder
@@ -577,6 +618,48 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 .get_parent()
                 .expect("block has parent fn"),
             &format!("{}.len.ok", site),
+        );
+        self.builder
+            .build_conditional_branch(too_big, fail_block, ok_block)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(ok_block);
+        Ok(())
+    }
+
+    /// The wire twin's check of a raw length read off the frame, before
+    /// anything is added to it or allocated from it: `len <= wire_n -
+    /// after_prefix`, unsigned (`after_prefix <= wire_n` holds, the
+    /// prefix's own read having passed `emit_de_need`), so a negative
+    /// length fails here as a huge one, and never reaches a sum that
+    /// could wrap (reviewer, 2026-11-07: a Bytes length of -8 made
+    /// `len + 8` zero, and a zero-byte Bytes object was delivered with
+    /// the tail read from the prefix). A no-op in the local decoder.
+    fn emit_de_len_fits(
+        &mut self,
+        len: inkwell::values::IntValue<'ctx>,
+        after_prefix: inkwell::values::IntValue<'ctx>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
+        site: &str,
+    ) -> Result<(), CodegenError> {
+        if !self.de_checked {
+            return Ok(());
+        }
+        let remaining = self
+            .builder
+            .build_int_sub(wire_n, after_prefix, &format!("{}.fits.remaining", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let too_big = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::UGT, len, remaining, &format!("{}.fits.bad", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ok_block = self.context.append_basic_block(
+            self.builder
+                .get_insert_block()
+                .expect("insert block set")
+                .get_parent()
+                .expect("block has parent fn"),
+            &format!("{}.fits.ok", site),
         );
         self.builder
             .build_conditional_branch(too_big, fail_block, ok_block)
@@ -1407,7 +1490,9 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                     // The length read off the wire, against the bytes
                     // after it (not the whole frame: a nested or later
                     // String used to pass on a length the frame held
-                    // only from its start).
+                    // only from its start), before anything is added to
+                    // it.
+                    self.emit_de_len_fits(str_len, after_len, wire_n, fail_block, "de.str")?;
                     self.emit_de_need(after_len, str_len, wire_n, fail_block, "de.str.bytes")?;
                     let src_after_len = unsafe {
                         self.builder
@@ -1538,6 +1623,19 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                         .into_int_value();
                     self.emit_de_legacy_len_check(bytes_len, wire_n, fail_block, "de.bytes")?;
+                    // The raw length against what the frame holds after
+                    // its prefix, BEFORE the `+ 8`: a length of -8 made
+                    // the sum zero and passed the sum's check (reviewer,
+                    // 2026-11-07).
+                    let after_prefix = self
+                        .builder
+                        .build_int_add(
+                            cursor_iv,
+                            i64_t.const_int(8, false),
+                            "de.nested.bytes.after.prefix",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.emit_de_len_fits(bytes_len, after_prefix, wire_n, fail_block, "de.bytes")?;
                     let total = self
                         .builder
                         .build_int_add(
@@ -1547,8 +1645,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     // The prefix and the blob it announces, against
-                    // what the frame holds after the cursor; a length
-                    // that wraps the sum fails as a short frame does.
+                    // what the frame holds after the cursor.
                     self.emit_de_need(cursor_iv, total, wire_n, fail_block, "de.bytes.blob")?;
                     let alloc_fn = self
                         .module

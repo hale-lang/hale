@@ -76,6 +76,19 @@ const STRING_SUBSCRIBER: &str = r#"
     fn main() { App { }; }
 "#;
 
+const BYTES_SUBSCRIBER: &str = r#"
+    type Msg { tag: Int; payload: Bytes; tail: Int; }
+    locus Sub {
+        bus { subscribe "evt" as on_evt of type Msg; }
+        fn on_evt(m: Msg) { println("got tag=" + to_string(m.tag) + " size=" + to_string(len(m.payload)) + " tail=" + to_string(m.tail)); }
+    }
+    main locus App {
+        params { s: Sub = Sub { }; }
+        run() { while !self.draining { std::time::sleep(20ms); } println("main run done"); }
+    }
+    fn main() { App { }; }
+"#;
+
 struct Stopped(std::process::Child);
 impl Drop for Stopped {
     fn drop(&mut self) {
@@ -267,4 +280,40 @@ fn a_string_payload_whose_announced_length_runs_past_the_frame_is_dropped() {
     assert_eq!(got(&out), vec!["got tag=1 name=hi", "got tag=4 name=ok"], "stdout:\n{out}\nstderr:\n{stderr}");
     assert_eq!(counter(&stderr, "delivered"), 2, "{stderr}");
     assert_eq!(counter(&stderr, "dropped_decode"), 3, "a lying length, a negative one, a short frame:\n{stderr}");
+}
+
+#[test]
+fn a_bytes_length_that_wraps_its_header_sum_is_dropped() {
+    // reviewer, 2026-11-07: the Bytes read summed `len + 8` before the
+    // frame check, so a length of -8 made the sum zero: cursor + 0 fit,
+    // a zero-byte Bytes object was allocated, and the tail was read from
+    // the prefix (-8). The raw length is now held to the bytes after its
+    // prefix before any sum.
+    let l = Listener::start("bytes", BYTES_SUBSCRIBER);
+    let probe = UdpSocket::bind("127.0.0.1:0").expect("probe socket");
+    // the wire form of `Msg`: the tag's 8 bytes, the payload's 8-byte length, its bytes, the tail's 8
+    let frame = |tag: i64, len: u64, bytes: &[u8], tail: i64| {
+        let mut f = Vec::new();
+        f.extend_from_slice(&tag.to_le_bytes());
+        f.extend_from_slice(&len.to_le_bytes());
+        f.extend_from_slice(bytes);
+        f.extend_from_slice(&tail.to_le_bytes());
+        f
+    };
+    l.send(&probe, &frame(1, 2, b"hi", 9));
+    assert!(wait_for_line(&l.lines, "got tag=1 size=2 tail=9", Duration::from_secs(10)), "stdout:\n{}", l.lines.lock().unwrap().join("\n"));
+    // the reviewer's frame: 24 bytes, tag 42, length 0xfffffffffffffff8, tail 73
+    let f = frame(42, 0xffff_ffff_ffff_fff8, b"", 73);
+    assert_eq!(f.len(), 24);
+    l.send(&probe, &f);
+    // a length of -1: the header's eight bytes would be short-copied
+    l.send(&probe, &frame(43, 0xffff_ffff_ffff_ffff, b"", 74));
+    // a valid frame after them is delivered
+    l.send(&probe, &frame(4, 3, b"end", 5));
+    assert!(wait_for_line(&l.lines, "got tag=4 size=3 tail=5", Duration::from_secs(10)), "stdout:\n{}", l.lines.lock().unwrap().join("\n"));
+    let (status, _, stderr, out) = l.stop();
+    assert!(status.success(), "{status:?}\nstdout:\n{out}\nstderr:\n{stderr}");
+    assert_eq!(got(&out), vec!["got tag=1 size=2 tail=9", "got tag=4 size=3 tail=5"], "stdout:\n{out}\nstderr:\n{stderr}");
+    assert_eq!(counter(&stderr, "delivered"), 2, "{stderr}");
+    assert_eq!(counter(&stderr, "dropped_decode"), 2, "the wrapping length and the -1 length:\n{stderr}");
 }
