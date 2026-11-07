@@ -191,7 +191,12 @@ no digit past the scale to print).
 their result flows into (scale 9 where nothing gives one): `let p:
 Decimal<18> = std::str::parse_decimal(s) or raise;`. Text with a
 nonzero digit past that scale is the call's `ParseError`, never a
-truncation; zeros past it are accepted.
+truncation; zeros past it are accepted. So is text whose mantissa at
+that scale no i128 holds (`12345678901234567890123456789012.5` at
+scale 8, or forty integer digits at any scale): a refusal, never a
+wrong number (2026-11-07, downstream handoff: the overflow guard
+relied on signed overflow wrapping, which C leaves undefined, and the
+compiler dropped it, so such text read as a negative value).
 
 **On the wire.** A bus payload carries the mantissa (16 bytes) and
 the scale is the topic's type, so a field round-trips every digit its

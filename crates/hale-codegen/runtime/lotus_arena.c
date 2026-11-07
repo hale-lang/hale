@@ -26605,6 +26605,14 @@ int lotus_str_can_parse_float(const char *s) {
  * On malformed / overflowed input, writes 0,0 and the can-variant
  * returns 0. Callers that need to distinguish "0.0" from "bad input"
  * gate on lotus_str_can_parse_decimal first.
+ *
+ * Overflow is checked with the compiler's overflow builtins
+ * (downstream handoff, 2026-11-07): the guard used to be
+ * `mantissa * 10 + d` followed by `mantissa / 10 != prev`, which
+ * relies on signed i128 overflow wrapping — undefined in C, and
+ * clang folded the comparison away, so a mantissa past i128
+ * (`12345678901234567890123456789012.5` at scale 8) came back as a
+ * wrong, negative number instead of a refusal.
  */
 static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
     scale = lotus_dec_clamp_scale(scale);
@@ -26627,10 +26635,10 @@ static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
         if (c >= '0' && c <= '9') {
             seen_digit = 1;
             if (!seen_dot || frac_digits < scale) {
-                __int128 prev = mantissa;
-                mantissa = mantissa * 10 + (__int128)(c - '0');
-                /* overflow guard: re-divide and compare */
-                if (mantissa / 10 != prev) return 0;
+                if (__builtin_mul_overflow(mantissa, (__int128)10, &mantissa) ||
+                    __builtin_add_overflow(mantissa, (__int128)(c - '0'), &mantissa)) {
+                    return 0;  /* past i128: not representable */
+                }
                 if (seen_dot) frac_digits += 1;
             } else if (c != '0') {
                 return 0;  /* past the scale: not representable */
@@ -26645,9 +26653,7 @@ static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
     }
     if (!seen_digit) return 0;
     while (frac_digits < scale) {
-        __int128 prev = mantissa;
-        mantissa = mantissa * 10;
-        if (mantissa / 10 != prev) return 0;
+        if (__builtin_mul_overflow(mantissa, (__int128)10, &mantissa)) return 0;
         frac_digits += 1;
     }
     *out = sign * mantissa;
