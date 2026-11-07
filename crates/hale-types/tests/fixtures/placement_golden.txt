@@ -9048,6 +9048,10 @@ row	Counter@main1	Counter	main	default
 root	Till	the entry
 row	Till@literal1	Till	main	default
 
+== tests/hale/units_time_test.hl
+row	Poll@main1	Poll	main	default
+row	Poll@main2	Poll	main	default
+
 == tests/hale/violate_in_value_method_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

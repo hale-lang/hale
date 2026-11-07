@@ -31,6 +31,18 @@ type Header { send_ns: Int; send_us: Int; }
 // A name for `Duration in s`, so a handler can return one.
 type Seconds = Duration in s;
 
+// A refinement counted in milliseconds.
+type Millis = Duration in ms;
+
+// A locus param's default of a refinement: the literal is the count its
+// row says (100 of `Millis`, 1 of `Bucket`), not the catalogue's
+// nanoseconds, and an override flows into the same type (downstream
+// handoff: the build refused `every: Millis = 100ms` as "declared Int,
+// default Duration").
+locus Poll {
+    params { every: Millis = 100ms; bucket: Bucket = 150ms; raw: Duration = 100ms; }
+}
+
 // The `InexactError` of a conversion that divides says by how much.
 fn divisor(e: InexactError) -> Seconds {
     std::test::assert_eq_str(e.kind, "Duration in s", "the target of `d.in(s)`");
@@ -89,6 +101,19 @@ fn main() {
     let late = 0ms - 150ms;
     let before: Bucket = late;
     std::test::assert(before == 0ms - 200ms, "floor rounds a negative count down");
+
+    // A param default of a refinement, read back as that refinement.
+    let poll = Poll { };
+    std::test::assert_eq_str(to_string(poll.every), "100ms", "the default, counted in ms");
+    std::test::assert(poll.every == poll.raw, "100 ms is the same span as 100,000,000 ns");
+    std::test::assert_eq_str(
+        to_string(poll.bucket),
+        "1 Bucket",
+        "150ms is one bucket: floor, at compile time",
+    );
+    let faster = Poll { every: 25ms, bucket: 2s };
+    std::test::assert(faster.every == 25ms, "an override flows into the refinement");
+    std::test::assert_eq_str(to_string(faster.bucket), "20 Bucket", "and into the policy type");
 
     // Bytes are a quantity of their own.
     std::test::assert(4KiB == 4096B, "a KiB is 1024 B");

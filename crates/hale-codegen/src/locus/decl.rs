@@ -271,8 +271,26 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     };
                     // Try to lock in as a literal Const first; fall
                     // back to deferred Expr if that fails.
+                    let literal = param_value(default_expr, p.ty.as_ref());
+                    // GH #1076: a time literal's constant is the stdlib
+                    // catalogue's count of `Duration`; into a program's
+                    // refinement of it (`Duration in ms`, an `Int` here)
+                    // the literal is the count its row says, which the
+                    // deferred form reads where the locus is built
+                    // (downstream handoff: `d: Millis = 100ms` was
+                    // refused as "declared Int, default Duration").
+                    let literal = match (literal, p.ty.as_ref()) {
+                        (Ok(ParamValue::Duration(_)), Some(ascribed))
+                            if self.type_expr_to_codegen_ty(ascribed)? != CodegenTy::Duration =>
+                        {
+                            Err(CodegenError::Unsupported(
+                                "a quantity literal into a refinement lowers from its row".to_string(),
+                            ))
+                        }
+                        (other, _) => other,
+                    };
                     let (default, default_ty): (DefaultInit, CodegenTy) =
-                        match param_value(default_expr, p.ty.as_ref()) {
+                        match literal {
                             Ok(pv) => {
                                 let ty = match &pv {
                                     ParamValue::Int(_) => CodegenTy::Int,
