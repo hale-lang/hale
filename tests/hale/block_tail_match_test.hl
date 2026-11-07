@@ -67,7 +67,117 @@ fn early(n: Int) -> String {
     return s;
 }
 
+// A trailing match whose every arm leaves makes the block a diverging
+// one, legal where a diverging expression is: a match arm (beside valued
+// arms, or beside none), an `if` arm beside one that yields the value,
+// an `or { … }` substitute. v0.32.7 built `choose`; 2026-11-07 refused
+// it with the shapes whose lowering crashed (`&&`, a `while` condition, a
+// match guard), which stay refused (downstream handoff review).
+
+fn choose(n: Int) -> Int {
+    let v = match n {
+        0 -> {
+            10
+        },
+        _ -> {
+            match n {
+                1 -> {
+                    return 11;
+                },
+                _ -> {
+                    return 12;
+                },
+            }
+        },
+    };
+    return v;
+}
+
+fn all_arms(n: Int) -> Int {
+    let v = match n {
+        0 -> {
+            return 10;
+        },
+        _ -> {
+            match n {
+                1 -> {
+                    return 11;
+                },
+                _ -> {
+                    return 12;
+                },
+            }
+        },
+    };
+    return v;
+}
+
+fn if_arm(n: Int) -> Int {
+    let v = if n > 5 {
+        match n {
+            6 -> {
+                return 6;
+            },
+            _ -> {
+                return 7;
+            },
+        }
+    } else {
+        9
+    };
+    return v;
+}
+
+type Err {
+    kind: String = "";
+}
+
+fn risky(n: Int) -> Int fallible(Err) {
+    if n > 0 {
+        fail Err { kind: "pos" };
+    }
+    return n;
+}
+
+fn or_valued(n: Int) -> Int {
+    let v = risky(n) or {
+        let k = err.kind;
+        match k {
+            "pos" -> 100,
+            _ -> 200,
+        }
+    };
+    return v;
+}
+
+fn or_leaving(n: Int) -> Int {
+    let v = risky(n) or {
+        match err.kind {
+            "pos" -> {
+                return 100;
+            },
+            _ -> {
+                return 200;
+            },
+        }
+    };
+    return v + 1;
+}
+
 fn main() {
+    std::test::assert_eq_int(choose(0), 10, "the valued arm");
+    std::test::assert_eq_int(choose(1), 11, "the leaving arm's first return");
+    std::test::assert_eq_int(choose(2), 12, "the leaving arm's second return");
+    std::test::assert_eq_int(all_arms(0), 10, "every arm leaves: the first");
+    std::test::assert_eq_int(all_arms(1), 11, "every arm leaves: the nested match");
+    std::test::assert_eq_int(all_arms(2), 12, "every arm leaves: its other arm");
+    std::test::assert_eq_int(if_arm(6), 6, "an if arm whose match returns");
+    std::test::assert_eq_int(if_arm(9), 7, "its other return");
+    std::test::assert_eq_int(if_arm(1), 9, "the else arm supplies the value");
+    std::test::assert_eq_int(or_valued(0), 0, "the call's success");
+    std::test::assert_eq_int(or_valued(1), 100, "an or block with a statement before its match");
+    std::test::assert_eq_int(or_leaving(0), 1, "the success, plus one");
+    std::test::assert_eq_int(or_leaving(1), 100, "the or block's match returns");
     std::test::assert_eq_str(pick(Kind::A, 0), "one", "an arm block ending in a match");
     std::test::assert_eq_str(pick(Kind::A, 5), "many", "the other inner arm");
     std::test::assert_eq_str(pick(Kind::B, 0), "b", "the expression arm beside it");
