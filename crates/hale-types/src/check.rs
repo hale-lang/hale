@@ -1567,6 +1567,9 @@ pub fn check_bundle_rules(
         placement: inputs.placement,
     };
     diags.extend(Law { rule: DROPPED_DELIVERY, eval: check_scope_local_subscriber_on_classic_pool }.diags(&rows));
+    // A subscriber built as a statement (or a local) with no `run()` to
+    // hold it, torn down before any delivery.
+    diags.extend(Law { rule: STATEMENT_SUBSCRIBER, eval: check_subscriber_torn_down_at_its_statement }.diags(&rows));
     // A publish written before the literal that builds its subscriber:
     // the cell reaches the subscribers registered when it is published
     // (spec/runtime.md § "Lifecycle obligations", line 6), so not that one.
@@ -4001,6 +4004,113 @@ fn check_scope_local_subscriber_on_classic_pool(rows: &ScopeLocalSubscriberRows<
         }
     }
 }
+/// A subscriber built as a statement, or as a local, with no `run()` to
+/// hold it: torn down at the statement's end, before any delivery.
+const STATEMENT_SUBSCRIBER: RuleId = RuleId::registered("verification/structural", "subscriber-torn-down-at-its-statement");
+
+/// A locus literal in statement position, or let-bound and never stored,
+/// returned or sent on, whose locus subscribes on the bus (itself, or a
+/// subscriber it keeps for its whole life: `loci_keeping_a_subscriber`)
+/// and writes neither `birth()` nor `run()`, with no `accept` of its
+/// type owning it: it is born and torn down inside the statement
+/// (spec/semantics.md § "Locus instantiation": with no accepting
+/// ancestor the child is a transient throwaway; a statement-built locus
+/// with no `run()` is torn down at once, and its subscriptions with it),
+/// so a delivery can never reach it, and with no hook of its own the
+/// build was for the hearing alone. A statement-position locus with a
+/// `run()` runs it and hears while it runs, and one with a `birth()`
+/// does its work there (spec/styleguide.md § App locus: statement
+/// literals fire and forget), so neither is reported; nor is the entry
+/// (`main locus`), whose life is the program's. Reported at the literal,
+/// in any body (a lifecycle hook, a method, a free fn) but a bus
+/// handler's, where type-check rule 20 already refuses an unowned
+/// subscriber. Until 2026-11-06 such a program was silent at the check
+/// and at run time (downstream handoff).
+fn check_subscriber_torn_down_at_its_statement(rows: &ScopeLocalSubscriberRows<'_, '_>, out: &mut Vec<Violation>) {
+    use crate::alloc_summary::{AllocKind, EntryKind, Escape};
+    use crate::ownership_graph::OwnerResolution;
+    let ScopeLocalSubscriberRows { bundle, top, summary, ownership, .. } = *rows;
+    // The loci whose author wrote a `birth()` or a `run()` (the omitted
+    // `run` is synthesized, `LifecycleDecl::synthesized`), and the entry.
+    let mut works: BTreeSet<&str> = BTreeSet::new();
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            if let TopDecl::Locus(l) = item {
+                let written = l.members.iter().any(|m| {
+                    matches!(m, LocusMember::Lifecycle(lc)
+                        if matches!(lc.kind, LifecycleKind::Run | LifecycleKind::Birth) && !lc.synthesized)
+                });
+                if written || l.is_main {
+                    works.insert(l.name.name.as_str());
+                }
+            }
+        });
+    }
+    let mut fns: Vec<&crate::alloc_summary::FnSummary> =
+        summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
+    fns.sort_by_key(|f| f.decl_index);
+    let mut kept: Option<BTreeSet<String>> = None;
+    for f in fns {
+        if f.entry == Some(EntryKind::BusHandler) {
+            continue;
+        }
+        for s in f.sites.iter().chain(&f.in_place_sites) {
+            let AllocKind::StructLit(lit) = &s.kind else { continue };
+            if s.escape != Escape::Local {
+                continue;
+            }
+            let short = lit.rsplit("::").next().unwrap_or(lit);
+            if works.contains(short) {
+                continue;
+            }
+            let subscribes = matches!(top.lookup(lit), Some(TopSymbol::Locus(li)) if !li.bus_subscribes.is_empty());
+            if !subscribes {
+                let keeping = kept.get_or_insert_with(|| loci_keeping_a_subscriber(top, summary, ownership));
+                if !keeping.contains(lit.as_str()) {
+                    continue;
+                }
+            }
+            let owned = ownership.sites.iter().any(|o| {
+                o.span == s.span
+                    && matches!(
+                        o.resolution,
+                        OwnerResolution::SelfOwned(_) | OwnerResolution::Ancestor(_) | OwnerResolution::PerPath(_)
+                    )
+            });
+            if owned {
+                continue;
+            }
+            let call = match &f.key.locus {
+                Some(l) => format!("{}.{}", l, f.key.fn_name),
+                None => f.key.fn_name.clone(),
+            };
+            let what = if subscribes {
+                "subscribes on the bus"
+            } else {
+                "holds a bus subscriber for its whole life (one its construction or its bodies build and keep)"
+            };
+            let (built, end) = if s.bare_stmt {
+                ("as a statement of", "at the statement's end")
+            } else {
+                ("as a local of", "when the local's scope ends")
+            };
+            let holder = match &f.key.locus {
+                Some(l) => format!("in `{}`", l.rsplit("::").next().unwrap_or(l)),
+                None => "in a locus that builds it".to_string(),
+            };
+            out.push(Violation::warning(
+                STATEMENT_SUBSCRIBER,
+                s.span,
+                format!(
+                    "`{short}` {what}, and this literal builds it {built} `{call}` with no `birth()` or `run()` \
+                     of its own: it is torn down {end}, its subscription with it, so no delivery can reach it. \
+                     `accept` it {holder} (`accept(c: {short}) {{ }}`), or hold it in a field."
+                ),
+            ));
+        }
+    }
+}
+
 /// The birth-order trap.
 const BIRTH_ORDER: RuleId = RuleId::registered("verification/structural", "birth-order-trap");
 

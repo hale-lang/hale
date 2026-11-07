@@ -31,6 +31,8 @@ mod check_lowering_laws;
 mod check_publish_before_subscriber;
 #[path = "check_scope_local_subscriber.rs"]
 mod check_scope_local_subscriber;
+#[path = "check_subscriber_torn_down.rs"]
+mod check_subscriber_torn_down;
 #[path = "check_secret_reveal.rs"]
 mod check_secret_reveal;
 #[path = "check_stdlib_names.rs"]
