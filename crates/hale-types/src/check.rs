@@ -1343,6 +1343,7 @@ fn walk_bundle(
         templates: &templates,
         generic_bindings: BTreeMap::new(),
         specializing: None,
+        block_may_leave: false,
         next_handling: crate::typed_bodies::Handling::Bare,
         handling: crate::typed_bodies::Handling::Bare,
         scalars: crate::unit_values::ScalarTypes::new(inputs.units, top),
@@ -10405,20 +10406,17 @@ fn block_always_diverges(b: &Block) -> bool {
     if b.tail.is_some() {
         return false;
     }
-    matches!(
-        b.stmts.last(),
-        Some(
-            Stmt::Break(_)
-                | Stmt::Continue(_)
-                | Stmt::Return(..)
-                | Stmt::Fail { .. }
-                | Stmt::Terminate(_)
-        )
-    )
+    match b.stmts.last() {
+        Some(Stmt::Break(_) | Stmt::Continue(_) | Stmt::Return(..) | Stmt::Fail { .. } | Stmt::Terminate(_)) => true,
+        // A trailing `match` whose every arm leaves (`match_arm_leaves`).
+        Some(Stmt::Match(m)) => !m.arms.is_empty() && m.arms.iter().all(match_arm_leaves),
+        _ => false,
+    }
 }
 
 /// The refusal of a block used as a value whose trailing `match` leaves
-/// in every arm (`check_block_as_expr`, a match expression's block arm).
+/// in every arm, where a value is required of the block and nothing
+/// else supplies one (`check_block_as_expr`).
 const BLOCK_TRAILING_MATCH_LEAVES: &str = "this block ends in a `match` whose every arm leaves without a value (a `return`, \
      `fail`, `break` or an endless loop), so the block has no value: give an arm a value, or end the \
      block with `return` (spec/semantics.md § `match`, as a block's value)";
@@ -11413,6 +11411,13 @@ struct Checker<'a> {
     /// on the ordinary walk.
     generic_bindings: BTreeMap<String, Ty>,
     specializing: Option<Vec<Ty>>,
+    /// Set by a consumer that supplies a value of its own when the block
+    /// it is about to check leaves (an `if` expression's arm, with the
+    /// other arm; an `or { … }` substitute, with the call's success) for
+    /// the next `check_block_as_expr`, which takes it: such a block may
+    /// end in a `match` whose every arm leaves. Nothing beneath that
+    /// block inherits it.
+    block_may_leave: bool,
     /// What addresses the expression the next `check_expr` walks: an
     /// `or` sets it for its operand and its handler, and the walk takes
     /// it, so nothing beneath that expression inherits it.
@@ -16117,6 +16122,7 @@ impl<'a> Checker<'a> {
     /// build lowers it (`lower_block_as_expr`). A tail-less block ending
     /// in anything else is `()`.
     fn check_block_as_expr(&mut self, block: &Block) -> Ty {
+        let may_leave = std::mem::take(&mut self.block_may_leave);
         self.locals.push();
         let trailing_match = match (block.tail.as_ref(), block.stmts.split_last()) {
             (None, Some((Stmt::Match(m), _))) => Some(m),
@@ -16130,16 +16136,24 @@ impl<'a> Checker<'a> {
             (Some(tail), _) => self.check_expr(tail),
             // A trailing `match` whose every arm leaves without a value
             // (returns, fails, breaks, loops for ever …, transitively)
-            // is not a value: nothing would reach the join, and the
-            // lowering of the value's consumer (a `&&`'s live false
-            // path, a `while` condition, a match guard) has nowhere to
-            // put what it builds after it (downstream handoff review,
-            // 2026-11-07). The admitted shape yields a value in at least
-            // one arm; a diverging arm beside a valued one is the join
-            // case. Refused at the block, the arms checked as statements.
+            // makes the block a diverging one: it is legal where a
+            // diverging expression is — an `if` expression's arm beside
+            // one that supplies the value, an `or { … }` substitute (the
+            // consumer set `block_may_leave`), a match expression's block
+            // arm (checked as a statement in `check_match_core`, not
+            // here) — and refused where a value is required of it and
+            // nothing else supplies one: a `let`, a call argument, a
+            // `return`, an assignment, a field, a condition, and the
+            // operands of `&&` / `||`, a `while` condition and a match
+            // guard, whose lowering has nowhere to put what it builds
+            // after the divergence (downstream handoff review,
+            // 2026-11-07). Refused at the block, the arms checked as
+            // statements.
             (None, Some(m)) if !m.arms.is_empty() && m.arms.iter().all(match_arm_leaves) => {
                 self.check_match_core(m, false);
-                self.diags.push(Diag::ty(block.span, BLOCK_TRAILING_MATCH_LEAVES.to_string()));
+                if !may_leave {
+                    self.diags.push(Diag::ty(block.span, BLOCK_TRAILING_MATCH_LEAVES.to_string()));
+                }
                 Ty::Unknown
             }
             (None, Some(m)) => self.check_match_core(m, true),
@@ -17374,10 +17388,16 @@ impl<'a> Checker<'a> {
                 format!("if condition must be Bool; got `{}`", ct.display()),
             ));
         }
+        // An arm may leave (end in a `match` whose every arm does): the
+        // other arm supplies the value.
+        self.block_may_leave = true;
         let then_ty = self.check_block_as_expr(&stmt.then_block);
         let else_ty = match &stmt.else_block {
             Some(b) => match b.as_ref() {
-                ElseBranch::Else(blk) => self.check_block_as_expr(blk),
+                ElseBranch::Else(blk) => {
+                    self.block_may_leave = true;
+                    self.check_block_as_expr(blk)
+                }
                 ElseBranch::ElseIf(nested) => self.check_if_as_expr(nested),
             },
             None => Ty::Unit,
@@ -17544,17 +17564,11 @@ impl<'a> Checker<'a> {
                 }
                 MatchArmBody::Block(b) => {
                     arm_tys.push(Ty::Unknown);
-                    // A block arm of a match expression is a block used
-                    // as a value: one ending in a `match` whose every
-                    // arm leaves is refused as `check_block_as_expr`
-                    // refuses it (the arm's value would be no value).
-                    if as_expr && b.tail.is_none() {
-                        if let Some(Stmt::Match(inner)) = b.stmts.last() {
-                            if !inner.arms.is_empty() && inner.arms.iter().all(match_arm_leaves) {
-                                self.diags.push(Diag::ty(b.span, BLOCK_TRAILING_MATCH_LEAVES.to_string()));
-                            }
-                        }
-                    }
+                    // A block arm is checked as a statement: one ending
+                    // in a `match` whose every arm leaves is a diverging
+                    // arm, beside the arms that supply the value (or
+                    // none, when the whole match expression diverges, as
+                    // one whose every arm returns does).
                     self.check_block(b);
                     Ty::Unknown
                 }
@@ -24599,6 +24613,10 @@ impl<'a> Checker<'a> {
                             },
                         );
                         self.next_handling = crate::typed_bodies::Handling::Handler(*span);
+                        // A substitute block may leave (end in a `match`
+                        // whose every arm does): the call's success is
+                        // the value.
+                        self.block_may_leave = matches!(rhs.as_ref(), Expr::Block(_));
                         let rhs_ty = self.check_expr(rhs);
                         self.locals.pop();
                         // 2026-05-18 — locus → interface coercion at
