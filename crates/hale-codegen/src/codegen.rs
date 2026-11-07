@@ -22311,6 +22311,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let _ = self.lower_match_core(m, &mut inner, Some(&mut cap))?;
         // The core leaves the builder positioned at `match.after`.
         if cap.arm_values.is_empty() {
+            // Every arm ended control flow, so `match.after` is reached
+            // only by the no-arm-matched edge, which exhaustiveness
+            // (F.18) rules out for a checked program: close the block
+            // as the statement form does (panic, then unreachable),
+            // or the fn is left with a block that has no terminator
+            // (downstream handoff review, 2026-11-06).
+            let panic_fn = self
+                .module
+                .get_function("lotus_root_panic")
+                .expect("lotus_root_panic declared");
+            let ptr_t = self.context.ptr_type(inkwell::AddressSpace::default());
+            let i64_t = self.context.i64_type();
+            let msg = self.global_string(
+                "MatchFellThrough (no arm of a match whose every arm \
+                 diverges matched its scrutinee)",
+            );
+            self.builder
+                .build_call(
+                    panic_fn,
+                    &[ptr_t.const_null().into(), i64_t.const_zero().into(), msg.into()],
+                    "matchx.fallthrough.panic",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let undef = self.context.i32_type().get_undef();
             return Ok((undef.into(), CodegenTy::Int, BlockEnd::Terminated));
         }

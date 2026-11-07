@@ -157,3 +157,32 @@ fn match_expr_nested_in_arithmetic() {
     assert!(status.success(), "exit: {:?}", status);
     assert!(stdout.contains("total=15"), "got: {:?}", stdout);
 }
+
+/// A match arm's block whose trailing `match` diverges in every arm
+/// (`return`s): the block's value is that match (spec/semantics.md,
+/// `match` as a block's value), and with no arm value to merge the
+/// merge block `match.after` is reached by no edge but the no-arm-matched
+/// one, which is closed as the statement form closes it. Until 2026-11-06
+/// (downstream handoff review) the block was left with no terminator and
+/// the build failed in LLVM's verifier.
+#[test]
+fn match_expr_arm_block_whose_trailing_match_diverges_in_every_arm() {
+    let src = r#"
+        fn choose(n: Int) -> Int {
+            let x = match n {
+                0 -> {
+                    match n {
+                        0 -> { return 1; },
+                        _ -> { return 2; },
+                    }
+                },
+                _ -> 3,
+            };
+            return x;
+        }
+        fn main() { println(choose(0)); println(choose(5)); }
+    "#;
+    let (out, status) = build_and_run("diverging_trailing_match", src);
+    assert!(status.success(), "{status:?}");
+    assert_eq!(out, "1\n3\n");
+}

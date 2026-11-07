@@ -67,7 +67,30 @@ fn early(n: Int) -> String {
     return s;
 }
 
+fn choose(n: Int) -> Int {
+    let x = match n {
+        0 -> {
+            match n {
+                0 -> {
+                    return 1;
+                },
+                _ -> {
+                    return 2;
+                },
+            }
+        },
+        _ -> 3,
+    };
+    return x;
+}
+
 fn main() {
+    std::test::assert_eq_int(
+        choose(0),
+        1,
+        "an arm block whose trailing match diverges in every arm",
+    );
+    std::test::assert_eq_int(choose(5), 3, "the open arm beside it");
     std::test::assert_eq_str(pick(Kind::A, 0), "one", "an arm block ending in a match");
     std::test::assert_eq_str(pick(Kind::A, 5), "many", "the other inner arm");
     std::test::assert_eq_str(pick(Kind::B, 0), "b", "the expression arm beside it");
