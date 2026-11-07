@@ -245,6 +245,35 @@ fn untimed_waits_wake_with_their_closed_outcome() {
     }
 }
 
+/// A loop in a method the stopped `run()` calls has no back-edge stop, and
+/// its sleeps are not skipped (only a sleep written in the `run()` body
+/// is): it goes on at its own pace, so a time-bounded helper finishes its
+/// window instead of spinning through it, and the `run()`'s loop then ends
+/// at its back-edge. (Skipping every sleep in such a frame spun a helper's
+/// `while now < until { sleep(…) }` loop flat out until the grace.)
+#[test]
+fn a_helper_s_loop_keeps_its_pace() {
+    for (name, placement) in PLACEMENTS {
+        let body = "        println(\"up\");\n        while true { self.slow(); }";
+        let src = program(placement, "n: Int = 0;", body).replacen(
+            "    drain() {",
+            "    fn slow() {\n        let until = std::time::monotonic_ns() + 300000000;\n        while std::time::monotonic_ns() < until { self.n = self.n + 1; std::time::sleep(20ms); }\n    }\n    drain() { println(\"ticks \" + to_string(self.n)); }\n    fn _unused() {",
+            1,
+        );
+        let tag = format!("drain_runtime_helper_{name}");
+        let ran = term_after_up(&tag, &src, Duration::from_millis(100), &[]);
+        assert_eq!(ran.status.code(), Some(0), "{tag}: {:?}\n{}", ran.status, ran.stderr);
+        assert!(ran.stopped_in < Duration::from_secs(1), "{tag}: {:?}", ran.stopped_in);
+        let ticks: i64 = ran
+            .stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("ticks "))
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or_else(|| panic!("{tag}: no ticks line:\n{}", ran.stdout));
+        assert!(ticks < 200, "{tag}: the helper's loop spun ({ticks} ticks in well under a second)");
+    }
+}
+
 /// `fn main`'s own loop is the program's run: stopped at its back-edge.
 #[test]
 fn fn_main_s_own_loop_is_stopped() {

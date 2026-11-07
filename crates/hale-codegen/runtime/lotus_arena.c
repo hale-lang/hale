@@ -2153,9 +2153,12 @@ int lotus_drain_stop_up(void) {
  * (`lotus_reclaim_ctx_t` carries it):
  *   0     no extra cut: no frame (a handler), a hook;
  *   -1    GH #1858: the run() of a locus whose run() never reads
- *         `draining`, and `fn main`'s own body: the runtime stops these,
- *         so every wait begun during a STOP (a signal's drain, a failed
- *         test's) returns at once; a tree's drain cuts nothing extra;
+ *         `draining`, and `fn main`'s own body: the runtime stops these.
+ *         An untimed wait (an accept, a receive) begun during a STOP (a
+ *         signal's drain, a failed test's) returns at once with its
+ *         closed outcome; a timed one runs its length (codegen skips a
+ *         sleep written in the stopped body itself); a tree's drain cuts
+ *         nothing extra;
  *   1     a watching run() that has not seen the drain;
  *   g + 2 a watching run() that saw the drain of generation g.
  * The generation moves at every raise, so a run() that saw a tree's
@@ -2176,6 +2179,17 @@ static inline int64_t lotus_drain_seen_word(void) {
 /* Whether the drain cuts a wait begun in frame state `frame`, beyond
  * the in-progress cut every timed wait takes. */
 static inline int lotus_drain_cuts_frame(int64_t frame) {
+    if (frame <= 0 || !lotus_process_draining()) return 0;
+    return frame != lotus_drain_seen_word();
+}
+
+/* GH #1858: the same question for an untimed wait (an accept, a receive)
+ * begun during a drain: a stop ends it in a stopped frame (-1) too, where
+ * it answers its closed outcome, which ends the loop around it. (A TIMED
+ * wait begun during a stop in a stopped frame runs its length unless it
+ * is written in the stopped run()'s own body, which codegen skips: a
+ * sleep cut short in a loop of a fn the run calls would only spin it.) */
+static inline int lotus_drain_cuts_frame_untimed(int64_t frame) {
     if (frame == 0 || !lotus_process_draining()) return 0;
     if (frame < 0) return lotus_drain_stopping();
     return frame != lotus_drain_seen_word();
@@ -14803,7 +14817,7 @@ static inline int lotus_coro_drain_due(const lotus_coro_t *c, int draining) {
             || lotus_drain_cuts_frame(c->park_wait_frame);
     }
     return c->parked_fd >= 0 && c->park_wait_frame != 0 && lotus_drain_stopping()
-        && (c->park_pre_stop || lotus_drain_cuts_frame(c->park_wait_frame));
+        && (c->park_pre_stop || lotus_drain_cuts_frame_untimed(c->park_wait_frame));
 }
 
 static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
@@ -15216,7 +15230,7 @@ void lotus_drain_stop_raise(int64_t bit) {
 int lotus_drain_wait_mode(void) {
     if (g_stop_pipe[0] < 0 || t_wait_frame == 0) return 0;
     if (!lotus_drain_stopping()) return 2;
-    return lotus_drain_cuts_frame(t_wait_frame) ? 1 : 0;
+    return lotus_drain_cuts_frame_untimed(t_wait_frame) ? 1 : 0;
 }
 
 int lotus_drain_stop_fd(void) {
@@ -15246,22 +15260,30 @@ static struct {
     pthread_t tid;
     int       claimed;   /* __atomic: 0 free, 1 a thread's for good */
     int       active;    /* __atomic: 1 while in a registered wait */
+    int       fd;        /* __atomic: the socket the wait reads */
 } g_kwait[LOTUS_KWAIT_MAX];
 static __thread int t_kwait_slot = -1;
 static int g_kwait_signal_on = 0;
+int64_t lotus_sock_get_recv_timeout_ns(int fd);
 
 static void lotus_kwait_on_signal(int sig) {
     (void)sig;
 }
 
-/* Before a blocking socket syscall off an async_io pool: 1 when a stop
- * has already ended the wait (the caller answers its closed outcome at
- * once), else 0 (go on; when a stop is not up yet the thread is
- * registered, and the caller calls `lotus_kwait_leave` after the
- * syscall and asks `lotus_kwait_ended` on EINTR). */
-int lotus_kwait_enter(void) {
+/* Before a blocking socket syscall on `fd` off an async_io pool: 1 when
+ * a stop has already ended the wait (the caller answers its closed
+ * outcome at once), else 0 (go on; when a stop is not up yet the thread
+ * is registered, and the caller calls `lotus_kwait_leave` after the
+ * syscall and asks `lotus_kwait_ended` on EINTR). A receive on a socket
+ * with a timeout of its own (SO_RCVTIMEO: an HTTP call's read, a
+ * liveness loop's) is not woken: it ends at its timeout, and a call cut
+ * in flight could leave its answer unknown (the stopper reads the
+ * timeout when it kicks, so the receive itself pays no syscall). */
+int lotus_kwait_enter(int fd) {
     int mode = lotus_drain_wait_mode();
-    if (mode == 1) return 1;
+    /* (Only while a stop is up does the receive read its socket's
+     * timeout: a timed one waits it out.) */
+    if (mode == 1) return lotus_sock_get_recv_timeout_ns(fd) > 0 ? 0 : 1;
     if (mode != 2 || !g_kwait_signal_on) return 0;
     int slot = t_kwait_slot;
     if (slot < 0) {
@@ -15277,6 +15299,7 @@ int lotus_kwait_enter(void) {
         if (slot < 0) return 0;
         t_kwait_slot = slot;
     }
+    __atomic_store_n(&g_kwait[slot].fd, fd, __ATOMIC_RELAXED);
     __atomic_store_n(&g_kwait[slot].active, 1, __ATOMIC_SEQ_CST);
     if (lotus_drain_stopping()) {
         __atomic_store_n(&g_kwait[slot].active, 0, __ATOMIC_RELEASE);
@@ -15296,13 +15319,16 @@ int lotus_kwait_ended(void) {
     return lotus_drain_stopping();
 }
 
-/* Send the wake signal to every thread in a registered wait. */
+/* Send the wake signal to every thread in a registered wait whose
+ * socket has no timeout of its own. */
 static void lotus_kwait_kick(void) {
 #ifdef LOTUS_WAKE_SIG
     if (!g_kwait_signal_on) return;
     for (int i = 0; i < LOTUS_KWAIT_MAX; i++) {
         if (!__atomic_load_n(&g_kwait[i].claimed, __ATOMIC_ACQUIRE)) continue;
         if (!__atomic_load_n(&g_kwait[i].active, __ATOMIC_ACQUIRE)) continue;
+        int fd = __atomic_load_n(&g_kwait[i].fd, __ATOMIC_RELAXED);
+        if (fd >= 0 && lotus_sock_get_recv_timeout_ns(fd) > 0) continue;
         (void)pthread_kill(g_kwait[i].tid, LOTUS_WAKE_SIG);
     }
 #endif
@@ -15447,7 +15473,8 @@ int lotus_drain_wait_mode(void) {
 int lotus_drain_stop_fd(void) {
     return -1;
 }
-int lotus_kwait_enter(void) {
+int lotus_kwait_enter(int fd) {
+    (void)fd;
     return 0;
 }
 void lotus_kwait_leave(void) {
@@ -23787,10 +23814,11 @@ int lotus_io_wait_fd(int fd, uint32_t events, int64_t deadline_ns) {
         if (deadline_ns > 0 && lotus_now_mono_ns() >= deadline_ns) return 1;
         if (lotus_time_sleep_park_try(1000000) == 1) return 0;
     }
-    /* GH #1858: a stop ends the wait as its deadline would (1): at once
-     * when one is up and this frame is one it cuts, or when it begins
-     * while the wait is in progress. */
-    int stop_mode = lotus_drain_wait_mode();
+    /* GH #1858: a stop ends an untimed wait as a deadline would (1): at
+     * once when one is up and this frame is one it cuts, or when it
+     * begins while the wait is in progress. A wait with a deadline of its
+     * own (a connect's, an HTTP call's) keeps it. */
+    int stop_mode = deadline_ns > 0 ? 0 : lotus_drain_wait_mode();
     if (stop_mode == 1) return 1;
     struct pollfd pfds[2];
     pfds[0].fd = fd;
@@ -24944,7 +24972,7 @@ static ssize_t lotus_udp_recvfrom_async(int fd, void *buf, size_t cap,
     for (;;) {
         /* GH #1858: a stop ends the wait with the timeout's shape (a
          * datagram socket has no end to report). */
-        if (!async && lotus_kwait_enter()) {
+        if (!async && lotus_kwait_enter(fd)) {
             errno = EAGAIN;
             return -1;
         }
@@ -25402,7 +25430,7 @@ const char *lotus_tcp_recv_str(int fd, int max_bytes) {
         /* GH #1858: a stop ends the wait as the peer's end would: empty,
          * status 0 (`lotus_kwait_enter`; an async_io park the same,
          * through its sweep). */
-        if (!async && lotus_kwait_enter()) return empty;
+        if (!async && lotus_kwait_enter(fd)) return empty;
         n = read(fd, buf, cap);
         if (!async) lotus_kwait_leave();
         if (n >= 0) break;
@@ -32354,7 +32382,7 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
     ssize_t n;
     for (;;) {
         /* GH #1858: a stop ends the wait as the peer's end would. */
-        if (!async && lotus_kwait_enter()) return lotus_bytes_empty_global();
+        if (!async && lotus_kwait_enter(fd)) return lotus_bytes_empty_global();
         n = read(fd, body, (size_t)max_bytes);
         if (!async) lotus_kwait_leave();
         if (n >= 0) break;
@@ -35542,7 +35570,7 @@ int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {
     ssize_t n;
     for (;;) {
         /* GH #1858: a stop ends the wait as the peer's end would (0). */
-        if (!async && lotus_kwait_enter()) return 0;
+        if (!async && lotus_kwait_enter(fd)) return 0;
         n = read(fd, tail, (size_t)max_bytes);
         if (!async) lotus_kwait_leave();
         if (n >= 0) break;
@@ -35627,7 +35655,7 @@ int64_t lotus_tcp_recv_stamped(int fd, void *builder, int64_t max_bytes) {
     ssize_t n;
     for (;;) {
         /* GH #1858: a stop ends the wait as the peer's end would. */
-        if (!async && lotus_kwait_enter()) return 0;
+        if (!async && lotus_kwait_enter(fd)) return 0;
         n = recvmsg(fd, &msg, 0);
         if (!async) lotus_kwait_leave();
         if (n < 0 && errno == EINTR && !async && lotus_kwait_ended()) return 0;
@@ -35700,7 +35728,7 @@ int64_t lotus_udp_recv_into(int fd, void *builder, int64_t max_bytes) {
     for (;;) {
         /* GH #1858: a stop ends the wait with the timeout's -2 (a
          * datagram socket has no end to report). */
-        if (!async && lotus_kwait_enter()) return -2;
+        if (!async && lotus_kwait_enter(fd)) return -2;
         n = recvfrom(fd, tail, (size_t)max_bytes, 0, NULL, NULL);
         if (!async) lotus_kwait_leave();
         if (n < 0 && errno == EINTR && !async && lotus_kwait_ended()) return -2;

@@ -4121,6 +4121,8 @@ for replay-under-a-different-plan) is the next milestone.
   pool polls beside its listening fd (`lotus_drain_wait_fd`), the wake
   signal (`SIGURG`, installed without `SA_RESTART`, its handler empty)
   to every thread registered in a blocking TCP, TLS or UDP receive
+  with no `SO_RCVTIMEO` of its own (the stopper reads it when it kicks,
+  so the receive pays nothing; a timed receive ends at its timeout)
   made in a `run()` or `fn main` (wait frame not 0: a handler's, a
   hook's and a standard-library coroutine's untimed waits are left
   alone, so a server's connections answer the calls in flight)

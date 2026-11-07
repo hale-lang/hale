@@ -574,9 +574,6 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         let rem = self.alloca_in_entry(ts_t.into(), "rem")?;
         let remaining = self.alloca_in_entry(i64_t.into(), "sleep.remaining")?;
         let chunk_slot = self.alloca_in_entry(i64_t.into(), "sleep.chunk")?;
-        self.builder
-            .build_store(remaining, ns)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         // GH #1039: was the process already draining when this sleep
         // began? The drain cuts short every sleep IN PROGRESS when it
         // starts. One begun afterwards is the runtime's question, asked
@@ -595,6 +592,27 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         } else {
             None
         };
+        // GH #1858: a sleep written in the body of a run() the runtime
+        // stops (or of `fn main`) is skipped when a stop (a signal's
+        // drain, a failed test's) is already up: the loop it sits in goes
+        // on to its back-edge, where the stop ends it. A sleep in a fn or
+        // method such a body calls is not: a loop there has no back-edge
+        // stop, and skipping its sleeps would only spin it.
+        let ns = match (entry_draining, self.backedge_stop_fn, self.current_fn) {
+            (Some(entry), Some(stop_fn), Some(cur)) if stop_fn == cur => {
+                let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+                let stops = self.builder.build_and(entry, i64_t.const_int(1 | 4, false), "sleep.stop.bits").map_err(e)?;
+                let stopped = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::NE, stops, zero64, "sleep.stopped")
+                    .map_err(e)?;
+                self.builder.build_select(stopped, zero64, ns, "sleep.ns").map_err(e)?.into_int_value()
+            }
+            _ => ns,
+        };
+        self.builder
+            .build_store(remaining, ns)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         let req_sec_ptr = self
             .builder

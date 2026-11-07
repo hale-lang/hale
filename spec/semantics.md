@@ -5391,8 +5391,9 @@ SIGINT or SIGTERM:
    - A wait **already in progress** returns: a `std::time::sleep` at
      its next 100 ms slice (at once on an `async_io` pool) and a
      deadline-bounded park on an `async_io` pool with its timeout,
-     wherever they are; and an untimed blocking wait made in a `run()`
-     (what it calls included) or in `fn main` with its existing closed
+     wherever they are; and an untimed blocking wait (an accept, a
+     receive on a socket with no `set_recv_timeout` of its own) made in
+     a `run()` (what it calls included) or in `fn main` with its existing closed
      or empty outcome — no new variant, so the `or` its caller already
      writes covers it (`stdlib.md` § "What a drain does to a wait"): an
      `accept` its closed `-1`, a TCP or TLS `recv` the empty answer a
@@ -5403,13 +5404,16 @@ SIGINT or SIGTERM:
      flight before it closes) is not ended by the stop; the listeners'
      stop (step 3) and the grace bound it.
    - A wait that **begins during the drain** returns at once, in the
-     same way, when it is made in a `run()` the runtime stops (not
-     manual) or in `fn main`'s own body, or in a manual `run()` that has
-     not yet read `draining` as `true` (what either calls included; a
-     standard-library locus's bodies run in their caller's frame). So a
-     loop that was mid-iteration when the signal landed reaches its
-     back-edge (or, manual, its `while !self.draining` check) instead of
-     starting a 30 s sleep into the grace. A handler is not part of the
+     same way: in a manual `run()` that has not yet read `draining` as
+     `true` (what it calls included; a standard-library locus's bodies
+     run in their caller's frame); and in a `run()` the runtime stops,
+     or `fn main`, a `sleep` written in that body itself, and an untimed
+     wait anywhere it calls. So a loop that was mid-iteration when the
+     signal landed reaches its back-edge (or, manual, its `while
+     !self.draining` check) instead of starting a 30 s sleep into the
+     grace. A `sleep` in a fn or method a stopped `run()` calls runs its
+     length: a loop there has no back-edge stop, and cutting its sleeps
+     would only spin it. A handler is not part of the
      `run()` (one delivered inside the run()'s wait neither takes its
      cut nor ends it by reading `draining`). On an `async_io` pool such
      a park is resumed before the pool's shutdown abandons what is

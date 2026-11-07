@@ -106,7 +106,7 @@ int     lotus_io_wait_fd(int fd, uint32_t events, int64_t deadline_ns);
  * registration a blocking read takes around its syscall so a stop's wake
  * signal interrupts it (enter: 1 the stop already ended the wait). */
 int     lotus_drain_stop_up(void);
-int     lotus_kwait_enter(void);
+int     lotus_kwait_enter(int fd);
 void    lotus_kwait_leave(void);
 int     lotus_kwait_ended(void);
 /* Level-triggered epoll event bits; values mirror sys/epoll.h
@@ -793,7 +793,7 @@ static int lotus_tls__read_until(int handle, SSL *ssl, char *buf, int max,
          * blocking read as the peer's close would (0): the thread is
          * registered around the read (`lotus_kwait_enter`), so the stop's
          * wake signal interrupts it. */
-        if (!async && lotus_kwait_enter()) return 0;
+        if (!async && lotus_kwait_enter(raw_fd)) return 0;
         int n = SSL_read(ssl, buf, max);
         if (!async) lotus_kwait_leave();
         if (n >= 0) return n;

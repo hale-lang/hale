@@ -592,7 +592,7 @@ covers it.
 | `std::time::sleep` | early (its next 100 ms slice; at once on an `async_io` pool) |
 | `std::io::tcp::accept_one` / `__accept_one` (and a `std::io::unix` listener's) | its closed outcome: `-1` (`accept_one` fails as a stopped listener does) |
 | `Stream.recv` / `recv_bytes`, `__recv`, `__recv_bytes` | the empty answer of a peer's close (status 0) |
-| `std::io::tcp::recv_into`, `recv_stamped_into` | `0`, the peer's close (`-2` when the socket's own `set_recv_timeout` passed first) |
+| `std::io::tcp::recv_into`, `recv_stamped_into` | `0`, the peer's close |
 | `std::io::tls::recv_bytes`, `recv_into` and their `_until` siblings | the peer's close (`0`, or empty) |
 | `std::io::udp::recv`, `__recv`, `recv_with_source` | its timeout's failure (`would_block`): a datagram socket has no close to report |
 | `std::io::udp::recv_into` | `-2`, its timeout |
@@ -600,7 +600,12 @@ covers it.
 The rule is the same on main, a pinned thread, a classic pool (a receive
 is interrupted by the runtime's wake signal, an accept polls its stop
 pipe; a receive is still one syscall) and an `async_io` pool (where the
-pool's sweep resumes the park). An untimed wait (an accept, a receive
+pool's sweep resumes the park). Off an `async_io` pool a receive on a
+socket with a timeout of its own (`set_recv_timeout`: an HTTP call's
+read, a liveness loop's) is not woken: it answers at its timeout as it
+always did, and a call cut in flight would leave its answer unknown; on
+an `async_io` pool such a receive is a timed park, which the drain has
+always cut with its timeout outcome. An untimed wait (an accept, a receive
 with no timeout) is woken only where a `run()` (what it calls included)
 or `fn main` makes it: one in a handler, a hook, or a standard-library
 coroutine (a server's connection answering the calls in flight) waits
