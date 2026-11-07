@@ -5232,11 +5232,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// children, `own_pinned_entries`) that declares one to return for
     /// good (`lotus_pinned_run_await`: the thread's domain records it,
     /// `lotus_pinned_run_done`), its mailbox untouched. With
-    /// `unwatched_only`, only a child whose code does not read
-    /// `draining` is waited for — the private flag
-    /// `lotus.reads_drain.<locus>`, 0 until the end of `lower_program`
-    /// writes it — since a run() that watches the drain is what the drain
-    /// ends; a main locus with no run() waits so before its tree drain.
+    /// `unwatched_only`, only a child whose run() does not read
+    /// `draining` (itself or through what it calls: the flow rows'
+    /// watches-drain column, `LocusInfo::run_watches_drain`) is waited
+    /// for, since a run() that watches the drain is what the drain ends;
+    /// a main locus with no run() waits so before its tree drain. A read
+    /// in the child's handler or hook does not make its run() one the
+    /// drain ends (GH #1858: it used to, and a pinned publisher whose
+    /// `drain()` read the flag was not waited for, so its deliveries were
+    /// lost).
     /// An entry whose instantiation this path never reached (a null
     /// slot) is skipped, as its teardown skips it.
     pub(crate) fn emit_pinned_run_awaits(
@@ -5262,29 +5266,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_load(ptr_t, *self_slot, &format!("{name}.run_await.self"))
                 .map_err(e)?
                 .into_pointer_value();
-            let mut skip = self.builder.build_is_null(self_ptr, &format!("{name}.run_await.self_null")).map_err(e)?;
-            if unwatched_only {
-                let gname = format!("lotus.reads_drain.{name}");
-                let g = match self.module.get_global(&gname) {
-                    Some(g) => g,
-                    None => {
-                        let g = self.module.add_global(i64_t, None, &gname);
-                        g.set_linkage(inkwell::module::Linkage::Private);
-                        g.set_initializer(&i64_t.const_zero());
-                        g
-                    }
-                };
-                let reads = self
-                    .builder
-                    .build_load(i64_t, g.as_pointer_value(), &format!("{name}.run_await.reads_drain"))
-                    .map_err(e)?
-                    .into_int_value();
-                let watches = self
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::NE, reads, i64_t.const_zero(), &format!("{name}.run_await.watches"))
-                    .map_err(e)?;
-                skip = self.builder.build_or(skip, watches, &format!("{name}.run_await.skip")).map_err(e)?;
+            if unwatched_only && child.run_watches_drain {
+                continue;
             }
+            let skip = self.builder.build_is_null(self_ptr, &format!("{name}.run_await.self_null")).map_err(e)?;
             let await_bb = self.context.append_basic_block(func, &format!("{name}.run_await"));
             let after_bb = self.context.append_basic_block(func, &format!("{name}.run_await.after"));
             self.builder.build_conditional_branch(skip, after_bb, await_bb).map_err(e)?;

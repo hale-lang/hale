@@ -4148,68 +4148,7 @@ struct DrainHookRows<'r, 'a> {
 /// are left alone; a `run()` that can end, or reads `draining`, is never
 /// reported.
 fn check_drain_hook_behind_endless_run(rows: &DrainHookRows<'_, '_>, out: &mut Vec<Violation>) {
-    use crate::listener_window::{visit_block, Visited};
     let DrainHookRows { bundle, flows } = *rows;
-    // The program's free fns, by name, a module's included: what a bare
-    // call in a `run()` reaches.
-    let mut free_fns: BTreeMap<&str, &FnDecl> = BTreeMap::new();
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            if let TopDecl::Fn(f) = item {
-                free_fns.entry(f.name.name.as_str()).or_insert(f);
-            }
-        });
-    }
-    // Whether `body`, or a fn or method of `decl`'s it calls (transitively),
-    // reads `draining`, on any receiver: the read GH #1077 counts.
-    fn reads_draining<'a>(
-        body: &'a Block,
-        decl: &'a LocusDecl,
-        free_fns: &BTreeMap<&str, &'a FnDecl>,
-        seen: &mut BTreeSet<(bool, &'a str)>,
-    ) -> bool {
-        let mut found = false;
-        let mut callees: Vec<(bool, &'a str)> = Vec::new();
-        visit_block(body, &mut |v| {
-            let Visited::Expr(e) = v else { return };
-            match e {
-                Expr::Field { name, .. } if name.name == "draining" => found = true,
-                Expr::Call { callee, .. } => match callee.as_ref() {
-                    Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
-                        if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
-                    {
-                        callees.push((true, name.name.as_str()));
-                    }
-                    Expr::Ident(id) => {
-                        callees.push((true, id.name.as_str()));
-                        callees.push((false, id.name.as_str()));
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-        });
-        if found {
-            return true;
-        }
-        for (method, name) in callees {
-            if !seen.insert((method, name)) {
-                continue;
-            }
-            let callee_body = if method {
-                decl.members.iter().find_map(|m| match m {
-                    LocusMember::Fn(f) if f.name.name == name => Some(&f.body),
-                    _ => None,
-                })
-            } else {
-                free_fns.get(name).map(|f| &f.body)
-            };
-            if callee_body.is_some_and(|b| reads_draining(b, decl, free_fns, seen)) {
-                return true;
-            }
-        }
-        false
-    }
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(l) = item else { return };
@@ -4229,13 +4168,9 @@ fn check_drain_hook_behind_endless_run(rows: &DrainHookRows<'_, '_>, out: &mut V
                 return;
             };
             let Some(endless) = never_returns(flows, l) else { return };
-            let Some(run) = l.members.iter().find_map(|m| match m {
-                LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run => Some(&lc.body),
-                _ => None,
-            }) else {
-                return;
-            };
-            if reads_draining(run, l, &free_fns, &mut BTreeSet::new()) {
+            // The run row's watches-drain column: the `run()` reads
+            // `draining`, itself or through what it calls.
+            if flows.run_of(l).is_some_and(|r| r.watches_drain) {
                 return;
             }
             out.push(

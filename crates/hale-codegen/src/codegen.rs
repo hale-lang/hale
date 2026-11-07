@@ -5979,6 +5979,13 @@ pub(crate) struct LocusInfo<'ctx> {
     /// — for accept-in-a-loop patterns (`coord_with_churn`-style)
     /// that's the dominant per-child cost.
     pub(crate) empty_lifecycle: std::collections::BTreeSet<&'static str>,
+    /// GH #1858: the flow rows' watches-drain column for this locus's
+    /// declaration (`FlowRows::run_watches_drain`): its `run()` reads
+    /// `draining`, itself or through what it calls. Read here, derived
+    /// nowhere in lowering. Such a run() watches the drain (its wait frame
+    /// is cut until it reads the flag), and a main locus with no run()
+    /// does not wait for it before its tree's drain.
+    pub(crate) run_watches_drain: bool,
 }
 
 /// F.22 slot record carried on every LocusInfo. v1 surface:
@@ -10668,14 +10675,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             })
             .map(|(name, _)| name.clone())
             .collect();
-        // The loci whose run() watches the drain (their code reads it;
-        // a hook alone does not make a run() watch): the wait frames of
-        // `emit_wait_frame_enter`.
-        for name in &self.drain_observer_loci {
-            if let Some(g) = self.module.get_global(&format!("lotus.reads_drain.{name}")) {
-                g.set_initializer(&self.context.i64_type().const_int(1, false));
-            }
-        }
         for name in hooked {
             self.reads_draining = true;
             self.drain_reads_beyond_run.insert(name.clone());

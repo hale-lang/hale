@@ -660,7 +660,9 @@ delivering) when it began before the drain, or when
 answer is the thread's **wait frame**: codegen enters one at the top
 of every `run()`, `drain()` and `dissolve()` body of a program's own
 loci (a store to the thread-local `lotus_wait_frame`, no call: 1 for
-the `run()` of a locus whose code reads `draining`, else 0) and puts
+a `run()` that reads `draining`, itself or through a fn or method it
+calls — the flow rows' watches-drain column, a read in a handler or a
+hook aside — else 0) and puts
 the previous one back at each return (a standard-library locus's bodies run in their caller's
 frame); every handler call (`LOTUS_CALL_HANDLER`) runs in frame 0;
 a coroutine carries its own across a park; a `draining` read that
