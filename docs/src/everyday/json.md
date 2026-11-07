@@ -70,7 +70,7 @@ let roundtrip = Person::from_json(encoded) or raise;
 ### Decoding & Encoding Rules
 
 - **Single-pass scanning**: `Type::from_json(s) -> Type fallible(JsonError)` walks the JSON object once, dispatches matched keys to their target fields, and skips unknown keys (including nested objects or arrays under unknown keys).
-- **Required vs. optional fields**: A missing field raises `JsonError` (naming the missing field) unless the field declaration includes a default value (`role: String = "member"`).
+- **Required vs. optional fields**: A missing field raises `JsonError { kind: "missing_field", field }` (naming the missing field) unless the field declaration includes a default value, of any shape a field default may have: a literal (`role: String = "member"`, `n: Int = -1`), an enum variant (`side: Side = Side::Buy`), a record literal (`inst: Instrument = Instrument { sym: "Y", tick: 2 }`, its own fields' defaults filling what it leaves out). The codec builds the default when the key is absent, exactly as the record's own literal would.
 - **Error handling**: Because `from_json` is `fallible(JsonError)`, callers must address errors with `or raise`, `or <fallback>`, or an error handler. `Type::to_json(value)` is infallible and always returns a `String`.
 - **Supported field types**: what an api surface's JSON codec carries of a field ([The API surface](../services/api.md)):
   - **Scalars**: `Int`, `Float`, `Bool`, `String`, and `Decimal<S>`; a unit-dialect scalar (an identity, a range, a quantity) as its `Int`; a `Time` as its RFC 3339 text; a `Duration` as its nanoseconds; a `std::json::Value` as its text.

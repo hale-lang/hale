@@ -2779,8 +2779,13 @@ payload picks the consumer mode:
   `JsonError { kind: "wrong_type", field }`, never truncated or read as
   zero (spec/types.md § Decimal<S>). The key is the tag value, else
   the field name; unmatched keys (and nested objects/arrays under them)
-  are skipped. A missing field raises `JsonError { kind, field }` unless
-  the field declares a literal default (`= "USD"`), which fills it.
+  are skipped. A missing field raises `JsonError { kind: "missing_field",
+  field }` unless the field declares a default, which fills it: a
+  literal (`= "USD"`, `= -1`), an enum variant (`= Side::Buy`), a record
+  literal (`= Instrument { sym: "Y", tick: 2 }`, its own fields' defaults
+  filling what it leaves out), or any expression a field default may be;
+  the codec builds it when the key is absent, exactly as the record's
+  own literal would.
   `from_json` is `fallible`, so callers must address it. The same tags
   drive emit: `Type::to_json(v) -> String` serializes a value back (bare
   numbers/bools, a Decimal's exact digits at its scale, escaped strings,

@@ -517,11 +517,21 @@ fn scalar_of(te: &TypeExpr) -> Option<ScalarTy> {
     }
 }
 
-/// Render a literal default expression to Hale source. Only literals are
-/// supported (covers `= 0`, `= 1.5`, `= true`, `= "USD"`); anything else
-/// disqualifies the field's default (treated as required).
+/// Render a literal default expression to Hale source: `= 0`, `= -1`,
+/// `= 1.5`, `= true`, `= "USD"`, a Decimal's, a Time's or a quantity's
+/// literal, each as the declaration wrote it. Any other default is no
+/// literal: the codec builds it as an expression instead
+/// (`JsonField::default_expr`), when the key is absent.
 fn literal_src(e: &Expr) -> Option<String> {
     match e {
+        // a negated number is the number's literal with its sign (`-1`
+        // parses as the negation of `1`)
+        Expr::Unary { op: crate::ast::UnaryOp::Neg, operand, .. } => match operand.as_ref() {
+            Expr::Literal(Literal::Int(_) | Literal::Float(_) | Literal::Decimal(_), _) => {
+                literal_src(operand).map(|s| format!("-{s}"))
+            }
+            _ => None,
+        },
         Expr::Literal(Literal::Int(n), _) => Some(n.to_string()),
         Expr::Literal(Literal::Bool(b), _) => Some(b.to_string()),
         Expr::Literal(Literal::Float(f), _) => Some(format!("{:?}", f)),
