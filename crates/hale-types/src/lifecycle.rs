@@ -171,6 +171,116 @@ pub fn run_is_called(body_empty: bool, flow: bool) -> bool {
     !body_empty || flow
 }
 
+// ------------------------------------------------------ the drain read
+
+/// The free fns of `items`, by name, a module's included: what a bare
+/// call in a body reaches. The first declaration of a name wins.
+pub fn free_fns_of(items: &[hale_syntax::ast::TopDecl]) -> std::collections::BTreeMap<&str, &hale_syntax::ast::FnDecl> {
+    let mut free_fns = std::collections::BTreeMap::new();
+    for item in hale_syntax::ast::flat_decls(items) {
+        if let hale_syntax::ast::TopDecl::Fn(f) = item {
+            free_fns.entry(f.name.name.as_str()).or_insert(f);
+        }
+    }
+    free_fns
+}
+
+/// Whether `body`, or a fn or method of `decl`'s it calls (transitively:
+/// a `self.m(…)` reaches `decl`'s method `m`, a bare `f(…)` a free fn
+/// or a method of that name), reads `draining`, on any receiver: the
+/// read GH #1077 counts.
+pub fn body_reads_draining<'a>(
+    body: &'a hale_syntax::ast::Block,
+    decl: &'a hale_syntax::ast::LocusDecl,
+    free_fns: &std::collections::BTreeMap<&str, &'a hale_syntax::ast::FnDecl>,
+    seen: &mut std::collections::BTreeSet<(bool, &'a str)>,
+) -> bool {
+    use crate::listener_window::{visit_block, Visited};
+    use hale_syntax::ast::{Expr, LocusMember};
+    let mut found = false;
+    let mut callees: Vec<(bool, &'a str)> = Vec::new();
+    visit_block(body, &mut |v| {
+        let Visited::Expr(e) = v else { return };
+        match e {
+            Expr::Field { name, .. } if name.name == "draining" => found = true,
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
+                    if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+                {
+                    callees.push((true, name.name.as_str()));
+                }
+                Expr::Ident(id) => {
+                    callees.push((true, id.name.as_str()));
+                    callees.push((false, id.name.as_str()));
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    });
+    if found {
+        return true;
+    }
+    for (method, name) in callees {
+        if !seen.insert((method, name)) {
+            continue;
+        }
+        let callee_body = if method {
+            decl.members.iter().find_map(|m| match m {
+                LocusMember::Fn(f) if f.name.name == name => Some(&f.body),
+                _ => None,
+            })
+        } else {
+            free_fns.get(name).map(|f| &f.body)
+        };
+        if callee_body.is_some_and(|b| body_reads_draining(b, decl, free_fns, seen)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `decl`'s `run()` reads `draining`: in its own body, or in a
+/// method of `decl`'s or a free fn it calls, transitively
+/// ([`body_reads_draining`]). A read in a handler, in a `drain()` or
+/// `dissolve()` hook, or in a method the `run()` never reaches is not
+/// the `run()`'s: such a locus can answer a drain after its `run()` has
+/// returned, but its `run()` does not watch the drain, so the runtime's
+/// drain neither cuts its waits (spec/semantics.md § "Drain cascade
+/// (whole-process)", step 2) nor skips waiting for it before a tree
+/// drain (§ "Scoped drain", a `main` with no `run()`). Lowering reads
+/// this test for the flag `lotus.reads_drain.<locus>`, and the drain-hook
+/// law (`check_drain_hook_behind_endless_run`) for its exemption. A
+/// locus with no `run()` reads nothing.
+pub fn run_reads_draining<'a>(
+    decl: &'a hale_syntax::ast::LocusDecl,
+    free_fns: &std::collections::BTreeMap<&str, &'a hale_syntax::ast::FnDecl>,
+) -> bool {
+    use hale_syntax::ast::{LifecycleKind, LocusMember};
+    decl.members
+        .iter()
+        .find_map(|m| match m {
+            LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run => Some(&lc.body),
+            _ => None,
+        })
+        .is_some_and(|run| body_reads_draining(run, decl, free_fns, &mut std::collections::BTreeSet::new()))
+}
+
+/// The loci of `items` whose `run()` reads `draining`
+/// ([`run_reads_draining`]), by name.
+pub fn loci_whose_run_reads_draining(items: &[hale_syntax::ast::TopDecl]) -> std::collections::BTreeSet<String> {
+    let free_fns = free_fns_of(items);
+    let mut out = std::collections::BTreeSet::new();
+    for item in hale_syntax::ast::flat_decls(items) {
+        if let hale_syntax::ast::TopDecl::Locus(l) = item {
+            if run_reads_draining(l, &free_fns) {
+                out.insert(l.name.name.clone());
+            }
+        }
+    }
+    out
+}
+
 // ------------------------------------------------------------ identity
 
 /// P1's identities, shared: a row is keyed by the placement table's

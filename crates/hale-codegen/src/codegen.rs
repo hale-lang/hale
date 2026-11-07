@@ -10668,10 +10668,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             })
             .map(|(name, _)| name.clone())
             .collect();
-        // The loci whose run() watches the drain (their code reads it;
-        // a hook alone does not make a run() watch): the wait frames of
-        // `emit_wait_frame_enter`.
-        for name in &self.drain_observer_loci {
+        // The loci whose run() watches the drain: it reads `draining`
+        // itself, or in a method of its own or a free fn it calls,
+        // transitively (`hale_types::lifecycle::run_reads_draining`). A
+        // read in a handler, in a `drain()` / `dissolve()` hook, or in a
+        // method the run() never reaches makes the locus an observer
+        // (below) but not its run() a watcher: the wait frames of
+        // `emit_wait_frame_enter` and the no-run() main's pinned-run
+        // awaits (`emit_pinned_run_awaits`) read this one flag. Until
+        // 2026-11-07 the flag was set for any read of the locus's code,
+        // so a pinned publisher with a `drain() { if self.draining … }`
+        // hook was not awaited and its deliveries were lost (downstream
+        // handoff review).
+        for name in hale_types::lifecycle::loci_whose_run_reads_draining(&self.program.items) {
             if let Some(g) = self.module.get_global(&format!("lotus.reads_drain.{name}")) {
                 g.set_initializer(&self.context.i64_type().const_int(1, false));
             }

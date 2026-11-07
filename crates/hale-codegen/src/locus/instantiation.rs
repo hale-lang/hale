@@ -5232,11 +5232,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// children, `own_pinned_entries`) that declares one to return for
     /// good (`lotus_pinned_run_await`: the thread's domain records it,
     /// `lotus_pinned_run_done`), its mailbox untouched. With
-    /// `unwatched_only`, only a child whose code does not read
-    /// `draining` is waited for — the private flag
+    /// `unwatched_only`, only a child whose run() does not read
+    /// `draining` (itself or through what it calls: the private flag
     /// `lotus.reads_drain.<locus>`, 0 until the end of `lower_program`
-    /// writes it — since a run() that watches the drain is what the drain
-    /// ends; a main locus with no run() waits so before its tree drain.
+    /// writes it; a read in a handler or a hook does not make the run()
+    /// watch) is waited for, since a run() that watches the drain is
+    /// what the drain ends; a main locus with no run() waits so before
+    /// its tree drain.
     /// An entry whose instantiation this path never reached (a null
     /// slot) is skipped, as its teardown skips it.
     pub(crate) fn emit_pinned_run_awaits(

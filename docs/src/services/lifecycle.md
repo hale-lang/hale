@@ -224,7 +224,7 @@ self.conn.url = next;                   // mutates existing instance in place; n
 Every locus has a synthetic boolean field `self.draining` (initialized to `false`). When the process receives `SIGINT` (Ctrl-C) or `SIGTERM`, or when `main`'s `run()` returns:
 
 1. `self.draining` becomes `true` across all loci in the program.
-2. Any in-progress `std::time::sleep` inside `run()` wakes immediately so loops conditioned on `while !self.draining` exit without waiting out their timer. A sleep that *begins* during the drain in a `run()` that reads `self.draining` returns at once too, until that `run()` has seen `self.draining` as `true` — so a loop that was in the middle of its work when the signal landed does not start a fresh 30 s sleep into the grace period. (Sleeps executed inside `drain()` or `dissolve()`, in a handler, or in `run()` after its loop has seen the drain run for their full duration so final network flushes can pace themselves.)
+2. Any in-progress `std::time::sleep` inside `run()` wakes immediately so loops conditioned on `while !self.draining` exit without waiting out their timer. A sleep that *begins* during the drain in a `run()` that reads `self.draining` (itself, or in a method or free fn it calls) returns at once too, until that `run()` has seen `self.draining` as `true` — so a loop that was in the middle of its work when the signal landed does not start a fresh 30 s sleep into the grace period. (Sleeps executed inside `drain()` or `dissolve()`, in a handler, or in `run()` after its loop has seen the drain run for their full duration so final network flushes can pace themselves.)
 3. `drain()` cascades depth-first (deepest children drain first, then their parents).
 4. `dissolve()` executes and arenas are reclaimed leaves-first, after which the process exits with code `0`.
 
@@ -277,7 +277,7 @@ main locus App {
     drain() { println("drained"); }
 }
 ```
-- **Default `main` wait behavior**: A `main locus` with no `run()` exits as soon as its children complete, except when `main` (or a child server locus beneath it) holds an active `api::Exposure` socket, in which case `main` implicitly waits until the exposure stops or the process drains. "Complete" means the `run()` of every pinned child that does not read `self.draining` has returned: only then does the tree's drain begin, so a sibling looping on `while !self.draining` keeps serving until the workers are done, and a pinned subscriber declared before such a worker still consumes what the worker publishes in its last moments.
+- **Default `main` wait behavior**: A `main locus` with no `run()` exits as soon as its children complete, except when `main` (or a child server locus beneath it) holds an active `api::Exposure` socket, in which case `main` implicitly waits until the exposure stops or the process drains. "Complete" means the `run()` of every pinned child whose `run()` does not read `self.draining` (itself, or in a method or free fn it calls; a read in a handler or in a `drain()` / `dissolve()` hook does not count) has returned: only then does the tree's drain begin, so a sibling looping on `while !self.draining` keeps serving until the workers are done, and a pinned subscriber declared before such a worker still consumes what the worker publishes in its last moments.
 
 ### Self-Termination (`terminate;`)
 

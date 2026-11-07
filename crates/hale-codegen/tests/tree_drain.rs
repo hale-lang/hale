@@ -261,6 +261,88 @@ fn a_main_with_no_run_delivers_what_its_pinned_children_publish_under_asan() {
     assert_three_deliveries(&out);
 }
 
+/// The await is about the child's `run()`: a `Pub` whose `drain()` hook
+/// reads `draining`, or whose handler does, is still a `run()` that
+/// does not watch the drain, so the main locus waits for it and every
+/// delivery arrives. Until 2026-11-07 the flag was the locus's (any read
+/// anywhere), so adding `drain() { if self.draining { … } }` to the
+/// publisher brought the silent loss back (downstream handoff review).
+#[test]
+fn a_pinned_child_whose_hook_reads_draining_is_still_awaited() {
+    let src = STORE_AND_PUB.replace(
+        "        bus { publish Recs; publish Gos; }\n",
+        "        bus { publish Recs; publish Gos; }\n        drain() { println(\"pub hook\"); if self.draining { println(\"pub hook saw drain\"); } }\n",
+    );
+    assert_ne!(src, STORE_AND_PUB, "the hook was spliced in");
+    let bin = harness::unique_bin("tree_drain_no_run_hook_reads");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+    let out = run_bounded(&bin, 20, &[]);
+    let _ = std::fs::remove_file(&bin);
+    assert_three_deliveries(&out);
+    pos(&lines(&out), "pub hook");
+}
+
+#[test]
+fn a_pinned_child_whose_handler_reads_draining_is_still_awaited() {
+    let src = STORE_AND_PUB.replace(
+        "        bus { publish Recs; publish Gos; }\n",
+        "        bus { publish Recs; publish Gos; subscribe Gos as on_go; }\n        fn on_go(g: Go) { if self.draining { println(\"pub handler saw drain\"); } else { println(\"pub handler\"); } }\n",
+    );
+    assert_ne!(src, STORE_AND_PUB, "the handler was spliced in");
+    let bin = harness::unique_bin("tree_drain_no_run_handler_reads");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+    let out = run_bounded(&bin, 20, &[]);
+    let _ = std::fs::remove_file(&bin);
+    assert_three_deliveries(&out);
+}
+
+/// The rule's other side: a `run()` that reads `draining` — in its loop,
+/// or in a method of its own the loop calls — is what the drain ends, so
+/// it is not waited for: the tree's drain begins at once, the loop sees
+/// it and the program ends (awaited, it would loop until the 20 s bound).
+#[test]
+fn a_pinned_child_whose_run_reads_draining_is_not_awaited() {
+    for (tag, loop_head, method) in [
+        ("loop", "while !self.draining {", ""),
+        ("method", "while !self.stop() {", "fn stop() -> Bool { return self.draining; }\n"),
+    ] {
+        let src = format!(
+            "type Rec {{ name: String = \"\"; }}
+            topic Recs {{ payload: Rec; subject: \"recs\"; }}
+            locus Store {{
+                bus {{ subscribe Recs as on_rec; }}
+                fn on_rec(r: Rec) {{ println(\"stored=\" + r.name); }}
+            }}
+            locus Pub {{
+                bus {{ publish Recs; }}
+                {method}
+                run() {{
+                    let mut i = 0;
+                    {loop_head}
+                        Recs <- Rec {{ name: \"rec\" + to_string(i) }};
+                        i = i + 1;
+                        std::time::sleep(20ms);
+                    }}
+                    println(\"pub loop out\");
+                }}
+            }}
+            main locus App {{
+                params {{ s: Store = Store {{ }}; p: Pub = Pub {{ }}; }}
+                placement {{ s: pinned; p: pinned; }}
+            }}
+            fn main() {{ App {{ }}; println(\"after\"); }}
+            "
+        );
+        let bin = harness::unique_bin(&format!("tree_drain_no_run_{tag}_reads"));
+        build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+        let out = run_bounded(&bin, 20, &[]);
+        let _ = std::fs::remove_file(&bin);
+        assert!(out.status.success(), "{tag}: {:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+        let l = lines(&out);
+        assert!(pos(&l, "pub loop out") < pos(&l, "after"), "{tag}: the loop was ended by the drain:\n{}", l.join("\n"));
+    }
+}
+
 /// The same main locus with a pinned worker that does not read
 /// `draining` beside a pinned child that loops on it: the tree's drain
 /// begins once the worker's `run()` has returned, so the loop sees it

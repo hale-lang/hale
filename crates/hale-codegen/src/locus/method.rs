@@ -56,9 +56,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// once, so its loop reaches its check. Every other run() and the two
     /// hooks are frames that cut nothing beyond the in-progress cut, so a
     /// hook a watching run() reaches does not inherit its cut. Whether
-    /// `locus` reads `draining` is known once every body has lowered: the
-    /// private flag `lotus.reads_drain.<locus>` is 0 until the end of
-    /// `lower_program` writes its initializer. The frame it replaces is
+    /// `locus`'s run() reads `draining` (itself or through what it calls;
+    /// a handler's or a hook's read does not count) is written at the end
+    /// of `lower_program`: the private flag `lotus.reads_drain.<locus>`
+    /// is 0 until its initializer is set there. The frame it replaces is
     /// the value returned, put back at every return
     /// ([`Self::emit_wait_frame_leaves`]). `None` for the other hooks,
     /// where no drain reaches the program (`DrainTerm` omitted), and for
