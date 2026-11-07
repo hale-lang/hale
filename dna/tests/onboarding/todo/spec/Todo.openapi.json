@@ -7,6 +7,12 @@
     "x-hale-surface": "Todo",
     "x-hale-digest": "fnv1a64:67bff1470a7912dc"
   },
+  "servers": [
+    {
+      "url": "/",
+      "description": "The exposure serving this surface: a deployment fact the document does not carry, so every path is relative to where it listens."
+    }
+  ],
   "paths": {
     "/call/Todos::add": {
       "post": {

@@ -7,6 +7,12 @@
     "x-hale-surface": "Admin",
     "x-hale-digest": "fnv1a64:40381db6685c9f75"
   },
+  "servers": [
+    {
+      "url": "/",
+      "description": "The exposure serving this surface: a deployment fact the document does not carry, so every path is relative to where it listens."
+    }
+  ],
   "paths": {
     "/call/Ledger::rebalance": {
       "post": {

@@ -7,6 +7,12 @@
     "x-hale-surface": "Voice",
     "x-hale-digest": "fnv1a64:d5847413a875104f"
   },
+  "servers": [
+    {
+      "url": "/",
+      "description": "The exposure serving this surface: a deployment fact the document does not carry, so every path is relative to where it listens."
+    }
+  ],
   "paths": {
     "/call/Accounts::archive": {
       "post": {

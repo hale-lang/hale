@@ -2847,7 +2847,11 @@ rows, one per surface, each carrying the digest: `hale check --api
 method and path of a row that declares a route, `200` its
 response, `422` its handler error, `500` a `ClosureViolation` row's
 server error, the refusals by their statuses, the digest as the
-`Hale-Surface-Digest` header), `--json-schema` (every type the rows name
+`Hale-Surface-Digest` header, and one server after `info`, the
+relative `"url": "/"` (OpenAPI 3.1 allows one): where an exposure
+listens is a deployment fact the document cannot know, and a linter
+refuses a document with no `servers` at all, redocly's
+`no-empty-servers` (2026-11-06, downstream handoff)), `--json-schema` (every type the rows name
 under `$defs`, each member's types by reference) and `--mcp` (a tool per
 row, its input the request's schema, self-contained; a request whose
 schema is not an object is wrapped as an object with one required

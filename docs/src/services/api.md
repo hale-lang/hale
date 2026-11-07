@@ -795,7 +795,7 @@ hale api export --surface Public --check api/public desk.hl   # exits 1 on drift
 Generated files in `api/public/`:
 
 - `Public.description.json`: Full surface description, schemas, exposures, and hubs.
-- `Public.openapi.json`: OpenAPI 3.0 specification.
+- `Public.openapi.json`: OpenAPI 3.1 specification, with one relative server (`"url": "/"`), since where the exposure listens is a deployment fact; a linter's `no-empty-servers` passes, and a client points it at the exposure's address.
 - `Public.json-schema.json`: Standalone JSON Schema bundle.
 - `Public.mcp.json`: MCP tool definitions.
 - `Public.proto`: Protobuf v3 service and message definitions for `grpc::Rpc`.

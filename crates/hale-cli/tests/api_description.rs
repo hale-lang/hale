@@ -96,6 +96,17 @@ fn the_openapi_form_matches_its_baseline_and_validates() {
     check_baseline("openapi.json", &["--surface", "Books", "--openapi"]);
     let d: Value = serde_json::from_str(&describe(&["--surface", "Books", "--openapi"])).expect("json");
     assert_eq!(d["openapi"], "3.1.0");
+    // one server, the relative `/`: a linter refuses a document with none
+    // (redocly's `no-empty-servers`, downstream handoff), and where the
+    // exposure listens is not the document's to say
+    let servers = d["servers"].as_array().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0]["url"], "/");
+    assert!(servers[0]["description"].as_str().unwrap().contains("deployment fact"));
+    // written right after `info`, before the paths
+    let text = describe(&["--surface", "Books", "--openapi"]);
+    let at = |key: &str| text.find(&format!("\"{key}\":")).unwrap_or_else(|| panic!("no {key}"));
+    assert!(at("info") < at("servers") && at("servers") < at("paths"), "{text}");
     let paths = d["paths"].as_object().unwrap();
     assert_eq!(paths.len(), 4);
     // A scalar reply is inlined, never a $ref to a component that does not exist.
