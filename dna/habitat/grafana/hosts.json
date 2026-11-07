@@ -9,7 +9,7 @@
   "editable": false,
   "graphTooltip": 1,
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "time": {
     "from": "now-6h",
     "to": "now"
@@ -220,6 +220,58 @@
           "options": {}
         },
         {
+          "id": "calculateField",
+          "options": {
+            "mode": "reduceRow",
+            "reduce": {
+              "reducer": "last",
+              "include": [
+                "Value #D"
+              ]
+            },
+            "alias": "memory used bar"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "reduceRow",
+            "reduce": {
+              "reducer": "last",
+              "include": [
+                "Value #H"
+              ]
+            },
+            "alias": "disk used bar"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "reduceRow",
+            "reduce": {
+              "reducer": "last",
+              "include": [
+                "Value #I"
+              ]
+            },
+            "alias": "CPU busy bar"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "reduceRow",
+            "reduce": {
+              "reducer": "last",
+              "include": [
+                "Value #J"
+              ]
+            },
+            "alias": "GPU busy bar"
+          }
+        },
+        {
           "id": "organize",
           "options": {
             "excludeByName": {
@@ -231,16 +283,20 @@
               "Value #B": 2,
               "Value #C": 3,
               "Value #D": 4,
-              "Value #E": 5,
-              "Value #F": 6,
-              "Value #G": 7,
-              "Value #H": 8,
-              "Value #I": 9,
-              "Value #J": 10,
-              "Value #K": 11,
-              "Value #L": 12,
-              "Value #M": 13,
-              "Value #N": 14
+              "memory used bar": 5,
+              "Value #E": 6,
+              "Value #F": 7,
+              "Value #G": 8,
+              "Value #H": 9,
+              "disk used bar": 10,
+              "Value #I": 11,
+              "CPU busy bar": 12,
+              "Value #J": 13,
+              "GPU busy bar": 14,
+              "Value #K": 15,
+              "Value #L": 16,
+              "Value #M": 17,
+              "Value #N": 18
             },
             "renameByName": {
               "Value #A": "memory",
@@ -310,16 +366,28 @@
                 "value": "percent"
               },
               {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "memory used bar"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
                 "id": "min",
                 "value": 0
               },
               {
                 "id": "max",
                 "value": 100
-              },
-              {
-                "id": "decimals",
-                "value": 0
               },
               {
                 "id": "color",
@@ -352,8 +420,16 @@
                 "value": {
                   "type": "gauge",
                   "mode": "lcd",
-                  "valueDisplayMode": "text"
+                  "valueDisplayMode": "hidden"
                 }
+              },
+              {
+                "id": "custom.width",
+                "value": 72
+              },
+              {
+                "id": "displayName",
+                "value": " "
               }
             ]
           },
@@ -368,16 +444,28 @@
                 "value": "percent"
               },
               {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "disk used bar"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
                 "id": "min",
                 "value": 0
               },
               {
                 "id": "max",
                 "value": 100
-              },
-              {
-                "id": "decimals",
-                "value": 0
               },
               {
                 "id": "color",
@@ -410,8 +498,16 @@
                 "value": {
                   "type": "gauge",
                   "mode": "lcd",
-                  "valueDisplayMode": "text"
+                  "valueDisplayMode": "hidden"
                 }
+              },
+              {
+                "id": "custom.width",
+                "value": 72
+              },
+              {
+                "id": "displayName",
+                "value": "  "
               }
             ]
           },
@@ -426,57 +522,15 @@
                 "value": "percent"
               },
               {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 100
-              },
-              {
                 "id": "decimals",
                 "value": 0
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "thresholds"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": null
-                    },
-                    {
-                      "color": "#EAB839",
-                      "value": 75
-                    },
-                    {
-                      "color": "red",
-                      "value": 90
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "gauge",
-                  "mode": "lcd",
-                  "valueDisplayMode": "text"
-                }
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "GPU busy"
+              "options": "CPU busy bar"
             },
             "properties": [
               {
@@ -492,8 +546,82 @@
                 "value": 100
               },
               {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 75
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "lcd",
+                  "valueDisplayMode": "hidden"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 72
+              },
+              {
+                "id": "displayName",
+                "value": "   "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GPU busy"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
                 "id": "decimals",
                 "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GPU busy bar"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
               },
               {
                 "id": "color",
@@ -526,8 +654,16 @@
                 "value": {
                   "type": "gauge",
                   "mode": "lcd",
-                  "valueDisplayMode": "text"
+                  "valueDisplayMode": "hidden"
                 }
+              },
+              {
+                "id": "custom.width",
+                "value": 72
+              },
+              {
+                "id": "displayName",
+                "value": "    "
               }
             ]
           },
