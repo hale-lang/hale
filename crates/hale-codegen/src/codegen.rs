@@ -10187,13 +10187,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // beside its local one, before any registration or reader (the
         // readers look the wire one up through the registered local
         // one; a program with no bus payload emits nothing here).
-        if !self.serializers.is_empty() {
+        // An api codec thunk validates its own text: its own twin, so the
+        // lookup (which refuses what it has no pair for) knows it.
+        if !self.serializers.is_empty() || !self.codec_thunks.is_empty() {
             let twin = self
                 .module
                 .get_function("lotus_bus_wire_decoder")
                 .expect("lotus_bus_wire_decoder declared");
-            let pairs: Vec<(FunctionValue<'ctx>, FunctionValue<'ctx>)> =
-                self.serializers.values().map(|p| (p.deserialize, p.deserialize_wire)).collect();
+            let pairs: Vec<(FunctionValue<'ctx>, FunctionValue<'ctx>)> = self
+                .serializers
+                .values()
+                .map(|p| (p.deserialize, p.deserialize_wire))
+                .chain(self.codec_thunks.values().map(|t| (t.decode, t.decode)))
+                .collect();
             for (local, wire) in pairs {
                 self.builder
                     .build_call(

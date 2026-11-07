@@ -27093,22 +27093,39 @@ static lotus_bus_queue_t *g_bus_queue_for_remote;
  * bytes), and `__deserialize_wire_T`, every read held to the frame's
  * remaining length and a frame shorter than the type refused. The
  * program's main announces each pair here before anything registers
- * or reads, and the places foreign bytes come in — the udp and unix
- * readers, the early-ingress flush, the replay injector — map the
- * registered local decoder to its wire twin. A decoder with no twin
- * (an api codec thunk) is used as it is. Written on main before any
- * thread starts; read-only after. */
-#define LOTUS_BUS_WIRE_DECODER_MAX 1024
-static struct { lotus_deserialize_fn local, wire; }
-    g_bus_wire_decoders[LOTUS_BUS_WIRE_DECODER_MAX];
-static size_t g_bus_wire_decoder_count;
+ * or reads — an api codec thunk, which validates its own text, as its
+ * own twin — and the places foreign bytes come in (the udp and unix
+ * readers, the early-ingress flush, the replay injector) map the
+ * registered decoder to its wire twin. A registered decoder with no
+ * pair is never used on foreign bytes: the lookup answers a decoder
+ * that refuses every frame (dropped and counted), so a frame is
+ * decoded unchecked under no circumstance (reviewer, 2026-11-07: a
+ * fixed table of 1,024 pairs logged the 1,025th and fell back to the
+ * local decoder). The table grows by doubling; it is written on the
+ * main thread in main's prelude before any thread starts and read
+ * only after, so it needs no lock; an allocation it cannot make is
+ * fatal here, naming it, rather than a type left unchecked. */
+static struct lotus_bus_wire_decoder_pair { lotus_deserialize_fn local, wire; }
+    *g_bus_wire_decoders;
+static size_t g_bus_wire_decoder_count, g_bus_wire_decoder_cap;
+
+static ssize_t lotus_bus_refuse_frame(const void *src, size_t n, void *dst, size_t cap) {
+    (void)src; (void)n; (void)dst; (void)cap;
+    return -1;
+}
 
 void lotus_bus_wire_decoder(lotus_deserialize_fn local, lotus_deserialize_fn wire) {
     if (!local || !wire) return;
-    if (g_bus_wire_decoder_count >= LOTUS_BUS_WIRE_DECODER_MAX) {
-        fprintf(stderr, "lotus: more than %d bus payload types; the rest decode wire frames unchecked\n",
-                LOTUS_BUS_WIRE_DECODER_MAX);
-        return;
+    if (g_bus_wire_decoder_count == g_bus_wire_decoder_cap) {
+        size_t cap = g_bus_wire_decoder_cap ? g_bus_wire_decoder_cap * 2 : 64;
+        struct lotus_bus_wire_decoder_pair *grown =
+            realloc(g_bus_wire_decoders, cap * sizeof *grown);
+        if (!grown) {
+            fprintf(stderr, "lotus: out of memory growing the bus wire-decoder table to %zu pairs\n", cap);
+            abort();
+        }
+        g_bus_wire_decoders = grown;
+        g_bus_wire_decoder_cap = cap;
     }
     g_bus_wire_decoders[g_bus_wire_decoder_count].local = local;
     g_bus_wire_decoders[g_bus_wire_decoder_count].wire = wire;
@@ -27119,7 +27136,7 @@ static lotus_deserialize_fn lotus_bus_wire_decoder_of(lotus_deserialize_fn local
     for (size_t i = 0; i < g_bus_wire_decoder_count; i++) {
         if (g_bus_wire_decoders[i].local == local) return g_bus_wire_decoders[i].wire;
     }
-    return local;
+    return lotus_bus_refuse_frame;
 }
 
 /* GH #468 — the shared deserializer lookup both readers used to
