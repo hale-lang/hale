@@ -1014,7 +1014,8 @@ locus ComposeProvider {
             let mut st = observe_address(a.address);
             // the habitat's head and face run in its `face` service: its image
             if a.role == "head" || a.role == "face" {
-                let img = run_tool(
+                let img = run_tool_timeout(
+                    OBSERVE_TOOL_SECS,
                     "docker\nps\n--filter\nlabel=com.docker.compose.project="
                         + (if len(a.project) > 0 { a.project } else { local_habitat_project() })
                         + "\n--filter\nlabel=com.docker.compose.service=face\n--format\n{{.Image}}",
@@ -1024,13 +1025,20 @@ locus ComposeProvider {
             return st;
         }
         // an organism's own services: every container of its project, with
-        // how often docker restarted each
-        let ps = run_tool(
+        // how often docker restarted each; docker that does not answer is
+        // said so, never waited on past `OBSERVE_TOOL_SECS`
+        let ps = run_tool_timeout(
+            OBSERVE_TOOL_SECS,
             "sh\n-c\n" + containers_probe(
                 if len(a.project) > 0 { a.project } else { local_habitat_project() },
                 service,
             ),
         );
+        if ps.code == 124 {
+            return AllocationState {
+                detail: "docker did not answer within " + to_string(OBSERVE_TOOL_SECS) + " s",
+            };
+        }
         if ps.code != 0 { return AllocationState { detail: "docker: " + trim_nl(ps.stderr) }; }
         return observed_containers(
             if len(service) > 0 { service } else { a.project },
@@ -1107,6 +1115,12 @@ fn naming_down(st: AllocationState, down: String) -> AllocationState {
 // How long the observation of an address waits for its listener to accept:
 // one on the loopback or the LAN accepts at once.
 const OBSERVE_DIAL: Duration = 2s;
+
+// How long an observation waits on docker here (`docker ps` and the
+// `docker inspect` of each container it lists) before saying it did not
+// answer: a read observes every allocation in the head's one command at a
+// time, so docker held there held every command behind it.
+const OBSERVE_TOOL_SECS: Int = 10;
 
 // An allocation served at `address` (`http://<host>:<port>`): up while
 // something accepts connections there. The loopback is reached as this

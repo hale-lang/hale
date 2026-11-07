@@ -4195,9 +4195,6 @@ struct DrainHookRows<'r, 'a> {
 /// reported.
 fn check_drain_hook_behind_endless_run(rows: &DrainHookRows<'_, '_>, out: &mut Vec<Violation>) {
     let DrainHookRows { bundle, flows } = *rows;
-    // The bundle's loci, their fields and free fns: what a receiver in a
-    // `run()`, or a bare call there, resolves to.
-    let rows = crate::lifecycle::DrainReadRows::of_many(bundle.programs.values().map(|p| p.items.as_slice()));
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(l) = item else { return };
@@ -4217,7 +4214,9 @@ fn check_drain_hook_behind_endless_run(rows: &DrainHookRows<'_, '_>, out: &mut V
                 return;
             };
             let Some(endless) = never_returns(flows, l) else { return };
-            if rows.run_reads_draining(l) {
+            // The run row's watches-drain column: the `run()` reads
+            // `draining`, itself or through what it calls.
+            if flows.run_of(l).is_some_and(|r| r.watches_drain) {
                 return;
             }
             out.push(

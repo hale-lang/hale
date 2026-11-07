@@ -6137,6 +6137,13 @@ pub(crate) struct LocusInfo<'ctx> {
     /// — for accept-in-a-loop patterns (`coord_with_churn`-style)
     /// that's the dominant per-child cost.
     pub(crate) empty_lifecycle: std::collections::BTreeSet<&'static str>,
+    /// GH #1858: the flow rows' watches-drain column for this locus's
+    /// declaration (`FlowRows::run_watches_drain`): its `run()` reads
+    /// `draining`, itself or through what it calls. Read here, derived
+    /// nowhere in lowering. Such a run() watches the drain (its wait frame
+    /// is cut until it reads the flag), and a main locus with no run()
+    /// does not wait for it before its tree's drain.
+    pub(crate) run_watches_drain: bool,
 }
 
 /// F.22 slot record carried on every LocusInfo. v1 surface:
@@ -10857,27 +10864,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             })
             .map(|(name, _)| name.clone())
             .collect();
-        // The loci whose run() watches the drain: it reads its locus's
-        // `draining` itself, or in a method of its own or a free fn it
-        // calls, transitively, through any receiver that resolves to
-        // the locus (`self`, a `let` alias, a parameter bound to it) or
-        // that cannot be resolved
-        // (`hale_types::lifecycle::DrainReadRows::run_reads_draining`). A
-        // read in a handler, in a `drain()` / `dissolve()` hook, or in a
-        // method the run() never reaches, or of another locus's
-        // `draining`, makes the locus an observer
-        // (below) but not its run() a watcher: the wait frames of
-        // `emit_wait_frame_enter` and the no-run() main's pinned-run
-        // awaits (`emit_pinned_run_awaits`) read this one flag. Until
-        // 2026-11-07 the flag was set for any read of the locus's code,
-        // so a pinned publisher with a `drain() { if self.draining … }`
-        // hook was not awaited and its deliveries were lost (downstream
-        // handoff review).
-        for name in hale_types::lifecycle::loci_whose_run_reads_draining(&self.program.items) {
-            if let Some(g) = self.module.get_global(&format!("lotus.reads_drain.{name}")) {
-                g.set_initializer(&self.context.i64_type().const_int(1, false));
-            }
-        }
         for name in hooked {
             self.reads_draining = true;
             self.drain_reads_beyond_run.insert(name.clone());

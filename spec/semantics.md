@@ -5380,23 +5380,22 @@ SIGINT or SIGTERM:
    100 ms slice (at once, on an `async_io` pool), and a
    deadline-bounded park on an `async_io` pool — a `recv` with a
    timeout — reports its timeout. A timed wait that **begins during
-   the drain** in a `run()` that reads its locus's `draining` — itself,
-   or in a method or a free fn it calls, transitively, through any
-   receiver that is the locus by declared type: `self`, a `let` alias
-   of it (in its block), a parameter a method or free fn binds to it
-   (a call on another locus that hands it this locus is followed), or
-   a declared field path whose type is the locus (a call on a locus
-   whose params declare a field of this locus's type, or of a holder
-   of one, transitively — a collection or projection of it included —
-   is followed, and its `self.<field>` is this locus: by declared
-   types, not by construction); a receiver the declarations cannot
-   resolve is taken as a read. A read in
-   a handler, in a `drain()` or `dissolve()` hook, or in a method the
-   `run()` never reaches, or of another locus's `draining` (a holder's
-   own `self.draining`), is not the
-   `run()`'s (one of the program's own
-   loci; a standard-library locus's bodies run in
-   their caller's frame) — returns at once the same way, until that `run()` has read
+   the drain** in a `run()` that reads its locus's `draining`, itself or
+   through a fn or method of the program it calls, transitively,
+   through any receiver that is the locus by declared type — `self`, a
+   `let` alias of it (in its block), a parameter a method or free fn
+   binds to it (a call on another locus that hands it this locus is
+   followed), or a declared field path whose type is the locus (a call
+   on a locus whose params declare a field of this locus's type, or of
+   a holder of one, transitively, a collection or projection of it
+   included, is followed, and its `self.<field>` is this locus: by
+   declared types, not by construction) — or that the declarations
+   cannot resolve, which is taken as a read (one of the program's own
+   loci; a standard-library locus's bodies run in their caller's frame;
+   a read in a handler or a hook, or of another locus's `draining`, a
+   holder's own `self.draining` included, does not make the `run()`
+   one that reads it)
+   returns at once the same way, until that `run()` has read
    `draining` as `true`: a `while !self.draining { work();
    std::time::sleep(30s); }` loop that was in `work()` when the
    signal landed reaches its check instead of sleeping the full 30 s
@@ -5517,25 +5516,20 @@ tree's drain stop every listener, which cut such a program's servers,
 one bound before the drain and one bound after alike; downstream
 handoff.) With no `run()` (an empty one is the same program), the
 tree's drain begins once the `run()` of each pinned child whose `run()`
-does not read `draining` has returned, on the eager and the deferred
-spine alike: a sleep such a `run()` is in is not cut short, a sibling
-that watches the drain keeps serving until then, and what such a
-`run()` publishes in its last moments reaches a pinned sibling that
-still consumes, in any declaration order; a child whose `run()` reads
-`draining` (itself, or in a method of its own or a free fn it calls,
-transitively, through any receiver that is the locus or cannot be
-resolved, as step 2 above counts the read) is what the drain ends,
-so it is not waited for. A read elsewhere in the child — a handler's,
-a `drain()` or `dissolve()` hook's, a method's the `run()` never
-reaches — does not make its `run()` one the drain ends, so the child
-is waited for. (2026-11-06, downstream
+does not read `draining` has returned, on the eager and the deferred spine
+alike: a sleep such a `run()` is in is not cut short, a sibling that
+watches the drain keeps serving until then, and what such a `run()`
+publishes in its last moments reaches a pinned sibling that still
+consumes, in any declaration order; a child whose `run()` reads
+`draining` (itself or through a fn or method it calls) is what the
+drain ends, so it is not waited for. A read in the child's handler or
+`drain()` hook does not count: such a child was not waited for, and a
+pinned publisher whose hook read the flag lost its deliveries again
+(GH #1858, the review of the fix below). (2026-11-06, downstream
 handoff: the teardown joined the pinned children in declaration order
 right after the tree was built, so the pinned subscriber declared
 first was shut down while the pinned publisher declared after it was
-still running, and every delivery of the program was lost, silently.
-2026-11-07: the wait skipped a child that read `draining` anywhere, so
-a publisher with a `drain() { if self.draining { … } }` hook lost its
-deliveries the same way; downstream handoff review.)
+still running, and every delivery of the program was lost, silently.)
 An `async_io` child parked
 on an untimed wait (a plain `recv`, an `accept`) is abandoned at its
 pool's shutdown (`runtime.md` § the wakeable park), as before. The tree's drain ends

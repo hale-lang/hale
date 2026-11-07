@@ -1583,6 +1583,7 @@ crates/hale-codegen/tests/tcp_connect_deadline.rs#4 6572f9f30ed0799f
 crates/hale-codegen/tests/tcp_connect_deadline.rs#5 214a4015dcedbdb2
 crates/hale-codegen/tests/tcp_connect_deadline.rs#6 214a4015dcedbdb2
 crates/hale-codegen/tests/tcp_connect_deadline.rs#8 214a4015dcedbdb2
+crates/hale-codegen/tests/tcp_connect_deadline.rs#9 38315ab6b4982485
 crates/hale-codegen/tests/tcp_dns_connect.rs#2 31e8ae265324c59b
 crates/hale-codegen/tests/tcp_listener.rs#1 7f6070b996440d05
 crates/hale-codegen/tests/tcp_recv_bytes.rs#1 f21fbc665a9c2254
