@@ -414,6 +414,11 @@ pub enum Receiver {
 /// its declared type, each locus's methods, and the free fns by name.
 pub struct DrainReads<'a> {
     loci: BTreeSet<&'a str>,
+    /// `type X = Y;` declarations: a field or parameter typed `X` is
+    /// classified by `Y`, transitively.
+    aliases: BTreeMap<&'a str, &'a TypeExpr>,
+    /// The other declared types (records, enums): no locus.
+    records: BTreeSet<&'a str>,
     fields: BTreeMap<&'a str, BTreeMap<&'a str, Receiver>>,
     methods: BTreeMap<&'a str, BTreeMap<&'a str, &'a hale_syntax::ast::FnDecl>>,
     free_fns: FreeFns<'a>,
@@ -422,7 +427,14 @@ pub struct DrainReads<'a> {
 impl<'a> DrainReads<'a> {
     /// No declarations: every receiver unresolved.
     pub fn empty() -> Self {
-        DrainReads { loci: BTreeSet::new(), fields: BTreeMap::new(), methods: BTreeMap::new(), free_fns: FreeFns::new() }
+        DrainReads {
+            loci: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+            records: BTreeSet::new(),
+            fields: BTreeMap::new(),
+            methods: BTreeMap::new(),
+            free_fns: FreeFns::new(),
+        }
     }
 
     /// The rows of `programs`' declarations, a module's included.
@@ -431,13 +443,25 @@ impl<'a> DrainReads<'a> {
         rows.free_fns = free_fns_of(programs);
         for program in programs {
             for item in hale_syntax::ast::flat_decls(&program.items) {
-                let TopDecl::Locus(l) = item else { continue };
-                rows.loci.insert(l.name.name.as_str());
-                let methods = rows.methods.entry(l.name.name.as_str()).or_default();
-                for m in &l.members {
-                    if let LocusMember::Fn(f) = m {
-                        methods.entry(f.name.name.as_str()).or_insert(f);
+                match item {
+                    TopDecl::Locus(l) => {
+                        rows.loci.insert(l.name.name.as_str());
+                        let methods = rows.methods.entry(l.name.name.as_str()).or_default();
+                        for m in &l.members {
+                            if let LocusMember::Fn(f) = m {
+                                methods.entry(f.name.name.as_str()).or_insert(f);
+                            }
+                        }
                     }
+                    TopDecl::Type(t) => match &t.body {
+                        hale_syntax::ast::TypeDeclBody::Alias(target) => {
+                            rows.aliases.entry(t.name.name.as_str()).or_insert(target);
+                        }
+                        _ => {
+                            rows.records.insert(t.name.name.as_str());
+                        }
+                    },
+                    _ => {}
                 }
             }
         }
@@ -463,26 +487,46 @@ impl<'a> DrainReads<'a> {
     }
 
     /// The locus a type names: a declared locus by its bare name (an
-    /// imported one by its last segment, when that is a declared name),
-    /// else no locus (a primitive, a declared record or enum) or, for a
-    /// path the rows cannot place, unresolved. A collection or projection
-    /// of a locus holds that locus.
+    /// imported one by its last segment, when that is a declared name), a
+    /// type alias by its target, transitively (`type WorkerRef = Worker;`
+    /// hides the locus from nothing), else no locus (a primitive, a
+    /// declared record or enum) or, for a name the rows cannot place,
+    /// unresolved — never no locus, since an unresolved name may be this
+    /// locus and the wrong answer there is a hang. A collection or
+    /// projection of a locus holds that locus.
     fn kind_of_type(&self, ty: &TypeExpr) -> Receiver {
+        self.kind_of_type_within(ty, 0)
+    }
+
+    fn kind_of_type_within(&self, ty: &TypeExpr, depth: usize) -> Receiver {
         match ty {
-            TypeExpr::Named { path, .. } => self.kind_of_name(path),
+            TypeExpr::Named { path, .. } => self.kind_of_name_within(path, depth),
             TypeExpr::Primitive(..) => Receiver::NotLocus,
             TypeExpr::Projection { inner, .. } | TypeExpr::Array { elem: inner, .. } | TypeExpr::Bounded { elem: inner, .. } => {
-                self.kind_of_type(inner)
+                self.kind_of_type_within(inner, depth)
             }
             _ => Receiver::Unknown,
         }
     }
 
     fn kind_of_name(&self, path: &hale_syntax::ast::QualifiedName) -> Receiver {
+        self.kind_of_name_within(path, 0)
+    }
+
+    fn kind_of_name_within(&self, path: &hale_syntax::ast::QualifiedName, depth: usize) -> Receiver {
         let Some(last) = path.segments.last() else { return Receiver::Unknown };
-        if self.loci.contains(last.name.as_str()) {
+        let name = last.name.as_str();
+        if self.loci.contains(name) {
             Receiver::Locus(last.name.clone())
-        } else if path.segments.len() == 1 {
+        } else if let Some(target) = self.aliases.get(name) {
+            // An alias chain is finite; a cycle (refused by the check) is
+            // cut as unresolved.
+            if depth > 32 {
+                Receiver::Unknown
+            } else {
+                self.kind_of_type_within(target, depth + 1)
+            }
+        } else if path.segments.len() == 1 && self.records.contains(name) {
             Receiver::NotLocus
         } else {
             Receiver::Unknown
@@ -973,7 +1017,9 @@ mod tests {
     /// are scoped, so the loop's `w` is still the locus). The other side:
     /// a holder's method reading only its own `self.draining`, with or
     /// without the locus as an argument, is another locus's read; a
-    /// `run()` reading a child's `draining` reads another locus's.
+    /// `run()` reading a child's `draining` reads another locus's. A
+    /// holder's field typed by an alias (a chain of two) is the locus it
+    /// aliases; an alias of another locus is that other locus.
     #[test]
     fn watches_drain_is_reached_through_aliases_arguments_and_declared_fields() {
         let src = "locus Alias { fn stop() -> Bool { return self.draining; } run() { let w = self; while !w.stop() { } } }
@@ -992,6 +1038,13 @@ mod tests {
                    locus Shadow { run() { let w = self; if true { let w = Other { }; println(w.n); } while !w.draining { } } }
                    locus Child { params { n: Int = 0; } }
                    locus ReadsChild { params { c: Child = Child { }; } run() { while !self.c.draining { } } }
+                   type AliasedRef = ByAlias;
+                   type AliasedRefRef = AliasedRef;
+                   locus AliasKeeper { params { target: AliasedRefRef; } fn stopped() -> Bool { return self.target.draining; } }
+                   locus ByAlias { run() { let k = AliasKeeper { target: self }; while !k.stopped() { } } }
+                   type OtherRef = Other;
+                   locus OtherKeeper { params { target: OtherRef; } fn stopped() -> Bool { return self.target.draining; } }
+                   locus ByOtherAlias { params { k: OtherKeeper; } run() { while !self.k.stopped() { } } }
                    fn main() { }
 ";
         let p = hale_syntax::parse_source(src).expect("parse");
@@ -1006,6 +1059,8 @@ mod tests {
         assert!(watches("ByChain"));
         assert!(watches("Shadow"));
         assert!(!watches("ReadsChild"));
+        assert!(watches("ByAlias"), "a type alias hides the locus from nothing");
+        assert!(!watches("ByOtherAlias"), "an alias of another locus is that locus");
     }
 
     /// A clause's child is the locus lowering names: an alias is

@@ -303,8 +303,9 @@ fn a_draining_read_outside_run_does_not_skip_the_wait_for_it() {
 /// calling a method, the alias handed to a free fn, `self` handed to
 /// another locus's method that reads its parameter, a holder built with
 /// `target: self` whose method reads `self.target.draining`, a two-level
-/// holder chain, and an alias an inner block shadows (with a control
-/// that renames the inner binding).
+/// holder chain, the holder's field typed by an alias of the locus
+/// (`type WorkerRef = Worker;`), and an alias an inner block shadows
+/// (with a control that renames the inner binding).
 #[test]
 fn a_run_reading_draining_through_an_alias_an_argument_or_a_field_is_not_awaited() {
     let main = "main locus App {
@@ -313,7 +314,7 @@ fn a_run_reading_draining_through_an_alias_an_argument_or_a_field_is_not_awaited
         }
         fn main() { App { }; println(\"after\"); }
         ";
-    let shapes: [(&str, &str); 7] = [
+    let shapes: [(&str, &str); 8] = [
         ("alias_method", "locus Worker {
             fn stopped() -> Bool { return self.draining; }
             run() { let w = self; while !w.stopped() { std::time::sleep(10ms); } println(\"worker out\"); }
@@ -334,6 +335,19 @@ fn a_run_reading_draining_through_an_alias_an_argument_or_a_field_is_not_awaited
         "),
         ("field", "locus Watch {
             params { target: Worker; }
+            fn stopped() -> Bool { return self.target.draining; }
+        }
+        locus Worker {
+            run() {
+                let watcher = Watch { target: self };
+                while !watcher.stopped() { std::time::sleep(10ms); }
+                println(\"worker out\");
+            }
+        }
+        "),
+        ("field_alias", "type WorkerRef = Worker;
+        locus Watch {
+            params { target: WorkerRef; }
             fn stopped() -> Bool { return self.target.draining; }
         }
         locus Worker {
@@ -394,8 +408,9 @@ fn a_run_reading_draining_through_an_alias_an_argument_or_a_field_is_not_awaited
 
 /// The column's other side: a holder's method that reads only its own
 /// `self.draining` — the holder declaring a `Worker` field, or handed the
-/// `Worker` as an argument — reads another locus's drain, so the finite
-/// `Worker` does not watch and is awaited: `worker done` before `after`,
+/// `Worker` as an argument — or a holder whose field is an alias of
+/// another locus, reads another locus's drain, so the finite `Worker`
+/// does not watch and is awaited: `worker done` before `after`,
 /// its sleeps uncut.
 #[test]
 fn a_run_reading_only_another_locus_s_draining_is_awaited() {
@@ -405,7 +420,7 @@ fn a_run_reading_only_another_locus_s_draining_is_awaited() {
         }
         fn main() { App { }; println(\"after\"); }
         ";
-    let shapes: [(&str, &str); 2] = [
+    let shapes: [(&str, &str); 3] = [
         ("field_self", "locus Watch {
             params { target: Worker; }
             fn stopped() -> Bool { return self.draining; }
@@ -415,6 +430,21 @@ fn a_run_reading_only_another_locus_s_draining_is_awaited() {
                 let watcher = Watch { target: self };
                 let mut i = 0;
                 while i < 3 && !watcher.stopped() { i = i + 1; std::time::sleep(20ms); }
+                println(\"worker done\");
+            }
+        }
+        "),
+        ("field_other_alias", "locus Other { params { n: Int = 0; } }
+        type OtherRef = Other;
+        locus Watch {
+            params { target: OtherRef; }
+            fn stopped() -> Bool { return self.target.draining; }
+        }
+        locus Worker {
+            params { watcher: Watch = Watch { target: Other { } }; }
+            run() {
+                let mut i = 0;
+                while i < 3 && !self.watcher.stopped() { i = i + 1; std::time::sleep(20ms); }
                 println(\"worker done\");
             }
         }

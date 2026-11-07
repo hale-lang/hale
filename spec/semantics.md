@@ -5388,9 +5388,11 @@ SIGINT or SIGTERM:
    followed), or a declared field path whose type is the locus (a call
    on a locus whose params declare a field of this locus's type, or of
    a holder of one, transitively, a collection or projection of it
-   included, is followed, and its `self.<field>` is this locus: by
-   declared types, not by construction) — or that the declarations
-   cannot resolve, which is taken as a read (one of the program's own
+   included, a type alias of it resolved to it, is followed, and its
+   `self.<field>` is this locus: by declared types, not by
+   construction) — or that the declarations cannot resolve (a type
+   name they do not know is never taken as no locus), which is taken
+   as a read (one of the program's own
    loci; a standard-library locus's bodies run in their caller's frame;
    a read in a handler or a hook, or of another locus's `draining`, a
    holder's own `self.draining` included, does not make the `run()`
