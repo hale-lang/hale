@@ -553,7 +553,11 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 .get(name.as_str())
                 .map(|info| self.wire_min_size_of_fields(&info.field_order, &info.fields))
                 .unwrap_or(0),
-            CodegenTy::Bounded(elem, n) => 8 + n * codegen_ty_size_bytes(self.context, elem),
+            // the count and the elements at their wire size (an enum's
+            // tag is four bytes: `codegen_ty_size_bytes` prices every
+            // non-Decimal at eight, which overshot a `bounded[Enum; N]`
+            // and refused every frame holding one)
+            CodegenTy::Bounded(elem, n) => 8 + n * self.wire_fixed_size(elem),
             CodegenTy::Array(elem, n) => n * self.wire_min_size(elem),
             other if self.wire_fixed_field(other) => self.wire_fixed_size(other),
             _ => 0,
