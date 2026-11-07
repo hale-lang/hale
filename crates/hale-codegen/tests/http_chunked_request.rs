@@ -138,3 +138,82 @@ fn malformed_or_over_cap_chunked_framing_is_refused() {
     drop(child);
     let _ = std::fs::remove_file(&bin);
 }
+
+// A server taking requests of up to 16 MiB, answering with the length
+// of the body it got (`a_large_request_costs_memory_linear_in_its_size`'s).
+const LARGE_ECHO_SERVER: &str = r#"
+    locus Count {
+        fn handle(req: std::http::Request) -> std::http::Response {
+            return std::http::Response { status: 200, body: to_string(len(req.body)) };
+        }
+    }
+    fn main() {
+        std::http::Server {
+            host: "127.0.0.1",
+            port: 0,
+            handler: Count { },
+            max_request_bytes: 16777216,
+            ready_signal: "ready"
+        };
+    }
+"#;
+
+fn peak_kb(pid: u32) -> u64 {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .and_then(|v| v.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// One 12 MiB chunk whose data carries a blank line every 4 KiB, written
+/// 4 KiB at a time (review of the first cut, downstream handoff): the
+/// framing is consumed as it arrives, so the server's peak resident set
+/// grows by a small multiple of the body and the handler sees all of it.
+/// The first cut scanned a snapshot of everything so far on every read
+/// whose bytes ended in a blank line: about 9 GiB of prefix copies for
+/// this request.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_large_chunk_in_small_writes_costs_memory_linear_in_its_size() {
+    let bin = harness::unique_bin("http_chunked_large");
+    build_opts::build_source(LARGE_ECHO_SERVER, &bin, &build_opts::options()).expect("build");
+    let mut child = Command::new(&bin).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn the server");
+    let stdout = child.stdout.take().unwrap();
+    let mut child = Stopped(child);
+    let mut ready = String::new();
+    let _ = BufReader::new(stdout).read_line(&mut ready);
+    assert_eq!(ready.trim(), "ready", "the server did not start");
+    let port = child::tcp_port(&mut child.0);
+    let pid = child.0.id();
+    let before = peak_kb(pid);
+
+    // 4 KiB pieces, each ending in a blank line
+    let piece: Vec<u8> = {
+        let mut p = vec![b'x'; 4096 - 4];
+        p.extend_from_slice(b"\r\n\r\n");
+        p
+    };
+    let pieces = 3 * 1024;
+    let size = piece.len() * pieces;
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    s.set_read_timeout(Some(Duration::from_secs(120))).unwrap();
+    s.write_all(format!("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n{size:x}\r\n").as_bytes()).unwrap();
+    for _ in 0..pieces {
+        s.write_all(&piece).unwrap();
+    }
+    s.write_all(b"\r\n0\r\n\r\n").unwrap();
+    let mut reply = Vec::new();
+    let _ = s.read_to_end(&mut reply);
+    let reply = String::from_utf8_lossy(&reply);
+    let peak = peak_kb(pid);
+    drop(child);
+    let _ = std::fs::remove_file(&bin);
+    assert!(reply.starts_with("HTTP/1.1 200") && reply.trim_end().ends_with(&size.to_string()), "{reply}");
+    eprintln!("peak RSS grew {} KB for a 12 MiB chunked request", peak.saturating_sub(before));
+    // a linear assembly holds a few copies of 12 MiB; the per-read
+    // snapshot held gigabytes
+    assert!(peak.saturating_sub(before) < 96 * 1024, "peak RSS grew {} KB for a 12 MiB chunked request ({before} KB to {peak} KB)", peak.saturating_sub(before));
+}

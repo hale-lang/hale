@@ -3823,6 +3823,10 @@ row	H@main1	H	main	default
 shared	__StdHttpServer@main1	__StdHttpServer #a56eb774
 shared	dynamic	sites in the seed #069c8230
 
+== crates/hale-codegen/tests/http_chunked_request.rs#87f6e7a4
+shared	__StdHttpServer@main1	__StdHttpServer #a194964f
+shared	dynamic	sites in the seed #069c8230
+
 == crates/hale-codegen/tests/http_peer_hangup.rs#21c68d21
 -- __StdHttpServer@main1	__StdHttpServer
 row	~	__StdHttpServer	main	default
@@ -3930,14 +3934,7 @@ row	~.relay	__StdIoTcpRelay	pool:web	inherited
 shared	dynamic	sites in the seed #af37ec58
 
 == crates/hale-codegen/tests/http_server_memory.rs#88079992
--- __StdHttpServer@main1	__StdHttpServer
-row	~	__StdHttpServer	main	default
-row	~.conns	__StdIoTcpConnections	main	inherited
-row	~.conns.flows	__StdIoTcpFlows	main	inherited
-row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	Count	main	inherited
-row	~.handler	Count	main	inherited
-row	~.relay	__StdIoTcpRelay	main	inherited
+shared	__StdHttpServer@main1	__StdHttpServer #a194964f
 shared	dynamic	sites in the seed #069c8230
 
 == crates/hale-codegen/tests/http_split_write.rs#74f0dac9
@@ -18431,6 +18428,15 @@ row	~.conns.handler	__StdHttpResponder	pool:web	inherited
 row	~.conns.handler.handler	Slow	pool:web	inherited
 row	~.handler	Slow	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
+
+== shared __StdHttpServer #a194964f
+row	~	__StdHttpServer	main	default
+row	~.conns	__StdIoTcpConnections	main	inherited
+row	~.conns.flows	__StdIoTcpFlows	main	inherited
+row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	Count	main	inherited
+row	~.handler	Count	main	inherited
+row	~.relay	__StdIoTcpRelay	main	inherited
 
 == shared __StdHttpServer #a56eb774
 row	~	__StdHttpServer	main	default
