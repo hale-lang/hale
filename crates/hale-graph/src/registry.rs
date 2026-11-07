@@ -2771,7 +2771,7 @@ pub const RULES: &[Rule] = &[
         title: "Subscriber torn down at its statement",
         // The allocation summary's rows (each own fn's locus literals, whether statement-built and whether the value leaves the call), the scope (which locus subscribes), the ownership graph (an `accept` owning the literal) and the declarations (which locus wrote a `birth()` or a `run()`).
         reads: Reads::Rows(&["alloc_summary", "top_scope", "ownership"]),
-        gist: "a bus subscriber, or a locus that keeps one, built as a bare statement, writing neither `birth()` nor `run()` and with no `accept` owning it, torn down at the statement's end before any delivery can reach it (warning, at the literal)",
+        gist: "a bus subscriber, or a locus that keeps one, built as a bare statement outside a `run()` body, writing neither `birth()` nor `run()`, holding no child whose `run()` runs, and with no `accept` owning it, torn down at the statement's end before any delivery can reach it (warning, at the literal)",
         family: "alloc_summary",
         evaluator: Some(site(CHECK, "check_subscriber_torn_down_at_its_statement")),
         state: State::Canonical,
