@@ -20957,6 +20957,16 @@ impl<'a> Checker<'a> {
         {
             return None;
         }
+        // A hub's path the expansion did not build (spec/api.md § Streams):
+        // it is a main locus's param, so one written elsewhere, or one the
+        // hub laws refuse, is said to be that rather than an unknown head.
+        if matches!((head, name), ("ws" | "udp", "Hub")) {
+            return Some(format!(
+                "`{head}::Hub` is the standard library's hub (`std::api::{head}::Hub`): a param of the main \
+                 locus, built by a `{head}::Hub {{ bind: \"…\", principals: …, roles: …, as: \"…\" }}` literal in \
+                 its `params`, where the compiler builds it (spec/api.md § Streams)"
+            ));
+        }
         // The names this build's imports registered under this head.
         // A row for the name being written means the path resolves
         // exactly as codegen resolves it, and there is nothing to say.

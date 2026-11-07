@@ -1272,7 +1272,7 @@ pub fn expand(
     if mentions_sha256(programs) {
         inject_sha256(programs);
     }
-    let hubs = crate::hub_expand::binds_a_hub(programs);
+    let hubs = crate::hub_expand::declares_a_hub(programs);
     if !mentions_runtime(programs) && !hubs {
         return Vec::new();
     }

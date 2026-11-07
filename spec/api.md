@@ -2078,7 +2078,16 @@ the address it listens on (or, for a `ws::Hub`, none, when an
 the compiler numbers it and gives it its rows there, so a construction
 that supplies the param is refused ("param `hub` is a hub that streams
 are bound to; its default is the hub, and a construction cannot supply
-another"). It is two kinds of locus sharing one listener, so that no
+another"). The literal resolves wherever it is written in the main
+locus's `params`, and the hub is built whether or not a stream is bound
+to it or a surface served over it: a hub with no stream row listens,
+admits subscriptions to nothing, and carries the rpcs served over it
+(2026-11-06, downstream handoff: a hub with no `bindings` row was left
+unbuilt, and `ws::Hub` then failed to resolve). Written anywhere else
+(a param of a locus that is not the main one), `ws::Hub` is refused as
+what it is: "`ws::Hub` is the standard library's hub
+(`std::api::ws::Hub`): a param of the main locus, built by a `ws::Hub {
+… }` literal in its `params`, where the compiler builds it". It is two kinds of locus sharing one listener, so that no
 locus has to serve two interfaces: the hub itself holds the sources,
 admits subscriptions and is the `Rpc` a surface may be served over
 (`api::serve(S, self.hub, …)`: one listener carries rpcs and streams over

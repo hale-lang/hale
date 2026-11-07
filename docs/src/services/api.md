@@ -604,6 +604,8 @@ main locus Desk {
 }
 ```
 
+The hub is built wherever its literal is written in the main locus's `params`, with or without a `bindings { }` row or a surface served over it (`api::serve(Public, self.hub, …)`): a hub with no stream row listens and carries the rpcs served over it. A `ws::Hub` literal in any other locus is refused, naming the main locus as its place.
+
 ### Hub Protocol and Queue Semantics
 
 - **Configuration**: A hub param must keep its default constructor literal (overriding `Desk { hub: ... }` is rejected). Published events must fit within the 65,536-byte bus frame limit (including header).

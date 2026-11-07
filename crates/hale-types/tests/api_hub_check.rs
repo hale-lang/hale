@@ -142,6 +142,50 @@ fn a_hub_names_its_exposure_and_its_address() {
 }
 
 #[test]
+fn a_hub_with_no_stream_row_is_built_where_its_literal_is_written() {
+    // downstream handoff: a hub with no `bindings` row was left unbuilt,
+    // and `ws::Hub` then failed to resolve ("`ws` is not an import or a
+    // type of this seed"); the same literal beside a stream row resolved
+    let src = program(HUB, "");
+    assert!(errors(&src).is_empty(), "{:?}", errors(&src));
+    assert!(build_errors(&src).is_empty(), "{:?}", build_errors(&src));
+    // beside a surface served over it, and no stream row
+    let served = program(
+        &format!("{HUB}\n        ex: api::Exposure = api::serve(Public, self.hub, as: \"rpc\", receivers: {{ Maker: self.maker }}, bound: 8, on_full: refuse);"),
+        "",
+    )
+    .replace("locus Maker {", "api Public { rpc Maker::make; }\n\nlocus Maker {");
+    assert!(errors(&served).is_empty(), "{:?}", errors(&served));
+    assert!(build_errors(&served).is_empty(), "{:?}", build_errors(&served));
+}
+
+/// The errors `hale check <file>` reports: the whole-program check, whose
+/// unresolved-path rule names a head no import or type declares.
+fn whole_program_errors(src: &str) -> Vec<String> {
+    let parsed = hale_syntax::parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+    let snap = Snapshot::from_program(parsed, Vec::new(), Config::check(true, false)).ok().expect("a snapshot");
+    let diags = match snap.demand_check() {
+        Ok(c) => c.diags.clone(),
+        Err(b) => b.because.clone(),
+    };
+    diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect()
+}
+
+#[test]
+fn a_hub_outside_the_main_locus_is_named_as_the_main_locus_s() {
+    let src = program("", "").replace(
+        "locus Maker {",
+        "locus Side {\n    params { bearer: Tokens = Tokens { }; roles: Grants = Grants { }; hub: ws::Hub = ws::Hub { bind: \"127.0.0.1:0\", principals: self.bearer, roles: self.roles, as: \"side\" }; }\n}\n\nlocus Maker {",
+    );
+    let e = whole_program_errors(&src);
+    assert!(
+        e.iter().any(|m| m.starts_with("`ws::Hub` is the standard library's hub (`std::api::ws::Hub`): a param of the main locus")),
+        "{e:?}"
+    );
+    assert!(!e.iter().any(|m| m.contains("is not an import or a type of this seed")), "{e:?}");
+}
+
+#[test]
 fn a_hub_is_a_param_built_by_a_literal() {
     let src = program("", ROW);
     let e = errors(&src);
