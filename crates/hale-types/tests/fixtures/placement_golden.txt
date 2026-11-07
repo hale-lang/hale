@@ -5900,6 +5900,14 @@ row	App@literal1	App	main	default
 row	App@literal1.w	Worker	pool:io	entry	off owner
 row	Sink@binding1	Sink	pinned:Sink@binding1	binding
 
+== crates/hale-codegen/tests/tree_drain.rs#20604e25
+root	App	the entry
+domain	pinned:App@literal1.s
+domain	pinned:App@literal1.p
+row	App@literal1	App	main	default
+row	App@literal1.p	Pub	pinned:App@literal1.p	entry	off owner
+row	App@literal1.s	Store	pinned:App@literal1.s	entry	off owner
+
 == crates/hale-codegen/tests/unowned_literal_pair_leak.rs#492944e5
 row	Lonely@main1	Lonely	main	default
 row	Lonely@main2	Lonely	main	default

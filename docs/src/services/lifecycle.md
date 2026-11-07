@@ -277,7 +277,7 @@ main locus App {
     drain() { println("drained"); }
 }
 ```
-- **Default `main` wait behavior**: A `main locus` with no `run()` exits as soon as its children complete, except when `main` (or a child server locus beneath it) holds an active `api::Exposure` socket, in which case `main` implicitly waits until the exposure stops or the process drains.
+- **Default `main` wait behavior**: A `main locus` with no `run()` exits as soon as its children complete, except when `main` (or a child server locus beneath it) holds an active `api::Exposure` socket, in which case `main` implicitly waits until the exposure stops or the process drains. "Complete" means the `run()` of every pinned child that does not read `self.draining` has returned: only then does the tree's drain begin, so a sibling looping on `while !self.draining` keeps serving until the workers are done, and a pinned subscriber declared before such a worker still consumes what the worker publishes in its last moments.
 
 ### Self-Termination (`terminate;`)
 

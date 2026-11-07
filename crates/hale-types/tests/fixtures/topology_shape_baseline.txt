@@ -1637,6 +1637,7 @@ crates/hale-codegen/tests/topic_phase2_adapter_binding.rs#22 b9536d6972118667
 crates/hale-codegen/tests/topic_phase2_adapter_binding.rs#5 94ab3adeee6345aa
 crates/hale-codegen/tests/topic_phase2_adapter_binding.rs#8 9065d0ebf49faf99
 crates/hale-codegen/tests/tree_drain.rs#0 dad554c973ea185e
+crates/hale-codegen/tests/tree_drain.rs#1 1535c5f27134de4f
 crates/hale-codegen/tests/type_record_fn_pointer_field.rs#0 01c15ba016baedb3
 crates/hale-codegen/tests/type_record_fn_pointer_field.rs#1 731a66bfc6b97775
 crates/hale-codegen/tests/type_record_fn_pointer_field.rs#2 6535b1dbe65ceff1

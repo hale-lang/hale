@@ -7030,6 +7030,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 });
                 if let Some((owner_slot, owner_name, _)) = main_owner {
                     if !self.hoisted_heads.contains(&owner_slot) {
+                        // An owner with no run() waits, before its
+                        // head's tree drain, for the run() of each of
+                        // its own pinned entries that does not read
+                        // `draining`, as the eager spine does
+                        // (`emit_pinned_run_awaits`).
+                        let owner_has_no_run = self
+                            .user_loci
+                            .get(&owner_name)
+                            .map_or(true, |i| !i.methods.contains_key("run") || i.empty_lifecycle.contains("run"));
+                        if owner_has_no_run {
+                            let own: Vec<(PointerValue<'ctx>, String, PointerValue<'ctx>)> = order
+                                .iter()
+                                .filter_map(|(s, name, tid)| tid.map(|tid| (*s, name.clone(), tid)))
+                                .filter(|(s, _, _)| self.pinned_owner.iter().any(|(p, o)| p == s && *o == owner_slot))
+                                .collect();
+                            self.emit_pinned_run_awaits(&own, true)?;
+                        }
                         self.emit_hoisted_head(owner_slot, &owner_name)?;
                         self.hoisted_heads.push(owner_slot);
                     }

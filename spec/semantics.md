@@ -5443,7 +5443,19 @@ A `main` that only builds its tree (no `run()`, its children doing the
 work) serves for as long as they do. (2026-10-19: GH #1659 had the
 tree's drain stop every listener, which cut such a program's servers,
 one bound before the drain and one bound after alike; downstream
-handoff.) An `async_io` child parked
+handoff.) With no `run()` (an empty one is the same program), the
+tree's drain begins once the `run()` of each pinned child that does not
+read `draining` has returned, on the eager and the deferred spine
+alike: a sleep such a `run()` is in is not cut short, a sibling that
+watches the drain keeps serving until then, and what such a `run()`
+publishes in its last moments reaches a pinned sibling that still
+consumes, in any declaration order; a child that reads `draining` is
+what the drain ends, so it is not waited for. (2026-11-06, downstream
+handoff: the teardown joined the pinned children in declaration order
+right after the tree was built, so the pinned subscriber declared
+first was shut down while the pinned publisher declared after it was
+still running, and every delivery of the program was lost, silently.)
+An `async_io` child parked
 on an untimed wait (a plain `recv`, an `accept`) is abandoned at its
 pool's shutdown (`runtime.md` § the wakeable park), as before. The tree's drain ends
 with its teardown: a `main` locus built afterwards starts undrained,

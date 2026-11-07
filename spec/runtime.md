@@ -2738,6 +2738,16 @@ its `KNOWN_OPEN` table, which is empty today.
   complete: a pinned or pool-placed child's `while !self.draining`
   loop no longer holds the process once `main`'s `run()` has returned.
   A `run()` that does not watch it keeps running, as under a signal.
+  A main locus with no `run()` (an empty one is the same program)
+  raises it, on the eager and the deferred spine alike, only once the
+  `run()` of each of its own pinned children that does not read
+  `draining` has returned (`lotus_pinned_run_await`, before the
+  `TreeDrain` row; a wait, not an obligation of the plan, which the
+  pinned thread's domain answers as its run section ends,
+  `lotus_pinned_run_done`), so the joins that follow find those runs
+  done and a run's last publishes reach a pinned sibling that still
+  consumes (`spec/semantics.md` § "When `main`'s `run()` ends first";
+  2026-11-06, downstream handoff).
   Unlike a signal's drain it stops no listener: a server keeps
   accepting until a signal (`spec/semantics.md` § Drain cascade).
   The tree drain is the flag's second bit, so a signal's drain is

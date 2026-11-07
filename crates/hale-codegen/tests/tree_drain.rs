@@ -184,3 +184,129 @@ fn a_deferred_main_locus_drains_its_tree_at_its_teardown() {
     let l = lines(&out);
     assert!(pos(&l, "pinned saw the drain") > pos(&l, "fn main ends"), "{}", l.join("\n"));
 }
+
+/// A main locus with no `run()` whose children do the work (downstream
+/// handoff, 2026-11-06): a pinned subscriber declared first, a pinned
+/// publisher declared after it whose `run()` publishes three records,
+/// sleeps, publishes a trigger, sleeps and returns. The main locus's
+/// teardown used to join its pinned children in declaration order, so
+/// the subscriber's mailbox was shut down while the publisher was still
+/// running and every delivery was lost: the program printed nothing and
+/// exited 0. The record names are heap values (`std::str::upper`), so the
+/// ASan twin reads them from memory a wrong teardown order would have
+/// freed.
+const STORE_AND_PUB: &str = r#"
+    type Rec { name: String = ""; }
+    type Go { n: Int; }
+    topic Recs { payload: Rec; subject: "recs"; }
+    topic Gos { payload: Go; subject: "gos"; }
+    locus Store {
+        params { items: bounded[Rec; 16]; }
+        bus { subscribe Recs as on_rec; subscribe Gos as on_go; }
+        fn on_rec(r: Rec) { push(self.items, r) or discard; }
+        fn on_go(g: Go) {
+            for x in self.items { println("stored=" + x.name); }
+            println("count=" + to_string(count(self.items)));
+        }
+    }
+    locus Pub {
+        bus { publish Recs; publish Gos; }
+        run() {
+            let mut i = 0;
+            while i < 3 { Recs <- Rec { name: std::str::upper("rec") + to_string(i) }; i = i + 1; }
+            std::time::sleep(100ms);
+            Gos <- Go { n: 1 };
+            std::time::sleep(100ms);
+            println("pub run done");
+        }
+    }
+    main locus App {
+        params { s: Store = Store { }; p: Pub = Pub { }; }
+        placement { s: pinned; p: pinned; }
+    }
+    fn main() { App { }; println("after"); }
+"#;
+
+fn assert_three_deliveries(out: &Output) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{:?}\nstderr:\n{stderr}", out.status);
+    let l = lines(out);
+    for i in 0..3 {
+        pos(&l, &format!("stored=REC{i}"));
+    }
+    pos(&l, "count=3");
+    pos(&l, "pub run done");
+    assert_eq!(l.last().map(String::as_str), Some("after"), "{}", l.join("\n"));
+}
+
+#[test]
+fn a_main_with_no_run_delivers_what_its_pinned_children_publish() {
+    let bin = harness::unique_bin("tree_drain_no_run_pinned");
+    build_opts::build_source(STORE_AND_PUB, &bin, &build_opts::options()).expect("build");
+    let out = run_bounded(&bin, 20, &[]);
+    let _ = std::fs::remove_file(&bin);
+    assert_three_deliveries(&out);
+}
+
+#[test]
+fn a_main_with_no_run_delivers_what_its_pinned_children_publish_under_asan() {
+    let bin = harness::unique_bin("tree_drain_no_run_pinned_asan");
+    harness::build_source_asan(STORE_AND_PUB, &bin);
+    let out = run_bounded(&bin, 60, &[("LOTUS_NO_CHUNK_POOL", "1")]);
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for bad in ["AddressSanitizer", "LeakSanitizer", "SUMMARY:"] {
+        assert!(!stderr.contains(bad), "{bad} in:\n{stderr}");
+    }
+    assert_three_deliveries(&out);
+}
+
+/// The same main locus with a pinned worker that does not read
+/// `draining` beside a pinned child that loops on it: the tree's drain
+/// begins once the worker's `run()` has returned, so the loop sees it
+/// after the worker is done — and still sees it, so the program ends.
+/// Alone, a child that reads `draining` sees the drain at once (the
+/// shape before this: `loop out` printed first).
+#[test]
+fn a_main_with_no_run_drains_its_tree_once_its_workers_have_returned() {
+    let src = format!(
+        "{SLEEPER}
+        locus Worker {{
+            run() {{ std::time::sleep(150ms); println(\"worker done\"); }}
+        }}
+        main locus App {{
+            params {{ l: Sleeper = Sleeper {{ tag: \"pinned\" }}; w: Worker = Worker {{ }}; }}
+            placement {{ l: pinned; w: pinned; }}
+        }}
+        fn main() {{ App {{ }}; println(\"after\"); }}
+        "
+    );
+    let bin = harness::unique_bin("tree_drain_no_run_worker");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+    let out = run_bounded(&bin, 20, &[]);
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "{:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+    let l = lines(&out);
+    assert!(pos(&l, "worker done") < pos(&l, "pinned saw the drain"), "{}", l.join("\n"));
+    assert!(laps(&l, "pinned") >= 3, "the loop was drained before the worker returned:\n{}", l.join("\n"));
+    assert_eq!(l.last().map(String::as_str), Some("after"), "{}", l.join("\n"));
+
+    // alone, the loop sees the drain at once and the program ends
+    let src = format!(
+        "{SLEEPER}
+        main locus App {{
+            params {{ l: Sleeper = Sleeper {{ tag: \"pinned\" }}; }}
+            placement {{ l: pinned; }}
+        }}
+        fn main() {{ App {{ }}; println(\"after\"); }}
+        "
+    );
+    let bin = harness::unique_bin("tree_drain_no_run_alone");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+    let out = run_bounded(&bin, 20, &[]);
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "{:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+    let l = lines(&out);
+    pos(&l, "pinned saw the drain");
+    assert_eq!(l.last().map(String::as_str), Some("after"), "{}", l.join("\n"));
+}

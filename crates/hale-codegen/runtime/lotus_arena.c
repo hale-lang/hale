@@ -13245,6 +13245,7 @@ struct lotus_domain {
     int                  alive;         /* the thread still consumes */
     int                  pending;       /* posted deliveries not yet claimed */
     int                  refs;          /* posters still naming it */
+    int                  run_done;      /* a locus's thread: its run() returned for good */
 };
 
 static lotus_domain_t *g_domains = NULL;
@@ -13749,6 +13750,58 @@ void lotus_pinned_join(int64_t tid) {
     free(d);
 }
 
+/* A pinned locus's run() has returned for good (or never ran, the
+ * locus quarantined): its thread records it on its domain, so the
+ * thread that built it can wait for the run alone, before it shuts the
+ * mailbox down and joins (`lotus_pinned_run_await`). Called by the
+ * compiled thread_main once past the run section; the mailbox loop,
+ * if any, follows. */
+void lotus_pinned_run_done(void) {
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_t *d = t_domain;
+    if (d) {
+        d->run_done = 1;
+        pthread_cond_broadcast(&g_held_delivered);
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+/* The instantiating thread: wait until the pinned thread `tid`'s run()
+ * has returned (`lotus_pinned_run_done`), or the thread has ended,
+ * without shutting its mailbox down, so a sibling the run still
+ * publishes to keeps consuming: a main locus's teardown waits for every
+ * pinned child's run() before the first of its mailbox shutdowns
+ * (spec/semantics.md § "When `main`'s `run()` ends first"; downstream
+ * handoff: the first pinned subscriber was shut down while the second
+ * pinned child's run() was still publishing to it, and every delivery
+ * was lost). The wait services the failures posted here and, in 1 ms
+ * slices, drains the program-wide queue and this thread's own mailbox,
+ * as the readiness wait of a start does
+ * (`lotus_pinned_start_await_ready`): a handler on this thread the run
+ * publishes to is answered meanwhile. A thread this process never
+ * started (no domain) is nothing to wait for. */
+void lotus_pinned_run_await(int64_t tid, lotus_bus_queue_t *queue) {
+    pthread_t t = (pthread_t)(uintptr_t)tid;
+    lotus_mailbox_t *own = g_current_pinned_mailbox;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_t *d = g_domains;
+    while (d && !(d->kind == LOTUS_DOMAIN_THREAD && pthread_equal(d->thread, t)))
+        d = d->next;
+    while (d && !d->run_done && d->alive) {
+        lotus_domain_t *here = t_domain;
+        if (here && here->pending > 0 && !t_failure_servicing) {
+            lotus_failure_await_service_locked();
+            continue;
+        }
+        lotus_held_wait_slice_locked();
+        pthread_mutex_unlock(&g_params_open_lock);
+        lotus_bus_queue_drain(queue);
+        lotus_mailbox_drain_pending(own);
+        pthread_mutex_lock(&g_params_open_lock);
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
 #else /* __wasm__ */
 static void lotus_domain_pool_begin(lotus_coop_pool_t *p) { (void)p; }
 static void lotus_domain_pool_started(lotus_coop_pool_t *p) { (void)p; }
@@ -13784,6 +13837,12 @@ int64_t lotus_failure_post(void *parent, void *fn, void *child,
 void lotus_pinned_join(int64_t tid) {
     (void)tid;
     fprintf(stderr, "lotus: a pinned locus cannot be joined on wasm32 (no threads)\n");
+    abort();
+}
+void lotus_pinned_run_done(void) {}
+void lotus_pinned_run_await(int64_t tid, lotus_bus_queue_t *queue) {
+    (void)tid; (void)queue;
+    fprintf(stderr, "lotus: a pinned locus cannot be waited for on wasm32 (no threads)\n");
     abort();
 }
 #endif /* __wasm__ */
