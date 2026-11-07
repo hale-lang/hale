@@ -8,6 +8,30 @@ behavior.
 
 ## Unreleased
 
+## v0.32.7 — stops that end promptly, and a Mac that links (2026-11-06)
+
+A patch release from the first run of a habitat and voice on a laptop, and from hale-lang/voice's review.
+
+**A sleep that begins during a drain returns at once.** A `run()` that watches the drain, mid-work when SIGTERM arrived, started its next `sleep` after the drain had begun and slept its full length: past the grace, killed by the signal, its `drain()` hook unrun. The drain now ends a timed wait that begins after it as well as one in progress, and a coroutine pool that is shutting down resumes the waits the drain cut instead of abandoning them. Deliberate pauses are left alone: a sleep in a `drain()`/`dissolve()` hook, in a handler, or after the loop has seen the drain.
+
+**Grafting onto the habitat's own machine places the organism.** `hale habitat graft <sapling> --host local` through the head now places the sapling's services, and `hale habitat apply` runs outside the head's request, so pulling images no longer times it out.
+
+**A Mac with mismatched developer tools links.** With an older Xcode selected beside newer Command Line Tools, every link failed with `tapi error: malformed file … unknown architecture`. With no `SDKROOT` set, hale now picks an SDK the selected linker can read, tests it once and caches the choice. If none links, the error names what was tried and how to fix it.
+
+**`hale fmt` writes a seam one hop per line**, whatever its width.
+
+The item-level notes follow.
+
+- `hale habitat graft <sapling> --host local` through the habitat's head places the sapling's own services on this machine; the head dropped `--host local`, so nothing of the organism's was placed and `hale habitat apply` had nothing of it to bring up.
+- `hale habitat apply` no longer fails with "the project's API did not answer within the head's deadline": the head's `Commands::apply_allocations` starts the apply in a process of its own and answers at once with its id, and the new `Commands::apply_log` pages its log and hands back the pulse when it ends. `hale habitat apply`, a graft's placement, `hale habitat organism upgrade` and the operator face follow it, so a first pull or build of an organism's images no longer holds every other command of the head. One apply runs at a time.
+- Observing an allocation's address waits at most 2 s for it to accept, an organism that reuses the habitat's memory or nerves reads as that server after an apply instead of `down`, and the habitat's body no longer repeats `github: no forge: forgejo  at …` every tick.
+
+- **Changed:** `hale fmt` puts one seam hop per line. A seam (`seam { … }` or `seam name(x: T) -> R { … }`) is always multi-line, whatever its width and however few its hops: the head on the body's first line, each pipeline `->` opening a line one level deeper with its hop and the chain's `;`, and `or end;` / `or violate NAME;` and the closing `}` on lines of their own. It is the formatter's first rule that sets a shape regardless of width; the signature's return arrow, a `->` inside the head's brackets and every `->` outside a seam are left alone, and comments keep their place. Run `hale fmt` once to bring existing seams into this form, or `hale fmt --check` will list their files.
+
+- **Fixed:** a `std::time::sleep` that begins while the process drains no longer runs its full length in a `run()` that watches the drain. The drain cut only a sleep already in progress when it began, so a `while !self.draining { work(); std::time::sleep(30s); }` loop that was in `work()` when SIGTERM landed started a full 30 s sleep, outlasted the 5 s grace and died by the signal (exit 143) with its `drain()` / `dissolve()` hooks unrun. Now a timed wait begun during the drain in the `run()` of a locus whose code reads `draining` returns at once, on main, a pinned thread, a classic pool and an `async_io` pool (where it is a timed park, now resumed before the pool's shutdown abandons what is still parked), until that `run()` has read `draining` as `true`. Waits begun during the drain elsewhere still run their length: a `drain()` / `dissolve()` body, a handler, and a `run()` pacing a final flush after its loop. The reported loop now stops in about 0.4 s, exit 0, hooks run. Reported from hale-lang/voice.
+
+- **Fixed:** on a Mac with an older Xcode selected beside newer Command Line Tools, every `hale` link (`build`, `run`, `test`, the DNA host builds) failed with `tapi error: malformed file … unknown architecture` until `SDKROOT` was set by hand: clang took the Command Line Tools' newer SDK and Xcode's linker cannot read it. With `SDKROOT` unset, `hale` now notices the mismatch once per toolchain (a trial link, cached beside the runtime objects, keyed by the linker and the default SDK) and links against an SDK that linker reads — its own developer directory's newest, then the Command Line Tools' — so the build works with no setup. An explicit `SDKROOT` is used as given, a default SDK under the linker's own tools is never probed, and other hosts are untouched. When no installed SDK links, the failure names the SDKs tried and the fixes (`sudo xcode-select -s /Library/Developer/CommandLineTools`, update Xcode, or `SDKROOT`).
+
 ## v0.32.6 — a first run that recovers (2026-11-06)
 
 A patch release from a first run of a habitat on a laptop, and from hale-lang/voice's upgrade to v0.32.5.
