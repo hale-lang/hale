@@ -184,6 +184,7 @@ Every type reachable from an `rpc` row is encoded and decoded strictly. Unknown 
 | `bounded[T; N] indexed_by k` | JSON object keyed by `T.k` (`{"db": {"status": "up"}}`) | `map<string, T>` | Length > `N` (`too_long`), repeated key (`duplicate_key`) |
 | `bounded[T; N] indexed_by k -> v` | JSON object mapping `T.k` to `T.v` (`{"db": "ok"}`) | `map<string, V>` | Length > `N` (`too_long`), repeated key (`duplicate_key`) |
 | `std::json::Value` | Arbitrary well-formed JSON (<= 64 levels deep, <= 64 KiB) | `optional string` | Invalid JSON, depth > 64, or size > 64 KiB |
+| Any field with a default | `null` is the key omitted: the declared default, whatever its shape (a literal, an enum variant, a nested record's declared default); a field with no default is `missing_field` | Declared as-is | A `std::json::Value` field alone holds `null` as its text |
 | Presence pair (`x` + `has_x: Bool`) | Optional field; omitted or `null` sets `has_x = false` | Both fields declared as-is | `wrong_type` if non-null value fails to decode |
 | Clear triple (`x` + `has_x` + `clear_x`) | Omitted -> neither; `null` -> `clear_x = true`; value -> `has_x = true` | All three fields declared as-is | `wrong_type` if non-null value fails to decode |
 | `enum { A, B(T), C(T, U) }` | `"A"`, `{"B": val}`, `{"C": [v1, v2]}` | `enum` (unit-only) or `message` with `oneof` | Unknown variant, wrong payload shape/arity (`wrong_type`), `missing_field` |

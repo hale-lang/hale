@@ -126,6 +126,31 @@ fn main() {
     refute(std::json::valid("1e"), "an exponent with no digits");
     refute(std::json::valid("1e+"), "a signed exponent with no digits");
     refute(std::json::valid("+1"), "a leading plus");
+    // `number_end`: the index just past the number at `from`, or -1 (the
+    // grammar a codec holds a Decimal field's text to)
+    std::test::assert_eq_int(
+        std::json::number_end("1.50E+1,", 0, 8),
+        7,
+        "number_end: past the exponent",
+    );
+    std::test::assert_eq_int(
+        std::json::number_end("x-0.5]", 1, 6),
+        5,
+        "number_end: from an offset",
+    );
+    std::test::assert_eq_int(
+        std::json::number_end("01", 0, 2),
+        1,
+        "number_end: a leading zero ends the number",
+    );
+    std::test::assert_eq_int(std::json::number_end("1.", 0, 2), -1, "number_end: a trailing dot");
+    std::test::assert_eq_int(std::json::number_end(".5", 0, 2), -1, "number_end: a leading dot");
+    std::test::assert_eq_int(std::json::number_end("+1", 0, 2), -1, "number_end: a leading plus");
+    std::test::assert_eq_int(
+        std::json::number_end("1e", 0, 2),
+            -1,
+        "number_end: an exponent with no digits",
+    );
     refute(std::json::valid("-"), "a bare minus");
     refute(std::json::valid("0x10"), "a hex literal");
     refute(std::json::valid("1.2.3"), "two dots");

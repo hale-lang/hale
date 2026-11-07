@@ -26594,9 +26594,11 @@ int lotus_str_can_parse_float(const char *s) {
  * at the scale `scale` (Decimal<S>; plain Decimal is 9). Mirrors
  * hale-syntax's decimal_literal.rs (the literal's parse) — accepts
  * optional trailing 'd', optional leading sign, '_' digit
- * separators, pads with zeros below `scale` fractional digits, and
- * REFUSES a nonzero digit past the last place of the scale: that is
- * a value no Decimal<S> holds, and it used to be truncated in
+ * separators, an exponent (`1e-7`, `1.50E+1`; 2026-11-07, downstream
+ * handoff: a JavaScript client writes a small number that way), pads
+ * with zeros below `scale` fractional digits, and REFUSES a nonzero
+ * digit past the last place of the scale (the exponent applied): that
+ * is a value no Decimal<S> holds, and it used to be truncated in
  * silence (`parse_decimal("0.123456789012")` was 0.123456789).
  * Zeros past the last place are the same value and are accepted. The i128 result is split into
  * two i64 halves (hi:lo) for ABI portability — same convention
@@ -26622,41 +26624,69 @@ static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
     if (s[n - 1] == 'd') n -= 1;
     if (n == 0) return 0;
     size_t i = 0;
-    __int128 sign = 1;
-    if (s[i] == '-') { sign = -1; i += 1; }
+    int neg = 0;
+    if (s[i] == '-') { neg = 1; i += 1; }
     else if (s[i] == '+') { i += 1; }
     if (i >= n) return 0;
-    __int128 mantissa = 0;
-    int frac_digits = 0;
-    int seen_dot = 0;
-    int seen_digit = 0;
+    __int128 mantissa = 0;   /* the significant digits so far, its last nonzero */
+    int64_t pending = 0;     /* zeros after them, not yet multiplied in */
+    int64_t frac_digits = 0; /* digits after the point, zeros included */
+    int seen_dot = 0, seen_digit = 0;
     for (; i < n; i++) {
         char c = s[i];
         if (c >= '0' && c <= '9') {
             seen_digit = 1;
-            if (!seen_dot || frac_digits < scale) {
+            if (seen_dot) frac_digits += 1;
+            if (c == '0') {
+                if (mantissa != 0) pending += 1;  /* a leading zero is nothing */
+            } else {
+                for (; pending > 0; pending--) {
+                    if (__builtin_mul_overflow(mantissa, (__int128)10, &mantissa)) return 0;
+                }
                 if (__builtin_mul_overflow(mantissa, (__int128)10, &mantissa) ||
                     __builtin_add_overflow(mantissa, (__int128)(c - '0'), &mantissa)) {
-                    return 0;  /* past i128: not representable */
+                    return 0;
                 }
-                if (seen_dot) frac_digits += 1;
-            } else if (c != '0') {
-                return 0;  /* past the scale: not representable */
             }
         } else if (c == '.' && !seen_dot) {
             seen_dot = 1;
         } else if (c == '_') {
             /* digit separator */
+        } else if (c == 'e' || c == 'E') {
+            break;
         } else {
             return 0;
         }
     }
     if (!seen_digit) return 0;
-    while (frac_digits < scale) {
-        if (__builtin_mul_overflow(mantissa, (__int128)10, &mantissa)) return 0;
-        frac_digits += 1;
+    int64_t exp = 0;
+    if (i < n) {
+        /* the exponent: `e`, an optional sign, at least one digit;
+         * saturated far past any shift the mantissa survives */
+        i += 1;
+        int eneg = 0;
+        if (i < n && (s[i] == '+' || s[i] == '-')) { eneg = s[i] == '-'; i += 1; }
+        if (i >= n) return 0;
+        for (; i < n; i++) {
+            char c = s[i];
+            if (c < '0' || c > '9') return 0;
+            if (exp < 1000000) exp = exp * 10 + (c - '0');
+        }
+        if (eneg) exp = -exp;
     }
-    *out = sign * mantissa;
+    if (mantissa == 0) { *out = 0; return 1; }
+    /* places to append (positive) or drop (negative) to sit at the scale */
+    int64_t shift = scale + exp - frac_digits;
+    if (shift < 0) {
+        if (-shift > pending) return 0;  /* a nonzero digit past the scale */
+        pending += shift;
+    } else {
+        pending += shift;
+    }
+    for (; pending > 0; pending--) {
+        if (__builtin_mul_overflow(mantissa, (__int128)10, &mantissa)) return 0;
+    }
+    *out = neg ? -mantissa : mantissa;
     return 1;
 }
 

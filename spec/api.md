@@ -2453,17 +2453,27 @@ prints them (`12.34`, `-2`, `0.000000000000000001`: the fraction's
 trailing zeros dropped, never an exponent), a field, a list's element
 and a whole value alike, and the decoder reads a JSON number at the
 field's scale with every digit kept (`std::str::range_parse_decimal`
-at `S`): zeros past the scale are the same number, a nonzero digit past
-it is `wrong_type` for the field, never a truncation, a mantissa no
-i128 holds at the scale is `wrong_type` as well, never a wrong number
-(2026-11-07, downstream handoff: `12345678901234567890123456789012.5`
-at scale 8 decoded to a negative value), and a string, a bool or an
-object is `wrong_type` too, as for any number. Its schema is
+at `S`), the JSON number grammar (RFC 8259 § 6) and nothing else
+(2026-11-07, downstream handoff): an exponent is applied exactly
+(`1e2` is `100`, `1.50E+1` is `15`, `1e-7` at scale 8 is `0.0000001`;
+a JavaScript client writes a small number that way), zeros past the
+scale are the same number, a nonzero digit past it — the exponent
+applied, so `1e-9` at scale 8 — is `wrong_type` for the field, never a
+truncation, a mantissa no i128 holds at the scale is `wrong_type` as
+well, never a wrong number (`12345678901234567890123456789012.5` at
+scale 8 decoded to a negative value), a spelling that is no JSON
+number (`+1`, `.5`, `1.`, `01`) is `wrong_type` though the Decimal
+literal admits some of them, and a string, a bool or an object is
+`wrong_type` too, as for any number. Its schema is
 `{"type": "number", "x-hale-type": "Decimal<2>"}`: a reader that keeps
 the digits reads the scale there, and one that does not reads a JSON
 number. Protobuf carries it as its digits in a `string` (proto3 has no
 decimal; `string price = 1; // Hale: Decimal<2>`), the generated Hale
-client declares the field `Decimal<S>` and reads it at that scale, and
+client declares the field `Decimal<S>` and reads it at that scale (a
+reply it cannot read as one — a digit past the scale, a mantissa past
+i128, no number — is the call's `Lost` outcome naming the parse's
+kind and input, as a reply the codec refuses is, never `0d`;
+2026-11-07, downstream handoff), and
 the TypeScript and JavaScript clients hold it as a `number`.
 
 **An instant and a duration.** The stdlib's `Time` (a point over
@@ -2709,7 +2719,15 @@ or `false` for a `Bool`, one quoted and correctly escaped string for a
 an `Int` and for the integer a unit scalar counts; anything else is
 refused before the request is queued), a
 missing field without a default is `missing_field`, and a handler only
-ever sees a decoded value. A field with a default may be left out, and
+ever sees a decoded value. On the JSON wire a field sent as `null` is a
+field left out (2026-11-07, downstream handoff): it takes its declared
+default, whatever its shape — a literal, an enum's variant, a nested
+record's declared default (not the nested type's own defaults) — and
+is `missing_field` with none, exactly as an absent key; the last of a
+key sent twice wins, so a `null` after a value leaves nothing of it. A
+`std::json::Value` field is the exception, holding `null` as its text
+as it holds any value, unless it is optional (below). A field with a
+default may be left out, and
 the description lists it under no `required`: whatever the declaration
 writes for it (a literal, an enum's variant, a record, a value computed
 from others) is what the absent field decodes to, through either codec,

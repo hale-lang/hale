@@ -58,4 +58,34 @@ fn main() {
 
     let m = Order::from_json("{\"n\":1}") or missing(err);
     std::test::assert_eq_str(m.name, "missing", "the failure arm ran");
+
+    // a key sent as `null` is a key absent (downstream handoff: `n: Int =
+    // -1` read 0, an enum was `wrong_type`, and a nested record took its
+    // type's own defaults instead of the field's declared default)
+    let nulls = "{\"name\":\"c\",\"n\":null,\"ratio\":null,\"live\":null,\"note\":null,\"price\":null,\"side\":null,\"inst\":null,\"tags\":null}";
+    let z = Order::from_json(nulls) or raise;
+    std::test::assert_eq_int(z.n, -1, "null: the Int default");
+    std::test::assert_near(z.ratio, -0.5, 0.000001, "null: the Float default");
+    std::test::assert(z.live, "null: the Bool default");
+    std::test::assert_eq_str(z.note, "none", "null: the String default");
+    std::test::assert(z.price == -1.25d, "null: the Decimal default");
+    std::test::assert(z.side == Side::Sell, "null: the enum default");
+    std::test::assert_eq_str(z.inst.sym, "Y", "null: the nested record's declared default");
+    std::test::assert_eq_int(z.inst.tick, 2, "its written field, not the nested type's own");
+    std::test::assert_eq_int(count(z.tags), 0, "null: a bounded list is empty");
+    let za = Order::api_decode(nulls) or raise;
+    std::test::assert(
+        za.n == -1 && za.side == Side::Sell && za.inst.tick == 2 && count(za.tags) == 0,
+        "the api codec reads null as absence the same way",
+    );
+    // a null after a value leaves nothing of it; a null for a field with
+    // no default is the field missing
+    let twice = Order::from_json("{\"name\":\"d\",\"n\":7,\"n\":null}") or raise;
+    std::test::assert_eq_int(twice.n, -1, "the last of a key sent twice wins: null after a value");
+    let mn = Order::from_json("{\"name\":null,\"n\":1}") or missing(err);
+    std::test::assert_eq_str(
+        mn.name,
+        "missing",
+        "null for a field with no default is missing_field",
+    );
 }
