@@ -1,12 +1,15 @@
 //! The "Subscriber torn down at its statement" advisory
-//! (spec/verification.md): a bus subscriber built as a statement, or as a
-//! local nobody keeps, with no `run()` to hold it and no `accept` owning
-//! it is torn down inside the statement, its subscription with it, so no
+//! (spec/verification.md): a bus subscriber built as a bare statement,
+//! with no `birth()` or `run()` of its own and no `accept` owning it, is
+//! torn down inside the statement, its subscription with it, so no
 //! delivery can reach it and the program is silent by design
 //! (spec/semantics.md § "Locus instantiation"). `hale check` warns at the
 //! literal, in any body; not when the enclosing locus accepts the type,
 //! not when the subscriber declares a `run()` or a `birth()` (the build
-//! does its own work), and not when it is held in a field. Until 2026-11-06 the program was silent at the check and at
+//! does its own work), not when it is held in a field, and not when it
+//! is let-bound: a local lives for its scope and hears across a park
+//! point there (the reviewer's shape: built, published to, `yield`, then
+//! read). Until 2026-11-06 the program was silent at the check and at
 //! run time (downstream handoff).
 //!
 //! The programs are escaped string literals rather than raw strings:
@@ -86,12 +89,24 @@ fn statement_built_subscribers_in_birth_are_warned() {
 }
 
 #[test]
-fn a_let_bound_subscriber_nobody_keeps_is_warned() {
-    let (ok, out) = check("let", &program("run", "", "", "let e = Empire { empire_id: 1 };"));
+fn not_when_let_bound_and_read_after_a_park_point() {
+    let src = "type Tick { n: Int = 0; }
+topic Ticks { payload: Tick; subject: \"t\"; }
+locus Sink {
+    params { last: Int = 0; }
+    bus { subscribe Ticks as on_tick; }
+    fn on_tick(t: Tick) { self.last = t.n; }
+    fn read() -> Int { return self.last; }
+}
+locus Parent {
+    bus { publish Ticks; }
+    run() { let sink = Sink { }; Ticks <- Tick { n: 7 }; yield; println(sink.read()); }
+}
+fn main() { let p = Parent { }; }
+";
+    let (ok, out) = check("let", src);
     assert!(ok, "{out}");
-    assert_eq!(out.matches(FINDING).count(), 1, "{out}");
-    assert!(out.contains("builds it as a local of `Parent.run`"), "{out}");
-    assert!(out.contains("torn down when the local's scope ends"), "{out}");
+    assert_eq!(out.matches(FINDING).count(), 0, "a local lives for its scope and hears across the yield:\n{out}");
 }
 
 #[test]

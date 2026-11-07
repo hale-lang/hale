@@ -70,7 +70,7 @@ How you instantiate a locus determines when `dissolve()` runs:
 | **`let`-bound** | `let c = Counter { };` | Runs `birth` and `run` immediately; keeps `c` alive for method calls (`c.bump()`) and runs `dissolve` when the enclosing function scope exits. |
 | **Statement-position** | `App { name: "world" };` | Runs `birth`, `run`, and `dissolve` immediately, reclaiming the locus at the semicolon `;`. |
 
-A locus that subscribes to a topic hears only while it lives. Built in statement position (or as a `let` nobody keeps) with neither a `birth()` nor a `run()` of its own, it is torn down before anything can be delivered to it, and the program is silent; `hale check` warns at the literal and says to `accept` it in the enclosing locus (`accept(c: Child) { }`) or hold it in a `params` field.
+A locus that subscribes to a topic hears only while it lives. Built in statement position with neither a `birth()` nor a `run()` of its own, it is torn down at the semicolon before anything can be delivered to it, and the program is silent (a `let`-bound one lives for its scope and hears across a `yield` or a sleep there); `hale check` warns at the literal and says to `accept` it in the enclosing locus (`accept(c: Child) { }`) or hold it in a `params` field.
 
 ### Declaration Rules for Loci
 

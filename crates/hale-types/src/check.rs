@@ -4009,11 +4009,13 @@ fn check_scope_local_subscriber_on_classic_pool(rows: &ScopeLocalSubscriberRows<
 /// hold it: torn down at the statement's end, before any delivery.
 const STATEMENT_SUBSCRIBER: RuleId = RuleId::registered("verification/structural", "subscriber-torn-down-at-its-statement");
 
-/// A locus literal in statement position, or let-bound and never stored,
-/// returned or sent on, whose locus subscribes on the bus (itself, or a
-/// subscriber it keeps for its whole life: `loci_keeping_a_subscriber`)
-/// and writes neither `birth()` nor `run()`, with no `accept` of its
-/// type owning it: it is born and torn down inside the statement
+/// A locus literal in statement position (a bare statement: a let-bound
+/// one lives for its scope and hears across a park point there, which
+/// the dropped-delivery rule judges on a classic pool), whose locus
+/// subscribes on the bus (itself, or a subscriber it keeps for its whole
+/// life: `loci_keeping_a_subscriber`) and writes neither `birth()` nor
+/// `run()`, with no `accept` of its type owning it: it is born and torn
+/// down inside the statement
 /// (spec/semantics.md § "Locus instantiation": with no accepting
 /// ancestor the child is a transient throwaway; a statement-built locus
 /// with no `run()` is torn down at once, and its subscriptions with it),
@@ -4027,8 +4029,9 @@ const STATEMENT_SUBSCRIBER: RuleId = RuleId::registered("verification/structural
 /// nothing else is alive to publish to it). Reported at the literal,
 /// in any body (a lifecycle hook, a method, a free fn) but a bus
 /// handler's, where type-check rule 20 already refuses an unowned
-/// subscriber. Until 2026-11-06 such a program was silent at the check
-/// and at run time (downstream handoff).
+/// subscriber, and `fn main`'s, whose literal is the program's root.
+/// Until 2026-11-06 such a program was silent at the check and at run
+/// time (downstream handoff).
 fn check_subscriber_torn_down_at_its_statement(rows: &ScopeLocalSubscriberRows<'_, '_>, out: &mut Vec<Violation>) {
     use crate::alloc_summary::{AllocKind, EntryKind, Escape};
     use crate::ownership_graph::OwnerResolution;
@@ -4065,7 +4068,7 @@ fn check_subscriber_torn_down_at_its_statement(rows: &ScopeLocalSubscriberRows<'
         }
         for s in f.sites.iter().chain(&f.in_place_sites) {
             let AllocKind::StructLit(lit) = &s.kind else { continue };
-            if s.escape != Escape::Local {
+            if s.escape != Escape::Local || !s.bare_stmt {
                 continue;
             }
             let short = lit.rsplit("::").next().unwrap_or(lit);
@@ -4098,11 +4101,7 @@ fn check_subscriber_torn_down_at_its_statement(rows: &ScopeLocalSubscriberRows<'
             } else {
                 "holds a bus subscriber for its whole life (one its construction or its bodies build and keep)"
             };
-            let (built, end) = if s.bare_stmt {
-                ("as a statement of", "at the statement's end")
-            } else {
-                ("as a local of", "when the local's scope ends")
-            };
+            let (built, end) = ("as a statement of", "at the statement's end");
             let holder = match &f.key.locus {
                 Some(l) => format!("in `{}`", l.rsplit("::").next().unwrap_or(l)),
                 None => "in a locus that builds it".to_string(),
