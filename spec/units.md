@@ -531,7 +531,9 @@ let top = Byte(n) or clamp;               // 255 for anything above
   Across components, a point into a quantity, and an `Int` into either
   are refused ("\`Money(…)\` of an \`Int\`: a count becomes a quantity by
   a unit (\`n * 1cent\`)"). A literal's cast is the literal flowing into
-  `T`, at compile time.
+  `T`, at compile time. `T` may be an imported seed's, written through
+  its alias (`lib::Money(x)`): the cast, and the `or` after it, are the
+  same.
 - **`T(x)`**, `T` an identity, a range or `Int`:
 
   | conversion | kind |

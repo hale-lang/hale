@@ -25588,7 +25588,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // an `or` it is total, a widening, or rounded by its
                 // target's `round:`; any other narrowing is lowered under
                 // its `or`.
-                Expr::Ident(_) | Expr::Field { .. } if self.conversion_operand(e).is_some() => {
+                Expr::Ident(_) | Expr::Field { .. } | Expr::Path(_) if self.conversion_operand(e).is_some() => {
                     let (row, operand) = self.conversion_operand(e).expect("guard checked");
                     let Some(arg) = operand else {
                         return Err(CodegenError::UnsupportedAt(

@@ -66,7 +66,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// total answer: the call is no conversion, whatever its callee is
     /// named (a local, a parameter or a fn the checker resolved the name
     /// to, or `Int(x)`, the numeric builtin), and is lowered as the call
-    /// it is; a division is the `Int`'s. Inside a default every row is
+    /// it is; a division is the `Int`'s. An imported seed's `lib::T(x)`
+    /// is a cast by the same row. Inside a default every row is
     /// the evaluation path's being lowered (`default_evaluation`): the
     /// default's name means what that scope says, a cast in one and a
     /// local's call in another, and its literals and values convert into
@@ -75,7 +76,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match e {
             Expr::Call { callee, id, args, .. } => {
                 let operand = match callee.as_ref() {
-                    Expr::Ident(_) => match args.as_slice() {
+                    Expr::Ident(_) | Expr::Path(_) => match args.as_slice() {
                         [arg] => Some(arg),
                         _ => None,
                     },

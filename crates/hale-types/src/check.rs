@@ -22154,6 +22154,23 @@ impl<'a> Checker<'a> {
                         return t;
                     }
                 }
+                // `lib::T(x)`, `T` an imported seed's quantity, point,
+                // identity or range: the same conversion, through the
+                // import's rename (downstream handoff: the call typed as
+                // an unresolved path, and the build refused it in
+                // expression position; its `or` had no narrowing to
+                // discharge, so `or half_even` was an unknown name).
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if qn.segments.len() >= 2 {
+                        let key: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                        if let Some(mangled) = self.known.import_target(&key.join("::")).map(str::to_string) {
+                            let imported = Ident::new(mangled, qn.span);
+                            if let Some(t) = self.scalar_cast(*call_id, *call_span, &imported, args) {
+                                return t;
+                            }
+                        }
+                    }
+                }
                 // GH #1076 (U3): `x.in(u)` and `x.split(u)` of a quantity or
                 // a point.
                 if let (Expr::Field { receiver, name, .. }, [arg]) = (callee.as_ref(), args.as_slice()) {
