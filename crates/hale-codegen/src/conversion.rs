@@ -88,6 +88,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => return None,
                 };
                 let row = self.row(SiteKind::Cast(id.0))?;
+                // A `Decimal<S>` row keyed at a path call is the scale its
+                // result takes (`std::str::parse_decimal`, a generated
+                // codec's), read by `decimal_scale_at_call`, not a cast:
+                // the call is lowered as the call it is.
+                if matches!(callee.as_ref(), Expr::Path(_))
+                    && matches!(row.to, hale_types::ty::Ty::Prim(hale_syntax::ast::PrimType::Decimal(_)))
+                {
+                    return None;
+                }
                 Some((row.clone(), operand))
             }
             Expr::Binary { op: BinOp::Div, left, span, .. } if self.typed.has_quantity_rows() => {
