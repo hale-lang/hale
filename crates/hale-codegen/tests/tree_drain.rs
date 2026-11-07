@@ -409,6 +409,92 @@ fn a_run_reading_draining_through_an_alias_or_a_free_fn_is_not_awaited() {
     assert!(pos(&l, "worker done") < pos(&l, "after"), "{}", l.join("\n"));
 }
 
+/// Two more reads the walk has to reach (reviewer P1s on the follow-up,
+/// 2026-11-07), each a teardown hang when missed: another locus's method
+/// handed this locus (`self.watcher.stopped(self)`, `Watch.stopped(w:
+/// Worker)` reading `w.draining`), and an alias shadowed in an inner
+/// block (`let w = self; if true { let w = Other { }; … } while
+/// !w.draining`), where one flat environment left `w: Other` for the
+/// loop. Each shows the flag at 1 and ends under the tree drain; the
+/// control renames the inner binding. The precision side: `Watch.stopped`
+/// reading its own `self.draining` is another locus's read, flag 0, and
+/// the finite worker is awaited.
+#[test]
+fn a_run_reading_draining_through_another_locus_or_past_a_shadow_is_not_awaited() {
+    let main = "main locus App {{
+            params {{ w: Worker = Worker {{ }}; }}
+            placement {{ w: pinned(core = 0); }}
+        }}
+        fn main() {{ App {{ }}; println(\"after\"); }}
+        ";
+    let shapes: [(&str, &str); 3] = [
+        ("watch_arg", "locus Watch {{
+            fn stopped(w: Worker) -> Bool {{ return w.draining; }}
+        }}
+        locus Worker {{
+            params {{ watcher: Watch = Watch {{ }}; }}
+            run() {{ while !self.watcher.stopped(self) {{ std::time::sleep(10ms); }} println(\"worker out\"); }}
+        }}
+        "),
+        ("shadow", "locus Other {{ params {{ n: Int = 0; }} }}
+        locus Worker {{
+            run() {{
+                let w = self;
+                if true {{ let w = Other {{ }}; println(w.n); }}
+                while !w.draining {{ std::time::sleep(10ms); }}
+                println(\"worker out\");
+            }}
+        }}
+        "),
+        ("shadow_control", "locus Other {{ params {{ n: Int = 0; }} }}
+        locus Worker {{
+            run() {{
+                let w = self;
+                if true {{ let v = Other {{ }}; println(v.n); }}
+                while !w.draining {{ std::time::sleep(10ms); }}
+                println(\"worker out\");
+            }}
+        }}
+        "),
+    ];
+    for (tag, loci) in shapes {
+        let src = format!("{loci}{main}").replace("{{", "{").replace("}}", "}");
+        let bin = harness::unique_bin(&format!("tree_drain_reads_{tag}"));
+        let ir = harness::build_source_ir_text(&src, &bin).expect("build");
+        assert!(ir.contains("lotus.reads_drain.Worker = private global i64 1"), "{tag}: the flag is 1:\n{}", ir.lines().filter(|l| l.contains("reads_drain")).collect::<Vec<_>>().join("\n"));
+        let out = run_bounded(&bin, 20, &[]);
+        let _ = std::fs::remove_file(&bin);
+        assert!(out.status.success(), "{tag}: {:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+        let l = lines(&out);
+        assert!(pos(&l, "worker out") < pos(&l, "after"), "{tag}: the drain ended the loop:\n{}", l.join("\n"));
+    }
+
+    let src = format!(
+        "locus Watch {{
+            fn stopped(w: Worker) -> Bool {{ return self.draining; }}
+        }}
+        locus Worker {{
+            params {{ watcher: Watch = Watch {{ }}; }}
+            run() {{
+                let mut i = 0;
+                while i < 3 && !self.watcher.stopped(self) {{ i = i + 1; std::time::sleep(20ms); }}
+                println(\"worker done\");
+            }}
+        }}
+        {main}"
+    )
+    .replace("{{", "{")
+    .replace("}}", "}");
+    let bin = harness::unique_bin("tree_drain_reads_watch_self");
+    let ir = harness::build_source_ir_text(&src, &bin).expect("build");
+    assert!(ir.contains("lotus.reads_drain.Worker = private global i64 0"), "the watcher's own draining:\n{}", ir.lines().filter(|l| l.contains("reads_drain")).collect::<Vec<_>>().join("\n"));
+    let out = run_bounded(&bin, 20, &[]);
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "{:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+    let l = lines(&out);
+    assert!(pos(&l, "worker done") < pos(&l, "after"), "{}", l.join("\n"));
+}
+
 /// The same main locus with a pinned worker that does not read
 /// `draining` beside a pinned child that loops on it: the tree's drain
 /// begins once the worker's `run()` has returned, so the loop sees it
