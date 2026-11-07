@@ -629,7 +629,7 @@ const SITES: &[(&str, &str, Reads)] = &[
     (CG, "if !is_wasm { ⏎ let mut f = cx.module.get_first_function();", Reads::Backend),
     (CG, "let pass_pipeline = if is_wasm { ⏎ \"default<O2>\"", Reads::Backend),
     (CG, "if is_wasm { ⏎ let Some(hale_types::capability::Lowering::Exports(fixed)) =", Reads::Link),
-    (CG, "if !target_spec.is_wasm() && !target_spec.is_macos() { ⏎ match options.target_cpu {", Reads::Backend),
+    (CG, "if !target_spec.is_wasm() { ⏎ let x86 = target_spec.arch == crate::target::TargetArch::X86_64;", Reads::Backend),
 ];
 
 /// Every read of the lowering view's cells in codegen: the file, the

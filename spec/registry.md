@@ -1817,7 +1817,7 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 
 | path | invocation | count | verdict |
 |---|---|---|---|
-| `crates/hale-cli/src/build_env.rs` | `format!( "target={:?};cpu={:?};dev={};debug=false", o.target, o.target_cpu, o.dev_profile ` | 1 | decides (`digests`) |
+| `crates/hale-cli/src/build_env.rs` | `format!( "target={:?};cpu={};dev={};debug=false", o.target, o.target_cpu.identity(), o.dev` | 1 | decides (`digests`) |
 | `crates/hale-cli/src/build_env.rs` | `format!(";lto={l:?}")` | 1 | decides (`digests`) |
 | `crates/hale-cli/src/verbs/misc.rs` | `println!("{:#?}", prog)` | 1 | renders |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", other)` | 1 | renders |
