@@ -5,7 +5,12 @@
 //! Apple clang 21 knows `znver4`; LLVM 18 does not), so the table is
 //! read here from that LLVM's own `llc -mcpu=help`, found beside its
 //! `llvm-config` (the one `llvm-sys` builds against: `LLVM_SYS_180_PREFIX`,
-//! else `llvm-config-18` / `llvm-config` on PATH). Written to
+//! else `llvm-config-18` / `llvm-config` on PATH), and kept to the CPUs
+//! that `llc` will emit the triple's code for: `-mcpu=help` lists the
+//! whole x86 family for an x86-64 triple, `i386` and `pentium` included,
+//! and a target machine for one of those is the same abort ("64-bit
+//! code requested on a subtarget that doesn't support it"), so each
+//! name is tried on an empty module first. Written to
 //! `$OUT_DIR/llvm_cpus.rs`; `codegen::llvm_cpus` includes it. Without
 //! an `llc` the table is empty and a named CPU is refused, saying so.
 use std::env;
@@ -39,6 +44,18 @@ fn llvm_version(bindir: &Path) -> String {
         }
     }
     String::new()
+}
+
+/// Whether `llc` emits the triple's code for `cpu`: a trivial module
+/// compiled to nothing. A CPU of the wrong width (`i386` for x86-64)
+/// is LLVM's fatal error and a non-zero exit.
+fn emits(llc: &Path, triple: &str, cpu: &str, module: &Path) -> bool {
+    Command::new(llc)
+        .args([&format!("-mtriple={triple}"), &format!("-mcpu={cpu}"), "-filetype=null", "-o", "/dev/null"])
+        .arg(module)
+        .output()
+        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stderr).contains("not a recognized processor"))
+        .unwrap_or(false)
 }
 
 /// `llc -mtriple=<triple> -mcpu=help` lists, after the line
@@ -86,10 +103,12 @@ fn main() {
         .filter(|p| p.is_file())
         .or_else(|| ["llc-18", "llc"].iter().map(PathBuf::from).find(|c| Command::new(c).arg("--version").output().is_ok()));
     let version = bindir.as_deref().map(llvm_version).unwrap_or_default();
+    let module = out.join("empty.ll");
+    fs::write(&module, "define void @f() {\n  ret void\n}\n").expect("write empty.ll");
     let mut tables = Vec::new();
     for (konst, triple) in [("X86_64", "x86_64-unknown-linux-gnu"), ("AARCH64", "aarch64-unknown-linux-gnu")] {
-        let names = match &llc {
-            Some(llc) => cpus(llc, triple),
+        let names: Vec<String> = match &llc {
+            Some(llc) => cpus(llc, triple).into_iter().filter(|c| emits(llc, triple, c, &module)).collect(),
             None => Vec::new(),
         };
         tables.push(format!(

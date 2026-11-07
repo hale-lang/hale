@@ -39427,10 +39427,16 @@ mod target_cpu_tests {
     fn the_cpu_table_is_the_linked_llvms() {
         assert!(llvm_cpus::LLVM_VERSION.starts_with("18."), "{}", llvm_cpus::LLVM_VERSION);
         let x86 = known_cpus(TargetArch::X86_64);
-        for name in ["x86-64", "x86-64-v3", "x86-64-v4", "znver4", "sapphirerapids"] {
+        for name in ["x86-64", "x86-64-v3", "x86-64-v4", "znver4", "sapphirerapids", "athlon64"] {
             assert!(x86.contains(&name), "{name} missing from {}", x86.len());
         }
         assert!(!x86.contains(&"znver9"));
+        // `-mcpu=help` lists the whole x86 family; the 32-bit ones would
+        // be LLVM's abort at an x86-64 target machine, so they are not
+        // in the table.
+        for name in ["i386", "i686", "pentium", "pentium4", "prescott"] {
+            assert!(!x86.contains(&name), "{name} is 32-bit-only or not x86-64 capable");
+        }
         let arm = known_cpus(TargetArch::Aarch64);
         for name in ["generic", "neoverse-v2", "apple-m1"] {
             assert!(arm.contains(&name), "{name} missing from {}", arm.len());

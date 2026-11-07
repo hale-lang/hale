@@ -4445,8 +4445,10 @@ What the compiler emits for a native `hale build`:
   `-mcpu=x86_64_v4`). A name the compiler's own LLVM does not know
   is refused before any code is emitted, naming the CPUs that LLVM
   knows: the table is read from that LLVM's `llc -mcpu=help` when
-  the compiler is built, not from the system clang, whose version
-  can differ. The compiler that builds the target's runtime must
+  the compiler is built, kept to the CPUs `llc` emits the triple's
+  code for (`-mcpu=help` lists the whole x86 family, 32-bit ones
+  included, for an x86-64 triple), not from the system clang, whose
+  version can differ. The compiler that builds the target's runtime must
   know the name as well (the host's clang; `zig cc` for a Linux
   cross target; none for a Darwin object-only build) and is refused
   by name when it does not. The emitted module self-describes its
