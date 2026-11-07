@@ -1015,12 +1015,16 @@ fn main() { App { }; }
     )
     .unwrap();
 
-    // Record via `hale run` (which execs the built binary — one pid)
-    // and SIGKILL it mid-stream.
+    // Record from the built binary itself and SIGKILL it mid-stream.
+    // (Not through `hale run`: killing `hale run` reaches its program
+    // as the parent-death SIGTERM, and since GH #1858 a SIGTERM stops
+    // the program cleanly — its loop ends at its back-edge — so the
+    // recording was finalized short instead of cut.)
+    let bin = dir.join("steady-bin");
+    let out = hale().arg("build").arg(&prog).arg("-o").arg(&bin).output().expect("hale build");
+    assert!(out.status.success(), "hale build: {}", String::from_utf8_lossy(&out.stderr));
     let rec = dir.join("crash.halerec");
-    let mut child = hale()
-        .arg("run")
-        .arg(&prog)
+    let mut child = Command::new(&bin)
         .env("LOTUS_OBS_RECORD", &rec)
         .spawn()
         .expect("spawn recorded run");
