@@ -741,6 +741,7 @@ fn typed_body_laws(
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
     diags.extend(crate::surfaces::surface_laws(bundle, inputs.surfaces, inputs.roles, inputs.alloc_summary));
+    diags.extend(crate::json_codec_laws::json_codec_laws(bundle));
     diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces, inputs.entry, inputs.effects, &table, inputs.placement));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     diags

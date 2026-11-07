@@ -2760,8 +2760,20 @@ payload picks the consumer mode:
   one `json:` tag gets a generated `Type::from_json(s) -> Type
   fallible(JsonError)` that parses the object in a single pass (driving
   the `std::json` object cursor), dispatching each key to the matching
-  field and reading the value by the field's declared scalar type
-  (`Int` / `Float` / `Bool` / `String` / `Decimal<S>`). A `Decimal<S>`
+  field and reading the value by the field's declared type. A field is
+  what the api surface's JSON codec carries of one (spec/api.md §
+  Codecs): a scalar (`Int` / `Float` / `Bool` / `String` / `Decimal<S>`),
+  a scalar of the unit dialect as its `Int`, a `Time` as its RFC 3339
+  text, a `Duration` as its nanoseconds, a `std::json::Value` as its
+  text, an enum (a payload-free variant as its name in a JSON string,
+  `"Buy"`, one with values as the api codec writes it, `{"Circle": 1.5}`;
+  a name no variant has is the field's `JsonError { kind: "wrong_type",
+  field }`), a record of the same seed (the nested object's raw text is
+  handed to that record's own generated codec, whether or not it
+  declares a `json:` tag itself; a nested failure propagates), and a
+  `bounded[T; N]` or `[T; N]` of any of those as a JSON array (more
+  elements than `N` is `too_long`, fewer than a fixed array's
+  `too_short`; an absent `bounded` field is empty). A `Decimal<S>`
   field is a JSON number read at the field's scale, every digit kept; a
   number with a nonzero digit past the scale (or not a number) is
   `JsonError { kind: "wrong_type", field }`, never truncated or read as
@@ -2772,14 +2784,20 @@ payload picks the consumer mode:
   `from_json` is `fallible`, so callers must address it. The same tags
   drive emit: `Type::to_json(v) -> String` serializes a value back (bare
   numbers/bools, a Decimal's exact digits at its scale, escaped strings,
-  nested structs recursed), round-tripping
-  with `from_json`; it is not fallible. A field whose
-  type is another generated JSON struct is parsed recursively (the nested
-  object's raw text is handed to that type's parser; a nested failure
-  propagates). Array fields are **not** supported by design — Hale
-  sequences are locus-owned (there is no heap-owning value collection),
-  so a JSON array is read by walking the array cursor and pushing into a
-  `@form(vec)` locus cell, not parsed into a struct value field (see
+  an enum's variant name, nested structs and lists recursed),
+  round-tripping with `from_json`; it is not fallible. The check is the
+  gate: a tagged struct with a field the codec does not carry (`Bytes`,
+  an unbounded `[T]`, a tuple, a record of another seed), in it or in a
+  record or an enum it reaches, has no codec, and the call is refused
+  naming the field ("`Export::from_json`: `Export` has a field `raw:
+  Bytes`, which the JSON codec does not carry"), as `T::from_json` of a
+  record with no `json:` tag is ("`Plain::from_json`: `Plain` declares
+  no `json:` field tag, which is what gives a record its JSON codec; tag
+  a field, `id: Int `json:"id"`;`"), of an enum, and a call of another
+  arity; a program the check admits builds. An unbounded `[T]` is not a
+  field's: Hale sequences are locus-owned (there is no heap-owning value
+  collection), so a JSON array of unknown length is read by walking the
+  array cursor and pushing into a `@form(vec)` locus cell (see
   `notes/value-collections.md`). Further tag keys remain reserved for
   future consumers (validation, db mapping).
 

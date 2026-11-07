@@ -8,16 +8,24 @@
 //! declared type — one pass, no per-field rescan, unknown keys skipped.
 //! `Type::from_json(s)` calls are rewritten to the generated function.
 //!
-//! Semantics (v1, scalar fields):
+//! Semantics:
 //!   - key = the `json:` tag value, else the field name.
 //!   - a missing field raises `JsonError { kind: "missing_field", field }`,
-//!     UNLESS the field declares a literal `= default`, in which case the
-//!     default is kept (optional-with-default for free).
-//!   - field types: Int / Float / Bool / String / `Decimal<S>` (a JSON
-//!     number, its exact digits at the field's scale; a number with a
+//!     UNLESS the field declares a default, which the codec keeps (a
+//!     literal as the field's initial value, any other expression built
+//!     when the key is absent).
+//!   - field types: what the api codecs carry of a field (`classify_field`,
+//!     spec/api.md § Codecs): Int / Float / Bool / String / `Decimal<S>` (a
+//!     JSON number, its exact digits at the field's scale; a number with a
 //!     nonzero digit past the scale is the field's `wrong_type`, never a
-//!     truncation). A type with any non-scalar field is left ungenerated
-//!     (nested types + arrays are a follow-up).
+//!     truncation), a unit scalar as its `Int`, a `Time`, a `Duration`, a
+//!     `std::json::Value`, an enum (a payload-free variant its name), a
+//!     record of the same program (its own codec, generated beside the
+//!     tagged one's whether or not it carries a tag), and a `bounded[T; N]`
+//!     or `[T; N]` of those. No presence pair is read. A tagged type with a
+//!     field the codec cannot carry, in it or in what it reaches, is left
+//!     ungenerated, and the check refuses the call naming the field
+//!     (`hale_types::json_codec_laws`), so a program that checks builds.
 //!
 //! The pass runs BEFORE typecheck (so the generated parser is itself
 //! checked and `from_json` resolves to a real fallible function the caller
@@ -482,6 +490,7 @@ pub fn scalar_convs(programs: &[&Program]) -> std::collections::BTreeMap<String,
     out
 }
 
+#[derive(Clone)]
 struct JsonType {
     name: String,
     fields: Vec<JsonField>,
@@ -560,58 +569,170 @@ fn collect_json_type_names(items: &[TopDecl], out: &mut HashSet<String>) {
     }
 }
 
-/// Build the field schema for every opted-in struct. Each field must be a
-/// scalar (Int/Float/Bool/String) or a nested field whose type is itself a
-/// generated JSON struct (in `names`); a field of any other type leaves
-/// the whole type ungenerated (arrays + non-JSON structs are future work).
-fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<JsonType>) {
-    for item in items {
-        match item {
-            TopDecl::Type(td) => {
-                if let TypeDeclBody::Struct(fields) = &td.body {
-                    if !fields.iter().any(|f| tag_json_key(&f.tag).is_some()) {
-                        continue;
-                    }
-                    let mut jfields = Vec::new();
-                    let mut ok = true;
-                    for f in fields {
-                        let kind = if let Some(s) = scalar_of(&f.ty) {
-                            FieldKind::Scalar(s)
-                        } else if let Some(tn) = named_single(&f.ty) {
-                            if names.contains(tn) {
-                                FieldKind::Nested(tn.to_string())
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        } else {
-                            ok = false;
-                            break;
-                        };
-                        let default_src = match kind {
-                            FieldKind::Scalar(_) => f.default.as_ref().and_then(literal_src),
-                            FieldKind::Nested(_) | FieldKind::Time | FieldKind::List { .. } | FieldKind::Enum { .. } | FieldKind::Raw => None,
-                        };
-                        jfields.push(JsonField {
-                            name: f.name.name.clone(),
-                            key: tag_json_key(&f.tag).unwrap_or_else(|| f.name.name.clone()),
-                            kind,
-                            default_src,
-                            conv: None,
-                            pb_no: 0,
-                            presence: Presence::No,
-                            default_expr: None,
-                        });
-                    }
-                    if ok && !jfields.is_empty() {
-                        out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None, lifted_clear: None });
-                    }
-                }
+/// What a record's or an enum's values reach: the records and enums whose
+/// codecs theirs call.
+enum Reach {
+    Record(String),
+    Enum(String),
+}
+
+fn elem_reach(elem: &Elem, out: &mut Vec<Reach>) {
+    match elem {
+        Elem::Nested(tn) => out.push(Reach::Record(tn.clone())),
+        Elem::Enum { name, .. } => out.push(Reach::Enum(name.clone())),
+        Elem::Scalar(..) | Elem::Time | Elem::Raw => {}
+    }
+}
+
+fn field_reach(kind: &FieldKind, out: &mut Vec<Reach>) {
+    match kind {
+        FieldKind::Nested(tn) => out.push(Reach::Record(tn.clone())),
+        FieldKind::Enum { name, .. } => out.push(Reach::Enum(name.clone())),
+        FieldKind::List { elem, value, .. } => {
+            elem_reach(elem, out);
+            if let Some(v) = value {
+                elem_reach(&v.elem, out);
             }
-            TopDecl::Module(m) => collect_json_types(&m.items, names, out),
-            _ => {}
+        }
+        FieldKind::Scalar(_) | FieldKind::Time | FieldKind::Raw => {}
+    }
+}
+
+/// The records a program's `json:` tags opt in, with the records and
+/// enums their fields reach (spec/semantics.md § Metadata tags): the
+/// types the record codecs are generated for, their enums, and the tagged
+/// records among them, whose `T::from_json` / `T::to_json` the calls name.
+/// A field is what the api codec carries of it ([`classify_field`]): a
+/// scalar, a unit scalar, a `Time`, a `Duration`, a `std::json::Value`, an
+/// enum, a record of the program, or a list of any of those; a tagged
+/// record with a field the codec cannot carry, or that reaches a record or
+/// an enum it cannot, is left without a codec, and the check refuses its
+/// call naming the field. No presence pair is read: `has_x` is a key like
+/// any other field's.
+struct Tier2 {
+    types: Vec<JsonType>,
+    enums: Vec<JsonEnum>,
+    tagged: HashSet<String>,
+}
+
+fn collect_tier2(program: &Program) -> Tier2 {
+    use std::collections::BTreeMap;
+    let mut tagged = HashSet::new();
+    collect_json_type_names(&program.items, &mut tagged);
+    if tagged.is_empty() {
+        return Tier2 { types: Vec::new(), enums: Vec::new(), tagged };
+    }
+    let scalars = scalar_convs(&[program]);
+    let mut aliases = BTreeMap::new();
+    collect_aliases(&program.items, &mut aliases);
+    let mut enum_kinds = BTreeMap::new();
+    collect_enum_kinds(&program.items, &mut enum_kinds);
+    let mut records = BTreeMap::new();
+    collect_record_fields(&program.items, &mut records);
+    // every enum, as the codec reads it: `None` for one with a value the
+    // codec cannot carry
+    let mut enums: BTreeMap<String, Option<JsonEnum>> = BTreeMap::new();
+    fn walk_enums(
+        items: &[TopDecl],
+        scalars: &BTreeMap<String, Conv>,
+        aliases: &BTreeMap<String, TypeExpr>,
+        kinds: &BTreeMap<String, bool>,
+        out: &mut BTreeMap<String, Option<JsonEnum>>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Type(td) => {
+                    let TypeDeclBody::Enum(vs) = &td.body else { continue };
+                    let mut variants = Vec::new();
+                    let mut ok = true;
+                    for v in vs {
+                        match v.fields.iter().map(|t| elem_of(t, scalars, aliases, kinds)).collect::<Option<Vec<_>>>() {
+                            Some(values) => variants.push((v.name.name.clone(), values)),
+                            None => ok = false,
+                        }
+                    }
+                    out.insert(td.name.name.clone(), ok.then(|| JsonEnum { name: td.name.name.clone(), variants }));
+                }
+                TopDecl::Module(m) => walk_enums(&m.items, scalars, aliases, kinds, out),
+                _ => {}
+            }
         }
     }
+    walk_enums(&program.items, &scalars, &aliases, &enum_kinds, &mut enums);
+    // every record, as the codec reads it: `None` for one with a field the
+    // codec cannot carry
+    let classified: BTreeMap<&String, Option<JsonType>> = records
+        .iter()
+        .map(|(name, fields)| {
+            let jfields: Option<Vec<JsonField>> = fields
+                .iter()
+                .enumerate()
+                .map(|(at, f)| classify_field(f, at, &scalars, &aliases, &enum_kinds, &records))
+                .collect();
+            let t = jfields.filter(|fs| !fs.is_empty()).map(|fields| JsonType {
+                name: name.clone(),
+                fields,
+                lifted: None,
+                lifted_flag: None,
+                lifted_clear: None,
+            });
+            (name, t)
+        })
+        .collect();
+    // whether a record or an enum is carried whole: itself and everything
+    // it reaches (a cycle is carried if nothing on it is refused)
+    fn carried(
+        at: &Reach,
+        classified: &BTreeMap<&String, Option<JsonType>>,
+        enums: &BTreeMap<String, Option<JsonEnum>>,
+        seen: &mut Vec<String>,
+    ) -> bool {
+        let name = match at {
+            Reach::Record(n) | Reach::Enum(n) => n,
+        };
+        if seen.contains(name) {
+            return true;
+        }
+        seen.push(name.clone());
+        let mut next = Vec::new();
+        match at {
+            Reach::Record(n) => match classified.get(n) {
+                Some(Some(t)) => t.fields.iter().for_each(|f| field_reach(&f.kind, &mut next)),
+                _ => return false,
+            },
+            Reach::Enum(n) => match enums.get(n) {
+                Some(Some(e)) => e.variants.iter().flat_map(|(_, vs)| vs.iter()).for_each(|(elem, _)| elem_reach(elem, &mut next)),
+                _ => return false,
+            },
+        }
+        next.iter().all(|r| carried(r, classified, enums, seen))
+    }
+    let mut types: Vec<JsonType> = Vec::new();
+    let mut out_enums: Vec<JsonEnum> = Vec::new();
+    let mut carried_tagged = HashSet::new();
+    let mut ordered: Vec<&String> = tagged.iter().collect();
+    ordered.sort();
+    for name in ordered {
+        let root = Reach::Record(name.clone());
+        let mut seen = Vec::new();
+        if !carried(&root, &classified, &enums, &mut seen) {
+            continue;
+        }
+        carried_tagged.insert(name.clone());
+        // what the record reaches joins the set, once, in reach order
+        for n in seen {
+            if let Some(Some(t)) = classified.get(&n) {
+                if !types.iter().any(|x| x.name == n) {
+                    types.push(t.clone());
+                }
+            } else if let Some(Some(e)) = enums.get(&n) {
+                if !out_enums.iter().any(|x| x.name == n) {
+                    out_enums.push(e.clone());
+                }
+            }
+        }
+    }
+    Tier2 { types, enums: out_enums, tagged: carried_tagged }
 }
 
 /// The Hale expression that parses a scalar value span `[__vs, __ve)` into
@@ -2068,41 +2189,51 @@ pub fn generate_json_parsers_in(programs: &mut [&mut Program]) {
 }
 
 fn generate_json_parsers_at(program: &mut Program, base: u32) {
-    let mut names = HashSet::new();
-    collect_json_type_names(&program.items, &mut names);
-    let mut types = Vec::new();
-    collect_json_types(&program.items, &names, &mut types);
+    let Tier2 { types, enums, tagged } = collect_tier2(program);
     if types.is_empty() {
         return;
     }
 
-    let existing_fns: HashSet<String> = program
-        .items
-        .iter()
-        .filter_map(|i| match i {
-            TopDecl::Fn(f) => Some(f.name.name.clone()),
-            _ => None,
-        })
-        .collect();
-    let have_jsonerror = program.items.iter().any(
-        |i| matches!(i, TopDecl::Type(t) if t.name.name == "JsonError"),
-    );
+    let mut existing_fns: HashSet<String> = HashSet::new();
+    walk_fns(&program.items, &mut |name| {
+        existing_fns.insert(name.to_string());
+    });
+    let mut declared_types: HashSet<String> = HashSet::new();
+    walk_types(&program.items, &mut |name| {
+        declared_types.insert(name.to_string());
+    });
+    let have_jsonerror = items_declare_type(&program.items, "JsonError");
 
     let mut src = String::new();
     if !have_jsonerror {
         src.push_str("type JsonError { kind: String; field: String; }\n");
     }
     for t in &types {
-        if !existing_fns.contains(&format!("__json_parse_{}", t.name)) {
+        // the holders of the record's lists, which the api codecs share
+        for f in &t.fields {
+            if matches!(f.kind, FieldKind::List { .. }) && declared_types.insert(holder_name(&t.name, &f.name)) {
+                src.push_str(&holder_src(t, &f.name));
+            }
+        }
+        if !existing_fns.contains(&format!("{}{}", TIER2.decode, t.name)) {
             src.push_str(&generate_parser_src(t));
         }
-        if !existing_fns.contains(&format!("__json_to_json_{}", t.name)) {
+        if !existing_fns.contains(&format!("{}{}", TIER2.encode, t.name)) {
             src.push_str(&generate_emit_src(t));
+        }
+    }
+    for e in &enums {
+        if !existing_fns.contains(&format!("{}{}", TIER2.decode, e.name)) {
+            src.push_str(&generate_enum_json_src(e, TIER2));
         }
     }
     if !src.trim().is_empty() {
         match parse_source_at(&src, base) {
-            Ok(generated) => program.items.extend(mark_synthetic(generated.items)),
+            Ok(generated) => {
+                let mut items = mark_synthetic(generated.items);
+                splice_defaults(&mut items, &types);
+                program.items.extend(items)
+            }
             // The generator emits well-formed source; a parse failure is a
             // generator bug, not user error. Say so on stderr and leave the
             // program unchanged so the (un-rewritten) call surfaces a normal
@@ -2117,10 +2248,15 @@ fn generate_json_parsers_at(program: &mut Program, base: u32) {
         }
     }
 
-    let names: HashSet<String> = types.iter().map(|t| t.name.clone()).collect();
-    // `T::from_json(s)` / `T::to_json(o)` with T a generated type ->
-    // `__json_parse_T(s)` / `__json_to_json_T(o)`.
-    rewrite_items(&mut program.items, &mut |e: &mut Expr| {
+    rewrite_tier2_calls(&mut program.items, &tagged);
+}
+
+/// `T::from_json(s)` / `T::to_json(o)` with `T` one of `names` ->
+/// `__json_parse_T(s)` / `__json_to_json_T(o)`. A call of any other type,
+/// or of another arity, is left as written, for the checker to refuse
+/// (`json_codec_laws`).
+fn rewrite_tier2_calls(items: &mut [TopDecl], names: &HashSet<String>) {
+    rewrite_items(items, &mut |e: &mut Expr| {
         let Expr::Call { callee, args, span, .. } = e else { return };
         if args.len() != 1 {
             return;
@@ -2130,8 +2266,8 @@ fn generate_json_parsers_at(program: &mut Program, base: u32) {
             return;
         }
         let prefix = match qn.segments[1].name.as_str() {
-            "from_json" => "__json_parse_",
-            "to_json" => "__json_to_json_",
+            "from_json" => TIER2.decode,
+            "to_json" => TIER2.encode,
             _ => return,
         };
         let fname = format!("{}{}", prefix, qn.segments[0].name);
@@ -2653,7 +2789,7 @@ fn generate_codecs(
             continue;
         }
         if !existing_fns.contains(&format!("__api_decode_{}", e.name)) {
-            src.push_str(&generate_enum_json_src(e));
+            src.push_str(&generate_enum_json_src(e, API));
         }
     }
     // the wire maps' value codecs: each (record, key) a map is keyed by
@@ -2780,6 +2916,7 @@ fn splice_defaults(items: &mut [TopDecl], types: &[JsonType]) {
 
 /// An enum a surface's rows carry: its variants, each with the values it
 /// holds (what a list element of their type is, and its spelling).
+#[derive(Clone)]
 struct JsonEnum {
     name: String,
     variants: Vec<(String, Vec<(Elem, String)>)>,
@@ -2843,9 +2980,25 @@ fn collect_api_enums(
 /// readers' string literal of the key).
 const RUNTIME_KEY: &str = "\" + __k + \"";
 
+/// The names a family of JSON codecs is generated under: a record's or an
+/// enum's decoder and encoder, and the readers of an enum's values.
+#[derive(Clone, Copy)]
+struct Prefixes {
+    decode: &'static str,
+    encode: &'static str,
+    reader: &'static str,
+}
+
+/// The api codecs (`__api_decode_<T>`, `__api_encode_<T>`, strict).
+const API: Prefixes = Prefixes { decode: "__api_decode_", encode: "__api_encode_", reader: "__api_jv_" };
+
+/// A record's own codecs (`T::from_json` / `T::to_json`, spec/semantics.md
+/// § Metadata tags): `__json_parse_<T>`, `__json_to_json_<T>`.
+const TIER2: Prefixes = Prefixes { decode: "__json_parse_", encode: "__json_to_json_", reader: "__json_jv_" };
+
 /// The name of the reader of value `i` of variant `v` of `e` from JSON.
-fn json_value_reader(e: &str, v: &str, i: usize) -> String {
-    format!("__api_jv_{e}_{v}_{i}")
+fn json_value_reader(p: Prefixes, e: &str, v: &str, i: usize) -> String {
+    format!("{}{e}_{v}_{i}", p.reader)
 }
 
 /// The record a variant with several values crosses protobuf as.
@@ -2858,7 +3011,7 @@ fn variant_record(e: &str, v: &str) -> String {
 /// a variant with one value `{"<Variant>": <value>}`, with several
 /// `{"<Variant>": [<value>, ...]}`, exactly as many; anything else, an
 /// unknown variant among it, is `wrong_type` for the field read.
-fn generate_enum_json_src(e: &JsonEnum) -> String {
+fn generate_enum_json_src(e: &JsonEnum, p: Prefixes) -> String {
     let n = &e.name;
     let wrong = "fail JsonError { kind: \"wrong_type\", field: __k };";
     let mut b = String::new();
@@ -2867,7 +3020,7 @@ fn generate_enum_json_src(e: &JsonEnum) -> String {
         for (i, (elem, ty)) in values.iter().enumerate() {
             b.push_str(&format!(
                 "fn {}(__src: String, __es: Int, __ee0: Int, __k: String) -> {ty} fallible(JsonError) {{\n",
-                json_value_reader(n, v, i)
+                json_value_reader(p, n, v, i)
             ));
             b.push_str("    let mut __ee = __ee0;\n");
             b.push_str("    while __ee > __es {\n");
@@ -2875,11 +3028,11 @@ fn generate_enum_json_src(e: &JsonEnum) -> String {
             b.push_str("        if __tc == 32 || __tc == 9 || __tc == 10 || __tc == 13 { __ee = __ee - 1; } else { break; }\n");
             b.push_str("    }\n");
             b.push_str(&format!("    if __ee <= __es {{ {wrong} }}\n"));
-            b.push_str(&json_elem_read(elem, "__src", RUNTIME_KEY, "__api_decode_", "    "));
+            b.push_str(&json_elem_read(elem, "__src", RUNTIME_KEY, p.decode, "    "));
             b.push_str("    return __ev;\n}\n");
         }
     }
-    b.push_str(&format!("fn __api_decode_{n}(__s: String, __k: String) -> {n} fallible(JsonError) {{\n"));
+    b.push_str(&format!("fn {}{n}(__s: String, __k: String) -> {n} fallible(JsonError) {{\n", p.decode));
     b.push_str("    let __t = std::str::trim(__s);\n");
     b.push_str("    let __tn = len(__t);\n");
     b.push_str(&format!("    if __tn < 2 || !std::json::valid(__t) {{ {wrong} }}\n"));
@@ -2905,7 +3058,7 @@ fn generate_enum_json_src(e: &JsonEnum) -> String {
             }
             b.push_str(&format!("        if std::json::obj_key_eq(__it, __t, \"{v}\") {{\n"));
             if values.len() == 1 {
-                b.push_str(&format!("            let __a0 = {}(__t, __vs, __ve, __k) or raise;\n", json_value_reader(n, v, 0)));
+                b.push_str(&format!("            let __a0 = {}(__t, __vs, __ve, __k) or raise;\n", json_value_reader(p, n, v, 0)));
                 b.push_str(&format!("            return {n}::{v}(__a0);\n"));
             } else {
                 b.push_str(&format!("            if std::str::byte_at_unchecked(__t, __vs) != 91 {{ {wrong} }}\n"));
@@ -2916,7 +3069,7 @@ fn generate_enum_json_src(e: &JsonEnum) -> String {
                     b.push_str(&format!("            if __li.done {{ {wrong} }}\n"));
                     b.push_str(&format!(
                         "            let __a{i} = {}(__la, __li.cur_start, __li.cur_end, __k) or raise;\n",
-                        json_value_reader(n, v, i)
+                        json_value_reader(p, n, v, i)
                     ));
                     b.push_str("            __li = std::json::array_next_span(__li, __la);\n");
                     args.push(format!("__a{i}"));
@@ -2930,7 +3083,7 @@ fn generate_enum_json_src(e: &JsonEnum) -> String {
     }
     b.push_str(&format!("    {wrong}\n}}\n"));
     // the encoder
-    b.push_str(&format!("fn __api_encode_{n}(__v: {n}) -> String {{\n    match __v {{\n"));
+    b.push_str(&format!("fn {}{n}(__v: {n}) -> String {{\n    match __v {{\n", p.encode));
     for (v, values) in &e.variants {
         if values.is_empty() {
             b.push_str(&format!("        {n}::{v} -> {{ return \"\\\"{v}\\\"\"; }},\n"));
@@ -2941,7 +3094,7 @@ fn generate_enum_json_src(e: &JsonEnum) -> String {
         let mut parts = Vec::new();
         for (i, (elem, ty)) in values.iter().enumerate() {
             b.push_str(&format!("            let __x{i}: {ty} = __a{i};\n"));
-            parts.push(json_elem_write(elem, &format!("__x{i}"), "__api_encode_"));
+            parts.push(json_elem_write(elem, &format!("__x{i}"), p.encode));
         }
         let body = if parts.len() == 1 {
             parts[0].clone()
@@ -3257,6 +3410,128 @@ fn elem_of(
     }
 }
 
+/// What field `f` of a record is to the codec, at place `at` among the
+/// record's fields (its protobuf number counts from 1): its kind, its
+/// literal default (a unit scalar's held as its wire `Int`) or the
+/// default the codec builds when the field is absent, and no presence
+/// (the record's pairs are marked over its fields). `None` where the
+/// codec cannot carry the field: a list of lists, a map whose value it
+/// cannot carry, a type it carries no way.
+fn classify_field(
+    f: &crate::ast::StructField,
+    at: usize,
+    scalars: &std::collections::BTreeMap<String, Conv>,
+    aliases: &std::collections::BTreeMap<String, TypeExpr>,
+    enums: &std::collections::BTreeMap<String, bool>,
+    records: &std::collections::BTreeMap<String, Vec<crate::ast::StructField>>,
+) -> Option<JsonField> {
+    let mut conv = None;
+    // a field typed by a plain alias is what the alias stands for
+    let ty = through_aliases(&f.ty, aliases);
+    let kind = if let Some((elem, cap, exact)) = wire_list(&ty) {
+        // a list: its elements are what a field of their type is
+        let (elem, elem_ty) = elem_of(elem, scalars, aliases, enums)?;
+        // `indexed_by <key>`: a wire map of the records,
+        // keyed by their `<key>` (spec/api.md § Codecs); a
+        // map whose value this codec cannot carry is
+        // refused by the check from this codec's own answer
+        // (`uncarried_wire_maps`), so it is never dropped
+        // from a program that checks
+        let key = f.indexed_by.as_ref().map(|k| k.name.clone()).filter(|_| matches!(elem, Elem::Nested(_)));
+        // `indexed_by <key> -> <value>`: a map of the
+        // records' `<value>`s
+        let value = match (&elem, &f.map_value, key.is_some()) {
+            (Elem::Nested(tn), Some(v), true) => match map_value(tn, &v.name, records, scalars, aliases, enums) {
+                Ok(mut mv) => {
+                    // the map supplied the key: present,
+                    // and not cleared
+                    let k = key.as_deref().unwrap_or_default();
+                    let is_bool = |te: &TypeExpr| matches!(through_aliases(te, aliases), TypeExpr::Primitive(PrimType::Bool, _));
+                    if let Some(rf) = records.get(tn) {
+                        for (of, flag) in presence_pairs(rf, &is_bool) {
+                            if of == k {
+                                mv.key_inits.push_str(&format!(", {flag}: true"));
+                            }
+                        }
+                        for (of, clear) in presence_clears(rf, &is_bool) {
+                            if of == k {
+                                mv.key_inits.push_str(&format!(", {clear}: false"));
+                            }
+                        }
+                    }
+                    Some(mv)
+                }
+                Err(_) => return None,
+            },
+            _ => None,
+        };
+        FieldKind::List { elem, elem_ty, cap, exact, key, value }
+    } else {
+        match elem_of(&ty, scalars, aliases, enums)? {
+            (Elem::Scalar(s, c), _) => {
+                conv = c;
+                FieldKind::Scalar(s)
+            }
+            (Elem::Time, _) => FieldKind::Time,
+            (Elem::Raw, _) => FieldKind::Raw,
+            (Elem::Nested(tn), _) => FieldKind::Nested(tn),
+            (Elem::Enum { name, unit_only }, _) => FieldKind::Enum { name, unit_only },
+        }
+    };
+    // a literal default; a unit scalar's is held as its wire `Int`
+    let default_src = match (&kind, &conv) {
+        (FieldKind::Scalar(_), None) | (FieldKind::Time, _) => f.default.as_ref().and_then(literal_src),
+        (FieldKind::Scalar(_), Some(c)) => f.default.as_ref().and_then(literal_src).map(|d| c.to_int(&d)),
+        _ => None,
+    };
+    // any other default (an enum's, a record's, a scalar's
+    // that is no literal) is built when the field is absent,
+    // as the description's `required` promises; a list's is
+    // not read (a `bounded` absent is empty, a fixed array is
+    // always sent: spec/api.md § Codecs)
+    let default_expr = match &kind {
+        FieldKind::List { .. } => None,
+        _ if default_src.is_some() => None,
+        _ => f.default.clone(),
+    };
+    Some(JsonField {
+        name: f.name.name.clone(),
+        key: tag_json_key(&f.tag).unwrap_or_else(|| f.name.name.clone()),
+        kind,
+        default_src,
+        conv,
+        pb_no: at as u32 + 1,
+        presence: Presence::No,
+        default_expr,
+    })
+}
+
+/// The presence pairs and triples of `fields` marked over `jfields`
+/// (spec/api.md § Codecs): the optional field, its flag and its clear flag.
+fn mark_presence(
+    fields: &[crate::ast::StructField],
+    aliases: &std::collections::BTreeMap<String, TypeExpr>,
+    jfields: &mut [JsonField],
+) {
+    let is_bool = |te: &TypeExpr| matches!(through_aliases(te, aliases), TypeExpr::Primitive(PrimType::Bool, _));
+    for (of, flag) in presence_pairs(fields, &is_bool) {
+        for jf in jfields.iter_mut() {
+            if jf.name == of {
+                jf.presence = Presence::Tracked(flag.to_string());
+            } else if jf.name == flag {
+                jf.presence = Presence::Flag(of.to_string());
+            }
+        }
+    }
+    for (of, clear) in presence_clears(fields, &is_bool) {
+        for jf in jfields.iter_mut() {
+            if jf.name == clear {
+                jf.presence = Presence::Cleared(of.to_string());
+            }
+        }
+    }
+}
+
 /// Like `collect_json_types`, but for a named set and with every field
 /// admitted (the api surface already classified the closure).
 fn collect_api_types(
@@ -3278,106 +3553,12 @@ fn collect_api_types(
                     continue;
                 }
                 let TypeDeclBody::Struct(fields) = &td.body else { continue };
-                let mut jfields = Vec::new();
-                for (at, f) in fields.iter().enumerate() {
-                    let mut conv = None;
-                    // a field typed by a plain alias is what the alias stands for
-                    let ty = through_aliases(&f.ty, aliases);
-                    let kind = if let Some((elem, cap, exact)) = wire_list(&ty) {
-                        // a list: its elements are what a field of their type is
-                        let Some((elem, elem_ty)) = elem_of(elem, scalars, aliases, enums) else { continue };
-                        // `indexed_by <key>`: a wire map of the records,
-                        // keyed by their `<key>` (spec/api.md § Codecs); a
-                        // map whose value this codec cannot carry is
-                        // refused by the check from this codec's own answer
-                        // (`uncarried_wire_maps`), so it is never dropped
-                        // from a program that checks
-                        let key = f.indexed_by.as_ref().map(|k| k.name.clone()).filter(|_| matches!(elem, Elem::Nested(_)));
-                        // `indexed_by <key> -> <value>`: a map of the
-                        // records' `<value>`s
-                        let value = match (&elem, &f.map_value, key.is_some()) {
-                            (Elem::Nested(tn), Some(v), true) => match map_value(tn, &v.name, records, scalars, aliases, enums) {
-                                Ok(mut mv) => {
-                                    // the map supplied the key: present,
-                                    // and not cleared
-                                    let k = key.as_deref().unwrap_or_default();
-                                    let is_bool = |te: &TypeExpr| matches!(through_aliases(te, aliases), TypeExpr::Primitive(PrimType::Bool, _));
-                                    if let Some(rf) = records.get(tn) {
-                                        for (of, flag) in presence_pairs(rf, &is_bool) {
-                                            if of == k {
-                                                mv.key_inits.push_str(&format!(", {flag}: true"));
-                                            }
-                                        }
-                                        for (of, clear) in presence_clears(rf, &is_bool) {
-                                            if of == k {
-                                                mv.key_inits.push_str(&format!(", {clear}: false"));
-                                            }
-                                        }
-                                    }
-                                    Some(mv)
-                                }
-                                Err(_) => continue,
-                            },
-                            _ => None,
-                        };
-                        FieldKind::List { elem, elem_ty, cap, exact, key, value }
-                    } else {
-                        match elem_of(&ty, scalars, aliases, enums) {
-                            Some((Elem::Scalar(s, c), _)) => {
-                                conv = c;
-                                FieldKind::Scalar(s)
-                            }
-                            Some((Elem::Time, _)) => FieldKind::Time,
-                            Some((Elem::Raw, _)) => FieldKind::Raw,
-                            Some((Elem::Nested(tn), _)) => FieldKind::Nested(tn),
-                            Some((Elem::Enum { name, unit_only }, _)) => FieldKind::Enum { name, unit_only },
-                            None => continue,
-                        }
-                    };
-                    // a literal default; a unit scalar's is held as its wire `Int`
-                    let default_src = match (&kind, &conv) {
-                        (FieldKind::Scalar(_), None) | (FieldKind::Time, _) => f.default.as_ref().and_then(literal_src),
-                        (FieldKind::Scalar(_), Some(c)) => f.default.as_ref().and_then(literal_src).map(|d| c.to_int(&d)),
-                        _ => None,
-                    };
-                    // any other default (an enum's, a record's, a scalar's
-                    // that is no literal) is built when the field is absent,
-                    // as the description's `required` promises; a list's is
-                    // not read (a `bounded` absent is empty, a fixed array is
-                    // always sent: spec/api.md § Codecs)
-                    let default_expr = match &kind {
-                        FieldKind::List { .. } => None,
-                        _ if default_src.is_some() => None,
-                        _ => f.default.clone(),
-                    };
-                    jfields.push(JsonField {
-                        name: f.name.name.clone(),
-                        key: tag_json_key(&f.tag).unwrap_or_else(|| f.name.name.clone()),
-                        kind,
-                        default_src,
-                        conv,
-                        pb_no: at as u32 + 1,
-                        presence: Presence::No,
-                        default_expr,
-                    });
-                }
-                let is_bool = |te: &TypeExpr| matches!(through_aliases(te, aliases), TypeExpr::Primitive(PrimType::Bool, _));
-                for (of, flag) in presence_pairs(fields, &is_bool) {
-                    for jf in jfields.iter_mut() {
-                        if jf.name == of {
-                            jf.presence = Presence::Tracked(flag.to_string());
-                        } else if jf.name == flag {
-                            jf.presence = Presence::Flag(of.to_string());
-                        }
-                    }
-                }
-                for (of, clear) in presence_clears(fields, &is_bool) {
-                    for jf in jfields.iter_mut() {
-                        if jf.name == clear {
-                            jf.presence = Presence::Cleared(of.to_string());
-                        }
-                    }
-                }
+                let mut jfields: Vec<JsonField> = fields
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(at, f)| classify_field(f, at, scalars, aliases, enums, records))
+                    .collect();
+                mark_presence(fields, aliases, &mut jfields);
                 out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None, lifted_clear: None });
             }
             TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, records, out),

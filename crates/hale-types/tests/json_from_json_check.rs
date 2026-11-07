@@ -44,3 +44,72 @@ fn addressed_from_json_is_clean() {
         msgs
     );
 }
+
+// ---- the record codecs' law (`json_codec_laws`): a call the sequence
+// left as written is refused by the check, naming the rule, so that a
+// program the check admits builds (downstream handoff).
+
+#[test]
+fn from_json_of_an_untagged_record_is_refused_with_the_tag_to_write() {
+    let msgs = check(
+        r#"
+        type Plain { id: Int; }
+        fn f() -> Int { let o = Plain::from_json("{}") or raise; return o.id; }
+    "#,
+    );
+    let want = "`Plain::from_json`: `Plain` declares no `json:` field tag, which is what gives a record its JSON codec (spec/semantics.md § Metadata tags); tag a field, `id: Int `json:\"id\"`;`";
+    assert!(msgs.iter().any(|m| m == want), "got: {msgs:?}");
+}
+
+#[test]
+fn from_json_of_a_record_with_an_uncarried_field_names_the_field() {
+    let msgs = check(
+        r#"
+        type Export { id: Int `json:"id"`; raw: Bytes; }
+        fn f() -> Int { let o = Export::from_json("{}") or raise; return o.id; }
+    "#,
+    );
+    let want = "`Export::from_json`: `Export` has a field `raw: Bytes`, which the JSON codec does not carry";
+    assert!(msgs.iter().any(|m| m == want), "got: {msgs:?}");
+    // through a record it reaches, by the field's path
+    let msgs = check(
+        r#"
+        type Inner { w: [Int]; }
+        type Outer { id: Int `json:"id"`; i: Inner; }
+        fn f() -> String { let o = Outer { id: 1, i: Inner { w: [1] } }; return Outer::to_json(o); }
+    "#,
+    );
+    let want = "`Outer::to_json`: `Outer` has a field `i.w: [Int]`, which the JSON codec does not carry";
+    assert!(msgs.iter().any(|m| m == want), "got: {msgs:?}");
+}
+
+#[test]
+fn from_json_of_an_enum_and_of_the_wrong_arity_are_refused() {
+    let msgs = check(
+        r#"
+        type Side = enum { Buy, Sell };
+        type Ord { side: Side `json:"side"`; }
+        fn f() -> Side { let s = Side::from_json("\"Buy\"") or raise; return s; }
+        fn g() -> Ord { let o = Ord::from_json("{}", 1) or raise; return o; }
+    "#,
+    );
+    assert!(
+        msgs.iter().any(|m| m.starts_with("`Side::from_json`: `Side` is an enum, and `from_json` is a record's")),
+        "got: {msgs:?}"
+    );
+    assert!(msgs.iter().any(|m| m == "`Ord::from_json` takes one argument (the JSON text), got 2"), "got: {msgs:?}");
+}
+
+#[test]
+fn an_enum_field_and_a_list_field_are_carried() {
+    // the codec is generated and the call rewritten: nothing to refuse,
+    // and the fallible rule reads the generated signature
+    let msgs = check(
+        r#"
+        type Side = enum { Buy, Sell };
+        type Ord { side: Side `json:"side"`; tags: bounded[String; 4]; mode: Side = Side::Sell; }
+        fn f() -> Side { let o = Ord::from_json("{}") or raise; return o.side; }
+    "#,
+    );
+    assert!(msgs.is_empty(), "got: {msgs:?}");
+}

@@ -72,13 +72,16 @@ let roundtrip = Person::from_json(encoded) or raise;
 - **Single-pass scanning**: `Type::from_json(s) -> Type fallible(JsonError)` walks the JSON object once, dispatches matched keys to their target fields, and skips unknown keys (including nested objects or arrays under unknown keys).
 - **Required vs. optional fields**: A missing field raises `JsonError` (naming the missing field) unless the field declaration includes a default value (`role: String = "member"`).
 - **Error handling**: Because `from_json` is `fallible(JsonError)`, callers must address errors with `or raise`, `or <fallback>`, or an error handler. `Type::to_json(value)` is infallible and always returns a `String`.
-- **Supported field types**:
-  - **Scalars**: `Int`, `Float`, `Bool`, `String`, and `Decimal<S>`.
+- **Supported field types**: what an api surface's JSON codec carries of a field ([The API surface](../services/api.md)):
+  - **Scalars**: `Int`, `Float`, `Bool`, `String`, and `Decimal<S>`; a unit-dialect scalar (an identity, a range, a quantity) as its `Int`; a `Time` as its RFC 3339 text; a `Duration` as its nanoseconds; a `std::json::Value` as its text.
   - **Exact decimals**: `Decimal<S>` serializes as an exact JSON number (`19.99`, without float approximation) and parses at scale `S`. Numbers with more fractional digits than `S` are rejected with `wrong_type` rather than truncated.
-  - **Nested structs**: Any field whose type is another `json:`-tagged `type` is parsed and serialized recursively.
+  - **Enums**: a payload-free variant is its name as a JSON string (`"Buy"`), read back by name; a name no variant has is `wrong_type` for the field. A variant with values is written as the api codec writes it (`{"Circle": 1.5}`).
+  - **Nested records**: Any field whose type is another record of the seed is parsed and serialized recursively, by that record's own codec (its keys its fields' tags, else their names), whether or not it declares a `json:` tag of its own.
+  - **Lists**: a `bounded[T; N]` or `[T; N]` of any of those is a JSON array; more elements than `N` is `too_long`, fewer than a fixed array's `too_short`, and an absent `bounded` field is empty.
+- **The check is the gate**: a tagged record with a field the codec does not carry (`Bytes`, an unbounded `[T]`, a tuple), in it or in a record it reaches, has no codec, and `hale check` refuses the call naming the field: `` `Export::from_json`: `Export` has a field `raw: Bytes`, which the JSON codec does not carry ``. A call on a record with no `json:` tag is refused with the tag to write, and a call on an enum, or with two arguments, is refused too. A program that checks builds.
 
 > [!NOTE]
-> `Type::from_json` does not support dynamically sized array fields because general sequences in Hale are locus-owned (`@form(vec)`). To parse a JSON array with `std::json`, extract the raw array slice with `find_field_raw` (if nested), iterate it with [`array_first` / `array_next`](#iterating-arrays-and-dynamic-objects), and `push` elements into a locus collection. (For RPC message types declared in an `api` surface, use fixed `[T; N]` or capacity-bounded `bounded[T; N]` array fields and `std::json::Value`—see [The API surface](../services/api.md).)
+> `Type::from_json` does not support unbounded `[T]` fields because general sequences in Hale are locus-owned (`@form(vec)`). Declare the field `bounded[T; N]` for a list with a known cap; to read a JSON array of unknown length with `std::json`, extract the raw array slice with `find_field_raw` (if nested), iterate it with [`array_first` / `array_next`](#iterating-arrays-and-dynamic-objects), and `push` elements into a locus collection.
 
 ---
 
