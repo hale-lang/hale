@@ -464,9 +464,9 @@ fn main() {{ Desk {{ }}; }}
 /// is (#1532): in JSON each element a number at the element's scale, every
 /// digit kept (written as `to_string` writes it, trailing zeros dropped), a nonzero digit past the scale `wrong_type`; in protobuf each
 /// element its digits in a string occurrence (length-delimited, so there is
-/// no packed form). An api surface still refuses a Decimal row (its schema has
-/// none), so the codecs are reached here through the harness's build, which
-/// lowers what the check refuses, and called as the transport's thunks would.
+/// no packed form). An api surface admits a Decimal row (its schema a number
+/// named with its scale, spec/api.md § Codecs); the codecs are reached here
+/// through the harness's build and called as the transport's thunks would.
 #[test]
 fn a_list_of_decimals_crosses_both_codecs_at_its_scale() {
     let program = r#"

@@ -95,6 +95,11 @@ fn main() {
 }
 ```
 
+The synthesized set is reached in method position only. The free
+builtin `len(x)` admits no locus (types.md § Value builtins), so
+`len(l)` on a form locus is refused at the check, pointing at
+`l.len()`.
+
 **The user CAN add additional methods** on top of the
 synthesized standard set. Naming a user method that collides
 with a synthesized method (e.g. user writes their own `push`)
@@ -782,7 +787,10 @@ contract; will be answered as workloads surface demand.
    oldest-first walk). The pseudo-field is the form's, whatever the
    capacity slot is named: a vec declared `heap cells of Int` is
    still iterated as `v.items`, and `v.cells` is refused with a
-   hint naming `.items` (a slot is not a field; friction sweep
+   hint naming `.items`; a chain terminal written on the form
+   itself (`v.sum(0.0d)`) is refused with the hint an array gets,
+   naming the surface: "write `v.items.map(it).sum(…)`"
+   (2026-11-06, downstream handoff) (a slot is not a field; friction sweep
    2026-10-12).
 2. **Bulk operations.** `extend(other: @form(vec))`, `clear()`,
    `truncate(n: Int)`. Useful but not foundational. Add after

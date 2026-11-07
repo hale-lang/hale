@@ -91,7 +91,7 @@ println(f"upper: {std::str::upper(name)}");
 println(f"literal {{braces}}, interpolated {n}");
 ```
 
-Plain `"..."` strings do not interpolate; writing `"x={x}"` leaves the braces literal and emits a compiler warning if `x` is in scope. Escape literal braces in an f-string with `{{` and `}}`.
+Plain `"..."` strings do not interpolate; writing `"x={x}"` leaves the braces literal and emits a compiler warning if `x` is in scope. Escape literal braces in an f-string with `{{` and `}}`. A plain string may also span lines: a line break inside the quotes is part of the value as written, escapes still apply, and nothing is stripped; for text with its own syntax, reach for a block string.
 
 ### Printing Whole Values
 

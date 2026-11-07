@@ -497,7 +497,7 @@ row	Shop@literal1.staff	__StdApiStaticRoles	main	default
 shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	dynamic	sites in the seed #09510ed0
 
-== crates/hale-cli/tests/fixtures/api_shapes/main.hl#444ccdd2
+== crates/hale-cli/tests/fixtures/api_shapes/main.hl#a8ea23d6
 root	Desk	the entry
 domain	pool:__api_http	async_io
 hole	Desk@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
@@ -802,6 +802,9 @@ shared	dynamic	sites in the seed #042a0a8b
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.q	Q	main	default
+
+== crates/hale-cli/tests/check_subscriber_torn_down.rs#9325c3b8
+row	Empire@main1	Empire	main	default
 
 == crates/hale-cli/tests/check_tcp_substrate.rs#ac402bbb
 root	App	the entry
@@ -1572,6 +1575,15 @@ row	D@literal1.ab	A__b	main	default
 row	D@literal1.t	Tok	main	default
 shared	D@literal1.__rpc_h_1	__StdApiHttpListener #80abdd5b
 shared	dynamic	sites in the seed #042a0a8b
+
+== crates/hale-codegen/tests/api_pb_codec.rs#07425596
+root	Desk	the entry
+domain	pool:__api_grpc	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.probe	Probe	main	default
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
+shared	dynamic	sites in the seed #d81b1982
 
 == crates/hale-codegen/tests/api_rest.rs#24802f4b
 root	Svc	the entry
@@ -2512,6 +2524,14 @@ row	Sub@main1	Sub	main	default
 == crates/hale-codegen/tests/bus_subscriber.rs#54f3394b
 row	Pub@main2	Pub	main	default
 row	Sub@main1	Sub	main	default
+
+== crates/hale-codegen/tests/bus_udp_ingress.rs#d18c95e4
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.s	Sub	main	default
+
+== crates/hale-codegen/tests/bus_udp_ingress.rs#64582bbf
+row	Pub@main1	Pub	main	default
 
 == crates/hale-codegen/tests/bus_udp_transport.rs#b5d4711d
 row	Sub@main1	Sub	main	default
@@ -3799,6 +3819,25 @@ row	~.r	Hard	main	inherited
 == crates/hale-codegen/tests/held_field_view.rs#7bb6103d
 row	H@main1	H	main	default
 
+== crates/hale-codegen/tests/http_chunked_request.rs#a2ccb8fb
+shared	__StdHttpServer@main1	__StdHttpServer #a56eb774
+shared	dynamic	sites in the seed #069c8230
+
+== crates/hale-codegen/tests/http_chunked_request.rs#87f6e7a4
+shared	__StdHttpServer@main1	__StdHttpServer #a194964f
+shared	dynamic	sites in the seed #069c8230
+
+== crates/hale-codegen/tests/http_peer_hangup.rs#21c68d21
+-- __StdHttpServer@main1	__StdHttpServer
+row	~	__StdHttpServer	main	default
+row	~.conns	__StdIoTcpConnections	main	inherited
+row	~.conns.flows	__StdIoTcpFlows	main	inherited
+row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	Slow	main	inherited
+row	~.handler	Slow	main	inherited
+row	~.relay	__StdIoTcpRelay	main	inherited
+shared	dynamic	sites in the seed #069c8230
+
 == crates/hale-codegen/tests/http_response_headers.rs#b03484a8
 shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
 shared	dynamic	sites in the seed #a76c74f1
@@ -3895,25 +3934,11 @@ row	~.relay	__StdIoTcpRelay	pool:web	inherited
 shared	dynamic	sites in the seed #af37ec58
 
 == crates/hale-codegen/tests/http_server_memory.rs#88079992
--- __StdHttpServer@main1	__StdHttpServer
-row	~	__StdHttpServer	main	default
-row	~.conns	__StdIoTcpConnections	main	inherited
-row	~.conns.flows	__StdIoTcpFlows	main	inherited
-row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	Count	main	inherited
-row	~.handler	Count	main	inherited
-row	~.relay	__StdIoTcpRelay	main	inherited
+shared	__StdHttpServer@main1	__StdHttpServer #a194964f
 shared	dynamic	sites in the seed #069c8230
 
 == crates/hale-codegen/tests/http_split_write.rs#74f0dac9
--- __StdHttpServer@main1	__StdHttpServer
-row	~	__StdHttpServer	main	default
-row	~.conns	__StdIoTcpConnections	main	inherited
-row	~.conns.flows	__StdIoTcpFlows	main	inherited
-row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	Echo	main	inherited
-row	~.handler	Echo	main	inherited
-row	~.relay	__StdIoTcpRelay	main	inherited
+shared	__StdHttpServer@main1	__StdHttpServer #a56eb774
 shared	dynamic	sites in the seed #069c8230
 
 == crates/hale-codegen/tests/http_upgrade.rs#715cadda
@@ -4971,6 +4996,11 @@ shared	Job@main1	Job #01dd0b0d
 == crates/hale-codegen/tests/process_try_wait.rs#d38b191b
 row	__StdProcessChild@main1	__StdProcessChild	main	default
 
+== crates/hale-codegen/tests/publish_in_or_arm.rs#7593ea63
+-- Worker@main1	Worker
+row	~	Worker	main	default
+row	~.w	Watch	main	inherited
+
 == crates/hale-codegen/tests/qualified_locus_type_coop_pool.rs#9ad24901
 root	App	the entry
 domain	pool:io
@@ -5894,6 +5924,14 @@ domain	pinned:Sink@binding1
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	pool:io	entry	off owner
 row	Sink@binding1	Sink	pinned:Sink@binding1	binding
+
+== crates/hale-codegen/tests/tree_drain.rs#20604e25
+root	App	the entry
+domain	pinned:App@literal1.s
+domain	pinned:App@literal1.p
+row	App@literal1	App	main	default
+row	App@literal1.p	Pub	pinned:App@literal1.p	entry	off owner
+row	App@literal1.s	Store	pinned:App@literal1.s	entry	off owner
 
 == crates/hale-codegen/tests/unowned_literal_pair_leak.rs#492944e5
 row	Lonely@main1	Lonely	main	default
@@ -8391,6 +8429,9 @@ row	Box@main2	Box	main	default
 row	Counter@main1	Counter	main	default
 dynamic	Mx	on main	in the seed
 
+== tests/hale/bounded_on_call_result_test.hl
+row	Store@main1	Store	main	default
+
 == tests/hale/bounded_time_test.hl
 root	Clock	the entry
 row	Clock@literal1	Clock	main	default
@@ -9047,6 +9088,10 @@ row	Counter@main1	Counter	main	default
 == tests/hale/units_loop_test.hl
 root	Till	the entry
 row	Till@literal1	Till	main	default
+
+== tests/hale/units_time_test.hl
+row	Poll@main1	Poll	main	default
+row	Poll@main2	Poll	main	default
 
 == tests/hale/violate_in_value_method_test.hl
 root	App	the entry
@@ -18383,6 +18428,24 @@ row	~.conns.handler	__StdHttpResponder	pool:web	inherited
 row	~.conns.handler.handler	Slow	pool:web	inherited
 row	~.handler	Slow	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
+
+== shared __StdHttpServer #a194964f
+row	~	__StdHttpServer	main	default
+row	~.conns	__StdIoTcpConnections	main	inherited
+row	~.conns.flows	__StdIoTcpFlows	main	inherited
+row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	Count	main	inherited
+row	~.handler	Count	main	inherited
+row	~.relay	__StdIoTcpRelay	main	inherited
+
+== shared __StdHttpServer #a56eb774
+row	~	__StdHttpServer	main	default
+row	~.conns	__StdIoTcpConnections	main	inherited
+row	~.conns.flows	__StdIoTcpFlows	main	inherited
+row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	Echo	main	inherited
+row	~.handler	Echo	main	inherited
+row	~.relay	__StdIoTcpRelay	main	inherited
 
 == shared __StdHttpServer #e3960846
 row	~	__StdHttpServer	pool:io	entry	off owner

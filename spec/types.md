@@ -202,9 +202,10 @@ that disagree on a scale disagree on the contract. The JSON codec
 (`T::to_json` / `T::from_json`, the `json:` tag in spec/semantics.md) writes a
 `Decimal<S>` field as a JSON number with its exact digits and reads it
 back at the field's scale; a number with a nonzero digit past the
-scale is the field's `wrong_type`. An api surface's codecs (JSON,
-protobuf) do not carry a Decimal at any scale (spec/api.md § Codecs):
-a row that names one is refused.
+scale is the field's `wrong_type`. An api surface's codecs carry one
+the same way (spec/api.md § Codecs): JSON as a number at its scale,
+its schema `{"type": "number", "x-hale-type": "Decimal<S>"}`, protobuf
+as its digits in a string.
 
 **Units.** A quantity, an identity and a range count an `Int`
 (spec/units.md), so `quantity Decimal<18> in wei` is refused as
@@ -1089,7 +1090,14 @@ for the narrowing direction (LLVM `fptosi` / `sitofp`):
   identity on its own type, and rejects any other argument type.
   They are the only two numeric casts: there is no `String(x)`,
   `Bool(x)`, `Bytes(x)` or `Decimal(x)` — those names are types; a
-  Decimal changes scale by `d.rescale(T)` (§ Decimal<S>).
+  Decimal changes scale by `d.rescale(T)` (§ Decimal<S>), and has no
+  `Int` or `Float` cast: `Int(d)` and `Float(d)` of a `Decimal<S>` are
+  check errors at the argument naming this rule ("\`Int(…)\` takes an
+  \`Int\` or a \`Float\`, and \`Decimal<6>\` is neither: a Decimal changes
+  scale by \`.rescale(T)\`; an \`Int\` of a Decimal is not a cast:
+  \`d.rescale(0) or trunc\` is its whole part (a \`Decimal<0>\`), and
+  \`Int(std::decimal::to_float(d))\` its nearest \`Int\` through
+  \`Float\`"), never a build error after a passing check.
   `Duration(x)` and `Time(x)` are the unit dialect's conversions of a
   value of the time component (spec/units.md § Conversions), never of
   an `Int` (`n * 1ns` makes a count a `Duration`).
@@ -1232,7 +1240,14 @@ f.get(i)         -> T   fallible(IndexError)      // = at(f, i); see below
 ```
 
 `get` is the one operation in method position, and the same is true
-of `[T; N]`. Element chains rewrite to a loop that fetches through
+of `[T; N]`. `f[i]` is not an operation of a `bounded`: an element is
+read with `at(f, i)` and written with `set(f, i, x)`, each fallible past
+the live count, where `[i]` would have no bound to check against. The
+check refuses it, in value position and as an assignment target, naming
+both ("\`[i]\` does not apply to a \`bounded[Rec; 16]\`: a \`bounded\`'s
+element is read with \`at(self.items, i) or …\` and written with
+\`set(self.items, i, x) or …\` …"); until 2026-11-06 it passed and the
+build refused it with no file or line. Element chains rewrite to a loop that fetches through
 the source's `get`, so answering that name is what makes a form
 chainable at all — without it, `f.filter(…).count()` failed with
 "no field `get`" and the type-level collections could not anchor a
@@ -1876,13 +1891,19 @@ them from one signature table:
 | `len(x)` | a `String` or `Bytes` (or a view of either), a fixed-size array | `Int` |
 | `to_string(x)` | a printable value | `String` |
 | `Int(x)` / `Float(x)` | an `Int` or a `Float` | `Int` / `Float` |
-| `abs(x)`, `min(a, b)`, `max(a, b)` | `Int`, `Float`, `Duration` or `Decimal`, one type throughout | the operands' type |
+| `abs(x)`, `min(a, b)`, `max(a, b)` | `Int`, `Float`, `Duration` or `Decimal`, one type throughout; `min` / `max` also two values of one quantity, or of two points of one origin, at one denomination (spec/units.md § The algebra) | the operands' type |
 | `starts_with(s, p)`, `contains(s, p)` | two `String`s | `Bool` |
 
 A call over operands outside its row is typed as unknown: the checker
 names no type for it, and the compiler refuses it where it lowers it. So
 `first(len(s))` instantiates `first<Int>`, and `let n: String =
-len(s)` is a type error at the `let`.
+len(s)` is a type error at the `let`. Two operands outside `len`'s row
+are refused at the check itself, each pointing at the spelling that
+holds: a `bounded[T; N]` (its live count is `count(x)`, § bounded[T;
+N]) and a form locus (its length is the form's synthesized `len()`
+method: "\`len\` does not apply to a \`V\`: a \`@form(vec)\`'s length
+is \`v.len()\`", [forms.md](forms.md) § Synthesized methods), where
+the build refused the form case with no file or line until 2026-11-06.
 
 ### Bare identifiers
 

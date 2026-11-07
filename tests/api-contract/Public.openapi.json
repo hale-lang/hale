@@ -7,6 +7,12 @@
     "x-hale-surface": "Public",
     "x-hale-digest": "fnv1a64:a8930d6e7998e986"
   },
+  "servers": [
+    {
+      "url": "/",
+      "description": "The exposure serving this surface: a deployment fact the document does not carry, so every path is relative to where it listens."
+    }
+  ],
   "paths": {
     "/call/Orders::cancel": {
       "post": {

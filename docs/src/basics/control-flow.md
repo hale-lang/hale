@@ -146,6 +146,18 @@ let label = {
 
 A block whose final item ends with `;` has no value (`()`) and cannot be used where a value is expected.
 
+A block whose last item is a `match` (no `;` after its closing brace) takes the match's value where the block is used as one — a `let`'s block, an arm of a `match` or `if` expression — so an arm can bind a local and then match on it (at least one arm must yield a value; a `match` whose every arm `return`s is no value, and `hale check` says so):
+
+```hale,fragment
+let label = match kind {
+    Kind::A -> {
+        let m = n + 1;
+        match m { 1 -> "one", _ -> "many" }
+    },
+    Kind::B -> "b",
+};
+```
+
 Conversely, a standalone statement terminated by `;` must perform an action—such as a function or method call (whose return value, if any, is discarded), a locus instantiation, or an `or` clause on a fallible call. Writing a pure value expression as a statement (`total + 1;` or `p.name;`) fails compilation with `this expression's value is unused`.
 
 Next: [Strings & Text](./strings.md).

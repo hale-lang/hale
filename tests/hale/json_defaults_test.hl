@@ -1,0 +1,61 @@
+// tests/hale/json_defaults_test.hl — a record codec's conformance on
+// defaults (spec/semantics.md § Metadata tags): a missing key takes the
+// field's default of every shape a field default may have (a literal of
+// each scalar type, negative ones among them, a nested record literal
+// with defaults of its own inside it, an enum variant), a bounded list
+// field absent is empty, and a missing field with no default is
+// `missing_field` naming the field. Downstream handoff: `n: Int = -1`
+// and a record-literal default each read as "missing".
+
+type Side = enum { Buy, Sell };
+type Instrument { sym: String = "X"; tick: Int = 1; lot: Int = -5; }
+type Order {
+    name: String `json:"name"`;
+    n: Int = -1 `json:"n"`;
+    ratio: Float = -0.5 `json:"ratio"`;
+    live: Bool = true `json:"live"`;
+    note: String = "none" `json:"note"`;
+    price: Decimal<2> = -1.25d `json:"price"`;
+    side: Side = Side::Sell `json:"side"`;
+    inst: Instrument = Instrument { sym: "Y", tick: 2 } `json:"inst"`;
+    tags: bounded[String; 4] `json:"tags"`;
+}
+
+fn missing(e: JsonError) -> Order {
+    std::test::assert_eq_str(e.kind, "missing_field", "a field with no default is required");
+    std::test::assert_eq_str(e.field, "name", "named by its key");
+    return Order { name: "missing" };
+}
+
+fn main() {
+    let o = Order::from_json("{\"name\":\"a\"}") or raise;
+    std::test::assert_eq_str(o.name, "a", "the key sent");
+    std::test::assert_eq_int(o.n, -1, "a negative Int default");
+    std::test::assert_near(o.ratio, -0.5, 0.000001, "a negative Float default");
+    std::test::assert(o.live, "a Bool default");
+    std::test::assert_eq_str(o.note, "none", "a String default");
+    std::test::assert(o.price == -1.25d, "a negative Decimal default");
+    std::test::assert(o.side == Side::Sell, "an enum default");
+    std::test::assert_eq_str(o.inst.sym, "Y", "a nested record default");
+    std::test::assert_eq_int(o.inst.tick, 2, "its written field");
+    std::test::assert_eq_int(o.inst.lot, -5, "and the nested record's own default inside it");
+    std::test::assert_eq_int(count(o.tags), 0, "an absent bounded list is empty");
+
+    let sent = Order::from_json(
+        "{\"name\":\"b\",\"n\":4,\"ratio\":1.5,\"live\":false,\"note\":\"x\",\"price\":2.50,\"side\":\"Buy\",\"inst\":{\"sym\":\"Z\"},\"tags\":[\"t\"]}",
+    ) or raise;
+    std::test::assert_eq_int(sent.n, 4, "a key sent overrides the default");
+    std::test::assert(!sent.live, "a Bool sent");
+    std::test::assert(sent.price == 2.5d, "a Decimal sent");
+    std::test::assert(sent.side == Side::Buy, "an enum sent");
+    std::test::assert_eq_str(sent.inst.sym, "Z", "a nested record sent");
+    std::test::assert_eq_int(
+        sent.inst.tick,
+        1,
+        "its absent field takes the nested record's own default",
+    );
+    std::test::assert_eq_int(count(sent.tags), 1, "a list sent");
+
+    let m = Order::from_json("{\"n\":1}") or missing(err);
+    std::test::assert_eq_str(m.name, "missing", "the failure arm ran");
+}

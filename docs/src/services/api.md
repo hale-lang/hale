@@ -175,6 +175,7 @@ Every type reachable from an `rpc` row is encoded and decoded strictly. Unknown 
 | Hale Type / Pattern | JSON Wire Format | Protobuf (`.proto`) Format | Refusal Conditions (`malformed`) |
 |---|---|---|---|
 | `Int`, `Float`, `Bool`, `String` | Standard JSON primitives | `optional int64`, `double`, `bool`, `string` | `wrong_type`, `missing_field` (if no default) |
+| `Decimal<S>` | JSON number at scale `S`, every digit kept (`12.34`; schema `{"type": "number", "x-hale-type": "Decimal<2>"}`) | `optional string` (its digits; `// Hale: Decimal<2>`) | A nonzero digit past `S`, or a string (`wrong_type`), never a truncation |
 | `distinct T` / `quantity Int in u` | Underlying scalar value (`Int` count for quantities) | Underlying scalar (`// Hale: Type, q(u)`) | `wrong_type` |
 | `Time` | UTC RFC 3339 string ending in `Z` (`"2026-10-12T03:04:05.123456789Z"`) | `optional int64` (nanoseconds) | Non-UTC offset, missing `Z`, or past year 2262 (`wrong_type`) |
 | `Duration` | Integer nanoseconds (`1500000000` = `1.5s`) | `optional int64` (nanoseconds) | `wrong_type` |
@@ -603,6 +604,8 @@ main locus Desk {
 }
 ```
 
+The hub is built wherever its literal is written in the main locus's `params`, with or without a `bindings { }` row or a surface served over it (`api::serve(Public, self.hub, …)`): a hub with no stream row listens and carries the rpcs served over it. A `ws::Hub` literal in any other locus is refused, naming the main locus as its place.
+
 ### Hub Protocol and Queue Semantics
 
 - **Configuration**: A hub param must keep its default constructor literal (overriding `Desk { hub: ... }` is rejected). Published events must fit within the 65,536-byte bus frame limit (including header).
@@ -794,7 +797,7 @@ hale api export --surface Public --check api/public desk.hl   # exits 1 on drift
 Generated files in `api/public/`:
 
 - `Public.description.json`: Full surface description, schemas, exposures, and hubs.
-- `Public.openapi.json`: OpenAPI 3.0 specification.
+- `Public.openapi.json`: OpenAPI 3.1 specification, with one relative server (`"url": "/"`), since where the exposure listens is a deployment fact; a linter's `no-empty-servers` passes, and a client points it at the exposure's address.
 - `Public.json-schema.json`: Standalone JSON Schema bundle.
 - `Public.mcp.json`: MCP tool definitions.
 - `Public.proto`: Protobuf v3 service and message definitions for `grpc::Rpc`.
@@ -921,7 +924,7 @@ $ echo $?
 
 ## Current Limitations
 
-- **Unsupported Wire Field Types**: `Decimal`, `Bytes`, unbounded slices, and locus types cannot appear in wire records.
+- **Unsupported Wire Field Types**: `Bytes`, unbounded slices, and locus types cannot appear in wire records.
 - **Batch Handlers**: `Drain<T>` batch handlers cannot be exposed as `rpc` rows.
 - **Non-Object MCP Requests**: An `rpc` row whose request type is a top-level enum rather than a struct has no MCP tool projection.
 - **Hub Live Descriptions**: When a `ws::Hub` also serves an `api` surface via `api::serve`, its live `GET /.description` lists its stream bindings; the RPC surface members remain in the static `hale check --api` inventory.

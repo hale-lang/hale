@@ -64,7 +64,7 @@ type TempDelta = quantity Int in mK;
 ```
 
 - **No shadowing builtin type names:** Neither a `unit` nor a `type` may use a built-in type name (for example, `Bytes` is the binary buffer primitive, so a byte quantity is named `ByteCount`).
-- **Literal token rules:** In expressions, a number and its unit suffix must be written as a single token with no space (`1_250_000USD`, `4KiB`, `500ms`). In declarations (`unit` equations, `in <unit>`, and `origin:` clauses), whitespace between the multiplier and unit is optional (`1024 B` or `1024B`).
+- **Literal token rules:** In expressions, a number and its unit suffix must be written as a single token with no space (`1_250_000USD`, `4KiB`, `500ms`). In declarations (`unit` equations, `in <unit>`, and `origin:` clauses), whitespace between the multiplier and unit is optional (`1024 B` or `1024B`). A negated literal (`-2_000ms`) converts at compile time from its negated count, so it is exact wherever the positive literal is (`let s: Seconds = -2_000ms;` is `-2s`).
 - **Standard library time units:** The standard library pre-declares `ns`, `us`, `ms`, `s`, `min`, `h`, and `day`, along with `Duration` (`quantity Int in ns`) and `Time` (`point Duration`). User programs can extend the time component by defining derived units (`unit frame_tick = 16 ms;`).
 
 ## Conversions, `.split()`, and Boundary Types
@@ -106,6 +106,8 @@ fn main() {
 ```
 
 Assigning a finer-grained value to a boundary type applies the type's `round:` policy automatically without requiring an `or` clause at each assignment.
+
+A quantity or point declared in an imported seed converts the same way through the import's alias: `lib::Metres(distance) or half_even` is the cast `Metres(distance) or half_even` written in the library itself.
 
 ## Exact Ratio Arithmetic (Money and Basis Points)
 
@@ -207,6 +209,7 @@ fn main() {
 | **Adding two points or identities** | `let p = bid + ask;` / `id + id` | Points only subtract (`ask - bid`) or shift by a quantity (`bid + 1tick`); `distinct Int` has no arithmetic. |
 | **Narrowing without a policy** | `let bad: Money = odd;` | Converting `1/10000 cent` to `cent` divides by `10,000`; add `.in(cent) or floor` or use a `{ round: ... }` boundary type. |
 | **Bare `Int` vs. quantity** | `if d > 0 { ... }` / `let w: Duration = n;` | Quantities only compare with their own kind (`d > 0ns`). Convert `Int` to a quantity by multiplying (`n * 1ms`) and extract a count by dividing (`d / 1ms` or `x / 1cent`). |
+| **`min`/`max` across units** | `min(d, m)` with `d: Duration`, `m: Millis` | `min` and `max` order two values of one quantity (or two points of one origin) at one unit, and are that type: `min(lo, hi)` over two `Millis` is a `Millis`. Convert one side first (`m.in(ns)`, `Millis(d) or floor`). |
 
 ## Auditing Units with `hale check --units`
 

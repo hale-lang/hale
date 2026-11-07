@@ -884,6 +884,200 @@ fn len_of_a_bounded_is_refused_for_count() {
     assert_eq!(ds.len(), 2, "nothing else: {ds:?}");
 }
 
+/// `len` of a form locus is refused at the check, pointing at the
+/// form's synthesized `len()` (spec/forms.md § Synthesized methods):
+/// `len(x)`'s row admits no locus (spec/types.md § Value builtins), and
+/// the build refused it with no file or line while the check passed it
+/// (downstream handoff). The hint spells the receiver as written: a
+/// local, `self`, or a field chain over one. `v.len()`, and `len` of a
+/// String, pass.
+#[test]
+fn len_of_a_form_locus_is_refused_for_its_len_method() {
+    let ds = diags(
+        r#"
+        @form(vec)
+        locus V { capacity { heap items of String; } }
+        @form(ring_buffer, cap = 4)
+        locus R { capacity { pool events of Int; } }
+        locus Holder {
+            params { v: V = V { }; }
+            fn n() -> Int { return len(self.v); }
+        }
+        fn main() {
+            let v = V { };
+            let r = R { };
+            let a = len(v);
+            let b = len(r);
+            let c = v.len();
+            let d = len("abc");
+            let h = Holder { };
+        }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("`len` does not apply")).collect();
+    assert_eq!(hits.len(), 3, "{ds:?}");
+    assert!(hits[0].contains("`V`") && hits[0].contains("`@form(vec)`") && hits[0].contains("`self.v.len()`"), "{hits:?}");
+    assert!(hits[1].contains("`V`") && hits[1].contains("`v.len()`"), "{hits:?}");
+    assert!(hits[2].contains("`R`") && hits[2].contains("`@form(ring_buffer)`") && hits[2].contains("`r.len()`"), "{hits:?}");
+    assert_eq!(ds.len(), 3, "nothing else: {ds:?}");
+}
+
+/// A block used as a value takes its trailing `match` as its value
+/// (spec/semantics.md, `match` is dual-position: as a block's value), so
+/// the match is checked as an expression there: arms of two types are
+/// refused at the match, and arms with no value leave the block with
+/// none, which the `let` refuses. The same block ending in a tail
+/// expression, and a trailing `match` in a fn body, pass.
+#[test]
+fn a_blocks_trailing_match_is_typed_as_its_value() {
+    let ds = diags(
+        r#"
+        fn tell(n: Int) { println(n); }
+        fn main() {
+            let a = { let m = 1; match m { 1 -> 2, _ -> "s" } };
+            let b = { let m = 1; match m { 1 -> tell(1), _ -> tell(2) } };
+            let c = { let m = 1; match m { 1 -> 2, _ -> 3 } };
+            let d = { let m = 1; m + 1 };
+            match c { 2 -> tell(c), _ -> tell(d) }
+        }
+    "#,
+    );
+    assert_eq!(ds.len(), 2, "{ds:?}");
+    assert!(ds[0].starts_with("match expression arms have mismatched types: `Int` vs `String`"), "{ds:?}");
+    assert!(ds[1].starts_with("let `b` needs a value, and this expression produces none"), "{ds:?}");
+}
+
+/// `f[i]` on a `bounded[T; N]` (written or through an alias) is refused
+/// at the check in value position and as an assignment target, pointing
+/// at `at(f, i)` / `set(f, i, x)` (spec/types.md § bounded[T; N]: the
+/// operations are the free intrinsics; `[i]` has no live count to check
+/// against). The build refused it with no file or line while the check
+/// passed it (downstream handoff). The element type is still what
+/// follows, so `.name` after the index is typed as written; `at`, `[i]`
+/// on an array, and a `bounded` inside an indexed array pass.
+#[test]
+fn indexing_a_bounded_is_refused_for_at_and_set() {
+    let ds = diags(
+        r#"
+        type Rec { name: String = ""; }
+        type Items = bounded[Rec; 16];
+        type Row { xs: [Int; 4] = [0; 4]; }
+        locus Store {
+            params { items: bounded[Rec; 16]; alias: Items; rows: [Row; 2] = [Row { }, Row { }]; }
+            fn read(i: Int) -> String { return self.items[i].name; }
+            fn read_alias(i: Int) -> String { return self.alias[i].name; }
+            fn write(i: Int) { self.items[i].name = "x"; }
+            fn whole(i: Int) -> Rec { let r = self.items[i]; return r; }
+            fn fine(i: Int) -> Int { let r = at(self.items, i) or Rec { }; self.rows[0].xs[i] = 1; return self.rows[1].xs[i] + len(r.name); }
+        }
+        fn main() { let s = Store { }; println(s.read(0)); }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("`[i]` does not apply")).collect();
+    assert_eq!(hits.len(), 4, "{ds:?}");
+    assert!(hits[0].contains("`bounded[Rec; 16]`") && hits[0].contains("`at(self.items, i) or …`") && hits[0].contains("`set(self.items, i, x) or …`"), "{hits:?}");
+    assert!(hits[1].contains("`at(self.alias, i) or …`"), "through the alias: {hits:?}");
+    assert!(hits[2].contains("`set(self.items, i, x) or …`"), "the assignment target: {hits:?}");
+    assert!(hits[3].contains("`at(self.items, i) or …`"), "{hits:?}");
+    assert_eq!(ds.len(), 4, "nothing else: {ds:?}");
+}
+
+/// A stage-less chain terminal on a form locus (`v.sum(0.0d)` on a
+/// `@form(vec)`) gets the hint an array gets, naming the form's
+/// iteration surface (`v.items` for a vec, `m.entries` for a hashmap;
+/// spec/forms.md § Iteration surface): until 2026-11-06 it said only
+/// "no field `sum` on `V`" (downstream handoff). A method the locus
+/// declares is not a terminal and gets no hint.
+#[test]
+fn a_stage_less_terminal_on_a_form_locus_names_its_iteration_surface() {
+    let ds = diags(
+        r#"
+        @form(vec)
+        locus V { capacity { heap items of Decimal; } }
+        type E { k: Int; d: Decimal; }
+        @form(hashmap)
+        locus M { capacity { pool entries of E indexed_by k; } }
+        locus Holder {
+            params { v: V = V { }; }
+            fn total() -> Decimal { return self.v.sum(0.0d); }
+        }
+        fn main() {
+            let v = V { };
+            let m = M { };
+            let a = v.sum(0.0d);
+            let b = m.sum(0.0d);
+            let c = v.items.map(it).sum(0.0d);
+            let h = Holder { };
+        }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("no field `sum`")).collect();
+    assert_eq!(hits.len(), 3, "{ds:?}");
+    assert!(hits[0].contains("`@form(vec)`") && hits[0].contains("`self.v.items.map(it).sum(…)`"), "{hits:?}");
+    assert!(hits[1].contains("`v.items.map(it).sum(…)`"), "{hits:?}");
+    assert!(hits[2].contains("`@form(hashmap)`") && hits[2].contains("`m.entries.map(it).sum(…)`"), "{hits:?}");
+    assert_eq!(ds.len(), 3, "nothing else: {ds:?}");
+}
+
+/// A block used as a value whose trailing `match` leaves without a value
+/// in every arm (spec/semantics.md, `match` as a block's value) is refused
+/// at the block, whatever consumes it: a `let`, a match arm, an `if`
+/// expression's arm, an `or` substitute, a call argument (Int, String,
+/// Bytes), a `return`, an assignment, a record field, a Bool condition, an
+/// operand of `&&` / `||`, a `while` condition, a match guard — the
+/// shapes whose lowering would leave live blocks open after the
+/// divergence (downstream handoff review, 2026-11-07). The judgment is
+/// transitive (an `if … else …` or a nested `match` each of whose
+/// branches leaves, an endless `while true`); a trailing `match` with a
+/// diverging arm beside a valued one is the join case and passes.
+#[test]
+fn a_block_whose_trailing_match_leaves_in_every_arm_is_refused() {
+    let div = "{ match n { 0 -> { return 1; }, _ -> { return 2; } } }";
+    let sdiv = "{ match n { 0 -> { return \"a\"; }, _ -> { return \"b\"; } } }";
+    let bdiv = "{ match n { 0 -> { return true; }, _ -> { return false; } } }";
+    let src = format!(
+        r#"
+        type Rec {{ name: String = ""; }}
+        type E {{ k: Int = 0; }}
+        fn risky(n: Int) -> Int fallible(E) {{ if n > 0 {{ fail E {{ k: n }}; }} return n; }}
+        fn twice(n: Int) -> Int {{ return n * 2; }}
+        fn shout(s: String) -> String {{ return s + "!"; }}
+        fn size(b: Bytes) -> Int {{ return len(b); }}
+        fn via_let(n: Int) -> Int {{ let x = {div}; return x; }}
+        fn via_arm(n: Int) -> Int {{ let x = match n {{ 0 -> {div}, _ -> 3 }}; return x; }}
+        fn via_if(n: Int) -> Int {{ let x = if n > 5 {{ match n {{ 6 -> {{ return 6; }}, _ -> {{ return 7; }} }} }} else {{ 9 }}; return x; }}
+        fn via_or(n: Int) -> Int {{ let x = risky(n) or {{ match err.k {{ 1 -> {{ return 21; }}, _ -> {{ return 22; }} }} }}; return x; }}
+        fn int_arg(n: Int) -> Int {{ let x = twice({div}); return x; }}
+        fn string_arg(n: Int) -> String {{ let x = shout({sdiv}); return x; }}
+        fn bytes_arg(n: Int) -> Int {{ let x = size({div}); return x; }}
+        fn via_return(n: Int) -> Int {{ return {div}; }}
+        fn via_assign(n: Int) -> String {{ let mut s = ""; s = {sdiv}; return s; }}
+        fn via_field(n: Int) -> String {{ let r = Rec {{ name: {sdiv} }}; return r.name; }}
+        fn via_cond(n: Int) -> Int {{ if {div} {{ return 0; }} return 1; }}
+        fn via_and(n: Int, flag: Bool) -> Bool {{ let x = flag && {bdiv}; return x; }}
+        fn via_or_op(n: Int, flag: Bool) -> Bool {{ let x = flag || {bdiv}; return x; }}
+        fn via_while(n: Int) -> Int {{ while {div} {{ return 5; }} return 6; }}
+        fn via_guard(n: Int) -> Int {{ let x = match n {{ 0 if {div} -> 1, _ -> 2 }}; return x; }}
+        fn nested(n: Int) -> Int {{
+            let x = {{ match n {{
+                0 -> {{ if n > 1 {{ return 1; }} else {{ return 2; }} }},
+                1 -> {{ match n {{ 1 -> {{ fail_loop(); return 3; }}, _ -> {{ return 4; }} }} }},
+                _ -> {{ while true {{ fail_loop(); }} }},
+            }} }};
+            return x;
+        }}
+        fn fail_loop() {{ }}
+        fn joined(n: Int) -> Int {{ let x = {{ match n {{ 0 -> {{ return 1; }}, _ -> 3 }} }}; return x; }}
+        fn main() {{ println(joined(1)); }}
+    "#
+    );
+    let ds = diags(&src);
+    let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("this block ends in a `match` whose every arm leaves without a value")).collect();
+    assert_eq!(hits.len(), 16, "{ds:?}");
+    assert!(hits[0].contains("give an arm a value, or end the block with `return`"), "{hits:?}");
+    assert_eq!(ds.len(), 16, "nothing else, and `joined` passes: {ds:?}");
+}
+
 /// The one-owner rule (spec/memory.md, invariant 3 of the per-method
 /// scratch reclaim): a call publishes one arena for a callee that may
 /// write through its arguments, so handing it both a record a field of

@@ -1,0 +1,17 @@
+// The library half of units_import_test.hl: a seed's units and scalar
+// types, converted into through the import.
+unit mm;
+unit m = 1000 mm;
+type Length = quantity Int in mm;
+type Metres = Length in m;
+
+unit mK;
+unit K = 1000 mK;
+type Temperature = quantity Int in mK;
+type Celsius = point Temperature { origin: 273150 mK; }
+
+unit monotonic_ns;
+type Span = quantity Int in monotonic_ns;
+type Instant = point Span;
+
+type Session = distinct Int { range: 0..64; }

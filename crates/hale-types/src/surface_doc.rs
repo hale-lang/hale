@@ -956,7 +956,10 @@ const REFUSAL: &str = "hale.Refusal";
 /// The OpenAPI 3.1 form of a surface: `POST /call/<member>` per row, the
 /// body its request, `200` its response, `422` its handler error, `500`
 /// the server error, the refusals by their statuses; the digest in
-/// `info` and as the `Hale-Surface-Digest` header a request may carry.
+/// `info` and as the `Hale-Surface-Digest` header a request may carry;
+/// one server, the relative `/`, since where an exposure listens is a
+/// deployment fact the document cannot know, and a linter refuses a
+/// document with no `servers` (`no-empty-servers`).
 pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<J, String> {
     const REFS: &str = "#/components/schemas/";
     let (digest, members) = surface_members(rows, surface)?;
@@ -1171,6 +1174,16 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
                 ("x-hale-surface", s(surface)),
                 ("x-hale-digest", s(&digest_text(digest))),
             ]),
+        ),
+        (
+            "servers",
+            J::Arr(vec![o(vec![
+                ("url", s("/")),
+                (
+                    "description",
+                    s("The exposure serving this surface: a deployment fact the document does not carry, so every path is relative to where it listens."),
+                ),
+            ])]),
         ),
         ("paths", J::Obj(paths)),
         (

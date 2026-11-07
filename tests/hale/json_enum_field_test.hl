@@ -1,0 +1,50 @@
+// tests/hale/json_enum_field_test.hl — a record's own JSON codec carries
+// an enum field (spec/semantics.md § Metadata tags): a payload-free
+// variant is its name as a JSON string, read back by name, a name no
+// variant has the field's `wrong_type`; an enum field's default fills an
+// absent key; a bounded list field is a JSON array; a record with no tag
+// of its own is parsed recursively. Downstream handoff: a record with an
+// enum field checked and then failed to build ("`or` over unknown path
+// call `Ord::from_json`").
+
+type Side = enum { Buy, Sell };
+type Venue { code: String; tier: Int; }
+type Ord {
+    side: Side `json:"side"`;
+    n: Int `json:"n"`;
+    mode: Side = Side::Sell `json:"mode"`;
+    venue: Venue `json:"venue"`;
+    tags: bounded[String; 3] `json:"tags"`;
+}
+
+fn failed(e: JsonError) -> Ord {
+    std::test::assert_eq_str(e.kind, "wrong_type", "an unknown variant name is wrong_type");
+    std::test::assert_eq_str(e.field, "side", "named for the field read");
+    return Ord { side: Side::Sell, n: -1, venue: Venue { code: "", tier: 0 } };
+}
+
+fn main() {
+    let o = Ord::from_json(
+        "{\"side\":\"Buy\",\"n\":3,\"venue\":{\"code\":\"X\",\"tier\":2},\"tags\":[\"a\",\"b\"]}",
+    )
+    or raise;
+    std::test::assert(o.side == Side::Buy, "a variant by its name");
+    std::test::assert_eq_int(o.n, 3, "beside a scalar");
+    std::test::assert(o.mode == Side::Sell, "an absent enum field takes its default");
+    std::test::assert_eq_str(o.venue.code, "X", "a nested record with no tag of its own");
+    std::test::assert_eq_int(count(o.tags), 2, "a bounded list field");
+
+    let text = Ord::to_json(o);
+    std::test::assert_eq_str(
+        text,
+        "{\"side\":\"Buy\",\"n\":3,\"mode\":\"Sell\",\"venue\":{\"code\":\"X\",\"tier\":2},\"tags\":[\"a\",\"b\"]}",
+        "written back as its name",
+    );
+    let back = Ord::from_json(text) or raise;
+    std::test::assert(back.side == Side::Buy && back.mode == Side::Sell, "round trip");
+
+    let bad = Ord::from_json(
+        "{\"side\":\"Hold\",\"n\":3,\"venue\":{\"code\":\"X\",\"tier\":2}}",
+    ) or failed(err);
+    std::test::assert_eq_int(bad.n, -1, "the failure arm ran");
+}

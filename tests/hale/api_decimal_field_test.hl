@@ -1,0 +1,53 @@
+// tests/hale/api_decimal_field_test.hl — a `Decimal<S>` crosses the api
+// codec (spec/api.md § Codecs, spec/types.md § Decimal<S>): a field, a
+// list's element and a whole value, as a JSON number read at the field's
+// scale with every digit kept, written back as its digits; a number with a
+// nonzero digit past the scale is the field's `wrong_type`, never a
+// truncation, and a string is no number. Downstream handoff: a request
+// with a `price: Decimal<2>` field was refused by law 5 ("which the JSON
+// codec does not carry").
+
+type Line { sku: String; px: Decimal<2>; }
+type Order {
+    total: Decimal<2>;
+    rate: Decimal<18> = 0.000000000000000001d;
+    lines: bounded[Line; 2];
+}
+
+fn refused(text: String, field: String, what: String) {
+    let got = Order::api_decode(text) or {
+        std::test::assert_eq_str(err.kind, "wrong_type", what + ": the kind");
+        std::test::assert_eq_str(err.field, field, what + ": the field");
+        return;
+    };
+    std::test::assert(false, what + ": decoded " + Order::api_encode(got));
+}
+
+fn main() {
+    let o = Order::api_decode(
+        "{\"total\":12.34,\"lines\":[{\"sku\":\"a\",\"px\":0.5},{\"sku\":\"b\",\"px\":-2}]}",
+    ) or raise;
+    std::test::assert(o.total == 12.34d, "a field at its scale");
+    std::test::assert(o.rate == 0.000000000000000001d, "a default at scale 18");
+    std::test::assert_eq_int(count(o.lines), 2, "a list of records with a Decimal");
+    let first = at(o.lines, 0) or raise;
+    std::test::assert(first.px == 0.5d, "an element's field");
+    std::test::assert_eq_str(
+        Order::api_encode(o),
+        "{\"total\":12.34,\"rate\":0.000000000000000001,\"lines\":[{\"sku\":\"a\",\"px\":0.5},{\"sku\":\"b\",\"px\":-2}]}",
+        "written as its digits",
+    );
+    let back = Order::api_decode(Order::api_encode(o)) or raise;
+    std::test::assert(back.total == o.total && back.rate == o.rate, "round trip");
+
+    // zeros past the scale are the same number; a nonzero digit is not
+    let z = Order::api_decode("{\"total\":12.3400}") or raise;
+    std::test::assert(z.total == 12.34d, "trailing zeros past the scale");
+    refused("{\"total\":12.345}", "total", "a third place is no Decimal<2>");
+    refused("{\"total\":\"12.34\"}", "total", "a string is no number");
+    refused(
+        "{\"total\":1,\"lines\":[{\"sku\":\"a\",\"px\":0.001}]}",
+        "px",
+        "an element past its scale, named by its own field",
+    );
+}

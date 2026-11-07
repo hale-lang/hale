@@ -1982,6 +1982,7 @@ impl Snapshot {
                 let surfaces = self.demand_surface_rows().map_err(Clone::clone)?;
                 let roles = self.demand_role_rows().map_err(Clone::clone)?;
                 diags.extend(hale_types::surfaces::surface_laws(&self.bundle(), surfaces, roles, summary));
+                diags.extend(hale_types::json_codec_laws::json_codec_laws(&self.bundle()));
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;
                 let entry = self.demand_entry().map_err(Clone::clone)?;
                 let effects = || self.demand_effects().ok();

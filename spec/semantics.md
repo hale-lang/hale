@@ -145,6 +145,27 @@ Phase 2b entry in `spec/stdlib.md`.
   yields the zero value of the result type (`0` / `0.0` /
   `false` / empty for pointer-shaped types), mirroring the
   statement form's silent-no-op fallthrough.
+- **As a block's value** (2026-11-06): a trailing `match` — the last
+  item of a block, with no `;` — stays a statement in the grammar
+  (unlike a trailing `if`, above: a side-effect `match` ends many fn
+  bodies), and is the block's value wherever the block is used as
+  one: a `let`'s block, a match arm's block in a match expression, an
+  `if` expression's arm, an `or { … }` substitute. There it is typed
+  and lowered as a match expression (every arm one type), so
+  `Kind::A -> { let m = n + 1; match m { 1 -> "one", _ -> "many" } }`
+  is an arm of a `String` match. The trailing `match` must yield a
+  value in at least one arm: a diverging arm beside a valued one is
+  the join (only the valued arms reach it), but a `match` whose
+  every arm leaves without a value (a `return`, `fail`, `break`, an
+  endless loop, transitively through nested blocks, `if`s and
+  `match`es) makes the block no value at all, and the check refuses
+  the block ("this block ends in a \`match\` whose every arm leaves
+  without a value … give an arm a value, or end the block with
+  \`return\`"). In a block used as a statement (a fn body, a loop
+  body) it stays the statement it reads as. Until
+  2026-11-06 the check passed the arm above and the build refused it
+  as a block with no trailing expression, where the same arm ending
+  in `if … else …` built (downstream handoff).
 
 **An enum-constructor pattern's values** are each a binding, `_` or a
 literal: a nested pattern there (`Op::Pair((a, b))`) is a type error at
@@ -2318,7 +2339,18 @@ acted on. Consequences, all normative:
      `0` disables), loud if exceeded — a silent peer holding a
      connection open cannot stall exit. Wire data arriving
      after the half-close arrived after exit and is outside the
-     contract.
+     contract. A `udp://` listener's reader is stopped by an
+     explicit wake, a pipe it polls beside its socket, the same
+     on Linux and macOS: it reads the datagrams the kernel has
+     queued, then ends. An empty datagram is an ordinary frame
+     to it, rejected as too short and counted as a drop, never
+     its stop (2026-11-06, downstream handoff: a zero-byte
+     datagram was the reader's stop sentinel — what a
+     `shutdown()` of the socket produced on Linux — so one ended
+     ingress for good and every later datagram went unread,
+     silently; and Darwin does not honour `shutdown()` on an
+     unconnected UDP socket, so an idle reader there never woke
+     and the exit waited out the bound, then hung on the join).
 - **Connect-side loss is structural, with reconnection as
   supervision policy (GH #233 steps 3–4).** A send failure on a
   source-declared connect binding marks the entry *lost*
@@ -2747,26 +2779,53 @@ payload picks the consumer mode:
   one `json:` tag gets a generated `Type::from_json(s) -> Type
   fallible(JsonError)` that parses the object in a single pass (driving
   the `std::json` object cursor), dispatching each key to the matching
-  field and reading the value by the field's declared scalar type
-  (`Int` / `Float` / `Bool` / `String` / `Decimal<S>`). A `Decimal<S>`
+  field and reading the value by the field's declared type. A field is
+  what the api surface's JSON codec carries of one (spec/api.md §
+  Codecs): a scalar (`Int` / `Float` / `Bool` / `String` / `Decimal<S>`),
+  a scalar of the unit dialect as its `Int`, a `Time` as its RFC 3339
+  text, a `Duration` as its nanoseconds, a `std::json::Value` as its
+  text, an enum (a payload-free variant as its name in a JSON string,
+  `"Buy"`, one with values as the api codec writes it, `{"Circle": 1.5}`;
+  a name no variant has is the field's `JsonError { kind: "wrong_type",
+  field }`), a record of the same seed (the nested object's raw text is
+  handed to that record's own generated codec, whether or not it
+  declares a `json:` tag itself; a nested failure propagates), and a
+  `bounded[T; N]` or `[T; N]` of any of those as a JSON array (more
+  elements than `N` is `too_long`, fewer than a fixed array's
+  `too_short`; an absent `bounded` field is empty). A `Decimal<S>`
   field is a JSON number read at the field's scale, every digit kept; a
   number with a nonzero digit past the scale (or not a number) is
   `JsonError { kind: "wrong_type", field }`, never truncated or read as
   zero (spec/types.md § Decimal<S>). The key is the tag value, else
   the field name; unmatched keys (and nested objects/arrays under them)
-  are skipped. A missing field raises `JsonError { kind, field }` unless
-  the field declares a literal default (`= "USD"`), which fills it.
+  are skipped. A missing field raises `JsonError { kind: "missing_field",
+  field }` unless the field declares a default, which fills it: a
+  literal (`= "USD"`, `= -1`), an enum variant (`= Side::Buy`), a record
+  literal (`= Instrument { sym: "Y", tick: 2 }`, its own fields' defaults
+  filling what it leaves out), or any expression a field default may be;
+  the codec builds it when the key is absent, exactly as the record's
+  own literal would.
   `from_json` is `fallible`, so callers must address it. The same tags
   drive emit: `Type::to_json(v) -> String` serializes a value back (bare
   numbers/bools, a Decimal's exact digits at its scale, escaped strings,
-  nested structs recursed), round-tripping
-  with `from_json`; it is not fallible. A field whose
-  type is another generated JSON struct is parsed recursively (the nested
-  object's raw text is handed to that type's parser; a nested failure
-  propagates). Array fields are **not** supported by design — Hale
-  sequences are locus-owned (there is no heap-owning value collection),
-  so a JSON array is read by walking the array cursor and pushing into a
-  `@form(vec)` locus cell, not parsed into a struct value field (see
+  an enum's variant name, nested structs and lists recursed),
+  round-tripping with `from_json`; it is not fallible. The check is the
+  gate: a tagged struct with a field the codec does not carry (`Bytes`,
+  an unbounded `[T]`, a tuple, a record of another seed), in it or in a
+  record or an enum it reaches, has no codec, and the call is refused
+  naming the field ("`Export::from_json`: `Export` has a field `raw:
+  Bytes`, which the JSON codec does not carry"), as `T::from_json` of a
+  record with no `json:` tag is ("`Plain::from_json`: `Plain` declares
+  no `json:` field tag, which is what gives a record its JSON codec; tag
+  a field, `id: Int `json:"id"`;`"), of an enum, and a call of another
+  arity; a program the check admits builds. Through an import the call
+  names the library's declaration as a construction through an import
+  does (`pricing::Observation::from_json(text)`,
+  `pricing::Observation::to_json(v)`), and the library's own
+  `Observation::to_json` is the same codec. An unbounded `[T]` is not a
+  field's: Hale sequences are locus-owned (there is no heap-owning value
+  collection), so a JSON array of unknown length is read by walking the
+  array cursor and pushing into a `@form(vec)` locus cell (see
   `notes/value-collections.md`). Further tag keys remain reserved for
   future consumers (validation, db mapping).
 
@@ -5403,7 +5462,19 @@ A `main` that only builds its tree (no `run()`, its children doing the
 work) serves for as long as they do. (2026-10-19: GH #1659 had the
 tree's drain stop every listener, which cut such a program's servers,
 one bound before the drain and one bound after alike; downstream
-handoff.) An `async_io` child parked
+handoff.) With no `run()` (an empty one is the same program), the
+tree's drain begins once the `run()` of each pinned child that does not
+read `draining` has returned, on the eager and the deferred spine
+alike: a sleep such a `run()` is in is not cut short, a sibling that
+watches the drain keeps serving until then, and what such a `run()`
+publishes in its last moments reaches a pinned sibling that still
+consumes, in any declaration order; a child that reads `draining` is
+what the drain ends, so it is not waited for. (2026-11-06, downstream
+handoff: the teardown joined the pinned children in declaration order
+right after the tree was built, so the pinned subscriber declared
+first was shut down while the pinned publisher declared after it was
+still running, and every delivery of the program was lost, silently.)
+An `async_io` child parked
 on an untimed wait (a plain `recv`, an `accept`) is abandoned at its
 pool's shutdown (`runtime.md` § the wakeable park), as before. The tree's drain ends
 with its teardown: a `main` locus built afterwards starts undrained,

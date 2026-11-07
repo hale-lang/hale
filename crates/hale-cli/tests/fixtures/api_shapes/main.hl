@@ -2,8 +2,8 @@
 // (`crates/hale-cli/tests/api_shapes.rs`): a list (`bounded[T; N]`, `[T; N]`),
 // an instant (`Time`) and a `Duration`, an optional field (a presence
 // pair), an enum (payload-free and with payloads, a field, a list's element
-// and a whole request and response) and a wire map (`indexed_by`), optional
-// too.
+// and a whole request and response), a wire map (`indexed_by`), optional
+// too, and a `Decimal<2>` (a number at its scale).
 // The listener binds port 0; the test reads back the port it was given.
 
 type Book { id: Int; title: String; }
@@ -15,6 +15,7 @@ type Note { text: String; has_text: Bool; tags: bounded[String; 2]; has_tags: Bo
 type Mood = enum { Calm, Busy };
 type Shape = enum { Empty, Circle(Float), Rect(Int, Int), Boxed(Book), Feel(Mood) };
 type Check { name: String; status: String; }
+type Priced { price: Decimal<2>; note: String = ""; }
 type Board {
     mood: Mood;
     shape: Shape;
@@ -32,6 +33,7 @@ api Shelves {
     rpc Library::note;
     rpc Library::board;
     rpc Library::flip;
+    rpc Library::price;
 }
 
 locus Tokens {
@@ -78,6 +80,8 @@ locus Library {
         out.has_extra = true;
         return out;
     }
+    // a Decimal<2> passes through at its scale, every digit kept
+    fn price(p: Priced) -> Priced { return p; }
     fn flip(m: Mood) -> Shape {
         return match m {
             Mood::Calm -> Shape::Empty,

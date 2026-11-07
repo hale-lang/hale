@@ -741,6 +741,7 @@ fn typed_body_laws(
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
     diags.extend(crate::surfaces::surface_laws(bundle, inputs.surfaces, inputs.roles, inputs.alloc_summary));
+    diags.extend(crate::json_codec_laws::json_codec_laws(bundle));
     diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces, inputs.entry, inputs.effects, &table, inputs.placement));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     diags
@@ -1567,6 +1568,9 @@ pub fn check_bundle_rules(
         placement: inputs.placement,
     };
     diags.extend(Law { rule: DROPPED_DELIVERY, eval: check_scope_local_subscriber_on_classic_pool }.diags(&rows));
+    // A subscriber built as a statement (or a local) with no `run()` to
+    // hold it, torn down before any delivery.
+    diags.extend(Law { rule: STATEMENT_SUBSCRIBER, eval: check_subscriber_torn_down_at_its_statement }.diags(&rows));
     // A publish written before the literal that builds its subscriber:
     // the cell reaches the subscribers registered when it is published
     // (spec/runtime.md § "Lifecycle obligations", line 6), so not that one.
@@ -4001,6 +4005,120 @@ fn check_scope_local_subscriber_on_classic_pool(rows: &ScopeLocalSubscriberRows<
         }
     }
 }
+/// A subscriber built as a statement, or as a local, with no `run()` to
+/// hold it: torn down at the statement's end, before any delivery.
+const STATEMENT_SUBSCRIBER: RuleId = RuleId::registered("verification/structural", "subscriber-torn-down-at-its-statement");
+
+/// A locus literal in statement position (a bare statement: a let-bound
+/// one lives for its scope and hears across a park point there, which
+/// the dropped-delivery rule judges on a classic pool), whose locus
+/// subscribes on the bus (itself, or a subscriber it keeps for its whole
+/// life: `loci_keeping_a_subscriber`) and writes neither `birth()` nor
+/// `run()`, with no `accept` of its type owning it: it is born and torn
+/// down inside the statement
+/// (spec/semantics.md § "Locus instantiation": with no accepting
+/// ancestor the child is a transient throwaway; a statement-built locus
+/// with no `run()` is torn down at once, and its subscriptions with it),
+/// so a delivery can never reach it, and with no hook of its own the
+/// build was for the hearing alone. A statement-position locus with a
+/// `run()` runs it and hears while it runs, and one with a `birth()`
+/// does its work there (spec/styleguide.md § App locus: statement
+/// literals fire and forget), so neither is reported; nor is the entry
+/// (`main locus`), whose life is the program's, nor a literal the free
+/// `fn main()` builds (the root: no enclosing locus can accept it, and
+/// nothing else is alive to publish to it). Reported at the literal,
+/// in any body (a lifecycle hook, a method, a free fn) but a bus
+/// handler's, where type-check rule 20 already refuses an unowned
+/// subscriber, and `fn main`'s, whose literal is the program's root.
+/// Until 2026-11-06 such a program was silent at the check and at run
+/// time (downstream handoff).
+fn check_subscriber_torn_down_at_its_statement(rows: &ScopeLocalSubscriberRows<'_, '_>, out: &mut Vec<Violation>) {
+    use crate::alloc_summary::{AllocKind, EntryKind, Escape};
+    use crate::ownership_graph::OwnerResolution;
+    let ScopeLocalSubscriberRows { bundle, top, summary, ownership, .. } = *rows;
+    // The loci whose author wrote a `birth()` or a `run()` (the omitted
+    // `run` is synthesized, `LifecycleDecl::synthesized`), and the entry.
+    let mut works: BTreeSet<&str> = BTreeSet::new();
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            if let TopDecl::Locus(l) = item {
+                let written = l.members.iter().any(|m| {
+                    matches!(m, LocusMember::Lifecycle(lc)
+                        if matches!(lc.kind, LifecycleKind::Run | LifecycleKind::Birth) && !lc.synthesized)
+                });
+                if written || l.is_main {
+                    works.insert(l.name.name.as_str());
+                }
+            }
+        });
+    }
+    let mut fns: Vec<&crate::alloc_summary::FnSummary> =
+        summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
+    fns.sort_by_key(|f| f.decl_index);
+    let mut kept: Option<BTreeSet<String>> = None;
+    for f in fns {
+        if f.entry == Some(EntryKind::BusHandler) {
+            continue;
+        }
+        // The free `fn main()` builds the program's root: no enclosing
+        // locus can accept it, and nothing else is alive to publish to
+        // it, so the hearing it misses is nobody's.
+        if f.key.locus.is_none() && f.key.fn_name == "main" {
+            continue;
+        }
+        for s in f.sites.iter().chain(&f.in_place_sites) {
+            let AllocKind::StructLit(lit) = &s.kind else { continue };
+            if s.escape != Escape::Local || !s.bare_stmt {
+                continue;
+            }
+            let short = lit.rsplit("::").next().unwrap_or(lit);
+            if works.contains(short) {
+                continue;
+            }
+            let subscribes = matches!(top.lookup(lit), Some(TopSymbol::Locus(li)) if !li.bus_subscribes.is_empty());
+            if !subscribes {
+                let keeping = kept.get_or_insert_with(|| loci_keeping_a_subscriber(top, summary, ownership));
+                if !keeping.contains(lit.as_str()) {
+                    continue;
+                }
+            }
+            let owned = ownership.sites.iter().any(|o| {
+                o.span == s.span
+                    && matches!(
+                        o.resolution,
+                        OwnerResolution::SelfOwned(_) | OwnerResolution::Ancestor(_) | OwnerResolution::PerPath(_)
+                    )
+            });
+            if owned {
+                continue;
+            }
+            let call = match &f.key.locus {
+                Some(l) => format!("{}.{}", l, f.key.fn_name),
+                None => f.key.fn_name.clone(),
+            };
+            let what = if subscribes {
+                "subscribes on the bus"
+            } else {
+                "holds a bus subscriber for its whole life (one its construction or its bodies build and keep)"
+            };
+            let (built, end) = ("as a statement of", "at the statement's end");
+            let holder = match &f.key.locus {
+                Some(l) => format!("in `{}`", l.rsplit("::").next().unwrap_or(l)),
+                None => "in a locus that builds it".to_string(),
+            };
+            out.push(Violation::warning(
+                STATEMENT_SUBSCRIBER,
+                s.span,
+                format!(
+                    "`{short}` {what}, and this literal builds it {built} `{call}` with no `birth()` or `run()` \
+                     of its own: it is torn down {end}, its subscription with it, so no delivery can reach it. \
+                     `accept` it {holder} (`accept(c: {short}) {{ }}`), or hold it in a field."
+                ),
+            ));
+        }
+    }
+}
+
 /// The birth-order trap.
 const BIRTH_ORDER: RuleId = RuleId::registered("verification/structural", "birth-order-trap");
 
@@ -10319,6 +10437,75 @@ fn block_always_diverges(b: &Block) -> bool {
     )
 }
 
+/// The refusal of a block used as a value whose trailing `match` leaves
+/// in every arm (`check_block_as_expr`, a match expression's block arm).
+const BLOCK_TRAILING_MATCH_LEAVES: &str = "this block ends in a `match` whose every arm leaves without a value (a `return`, \
+     `fail`, `break` or an endless loop), so the block has no value: give an arm a value, or end the \
+     block with `return` (spec/semantics.md § `match`, as a block's value)";
+
+/// Does this match arm leave without producing a value? An expression
+/// arm is a value; a block arm leaves when `block_leaves` says so.
+fn match_arm_leaves(arm: &MatchArm) -> bool {
+    match &arm.body {
+        MatchArmBody::Expr(_) => false,
+        MatchArmBody::Block(b) => block_leaves(b),
+    }
+}
+
+/// Does this block always leave without producing a value — its last
+/// statement transfers control (`return`, `fail`, `break`, `continue`,
+/// `terminate`, `violate`), or is an `if … else …` / `match` / block
+/// each of whose branches does (transitively), or a `while true` with
+/// no `break` in it? A tail is a value, so a block with one never
+/// leaves. The judgment a block used as a value is held to when it ends
+/// in a `match` (`check_block_as_expr`).
+fn block_leaves(b: &Block) -> bool {
+    if b.tail.is_some() {
+        return false;
+    }
+    match b.stmts.last() {
+        Some(Stmt::Return(..) | Stmt::Fail { .. } | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_) | Stmt::Violate { .. }) => true,
+        Some(Stmt::If(i)) => if_leaves(i),
+        Some(Stmt::Match(m)) => !m.arms.is_empty() && m.arms.iter().all(match_arm_leaves),
+        Some(Stmt::Block(inner)) => block_leaves(inner),
+        Some(Stmt::While { cond: Expr::Literal(Literal::Bool(true), _), body, .. }) => !block_has_break(body),
+        _ => false,
+    }
+}
+
+fn if_leaves(i: &IfStmt) -> bool {
+    block_leaves(&i.then_block)
+        && match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block_leaves(b),
+            Some(ElseBranch::ElseIf(n)) => if_leaves(n),
+            None => false,
+        }
+}
+
+/// A `break` anywhere in `b` (a nested loop's included: conservative,
+/// so a loop with one is never judged endless).
+fn block_has_break(b: &Block) -> bool {
+    b.stmts.iter().any(|s| match s {
+        Stmt::Break(_) => true,
+        Stmt::If(i) => if_has_break(i),
+        Stmt::Match(m) => m.arms.iter().any(|a| match &a.body {
+            MatchArmBody::Block(b) => block_has_break(b),
+            MatchArmBody::Expr(_) => false,
+        }),
+        Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::Block(body) => block_has_break(body),
+        _ => false,
+    })
+}
+
+fn if_has_break(i: &IfStmt) -> bool {
+    block_has_break(&i.then_block)
+        || match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block_has_break(b),
+            Some(ElseBranch::ElseIf(n)) => if_has_break(n),
+            None => false,
+        }
+}
+
 /// itself or can leave.
 fn block_has_flow_control(b: &Block) -> bool {
     b.stmts.iter().any(stmt_has_flow_control)
@@ -15944,14 +16131,39 @@ impl<'a> Checker<'a> {
     /// trailing expression's type. Returns `Ty::Unit` if the block
     /// has no trailing expression (caller decides whether that's an
     /// error — for if-expression arms it is).
+    /// The type of a block used as a value: its tail's, or, with no
+    /// tail, its trailing `match`'s as a match expression (every arm
+    /// one type; spec/semantics.md, `match` is dual-position), as the
+    /// build lowers it (`lower_block_as_expr`). A tail-less block ending
+    /// in anything else is `()`.
     fn check_block_as_expr(&mut self, block: &Block) -> Ty {
         self.locals.push();
-        for stmt in &block.stmts {
+        let trailing_match = match (block.tail.as_ref(), block.stmts.split_last()) {
+            (None, Some((Stmt::Match(m), _))) => Some(m),
+            _ => None,
+        };
+        let stmts = if trailing_match.is_some() { &block.stmts[..block.stmts.len() - 1] } else { &block.stmts[..] };
+        for stmt in stmts {
             self.check_stmt(stmt);
         }
-        let ty = match &block.tail {
-            Some(tail) => self.check_expr(tail),
-            None => Ty::Unit,
+        let ty = match (&block.tail, trailing_match) {
+            (Some(tail), _) => self.check_expr(tail),
+            // A trailing `match` whose every arm leaves without a value
+            // (returns, fails, breaks, loops for ever …, transitively)
+            // is not a value: nothing would reach the join, and the
+            // lowering of the value's consumer (a `&&`'s live false
+            // path, a `while` condition, a match guard) has nowhere to
+            // put what it builds after it (downstream handoff review,
+            // 2026-11-07). The admitted shape yields a value in at least
+            // one arm; a diverging arm beside a valued one is the join
+            // case. Refused at the block, the arms checked as statements.
+            (None, Some(m)) if !m.arms.is_empty() && m.arms.iter().all(match_arm_leaves) => {
+                self.check_match_core(m, false);
+                self.diags.push(Diag::ty(block.span, BLOCK_TRAILING_MATCH_LEAVES.to_string()));
+                Ty::Unknown
+            }
+            (None, Some(m)) => self.check_match_core(m, true),
+            (None, None) => Ty::Unit,
         };
         self.locals.pop();
         ty
@@ -17352,6 +17564,17 @@ impl<'a> Checker<'a> {
                 }
                 MatchArmBody::Block(b) => {
                     arm_tys.push(Ty::Unknown);
+                    // A block arm of a match expression is a block used
+                    // as a value: one ending in a `match` whose every
+                    // arm leaves is refused as `check_block_as_expr`
+                    // refuses it (the arm's value would be no value).
+                    if as_expr && b.tail.is_none() {
+                        if let Some(Stmt::Match(inner)) = b.stmts.last() {
+                            if !inner.arms.is_empty() && inner.arms.iter().all(match_arm_leaves) {
+                                self.diags.push(Diag::ty(b.span, BLOCK_TRAILING_MATCH_LEAVES.to_string()));
+                            }
+                        }
+                    }
                     self.check_block(b);
                     Ty::Unknown
                 }
@@ -17764,9 +17987,12 @@ impl<'a> Checker<'a> {
         if records {
             self.views.note_place(&lv.head, ty.clone());
         }
+        // The place as written up to the segment at hand, for a hint.
+        let mut spelled = lv.head.name.clone();
         for seg in &lv.tail {
             match seg {
                 LValueSeg::Field(f) => {
+                    spelled = format!("{spelled}.{}", f.name);
                     // GH #436 follow-up: an assignment TARGET resolves
                     // here, not through the expression field-access
                     // arm, so sealing was enforced on reads and not on
@@ -17832,8 +18058,9 @@ impl<'a> Checker<'a> {
                 }
                 LValueSeg::Index(idx) => {
                     let _ = self.check_expr(idx);
-                    ty = match ty {
+                    ty = match self.through_aliases(ty.clone()) {
                         Ty::Array(elem, _) => *elem,
+                        Ty::Bounded(elem, _) => self.refuse_bounded_index(&spelled.clone(), &ty, *elem, idx.span()),
                         _ => Ty::Unknown,
                     };
                     if records {
@@ -18989,6 +19216,54 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `t` with its `type` aliases followed (a bounded number of times).
+    fn through_aliases(&self, mut t: Ty) -> Ty {
+        for _ in 0..16 {
+            let Ty::Named(n) = &t else { break };
+            let Some(TopSymbol::Type(info)) = self.top.lookup(n) else { break };
+            let TypeKind::Alias(a) = &info.kind else { break };
+            t = a.clone();
+        }
+        t
+    }
+
+    /// `f[i]` on a `bounded[T; N]` place or value is refused at the
+    /// check: the type-level collection's operations are the free
+    /// intrinsics (spec/types.md § bounded[T; N]), and an element is
+    /// read with `at(f, i)` and written with `set(f, i, x)`, each
+    /// fallible past the live count, where `[i]` has no bound to
+    /// check against. The build refused it with no file or line
+    /// until 2026-11-06 (downstream handoff). Returns the element
+    /// type, so what follows the index is typed as written.
+    fn refuse_bounded_index(&mut self, recv: &str, bounded: &Ty, elem: Ty, span: Span) -> Ty {
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "`[i]` does not apply to a `{}`: a `bounded`'s element is read with `at({recv}, i) or …` and \
+                 written with `set({recv}, i, x) or …`, each fallible past the live count \
+                 (spec/types.md § bounded[T; N])",
+                bounded.display()
+            ),
+        ));
+        elem
+    }
+
+    /// The spelling of a receiver for a hint that rewrites a call on it
+    /// in method position: a local, `self`, or a field chain over one;
+    /// `x` for any other shape.
+    fn spell_receiver(e: &Expr) -> String {
+        match e {
+            Expr::Ident(i) => i.name.clone(),
+            Expr::KwSelf(_) => "self".to_string(),
+            Expr::Field { receiver, name, .. } => {
+                let r = Self::spell_receiver(receiver);
+                if r == "x" { r } else { format!("{r}.{}", name.name) }
+            }
+            _ => "x".to_string(),
+        }
+    }
+
+
     /// GH #892: does the program's OWN `fn NAME` answer this call,
     /// ahead of the `bounded[T; N]` intrinsic of the same name?
     ///
@@ -19638,6 +19913,56 @@ impl<'a> Checker<'a> {
         self.diags.push(d);
     }
 
+    /// GH #1076: why `min` / `max` (`name`) of a value of `l` and one of
+    /// `r`, at least one a quantity or a point, is refused: they order two
+    /// values of one quantity, or of two points of one origin, at one
+    /// denomination (spec/units.md § The algebra). `None` when they are
+    /// such a pair; else the message and a note at each declaration.
+    fn min_max_refusal(&self, name: &str, l: &Ty, r: &Ty) -> Option<(String, Vec<(Span, String)>)> {
+        use crate::unit_quantities::QKind;
+        let (lq, rq) = (self.scalars.quantity(l), self.scalars.quantity(r));
+        let (ln, rn) = (self.scalars.type_display(l), self.scalars.type_display(r));
+        let notes = self.scalars.notes(&[lq.as_ref(), rq.as_ref()]);
+        let why = match (&lq, &rq) {
+            (Some(a), Some(b)) => {
+                let one = a.component == b.component && a.kind == b.kind && (a.kind == QKind::Quantity || a.base == b.base);
+                let at_one = self.scalars.factor(&a.denom, &b.denom) == Some(crate::unit_graph::Ratio::one());
+                if one && at_one {
+                    return None;
+                }
+                let what = if a.component != b.component {
+                    "different quantities".to_string()
+                } else if a.kind != b.kind {
+                    "a quantity and a point".to_string()
+                } else if !one {
+                    "two points of different origins".to_string()
+                } else {
+                    format!("two denominations of `{}`", self.scalars.base_display(a))
+                };
+                format!(
+                    "`{name}` orders two values of one quantity, or of two points of one origin, at one denomination; \
+                     `{ln}` and `{rn}` are {what}: convert one to the other's first (`.in(u)`, `T(…)`)"
+                )
+            }
+            (Some(q), None) | (None, Some(q)) => {
+                let (q_name, other) = if lq.is_some() { (&ln, &rn) } else { (&rn, &ln) };
+                let kind = if q.kind == QKind::Quantity { "a quantity" } else { "a point" };
+                let hint = match (if lq.is_some() { r } else { l }, q.kind) {
+                    (Ty::Prim(PrimType::Int), QKind::Quantity) => {
+                        format!("; a count becomes a quantity by a unit (`n * 1{}`)", self.scalars.unit_hint(q))
+                    }
+                    _ => String::new(),
+                };
+                format!(
+                    "`{name}` orders two values of one type; `{q_name}` is {kind} and `{other}` is not one of its \
+                     values{hint}"
+                )
+            }
+            (None, None) => return None,
+        };
+        Some((why, notes))
+    }
+
     /// GH #1076 (U3): a value of `got` (the expression `value`) into a
     /// place of `want`, either of them a quantity or a point. Two types of
     /// one component and kind (two points of one origin) convert by the
@@ -19737,13 +20062,16 @@ impl<'a> Checker<'a> {
             row.policy = policy.map(|policy| Discharge::Round { policy, from_type: true });
         }
         let site = self.site(SiteKind::value(value.span()));
-        if let Expr::Literal(Literal::Quantity { value: written, unit }, span) = value {
+        if let Some((written, unit, negated)) = written_quantity_literal(value) {
             // A literal's conversion is computed here, from its count of
             // its own type: a whole number of the target is exact,
-            // whatever the factor.
+            // whatever the factor. A negated literal is the literal of
+            // the negated count (downstream handoff: `-3b` was converted
+            // at run time, and refused where `3b` was exact).
             // A literal refused where it is written (a count no `Int`
             // holds) has no count to convert, and no second error.
-            let Ok((_, n)) = self.scalars.quantity_literal(*written, unit) else { return };
+            let Ok((_, n)) = self.scalars.quantity_literal(written, unit) else { return };
+            let n = if negated { -n } else { n };
             if narrows && crate::unit_quantities::convert_count(n, &scale, None).is_some() {
                 row.kind = ConversionKind::Widening;
                 row.policy = None;
@@ -19751,8 +20079,12 @@ impl<'a> Checker<'a> {
             match crate::unit_quantities::convert_count(n, &scale, policy) {
                 Some(Ok(count)) => row.count = Some(count),
                 Some(Err(())) => self.unit_error(Diag::ty(
-                    *span,
-                    format!("`{written}{unit}` as a count of `{}` overflows an `Int`", row.target),
+                    value.span(),
+                    format!(
+                        "`{}{written}{unit}` as a count of `{}` overflows an `Int`",
+                        if negated { "-" } else { "" },
+                        row.target
+                    ),
                 )),
                 None => {}
             }
@@ -19825,11 +20157,13 @@ impl<'a> Checker<'a> {
                 return Ty::Unknown;
             }
             Ok(scale) => {
-                // A literal's cast is the literal flowing into `T`, at
-                // compile time, when its count is a whole number of `T` or
-                // `T` rounds it: the cast itself then changes nothing.
-                if let Expr::Literal(Literal::Quantity { value: n, unit }, _) = arg {
-                    let Ok((_, n)) = self.scalars.quantity_literal(*n, unit) else { return to };
+                // A literal's cast (a negated literal's too) is the literal
+                // flowing into `T`, at compile time, when its count is a
+                // whole number of `T` or `T` rounds it: the cast itself
+                // then changes nothing.
+                if let Some((n, unit, negated)) = written_quantity_literal(arg) {
+                    let Ok((_, n)) = self.scalars.quantity_literal(n, unit) else { return to };
+                    let n = if negated { -n } else { n };
                     if crate::unit_quantities::convert_count(n, &scale, q.policy).is_some() {
                         self.record_scale(arg, &from, &to, scale, q.policy);
                         let one = crate::typed_bodies::Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 };
@@ -20723,6 +21057,16 @@ impl<'a> Checker<'a> {
             .any(|(ns, f)| *ns == head && *f == name)
         {
             return None;
+        }
+        // A hub's path the expansion did not build (spec/api.md § Streams):
+        // it is a main locus's param, so one written elsewhere, or one the
+        // hub laws refuse, is said to be that rather than an unknown head.
+        if matches!((head, name), ("ws" | "udp", "Hub")) {
+            return Some(format!(
+                "`{head}::Hub` is the standard library's hub (`std::api::{head}::Hub`): a param of the main \
+                 locus, built by a `{head}::Hub {{ bind: \"…\", principals: …, roles: …, as: \"…\" }}` literal in \
+                 its `params`, where the compiler builds it (spec/api.md § Streams)"
+            ));
         }
         // The names this build's imports registered under this head.
         // A row for the name being written means the path resolves
@@ -22154,6 +22498,23 @@ impl<'a> Checker<'a> {
                         return t;
                     }
                 }
+                // `lib::T(x)`, `T` an imported seed's quantity, point,
+                // identity or range: the same conversion, through the
+                // import's rename (downstream handoff: the call typed as
+                // an unresolved path, and the build refused it in
+                // expression position; its `or` had no narrowing to
+                // discharge, so `or half_even` was an unknown name).
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if qn.segments.len() >= 2 {
+                        let key: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                        if let Some(mangled) = self.known.import_target(&key.join("::")).map(str::to_string) {
+                            let imported = Ident::new(mangled, qn.span);
+                            if let Some(t) = self.scalar_cast(*call_id, *call_span, &imported, args) {
+                                return t;
+                            }
+                        }
+                    }
+                }
                 // GH #1076 (U3): `x.in(u)` and `x.split(u)` of a quantity or
                 // a point.
                 if let (Expr::Field { receiver, name, .. }, [arg]) = (callee.as_ref(), args.as_slice()) {
@@ -22432,28 +22793,80 @@ impl<'a> Checker<'a> {
                                 self.check_fmt_builtin(args, callee);
                                 return Ty::Prim(PrimType::String);
                             }
-                            "abs" | "min" | "max" => {
+                            // `Int(x)` and `Float(x)` take an `Int` or a `Float`
+                            // (spec/types.md § Explicit numeric conversions); a
+                            // `Decimal<S>` is neither, and it has no `Int`: its
+                            // scale changes by `.rescale(T)`, and its `Float` is
+                            // `std::decimal::to_float(d)`. The build refused the
+                            // cast after the check had passed it (downstream
+                            // handoff). A scalar's `Int(x)` was answered above.
+                            "Int" | "Float" => {
                                 for a in args {
                                     let at = self.check_expr(a);
-                                    let numeric = matches!(
-                                        &at,
-                                        Ty::Prim(
-                                            PrimType::Int
-                                                | PrimType::Float
-                                                | PrimType::Duration
-                                                | PrimType::Decimal(_)
-                                        ) | Ty::Unknown
-                                    );
-                                    if !numeric {
+                                    if let Ty::Prim(PrimType::Decimal(_)) = at {
+                                        let out = if id.name == "Int" {
+                                            "an `Int` of a Decimal is not a cast: `d.rescale(0) or trunc` is \
+                                             its whole part (a `Decimal<0>`), and `Int(std::decimal::to_float(d))` \
+                                             its nearest `Int` through `Float`"
+                                        } else {
+                                            "its `Float` is `std::decimal::to_float(d)`"
+                                        };
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
-                                                "`{}` takes numeric operands (Int / Float / \
-                                                 Duration / Decimal), got `{}`",
+                                                "`{}(…)` takes an `Int` or a `Float`, and `{}` is neither: a Decimal \
+                                                 changes scale by `.rescale(T)`; {}",
                                                 id.name,
-                                                at.display()
+                                                at.display(),
+                                                out
                                             ),
                                         ));
+                                    }
+                                }
+                            }
+                            "abs" | "min" | "max" => {
+                                let tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
+                                // GH #1076: `min` and `max` order two values
+                                // of one quantity, or of two points of one
+                                // origin, at one denomination, as a
+                                // comparison does (spec/units.md § The
+                                // algebra), and are that type; anything
+                                // else is refused naming both (downstream
+                                // handoff: two `Millis` were refused as not
+                                // numeric).
+                                let ordered = id.name != "abs" && tys.iter().any(|t| self.scalars.quantity(t).is_some());
+                                if ordered {
+                                    if let [l, r] = tys.as_slice() {
+                                        if let Some((why, notes)) = self.min_max_refusal(&id.name, l, r) {
+                                            let mut d = Diag::ty(expr.span(), why);
+                                            for (at, label) in notes {
+                                                d = d.with_related(at, label);
+                                            }
+                                            self.unit_error(d);
+                                        }
+                                    }
+                                } else {
+                                    for (a, at) in args.iter().zip(&tys) {
+                                        let numeric = matches!(
+                                            at,
+                                            Ty::Prim(
+                                                PrimType::Int
+                                                    | PrimType::Float
+                                                    | PrimType::Duration
+                                                    | PrimType::Decimal(_)
+                                            ) | Ty::Unknown
+                                        );
+                                        if !numeric {
+                                            self.diags.push(Diag::ty(
+                                                a.span(),
+                                                format!(
+                                                    "`{}` takes numeric operands (Int / Float / \
+                                                     Duration / Decimal), got `{}`",
+                                                    id.name,
+                                                    at.display()
+                                                ),
+                                            ));
+                                        }
                                     }
                                 }
                             }
@@ -23430,10 +23843,41 @@ impl<'a> Checker<'a> {
                                     ),
                                 ));
                             }
+                            // `len` of a form locus: its length is the
+                            // synthesized `len()` method (spec/forms.md),
+                            // and `len(x)`'s row admits no locus
+                            // (spec/types.md § Value builtins). The
+                            // build refused it with no file or line
+                            // until 2026-11-06 (downstream handoff).
+                            if let Ty::Named(n) = &t {
+                                if let Some(form) = self.locus_decls.get(n.as_str()).and_then(|d| d.form.as_ref()) {
+                                    let recv = Self::spell_receiver(&args[0]);
+                                    self.diags.push(Diag::ty(
+                                        expr.span(),
+                                        format!(
+                                            "`len` does not apply to a `{}`: a `@form({})`'s length is `{}.len()` (spec/forms.md § Synthesized methods)",
+                                            t.display(),
+                                            form.name.name,
+                                            recv
+                                        ),
+                                    ));
+                                }
+                            }
                         }
-                        crate::builtin_sigs::bare_builtin_sig(&id.name)
-                            .and_then(|sig| sig.result(&arg_tys, |t| self.ty_is_printable(t)))
-                            .unwrap_or(Ty::Unknown)
+                        // GH #1076: `min` / `max` of two values of one
+                        // quantity or point type at one denomination is
+                        // that type (the refusal was said where the
+                        // operands were walked).
+                        let ordered_scalar = matches!(id.name.as_str(), "min" | "max")
+                            && matches!(arg_tys.as_slice(), [l, r]
+                                if self.scalars.quantity(l).is_some() && self.min_max_refusal(&id.name, l, r).is_none());
+                        if ordered_scalar {
+                            arg_tys[0].clone()
+                        } else {
+                            crate::builtin_sigs::bare_builtin_sig(&id.name)
+                                .and_then(|sig| sig.result(&arg_tys, |t| self.ty_is_printable(t)))
+                                .unwrap_or(Ty::Unknown)
+                        }
                     }
                     (_, t) => t,
                 };
@@ -23784,6 +24228,33 @@ impl<'a> Checker<'a> {
                                     name.name
                                 );
                             }
+                            // The same terminal on a form locus
+                            // (`v.sum(0.0d)` on a `@form(vec)`): the
+                            // chain anchors on the form's iteration
+                            // surface (spec/forms.md § Iteration
+                            // surface), so the hint names it. Until
+                            // 2026-11-06 only an array or a `bounded`
+                            // got the hint (downstream handoff).
+                            if hint.is_empty() && hale_syntax::chains::is_terminal(&name.name) {
+                                if let Ty::Named(tn) = &rt {
+                                    if let Some(form) = self.locus_decls.get(tn.as_str()).and_then(|d| d.form.as_ref()) {
+                                        let surface = match form.name.name.as_str() {
+                                            "hashmap" => "entries",
+                                            _ => "items",
+                                        };
+                                        hint = format!(
+                                            " — an element chain needs a stage before \
+                                             its terminal, and a `@form({})` is chained \
+                                             through its iteration surface: write \
+                                             `{}.{surface}.map(it).{}(…)` (`map(it)` \
+                                             passes each element through)",
+                                            form.name.name,
+                                            Self::spell_receiver(receiver),
+                                            name.name
+                                        );
+                                    }
+                                }
+                            }
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(
@@ -23798,11 +24269,15 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Expr::Index { receiver, index, .. } => {
+            Expr::Index { receiver, index, span } => {
                 let rt = self.check_expr(receiver);
                 let _ = self.check_expr(index);
-                match rt {
+                match self.through_aliases(rt.clone()) {
                     Ty::Array(elem, _) => *elem,
+                    Ty::Bounded(elem, _) => {
+                        let recv = Self::spell_receiver(receiver);
+                        self.refuse_bounded_index(&recv, &rt, *elem, *span)
+                    }
                     _ => Ty::Unknown,
                 }
             }
@@ -26565,5 +27040,19 @@ mod store_origin_tests {
         assert!(std_result_may_hold(&["std", "no", "such_fn"], Some("Registry"), &d));
         assert!(std_result_may_hold(&gauge, None, &d), "an argument of unknown type");
         assert!(!std_result_may_hold(&["std", "str", "upper"], Some("W"), &d), "a primitive result");
+    }
+}
+
+/// GH #1076: a quantity literal as written, `3b` or `-3b`: its magnitude,
+/// its unit and whether it is negated. A negated literal is the literal
+/// of the negated count wherever it flows (spec/units.md § Literals).
+fn written_quantity_literal(e: &Expr) -> Option<(i64, &str, bool)> {
+    match e {
+        Expr::Literal(Literal::Quantity { value, unit }, _) => Some((*value, unit.as_str(), false)),
+        Expr::Unary { op: UnaryOp::Neg, operand, .. } => match operand.as_ref() {
+            Expr::Literal(Literal::Quantity { value, unit }, _) => Some((*value, unit.as_str(), true)),
+            _ => None,
+        },
+        _ => None,
     }
 }

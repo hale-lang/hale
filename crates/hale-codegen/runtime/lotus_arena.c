@@ -141,6 +141,16 @@ void lotus_diag_errno(int level, const char *logger, const char *msg, const char
 void lotus_diag_field(char *buf, size_t cap, const char *key, const char *value);
 void lotus_diag_field_int(char *buf, size_t cap, const char *key, int64_t value);
 
+/* The level a failed send to a peer is reported at: the peer hanging up
+ * (EPIPE, ECONNRESET: a client that closed before it read the answer)
+ * is an expected condition and not a fault of the program, so it is a
+ * DEBUG record, written only when HALE_LOG names debug (downstream
+ * handoff: every early close of a client was an ERROR line on stderr,
+ * outside the program's std::log sinks); any other errno stays ERROR. */
+static inline int lotus_diag_peer_level(int err) {
+    return (err == EPIPE || err == ECONNRESET) ? 4 : 3;
+}
+
 /* async_io pool backend availability. The per-pool readiness poller +
  * wake channel + ucontext coroutines exist on glibc Linux (epoll +
  * eventfd), behind the wasm POSIX shim (which stubs the epoll calls),
@@ -13245,6 +13255,7 @@ struct lotus_domain {
     int                  alive;         /* the thread still consumes */
     int                  pending;       /* posted deliveries not yet claimed */
     int                  refs;          /* posters still naming it */
+    int                  run_done;      /* a locus's thread: its run() returned for good */
 };
 
 static lotus_domain_t *g_domains = NULL;
@@ -13749,6 +13760,58 @@ void lotus_pinned_join(int64_t tid) {
     free(d);
 }
 
+/* A pinned locus's run() has returned for good (or never ran, the
+ * locus quarantined): its thread records it on its domain, so the
+ * thread that built it can wait for the run alone, before it shuts the
+ * mailbox down and joins (`lotus_pinned_run_await`). Called by the
+ * compiled thread_main once past the run section; the mailbox loop,
+ * if any, follows. */
+void lotus_pinned_run_done(void) {
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_t *d = t_domain;
+    if (d) {
+        d->run_done = 1;
+        pthread_cond_broadcast(&g_held_delivered);
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
+/* The instantiating thread: wait until the pinned thread `tid`'s run()
+ * has returned (`lotus_pinned_run_done`), or the thread has ended,
+ * without shutting its mailbox down, so a sibling the run still
+ * publishes to keeps consuming: a main locus's teardown waits for every
+ * pinned child's run() before the first of its mailbox shutdowns
+ * (spec/semantics.md § "When `main`'s `run()` ends first"; downstream
+ * handoff: the first pinned subscriber was shut down while the second
+ * pinned child's run() was still publishing to it, and every delivery
+ * was lost). The wait services the failures posted here and, in 1 ms
+ * slices, drains the program-wide queue and this thread's own mailbox,
+ * as the readiness wait of a start does
+ * (`lotus_pinned_start_await_ready`): a handler on this thread the run
+ * publishes to is answered meanwhile. A thread this process never
+ * started (no domain) is nothing to wait for. */
+void lotus_pinned_run_await(int64_t tid, lotus_bus_queue_t *queue) {
+    pthread_t t = (pthread_t)(uintptr_t)tid;
+    lotus_mailbox_t *own = g_current_pinned_mailbox;
+    pthread_mutex_lock(&g_params_open_lock);
+    lotus_domain_t *d = g_domains;
+    while (d && !(d->kind == LOTUS_DOMAIN_THREAD && pthread_equal(d->thread, t)))
+        d = d->next;
+    while (d && !d->run_done && d->alive) {
+        lotus_domain_t *here = t_domain;
+        if (here && here->pending > 0 && !t_failure_servicing) {
+            lotus_failure_await_service_locked();
+            continue;
+        }
+        lotus_held_wait_slice_locked();
+        pthread_mutex_unlock(&g_params_open_lock);
+        lotus_bus_queue_drain(queue);
+        lotus_mailbox_drain_pending(own);
+        pthread_mutex_lock(&g_params_open_lock);
+    }
+    pthread_mutex_unlock(&g_params_open_lock);
+}
+
 #else /* __wasm__ */
 static void lotus_domain_pool_begin(lotus_coop_pool_t *p) { (void)p; }
 static void lotus_domain_pool_started(lotus_coop_pool_t *p) { (void)p; }
@@ -13784,6 +13847,12 @@ int64_t lotus_failure_post(void *parent, void *fn, void *child,
 void lotus_pinned_join(int64_t tid) {
     (void)tid;
     fprintf(stderr, "lotus: a pinned locus cannot be joined on wasm32 (no threads)\n");
+    abort();
+}
+void lotus_pinned_run_done(void) {}
+void lotus_pinned_run_await(int64_t tid, lotus_bus_queue_t *queue) {
+    (void)tid; (void)queue;
+    fprintf(stderr, "lotus: a pinned locus cannot be waited for on wasm32 (no threads)\n");
     abort();
 }
 #endif /* __wasm__ */
@@ -21764,7 +21833,7 @@ int lotus_transport_send(lotus_transport_t *t,
         hdr[1] = (t->send_seq & 0xFFFFFFFFFFFFULL) | ((o & 0xFFFFULL) << 48);
         if (lotus__transport_write_full(t->conn_fd, hdr, sizeof(hdr)) != 0
             || lotus__transport_write_full(t->conn_fd, buf, len) != 0) {
-            lotus_diag_errno(3, "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
+            lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
             return -1;
         }
         return 0;
@@ -21774,7 +21843,7 @@ int lotus_transport_send(lotus_transport_t *t,
         n = send(t->conn_fd, buf, len, 0);
     } while (n < 0 && errno == EINTR);   /* GH #468: a signal is not a send failure */
     if (n < 0) {
-        lotus_diag_errno(3, "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
+        lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
         return -1;
     }
     return 0;
@@ -22105,11 +22174,11 @@ int lotus_tcp_send(lotus_tcp_t *t, const void *buf, size_t len) {
     unsigned char header[8];
     lotus__u64_to_le((uint64_t)len, header);
     if (lotus__tcp_write_full(t->conn_fd, header, sizeof(header)) < 0) {
-        lotus_diag_errno(3, "lotus.tcp", "header failed", "lotus_tcp_send: header", errno, NULL);
+        lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.tcp", "header failed", "lotus_tcp_send: header", errno, NULL);
         return -1;
     }
     if (len > 0 && lotus__tcp_write_full(t->conn_fd, buf, len) < 0) {
-        lotus_diag_errno(3, "lotus.tcp", "payload failed", "lotus_tcp_send: payload", errno, NULL);
+        lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.tcp", "payload failed", "lotus_tcp_send: payload", errno, NULL);
         return -1;
     }
     return 0;
@@ -22654,9 +22723,26 @@ static char *lotus_diag_render(int format, int level, const char *logger, const 
     return b.p;
 }
 
+/* Whether the runtime's DEBUG and TRACE records are written: only when
+ * HALE_LOG names `debug` or `trace` (case-insensitive; read once). An
+ * unset or other value leaves them unwritten — they are the runtime's
+ * own debugging, asked for, where std::log's threshold filters nothing
+ * when unset. INFO, WARN and ERROR records are written regardless. */
+static int lotus_diag_debug_enabled(void) {
+    static _Atomic int on = -1;
+    int v = atomic_load_explicit(&on, memory_order_relaxed);
+    if (v >= 0) return v;
+    const char *e = getenv("HALE_LOG");
+    v = (e && (strcasecmp(e, "debug") == 0 || strcasecmp(e, "trace") == 0)) ? 1 : 0;
+    atomic_store_explicit(&on, v, memory_order_relaxed);
+    return v;
+}
+
 /* Write one runtime record to stderr. `fields` is logfmt text, built
- * with `lotus_diag_field` or empty. */
+ * with `lotus_diag_field` or empty. A DEBUG or TRACE record is written
+ * only under HALE_LOG=debug (`lotus_diag_debug_enabled`). */
 void lotus_diag(int level, const char *logger, const char *msg, const char *fields) {
+    if ((level == 4 || level == 5) && !lotus_diag_debug_enabled()) return;
     char *line = lotus_diag_render(lotus_diag_format(), level, logger, msg, fields, (int64_t)time(NULL));
     if (!line) return;
     size_t n = strlen(line);
@@ -25084,8 +25170,9 @@ int lotus_tcp_send_str(int fd, const char *msg) {
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (lotus_io_wait_writable(fd, lotus_send_stall_deadline(fd, &stall)) == 0) continue;
         }
-        lotus_io_status_set(errno ? errno : EIO);
-        lotus_diag_errno(3, "lotus.tcp", "write failed", "lotus_tcp_send_str: write", errno, NULL);
+        int err = errno ? errno : EIO;
+        lotus_io_status_set(err);
+        lotus_diag_errno(lotus_diag_peer_level(err), "lotus.tcp", "write failed", "lotus_tcp_send_str: write", err, NULL);
         return -1;
     }
     return 0;
@@ -25191,8 +25278,9 @@ static int lotus_tcp_send_bytes_impl(int fd, const void *bytes_ptr, int64_t unti
                 return -1;
             }
         }
-        lotus_io_status_set(errno ? errno : EIO);
-        lotus_diag_errno(3, "lotus.tcp", "write failed", "lotus_tcp_send_bytes: write", errno, NULL);
+        int err = errno ? errno : EIO;
+        lotus_io_status_set(err);
+        lotus_diag_errno(lotus_diag_peer_level(err), "lotus.tcp", "write failed", "lotus_tcp_send_bytes: write", err, NULL);
         return -1;
     }
     return 0;
@@ -26741,6 +26829,7 @@ typedef struct lotus_bus_remote_entry {
     int                udp_fd;
     struct sockaddr_in udp_dest;
     int                udp_is_multicast;
+    int                udp_stop[2];     /* LISTEN: the reader's stop pipe (read, write) */
     /* F.36 Slice 3 (2026-05-28): pluggable codec hooks. Set by
      * `lotus_bus_register_codec` when the binding entry carried
      * a `codec(L { ... })` clause. The encode hook converts a
@@ -26904,6 +26993,8 @@ static lotus_bus_remote_entry_t *lotus_bus_remote_entry_push(
     e->subject = subject_copy;
     e->kind    = kind;
     e->udp_fd  = -1;
+    e->udp_stop[0] = -1;
+    e->udp_stop[1] = -1;
     pthread_mutex_init(&e->pend_lock, NULL);
     g_bus_remote_entries[g_bus_remote_count++] = e;
     return e;
@@ -27951,13 +28042,62 @@ static int lotus_bus_udp_listener_setup(lotus_bus_remote_entry_t *e,
         }
         e->udp_is_multicast = 1;
     }
+    /* The reader's stop (`lotus_bus_udp_reader_stop`): a pipe it polls
+     * beside the socket, so the quiesce and the teardown wake it on
+     * every platform. Darwin does not honour shutdown() on an
+     * unconnected UDP socket, so an idle reader there never woke
+     * ("ingress quiesce: reader(s) still draining after 500 ms", then
+     * the join hung); and the n == 0 that shutdown produced on Linux
+     * was the reader's stop sentinel, which a genuine empty datagram
+     * also is (downstream handoff). */
+    int stop[2];
+    if (pipe(stop) != 0) {
+        lotus_diag_errno(3, "lotus.bus", "stop pipe failed", "lotus_bus udp listener: pipe", errno, NULL);
+        int save = errno;
+        close(fd);
+        errno = save;
+        return -1;
+    }
+#ifdef FD_CLOEXEC
+    (void)fcntl(stop[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(stop[1], F_SETFD, FD_CLOEXEC);
+#endif
+    e->udp_stop[0] = stop[0];
+    e->udp_stop[1] = stop[1];
     e->udp_fd   = fd;
     e->udp_dest = dest;
     return 0;
 }
 
-/* UDP LISTEN reader thread: just the recvfrom + deserialize +
- * local_dispatch loop over the pre-bound fd on the entry. */
+/* Wake the entry's UDP reader out of its poll and have it stop once the
+ * datagrams already queued are read: one byte on its stop pipe.
+ * Idempotent; a reader that has ended ignores it. */
+static void lotus_bus_udp_reader_stop(lotus_bus_remote_entry_t *e) {
+    if (e->udp_stop[1] < 0) return;
+    for (;;) {
+        ssize_t w = write(e->udp_stop[1], "s", 1);
+        if (w < 0 && errno == EINTR) continue;
+        break;
+    }
+}
+
+/* Close the entry's stop pipe, once its reader is joined. */
+static void lotus_bus_udp_stop_close(lotus_bus_remote_entry_t *e) {
+    for (int i = 0; i < 2; i++) {
+        if (e->udp_stop[i] >= 0) {
+            close(e->udp_stop[i]);
+            e->udp_stop[i] = -1;
+        }
+    }
+}
+
+#ifndef MSG_DONTWAIT
+#define MSG_DONTWAIT 0   /* the wasm shim: no reader thread ever runs there */
+#endif
+
+/* UDP LISTEN reader thread: the poll + recvfrom + deserialize +
+ * local_dispatch loop over the pre-bound fd on the entry, until its
+ * stop pipe is written. */
 typedef struct lotus_bus_udp_reader_args {
     lotus_bus_remote_entry_t *entry;
 } lotus_bus_udp_reader_args_t;
@@ -27969,14 +28109,49 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
      * after the join, never before, so the snapshot is stable
      * for this thread's lifetime. */
     int fd = args->entry->udp_fd;
+    int stop_fd = args->entry->udp_stop[0];
 
     char wire_buf[LOTUS_PAYLOAD_MAX];
     char struct_buf[LOTUS_PAYLOAD_MAX];
+    /* The loop waits in poll on the socket and the stop pipe, the same
+     * on Linux and macOS, and reads the socket only when poll reported
+     * it (never blocking in recvfrom, which a readable report that a
+     * checksum failure then voids could otherwise do). Once the stop
+     * is seen, what the kernel has queued is read to EAGAIN, bounded,
+     * through the intact registry, as the quiesce's drain-to-EOF
+     * promises (GH #468), then the thread ends. */
+    int stopping = 0;
+    long after_stop = 0;
     while (1) {
-        ssize_t n = recvfrom(fd, wire_buf, sizeof(wire_buf), 0, NULL, NULL);
+        if (!stopping) {
+            struct pollfd pfd[2];
+            pfd[0].fd = fd;
+            pfd[0].events = POLLIN;
+            pfd[0].revents = 0;
+            pfd[1].fd = stop_fd;
+            pfd[1].events = POLLIN;
+            pfd[1].revents = 0;
+            nfds_t nfds = stop_fd >= 0 ? 2 : 1;
+            int pr = poll(pfd, nfds, -1);
+            if (pr < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            if (nfds == 2 && (pfd[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+                stopping = 1;
+            }
+            if (!(pfd[0].revents & (POLLIN | POLLHUP | POLLERR)) && !stopping) continue;
+        } else if (after_stop++ >= 4096) {
+            break;  /* a flood after the stop: enough */
+        }
+        ssize_t n = recvfrom(fd, wire_buf, sizeof(wire_buf), MSG_DONTWAIT, NULL, NULL);
         if (n < 0) {
             if (errno == EINTR) continue;
-            break;  /* EBADF / ENOTCONN / shutdown-induced */
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (stopping) break;  /* the queue is drained: stop */
+                continue;
+            }
+            break;  /* EBADF and the like: the socket is gone */
         }
         /* iris handoff-3 P11: peel a leading observation seq
          * header if present. Self-describing: magic + the implied
@@ -27998,17 +28173,13 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
                 n -= 16;
             }
         }
-        if (n == 0) {
-            /* Two cases:
-             *   - Legitimate zero-length datagram. Not meaningful
-             *     for the bus router; the wire frame can never be
-             *     empty (it's the serialized form of the user's
-             *     type, which has at least the header bytes).
-             *   - Socket has been shut down by destroy_all
-             *     (shutdown(SHUT_RDWR)).
-             * Either way, exit the loop. */
-            break;
-        }
+        /* n == 0 is an empty datagram, an ordinary frame: it takes the
+         * decoder path below, which rejects it as a short frame (no
+         * serialized form is empty), and the loop goes on. It used to
+         * be the reader's stop sentinel (what shutdown(SHUT_RDWR)
+         * produced on Linux), so one empty datagram ended ingress for
+         * good and every later datagram went unread, silently
+         * (downstream handoff). The stop is the pipe above. */
         lotus_deserialize_fn deserialize =
             lotus_bus_find_deserializer(args->entry->subject);
         if (!deserialize) {
@@ -28538,6 +28709,7 @@ fail_close_udp:
         close(e->udp_fd);
         e->udp_fd = -1;
     }
+    lotus_bus_udp_stop_close(e);
 fail_pop_entry:
     g_bus_remote_count--;
     free(e->subject);
@@ -33902,7 +34074,12 @@ void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
         lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
         if (!e->has_reader_thread) continue;
         if (e->kind == LOTUS_BUS_REMOTE_KIND_UDP) {
-            if (e->udp_fd >= 0) shutdown(e->udp_fd, SHUT_RDWR);
+            /* The reader's explicit stop (its poll's second fd): it
+             * reads what is queued, then ends. shutdown() on the socket
+             * is not it: Darwin ignores one on an unconnected UDP
+             * socket, and the n == 0 it produced on Linux is what an
+             * empty datagram also is. */
+            lotus_bus_udp_reader_stop(e);
             have_ingress = 1;
         } else if (e->kind == LOTUS_BUS_REMOTE_KIND_UNIX) {
             /* Safe to dereference: the reader thread never
@@ -34019,21 +34196,18 @@ void lotus_bus_remote_destroy_all(void) {
             continue;
         }
 
-        /* 2026-05-26 — UDP entries. Two-step shutdown:
-         *   1. shutdown(SHUT_RDWR) unblocks a recvfrom-blocked
-         *      reader thread (close alone doesn't on Linux —
-         *      the file's refcount is still held by the blocked
-         *      thread, so the recvfrom doesn't see EBADF until
-         *      the next call).
-         *   2. pthread_join after the reader's recvfrom returns
-         *      n == 0 (its exit signal).
-         *   3. close releases the fd.
+        /* UDP entries. Three steps:
+         *   1. the stop pipe wakes a reader parked in poll, on Linux
+         *      and macOS alike (close alone does not: the blocked
+         *      thread holds the file's refcount, and Darwin ignores a
+         *      shutdown() on an unconnected UDP socket);
+         *   2. pthread_join once the reader has read what was queued
+         *      and seen the stop;
+         *   3. close releases the socket and the pipe.
          * IP_DROP_MEMBERSHIP is unnecessary pre-close (kernel
          * drops on close). */
         if (e->kind == LOTUS_BUS_REMOTE_KIND_UDP) {
-            if (e->udp_fd >= 0) {
-                shutdown(e->udp_fd, SHUT_RDWR);
-            }
+            lotus_bus_udp_reader_stop(e);
             if (e->has_reader_thread) {
                 pthread_join(e->reader_thread, NULL);
             }
@@ -34041,6 +34215,7 @@ void lotus_bus_remote_destroy_all(void) {
                 close(e->udp_fd);
                 e->udp_fd = -1;
             }
+            lotus_bus_udp_stop_close(e);
             lotus_bus_early_reset(e);
             if (e->subject) free(e->subject);
             free(e);

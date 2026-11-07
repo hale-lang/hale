@@ -66,7 +66,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// total answer: the call is no conversion, whatever its callee is
     /// named (a local, a parameter or a fn the checker resolved the name
     /// to, or `Int(x)`, the numeric builtin), and is lowered as the call
-    /// it is; a division is the `Int`'s. Inside a default every row is
+    /// it is; a division is the `Int`'s. An imported seed's `lib::T(x)`
+    /// is a cast by the same row. Inside a default every row is
     /// the evaluation path's being lowered (`default_evaluation`): the
     /// default's name means what that scope says, a cast in one and a
     /// local's call in another, and its literals and values convert into
@@ -75,7 +76,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match e {
             Expr::Call { callee, id, args, .. } => {
                 let operand = match callee.as_ref() {
-                    Expr::Ident(_) => match args.as_slice() {
+                    Expr::Ident(_) | Expr::Path(_) => match args.as_slice() {
                         [arg] => Some(arg),
                         _ => None,
                     },
@@ -87,6 +88,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => return None,
                 };
                 let row = self.row(SiteKind::Cast(id.0))?;
+                // A `Decimal<S>` row keyed at a path call is the scale its
+                // result takes (`std::str::parse_decimal`, a generated
+                // codec's), read by `decimal_scale_at_call`, not a cast:
+                // the call is lowered as the call it is.
+                if matches!(callee.as_ref(), Expr::Path(_))
+                    && matches!(row.to, hale_types::ty::Ty::Prim(hale_syntax::ast::PrimType::Decimal(_)))
+                {
+                    return None;
+                }
                 Some((row.clone(), operand))
             }
             Expr::Binary { op: BinOp::Div, left, span, .. } if self.typed.has_quantity_rows() => {
@@ -164,6 +174,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None => return Err(missing()),
         };
         Ok((self.context.i64_type().const_int(count as u64, true).into(), ty))
+    }
+
+    /// GH #1076: the constant a negated quantity literal (`-3b`) is where
+    /// it flows: the checker converted the negated count at compile time
+    /// and recorded it on the negation's row, so the negation emits that
+    /// count and no arithmetic (downstream handoff: lowered as the
+    /// literal's own count negated, the exact conversion the check
+    /// proved, `-3b` into a type counted in thirds of `b`, was lost).
+    /// `None` where the negation has no such row: it is the negation of
+    /// the literal's value then.
+    pub(crate) fn negated_literal_count(&self, span: Span) -> Option<(i64, CodegenTy)> {
+        if !self.typed.has_quantity_rows() {
+            return None;
+        }
+        let row = self.row(SiteKind::value(span))?;
+        Some((row.count?, quantity_repr(&row.to)))
     }
 
     /// GH #1076 (U4): what an arithmetic operator over a quantity or a
@@ -622,8 +648,9 @@ pub(crate) fn quantity_repr(t: &hale_types::ty::Ty) -> CodegenTy {
 }
 
 /// Whether a value lowered as `ty` is one a conversion of the unit
-/// dialect converts: an `Int`, or a `Duration` or `Time` (U4).
-fn is_quantity_repr(ty: &CodegenTy) -> bool {
+/// dialect converts: an `Int`, or a `Duration` or `Time` (U4). Two such
+/// values the checker compared are compared as the counts they are.
+pub(crate) fn is_quantity_repr(ty: &CodegenTy) -> bool {
     matches!(ty, CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time)
 }
 

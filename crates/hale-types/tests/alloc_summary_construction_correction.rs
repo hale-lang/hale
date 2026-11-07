@@ -726,8 +726,12 @@ fn own_entries_run_to_exit_programs() {
     // record the same way; 12: `tests/hale/api_encode_linear_test.hl`, whose
     // codec decodes its page of records the same way; 13:
     // `tests/hale/crypto_sha256_stream_test.hl`, whose `main` builds its
-    // assertion messages and failure fallbacks in its loops.
-    assert_eq!(moved, 13, "the run-to-exit programs among the targets that lose a site");
+    // assertion messages and failure fallbacks in its loops; 14:
+    // `tests/hale/api_decimal_field_test.hl`, whose codec of a Decimal row
+    // decodes the same way; 15: `tests/hale/json_defaults_test.hl` and 16:
+    // `tests/hale/json_enum_field_test.hl`, whose JSON codecs decode (and
+    // the enum's writes) the same way.
+    assert_eq!(moved, 16, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -766,6 +770,17 @@ fn own_entries_run_to_exit_programs() {
             // append whose operands are typed by the field and the
             // `recv` result, not a literal.
             "tests/hale/api_context_test.hl: Api::ask StringConcat @6460..6476 InvokedUnboundedly",
+            // `tests/hale/api_decimal_field_test.hl`: its codec of a Decimal row,
+            // decoding the same way
+            "tests/hale/api_decimal_field_test.hl: __api_decode_Line StructLit(\"JsonError\") @1610615927..1610615973 InvokedUnboundedly",
+            "tests/hale/api_decimal_field_test.hl: __api_decode_Line StructLit(\"JsonError\") @1610616431..1610616476 InvokedUnboundedly",
+            "tests/hale/api_decimal_field_test.hl: __api_decode_Line StructLit(\"JsonError\") @1610616564..1610616609 InUnboundedLoop",
+            "tests/hale/api_decimal_field_test.hl: __api_decode_Line StructLit(\"JsonError\") @1610616750..1610616799 InvokedUnboundedly",
+            "tests/hale/api_decimal_field_test.hl: __api_decode_Line StructLit(\"JsonError\") @1610616828..1610616876 InvokedUnboundedly",
+            "tests/hale/api_decimal_field_test.hl: __api_decode_Line StructLit(\"Line\") @1610616891..1610616924 InvokedUnboundedly",
+            "tests/hale/api_decimal_field_test.hl: __api_decode_Order StructLit(\"JsonError\") @1610620779..1610620827 InUnboundedLoop",
+            "tests/hale/api_decimal_field_test.hl: __api_decode_Order StructLit(\"JsonError\") @1610621276..1610621323 InUnboundedLoop",
+            "tests/hale/api_decimal_field_test.hl: __api_decode_Order StructLit(\"JsonError\") @1610622612..1610622658 InUnboundedLoop",
             // `tests/hale/api_encode_linear_test.hl`: its page's decoder, the
             // refusals and the record built per element read
             "tests/hale/api_encode_linear_test.hl: __api_decode_Item StructLit(\"JsonError\") @1610615950..1610615995 InvokedUnboundedly",
@@ -853,6 +868,15 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6858..6897 InUnboundedLoop",
             // a record per element of the array the shelf's decoder reads
             "tests/hale/enum_return_copy_loops_test.hl: book StructLit(\"Book\") @972..1095 InvokedUnboundedly",
+            // `tests/hale/json_defaults_test.hl`: its JSON codec of a record with
+            // defaults, decoding the same way
+            "tests/hale/json_defaults_test.hl: __json_parse_Order StructLit(\"JsonError\") @1610617279..1610617327 InUnboundedLoop",
+            "tests/hale/json_defaults_test.hl: __json_parse_Order StructLit(\"JsonError\") @1610618793..1610618838 InUnboundedLoop",
+            // `tests/hale/json_enum_field_test.hl`: its JSON codec of a record with
+            // an enum field, decoding and writing the same way
+            "tests/hale/json_enum_field_test.hl: __json_parse_Ord StructLit(\"JsonError\") @1610617789..1610617834 InUnboundedLoop",
+            "tests/hale/json_enum_field_test.hl: __json_to_json_Ord StringConcat @1610619462..1610619506 InUnboundedLoop",
+            "tests/hale/json_enum_field_test.hl: __json_to_json_Ord StringConcat @1610619462..1610619499 InUnboundedLoop",
             // the property test's copy of the per-byte escaper as it was:
             // its `\u00XX` digits were a concatenation per control byte
             "tests/hale/json_escape_runs_test.hl: old_hex_byte StringConcat @7937..7972 InvokedUnboundedly",

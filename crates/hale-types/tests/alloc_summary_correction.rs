@@ -247,7 +247,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 27] = [
+const CALL_LINES_ONLY: [(&str, usize); 28] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -264,6 +264,7 @@ const CALL_LINES_ONLY: [(&str, usize); 27] = [
     // the codec of an imported type, called through the alias: the
     // library's calls are named through the renames
     ("tests/hale/api_codec_import_test.hl", 2),
+    ("tests/hale/json_codec_import_test.hl", 1),
     ("tests/hale/api_bearer_roles_test.hl", 2),
     ("tests/hale/api_binding_test.hl", 2),
     ("tests/hale/api_context_test.hl", 2),

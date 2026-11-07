@@ -709,9 +709,12 @@ annotations are not in v1.
   Rust String invariant would UTF-8-encode them as two bytes
   and surprise the caller. No `\u{NNNN}` Unicode escape at
   v1; agents needing non-ASCII drop to byte literals.
-- Multi-line text that is itself a program, a query or a document
-  is a **block string** (below). There is no `r"..."` raw form: the
-  block string is the one raw string.
+- A plain literal may span lines: a line break inside the quotes is
+  part of the value, as written, with no indentation stripped and
+  the escapes still read (the DNA's own sources do this for short
+  fixtures). Multi-line text that is itself a program, a query or a
+  document is a **block string** (below). There is no `r"..."` raw
+  form: the block string is the one raw string.
 - F-strings (v1.x-10): `f"hello {name}"` — interpolates Hale
   expressions inside `{...}`, each rendered via the same
   formatter `println` uses. `{{` and `}}` are literal braces.

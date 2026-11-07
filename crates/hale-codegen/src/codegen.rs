@@ -1768,6 +1768,7 @@ fn build_resolved_lowered(
         placement: &resolved.placement,
         owner_site: None,
         in_fresh_temp_hook: false,
+        dead_continuation: false,
         current_fn_skip_exit_drain: false,
         bus_inert,
         xpool_check: !is_wasm && !options.no_xpool_backstop,
@@ -4714,6 +4715,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// GH #402: re-entry guard for the fresh-temp hook, cleared
     /// immediately on entry so nested calls still get their own.
     pub(crate) in_fresh_temp_hook: bool,
+    /// A value lowering ended control flow (every arm of a match or an
+    /// `if` in value position diverged, a block's statements returned)
+    /// and moved the builder to a `dead.*` block, so what its consumer
+    /// emits after it (a `let`'s store, an argument's call) lands in a
+    /// block nothing reaches instead of after a terminator. The next
+    /// statement boundary seals that block (`seal_dead`) and reports
+    /// the statement terminated.
+    pub(crate) dead_continuation: bool,
     pub(crate) current_fn_skip_exit_drain: bool,
     /// Static drain elision (2026-08-03): true when the merged
     /// program can never enqueue a bus cell (no topics, no bus
@@ -7030,6 +7039,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 });
                 if let Some((owner_slot, owner_name, _)) = main_owner {
                     if !self.hoisted_heads.contains(&owner_slot) {
+                        // An owner with no run() waits, before its
+                        // head's tree drain, for the run() of each of
+                        // its own pinned entries that does not read
+                        // `draining`, as the eager spine does
+                        // (`emit_pinned_run_awaits`).
+                        let owner_has_no_run = self
+                            .user_loci
+                            .get(&owner_name)
+                            .map_or(true, |i| !i.methods.contains_key("run") || i.empty_lifecycle.contains("run"));
+                        if owner_has_no_run {
+                            let own: Vec<(PointerValue<'ctx>, String, PointerValue<'ctx>)> = order
+                                .iter()
+                                .filter_map(|(s, name, tid)| tid.map(|tid| (*s, name.clone(), tid)))
+                                .filter(|(s, _, _)| self.pinned_owner.iter().any(|(p, o)| p == s && *o == owner_slot))
+                                .collect();
+                            self.emit_pinned_run_awaits(&own, true)?;
+                        }
                         self.emit_hoisted_head(owner_slot, &owner_name)?;
                         self.hoisted_heads.push(owner_slot);
                     }
@@ -12593,6 +12619,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // lower_block_as_expr instead.
         if let Some(tail) = &block.tail {
             let _ = self.lower_expr(tail, scope)?;
+            if self.seal_dead()? {
+                return Ok(BlockEnd::Terminated);
+            }
         }
         Ok(BlockEnd::Open)
     }
@@ -12627,6 +12656,56 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// A value lowering ended control flow: continue in a fresh block
+    /// nothing reaches, so the consumer's emissions stay well-formed,
+    /// and note it for the statement boundary (downstream handoff
+    /// review, 2026-11-06: a `let` of such a block stored after an
+    /// `unreachable`, "Terminator found in the middle of a basic block").
+    /// The value a diverged lowering hands its consumer: an `Int`'s
+    /// `i64 undef`, so a consumer that takes an `Int` (a call's
+    /// parameter, an operand) builds a well-typed instruction in the
+    /// dead block; a consumer that wants another type refuses it, and
+    /// the statement boundary takes that refusal as the end of the
+    /// statement (`lower_stmt`).
+    fn dead_placeholder(&self) -> BasicValueEnum<'ctx> {
+        self.context.i64_type().get_undef().into()
+    }
+
+    fn continue_dead(&mut self, what: &str) -> Result<(), CodegenError> {
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .ok_or_else(|| CodegenError::Unsupported("a value lowering with no function".into()))?;
+        let bb = self.context.append_basic_block(func, &format!("dead.{what}"));
+        self.builder.position_at_end(bb);
+        self.dead_continuation = true;
+        Ok(())
+    }
+
+    /// The statement boundary after a value lowering ended control flow:
+    /// when the builder still sits in the dead block that lowering
+    /// opened, close it (`unreachable`) and say so, so the enclosing
+    /// walk stops; when control flow joined a live block since (an
+    /// `or`'s phi), clear the note and go on.
+    pub(crate) fn seal_dead(&mut self) -> Result<bool, CodegenError> {
+        if !self.dead_continuation {
+            return Ok(false);
+        }
+        self.dead_continuation = false;
+        let Some(bb) = self.builder.get_insert_block() else { return Ok(false) };
+        let dead = bb.get_name().to_str().is_ok_and(|n| n.starts_with("dead."));
+        if !dead {
+            return Ok(false);
+        }
+        if bb.get_terminator().is_none() {
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(true)
+    }
+
     /// Lower a block in expression-context: lower its statements for
     /// side effects, then lower the trailing expression and return its
     /// value. Errors if the block has no trailing expression. Returns
@@ -12658,7 +12737,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // on the tail's own node, so a `return { warm(make(1));
         // make(2) };` cannot hand the caller's ownership to
         // `make(1)` the way the one-shot flag did.
-        for (i, stmt) in block.stmts.iter().enumerate() {
+        // The trailing `match` a tail-less block yields (below) is
+        // lowered as the block's value, not as a statement.
+        let stmts = match (block.tail.as_ref(), block.stmts.split_last()) {
+            (None, Some((Stmt::Match(_), head))) => head,
+            _ => block.stmts.as_slice(),
+        };
+        for (i, stmt) in stmts.iter().enumerate() {
             match self.lower_stmt(stmt, scope)? {
                 BlockEnd::Open => self.note_fresh_locus_local(block, i, scope),
                 BlockEnd::Terminated => {
@@ -12666,25 +12751,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // the tail. Synthesize a placeholder value so the
                     // caller can build the phi shape; it will not be
                     // selected at runtime because the branch is closed.
-                    let i32_ty = self.context.i32_type();
-                    let undef = i32_ty.get_undef();
                     return Ok((
-                        undef.into(),
+                        self.dead_placeholder(),
                         CodegenTy::Int,
                         BlockEnd::Terminated,
                     ));
                 }
             }
         }
+        let terminated = |cx: &mut Self, v: BasicValueEnum<'ctx>, ty: CodegenTy| -> Result<(BasicValueEnum<'ctx>, CodegenTy, BlockEnd), CodegenError> {
+            // The tail's own lowering ended control flow: the block
+            // did, and its value is the placeholder.
+            let end = if cx.seal_dead()? { BlockEnd::Terminated } else { BlockEnd::Open };
+            Ok((v, ty, end))
+        };
         match &block.tail {
             Some(tail) => {
                 let (v, ty) = self.lower_expr(tail, scope)?;
-                Ok((v, ty, BlockEnd::Open))
+                terminated(self, v, ty)
             }
-            None => Err(CodegenError::Unsupported(
-                "block used as expression has no trailing expression"
-                    .to_string(),
-            )),
+            // A trailing `match` (the block's last statement, no tail)
+            // is the block's value in a block used as one
+            // (spec/semantics.md, `match` is dual-position): its arms'
+            // values merge as a match expression's do. The parser keeps
+            // a trailing `match` a statement (a side-effect `match` at a
+            // fn body's end is the common shape), so the value position
+            // decides, and the check types the block the same way
+            // (`check_block_as_expr`). Until 2026-11-06 a match arm's
+            // block ending in a `match` checked and the build refused it
+            // as a block with no trailing expression, where the same
+            // block ending in `if … else …` built (downstream handoff).
+            None => match block.stmts.last() {
+                Some(Stmt::Match(m)) => {
+                    let (v, ty, end) = self.lower_match_value(m, scope)?;
+                    if end == BlockEnd::Terminated {
+                        // The match opened a dead block for a value
+                        // consumer; this caller reads the end instead,
+                        // so close that block here.
+                        self.seal_dead()?;
+                        return Ok((v, ty, end));
+                    }
+                    terminated(self, v, ty)
+                }
+                _ => Err(CodegenError::Unsupported(
+                    "block used as expression has no trailing expression"
+                        .to_string(),
+                )),
+            },
         }
     }
 
@@ -13171,7 +13284,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// The declaration used for a locus's emitted methods, retaining
     /// source identities while substituting its type arguments.
-    fn locus_declaration(&self, name: &str) -> Option<&LocusDecl> {
+    pub(crate) fn locus_declaration(&self, name: &str) -> Option<&LocusDecl> {
         self.specialized_locus_decls
             .get(name)
             .or_else(|| self.locus_decls_by_name.get(name).copied())
@@ -17201,6 +17314,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         let r = self.lower_stmt_traced(stmt, scope);
+        // A value lowering inside the statement ended control flow
+        // (`continue_dead`): the statement is terminated. A consumer
+        // that refused the placeholder's type on the way (a String
+        // parameter, a Bool condition, a String return, store or field)
+        // refused unreachable code: whatever it emitted before refusing
+        // is in a block nothing reaches, closed here, and the statement
+        // is terminated all the same (downstream handoff review,
+        // 2026-11-07).
+        if self.dead_continuation && r.is_err() {
+            self.dead_continuation = false;
+            if let Some(bb) = self.builder.get_insert_block() {
+                if bb.get_terminator().is_none() {
+                    self.builder
+                        .build_unreachable()
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            return Ok(BlockEnd::Terminated);
+        }
+        if matches!(r, Ok(BlockEnd::Open)) && self.seal_dead()? {
+            return Ok(BlockEnd::Terminated);
+        }
         // A place's value assigned into a part of a local (`h.f = <place>`,
         // `xs[i] = <place>`) makes the part another name's again: its
         // copy-on-write flag is cleared after the store
@@ -20204,10 +20339,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// v1.x-11: lower `Int(x)` — explicit Float → Int narrowing.
     /// Float arg lowers via `fptosi` (round-toward-zero); Int arg
-    /// is the identity. Decimal narrowing currently uses the same
-    /// fptosi after reading the cell, so Decimal → Int also works.
-    /// Other types are rejected so silent narrowing doesn't sneak
-    /// in through inference.
+    /// is the identity. Other types are rejected so silent narrowing
+    /// doesn't sneak in through inference; a `Decimal<S>` argument is
+    /// the check's refusal (it has no `Int`: `d.rescale(0)` is its
+    /// whole part at scale 0, `std::decimal::to_float(d)` its `Float`).
     fn lower_int_cast_builtin(
         &mut self,
         args: &[Expr],
@@ -20336,14 +20471,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return self.lower_abs(av, &at);
         }
         let (bv, bt) = self.lower_expr(&args[1], scope)?;
-        if at != bt {
+        // GH #1076: two values of one quantity or point type at one
+        // denomination order as their counts (spec/units.md § The
+        // algebra): a program's quantity is the `Int` it counts, and a
+        // `Duration` beside a refinement of it is one count under two
+        // representations (downstream handoff: `min` of two `Millis`
+        // was refused by the check as not numeric).
+        let one_count = crate::conversion::is_quantity_repr(&at) && crate::conversion::is_quantity_repr(&bt);
+        if at != bt && !one_count {
             return Err(CodegenError::Unsupported(format!(
                 "`{}`: operand types must match; got {:?} and {:?}",
                 name, at, bt
             )));
         }
         match at {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Decimal(_) => {
                 let pred = match name {
                     "min" => inkwell::IntPredicate::SLT,
                     "max" => inkwell::IntPredicate::SGT,
@@ -22103,7 +22245,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (arm_v, arm_ty, arm_end) = match &arm.body {
                     MatchArmBody::Expr(e) => {
                         let (v, ty) = self.lower_expr(e, scope)?;
-                        (v, ty, BlockEnd::Open)
+                        let end = if self.seal_dead()? { BlockEnd::Terminated } else { BlockEnd::Open };
+                        (v, ty, end)
                     }
                     MatchArmBody::Block(b) => {
                         let mut arm_scope = Scope {
@@ -22135,7 +22278,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             self.lower_stmt(&s, scope)?
                         } else {
                             let _ = self.lower_expr(e, scope)?;
-                            BlockEnd::Open
+                            if self.seal_dead()? { BlockEnd::Terminated } else { BlockEnd::Open }
                         }
                     }
                     MatchArmBody::Block(b) => self.lower_block(b, scope)?,
@@ -22237,6 +22380,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         m: &MatchStmt,
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        match self.lower_match_value(m, scope)? {
+            (v, ty, BlockEnd::Open) => Ok((v, ty)),
+            (_, _, BlockEnd::Terminated) => Err(CodegenError::Unsupported(
+                "match expression needs at least one arm whose body \
+                 produces a value (every arm body terminated)"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// A `match` whose arms' values merge into one: the match
+    /// expression, and the trailing `match` of a block used as a
+    /// value (`lower_block_as_expr`). `Terminated` when every arm
+    /// ended control flow, with a placeholder the caller never
+    /// selects.
+    fn lower_match_value(
+        &mut self,
+        m: &MatchStmt,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy, BlockEnd), CodegenError> {
         let mut cap = MatchExprCapture {
             arm_values: Vec::new(),
             fallthrough_bb: None,
@@ -22247,11 +22410,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let _ = self.lower_match_core(m, &mut inner, Some(&mut cap))?;
         // The core leaves the builder positioned at `match.after`.
         if cap.arm_values.is_empty() {
-            return Err(CodegenError::Unsupported(
-                "match expression needs at least one arm whose body \
-                 produces a value (every arm body terminated)"
-                    .to_string(),
-            ));
+            // Every arm ended control flow, so `match.after` is reached
+            // only by the no-arm-matched edge, which exhaustiveness
+            // (F.18) rules out for a checked program: close the block
+            // as the statement form does (panic, then unreachable),
+            // or the fn is left with a block that has no terminator
+            // (downstream handoff review, 2026-11-06).
+            let panic_fn = self
+                .module
+                .get_function("lotus_root_panic")
+                .expect("lotus_root_panic declared");
+            let ptr_t = self.context.ptr_type(inkwell::AddressSpace::default());
+            let i64_t = self.context.i64_type();
+            let msg = self.global_string(
+                "MatchFellThrough (no arm of a match whose every arm \
+                 diverges matched its scrutinee)",
+            );
+            self.builder
+                .build_call(
+                    panic_fn,
+                    &[ptr_t.const_null().into(), i64_t.const_zero().into(), msg.into()],
+                    "matchx.fallthrough.panic",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // A consumer that takes the value (`lower_expr`'s match arm)
+            // emits after this: into a dead block, not after the
+            // terminator. A consumer that reads the end clears the note.
+            self.continue_dead("match")?;
+            return Ok((self.dead_placeholder(), CodegenTy::Int, BlockEnd::Terminated));
         }
         let result_ty = cap.arm_values[0].1.clone();
         for (_, ty, _) in &cap.arm_values {
@@ -22275,7 +22464,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let zero = Self::zero_basic_value(llvm_ty);
             phi.add_incoming(&[(&zero, fbb)]);
         }
-        Ok((phi.as_basic_value(), result_ty))
+        Ok((phi.as_basic_value(), result_ty, BlockEnd::Open))
     }
 
     /// A defined all-zeroes value of the given LLVM type (null for
@@ -25563,6 +25752,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let (q, _) = self.lower_binop(*op, lv, rv, &CodegenTy::Duration)?;
                     return Ok((q, CodegenTy::Int));
                 }
+                // GH #1076: a comparison the checker typed between two
+                // representations of the unit dialect (a `Duration` and a
+                // refinement of it at the same denomination, which is the
+                // `Int` it counts; a `Time` and a refinement of it) is the
+                // signed comparison of their counts: a side that changed
+                // denomination was converted where it stands, and a
+                // comparison records no operator row (downstream handoff:
+                // `a == b` with `b: Duration in ns` was refused here as
+                // operands of mixed types).
+                if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
+                    && lt != rt
+                    && crate::conversion::is_quantity_repr(&lt)
+                    && crate::conversion::is_quantity_repr(&rt)
+                {
+                    return self.lower_binop(*op, lv, rv, &CodegenTy::Int);
+                }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
                         "binary op operands of mixed types {:?} and {:?}",
@@ -25572,6 +25777,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_binop(*op, lv, rv, &lt)
             }
             Expr::Unary { op, operand, span } => {
+                // GH #1076: a negated quantity literal where it flows is the
+                // constant its row says (`conversion::negated_literal_count`).
+                if *op == UnaryOp::Neg {
+                    if let Expr::Literal(Literal::Quantity { .. }, _) = operand.as_ref() {
+                        if let Some((count, ty)) = self.negated_literal_count(*span) {
+                            return Ok((self.context.i64_type().const_int(count as u64, true).into(), ty));
+                        }
+                    }
+                }
                 let (v, t) = self.lower_expr(operand, scope)?;
                 // GH #1076 (U4): the checker's refusal, where it is.
                 if *op == UnaryOp::Neg && t == CodegenTy::Time {
@@ -25588,7 +25802,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // an `or` it is total, a widening, or rounded by its
                 // target's `round:`; any other narrowing is lowered under
                 // its `or`.
-                Expr::Ident(_) | Expr::Field { .. } if self.conversion_operand(e).is_some() => {
+                Expr::Ident(_) | Expr::Field { .. } | Expr::Path(_) if self.conversion_operand(e).is_some() => {
                     let (row, operand) = self.conversion_operand(e).expect("guard checked");
                     let Some(arg) = operand else {
                         return Err(CodegenError::UnsupportedAt(
@@ -26170,7 +26384,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let mut inner = Scope {
                     locals: scope.locals.clone(),
                 };
-                let (v, ty, _end) = self.lower_block_as_expr(block, &mut inner)?;
+                let (v, ty, end) = self.lower_block_as_expr(block, &mut inner)?;
+                if end == BlockEnd::Terminated {
+                    // The block ended control flow: what the consumer
+                    // emits next goes to a dead block, and the next
+                    // statement boundary reports it terminated.
+                    self.continue_dead("block")?;
+                }
                 Ok((v, ty))
             }
             Expr::Or { inner, disposition, .. } => {
@@ -26568,11 +26788,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the merge block as unreachable.
         if then_end == BlockEnd::Terminated && else_end == BlockEnd::Terminated {
             self.builder.position_at_end(merge_bb);
-            let undef = self.context.i32_type().get_undef();
             self.builder
                 .build_unreachable()
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            return Ok((undef.into(), then_ty));
+            self.continue_dead("if")?;
+            return Ok((self.dead_placeholder(), then_ty));
         }
 
         self.builder.position_at_end(merge_bb);

@@ -2738,6 +2738,16 @@ its `KNOWN_OPEN` table, which is empty today.
   complete: a pinned or pool-placed child's `while !self.draining`
   loop no longer holds the process once `main`'s `run()` has returned.
   A `run()` that does not watch it keeps running, as under a signal.
+  A main locus with no `run()` (an empty one is the same program)
+  raises it, on the eager and the deferred spine alike, only once the
+  `run()` of each of its own pinned children that does not read
+  `draining` has returned (`lotus_pinned_run_await`, before the
+  `TreeDrain` row; a wait, not an obligation of the plan, which the
+  pinned thread's domain answers as its run section ends,
+  `lotus_pinned_run_done`), so the joins that follow find those runs
+  done and a run's last publishes reach a pinned sibling that still
+  consumes (`spec/semantics.md` § "When `main`'s `run()` ends first";
+  2026-11-06, downstream handoff).
   Unlike a signal's drain it stops no listener: a server keeps
   accepting until a signal (`spec/semantics.md` § Drain cascade).
   The tree drain is the flag's second bit, so a signal's drain is
@@ -4535,6 +4545,19 @@ time (RFC 3339 UTC), a level, a logger naming the runtime's part
 time=2026-10-19T07:31:08Z level=error logger=lotus.tcp msg="accept failed" op="lotus_tcp_accept_one: accept" errno=9 error="Bad file descriptor"
 ```
 
+The level is the condition's: a failed call the program did not cause
+and could not avoid is not an error. A send to a peer that has hung
+up — `EPIPE` or `ECONNRESET` from a write on a TCP connection or a bus
+transport, a client that closed before it read the answer — is a
+`debug` record (2026-11-06, downstream handoff: it was an `error` line
+on stderr for every early close, outside the program's `std::log`
+sinks and under no level filter); any other errno on the same write
+is an `error`. The runtime writes its `debug` and `trace` records only
+when `HALE_LOG` names `debug` or `trace`; unset or any other value
+leaves them unwritten, where `std::log`'s own threshold filters
+nothing when unset, because these are the runtime's debugging, asked
+for. `info`, `warn` and `error` records are written regardless of
+`HALE_LOG`.
 A failed system call carries `op` (the call and step it used to print
 as `fn: step`), `errno` and `error` (its `strerror`); a TLS failure
 carries OpenSSL's error queue as one `ssl_error` field, where it was
@@ -4675,7 +4698,7 @@ its behavior as described in this document.
 | `LOTUS_UNIX_STREAM=1` | off (`SOCK_SEQPACKET` on Linux) | GH #231: forces the unix bus transport into framed `SOCK_STREAM` mode on Linux (the Darwin default — macOS has no AF_UNIX `SOCK_SEQPACKET`). Wire format per message: `[u64 LE payload len][u64 LE seq][payload]`; the seq is per-connection monotonic from 1, reset per accepted peer, and the receiver counts gaps (`seq_gaps` counter — GH #236's loss-computability primitive). Set for EVERY process on a socket: framed and SEQPACKET ends don't interoperate (a mismatch trips the 8 MB length sanity cap with a diagnostic naming the likely cause). Primary use: Linux CI/test coverage of the macOS code path. |
 | `LOTUS_BUS_COUNTERS_DUMP=1` | off | GH #236 (observability groundwork): prints one stderr line per remote binding at teardown — `[bus counters] subject=... kind=... role=... sent= delivered= bytes_sent= bytes_delivered= send_failures= dropped_lost= waits= rearms= reconnects=`. The counters are plain relaxed atomics bumped at the transport choke points (fanout send, serve-loop dispatch, re-arm, reconnect) and exist as the substrate for the iris observer; the dump is the operator/test surface until an in-process consumer ships. `dropped_lost` counts publishes made while a connect binding was in the lost/reconnecting window (GH #233 — drops the publish contract makes deliberate and visible). `waits` counts publishes that parked in `or wait` through that window instead (GH #255 phase 1). `buffered_early` / `dropped_early` (GH #468) count boot-window wire messages buffered before any matching subscriber registration existed, and the subset dropped (buffer eviction at the 64-msg/1 MiB per-binding cap, a deserialize failure at flush, or a subject that never gained a subscriber by teardown). Socket-buffer occupancy is intentionally not a counter: it's a poll-time `SIOCOUTQ` query against the live fd. |
 | `LOTUS_BUS_LOG_DROP=1` | off | Broad superset for diagnosing "publish appears to succeed but handler doesn't fire" symptoms. Implies `LOTUS_BUS_LOG_UNMATCHED` + `LOTUS_BUS_LOG_DESERIALIZE_DROP` AND covers additional silent-drop sites the narrower vars miss: `lotus_bus_dispatch`'s serialize-fn-returns-<=0 case, the local-fanout (`lotus_bus_dispatch_wire` + `lotus_bus_local_dispatch`) zero-matching-subscribers case, per-entry deserialize-returns-<=0 on the local-fanout path, and the no-post-target case (mailbox / coop_pool / global queue all NULL on a matched entry). Each line names the call site, subject, and relevant size / index info so a bus-heavy repro can identify exactly which silent-skip is firing. Reach for this first when investigating bus-drop friction; the narrower vars stay supported for their specific bring-up scenarios. |
-| `LOTUS_BUS_QUIESCE_MS` | 500 | GH #468: bound on the main-exit ingress quiesce (default `500`, `0` disables it). At every main-exit point, before pools join and loci dissolve, LISTEN binding fds half-close and their readers drain kernel-accepted data to true EOF through the still-intact registry; this bounds how long exit waits for a wedged reader. Exceeding the bound is loud (stderr names it) and drops whatever stayed undrained. Test-only siblings `LOTUS_BUS_TEST_BOOT_HOLD_MS` / `LOTUS_BUS_TEST_READER_STALL_MS` deterministically stretch the boot-registration window / the reader's descheduled window (the loss canaries in `binding_ingest_468.rs` use them); never set them in production. |
+| `LOTUS_BUS_QUIESCE_MS` | 500 | GH #468: bound on the main-exit ingress quiesce (default `500`, `0` disables it). At every main-exit point, before pools join and loci dissolve, LISTEN binding fds half-close (a `udp://` reader is woken through the stop pipe it polls beside its socket, on Linux and macOS alike, and reads what the kernel has queued before it ends) and their readers drain kernel-accepted data to true EOF through the still-intact registry; this bounds how long exit waits for a wedged reader. Exceeding the bound is loud (stderr names it) and drops whatever stayed undrained. Test-only siblings `LOTUS_BUS_TEST_BOOT_HOLD_MS` / `LOTUS_BUS_TEST_READER_STALL_MS` deterministically stretch the boot-registration window / the reader's descheduled window (the loss canaries in `binding_ingest_468.rs` use them); never set them in production. |
 | `LOTUS_ARENA_CHUNK_BYTES_OVERRIDE=<N>` | 64 KiB | Overrides the arena chunk size (F.32-3): a power of two in [4 KiB, 16 MiB], anything else ignored; read once. Smaller chunks keep each locus's hot chunk in cache across pool rotations in a multi-locus-per-pool deployment. Overridden chunks bypass the per-thread chunk pool. |
 | `LOTUS_NO_CHUNK_POOL=<x>` | off (on under an ASan build) | Any non-empty value not starting with `0` turns the per-thread chunk pool off, so a destroyed arena's chunks are freed instead of recycled with their bytes intact and a use-after-free reads memory a sanitizer can see (GH #816). |
 | `LOTUS_HUGE_PAGES=1` | off | F.32-4a: chunks of at least 2 MiB are mapped with `MAP_HUGETLB \| MAP_HUGE_2MB` instead of malloc'd. A value starting with `1`, `t` or `T` turns it on. |
@@ -4713,7 +4736,7 @@ its behavior as described in this document.
 | `OTEL_SERVICE_NAME=<name>` | `hale` | The `service.name` of an `Otlp` backend whose `service` is empty. |
 | `OTEL_RESOURCE_ATTRIBUTES=<k=v,…>` | unset | More resource attributes on every export of an `Otlp` backend. |
 | `HALE_LOG_FORMAT=<format>` | `logfmt` | The record format of `std::log`'s `StdoutSink` and `FileSink` (`spec/stdlib.md` § `std::log`) and of the runtime's own diagnostics (§ Runtime diagnostics are records): `logfmt`, `json`, or `text` (the format before records); a sink's `format:` param overrides it for that sink, and an unknown name is `logfmt`. |
-| `HALE_LOG=<level>` | unset: no filtering | `std::log` drops events below this level (`debug`, `info`, `warn`, `error`, case-insensitive). Anything unrecognized, and an unset variable, filters nothing, so a typo cannot discard the logs it was set to see. |
+| `HALE_LOG=<level>` | unset: no filtering | `std::log` drops events below this level (`debug`, `info`, `warn`, `error`, case-insensitive). Anything unrecognized, and an unset variable, filters nothing, so a typo cannot discard the logs it was set to see. The runtime's own `debug` and `trace` records (§ Runtime diagnostics are records: a peer that hung up on a send) are written only under `debug` or `trace`; its `info`, `warn` and `error` records always. |
 | `HALE_VAULT_DIR=<dir>` | `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`, else `/tmp/hale-vault` | The local vault directory a `vault:` source of `std::secret` reads (a file per name). |
 | `HALE_VAULT_ADDR=<url>` | unset | When set, a `vault:` source resolves over the vault's HTTP API at `<url>/v1/secret/<name>` instead of the local directory. |
 | `HALE_VAULT_TOKEN=<token>` | unset | The bearer token for `HALE_VAULT_ADDR`; empty, the lookup fails closed. |

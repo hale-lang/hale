@@ -1,0 +1,86 @@
+// A block's trailing `match` (its last item, no `;`) is the block's
+// value where the block is used as one (spec/semantics.md, `match` is
+// dual-position): a match arm's block, an `if` expression's arm, a
+// `let`'s block. Until 2026-11-06 the check passed these and the build
+// refused them as a block with no trailing expression, where the same
+// block ending in `if … else …` built (downstream handoff).
+
+type Kind = enum { A, B };
+
+fn pick(k: Kind, n: Int) -> String {
+    let s = match k {
+        Kind::A -> {
+            let m = n + 1;
+            match m {
+                1 -> "one",
+                _ -> "many",
+            }
+        },
+        Kind::B -> "b",
+    };
+    return s;
+}
+
+fn nested(n: Int) -> Int {
+    let v = {
+        let m = n * 2;
+        match m {
+            0 -> 0,
+            _ -> {
+                let half = m / 2;
+                match half {
+                    1 -> 10,
+                    _ -> 20,
+                }
+            },
+        }
+    };
+    return v;
+}
+
+fn arm_of_if(flag: Bool, n: Int) -> String {
+    let s = if flag {
+        let m = n;
+        match m {
+            0 -> "zero",
+            _ -> "some",
+        }
+    } else {
+        "off"
+    };
+    return s;
+}
+
+fn early(n: Int) -> String {
+    let s = match n {
+        0 -> {
+            let m = n + 7;
+            match m {
+                7 -> "seven",
+                _ -> "other",
+            }
+        },
+        _ -> {
+            return "early";
+        },
+    };
+    return s;
+}
+
+fn main() {
+    std::test::assert_eq_str(pick(Kind::A, 0), "one", "an arm block ending in a match");
+    std::test::assert_eq_str(pick(Kind::A, 5), "many", "the other inner arm");
+    std::test::assert_eq_str(pick(Kind::B, 0), "b", "the expression arm beside it");
+    std::test::assert_eq_int(nested(0), 0, "a let block ending in a match");
+    std::test::assert_eq_int(nested(1), 10, "a match nested two blocks deep");
+    std::test::assert_eq_int(nested(3), 20, "its other arm");
+    std::test::assert_eq_str(
+        arm_of_if(true, 0),
+        "zero",
+        "an if expression's arm ending in a match",
+    );
+    std::test::assert_eq_str(arm_of_if(true, 2), "some", "its other inner arm");
+    std::test::assert_eq_str(arm_of_if(false, 0), "off", "the else arm");
+    std::test::assert_eq_str(early(0), "seven", "a trailing match beside a diverging arm");
+    std::test::assert_eq_str(early(1), "early", "the diverging arm returns");
+}

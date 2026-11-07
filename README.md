@@ -521,12 +521,12 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 
 ## Where the language stands
 
-Hale is at **v0.22.0** (2026-09-30) and pre-1.0, and it uses that
+Hale is at **v0.32.7** (2026-11-06) and pre-1.0, and it uses that
 freedom: there are no compatibility windows before 1.0. A rule that
 turns out to be wrong changes in the release that finds it, the change
 is listed under *Breaking changes* on that release's page with its
 migration, and nothing keeps the old form alive beside the new one.
-v0.22.0 carried nine such changes: a bare call to a fallible stdlib
+v0.22.0, for one, carried nine such changes: a bare call to a fallible stdlib
 function is now an error rather than a warning, a revealed secret is
 consumed in the statement that reveals it, a second `on_failure` for
 one child type is refused. Expect more of the same until 1.0; the page
@@ -535,7 +535,8 @@ for each release says exactly what moved.
 The **proven core**, all of it self-hosted by the native compiler: the
 typed topic bus; `placement`, `bindings` and NUMA-aware `topology`
 with `replicas`; `@form` collections; structural `interface`s; `@ffi`
-C bindings; the `fallible(T)` error model; effects and budgets;
+C bindings; the `fallible(T)` error model; the unit dialect
+(quantities, points and denominations); effects and budgets;
 claims, constitutions and fleet composition; the canonical model
 (`hale model`, its diff and its verification); record and replay; and
 the api binding, which turns any program into a CLI, an MCP host and
@@ -558,8 +559,8 @@ layers over one graph, with every semantic fact derived once and every
 migration checked by shadow diff ([RFC #1212](https://github.com/hale-lang/hale/issues/1212),
 delivered as a PR series on `main`); the habitat, the shared
 environment organisms are born into ([#602](https://github.com/hale-lang/hale/issues/602));
-and, once the graph is in place, `@evented` loci, a unit dialect and a
-UI emitted from the same tables.
+and, once the graph is in place, `@evented` loci and a UI emitted from
+the same tables.
 
 **Performance, scoped honestly:** Hale is faster than Go at message
 dispatch, JSON parsing and `@form` collections, and slower at raw

@@ -1,0 +1,11 @@
+// tests/hale/json_codec_import_lib/obs.hl — a library whose record has
+// its own JSON codec (a `json:` tag), used by `json_codec_import_test.hl`
+// through the import alias.
+type Side = enum { Buy, Sell };
+type Observation {
+    sym: String `json:"sym"`;
+    px: Int `json:"px"`;
+    side: Side = Side::Buy `json:"side"`;
+}
+
+fn show(o: Observation) -> String { return Observation::to_json(o); }

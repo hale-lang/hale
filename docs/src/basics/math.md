@@ -69,14 +69,14 @@ let rate = Float(hits) / Float(total);   // 0.375 (widens before division)
 let truncated = Int(3.9);                // 3 (truncates toward zero)
 ```
 
-`Int(x)` and `Float(x)` are the only primitive cast expressions in the language; type names like `String(x)`, `Bool(x)`, and `Bytes(x)` are not casts and are rejected at compile time.
+`Int(x)` and `Float(x)` are the only primitive cast expressions in the language; type names like `String(x)`, `Bool(x)`, and `Bytes(x)` are not casts and are rejected at compile time. Neither cast takes a `Decimal<S>`: `Int(d)` is refused by `hale check` (a Decimal has no `Int`; `d.rescale(0) or trunc` is its whole part as a `Decimal<0>`, and `Int(std::decimal::to_float(d))` its nearest `Int` through `Float`), and `Float(d)` points at `std::decimal::to_float(d)`.
 
 ### `std::math` Functions and IEEE-754 Semantics
 
 | Function | Signature | Description |
 |---|---|---|
 | `abs(x)` | `(T) -> T` (builtin) | Absolute value (`Int`, `Float`, `Decimal`, `Duration`) |
-| `min(a, b)` / `max(a, b)` | `(T, T) -> T` (builtin) | Minimum / maximum; returns `NaN` if either `Float` argument is `NaN` |
+| `min(a, b)` / `max(a, b)` | `(T, T) -> T` (builtin) | Minimum / maximum; returns `NaN` if either `Float` argument is `NaN`. `T` may also be a quantity or point type (`min(100ms, lo)` over two `Millis`, two `Price`s); both operands must be one type at one unit |
 | `std::math::int_to_float(n)` | `(Int) -> Float` | Converts `Int` to `Float` (equivalent to `Float(n)`) |
 | `std::math::float_to_int(x)` | `(Float) -> Int` | Truncates `Float` toward zero (equivalent to `Int(x)`) |
 | `std::math::round(x)` | `(Float) -> Int` | Rounds half away from zero (`2.5 -> 3`, `-2.5 -> -3`) |

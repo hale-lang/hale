@@ -346,6 +346,7 @@ the checker and, through its rows, by lowering:
 | point `-` point, one origin | the quantity, at the meet |
 | point `±` quantity, quantity `+` point | the point, at the meet |
 | comparison of one quantity, or of two points of one origin | `Bool`, exact at the meet |
+| `min` / `max` of two values of one quantity, or of two points of one origin, at one denomination | that type: the lesser or the greater count; across denominations, quantities, kinds or origins, refused naming both ("convert one to the other's first") |
 | comparison of one identity, of one range, or along a range's widening | `Bool` |
 | a range's arithmetic | its `Int`'s: `b + b` is an `Int` |
 | point `+` point; a quantity `/` a dimensionless quantity; any other product of two quantities; anything across components, across a quantity and a point, with an `Int`, an identity or a range; any arithmetic on an identity; `%` and the bitwise operators | refused, naming both declarations |
@@ -420,11 +421,17 @@ not is a narrowing like any other, which the target's `round:`
 discharges at compile time or the check refuses. Literal arithmetic is
 not folded: `3s + 500ms` is two constants and an addition.
 
+A negated literal (`-3b`) is the literal of the negated count, and
+flows and is cast as one: its conversion is computed at compile time
+from that count, so `-3b` into a type counted in thirds of `b` is
+exact where `3b` is, and a remainder is refused where `3b`'s is.
+
 ```hale,fragment
 let d: Duration = 3s;      // the constant 3000000000
 let b: Bucket = 150ms;     // 1 Bucket: Bucket rounds down, at compile time
 let t: Seconds = 2_000ms;  // 2, exact
 let u: Seconds = 1500ms;   // error: `Seconds` from `Duration` divides by 1,000,000,000: …
+let n: Seconds = -2_000ms; // -2, exact: the negated count converts as the count does
 ```
 
 An **integer literal** where a value of an identity or a range is
@@ -531,7 +538,9 @@ let top = Byte(n) or clamp;               // 255 for anything above
   Across components, a point into a quantity, and an `Int` into either
   are refused ("\`Money(…)\` of an \`Int\`: a count becomes a quantity by
   a unit (\`n * 1cent\`)"). A literal's cast is the literal flowing into
-  `T`, at compile time.
+  `T`, at compile time. `T` may be an imported seed's, written through
+  its alias (`lib::Money(x)`): the cast, and the `or` after it, are the
+  same.
 - **`T(x)`**, `T` an identity, a range or `Int`:
 
   | conversion | kind |

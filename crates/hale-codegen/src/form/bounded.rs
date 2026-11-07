@@ -28,8 +28,17 @@ use crate::codegen::Scope;
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Static (no-IR) type resolution for intrinsic dispatch —
     /// enough of the expression grammar to type a bounded
-    /// receiver: locals, `self`, and field chains through
-    /// TypeRef / LocusRef.
+    /// receiver: locals, `self`, field chains through TypeRef /
+    /// LocusRef, a call's result (a free fn, a locus method on a
+    /// local or on `self`) and an `or` expression over one.
+    ///
+    /// The intrinsics dispatch on their first argument's type
+    /// (`spec/types.md` § bounded[T; N]), and the checker types that
+    /// argument as any expression, so `count(s.plain().rows)` and
+    /// `at((s.keys() or Rows { }).rows, 0)` check. Until 2026-11-06
+    /// this walk stopped at a field chain rooted in a local or
+    /// `self`, so the same call reached the build untyped and was
+    /// refused as a call to an unknown free fn (downstream handoff).
     pub(crate) fn static_expr_codegen_ty(
         &self,
         e: &Expr,
@@ -58,8 +67,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => None,
                 }
             }
+            // A call's success type: a locus method on a receiver the
+            // walk types, else a free fn, a fn-pointer local or a
+            // qualified path (`call_returned_ty`).
+            Expr::Call { callee, .. } => {
+                if let Expr::Field { receiver, name, .. } = callee.as_ref() {
+                    if let Some(CodegenTy::LocusRef(locus)) =
+                        self.static_expr_codegen_ty(receiver, scope)
+                    {
+                        return self.static_locus_method_ret(&locus, &name.name);
+                    }
+                }
+                self.call_returned_ty(callee, scope)
+            }
+            // `inner or <disposition>` is the success type of `inner`
+            // on every disposition but `discard`, which is Unit.
+            Expr::Or { inner, disposition, .. } => match disposition {
+                hale_syntax::ast::OrDisposition::Discard(_) => None,
+                _ => self.static_expr_codegen_ty(inner, scope),
+            },
             _ => None,
         }
+    }
+
+    /// The declared return type of `locus.method`, as the static walk
+    /// needs it: `None` for a method with no return, a synthesized
+    /// form method, or a locus with no declaration in the program.
+    fn static_locus_method_ret(
+        &self,
+        locus: &str,
+        method: &str,
+    ) -> Option<CodegenTy> {
+        let decl = self.locus_declaration(locus)?;
+        decl.members.iter().find_map(|m| match m {
+            hale_syntax::ast::LocusMember::Fn(fd) if fd.name.name == method => {
+                fd.ret.as_ref().and_then(|t| self.type_expr_to_codegen_ty(t).ok())
+            }
+            _ => None,
+        })
     }
 
     /// Elem + cap when args[0] statically types as bounded[T; N].

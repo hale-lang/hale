@@ -4230,6 +4230,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if info.subscriptions.is_empty() && info.mailbox_field_idx.is_none() {
                     self.emit_drain_observer_out(locus_name, thread_self, true)?;
                 }
+                // The run has returned for good: the thread's domain
+                // records it (`lotus_pinned_run_done`), so a main locus
+                // with no run() can wait for it before its tree drain
+                // (`emit_pinned_run_awaits`); the mailbox loop below
+                // keeps serving meanwhile.
+                let run_done_fn = self.module.get_function("lotus_pinned_run_done").unwrap_or_else(|| {
+                    self.module.add_function(
+                        "lotus_pinned_run_done",
+                        self.context.void_type().fn_type(&[], false),
+                        None,
+                    )
+                });
+                self.builder
+                    .build_call(run_done_fn, &[], "")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
             }
             // The instantiating thread's steps, emitted above.
@@ -4942,6 +4957,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "the lifecycle plan joins the main locus's pinned fields before its eager head, which the emitter does not emit".into(),
                     ));
                 }
+                // A main locus that declares no run() (an empty one is
+                // the same program) serves for as long as its children
+                // do: before its head raises the tree drain, the run()
+                // of each of its own pinned children (the frame entries
+                // its param init pushed, joined below) that does not
+                // read `draining` is waited for, without a mailbox
+                // shutdown, so a sleep it is in is not cut short, a
+                // sibling that watches the drain keeps serving until
+                // then, and what it publishes reaches a pinned sibling
+                // declared before it (spec/semantics.md § "When
+                // `main`'s `run()` ends first"; downstream handoff: the
+                // joins below ran in declaration order right after the
+                // tree was built, so the pinned subscriber declared
+                // first was shut down while the pinned publisher
+                // declared after it was still running, and every
+                // delivery of the program was lost, silently). A run()
+                // that reads `draining` is what the drain ends, so it is
+                // not waited for.
+                let main_has_no_run =
+                    !info.methods.contains_key("run") || info.empty_lifecycle.contains("run");
+                if main_has_no_run {
+                    let own_pinned_runs = self.own_pinned_entries(deferred_frame_mark);
+                    self.emit_pinned_run_awaits(&own_pinned_runs, true)?;
+                }
                 // GH #468: drain kernel-accepted LISTEN ingress
                 // while the registry, pools, and subscriber loci
                 // are all still alive (the main locus's run() just
@@ -5176,6 +5215,96 @@ pub(crate) struct PinnedStart<'ctx> {
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// A runtime function of the pinned start gate, declared at its
     /// first use, so a program with no pinned locus carries none.
+    /// The pinned entries of the current deferred-dissolve frame from
+    /// `mark` on: the slot holding the instance, its locus and the slot
+    /// holding its thread id, each a pinned child this frame built and
+    /// joins. Read, not moved: the teardown that joins them takes them
+    /// out of the frame itself.
+    fn own_pinned_entries(&self, mark: usize) -> Vec<(PointerValue<'ctx>, String, PointerValue<'ctx>)> {
+        let Some(frame) = self.deferred_dissolves.last() else { return Vec::new() };
+        frame[mark.min(frame.len())..]
+            .iter()
+            .filter_map(|(slot, name, tid)| tid.map(|tid| (*slot, name.clone(), tid)))
+            .collect()
+    }
+
+    /// Wait for the run() of each of `entries` (a frame's own pinned
+    /// children, `own_pinned_entries`) that declares one to return for
+    /// good (`lotus_pinned_run_await`: the thread's domain records it,
+    /// `lotus_pinned_run_done`), its mailbox untouched. With
+    /// `unwatched_only`, only a child whose code does not read
+    /// `draining` is waited for — the private flag
+    /// `lotus.reads_drain.<locus>`, 0 until the end of `lower_program`
+    /// writes it — since a run() that watches the drain is what the drain
+    /// ends; a main locus with no run() waits so before its tree drain.
+    /// An entry whose instantiation this path never reached (a null
+    /// slot) is skipped, as its teardown skips it.
+    pub(crate) fn emit_pinned_run_awaits(
+        &mut self,
+        entries: &[(PointerValue<'ctx>, String, PointerValue<'ctx>)],
+        unwatched_only: bool,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        for (self_slot, name, tid_slot) in entries {
+            let Some(child) = self.user_loci.get(name).cloned() else { continue };
+            if !child.methods.contains_key("run") || child.empty_lifecycle.contains("run") {
+                continue;
+            }
+            let func = self
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .expect("a pinned run await inside a function");
+            let self_ptr = self
+                .builder
+                .build_load(ptr_t, *self_slot, &format!("{name}.run_await.self"))
+                .map_err(e)?
+                .into_pointer_value();
+            let mut skip = self.builder.build_is_null(self_ptr, &format!("{name}.run_await.self_null")).map_err(e)?;
+            if unwatched_only {
+                let gname = format!("lotus.reads_drain.{name}");
+                let g = match self.module.get_global(&gname) {
+                    Some(g) => g,
+                    None => {
+                        let g = self.module.add_global(i64_t, None, &gname);
+                        g.set_linkage(inkwell::module::Linkage::Private);
+                        g.set_initializer(&i64_t.const_zero());
+                        g
+                    }
+                };
+                let reads = self
+                    .builder
+                    .build_load(i64_t, g.as_pointer_value(), &format!("{name}.run_await.reads_drain"))
+                    .map_err(e)?
+                    .into_int_value();
+                let watches = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::NE, reads, i64_t.const_zero(), &format!("{name}.run_await.watches"))
+                    .map_err(e)?;
+                skip = self.builder.build_or(skip, watches, &format!("{name}.run_await.skip")).map_err(e)?;
+            }
+            let await_bb = self.context.append_basic_block(func, &format!("{name}.run_await"));
+            let after_bb = self.context.append_basic_block(func, &format!("{name}.run_await.after"));
+            self.builder.build_conditional_branch(skip, after_bb, await_bb).map_err(e)?;
+            self.builder.position_at_end(await_bb);
+            let tid = self.builder.build_load(i64_t, *tid_slot, &format!("{name}.run_await.tid")).map_err(e)?;
+            let queue = self.start_wait_queue(name, "run_await")?;
+            let await_fn = self.module.get_function("lotus_pinned_run_await").unwrap_or_else(|| {
+                self.module.add_function(
+                    "lotus_pinned_run_await",
+                    self.context.void_type().fn_type(&[i64_t.into(), ptr_t.into()], false),
+                    None,
+                )
+            });
+            self.builder.build_call(await_fn, &[tid.into(), queue.into()], "").map_err(e)?;
+            self.builder.build_unconditional_branch(after_bb).map_err(e)?;
+            self.builder.position_at_end(after_bb);
+        }
+        Ok(())
+    }
+
     fn pinned_start_fn(&self, name: &str) -> inkwell::values::FunctionValue<'ctx> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         self.module.get_function(name).unwrap_or_else(|| {

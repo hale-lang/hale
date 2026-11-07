@@ -1038,3 +1038,91 @@ fn inexact_error_is_a_builtin_in_every_program() {
     assert!(injected("type Byte = Int { range: 0..256; }\nfn main() { println(1); }\n"));
     assert!(injected("fn main() { let a: Decimal<18> = 1d; let b = a.rescale(2) or raise; }\n"));
 }
+
+/// GH #1076: a negated quantity literal is the literal of the negated
+/// count, converted at compile time where it flows: exact where the
+/// positive literal is, refused for a remainder where the positive is
+/// (downstream handoff: `-3b` into a type counted in thirds of `b` was
+/// refused as a division no policy discharged, while `3b` was exact).
+#[test]
+fn a_negated_literal_converts_at_compile_time() {
+    assert_eq!(errors("    let s: Seconds = -2000msec;\n    let c = Seconds(-2000msec);\n"), Vec::new());
+    assert_eq!(
+        errors("    let s: Seconds = -1500msec;\n"),
+        vec![(
+            "-1500msec".to_string(),
+            "`Seconds` from `Span` divides by 1,000,000,000: say what happens to the remainder: convert explicitly \
+             (`.in(u) or floor`, `Seconds(…) or half_even`, `or <value>`, `or raise`), or give `Seconds` a `round:` \
+             policy"
+                .to_string()
+        )]
+    );
+    // The row at the negation carries the converted count, and the
+    // literal inside it its own.
+    let found: Vec<(String, Option<i64>, ConversionKind, String)> =
+        rows("    let s: Seconds = -2000msec;\n").into_iter().map(|r| (r.at, r.count, r.kind, r.to)).collect();
+    assert_eq!(
+        found,
+        vec![
+            ("-2000msec".to_string(), Some(-2), ConversionKind::Widening, "Seconds".to_string()),
+            ("2000msec".to_string(), Some(2_000_000_000), ConversionKind::Widening, "Span".to_string()),
+        ]
+    );
+}
+
+/// GH #1076: `min` / `max` of two values of one quantity, or of two
+/// points of one origin, at one denomination, is that type; anything
+/// else is refused naming both (downstream handoff: two `Millis` were
+/// refused as not numeric).
+#[test]
+fn min_and_max_order_two_values_of_one_type() {
+    assert_eq!(
+        errors(
+            "    let lo = min(span(3), 2sec);\n    let hi: Seconds = max(seconds(1sec), seconds(2sec));\n    \
+             let p = min(Instant(span(1)), Instant(span(2)));\n    let m: Money = max(amount(1), 3cent);\n"
+        ),
+        Vec::new()
+    );
+    let refused = |body: &str| errors(body).into_iter().map(|(_, m)| m).collect::<Vec<_>>();
+    assert_eq!(
+        refused("    let x = min(seconds(3sec), span(3));\n"),
+        vec![
+            "`min` orders two values of one quantity, or of two points of one origin, at one denomination; `Seconds` \
+             and `Span` are two denominations of `Span`: convert one to the other's first (`.in(u)`, `T(…)`)"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        refused("    let x = max(amount(1), span(1));\n"),
+        vec![
+            "`max` orders two values of one quantity, or of two points of one origin, at one denomination; `Money` \
+             and `Span` are different quantities: convert one to the other's first (`.in(u)`, `T(…)`)"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        refused("    let x = min(Instant(span(1)), span(1));\n"),
+        vec![
+            "`min` orders two values of one quantity, or of two points of one origin, at one denomination; \
+             `Instant` and `Span` are a quantity and a point: convert one to the other's first (`.in(u)`, `T(…)`)"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        refused("    let x = min(Kelvin(300K), Celsius(0mK));\n"),
+        vec![
+            "`min` orders two values of one quantity, or of two points of one origin, at one denomination; \
+             `Kelvin` and `Celsius` are two points of different origins: convert one to the other's first \
+             (`.in(u)`, `T(…)`)"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        refused("    let x = min(amount(1), 3);\n"),
+        vec![
+            "`min` orders two values of one type; `Money` is a quantity and `Int` is not one of its values; a count \
+             becomes a quantity by a unit (`n * 1cent`)"
+                .to_string()
+        ]
+    );
+}

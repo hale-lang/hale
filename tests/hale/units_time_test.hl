@@ -31,6 +31,22 @@ type Header { send_ns: Int; send_us: Int; }
 // A name for `Duration in s`, so a handler can return one.
 type Seconds = Duration in s;
 
+// A refinement counted in milliseconds, and two at the quantity's own
+// denomination: the same count as a `Duration` or a `Time`, under
+// another name.
+type Millis = Duration in ms;
+type Nanos = Duration in ns;
+type Stamp = Time in ns;
+
+// A locus param's default of a refinement: the literal is the count its
+// row says (100 of `Millis`, 1 of `Bucket`), not the catalogue's
+// nanoseconds, and an override flows into the same type (downstream
+// handoff: the build refused `every: Millis = 100ms` as "declared Int,
+// default Duration").
+locus Poll {
+    params { every: Millis = 100ms; bucket: Bucket = 150ms; raw: Duration = 100ms; }
+}
+
 // The `InexactError` of a conversion that divides says by how much.
 fn divisor(e: InexactError) -> Seconds {
     std::test::assert_eq_str(e.kind, "Duration in s", "the target of `d.in(s)`");
@@ -89,6 +105,51 @@ fn main() {
     let late = 0ms - 150ms;
     let before: Bucket = late;
     std::test::assert(before == 0ms - 200ms, "floor rounds a negative count down");
+
+    // A param default of a refinement, read back as that refinement.
+    let poll = Poll { };
+    std::test::assert_eq_str(to_string(poll.every), "100ms", "the default, counted in ms");
+    std::test::assert(poll.every == poll.raw, "100 ms is the same span as 100,000,000 ns");
+    std::test::assert_eq_str(
+        to_string(poll.bucket),
+        "1 Bucket",
+        "150ms is one bucket: floor, at compile time",
+    );
+    let faster = Poll { every: 25ms, bucket: 2s };
+    std::test::assert(faster.every == 25ms, "an override flows into the refinement");
+    std::test::assert_eq_str(to_string(faster.bucket), "20 Bucket", "and into the policy type");
+
+    // A refinement at the quantity's own denomination compares and
+    // computes with the quantity: one count, two spellings (downstream
+    // handoff: the build refused `a == b` as operands of mixed types).
+    let a: Duration = 1ns;
+    let b: Nanos = 1ns;
+    std::test::assert(a == b && b == a, "equal");
+    std::test::assert(!(a != b), "and not unequal");
+    std::test::assert(!(a < b) && a <= b && !(a > b) && a >= b, "ordered as counts");
+    std::test::assert(b <= a && b >= a, "from either side");
+    std::test::assert(a + b == 2ns && b + a == 2ns, "a sum, either way round");
+    std::test::assert(a - b == 0ns && b - a == 0ns, "a difference, either way round");
+    let q: Int = a / b;
+    let r: Int = b / a;
+    std::test::assert_eq_int(q + r, 2, "quotients are counts");
+    let two: Nanos = b * 2;
+    let three = 3 * b;
+    std::test::assert(two == 2ns && three == 3ns, "scaled by an Int");
+    let t: Time = Time(5ns);
+    let st: Stamp = t;
+    std::test::assert(t == st && st == t && !(t < st) && st <= t, "a point and its refinement");
+    std::test::assert(t - st == 0ns && st - t == 0ns, "their difference");
+    std::test::assert(st + 1ns > t, "a point moves by a quantity");
+
+    // `min` and `max` of two values of one type order them as counts.
+    let lo: Millis = 100ms;
+    let hi: Millis = 250ms;
+    std::test::assert_eq_str(to_string(min(lo, hi)), "100ms", "the lesser of two Millis");
+    std::test::assert_eq_str(to_string(max(lo, hi)), "250ms", "the greater");
+    std::test::assert(min(a, b) == 1ns && max(b, a) == 1ns, "a Duration beside its refinement");
+    std::test::assert(min(t, st + 1ns) == t, "two points of one origin");
+    std::test::assert(max(hdr.send_ns * 1ns, 0ns) == hdr.send_ns * 1ns, "a Duration, as before");
 
     // Bytes are a quantity of their own.
     std::test::assert(4KiB == 4096B, "a KiB is 1024 B");

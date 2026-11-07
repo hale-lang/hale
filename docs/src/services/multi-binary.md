@@ -113,7 +113,7 @@ Evt <- reading or wait;
 ### Listener Buffering & Teardown Order
 
 - **Early-arrival buffering (`buffered_early`)**: If a remote publisher connects and sends messages in the brief window after a `listen` socket binds but before local subscribers finish registering, the listener buffers up to **64 messages / 1 MiB** per binding and delivers them as soon as registration completes.
-- **Shutdown quiesce (`LOTUS_BUS_QUIESCE_MS`)**: When `main` returns, `listen` sockets stop accepting new peers and drain any unread kernel socket buffers for up to **500 ms** (configurable via `LOTUS_BUS_QUIESCE_MS`) while local subscribers are still live.
+- **Shutdown quiesce (`LOTUS_BUS_QUIESCE_MS`)**: When `main` returns, `listen` sockets stop accepting new peers and drain any unread kernel socket buffers for up to **500 ms** (configurable via `LOTUS_BUS_QUIESCE_MS`) while local subscribers are still live. A `udp://` listener's reader is woken explicitly (a stop pipe it polls beside its socket, on Linux and macOS alike), reads the datagrams already queued, and ends; an empty datagram it receives at any time is just a frame too short to decode, dropped and counted, and ingress goes on.
 - **Binding teardown order**: Transport bindings are initialized in `fn main`'s prelude before any user code and are dissolved **last** at shutdown:
   1. Quiesce `listen` sockets (`LOTUS_BUS_QUIESCE_MS`).
   2. Join cooperative worker pools.

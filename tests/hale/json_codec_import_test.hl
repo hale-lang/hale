@@ -1,0 +1,28 @@
+// tests/hale/json_codec_import_test.hl — a record's own JSON codec
+// (spec/semantics.md § Metadata tags) called through an import alias:
+// `pricing::Observation::from_json(text)` and
+// `pricing::Observation::to_json(v)` name the library's declaration, as a
+// construction through an import does, and the library's own
+// `Observation::to_json` is the same codec. Downstream handoff: the local
+// form built and the imported form checked and then failed to build
+// ("`or` over unknown path call `pricing::Observation::from_json`").
+import "./json_codec_import_lib" as pricing;
+
+fn main() {
+    let o = pricing::Observation::from_json(
+        "{\"sym\":\"AB\",\"px\":7}",
+    ) or pricing::Observation { sym: "?", px: -1 };
+    std::test::assert_eq_str(o.sym, "AB", "decoded through the alias");
+    std::test::assert_eq_int(o.px, 7, "the decoded value");
+    std::test::assert(o.side == pricing::Side::Buy, "an enum default of the library's");
+    std::test::assert_eq_str(
+        pricing::Observation::to_json(o),
+        "{\"sym\":\"AB\",\"px\":7,\"side\":\"Buy\"}",
+        "encoded through the alias",
+    );
+    std::test::assert_eq_str(
+        pricing::show(o),
+        "{\"sym\":\"AB\",\"px\":7,\"side\":\"Buy\"}",
+        "the library's own call",
+    );
+}

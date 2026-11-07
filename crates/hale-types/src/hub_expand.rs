@@ -157,14 +157,51 @@ fn hub_literal<'a>(l: &'a LocusDecl, field: &str) -> Option<&'a Expr> {
     })
 }
 
-/// Whether any locus of the programs binds a topic to a hub.
-pub fn binds_a_hub(programs: &[&mut Program]) -> bool {
+/// Whether any locus of the programs declares a hub: a param typed or
+/// built by a `ws::Hub` / `udp::Hub` literal, or a topic bound to one. A
+/// hub is built wherever its literal is written in the main locus's
+/// params, whether or not a stream is bound to it or a surface served over
+/// it (spec/api.md § Streams; downstream handoff: a hub with no `bindings`
+/// row was left unexpanded, and its path then failed to resolve).
+pub fn declares_a_hub(programs: &[&mut Program]) -> bool {
     programs.iter().any(|p| {
         flat_decls(&p.items).any(|d| {
-            matches!(d, TopDecl::Locus(l) if l.members.iter().any(|m|
-                matches!(m, LocusMember::Bindings(bb) if !bb.hubs.is_empty())))
+            matches!(d, TopDecl::Locus(l) if l.members.iter().any(|m| match m {
+                LocusMember::Bindings(bb) => !bb.hubs.is_empty(),
+                LocusMember::Params(pb) => pb.params.iter().any(|p| {
+                    matches!(&p.ty, Some(TypeExpr::Named { path, .. }) if is_hub(path))
+                        || matches!(&p.init, ParamInit::Value(Expr::Struct { path, .. }) if is_hub(path))
+                }),
+                _ => false,
+            }))
         })
     })
+}
+
+/// The hub params of `l`: every param built by a hub literal, in
+/// declaration order, then any other instance a stream row names.
+fn hub_params(l: &LocusDecl) -> Vec<&str> {
+    let mut order: Vec<&str> = Vec::new();
+    for m in &l.members {
+        match m {
+            LocusMember::Params(pb) => {
+                for p in &pb.params {
+                    if matches!(&p.init, ParamInit::Value(Expr::Struct { path, .. }) if is_hub(path)) && !order.contains(&p.name.name.as_str()) {
+                        order.push(p.name.name.as_str());
+                    }
+                }
+            }
+            LocusMember::Bindings(bb) => {
+                for hb in &bb.hubs {
+                    if !order.contains(&hb.instance.name.as_str()) {
+                        order.push(hb.instance.name.as_str());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    order
 }
 
 fn find_locus_mut<'a>(items: &'a mut [TopDecl], name: &str) -> Option<&'a mut LocusDecl> {
@@ -236,17 +273,9 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                 if !l.is_main {
                     continue;
                 }
-                // the hubs this locus binds, in the order first bound
-                let mut order: Vec<&str> = Vec::new();
-                for m in &l.members {
-                    if let LocusMember::Bindings(bb) = m {
-                        for hb in &bb.hubs {
-                            if !order.contains(&hb.instance.name.as_str()) {
-                                order.push(hb.instance.name.as_str());
-                            }
-                        }
-                    }
-                }
+                // the hubs this locus declares, built or bound, in
+                // declaration order
+                let order = hub_params(l);
                 // the hubs an `http::Rest` of this locus mounts (GH #1780)
                 let mounts = crate::rpc_expand::locus_mounts(l);
                 for field in order {
@@ -328,8 +357,10 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                         }
                     }
                     // a hub of more than sixteen streams, or a stream the laws
-                    // refuse, is left as written
-                    if !ok || streams.is_empty() || streams.len() > 16 {
+                    // refuse, is left as written; one with no stream is built
+                    // all the same (it listens, and a surface may be served
+                    // over it)
+                    if !ok || streams.len() > 16 {
                         continue;
                     }
                     for s in &streams {

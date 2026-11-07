@@ -23,6 +23,9 @@ const EPOCH: &str = "`1970-01-01T00:00:00Z`";
 /// spec/api.md § Codecs) reads and writes it exactly as the server does.
 fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
     match f {
+        // a `Decimal<S>` is a number named with its scale (`x-hale-type`),
+        // and the client holds it at that scale, every digit kept
+        FieldSchema::Scalar { hale_type: Some(t), .. } if t.starts_with("Decimal<") => Ok(t.clone()),
         FieldSchema::Scalar { json, .. } => Ok(match *json {
             "integer" => "Int",
             "number" => "Float",
@@ -72,6 +75,12 @@ fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
 /// `return`) when a record's codec refuses it.
 fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &str, what: &str) -> Result<String, String> {
     Ok(match f {
+        // read at the field's scale: the annotated binding gives
+        // `parse_decimal` its scale, and a digit past it is the zero the
+        // client reads where a reply holds no number it can parse
+        FieldSchema::Scalar { hale_type: Some(t), .. } if t.starts_with("Decimal<") => {
+            format!("let {var}: {t} = std::str::parse_decimal(std::str::trim({json})) or 0d;\n")
+        }
         FieldSchema::Scalar { json: kind, .. } => format!(
             "let {var} = {};\n",
             match *kind {
@@ -170,6 +179,7 @@ fn buildable_empty(model: &ClientModel, name: &str, seen: &mut BTreeSet<String>)
 /// can be built; `None` where the field is required or has none.
 fn default_of(model: &ClientModel, f: &FieldSchema) -> Option<String> {
     match f {
+        FieldSchema::Scalar { hale_type: Some(t), .. } if t.starts_with("Decimal<") => Some("0d".to_string()),
         FieldSchema::Scalar { json, .. } => Some(
             match *json {
                 "integer" => "0",

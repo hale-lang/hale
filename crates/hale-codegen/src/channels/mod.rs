@@ -1053,11 +1053,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // placeholder type is irrelevant (so the fallible's
                     // success type may be String / Bytes / a struct, not
                     // just the spurious Int).
+                    // A block whose own value lowering ended control
+                    // flow (a trailing `match` diverging in every arm)
+                    // continued in a dead block: that is the same
+                    // divergence, sealed here (`seal_dead`).
                     let diverged = self
                         .builder
                         .get_insert_block()
                         .and_then(|bb| bb.get_terminator())
-                        .is_some();
+                        .is_some()
+                        || self.seal_dead()?;
                     if diverged {
                         None
                     } else {

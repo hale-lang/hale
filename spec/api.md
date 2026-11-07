@@ -2078,7 +2078,16 @@ the address it listens on (or, for a `ws::Hub`, none, when an
 the compiler numbers it and gives it its rows there, so a construction
 that supplies the param is refused ("param `hub` is a hub that streams
 are bound to; its default is the hub, and a construction cannot supply
-another"). It is two kinds of locus sharing one listener, so that no
+another"). The literal resolves wherever it is written in the main
+locus's `params`, and the hub is built whether or not a stream is bound
+to it or a surface served over it: a hub with no stream row listens,
+admits subscriptions to nothing, and carries the rpcs served over it
+(2026-11-06, downstream handoff: a hub with no `bindings` row was left
+unbuilt, and `ws::Hub` then failed to resolve). Written anywhere else
+(a param of a locus that is not the main one), `ws::Hub` is refused as
+what it is: "`ws::Hub` is the standard library's hub
+(`std::api::ws::Hub`): a param of the main locus, built by a `ws::Hub {
+… }` literal in its `params`, where the compiler builds it". It is two kinds of locus sharing one listener, so that no
 locus has to serve two interfaces: the hub itself holds the sources,
 admits subscriptions and is the `Rpc` a surface may be served over
 (`api::serve(S, self.hub, …)`: one listener carries rpcs and streams over
@@ -2412,8 +2421,8 @@ the subscriptions admitted and not ended, over every connection;
 
 A request, a response and an error cross under the exposure's codec
 (F.36). The JSON codec is generated from the type, as the GH #1106
-binding's was: `Int`, `Float`, `Bool`, `String` and nested structs of
-the same, with a `json:"key"` tag renaming a key; a plain alias
+binding's was: `Int`, `Float`, `Bool`, `String`, `Decimal<S>` and nested
+structs of the same, with a `json:"key"` tag renaming a key; a plain alias
 (`type Count = Int;`) is what its chain ends at, and a builtin record
 (`IndexError`) its fields as the description gives them; an identity, a range
 and a quantity are their integer (`spec/units.md` § Layout and the
@@ -2437,6 +2446,22 @@ encoder writes them as `nan`, `inf` and `-inf`, which the decoder (and
 any other JSON reader) refuses, `wrong_type`, so such a value does not
 cross JSON. Protobuf carries a Float as its eight bytes, every double
 included.
+
+**A `Decimal<S>`** crosses JSON as a number at its scale (2026-11-06,
+downstream handoff): the encoder writes its digits as `to_string`
+prints them (`12.34`, `-2`, `0.000000000000000001`: the fraction's
+trailing zeros dropped, never an exponent), a field, a list's element
+and a whole value alike, and the decoder reads a JSON number at the
+field's scale with every digit kept (`std::str::range_parse_decimal`
+at `S`): zeros past the scale are the same number, a nonzero digit past
+it is `wrong_type` for the field, never a truncation, and a string, a
+bool or an object is `wrong_type` too, as for any number. Its schema is
+`{"type": "number", "x-hale-type": "Decimal<2>"}`: a reader that keeps
+the digits reads the scale there, and one that does not reads a JSON
+number. Protobuf carries it as its digits in a `string` (proto3 has no
+decimal; `string price = 1; // Hale: Decimal<2>`), the generated Hale
+client declares the field `Decimal<S>` and reads it at that scale, and
+the TypeScript and JavaScript clients hold it as a `number`.
 
 **An instant and a duration.** The stdlib's `Time` (a point over
 `Duration` with no origin, `spec/types.md`) is the one point the codec
@@ -2471,10 +2496,7 @@ array's length `too_short`, both `malformed`, and the handler does not
 run. What is not carried, each refused by law 5 naming the field: an
 unbounded `[T]` (an unbounded collection is locus-owned, `@form(vec)`,
 and a type holds bounded data only, `spec/types.md` § bounded[T; N]), a
-list of lists, and a list of a shape the codec does not carry (a
-`Decimal<S>` among them: an api surface has no schema for one yet, as a
-field or as an element, though the generated codecs read and write it as
-JSON's tier 2 does, a number at its scale, and protobuf as its digits). A
+list of lists, and a list of a shape the codec does not carry. A
 request or response is never itself a list: a page of records is a
 record, `type Page { items: bounded[Item; 50]; }`, which leaves room
 for what a page says beside its items.
@@ -2834,7 +2856,11 @@ rows, one per surface, each carrying the digest: `hale check --api
 method and path of a row that declares a route, `200` its
 response, `422` its handler error, `500` a `ClosureViolation` row's
 server error, the refusals by their statuses, the digest as the
-`Hale-Surface-Digest` header), `--json-schema` (every type the rows name
+`Hale-Surface-Digest` header, and one server after `info`, the
+relative `"url": "/"` (OpenAPI 3.1 allows one): where an exposure
+listens is a deployment fact the document cannot know, and a linter
+refuses a document with no `servers` at all, redocly's
+`no-empty-servers` (2026-11-06, downstream handoff)), `--json-schema` (every type the rows name
 under `$defs`, each member's types by reference) and `--mcp` (a tool per
 row, its input the request's schema, self-contained; a request whose
 schema is not an object is wrapped as an object with one required
