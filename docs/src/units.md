@@ -107,6 +107,8 @@ fn main() {
 
 Assigning a finer-grained value to a boundary type applies the type's `round:` policy automatically without requiring an `or` clause at each assignment.
 
+A quantity or point declared in an imported seed converts the same way through the import's alias: `lib::Metres(distance) or half_even` is the cast `Metres(distance) or half_even` written in the library itself.
+
 ## Exact Ratio Arithmetic (Money and Basis Points)
 
 Multiplying a quantity by a dimensionless ratio (`unit bp = 1 / 10000;`) does not round at the multiplication step. Instead, the product has type `Money in 1/10000 cent`—an exact compound denomination:

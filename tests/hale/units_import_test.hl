@@ -2,7 +2,8 @@
 // convert into through the import's path, `u::T(x)`, as a declaration
 // of the program's own does (spec/units.md § Conversions). The cast
 // checked as an unresolved path and the build refused it in expression
-// position (downstream handoff).
+// position; with no narrowing for its `or` to discharge, `or half_even`
+// after it was refused as an unknown name (downstream handoff).
 import "./units_import_lib" as u;
 
 fn main() {
@@ -15,7 +16,14 @@ fn main() {
     let later = t0 + 5monotonic_ns;
     std::test::assert(later - t0 == 5monotonic_ns, "a point moves by a quantity");
 
-    // A literal's cast through the import is exact at compile time.
+    // A rounding policy after the imported cast discharges its narrowing.
+    let distance = 1500mm;
+    let rounded = u::Metres(distance) or half_even;
+    std::test::assert_eq_str(to_string(rounded), "2m", "1.5 m rounds half to even: 2");
+    let down = u::Metres(distance) or floor;
+    std::test::assert(down == 1m, "or floor");
+    let whole = u::Metres(distance) or 0m;
+    std::test::assert(whole == 0m, "no whole number of metres: the substitute");
     let exact = u::Metres(2000mm);
     std::test::assert(exact == 2m, "a literal's cast is exact at compile time");
 
