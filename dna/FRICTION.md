@@ -14,6 +14,9 @@ perspectives, topics and claims, and the proposed primitive's
 semantics are specified (#521 "prove each before adding syntax").
 Compiler BUGS found on the way are fixed upstream and noted here.
 
+Re-read 2026-11-06 against hale v0.32.7 (main `7764d0e18`): every entry
+carries a status line; the 2026-10-12 re-runs were on v0.23.0.
+
 ---
 
 ## F.1 — `match` on an enum declared in an imported seed
@@ -803,6 +806,8 @@ the value came from — and `hale run` reports a death by signal.
 
 ## F.21 — imported helper name collides with its seed's import alias
 
+**Status (2026-11-06):** FIXED upstream. Re-run on hale v0.32.7: a seed that imports another `as dna` and declares its own `fn dna(args: String)` checks, builds and runs, with `dna::url_encode(..)` reaching the import and `dna("x")` the helper. The rename to `run_dna` can stay or go.
+
 **Numbering:** originally labeled F.19; renumbered to preserve the earlier
 handler-owned subscriber entry's identity.
 
@@ -880,6 +885,8 @@ constant or enum comparison into an unintended match.
 
 ## F.23 — Successful native assertions must be silent
 
+**Status (2026-11-06):** by design, unchanged. spec/testing.md § Native tests: a pass is exit 0 with no stdout; stderr is not inspected, so progress output belongs on stderr (`eprint`).
+
 **Original context:** `dna/api/tests`; preserved port observations.
 
 The port was checked and built with this worktree's `target/release/hale`.
@@ -902,6 +909,8 @@ no longer needed.
   descriptors before a subsequent spawn can reuse them.
 
 ## F.25 — Failed assertions require independent child and scratch cleanup
+
+**Status (2026-11-06):** FIXED upstream in hale v0.24.0 (#1533): a failed `std::test::assert` tears the tree down. Re-run on v0.32.7 with the assert failing in a free fn and in a locus method: `ASSERTION FAILED`, then the holder's and the child's `dissolve()` lines, exit 1. The exit watcher can go.
 
 **Original context:** `dna/api/tests`; preserved port observations.
 
@@ -961,6 +970,8 @@ receiver. No compiler changes were made for this slice.
 
 ## F.29 — JSON nullable fields are not optional strings
 
+**Status (2026-11-06):** answered upstream (GH #719): `std::json::string_field(json, name) -> JsonString` is the typed read, `{kind, text}` with `kind` one of `string` / `null` / `missing` / …, so `owner: null` is `kind = "null"` rather than the text `null`. `find_string_field` keeps its permissive contract.
+
 **Original context:** `dna/operations`; preserved port observations.
 
 The stdlib's `find_string_field` returns the raw scalar spelling when a field
@@ -971,6 +982,8 @@ parent. Otherwise it would invent a parent instance named `null`. The native
 compiler fixture covers both the root and real containment edges.
 
 ## F.30 — Cache the String byte length in parser scans
+
+**Status (2026-11-06):** resolved in DNA; the upstream answer is the `ByteView` surface (GH #720, 2026-09-19): `std::str::bytes_view(s)` measures once and `byte_at` / `slice` / `find` walk it in linear time (spec/stdlib.md § Linear byte scanning).
 
 **Original context:** `dna/operations`; preserved port observations.
 
@@ -1010,6 +1023,8 @@ Application code must also cache String lengths in closure scans; the native
 workflow `json_whole` scanner now captures its input length once.
 
 ## F.32 — Inline mutable provider passed through an interface to an HTTP head
+
+**Status (2026-11-06):** not reproduced since; the fixture is gone. The shape (a locus literal written inline as a call argument and retained by the callee past the call) is GH #1048's, closed 2026-09-28, and a fallible member's write through a record parameter landing in its scratch was #1832 (v0.32.0). An ASan run of the original composition would settle it.
 
 Related to F.28's temporary receiver observation, but this fixture passes a
 mutable locus through a function/interface boundary rather than calling a method
