@@ -42,7 +42,7 @@ fn main() { App { }; }
 When a program declares no `std::observe::*` parameters on its `main locus`, no network ports are opened and no telemetry is sent over the network:
 
 - **Application logs**: Any configured `std::log` sink writes one [logfmt](./logging.md#output-formats-hale_log_format) record per event to `stdout` (`HALE_LOG_FORMAT=json` or `text` changes the format; `HALE_LOG` filters severity).
-- **Runtime diagnostics**: Failed sockets, TLS handshake errors, and drain timeouts are written to `stderr` in the format selected by `HALE_LOG_FORMAT`, with `logger` identifying the runtime subsystem (`lotus.tcp`, `lotus.tls`, `lotus.drain`). A client that hangs up before reading its response (`EPIPE` / `ECONNRESET` on the write) is not an error: the runtime records it at `debug`, which is written only under `HALE_LOG=debug`.
+- **Runtime diagnostics**: Failed sockets, TLS handshake errors, and drain timeouts are written to `stderr` in the format selected by `HALE_LOG_FORMAT`, with `logger` identifying the runtime subsystem (`lotus.tcp`, `lotus.tls`, `lotus.drain`). A client that hangs up before reading its response (`EPIPE` / `ECONNRESET` on the write, plain or TLS) is not an error: the runtime records it at `debug`, which is written only under `HALE_LOG=debug`. The one exception is a bus binding configured through `LOTUS_BUS_CONFIG`: no locus serves it, so nothing else reports its peer going away, and its first lost send is a `warn` record (the later ones `debug`).
 - **Local shared-memory telemetry (`LOTUS_OBS=1`)**: Setting `LOTUS_OBS=1` (enabled automatically by `hale run --observe`) publishes the live locus tree and bus traffic to a local shared-memory segment that the [local observer](../systems/iris.md) attaches to.
 
 ---

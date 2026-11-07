@@ -718,6 +718,7 @@ static int lotus_tls__send_bytes(int handle, const void *bytes_ptr, int64_t unti
             stall = -1;
             continue;
         }
+        int sys = errno;   /* the write's, before anything below moves it */
         int err = SSL_get_error(ssl, n);
         if (raw_fd >= 0
             && (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ)) {
@@ -743,9 +744,23 @@ static int lotus_tls__send_bytes(int handle, const void *bytes_ptr, int64_t unti
             }
         }
         {
-            char f[64];
-            snprintf(f, sizeof f, "err=%d", err);
-            lotus_tls__diag(3, "SSL_write failed", f);
+            /* The peer hanging up under the write (EPIPE / ECONNRESET
+             * from the socket, or its close_notify) is the DEBUG record
+             * every send path writes for it (review of #1869, finding
+             * 7: the plain-tcp and bus sends had it, this one stayed
+             * ERROR); any other failure is ERROR. The socket's errno
+             * rides the record. */
+            int hangup = (err == SSL_ERROR_ZERO_RETURN)
+                || (err == SSL_ERROR_SYSCALL
+                    && (sys == EPIPE || sys == ECONNRESET));
+            char f[160];
+            if (err == SSL_ERROR_SYSCALL) {
+                snprintf(f, sizeof f, "err=%d errno=%d", err, sys);
+                lotus_diag_field(f, sizeof f, "error", strerror(sys));
+            } else {
+                snprintf(f, sizeof f, "err=%d", err);
+            }
+            lotus_tls__diag(hangup ? 4 : 3, "SSL_write failed", f);
         }
         errno = EIO;
         return -1;

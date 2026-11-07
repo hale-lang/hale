@@ -4552,7 +4552,18 @@ transport, a client that closed before it read the answer — is a
 `debug` record (2026-11-06, downstream handoff: it was an `error` line
 on stderr for every early close, outside the program's `std::log`
 sinks and under no level filter); any other errno on the same write
-is an `error`. The runtime writes its `debug` and `trace` records only
+is an `error`. A bus binding the environment configured
+(`LOTUS_BUS_CONFIG`) is served by no locus, so nothing marks it lost
+when its peer is gone: its first lost send is a `warn` record, written
+regardless of `HALE_LOG`, and the later ones `debug` (2026-11-07,
+review of #1869: the `debug` record left a dead `unix://` peer of a
+configured binding visible only in a counter); a binding served by a
+locus marks itself lost and the loss is dispatched to its supervisor,
+so its record is `debug`. A TLS write the peer's hang-up fails
+(`SSL_ERROR_SYSCALL` with `EPIPE` or `ECONNRESET`, or the peer's
+close_notify) is the same `debug` record, with the errno on it; any
+other `SSL_write` failure stays an `error`, so the rule holds on every
+send path. The runtime writes its `debug` and `trace` records only
 when `HALE_LOG` names `debug` or `trace`; unset or any other value
 leaves them unwritten, where `std::log`'s own threshold filters
 nothing when unset, because these are the runtime's debugging, asked
