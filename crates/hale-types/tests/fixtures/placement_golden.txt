@@ -497,7 +497,7 @@ row	Shop@literal1.staff	__StdApiStaticRoles	main	default
 shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	dynamic	sites in the seed #09510ed0
 
-== crates/hale-cli/tests/fixtures/api_shapes/main.hl#444ccdd2
+== crates/hale-cli/tests/fixtures/api_shapes/main.hl#a8ea23d6
 root	Desk	the entry
 domain	pool:__api_http	async_io
 hole	Desk@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
@@ -1572,6 +1572,15 @@ row	D@literal1.ab	A__b	main	default
 row	D@literal1.t	Tok	main	default
 shared	D@literal1.__rpc_h_1	__StdApiHttpListener #80abdd5b
 shared	dynamic	sites in the seed #042a0a8b
+
+== crates/hale-codegen/tests/api_pb_codec.rs#07425596
+root	Desk	the entry
+domain	pool:__api_grpc	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.probe	Probe	main	default
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
+shared	dynamic	sites in the seed #d81b1982
 
 == crates/hale-codegen/tests/api_rest.rs#24802f4b
 root	Svc	the entry
