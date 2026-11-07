@@ -293,6 +293,157 @@ fn a_draining_read_outside_run_does_not_skip_the_wait_for_it() {
 /// after the worker is done — and still sees it, so the program ends.
 /// Alone, a child that reads `draining` sees the drain at once (the
 /// shape before this: `loop out` printed first).
+/// The watches-drain column reaches the read through any receiver that
+/// is the locus by declared type, not only a literal `self` (the #1869
+/// review's follow-ups, 2026-11-07): each `Worker` here loops until the
+/// drain, so a column that missed its read would have the no-run() main
+/// await a run() only the drain can end — the program would loop until
+/// the 20 s bound. With the read seen the child is not awaited and the
+/// program ends on its own under the tree drain: a `let` alias of `self`
+/// calling a method, the alias handed to a free fn, `self` handed to
+/// another locus's method that reads its parameter, a holder built with
+/// `target: self` whose method reads `self.target.draining`, a two-level
+/// holder chain, and an alias an inner block shadows (with a control
+/// that renames the inner binding).
+#[test]
+fn a_run_reading_draining_through_an_alias_an_argument_or_a_field_is_not_awaited() {
+    let main = "main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: pinned(core = 0); }
+        }
+        fn main() { App { }; println(\"after\"); }
+        ";
+    let shapes: [(&str, &str); 7] = [
+        ("alias_method", "locus Worker {
+            fn stopped() -> Bool { return self.draining; }
+            run() { let w = self; while !w.stopped() { std::time::sleep(10ms); } println(\"worker out\"); }
+        }
+        "),
+        ("free_fn_alias", "fn stopped(w: Worker) -> Bool { return w.draining; }
+        locus Worker {
+            run() { let w = self; while !stopped(w) { std::time::sleep(10ms); } println(\"worker out\"); }
+        }
+        "),
+        ("watch_arg", "locus Watch {
+            fn stopped(w: Worker) -> Bool { return w.draining; }
+        }
+        locus Worker {
+            params { watcher: Watch = Watch { }; }
+            run() { while !self.watcher.stopped(self) { std::time::sleep(10ms); } println(\"worker out\"); }
+        }
+        "),
+        ("field", "locus Watch {
+            params { target: Worker; }
+            fn stopped() -> Bool { return self.target.draining; }
+        }
+        locus Worker {
+            run() {
+                let watcher = Watch { target: self };
+                while !watcher.stopped() { std::time::sleep(10ms); }
+                println(\"worker out\");
+            }
+        }
+        "),
+        ("field_chain", "locus Holder {
+            params { target: Worker; }
+        }
+        locus Watch {
+            params { holder: Holder; }
+            fn stopped() -> Bool { return self.holder.target.draining; }
+        }
+        locus Worker {
+            run() {
+                let watcher = Watch { holder: Holder { target: self } };
+                while !watcher.stopped() { std::time::sleep(10ms); }
+                println(\"worker out\");
+            }
+        }
+        "),
+        ("shadow", "locus Other { params { n: Int = 0; } }
+        locus Worker {
+            run() {
+                let w = self;
+                if true { let w = Other { }; println(w.n); }
+                while !w.draining { std::time::sleep(10ms); }
+                println(\"worker out\");
+            }
+        }
+        "),
+        ("shadow_control", "locus Other { params { n: Int = 0; } }
+        locus Worker {
+            run() {
+                let w = self;
+                if true { let v = Other { }; println(v.n); }
+                while !w.draining { std::time::sleep(10ms); }
+                println(\"worker out\");
+            }
+        }
+        "),
+    ];
+    for (tag, loci) in shapes {
+        let src = format!("{loci}{main}");
+        let bin = harness::unique_bin(&format!("tree_drain_reads_{tag}"));
+        build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+        let out = run_bounded(&bin, 20, &[]);
+        let _ = std::fs::remove_file(&bin);
+        assert!(out.status.success(), "{tag}: {:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+        let l = lines(&out);
+        assert!(pos(&l, "worker out") < pos(&l, "after"), "{tag}: the drain ended the loop:\n{}", l.join("\n"));
+    }
+}
+
+/// The column's other side: a holder's method that reads only its own
+/// `self.draining` — the holder declaring a `Worker` field, or handed the
+/// `Worker` as an argument — reads another locus's drain, so the finite
+/// `Worker` does not watch and is awaited: `worker done` before `after`,
+/// its sleeps uncut.
+#[test]
+fn a_run_reading_only_another_locus_s_draining_is_awaited() {
+    let main = "main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: pinned(core = 0); }
+        }
+        fn main() { App { }; println(\"after\"); }
+        ";
+    let shapes: [(&str, &str); 2] = [
+        ("field_self", "locus Watch {
+            params { target: Worker; }
+            fn stopped() -> Bool { return self.draining; }
+        }
+        locus Worker {
+            run() {
+                let watcher = Watch { target: self };
+                let mut i = 0;
+                while i < 3 && !watcher.stopped() { i = i + 1; std::time::sleep(20ms); }
+                println(\"worker done\");
+            }
+        }
+        "),
+        ("arg_self", "locus Watch {
+            fn stopped(w: Worker) -> Bool { return self.draining; }
+        }
+        locus Worker {
+            params { watcher: Watch = Watch { }; }
+            run() {
+                let mut i = 0;
+                while i < 3 && !self.watcher.stopped(self) { i = i + 1; std::time::sleep(20ms); }
+                println(\"worker done\");
+            }
+        }
+        "),
+    ];
+    for (tag, loci) in shapes {
+        let src = format!("{loci}{main}");
+        let bin = harness::unique_bin(&format!("tree_drain_reads_{tag}"));
+        build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+        let out = run_bounded(&bin, 20, &[]);
+        let _ = std::fs::remove_file(&bin);
+        assert!(out.status.success(), "{tag}: {:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+        let l = lines(&out);
+        assert!(pos(&l, "worker done") < pos(&l, "after"), "{tag}: the finite worker was awaited:\n{}", l.join("\n"));
+    }
+}
+
 #[test]
 fn a_main_with_no_run_drains_its_tree_once_its_workers_have_returned() {
     let src = format!(

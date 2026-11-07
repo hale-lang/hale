@@ -5380,10 +5380,21 @@ SIGINT or SIGTERM:
    100 ms slice (at once, on an `async_io` pool), and a
    deadline-bounded park on an `async_io` pool — a `recv` with a
    timeout — reports its timeout. A timed wait that **begins during
-   the drain** in a `run()` that reads `draining`, itself or through a
-   fn or method of the program it calls (one of the program's own loci;
-   a standard-library locus's bodies run in their caller's frame; a read
-   in a handler or a hook does not make the `run()` one that reads it)
+   the drain** in a `run()` that reads its locus's `draining`, itself or
+   through a fn or method of the program it calls, transitively,
+   through any receiver that is the locus by declared type — `self`, a
+   `let` alias of it (in its block), a parameter a method or free fn
+   binds to it (a call on another locus that hands it this locus is
+   followed), or a declared field path whose type is the locus (a call
+   on a locus whose params declare a field of this locus's type, or of
+   a holder of one, transitively, a collection or projection of it
+   included, is followed, and its `self.<field>` is this locus: by
+   declared types, not by construction) — or that the declarations
+   cannot resolve, which is taken as a read (one of the program's own
+   loci; a standard-library locus's bodies run in their caller's frame;
+   a read in a handler or a hook, or of another locus's `draining`, a
+   holder's own `self.draining` included, does not make the `run()`
+   one that reads it)
    returns at once the same way, until that `run()` has read
    `draining` as `true`: a `while !self.draining { work();
    std::time::sleep(30s); }` loop that was in `work()` when the
