@@ -17775,9 +17775,12 @@ impl<'a> Checker<'a> {
         if records {
             self.views.note_place(&lv.head, ty.clone());
         }
+        // The place as written up to the segment at hand, for a hint.
+        let mut spelled = lv.head.name.clone();
         for seg in &lv.tail {
             match seg {
                 LValueSeg::Field(f) => {
+                    spelled = format!("{spelled}.{}", f.name);
                     // GH #436 follow-up: an assignment TARGET resolves
                     // here, not through the expression field-access
                     // arm, so sealing was enforced on reads and not on
@@ -17843,8 +17846,9 @@ impl<'a> Checker<'a> {
                 }
                 LValueSeg::Index(idx) => {
                     let _ = self.check_expr(idx);
-                    ty = match ty {
+                    ty = match self.through_aliases(ty.clone()) {
                         Ty::Array(elem, _) => *elem,
+                        Ty::Bounded(elem, _) => self.refuse_bounded_index(&spelled.clone(), &ty, *elem, idx.span()),
                         _ => Ty::Unknown,
                     };
                     if records {
@@ -18998,6 +19002,38 @@ impl<'a> Checker<'a> {
             Ty::Unknown => Some(Ty::Unknown),
             _ => None,
         }
+    }
+
+    /// `t` with its `type` aliases followed (a bounded number of times).
+    fn through_aliases(&self, mut t: Ty) -> Ty {
+        for _ in 0..16 {
+            let Ty::Named(n) = &t else { break };
+            let Some(TopSymbol::Type(info)) = self.top.lookup(n) else { break };
+            let TypeKind::Alias(a) = &info.kind else { break };
+            t = a.clone();
+        }
+        t
+    }
+
+    /// `f[i]` on a `bounded[T; N]` place or value is refused at the
+    /// check: the type-level collection's operations are the free
+    /// intrinsics (spec/types.md § bounded[T; N]), and an element is
+    /// read with `at(f, i)` and written with `set(f, i, x)`, each
+    /// fallible past the live count, where `[i]` has no bound to
+    /// check against. The build refused it with no file or line
+    /// until 2026-11-06 (downstream handoff). Returns the element
+    /// type, so what follows the index is typed as written.
+    fn refuse_bounded_index(&mut self, recv: &str, bounded: &Ty, elem: Ty, span: Span) -> Ty {
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "`[i]` does not apply to a `{}`: a `bounded`'s element is read with `at({recv}, i) or …` and \
+                 written with `set({recv}, i, x) or …`, each fallible past the live count \
+                 (spec/types.md § bounded[T; N])",
+                bounded.display()
+            ),
+        ));
+        elem
     }
 
     /// The spelling of a receiver for a hint that rewrites a call on it
@@ -23984,11 +24020,15 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Expr::Index { receiver, index, .. } => {
+            Expr::Index { receiver, index, span } => {
                 let rt = self.check_expr(receiver);
                 let _ = self.check_expr(index);
-                match rt {
+                match self.through_aliases(rt.clone()) {
                     Ty::Array(elem, _) => *elem,
+                    Ty::Bounded(elem, _) => {
+                        let recv = Self::spell_receiver(receiver);
+                        self.refuse_bounded_index(&recv, &rt, *elem, *span)
+                    }
                     _ => Ty::Unknown,
                 }
             }

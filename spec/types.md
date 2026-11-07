@@ -1239,7 +1239,14 @@ f.get(i)         -> T   fallible(IndexError)      // = at(f, i); see below
 ```
 
 `get` is the one operation in method position, and the same is true
-of `[T; N]`. Element chains rewrite to a loop that fetches through
+of `[T; N]`. `f[i]` is not an operation of a `bounded`: an element is
+read with `at(f, i)` and written with `set(f, i, x)`, each fallible past
+the live count, where `[i]` would have no bound to check against. The
+check refuses it, in value position and as an assignment target, naming
+both ("\`[i]\` does not apply to a \`bounded[Rec; 16]\`: a \`bounded\`'s
+element is read with \`at(self.items, i) or …\` and written with
+\`set(self.items, i, x) or …\` …"); until 2026-11-06 it passed and the
+build refused it with no file or line. Element chains rewrite to a loop that fetches through
 the source's `get`, so answering that name is what makes a form
 chainable at all — without it, `f.filter(…).count()` failed with
 "no field `get`" and the type-level collections could not anchor a

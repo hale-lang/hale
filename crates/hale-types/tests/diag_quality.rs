@@ -947,6 +947,41 @@ fn a_blocks_trailing_match_is_typed_as_its_value() {
     assert!(ds[1].starts_with("let `b` needs a value, and this expression produces none"), "{ds:?}");
 }
 
+/// `f[i]` on a `bounded[T; N]` (written or through an alias) is refused
+/// at the check in value position and as an assignment target, pointing
+/// at `at(f, i)` / `set(f, i, x)` (spec/types.md § bounded[T; N]: the
+/// operations are the free intrinsics; `[i]` has no live count to check
+/// against). The build refused it with no file or line while the check
+/// passed it (downstream handoff). The element type is still what
+/// follows, so `.name` after the index is typed as written; `at`, `[i]`
+/// on an array, and a `bounded` inside an indexed array pass.
+#[test]
+fn indexing_a_bounded_is_refused_for_at_and_set() {
+    let ds = diags(
+        r#"
+        type Rec { name: String = ""; }
+        type Items = bounded[Rec; 16];
+        type Row { xs: [Int; 4] = [0; 4]; }
+        locus Store {
+            params { items: bounded[Rec; 16]; alias: Items; rows: [Row; 2] = [Row { }, Row { }]; }
+            fn read(i: Int) -> String { return self.items[i].name; }
+            fn read_alias(i: Int) -> String { return self.alias[i].name; }
+            fn write(i: Int) { self.items[i].name = "x"; }
+            fn whole(i: Int) -> Rec { let r = self.items[i]; return r; }
+            fn fine(i: Int) -> Int { let r = at(self.items, i) or Rec { }; self.rows[0].xs[i] = 1; return self.rows[1].xs[i] + len(r.name); }
+        }
+        fn main() { let s = Store { }; println(s.read(0)); }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("`[i]` does not apply")).collect();
+    assert_eq!(hits.len(), 4, "{ds:?}");
+    assert!(hits[0].contains("`bounded[Rec; 16]`") && hits[0].contains("`at(self.items, i) or …`") && hits[0].contains("`set(self.items, i, x) or …`"), "{hits:?}");
+    assert!(hits[1].contains("`at(self.alias, i) or …`"), "through the alias: {hits:?}");
+    assert!(hits[2].contains("`set(self.items, i, x) or …`"), "the assignment target: {hits:?}");
+    assert!(hits[3].contains("`at(self.items, i) or …`"), "{hits:?}");
+    assert_eq!(ds.len(), 4, "nothing else: {ds:?}");
+}
+
 /// The one-owner rule (spec/memory.md, invariant 3 of the per-method
 /// scratch reclaim): a call publishes one arena for a callee that may
 /// write through its arguments, so handing it both a record a field of

@@ -38,6 +38,8 @@ Each `@form` locus manages a single collection (one `@form` per locus). Use `@fo
 
 *\*Operations marked with `*` are `fallible` (out-of-bounds, missing key, empty, or at capacity) and require an `or` clause.*
 
+A `bounded` is not indexed with `[i]`: read an element with `at(f, i) or …` and write one with `set(f, i, x) or …`, each fallible past the live count (`hale check` refuses `f[i]` and names both).
+
 The free builtin `len(x)` measures a `String`, a `Bytes` or a fixed array only. A form's length is its own `len()` method and a `bounded`'s live count is `count(f)`; `hale check` refuses `len(v)` on either and names the spelling to use (`v.len()` / `count(f)`).
 
 ## Growable Lists (`@form(vec)`)
