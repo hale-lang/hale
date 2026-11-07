@@ -10851,11 +10851,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             })
             .map(|(name, _)| name.clone())
             .collect();
-        // The loci whose run() watches the drain: it reads `draining`
-        // itself, or in a method of its own or a free fn it calls,
-        // transitively (`hale_types::lifecycle::run_reads_draining`). A
+        // The loci whose run() watches the drain: it reads its locus's
+        // `draining` itself, or in a method of its own or a free fn it
+        // calls, transitively, through any receiver that resolves to
+        // the locus (`self`, a `let` alias, a parameter bound to it) or
+        // that cannot be resolved
+        // (`hale_types::lifecycle::DrainReadRows::run_reads_draining`). A
         // read in a handler, in a `drain()` / `dissolve()` hook, or in a
-        // method the run() never reaches makes the locus an observer
+        // method the run() never reaches, or of another locus's
+        // `draining`, makes the locus an observer
         // (below) but not its run() a watcher: the wait frames of
         // `emit_wait_frame_enter` and the no-run() main's pinned-run
         // awaits (`emit_pinned_run_awaits`) read this one flag. Until

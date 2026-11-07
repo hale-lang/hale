@@ -343,6 +343,72 @@ fn a_pinned_child_whose_run_reads_draining_is_not_awaited() {
     }
 }
 
+/// The flag is about this locus's `draining`, reached from run() through
+/// any receiver that resolves to the locus — `self`, a `let` alias of it,
+/// a parameter a free fn binds to it — or that the rows cannot resolve.
+/// Each shape here loops until the drain: the flag is 1 in the IR, the
+/// child is not awaited, and the program ends on its own under the tree
+/// drain (awaited, it would loop until the 20 s bound: the reviewer's
+/// hang, `let w = self; while !w.stopped()`, where the walk followed a
+/// method call only on a literal `self`; downstream handoff review,
+/// 2026-11-07). The other side: a run() that reads only another locus's
+/// `draining` sets no flag and is awaited.
+#[test]
+fn a_run_reading_draining_through_an_alias_or_a_free_fn_is_not_awaited() {
+    let shapes: [(&str, &str, &str); 4] = [
+        ("alias_method", "", "fn stopped() -> Bool { return self.draining; }\n run() { let w = self; while !w.stopped() { std::time::sleep(10ms); } println(\"worker out\"); }"),
+        ("free_fn_self", "fn stopped(w: Worker) -> Bool { return w.draining; }\n", "run() { while !stopped(self) { std::time::sleep(10ms); } println(\"worker out\"); }"),
+        ("free_fn_alias", "fn stopped(w: Worker) -> Bool { return w.draining; }\n", "run() { let w = self; while !stopped(w) { std::time::sleep(10ms); } println(\"worker out\"); }"),
+        ("alias_field", "", "fn stopped() -> Bool { let me = self; return me.draining; }\n run() { while !self.stopped() { std::time::sleep(10ms); } println(\"worker out\"); }"),
+    ];
+    for (tag, free, members) in shapes {
+        let src = format!(
+            "{free}locus Worker {{
+                {members}
+            }}
+            main locus App {{
+                params {{ w: Worker = Worker {{ }}; }}
+                placement {{ w: pinned(core = 0); }}
+            }}
+            fn main() {{ App {{ }}; println(\"after\"); }}
+            "
+        );
+        let bin = harness::unique_bin(&format!("tree_drain_reads_{tag}"));
+        let ir = harness::build_source_ir_text(&src, &bin).expect("build");
+        assert!(ir.contains("lotus.reads_drain.Worker = private global i64 1"), "{tag}: the flag is 1:\n{}", ir.lines().filter(|l| l.contains("reads_drain")).collect::<Vec<_>>().join("\n"));
+        let out = run_bounded(&bin, 20, &[]);
+        let _ = std::fs::remove_file(&bin);
+        assert!(out.status.success(), "{tag}: {:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+        let l = lines(&out);
+        assert!(pos(&l, "worker out") < pos(&l, "after"), "{tag}: the drain ended the loop:\n{}", l.join("\n"));
+    }
+
+    // another locus's `draining` is not this locus's: flag 0, awaited
+    let src = "locus Other { params { n: Int = 0; } }
+        locus Worker {
+            params { o: Other = Other { }; }
+            run() {
+                let mut i = 0;
+                while i < 3 { if self.o.draining { println(\"o drains\"); } i = i + 1; std::time::sleep(20ms); }
+                println(\"worker done\");
+            }
+        }
+        main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: pinned; }
+        }
+        fn main() { App { }; println(\"after\"); }
+        ";
+    let bin = harness::unique_bin("tree_drain_reads_other");
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
+    assert!(ir.contains("lotus.reads_drain.Worker = private global i64 0"), "another locus's draining:\n{}", ir.lines().filter(|l| l.contains("reads_drain")).collect::<Vec<_>>().join("\n"));
+    let out = run_bounded(&bin, 20, &[]);
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "{:?}\n{}", out.status, String::from_utf8_lossy(&out.stderr));
+    let l = lines(&out);
+    assert!(pos(&l, "worker done") < pos(&l, "after"), "{}", l.join("\n"));
+}
+
 /// The same main locus with a pinned worker that does not read
 /// `draining` beside a pinned child that loops on it: the tree's drain
 /// begins once the worker's `run()` has returned, so the loop sees it

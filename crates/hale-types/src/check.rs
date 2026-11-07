@@ -4195,14 +4195,9 @@ struct DrainHookRows<'r, 'a> {
 /// reported.
 fn check_drain_hook_behind_endless_run(rows: &DrainHookRows<'_, '_>, out: &mut Vec<Violation>) {
     let DrainHookRows { bundle, flows } = *rows;
-    // The program's free fns, by name, a module's included: what a bare
-    // call in a `run()` reaches.
-    let mut free_fns: BTreeMap<&str, &FnDecl> = BTreeMap::new();
-    for program in bundle.programs.values() {
-        for (name, f) in crate::lifecycle::free_fns_of(&program.items) {
-            free_fns.entry(name).or_insert(f);
-        }
-    }
+    // The bundle's loci, their fields and free fns: what a receiver in a
+    // `run()`, or a bare call there, resolves to.
+    let rows = crate::lifecycle::DrainReadRows::of_many(bundle.programs.values().map(|p| p.items.as_slice()));
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(l) = item else { return };
@@ -4222,7 +4217,7 @@ fn check_drain_hook_behind_endless_run(rows: &DrainHookRows<'_, '_>, out: &mut V
                 return;
             };
             let Some(endless) = never_returns(flows, l) else { return };
-            if crate::lifecycle::run_reads_draining(l, &free_fns) {
+            if rows.run_reads_draining(l) {
                 return;
             }
             out.push(
