@@ -373,6 +373,7 @@ crates/hale-codegen/tests/bus_bounded_topics.rs#2 ca87e2d172ed22d9
 crates/hale-codegen/tests/bus_bytes_payload.rs#0 90d5770f3defa386
 crates/hale-codegen/tests/bus_bytes_payload.rs#1 cd9ca74e2c60ea3b
 crates/hale-codegen/tests/bus_config.rs#1 91bc84c0d2fe3d5d
+crates/hale-codegen/tests/bus_config.rs#2 421f3d31d51e667d
 crates/hale-codegen/tests/bus_cross_thread_drain.rs#0 aa385b851b46361f
 crates/hale-codegen/tests/bus_decimal_store.rs#0 3f25e0e61b4c6c5f
 crates/hale-codegen/tests/bus_decimal_store.rs#1 66dd4f50d6e8e2c6
@@ -455,6 +456,7 @@ crates/hale-codegen/tests/bus_subscriber.rs#4 f0c623a2e83da3a6
 crates/hale-codegen/tests/bus_subscriber.rs#5 91bc84c0d2fe3d5d
 crates/hale-codegen/tests/bus_udp_ingress.rs#0 1c2a01c0c4719d4f
 crates/hale-codegen/tests/bus_udp_ingress.rs#1 21c0e43606cd5706
+crates/hale-codegen/tests/bus_udp_ingress.rs#2 1c2a01c0c4719d4f
 crates/hale-codegen/tests/bus_udp_transport.rs#0 022d13b35b34d417
 crates/hale-codegen/tests/bus_udp_transport.rs#1 21c0e43606cd5706
 crates/hale-codegen/tests/bus_udp_transport.rs#10 c237bb4720a88922
@@ -977,7 +979,8 @@ crates/hale-codegen/tests/held_field_view.rs#3 8e4058ce6b5fa260
 crates/hale-codegen/tests/held_field_view.rs#4 93574f44cbda7aba
 crates/hale-codegen/tests/held_field_view.rs#5 f1e280d33dbea6d3
 crates/hale-codegen/tests/http_chunked_request.rs#0 2faf15512d6ee2e7
-crates/hale-codegen/tests/http_chunked_request.rs#1 a97dc08346895573
+crates/hale-codegen/tests/http_chunked_request.rs#1 2faf15512d6ee2e7
+crates/hale-codegen/tests/http_chunked_request.rs#2 a97dc08346895573
 crates/hale-codegen/tests/http_peer_hangup.rs#0 36322a79f191f58a
 crates/hale-codegen/tests/http_request_headers.rs#0 f21fbc665a9c2254
 crates/hale-codegen/tests/http_request_headers.rs#1 f21fbc665a9c2254
@@ -1728,6 +1731,7 @@ crates/hale-stdlib/hl/crypto_sha256.hl b68948b7c74811dd
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/hex.hl eb377492db5d27b1
 crates/hale-stdlib/hl/http.hl 67a1c930833df0a8
+crates/hale-stdlib/hl/http_client.hl eb5d0299409b2bc6
 crates/hale-stdlib/hl/http_read.hl 1fc27db38d44bca7
 crates/hale-stdlib/hl/io_tcp.hl 6be8920a3d36060a
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1
