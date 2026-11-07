@@ -928,6 +928,18 @@ mod tests {
         assert_eq!((v["uid"].as_str(), v["title"].as_str()), (Some("hale-containers"), Some("Services")), "the Containers dashboard's uid, so its links still reach it");
         let hosts: serde_json::Value = serde_json::from_str(HOSTS_DASHBOARD).unwrap();
         assert!(hosts["links"].as_array().unwrap().iter().any(|l| l["title"] == "Services" && l["url"] == "/grafana/d/hale-containers"));
+        // no table gauge shows its own value: Grafana sizes that text row by
+        // row, and the bars of one column would no longer line up
+        for board in [HOSTS_DASHBOARD, SERVICES_DASHBOARD] {
+            let v: serde_json::Value = serde_json::from_str(board).unwrap();
+            for p in v["panels"].as_array().unwrap().iter().filter(|p| p["type"] == "table") {
+                let f = &p["fieldConfig"];
+                let cells = std::iter::once(&f["defaults"]["custom"]["cellOptions"]).chain(f["overrides"].as_array().into_iter().flatten().flat_map(|o| o["properties"].as_array().unwrap()).filter(|q| q["id"] == "custom.cellOptions").map(|q| &q["value"]));
+                for c in cells.filter(|c| c["type"] == "gauge") {
+                    assert_eq!(c["valueDisplayMode"], "hidden", "{}: {c}", p["title"]);
+                }
+            }
+        }
     }
 
     #[test]
@@ -960,15 +972,45 @@ mod tests {
             assert!(q.starts_with(&format!("sum by (host) ({m}{{")) && q.contains(&format!("count by (host) ({m}{{")) && q.contains("== count by (host) (nvidia_smi_gpu_info{"), "{q}");
         }
         assert!(exprs[12].contains("max by (host) (nvidia_smi_temperature_gpu{") && exprs[13].contains("sum by (host) (nvidia_smi_power_draw_watts{"));
-        let names = &top["transformations"][1]["options"]["renameByName"];
-        let order = &top["transformations"][1]["options"]["indexByName"];
-        for (i, (r, n)) in [("J", "GPU busy"), ("K", "GPU memory"), ("L", "GPU memory in use"), ("M", "GPU temperature"), ("N", "GPU power")].into_iter().enumerate() {
-            assert_eq!((names[format!("Value #{r}")].as_str(), order[format!("Value #{r}")].as_u64()), (Some(n), Some(10 + i as u64)), "{r}");
+        let steps = top["transformations"].as_array().unwrap();
+        let org = &steps.last().unwrap()["options"];
+        let (names, order) = (&org["renameByName"], &org["indexByName"]);
+        for (r, n, i) in [("J", "GPU busy", 13), ("K", "GPU memory", 15), ("L", "GPU memory in use", 16), ("M", "GPU temperature", 17), ("N", "GPU power", 18)] {
+            assert_eq!((names[format!("Value #{r}")].as_str(), order[format!("Value #{r}")].as_u64()), (Some(n), Some(i)), "{r}");
         }
-        let unit = |n: &str| top["fieldConfig"]["overrides"].as_array().unwrap().iter().find(|o| o["matcher"]["options"] == n).and_then(|o| o["properties"].as_array().unwrap().iter().find(|p| p["id"] == "unit")).map(|p| p["value"].clone());
+        let overrides = top["fieldConfig"]["overrides"].as_array().unwrap();
+        let prop = |n: &str, id: &str| overrides.iter().find(|o| o["matcher"]["options"] == n).and_then(|o| o["properties"].as_array().unwrap().iter().find(|p| p["id"] == id)).map(|p| p["value"].clone());
+        let unit = |n: &str| prop(n, "unit");
         assert_eq!((unit("GPU busy"), unit("GPU temperature"), unit("GPU power")), (Some("percent".into()), Some("celsius".into()), Some("watt".into())));
-        assert_eq!(top["transformations"][0]["id"], "merge");
-        assert_eq!(top["transformations"][1]["options"]["excludeByName"]["Time"], true);
+        assert_eq!((steps[0]["id"].as_str(), steps.last().unwrap()["id"].as_str()), (Some("merge"), Some("organize")));
+        assert_eq!(org["excludeByName"]["Time"], true);
+        // Each share is a percent and, in the column after it, a gauge of the
+        // same reading with its value hidden. Grafana 13's table gauge sizes
+        // its value text to the longest value it has seen so far, so a gauge
+        // showing its own "7%" beside another row's "42%" starts and ends its
+        // bar somewhere else; hidden, the bar is the whole cell, every row's
+        // the same at any value and any width.
+        let mut blanks = std::collections::HashSet::new();
+        for (r, n) in [("D", "memory used"), ("H", "disk used"), ("I", "CPU busy"), ("J", "GPU busy")] {
+            let bar = format!("{n} bar");
+            let copy = steps.iter().find(|t| t["options"]["alias"] == bar.as_str()).unwrap_or_else(|| panic!("{bar}"));
+            // `last` of the one reading keeps a blank (a Mac's GPU) blank, where arithmetic would make it 0
+            assert_eq!((copy["id"].as_str(), copy["options"]["mode"].as_str(), copy["options"]["reduce"]["reducer"].as_str()), (Some("calculateField"), Some("reduceRow"), Some("last")), "{bar}");
+            assert_eq!(copy["options"]["reduce"]["include"], serde_json::json!([format!("Value #{r}")]), "{bar}");
+            let at = order[format!("Value #{r}")].as_u64().unwrap();
+            assert_eq!((names[format!("Value #{r}")].as_str(), order[&bar].as_u64()), (Some(n), Some(at + 1)), "{n}: the gauge beside its percent");
+            assert_eq!((unit(n), prop(n, "decimals"), prop(n, "custom.cellOptions")), (Some("percent".into()), Some(0.into()), None), "{n}: a plain number");
+            let cell = prop(&bar, "custom.cellOptions").unwrap();
+            assert_eq!((cell["type"].as_str(), cell["valueDisplayMode"].as_str()), (Some("gauge"), Some("hidden")), "{bar}");
+            assert_eq!((prop(&bar, "min"), prop(&bar, "max"), prop(&bar, "unit")), (Some(0.into()), Some(100.into()), Some("percent".into())), "{bar}");
+            assert!(prop(&bar, "custom.width").and_then(|w| w.as_u64()).is_some(), "{bar}: one width for every row");
+            assert_eq!(prop(&bar, "thresholds").unwrap()["steps"].as_array().unwrap().iter().map(|s| s["value"].as_u64()).collect::<Vec<_>>(), vec![None, Some(75), Some(90)], "{bar}");
+            // no header of its own (its percent's names it), but a distinct one:
+            // the table keys its columns by the name it shows
+            let shown = prop(&bar, "displayName").unwrap();
+            let shown = shown.as_str().unwrap();
+            assert!(shown.trim().is_empty() && blanks.insert(shown.to_string()), "{bar}: {shown:?}");
+        }
         // nothing overlaps: every panel's cells are its own
         let mut cells = std::collections::HashSet::new();
         for p in panels {

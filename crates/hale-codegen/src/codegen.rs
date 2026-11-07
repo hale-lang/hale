@@ -1837,6 +1837,7 @@ fn build_resolved_lowered(
         accumulator_ctx: None,
         serializers: BTreeMap::new(),
         ser_bound: None,
+        de_checked: false,
         codec_thunks: BTreeMap::new(),
         generic_fn_templates: BTreeMap::new(),
         generic_locus_templates: BTreeMap::new(),
@@ -4445,6 +4446,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// and lets the cursor run on, so the function returns the size the
     /// payload needs and the caller can hand it a buffer that big.
     pub(crate) ser_bound: Option<(PointerValue<'ctx>, inkwell::values::IntValue<'ctx>)>,
+    /// Inside a deserializer body: whether this is the wire decoder
+    /// (`__deserialize_wire_T`, every read held to the frame) or the
+    /// local one (`__deserialize_T`, straight-line: a local cell is the
+    /// program's own serializer's bytes, not a wire frame).
+    pub(crate) de_checked: bool,
     /// F.36 Slice 3b: per-subject codec thunk pair. Populated by
     /// `emit_codec_binding_register` when a binding entry carries
     /// `codec(L { ... })`. Each thunk matches the m70 serializer
@@ -4994,7 +5000,17 @@ pub(crate) struct SerializerPair<'ctx> {
     /// returning the struct's natural size on success or -1 on
     /// error. Identity body at v0.1 memcpys `sizeof(T)` bytes
     /// (which equals `n` because the wire format is identity).
+    /// The LOCAL decoder: what the registry, a cross-pool create cell
+    /// and every in-process delivery use. Straight-line, no bound
+    /// checks: a local cell holds the program's own serializer's
+    /// bytes, not a wire frame (2026-11-07).
     pub(crate) deserialize: FunctionValue<'ctx>,
+    /// `__deserialize_wire_T`: the same walk with every read held to
+    /// the frame's remaining length and a frame shorter than the
+    /// type's minimum refused (-1). The transport readers' entry: the
+    /// runtime maps `deserialize` to it (`lotus_bus_wire_decoder`)
+    /// where foreign bytes come in (downstream handoff, 2026-11-07).
+    pub(crate) deserialize_wire: FunctionValue<'ctx>,
 }
 
 /// F.36 Slice 3b: per-subject codec thunk pair. Each thunk has
@@ -6105,6 +6121,12 @@ pub(crate) struct LocusInfo<'ctx> {
     /// is cut until it reads the flag), and a main locus with no run()
     /// does not wait for it before its tree's drain.
     pub(crate) run_watches_drain: bool,
+    /// GH #1858: the flow rows' `manual_drain` column for this locus's
+    /// declaration (`FlowRows::run_manual_drain`): its `run()` definitely
+    /// reads `draining`, so it is manual: no back-edge stops in its loops,
+    /// and its wait frame watches the drain (1) where every other run()'s
+    /// is a stopped one (-1).
+    pub(crate) run_manual_drain: bool,
 }
 
 /// F.22 slot record carried on every LocusInfo. v1 surface:
@@ -10144,6 +10166,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // 2026-11-07: tell the runtime each payload type's wire decoder
+        // beside its local one, before any registration or reader (the
+        // readers look the wire one up through the registered local
+        // one; a program with no bus payload emits nothing here).
+        // An api codec thunk validates its own text: its own twin, so the
+        // lookup (which refuses what it has no pair for) knows it.
+        if !self.serializers.is_empty() || !self.codec_thunks.is_empty() {
+            let twin = self
+                .module
+                .get_function("lotus_bus_wire_decoder")
+                .expect("lotus_bus_wire_decoder declared");
+            let pairs: Vec<(FunctionValue<'ctx>, FunctionValue<'ctx>)> = self
+                .serializers
+                .values()
+                .map(|p| (p.deserialize, p.deserialize_wire))
+                .chain(self.codec_thunks.values().map(|t| (t.decode, t.decode)))
+                .collect();
+            for (local, wire) in pairs {
+                self.builder
+                    .build_call(
+                        twin,
+                        &[
+                            local.as_global_value().as_pointer_value().into(),
+                            wire.as_global_value().as_pointer_value().into(),
+                        ],
+                        "",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
 
         // 2026-05-17 — flip stdout to line-buffered so `println`
         // reaches pipe consumers on `\n` instead of sitting in

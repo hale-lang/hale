@@ -189,9 +189,18 @@ no digit past the scale to print).
 **Parsing.** `std::str::parse_decimal(s)` and
 `range_parse_decimal(s, start, end)` read at the scale of the place
 their result flows into (scale 9 where nothing gives one): `let p:
-Decimal<18> = std::str::parse_decimal(s) or raise;`. Text with a
-nonzero digit past that scale is the call's `ParseError`, never a
-truncation; zeros past it are accepted.
+Decimal<18> = std::str::parse_decimal(s) or raise;`. The spelling is
+the literal's (an optional sign, `_` separators, an optional `d`), and
+since 2026-11-07 an exponent as well (`1e-7`, `1.50E+1`, `12.5e1`),
+applied exactly: `1e-7` at scale 8 is `0.0000001`. Text with a
+nonzero digit past that scale, the exponent applied (`1e-9` at scale
+8), is the call's `ParseError`, never a
+truncation; zeros past it are accepted. So is text whose mantissa at
+that scale no i128 holds (`12345678901234567890123456789012.5` at
+scale 8, or forty integer digits at any scale): a refusal, never a
+wrong number (2026-11-07, downstream handoff: the overflow guard
+relied on signed overflow wrapping, which C leaves undefined, and the
+compiler dropped it, so such text read as a negative value).
 
 **On the wire.** A bus payload carries the mantissa (16 bytes) and
 the scale is the topic's type, so a field round-trips every digit its

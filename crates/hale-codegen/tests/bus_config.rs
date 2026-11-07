@@ -252,3 +252,99 @@ fn no_config_set_behaves_as_pre_m58() {
         stdout,
     );
 }
+
+/// A `LOTUS_BUS_CONFIG` binding is served by no locus, so nothing marks
+/// it lost when its peer goes away (review of #1869, finding 7): #1869
+/// made a peer hang-up a DEBUG record on every send path, which left a
+/// dead `unix://` peer of a configured binding visible only in a counter
+/// unless `HALE_LOG=debug`. The first lost send on such a binding is one
+/// WARN record, written regardless of `HALE_LOG`; the later ones are
+/// DEBUG, written only under `HALE_LOG=debug`; any other errno stays
+/// ERROR. A binding served by a locus keeps the DEBUG record and the
+/// lost marking (`http_peer_hangup.rs` for the TCP side).
+///
+/// The listener (`transport_driver.c`, `listen`) takes one message and
+/// exits, so the publisher's second and third sends go to a peer that
+/// has hung up.
+#[test]
+fn a_dead_config_peer_is_warned_once_then_debug() {
+    let src = r#"
+        type Ping {
+            n: Int;
+        }
+
+        locus Pub {
+            bus {
+                publish "evt" of type Ping;
+            }
+            birth() {
+                "evt" <- Ping { n: 1 };
+                std::time::sleep(300ms);
+                "evt" <- Ping { n: 2 };
+                "evt" <- Ping { n: 3 };
+                println("published");
+            }
+        }
+
+        fn main() {
+            Pub { };
+        }
+    "#;
+    let driver = build_listener_driver("dead");
+    let bin = harness::unique_bin("m58_dead_peer");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build publisher");
+
+    // one run: the listener, the publisher under the config (and `env`),
+    // and what the publisher wrote on stderr
+    let run = |env: &[(&str, &str)], tag: &str| -> String {
+        let sock = unique_path(tag, "sock");
+        let cfg = unique_path(tag, "conf");
+        std::fs::write(&cfg, format!("evt = unix://{} : connect\n", sock.display())).expect("write config");
+        let listener = Command::new(&driver)
+            .arg("listen")
+            .arg(&sock)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn listener");
+        let mut cmd = Command::new(&bin);
+        cmd.env("LOTUS_BUS_CONFIG", &cfg).stdout(Stdio::piped()).stderr(Stdio::piped());
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().expect("run publisher");
+        let listen_out = listener.wait_with_output().expect("listener wait");
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_file(&cfg);
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(
+            out.status.success() && String::from_utf8_lossy(&out.stdout).contains("published"),
+            "the publisher did not run to its end: {:?}\nstdout: {}\nstderr: {stderr}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout),
+        );
+        assert!(listen_out.status.success(), "the listener took no message:\n{}", String::from_utf8_lossy(&listen_out.stderr));
+        stderr
+    };
+
+    // the default level: one WARN for the first lost send, nothing for
+    // the second, and no ERROR
+    let err = run(&[], "warn");
+    let sends: Vec<&str> = err.lines().filter(|l| l.contains("send failed")).collect();
+    assert_eq!(sends.len(), 1, "one WARN record for the first lost send and nothing for the second:\n{err}");
+    assert!(sends[0].contains("level=warn") && sends[0].contains("logger=lotus.bus"), "{}", sends[0]);
+    let epipe = format!("errno={} ", libc::EPIPE);
+    let reset = format!("errno={} ", libc::ECONNRESET);
+    assert!(sends[0].contains(&epipe) || sends[0].contains(&reset), "EPIPE or ECONNRESET: {}", sends[0]);
+    assert!(!err.contains("level=error"), "an ERROR record for a peer that hung up:\n{err}");
+
+    // under HALE_LOG=debug the second lost send is a DEBUG record
+    let err = run(&[("HALE_LOG", "debug")], "debug");
+    let sends: Vec<&str> = err.lines().filter(|l| l.contains("send failed")).collect();
+    assert_eq!(sends.len(), 2, "the WARN and then a DEBUG record:\n{err}");
+    assert!(sends[0].contains("level=warn"), "{}", sends[0]);
+    assert!(sends[1].contains("level=debug"), "{}", sends[1]);
+
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&driver);
+}

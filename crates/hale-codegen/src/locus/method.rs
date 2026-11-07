@@ -51,9 +51,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// A `run()`, `drain()` or `dissolve()` body is a wait frame
     /// (spec/semantics.md § Drain cascade, step 2). The run() of a locus
-    /// whose run() reads `draining` (itself or through what it calls: the
-    /// flow rows' watches-drain column, `LocusInfo::run_watches_drain`)
-    /// watches the drain (frame 1): a wait it (or what it calls) begins
+    /// whose run() definitely reads `draining` (itself or through what it
+    /// calls: the flow rows' manual-drain column,
+    /// `LocusInfo::run_manual_drain`) watches the drain (frame 1): a wait it (or what it calls) begins
     /// during a drain it has not yet read returns at once, so its loop
     /// reaches its check. Every other run() is one the runtime stops
     /// (frame -1, GH #1858): a wait it begins during a stop returns at
@@ -83,7 +83,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // 1: a run() that watches the drain; -1 (GH #1858): a run() the
         // runtime stops, whose waits a stop cuts; 0: a hook.
         let word: i64 = match kind {
-            "run" if self.user_loci.get(locus).is_some_and(|i| i.run_watches_drain) => 1,
+            "run" if self.user_loci.get(locus).is_some_and(|i| i.run_manual_drain) => 1,
             "run" => -1,
             _ => 0,
         };
@@ -182,7 +182,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // a stop. The standard library's loci keep their own.
                 self.backedge_stop_fn = (kind == "run"
                     && !l.name.name.starts_with("__Std")
-                    && !info.run_watches_drain
+                    && !info.run_manual_drain
                     && self.cells.emits(hale_types::capability::Obligation::DrainTerm)?)
                 .then_some(func);
                 // F.27 extension (2026-05-19): lifecycle bodies are

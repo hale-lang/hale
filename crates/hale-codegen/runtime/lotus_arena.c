@@ -21565,6 +21565,18 @@ typedef struct lotus_transport {
     uint64_t recv_seq;    /* last seq seen (0 = none yet) */
     uint64_t recv_origin; /* iris handoff-3: sender origin read off the wire */
     uint64_t seq_gaps;    /* recv'd seq != last+1 occurrences */
+    /* The level a send to a peer that hung up is reported at (2026-11-07,
+     * review of #1869). A binding served by a locus marks itself lost
+     * and the loss is dispatched to its supervisor, so its record is
+     * DEBUG (lotus_diag_peer_level); a binding the environment
+     * configured (LOTUS_BUS_CONFIG, lotus_bus_register_remote) sits
+     * outside the supervision tree and nothing else says its peer is
+     * gone, so its first lost send is WARN and the rest DEBUG.
+     * `hangup_warn` is set on the configured binding's transport;
+     * `hangup_warned` once the WARN was written (exchanged: fanout may
+     * run on any thread). */
+    int      hangup_warn;
+    int      hangup_warned;
 } lotus_transport_t;
 
 /* iris handoff-3 (transport branch): expose the framed wire seq +
@@ -21828,6 +21840,19 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
     return NULL;
 }
 
+/* The record level of a failed send on `t` (review of #1869, finding 7):
+ * the peer hanging up is the DEBUG record every send path writes for it,
+ * except the first time on a transport that asked for a WARN (a
+ * LOTUS_BUS_CONFIG binding, which no locus serves: `hangup_warn`); any
+ * other errno is ERROR. */
+static int lotus_transport_send_level(lotus_transport_t *t, int err) {
+    if (err != EPIPE && err != ECONNRESET) return 3;
+    if (t->hangup_warn
+        && __atomic_exchange_n(&t->hangup_warned, 1, __ATOMIC_ACQ_REL) == 0)
+        return 2;
+    return 4;
+}
+
 int lotus_transport_send(lotus_transport_t *t,
                          const void *buf,
                          size_t len) {
@@ -21855,7 +21880,9 @@ int lotus_transport_send(lotus_transport_t *t,
         hdr[1] = (t->send_seq & 0xFFFFFFFFFFFFULL) | ((o & 0xFFFFULL) << 48);
         if (lotus__transport_write_full(t->conn_fd, hdr, sizeof(hdr)) != 0
             || lotus__transport_write_full(t->conn_fd, buf, len) != 0) {
-            lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
+            int err = errno;
+            lotus_diag_errno(lotus_transport_send_level(t, err), "lotus.bus", "send failed", "lotus_transport_send", err, NULL);
+            errno = err;
             return -1;
         }
         return 0;
@@ -21865,7 +21892,9 @@ int lotus_transport_send(lotus_transport_t *t,
         n = send(t->conn_fd, buf, len, 0);
     } while (n < 0 && errno == EINTR);   /* GH #468: a signal is not a send failure */
     if (n < 0) {
-        lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
+        int err = errno;
+        lotus_diag_errno(lotus_transport_send_level(t, err), "lotus.bus", "send failed", "lotus_transport_send", err, NULL);
+        errno = err;
         return -1;
     }
     return 0;
@@ -26685,9 +26714,11 @@ int lotus_str_can_parse_float(const char *s) {
  * at the scale `scale` (Decimal<S>; plain Decimal is 9). Mirrors
  * hale-syntax's decimal_literal.rs (the literal's parse) — accepts
  * optional trailing 'd', optional leading sign, '_' digit
- * separators, pads with zeros below `scale` fractional digits, and
- * REFUSES a nonzero digit past the last place of the scale: that is
- * a value no Decimal<S> holds, and it used to be truncated in
+ * separators, an exponent (`1e-7`, `1.50E+1`; 2026-11-07, downstream
+ * handoff: a JavaScript client writes a small number that way), pads
+ * with zeros below `scale` fractional digits, and REFUSES a nonzero
+ * digit past the last place of the scale (the exponent applied): that
+ * is a value no Decimal<S> holds, and it used to be truncated in
  * silence (`parse_decimal("0.123456789012")` was 0.123456789).
  * Zeros past the last place are the same value and are accepted. The i128 result is split into
  * two i64 halves (hi:lo) for ABI portability — same convention
@@ -26696,7 +26727,24 @@ int lotus_str_can_parse_float(const char *s) {
  * On malformed / overflowed input, writes 0,0 and the can-variant
  * returns 0. Callers that need to distinguish "0.0" from "bad input"
  * gate on lotus_str_can_parse_decimal first.
+ *
+ * Overflow is checked with the compiler's overflow builtins
+ * (downstream handoff, 2026-11-07): the guard used to be
+ * `mantissa * 10 + d` followed by `mantissa / 10 != prev`, which
+ * relies on signed i128 overflow wrapping — undefined in C, and
+ * clang folded the comparison away, so a mantissa past i128
+ * (`12345678901234567890123456789012.5` at scale 8) came back as a
+ * wrong, negative number instead of a refusal.
  */
+/* i128 overflow is checked against these bounds before each step: the
+ * compiler builtins (`__builtin_mul_overflow` on __int128) call
+ * compiler-rt's `__muloti4`, which the wasm32 target does not have, so a
+ * Decimal parse would reach the link undefined there. Signed i128 compare,
+ * multiply and divide by a constant are what the rest of the runtime
+ * already uses on every target. */
+#define LOTUS_I128_MAX ((__int128)(((unsigned __int128)1 << 127) - 1))
+#define LOTUS_I128_MAX_DIV10 (LOTUS_I128_MAX / 10)
+
 static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
     scale = lotus_dec_clamp_scale(scale);
     if (!s) return 0;
@@ -26705,43 +26753,71 @@ static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
     if (s[n - 1] == 'd') n -= 1;
     if (n == 0) return 0;
     size_t i = 0;
-    __int128 sign = 1;
-    if (s[i] == '-') { sign = -1; i += 1; }
+    int neg = 0;
+    if (s[i] == '-') { neg = 1; i += 1; }
     else if (s[i] == '+') { i += 1; }
     if (i >= n) return 0;
-    __int128 mantissa = 0;
-    int frac_digits = 0;
-    int seen_dot = 0;
-    int seen_digit = 0;
+    __int128 mantissa = 0;   /* the significant digits so far, its last nonzero */
+    int64_t pending = 0;     /* zeros after them, not yet multiplied in */
+    int64_t frac_digits = 0; /* digits after the point, zeros included */
+    int seen_dot = 0, seen_digit = 0;
     for (; i < n; i++) {
         char c = s[i];
         if (c >= '0' && c <= '9') {
             seen_digit = 1;
-            if (!seen_dot || frac_digits < scale) {
-                __int128 prev = mantissa;
-                mantissa = mantissa * 10 + (__int128)(c - '0');
-                /* overflow guard: re-divide and compare */
-                if (mantissa / 10 != prev) return 0;
-                if (seen_dot) frac_digits += 1;
-            } else if (c != '0') {
-                return 0;  /* past the scale: not representable */
+            if (seen_dot) frac_digits += 1;
+            if (c == '0') {
+                if (mantissa != 0) pending += 1;  /* a leading zero is nothing */
+            } else {
+                for (; pending > 0; pending--) {
+                    if (mantissa > LOTUS_I128_MAX_DIV10) return 0;
+                    mantissa *= 10;
+                }
+                if (mantissa > LOTUS_I128_MAX_DIV10) return 0;
+                mantissa *= 10;
+                if (mantissa > LOTUS_I128_MAX - (c - '0')) return 0;
+                mantissa += (c - '0');
             }
         } else if (c == '.' && !seen_dot) {
             seen_dot = 1;
         } else if (c == '_') {
             /* digit separator */
+        } else if (c == 'e' || c == 'E') {
+            break;
         } else {
             return 0;
         }
     }
     if (!seen_digit) return 0;
-    while (frac_digits < scale) {
-        __int128 prev = mantissa;
-        mantissa = mantissa * 10;
-        if (mantissa / 10 != prev) return 0;
-        frac_digits += 1;
+    int64_t exp = 0;
+    if (i < n) {
+        /* the exponent: `e`, an optional sign, at least one digit;
+         * saturated far past any shift the mantissa survives */
+        i += 1;
+        int eneg = 0;
+        if (i < n && (s[i] == '+' || s[i] == '-')) { eneg = s[i] == '-'; i += 1; }
+        if (i >= n) return 0;
+        for (; i < n; i++) {
+            char c = s[i];
+            if (c < '0' || c > '9') return 0;
+            if (exp < 1000000) exp = exp * 10 + (c - '0');
+        }
+        if (eneg) exp = -exp;
     }
-    *out = sign * mantissa;
+    if (mantissa == 0) { *out = 0; return 1; }
+    /* places to append (positive) or drop (negative) to sit at the scale */
+    int64_t shift = scale + exp - frac_digits;
+    if (shift < 0) {
+        if (-shift > pending) return 0;  /* a nonzero digit past the scale */
+        pending += shift;
+    } else {
+        pending += shift;
+    }
+    for (; pending > 0; pending--) {
+        if (mantissa > LOTUS_I128_MAX_DIV10) return 0;
+        mantissa *= 10;
+    }
+    *out = neg ? -mantissa : mantissa;
     return 1;
 }
 
@@ -27025,6 +27101,12 @@ typedef struct lotus_bus_remote_entry {
     size_t             pend_bytes;
     uint64_t           ctr_buffered_early;
     uint64_t           ctr_dropped_early;
+    /* A wire frame the subject's deserializer refused (-1: shorter
+     * than its type, or a length it announces past its end) is
+     * dropped here and counted, never delivered from whatever the
+     * reader's buffer held before it (downstream handoff,
+     * 2026-11-07). */
+    uint64_t           ctr_dropped_decode;
     volatile int       serve_done;
 } lotus_bus_remote_entry_t;
 
@@ -27124,11 +27206,66 @@ static lotus_bus_remote_entry_t *lotus_bus_remote_entry_push(
  * dispatches through it before the definition point. */
 static lotus_bus_queue_t *g_bus_queue_for_remote;
 
+/* The wire decoder of a local one (2026-11-07, downstream handoff).
+ * Codegen emits two decoders per payload type: `__deserialize_T`, the
+ * local one every registration and in-process delivery carries
+ * (straight-line: a local cell holds the program's own serializer's
+ * bytes), and `__deserialize_wire_T`, every read held to the frame's
+ * remaining length and a frame shorter than the type refused. The
+ * program's main announces each pair here before anything registers
+ * or reads — an api codec thunk, which validates its own text, as its
+ * own twin — and the places foreign bytes come in (the udp and unix
+ * readers, the early-ingress flush, the replay injector) map the
+ * registered decoder to its wire twin. A registered decoder with no
+ * pair is never used on foreign bytes: the lookup answers a decoder
+ * that refuses every frame (dropped and counted), so a frame is
+ * decoded unchecked under no circumstance (reviewer, 2026-11-07: a
+ * fixed table of 1,024 pairs logged the 1,025th and fell back to the
+ * local decoder). The table grows by doubling; it is written on the
+ * main thread in main's prelude before any thread starts and read
+ * only after, so it needs no lock; an allocation it cannot make is
+ * fatal here, naming it, rather than a type left unchecked. */
+static struct lotus_bus_wire_decoder_pair { lotus_deserialize_fn local, wire; }
+    *g_bus_wire_decoders;
+static size_t g_bus_wire_decoder_count, g_bus_wire_decoder_cap;
+
+static ssize_t lotus_bus_refuse_frame(const void *src, size_t n, void *dst, size_t cap) {
+    (void)src; (void)n; (void)dst; (void)cap;
+    return -1;
+}
+
+void lotus_bus_wire_decoder(lotus_deserialize_fn local, lotus_deserialize_fn wire) {
+    if (!local || !wire) return;
+    if (g_bus_wire_decoder_count == g_bus_wire_decoder_cap) {
+        size_t cap = g_bus_wire_decoder_cap ? g_bus_wire_decoder_cap * 2 : 64;
+        struct lotus_bus_wire_decoder_pair *grown =
+            realloc(g_bus_wire_decoders, cap * sizeof *grown);
+        if (!grown) {
+            fprintf(stderr, "lotus: out of memory growing the bus wire-decoder table to %zu pairs\n", cap);
+            abort();
+        }
+        g_bus_wire_decoders = grown;
+        g_bus_wire_decoder_cap = cap;
+    }
+    g_bus_wire_decoders[g_bus_wire_decoder_count].local = local;
+    g_bus_wire_decoders[g_bus_wire_decoder_count].wire = wire;
+    g_bus_wire_decoder_count++;
+}
+
+static lotus_deserialize_fn lotus_bus_wire_decoder_of(lotus_deserialize_fn local) {
+    for (size_t i = 0; i < g_bus_wire_decoder_count; i++) {
+        if (g_bus_wire_decoders[i].local == local) return g_bus_wire_decoders[i].wire;
+    }
+    return lotus_bus_refuse_frame;
+}
+
 /* GH #468 — the shared deserializer lookup both readers used to
  * inline: the FIRST local registration whose (possibly wildcard)
  * pattern matches this binding's concrete subject. By language
  * constraint all entries on one subject share the payload type,
- * so any match works. NULL = nothing registered (yet). */
+ * so any match works. NULL = nothing registered (yet). What comes
+ * back is the WIRE decoder of the registered one (above): every
+ * caller hands it bytes from outside the process. */
 static lotus_deserialize_fn lotus_bus_find_deserializer(
     const char *bound_subject)
 {
@@ -27137,7 +27274,7 @@ static lotus_deserialize_fn lotus_bus_find_deserializer(
         lotus_bus_target_t e_snap_;
         const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], bound_subject, &e_snap_);
         if (!e) continue;
-        return e->deserialize;
+        return lotus_bus_wire_decoder_of(e->deserialize);
     }
     return NULL;
 }
@@ -27855,7 +27992,14 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
             }
             ssize_t struct_size = deserialize(
                 wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
-            if (struct_size <= 0) continue;
+            if (struct_size <= 0) {
+                LOTUS_CTR_BUMP(entry->ctr_dropped_decode);
+                if (lotus_bus_log_deserialize_drop_enabled()) {
+                    { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus reader: drop on `%s` "
+                            "(deserialize returned %zd) — %zd-byte wire payload", entry->subject, struct_size, n); lotus_diag(2, "lotus.bus", lotus_diag_m, ""); }
+                }
+                continue;
+            }
             /* GH #296 phase 5b: capture the VERBATIM wire form with
              * a pinned identity — AFTER the deserialize, so a
              * message this application rejected never enters the
@@ -28295,7 +28439,9 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         }
         /* n == 0 is an empty datagram, an ordinary frame: it takes the
          * decoder path below, which rejects it as a short frame (no
-         * serialized form is empty), and the loop goes on. It used to
+         * struct's form is shorter than its fixed fields and length
+         * prefixes), counted on `dropped_decode`, and the loop goes
+         * on. It used to
          * be the reader's stop sentinel (what shutdown(SHUT_RDWR)
          * produced on Linux), so one empty datagram ended ingress for
          * good and every later datagram went unread, silently
@@ -28321,6 +28467,9 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         ssize_t struct_size = deserialize(
             wire, (size_t)n, struct_buf, sizeof(struct_buf));
         if (struct_size <= 0) {
+            /* Too short for its type (the empty datagram included), or
+             * a length past its end: dropped and counted. */
+            LOTUS_CTR_BUMP(args->entry->ctr_dropped_decode);
             if (lotus_bus_log_deserialize_drop_enabled()) {
                 { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus udp reader: drop on `%s` "
                         "(deserialize returned %zd) — %zd-byte wire payload", args->entry->subject, struct_size, n); lotus_diag(2, "lotus.bus", lotus_diag_m, ""); }
@@ -28552,7 +28701,8 @@ void lotus_replay_start_ingress(void) {
         if (!be) continue;
         if (!be->subject || !be->deserialize) continue;
         g_rp_snap[g_rp_snap_len].subject = be->subject;
-        g_rp_snap[g_rp_snap_len].deserialize = be->deserialize;
+        /* recorded bytes come from outside: the wire decoder */
+        g_rp_snap[g_rp_snap_len].deserialize = lotus_bus_wire_decoder_of(be->deserialize);
         g_rp_snap_len++;
     }
     if (lotus_replay_reserve_anon_floor)
@@ -28821,6 +28971,10 @@ int lotus_bus_register_remote(const char *subject,
          * fans out through the resulting transport. */
         e->transport = lotus_transport_create(path, role);
         if (!e->transport) goto fail_pop_entry;
+        /* A configured binding no locus serves: nothing marks it lost
+         * when its peer goes away, so its first lost send is a WARN
+         * record (lotus_transport_send_level). */
+        e->transport->hangup_warn = 1;
     }
     return 0;
 
@@ -29672,7 +29826,8 @@ static void lotus_bus_remote_fanout_entries(const char *subject,
                  * fanout may be running anywhere). Non-locus
                  * (LOTUS_BUS_CONFIG) entries keep the logged-only
                  * behavior — they sit outside the supervision
-                 * tree. */
+                 * tree — and that log is a WARN once per binding,
+                 * then DEBUG (lotus_transport_send_level). */
                 e->lost = 1;
                 lotus_bus_transport_mark_lost(e);
             }
@@ -34294,7 +34449,8 @@ void lotus_bus_remote_destroy_all(void) {
                     "sent=%llu delivered=%llu bytes_sent=%llu "
                     "bytes_delivered=%llu send_failures=%llu "
                     "dropped_lost=%llu waits=%llu rearms=%llu reconnects=%llu "
-                    "seq_gaps=%llu buffered_early=%llu dropped_early=%llu\n",
+                    "seq_gaps=%llu buffered_early=%llu dropped_early=%llu "
+                    "dropped_decode=%llu\n",
                     e->subject, e->kind, e->role,
                     (unsigned long long)e->ctr_msgs_sent,
                     (unsigned long long)e->ctr_msgs_delivered,
@@ -34307,7 +34463,8 @@ void lotus_bus_remote_destroy_all(void) {
                     (unsigned long long)e->ctr_reconnects,
                     (unsigned long long)e->ctr_seq_gaps,
                     (unsigned long long)e->ctr_buffered_early,
-                    (unsigned long long)e->ctr_dropped_early);
+                    (unsigned long long)e->ctr_dropped_early,
+                    (unsigned long long)e->ctr_dropped_decode);
         }
 
         /* Wave B: adapter entries own their protocol lifecycle

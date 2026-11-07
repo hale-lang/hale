@@ -46,6 +46,9 @@ locus PgPool {
         // homogeneous (one host/port/sslmode), so every connection
         // negotiates the SAME transport.
         sslmode: String = "prefer";
+        // connect_timeout_ms — each pooled dial's connect bound, as
+        // PgConn's (0 = none).
+        connect_timeout_ms: Int = 10000;
         size: Int = 4;
 
         opened: Bool = false;
@@ -91,7 +94,8 @@ locus PgPool {
         while i < self.size {
             let c = PgConn { host: self.host, port: self.port,
                 user: self.user, password: self.password,
-                database: self.database, sslmode: self.sslmode };
+                database: self.database, sslmode: self.sslmode,
+                connect_timeout_ms: self.connect_timeout_ms };
             let st = c.open();
             if !st.ok {
                 self.opened = (self.n > 0);

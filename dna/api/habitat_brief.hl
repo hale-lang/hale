@@ -27,12 +27,13 @@ const BRIEF_VERSION: String = "habitat-brief/1";
 
 // The brief for `person` ("" when the caller maps to none), at most `limit`
 // entries of each section.
-fn habitat_brief(root: String, person: String, limit: Int) -> HabitatBrief {
+fn habitat_brief(root: String, person: String, limit: Int, seer: Observer) -> HabitatBrief {
     let cap = habitat_cap(limit);
     let j = habitat_journal(root);
-    let index = record_index(root, cap);
+    seer.begin();
+    let index = record_index(root, cap, seer);
     let hosts = habitat_hosts(root, cap);
-    let allocations = habitat_allocations(root, cap);
+    let allocations = habitat_allocations(root, cap, seer);
     let saplings = habitat_saplings(root, cap);
     let charter = dna::hat_node_text(j, "position:board");
     let id = dna::record_scope(root);

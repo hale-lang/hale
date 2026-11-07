@@ -35,7 +35,7 @@ use std::collections::BTreeSet;
 use hale_syntax::ast::{BinOp, Block, ElseBranch, Expr, IfStmt, Literal, LocusDecl, MatchArmBody, OrDisposition, Stmt, UnaryOp};
 use hale_syntax::Span;
 
-use crate::flows::{followed_callees, FreeFns};
+use crate::flows::FreeFns;
 use crate::listener_window::{visit_block, visit_expr, Visited};
 
 /// A loop a manual `run()` runs that the analysis cannot see stop on the
@@ -76,6 +76,47 @@ pub fn unhonoured_loops<'a>(run: &'a Block, decl: &'a LocusDecl, free_fns: &Free
         }
     }
     out
+}
+
+/// The fns a body calls that the honour walk follows: a method of
+/// `decl`'s called on `self` (`self.m()`), and a bare call (`m()`), as a
+/// method of `decl`'s and as a free fn. A call on another receiver is
+/// another locus's code, and not followed.
+fn followed_callees<'a>(
+    body: &'a Block,
+    decl: &'a LocusDecl,
+    free_fns: &FreeFns<'a>,
+) -> Vec<(bool, &'a str, &'a hale_syntax::ast::FnDecl)> {
+    let mut names: Vec<(bool, &'a str)> = Vec::new();
+    visit_block(body, &mut |v| {
+        let Visited::Expr(Expr::Call { callee, .. }) = v else { return };
+        match callee.as_ref() {
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+            {
+                names.push((true, name.name.as_str()));
+            }
+            Expr::Ident(id) => {
+                names.push((true, id.name.as_str()));
+                names.push((false, id.name.as_str()));
+            }
+            _ => {}
+        }
+    });
+    names
+        .into_iter()
+        .filter_map(|(method, name)| {
+            let f = if method {
+                decl.members.iter().find_map(|m| match m {
+                    hale_syntax::ast::LocusMember::Fn(f) if f.name.name == name => Some(f),
+                    _ => None,
+                })
+            } else {
+                free_fns.get(name).copied()
+            };
+            f.map(|f| (method, name, f))
+        })
+        .collect()
 }
 
 /// Whether one `while` honours the drain or ends without it (the module's

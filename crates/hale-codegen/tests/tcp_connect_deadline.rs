@@ -23,6 +23,7 @@
 //! these tests are Linux's alone.
 
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -608,4 +609,60 @@ fn the_http_client_timeout_bounds_a_post_its_peer_drains_slowly() {
         let took = ms(&out, tag);
         assert!((550..2000).contains(&took), "{tag}: the send must end at timeout_ms however the peer drains it; took {took} ms: {out}");
     }
+}
+
+/// The DNA's PostgreSQL driver bounds its dial (first-run handoff,
+/// 2026-11-07): `PgConn.open()` dialled with a plain `connect`, so a memory
+/// address that neither accepts nor refuses held whoever opened for the
+/// kernel's ~2 min of SYN retransmits — a habitat head, which opens its
+/// record on every command and serves its commands one at a time, held
+/// every command behind that one, and the CLI's `Commands::allocations`
+/// outlived the head's deadline. The dial is `connect_within` its
+/// `connect_timeout_ms`, and one that runs out is `connect_timeout`,
+/// which `open()` does not redial: the open ends at the one bound, not at
+/// eight of them.
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "the full-accept-queue blackhole is Linux's SYN-drop contract")]
+fn a_postgres_dial_nobody_answers_fails_once_at_its_bound() {
+    let hole = Blackhole::new();
+    // the program imports the driver as the DNA does, from a copy of its
+    // `pond` beside it
+    let dir = harness::unique_bin("hale_pq_connect_deadline_src");
+    let pond = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../dna/core/pond");
+    for sub in ["db", "pq"] {
+        std::fs::create_dir_all(dir.join("pond").join(sub)).expect("pond dir");
+        for f in std::fs::read_dir(pond.join(sub)).expect("pond source") {
+            let f = f.expect("entry").path();
+            std::fs::copy(&f, dir.join("pond").join(sub).join(f.file_name().unwrap())).expect("copy");
+        }
+    }
+    let entry = dir.join("main.hl");
+    std::fs::write(
+        &entry,
+        r#"
+        import "pond/pq" as pq;
+        fn main() {
+            let port = std::str::parse_int(std::env::arg(1)) or 0;
+            let c = pq::PgConn { host: "127.0.0.1", port: port, sslmode: "disable", connect_timeout_ms: 300 };
+            let t = std::time::monotonic_ns();
+            let st = c.open();
+            println("open ok=", st.ok, " kind=", st.err.kind, " ms=", (std::time::monotonic_ns() - t) / 1000000);
+            println("default ms=", pq::PgConn { }.connect_timeout_ms, " pool=", pq::PgPool { }.connect_timeout_ms);
+        }
+        "#,
+    )
+    .expect("write main.hl");
+    let bin = harness::unique_bin("hale_pq_connect_deadline");
+    build_opts::build_seed_dir(&entry, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).arg(hole.port.to_string()).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{:?}; stdout: {stdout}; stderr: {}", out.status, String::from_utf8_lossy(&out.stderr));
+    assert_eq!(field(&stdout, "open", "ok"), "false", "{stdout}");
+    assert_eq!(field(&stdout, "open", "kind"), "connect_timeout", "{stdout}");
+    let took = ms(&stdout, "open");
+    assert!((280..1300).contains(&took), "the open must end at its one 300 ms bound, not redial it; took {took} ms: {stdout}");
+    assert_eq!(field(&stdout, "default", "ms"), "10000", "{stdout}");
+    assert_eq!(field(&stdout, "default", "pool"), "10000", "{stdout}");
 }

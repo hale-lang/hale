@@ -47,6 +47,55 @@ fn main() {
     );
     std::test::assert_eq_str("" + (0.000000001d * 0.5d), "0", "below one unit is zero");
 
+    // A mantissa no i128 holds is a parse failure, never a wrong number
+    // (downstream handoff: the overflow guard relied on signed overflow
+    // wrapping, which C leaves undefined, and the compiler dropped it, so
+    // this read as -1265615775602970648411527508258.22845824 at scale 8).
+    let wide: Decimal<8> = std::str::parse_decimal("12345678901234567890123456789012.5") or {
+        std::test::assert_eq_str(err.kind, "parse_decimal", "past i128: the refusal's kind");
+        9.0d
+    };
+    std::test::assert_eq_str("" + wide, "9", "past i128 at scale 8 is refused");
+    let wide9 = std::str::parse_decimal("170141183460469231731687303715884105728") or 9.0d;
+    std::test::assert_eq_str("" + wide9, "9", "past i128 at scale 9 is refused");
+    let padded: Decimal<18> = std::str::parse_decimal("170141183460469231732") or 9.0d;
+    std::test::assert_eq_str("" + padded, "9", "overflow while padding to the scale is refused");
+    let edge: Decimal<0> = std::str::parse_decimal(
+        "170141183460469231731687303715884105727",
+    ) or 9.0d;
+    std::test::assert_eq_str(
+        "" + edge, "170141183460469231731687303715884105727", "i128's maximum itself is read");
+    let text = "[12345678901234567890123456789012.5]";
+    let wide_range: Decimal<8> = std::str::range_parse_decimal(text, 1, len(text) - 1) or 9.0d;
+    std::test::assert_eq_str("" + wide_range, "9", "range_parse_decimal refuses it too");
+
+    // An exponent is applied exactly at the scale (2026-11-07): a JSON
+    // reader's spelling of a small number.
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("1e-7") or 9.0d), "0.0000001", "a negative exponent");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("1.50E+1") or 9.0d),
+        "15",
+        "a positive exponent with a fraction");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("125e-2") or 9.0d),
+        "1.25",
+        "an exponent moving the point left");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("0.000000001e2") or 9.0d),
+        "0.0000001",
+        "an exponent moving it right");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("1e-10") or 9.0d),
+        "9",
+        "an exponent landing past the scale is refused");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("1e") or 9.0d), "9", "an exponent with no digits");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("1e99999") or 9.0d), "9", "an exponent past i128");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("0e-99999999999") or 9.0d), "0", "zero at any exponent");
+
     // Garbage substitutes rather than silently yielding a value.
     std::test::assert_eq_str(
         "" + (std::str::parse_decimal("abc") or 0.0d), "0", "letters");

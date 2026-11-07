@@ -35,7 +35,46 @@ pub(crate) trait BusWire<'ctx> {
         n: u64,
         to_wire: bool,
         site: &str,
+        bound: Option<(
+            inkwell::values::IntValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+        )>,
     ) -> Result<(), CodegenError>;
+    fn emit_de_need(
+        &mut self,
+        cursor: inkwell::values::IntValue<'ctx>,
+        nbytes: inkwell::values::IntValue<'ctx>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
+        site: &str,
+    ) -> Result<(), CodegenError>;
+    fn emit_de_remaining(
+        &mut self,
+        cursor: inkwell::values::IntValue<'ctx>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        site: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError>;
+    fn emit_de_legacy_len_check(
+        &mut self,
+        len: inkwell::values::IntValue<'ctx>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
+        site: &str,
+    ) -> Result<(), CodegenError>;
+    fn emit_de_len_fits(
+        &mut self,
+        len: inkwell::values::IntValue<'ctx>,
+        after_prefix: inkwell::values::IntValue<'ctx>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
+        site: &str,
+    ) -> Result<(), CodegenError>;
+    fn wire_min_size(&self, t: &CodegenTy) -> u64;
+    fn wire_min_size_of_fields(
+        &self,
+        field_order: &[String],
+        fields: &BTreeMap<String, (u32, CodegenTy)>,
+    ) -> u64;
 
     fn emit_array_field_serialize(
         &mut self,
@@ -260,88 +299,116 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             .build_return(Some(&total_written))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // ssize_t @__deserialize_T(ptr src, size_t n, ptr dst, size_t cap)
-        let de_ty = usize_t.fn_type(
-            &[ptr_t.into(), usize_t.into(), ptr_t.into(), usize_t.into()],
-            false,
-        );
-        let de_fn = self.module.add_function(
-            &format!("__deserialize_{}", type_name),
-            de_ty,
-            None,
-        );
-        let de_entry = self.context.append_basic_block(de_fn, "entry");
-        // 2026-05-27 — error block for length-prefix bound-check
-        // failures inside variable-length field paths
-        // (`String` / `Bytes`). The reader-thread caller
-        // observes the -1 return as "drop this datagram" via the
-        // existing `if (struct_size <= 0) continue;` guard. The
-        // String/Bytes paths in `emit_per_field_deserialize{,_size}`
-        // branch here when a decoded length is negative or
-        // exceeds the remaining wire bytes — closes a real fault
-        // mode (corrupt or cross-routed datagram) that would
-        // otherwise hand a giant `size` straight to
-        // `lotus_bus_payload_arena_alloc`, triggering the arena
-        // cap-hit / NULL-deref symptom a downstream app reported.
-        let de_fail = self.context.append_basic_block(de_fn, "wire.fail");
-        self.builder.position_at_end(de_fail);
-        // -1 in the ssize_t return width (i32 0xFFFFFFFF on wasm32); the
-        // C caller checks `<= 0` to drop the datagram.
-        let neg_one = usize_t.const_int((-1i64) as u64, true);
-        self.builder
-            .build_return(Some(&neg_one))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder.position_at_end(de_entry);
-        let de_src = de_fn
-            .get_nth_param(0)
-            .expect("de src arg")
-            .into_pointer_value();
-        let de_n = de_fn
-            .get_nth_param(1)
-            .expect("de n arg")
-            .into_int_value();
-        // The body's bound checks are i64; widen the size_t `n` (i32 on
-        // wasm32) to i64 (no-op native).
-        let de_n = if de_n.get_type() == i64_t {
-            de_n
-        } else {
+        // Two decoders of the one walk (2026-11-07, downstream handoff):
+        // `__deserialize_T`, the local one — straight-line, no bound
+        // checks, what the registry, a cross-pool create cell and every
+        // in-process delivery decode with (a local cell is the program's
+        // own serializer's bytes, not a wire frame; the create-cell
+        // dispatch is one basic block, which lifecycle_flow holds) — and
+        // `__deserialize_wire_T`, every read held to the frame, the
+        // transport readers' entry (`lotus_bus_wire_decoder`).
+        let mut de_fns = Vec::new();
+        for (suffix, checked) in [("", false), ("wire_", true)] {
+            self.de_checked = checked;
+            // ssize_t @__deserialize_T(ptr src, size_t n, ptr dst, size_t cap)
+            let de_ty = usize_t.fn_type(
+                &[ptr_t.into(), usize_t.into(), ptr_t.into(), usize_t.into()],
+                false,
+            );
+            let de_fn = self.module.add_function(
+                &format!("__deserialize_{}{}", suffix, type_name),
+                de_ty,
+                None,
+            );
+            let de_entry = self.context.append_basic_block(de_fn, "entry");
+            // 2026-05-27 — error block for length-prefix bound-check
+            // failures inside variable-length field paths
+            // (`String` / `Bytes`). The reader-thread caller
+            // observes the -1 return as "drop this datagram" via the
+            // existing `if (struct_size <= 0) continue;` guard. The
+            // String/Bytes paths in `emit_per_field_deserialize{,_size}`
+            // branch here when a decoded length is negative or
+            // exceeds the remaining wire bytes — closes a real fault
+            // mode (corrupt or cross-routed datagram) that would
+            // otherwise hand a giant `size` straight to
+            // `lotus_bus_payload_arena_alloc`, triggering the arena
+            // cap-hit / NULL-deref symptom a downstream app reported.
+            let de_fail = self.context.append_basic_block(de_fn, "wire.fail");
+            self.builder.position_at_end(de_fail);
+            // -1 in the ssize_t return width (i32 0xFFFFFFFF on wasm32); the
+            // C caller checks `<= 0` to drop the datagram.
+            let neg_one = usize_t.const_int((-1i64) as u64, true);
             self.builder
-                .build_int_z_extend(de_n, i64_t, "de_n.i64")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-        };
-        let de_dst = de_fn
-            .get_nth_param(2)
-            .expect("de dst arg")
-            .into_pointer_value();
-        let _ = de_fn.get_nth_param(3); // cap, reserved
-
-        let de_struct_size: inkwell::values::IntValue<'ctx> =
-            if let Some((struct_ty, field_order, fields)) = &struct_layout
-            {
-                self.emit_per_field_deserialize(
-                    de_src,
-                    de_dst,
-                    *struct_ty,
-                    field_order,
-                    fields,
-                    de_n,
-                    de_fail,
-                )?
+                .build_return(Some(&neg_one))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(de_entry);
+            let de_src = de_fn
+                .get_nth_param(0)
+                .expect("de src arg")
+                .into_pointer_value();
+            let de_n = de_fn
+                .get_nth_param(1)
+                .expect("de n arg")
+                .into_int_value();
+            // The body's bound checks are i64; widen the size_t `n` (i32 on
+            // wasm32) to i64 (no-op native).
+            let de_n = if de_n.get_type() == i64_t {
+                de_n
             } else {
-                let size_iv = enum_size.expect("enum size present");
-                self.emit_memcpy_call(
-                    de_dst,
-                    de_src,
-                    size_iv,
-                    "de.memcpy",
-                )?;
-                size_iv
+                self.builder
+                    .build_int_z_extend(de_n, i64_t, "de_n.i64")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             };
-        // Narrow the i64 struct size to the ssize_t return width.
-        let de_struct_size = self.size_to_usize(de_struct_size)?;
-        self.builder
-            .build_return(Some(&de_struct_size))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let de_dst = de_fn
+                .get_nth_param(2)
+                .expect("de dst arg")
+                .into_pointer_value();
+            let _ = de_fn.get_nth_param(3); // cap, reserved
+
+            // A frame shorter than the type's minimum encoded size is
+            // refused before any field is read (the empty datagram
+            // included: no struct's form is shorter than its fixed
+            // fields and length prefixes); the field walk then holds each
+            // variable-length read to what remains.
+            let wire_min = match &struct_layout {
+                Some((_, field_order, fields)) => {
+                    i64_t.const_int(self.wire_min_size_of_fields(field_order, fields), false)
+                }
+                None => enum_size.expect("enum size present"),
+            };
+            self.emit_de_need(i64_t.const_int(0, false), wire_min, de_n, de_fail, "de.min")?;
+
+            let de_struct_size: inkwell::values::IntValue<'ctx> =
+                if let Some((struct_ty, field_order, fields)) = &struct_layout
+                {
+                    self.emit_per_field_deserialize(
+                        de_src,
+                        de_dst,
+                        *struct_ty,
+                        field_order,
+                        fields,
+                        de_n,
+                        de_fail,
+                    )?
+                } else {
+                    // the frame holds the cell: the `de.min` check above
+                    let size_iv = enum_size.expect("enum size present");
+                    self.emit_memcpy_call(
+                        de_dst,
+                        de_src,
+                        size_iv,
+                        "de.memcpy",
+                    )?;
+                    size_iv
+                };
+            // Narrow the i64 struct size to the ssize_t return width.
+            let de_struct_size = self.size_to_usize(de_struct_size)?;
+            self.builder
+                .build_return(Some(&de_struct_size))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            de_fns.push(de_fn);
+        }
+        self.de_checked = false;
 
         if let Some(b) = saved_block {
             self.builder.position_at_end(b);
@@ -349,7 +416,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
 
         self.serializers.insert(
             type_name.to_string(),
-            SerializerPair { serialize: ser_fn, deserialize: de_fn },
+            SerializerPair { serialize: ser_fn, deserialize: de_fns[0], deserialize_wire: de_fns[1] },
         );
         Ok(())
     }
@@ -375,6 +442,10 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         n: u64,
         to_wire: bool,
         site: &str,
+        bound: Option<(
+            inkwell::values::IntValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+        )>,
     ) -> Result<(), CodegenError> {
         let i64_t = self.context.i64_type();
         let i8_t = self.context.i8_type();
@@ -385,6 +456,11 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             .build_load(i64_t, cursor_alloca, &format!("{}.cursor", site))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_int_value();
+        // Deserializing: the frame holds the whole storage, or the
+        // decode fails.
+        if let Some((wire_n, fail_block)) = bound {
+            self.emit_de_need(cursor_iv, total_iv, wire_n, fail_block, site)?;
+        }
         let wire_at_cursor = unsafe {
             self.builder
                 .build_gep(
@@ -408,6 +484,39 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             self.emit_ser_memcpy(dst, src, total_iv, site)?;
         } else {
             self.emit_memcpy_call(dst, src, total_iv, site)?;
+            // The wire twin holds the count the storage carries to the
+            // bound: a frame saying more elements than `N` would be a
+            // malformed bounded object delivered (reviewer, 2026-11-07).
+            if let Some((_, fail_block)) = bound {
+                if self.de_checked {
+                    let count = self
+                        .builder
+                        .build_load(i64_t, field_storage_ptr, &format!("{}.count", site))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_int_value();
+                    let too_many = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::UGT,
+                            count,
+                            i64_t.const_int(n, false),
+                            &format!("{}.count.bad", site),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let ok_block = self.context.append_basic_block(
+                        self.builder
+                            .get_insert_block()
+                            .expect("insert block set")
+                            .get_parent()
+                            .expect("block has parent fn"),
+                        &format!("{}.count.ok", site),
+                    );
+                    self.builder
+                        .build_conditional_branch(too_many, fail_block, ok_block)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(ok_block);
+                }
+            }
         }
         let after = self
             .builder
@@ -417,6 +526,198 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             .build_store(cursor_alloca, after)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
+    }
+
+    /// The frame has `nbytes` more bytes at `cursor`, or the decode
+    /// fails: `cursor + nbytes <= wire_n`, unsigned, and a sum that
+    /// wraps (a length read off the wire as a negative i64) fails too.
+    /// Every read of a generated deserializer goes through it, so a
+    /// frame shorter than its type is refused (-1) rather than decoded
+    /// from whatever the reader's buffer held before it (downstream
+    /// handoff, 2026-11-07: an empty datagram was delivered as `n=0`,
+    /// and a one-byte one as the previous frame with its first byte
+    /// replaced).
+    fn emit_de_need(
+        &mut self,
+        cursor: inkwell::values::IntValue<'ctx>,
+        nbytes: inkwell::values::IntValue<'ctx>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
+        site: &str,
+    ) -> Result<(), CodegenError> {
+        // the local decoder reads straight through: its bytes are the
+        // program's own serializer's, and its create-cell dispatch must
+        // stay one block
+        if !self.de_checked {
+            return Ok(());
+        }
+        let end = self
+            .builder
+            .build_int_add(cursor, nbytes, &format!("{}.need.end", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let past = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::UGT,
+                end,
+                wire_n,
+                &format!("{}.need.past", site),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let wrapped = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::ULT,
+                end,
+                cursor,
+                &format!("{}.need.wrapped", site),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let bad = self
+            .builder
+            .build_or(past, wrapped, &format!("{}.need.bad", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ok_block = self.context.append_basic_block(
+            self.builder
+                .get_insert_block()
+                .expect("insert block set")
+                .get_parent()
+                .expect("block has parent fn"),
+            &format!("{}.need.ok", site),
+        );
+        self.builder
+            .build_conditional_branch(bad, fail_block, ok_block)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(ok_block);
+        Ok(())
+    }
+
+    /// The local decoder's one guard, the one it always had
+    /// (2026-05-27): a String's or Bytes's announced length may not
+    /// exceed the bytes it was given, so a corrupt length never reaches
+    /// the payload arena as a giant allocation. The wire decoder's
+    /// `emit_de_need` subsumes it.
+    fn emit_de_legacy_len_check(
+        &mut self,
+        len: inkwell::values::IntValue<'ctx>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
+        site: &str,
+    ) -> Result<(), CodegenError> {
+        if self.de_checked {
+            return Ok(());
+        }
+        let too_big = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::UGT, len, wire_n, &format!("{}.len.bad", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ok_block = self.context.append_basic_block(
+            self.builder
+                .get_insert_block()
+                .expect("insert block set")
+                .get_parent()
+                .expect("block has parent fn"),
+            &format!("{}.len.ok", site),
+        );
+        self.builder
+            .build_conditional_branch(too_big, fail_block, ok_block)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(ok_block);
+        Ok(())
+    }
+
+    /// The wire twin's check of a raw length read off the frame, before
+    /// anything is added to it or allocated from it: `len <= wire_n -
+    /// after_prefix`, unsigned (`after_prefix <= wire_n` holds, the
+    /// prefix's own read having passed `emit_de_need`), so a negative
+    /// length fails here as a huge one, and never reaches a sum that
+    /// could wrap (reviewer, 2026-11-07: a Bytes length of -8 made
+    /// `len + 8` zero, and a zero-byte Bytes object was delivered with
+    /// the tail read from the prefix). A no-op in the local decoder.
+    fn emit_de_len_fits(
+        &mut self,
+        len: inkwell::values::IntValue<'ctx>,
+        after_prefix: inkwell::values::IntValue<'ctx>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        fail_block: inkwell::basic_block::BasicBlock<'ctx>,
+        site: &str,
+    ) -> Result<(), CodegenError> {
+        if !self.de_checked {
+            return Ok(());
+        }
+        let remaining = self
+            .builder
+            .build_int_sub(wire_n, after_prefix, &format!("{}.fits.remaining", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let too_big = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::UGT, len, remaining, &format!("{}.fits.bad", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ok_block = self.context.append_basic_block(
+            self.builder
+                .get_insert_block()
+                .expect("insert block set")
+                .get_parent()
+                .expect("block has parent fn"),
+            &format!("{}.fits.ok", site),
+        );
+        self.builder
+            .build_conditional_branch(too_big, fail_block, ok_block)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(ok_block);
+        Ok(())
+    }
+
+    /// The bytes of the frame left after `cursor`: what a nested
+    /// struct's walk, which reads from `src + cursor`, may consume.
+    /// `cursor <= wire_n` holds here, every read before it having
+    /// passed `emit_de_need`.
+    fn emit_de_remaining(
+        &mut self,
+        cursor: inkwell::values::IntValue<'ctx>,
+        wire_n: inkwell::values::IntValue<'ctx>,
+        site: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        self.builder
+            .build_int_sub(wire_n, cursor, &format!("{}.remaining", site))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+    }
+
+    /// A lower bound on the wire bytes a value of `t` encodes to: its
+    /// fixed bytes, a String's or Bytes's 8-byte length prefix, a
+    /// nested struct's fields' sum, an array's elements' sum, a bounded
+    /// field's count and elements (its storage may carry alignment
+    /// padding on top; the field's own check holds the exact size). A
+    /// frame shorter than this is refused before any field is read.
+    fn wire_min_size(&self, t: &CodegenTy) -> u64 {
+        match t {
+            CodegenTy::String | CodegenTy::Bytes => 8,
+            CodegenTy::TypeRef(name) => self
+                .user_types
+                .get(name.as_str())
+                .map(|info| self.wire_min_size_of_fields(&info.field_order, &info.fields))
+                .unwrap_or(0),
+            // the count and the elements at their wire size (an enum's
+            // tag is four bytes: `codegen_ty_size_bytes` prices every
+            // non-Decimal at eight, which overshot a `bounded[Enum; N]`
+            // and refused every frame holding one)
+            CodegenTy::Bounded(elem, n) => 8 + n * self.wire_fixed_size(elem),
+            CodegenTy::Array(elem, n) => n * self.wire_min_size(elem),
+            other if self.wire_fixed_field(other) => self.wire_fixed_size(other),
+            _ => 0,
+        }
+    }
+
+    fn wire_min_size_of_fields(
+        &self,
+        field_order: &[String],
+        fields: &BTreeMap<String, (u32, CodegenTy)>,
+    ) -> u64 {
+        field_order
+            .iter()
+            .filter_map(|f| fields.get(f))
+            .map(|(_, t)| self.wire_min_size(t))
+            .sum()
     }
 
     fn emit_array_field_serialize(
@@ -662,6 +963,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .build_gep(i8_t, src, &[cursor_iv], "de.arr.src")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 };
+                self.emit_de_need(cursor_iv, total_iv, wire_n, fail_block, "de.arr")?;
                 self.emit_memcpy_call(
                     arr_ptr,
                     src_at_cursor,
@@ -745,13 +1047,14 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                             )
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                     };
+                    let remaining = self.emit_de_remaining(cursor_iv, wire_n, "de.arr.elem")?;
                     let consumed = self.emit_per_field_deserialize_size(
                         src_at_cursor,
                         nested_dst,
                         nested_info.struct_ty,
                         &nested_info.field_order,
                         &nested_info.fields,
-                        wire_n,
+                        remaining,
                         fail_block,
                     )?;
                     let after = self
@@ -1028,6 +1331,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         *bn,
                         true,
                         "ser.bounded",
+                        None,
                     )?;
                 }
                 CodegenTy::Array(elem_ty, n) => {
@@ -1077,7 +1381,8 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
     /// struct payload, walking fields in declared order.
     /// Returns the in-memory struct size (the dst contains a
     /// concrete struct, regardless of how much wire was
-    /// consumed).
+    /// consumed). The walk is `emit_per_field_deserialize_size`'s;
+    /// only the return differs.
     fn emit_per_field_deserialize(
         &mut self,
         src: PointerValue<'ctx>,
@@ -1088,412 +1393,15 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         wire_n: inkwell::values::IntValue<'ctx>,
         fail_block: inkwell::basic_block::BasicBlock<'ctx>,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
-        let i64_t = self.context.i64_type();
-        let i8_t = self.context.i8_type();
-        let cursor_alloca = self
-            .builder
-            .build_alloca(i64_t, "de.cursor")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(cursor_alloca, i64_t.const_int(0, false))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        for fname in field_order {
-            let (idx, field_ty) = fields
-                .get(fname)
-                .cloned()
-                .expect("field declared in field_order also present in fields");
-            let dst_field_ptr = self
-                .builder
-                .build_struct_gep(struct_ty, dst, idx, "de.field.ptr")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let cursor_iv = self
-                .builder
-                .build_load(i64_t, cursor_alloca, "de.cursor.load")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_int_value();
-            let src_at_cursor = unsafe {
-                self.builder
-                    .build_gep(i8_t, src, &[cursor_iv], "de.src.cursor")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            };
-
-            match &field_ty {
-                CodegenTy::String => {
-                    // Read 8-byte length prefix.
-                    let len_alloca = self
-                        .builder
-                        .build_alloca(i64_t, "de.str.len.alloca")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.emit_memcpy_call(
-                        len_alloca,
-                        src_at_cursor,
-                        i64_t.const_int(8, false),
-                        "de.str.memcpy.len",
-                    )?;
-                    let str_len = self
-                        .builder
-                        .build_load(i64_t, len_alloca, "de.str.len")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .into_int_value();
-                    // Bound-check (2026-05-27): decoded length must
-                    // be in [0, wire_n]. An unsigned > catches both
-                    // negative-as-i64 (would be huge unsigned) and
-                    // larger-than-the-wire-buffer cases — either
-                    // implies a corrupt or cross-routed datagram.
-                    // Fail-block returns -1; reader-thread drops
-                    // the packet via the existing
-                    // `if (struct_size <= 0) continue;` guard.
-                    let str_too_big = self
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::UGT,
-                            str_len,
-                            wire_n,
-                            "de.str.len.bad",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let ok_block = self.context.append_basic_block(
-                        self.builder
-                            .get_insert_block()
-                            .expect("insert block set")
-                            .get_parent()
-                            .expect("block has parent fn"),
-                        "de.str.len.ok",
-                    );
-                    self.builder
-                        .build_conditional_branch(str_too_big, fail_block, ok_block)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder.position_at_end(ok_block);
-                    let after_len = self
-                        .builder
-                        .build_int_add(
-                            cursor_iv,
-                            i64_t.const_int(8, false),
-                            "de.cursor.after.len",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let src_after_len = unsafe {
-                        self.builder
-                            .build_gep(
-                                i8_t,
-                                src,
-                                &[after_len],
-                                "de.src.after.len",
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    };
-                    // Allocate len+1 from the lazy global payload
-                    // arena. The +1 is for the C-side NUL
-                    // terminator so existing strlen / strcpy /
-                    // string-printing code works on the
-                    // deserialized struct.
-                    let alloc_size = self
-                        .builder
-                        .build_int_add(
-                            str_len,
-                            i64_t.const_int(1, false),
-                            "de.str.alloc.size",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let alloc_fn = self
-                        .module
-                        .get_function("lotus_bus_payload_arena_alloc")
-                        .expect("lotus_bus_payload_arena_alloc declared");
-                    let buf = self
-                        .builder
-                        .build_call(
-                            alloc_fn,
-                            &[
-                                alloc_size.into(),
-                                i64_t.const_int(1, false).into(),
-                            ],
-                            "de.str.alloc",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .try_as_basic_value()
-                        .left()
-                        .expect("payload arena alloc returns ptr")
-                        .into_pointer_value();
-                    self.emit_memcpy_call(
-                        buf,
-                        src_after_len,
-                        str_len,
-                        "de.str.memcpy.bytes",
-                    )?;
-                    // Write trailing NUL: buf[str_len] = 0.
-                    let nul_slot = unsafe {
-                        self.builder
-                            .build_gep(
-                                i8_t,
-                                buf,
-                                &[str_len],
-                                "de.str.nul.ptr",
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    };
-                    self.builder
-                        .build_store(nul_slot, i8_t.const_int(0, false))
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    // Store buf pointer into dst struct's String
-                    // field slot.
-                    self.builder
-                        .build_store(dst_field_ptr, buf)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let after_bytes = self
-                        .builder
-                        .build_int_add(
-                            after_len,
-                            str_len,
-                            "de.cursor.after.bytes",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder
-                        .build_store(cursor_alloca, after_bytes)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                CodegenTy::Int
-                | CodegenTy::Float
-                | CodegenTy::Bool
-                | CodegenTy::Time
-                | CodegenTy::Duration
-                | CodegenTy::Decimal(_)
-                | CodegenTy::Enum(_)
-                    if self.wire_fixed_field(&field_ty) =>
-                {
-                    let nbytes = self.wire_fixed_size(&field_ty);
-                    let nbytes_iv = i64_t.const_int(nbytes, false);
-                    self.emit_memcpy_call(
-                        dst_field_ptr,
-                        src_at_cursor,
-                        nbytes_iv,
-                        "de.fixed.memcpy",
-                    )?;
-                    let after = self
-                        .builder
-                        .build_int_add(
-                            cursor_iv,
-                            nbytes_iv,
-                            "de.cursor.after",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder
-                        .build_store(cursor_alloca, after)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                CodegenTy::Bytes => {
-                    // A8 (G15) — mirror of the serializer.
-                    // Read 8-byte length prefix at the cursor;
-                    // allocate `8 + len` bytes in the bus payload
-                    // arena, memcpy the length-prefixed blob,
-                    // store the pointer into the dst field. The
-                    // blob's first 8 bytes ARE the length, so a
-                    // subsequent `len(b)` read returns the
-                    // wire-level length directly.
-                    let len_alloca = self
-                        .builder
-                        .build_alloca(i64_t, "de.bytes.len.alloca")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.emit_memcpy_call(
-                        len_alloca,
-                        src_at_cursor,
-                        i64_t.const_int(8, false),
-                        "de.bytes.memcpy.len",
-                    )?;
-                    let bytes_len = self
-                        .builder
-                        .build_load(i64_t, len_alloca, "de.bytes.len")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .into_int_value();
-                    // Bound-check (2026-05-27): see matching note
-                    // on the String path.
-                    let bytes_too_big = self
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::UGT,
-                            bytes_len,
-                            wire_n,
-                            "de.bytes.len.bad",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let ok_block = self.context.append_basic_block(
-                        self.builder
-                            .get_insert_block()
-                            .expect("insert block set")
-                            .get_parent()
-                            .expect("block has parent fn"),
-                        "de.bytes.len.ok",
-                    );
-                    self.builder
-                        .build_conditional_branch(
-                            bytes_too_big,
-                            fail_block,
-                            ok_block,
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder.position_at_end(ok_block);
-                    let total = self
-                        .builder
-                        .build_int_add(
-                            bytes_len,
-                            i64_t.const_int(8, false),
-                            "de.bytes.total",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let alloc_fn = self
-                        .module
-                        .get_function("lotus_bus_payload_arena_alloc")
-                        .expect("lotus_bus_payload_arena_alloc declared");
-                    let buf = self
-                        .builder
-                        .build_call(
-                            alloc_fn,
-                            &[
-                                total.into(),
-                                i64_t.const_int(8, false).into(),
-                            ],
-                            "de.bytes.alloc",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .try_as_basic_value()
-                        .left()
-                        .expect("payload arena alloc returns ptr")
-                        .into_pointer_value();
-                    self.emit_memcpy_call(
-                        buf,
-                        src_at_cursor,
-                        total,
-                        "de.bytes.memcpy.blob",
-                    )?;
-                    self.builder
-                        .build_store(dst_field_ptr, buf)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let after = self
-                        .builder
-                        .build_int_add(
-                            cursor_iv,
-                            total,
-                            "de.cursor.after.bytes",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder
-                        .build_store(cursor_alloca, after)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                CodegenTy::TypeRef(nested_name) => {
-                    // Nested user-struct: allocate a fresh nested
-                    // storage in the payload arena, recurse to
-                    // deserialize its fields, and store the new
-                    // pointer into dst's slot.
-                    let nested_info = self
-                        .user_types
-                        .get(nested_name.as_str())
-                        .cloned()
-                        .ok_or_else(|| {
-                            CodegenError::Unsupported(format!(
-                                "bus payload field `{}: {}` — nested \
-                                 type not declared",
-                                fname, nested_name
-                            ))
-                        })?;
-                    let nested_size = nested_info
-                        .struct_ty
-                        .size_of()
-                        .expect("nested struct ty has known size");
-                    let alloc_fn = self
-                        .module
-                        .get_function("lotus_bus_payload_arena_alloc")
-                        .expect("lotus_bus_payload_arena_alloc declared");
-                    let nested_dst = self
-                        .builder
-                        .build_call(
-                            alloc_fn,
-                            &[
-                                nested_size.into(),
-                                // 16-align: a nested payload struct may
-                                // carry an i128 / Decimal (align-16)
-                                // field; a handler's aligned SSE load
-                                // (`vmovaps`) of it #GP-traps on an
-                                // 8-aligned allocation. Mirrors the
-                                // fixed-size-array element path above.
-                                i64_t.const_int(16, false).into(),
-                            ],
-                            "de.nested.alloc",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .try_as_basic_value()
-                        .left()
-                        .expect("payload arena alloc returns ptr")
-                        .into_pointer_value();
-                    let nested_consumed = self.emit_per_field_deserialize_size(
-                        src_at_cursor,
-                        nested_dst,
-                        nested_info.struct_ty,
-                        &nested_info.field_order,
-                        &nested_info.fields,
-                        wire_n,
-                        fail_block,
-                    )?;
-                    self.builder
-                        .build_store(dst_field_ptr, nested_dst)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let after = self
-                        .builder
-                        .build_int_add(
-                            cursor_iv,
-                            nested_consumed,
-                            "de.cursor.after.nested",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder
-                        .build_store(cursor_alloca, after)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                CodegenTy::Bounded(belem, bn) => {
-                    if Self::bounded_elem_is_ptr(belem) {
-                        return Err(CodegenError::Unsupported(format!(
-                            "bus payload field `{}: bounded[{:?}; {}]` — \
-                             pointer-element bounded cross-process is \
-                             post-v1 polish",
-                            fname, belem, bn
-                        )));
-                    }
-                    self.emit_bounded_field_wire_memcpy(
-                        dst_field_ptr,
-                        src,
-                        cursor_alloca,
-                        belem,
-                        *bn,
-                        false,
-                        "de.bounded",
-                    )?;
-                }
-                CodegenTy::Array(elem_ty, n) => {
-                    self.emit_array_field_deserialize(
-                        dst_field_ptr,
-                        src,
-                        cursor_alloca,
-                        struct_ty,
-                        idx,
-                        elem_ty,
-                        *n,
-                        fname,
-                        wire_n,
-                        fail_block,
-                    )?;
-                }
-                other => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "bus payload field `{}: {:?}` — m70 wire format \
-                         supports primitives, String, fixed-size arrays \
-                         of primitives or TypeRefs, and nested structs \
-                         (whose leaves are primitives/String)",
-                        fname, other
-                    )));
-                }
-            }
-        }
-
+        self.emit_per_field_deserialize_size(
+            src,
+            dst,
+            struct_ty,
+            field_order,
+            fields,
+            wire_n,
+            fail_block,
+        )?;
         let struct_size = struct_ty
             .size_of()
             .expect("payload struct has known size");
@@ -1552,6 +1460,13 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .builder
                         .build_alloca(i64_t, "de.nested.str.len.alloca")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.emit_de_need(
+                        cursor_iv,
+                        i64_t.const_int(8, false),
+                        wire_n,
+                        fail_block,
+                        "de.str.len",
+                    )?;
                     self.emit_memcpy_call(
                         len_alloca,
                         src_at_cursor,
@@ -1563,29 +1478,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .build_load(i64_t, len_alloca, "de.nested.str.len")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                         .into_int_value();
-                    // Bound-check (2026-05-27): see matching note on
-                    // emit_per_field_deserialize's String path.
-                    let str_too_big = self
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::UGT,
-                            str_len,
-                            wire_n,
-                            "de.nested.str.len.bad",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let ok_block = self.context.append_basic_block(
-                        self.builder
-                            .get_insert_block()
-                            .expect("insert block set")
-                            .get_parent()
-                            .expect("block has parent fn"),
-                        "de.nested.str.len.ok",
-                    );
-                    self.builder
-                        .build_conditional_branch(str_too_big, fail_block, ok_block)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder.position_at_end(ok_block);
+                    self.emit_de_legacy_len_check(str_len, wire_n, fail_block, "de.str")?;
                     let after_len = self
                         .builder
                         .build_int_add(
@@ -1594,6 +1487,13 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                             "de.nested.cursor.after.len",
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // The length read off the wire, against the bytes
+                    // after it (not the whole frame: a nested or later
+                    // String used to pass on a length the frame held
+                    // only from its start), before anything is added to
+                    // it.
+                    self.emit_de_len_fits(str_len, after_len, wire_n, fail_block, "de.str")?;
+                    self.emit_de_need(after_len, str_len, wire_n, fail_block, "de.str.bytes")?;
                     let src_after_len = unsafe {
                         self.builder
                             .build_gep(
@@ -1676,6 +1576,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 {
                     let nbytes = self.wire_fixed_size(&field_ty);
                     let nbytes_iv = i64_t.const_int(nbytes, false);
+                    self.emit_de_need(cursor_iv, nbytes_iv, wire_n, fail_block, "de.fixed")?;
                     self.emit_memcpy_call(
                         dst_field_ptr,
                         src_at_cursor,
@@ -1703,6 +1604,13 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .builder
                         .build_alloca(i64_t, "de.nested.bytes.len.alloca")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.emit_de_need(
+                        cursor_iv,
+                        i64_t.const_int(8, false),
+                        wire_n,
+                        fail_block,
+                        "de.bytes.len",
+                    )?;
                     self.emit_memcpy_call(
                         len_alloca,
                         src_at_cursor,
@@ -1714,33 +1622,20 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .build_load(i64_t, len_alloca, "de.nested.bytes.len")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                         .into_int_value();
-                    // Bound-check (2026-05-27): see matching note on
-                    // the top-level Bytes path.
-                    let bytes_too_big = self
+                    self.emit_de_legacy_len_check(bytes_len, wire_n, fail_block, "de.bytes")?;
+                    // The raw length against what the frame holds after
+                    // its prefix, BEFORE the `+ 8`: a length of -8 made
+                    // the sum zero and passed the sum's check (reviewer,
+                    // 2026-11-07).
+                    let after_prefix = self
                         .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::UGT,
-                            bytes_len,
-                            wire_n,
-                            "de.nested.bytes.len.bad",
+                        .build_int_add(
+                            cursor_iv,
+                            i64_t.const_int(8, false),
+                            "de.nested.bytes.after.prefix",
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let ok_block = self.context.append_basic_block(
-                        self.builder
-                            .get_insert_block()
-                            .expect("insert block set")
-                            .get_parent()
-                            .expect("block has parent fn"),
-                        "de.nested.bytes.len.ok",
-                    );
-                    self.builder
-                        .build_conditional_branch(
-                            bytes_too_big,
-                            fail_block,
-                            ok_block,
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder.position_at_end(ok_block);
+                    self.emit_de_len_fits(bytes_len, after_prefix, wire_n, fail_block, "de.bytes")?;
                     let total = self
                         .builder
                         .build_int_add(
@@ -1749,6 +1644,9 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                             "de.nested.bytes.total",
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // The prefix and the blob it announces, against
+                    // what the frame holds after the cursor.
+                    self.emit_de_need(cursor_iv, total, wire_n, fail_block, "de.bytes.blob")?;
                     let alloc_fn = self
                         .module
                         .get_function("lotus_bus_payload_arena_alloc")
@@ -1827,13 +1725,14 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .left()
                         .expect("payload arena alloc returns ptr")
                         .into_pointer_value();
+                    let remaining = self.emit_de_remaining(cursor_iv, wire_n, "de.nested")?;
                     let nested_consumed = self.emit_per_field_deserialize_size(
                         src_at_cursor,
                         nested_dst,
                         nested_info.struct_ty,
                         &nested_info.field_order,
                         &nested_info.fields,
-                        wire_n,
+                        remaining,
                         fail_block,
                     )?;
                     self.builder
@@ -1868,6 +1767,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         *bn,
                         false,
                         "de.bounded",
+                        Some((wire_n, fail_block)),
                     )?;
                 }
                 CodegenTy::Array(elem_ty, n) => {

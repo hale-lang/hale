@@ -153,19 +153,29 @@ Phase 2b entry in `spec/stdlib.md`.
   `if` expression's arm, an `or { … }` substitute. There it is typed
   and lowered as a match expression (every arm one type), so
   `Kind::A -> { let m = n + 1; match m { 1 -> "one", _ -> "many" } }`
-  is an arm of a `String` match. The trailing `match` must yield a
-  value in at least one arm: a diverging arm beside a valued one is
-  the join (only the valued arms reach it), but a `match` whose
-  every arm leaves without a value (a `return`, `fail`, `break`, an
-  endless loop, transitively through nested blocks, `if`s and
-  `match`es) makes the block no value at all, and the check refuses
-  the block ("this block ends in a \`match\` whose every arm leaves
+  is an arm of a `String` match. A diverging arm beside a valued one
+  is the join (only the valued arms reach it). A trailing `match`
+  whose every arm leaves without a value (a `return`, `fail`,
+  `break`, an endless loop, transitively through nested blocks,
+  `if`s and `match`es) makes the block a diverging one, legal
+  wherever a diverging expression is: a match expression's block arm
+  (beside arms that supply the value, or beside none, as a match
+  whose every arm returns is), an `if` expression's arm beside one
+  that supplies the value, an `or { … }` substitute (the call's
+  success is the value). Where a value is required of the block and
+  nothing else supplies one — a `let`'s block, a call argument, a
+  `return`, an assignment, a field, a condition, an operand of `&&`
+  or `||`, a `while` condition, a match guard — the check refuses the
+  block ("this block ends in a \`match\` whose every arm leaves
   without a value … give an arm a value, or end the block with
-  \`return\`"). In a block used as a statement (a fn body, a loop
-  body) it stays the statement it reads as. Until
-  2026-11-06 the check passed the arm above and the build refused it
-  as a block with no trailing expression, where the same arm ending
-  in `if … else …` built (downstream handoff).
+  \`return\`"), as it refuses `let x = { return 1; };`. In a block
+  used as a statement (a fn body, a loop body) it stays the statement
+  it reads as. Until 2026-11-06 the check passed the arm above and
+  the build refused it as a block with no trailing expression, where
+  the same arm ending in `if … else …` built (downstream handoff);
+  2026-11-07 refused the all-leaving trailing `match` in every
+  position, a match arm's included, where v0.32.7 had built it
+  (downstream handoff review).
 
 **An enum-constructor pattern's values** are each a binding, `_` or a
 literal: a nested pattern there (`Op::Pair((a, b))`) is a type error at
@@ -2343,7 +2353,8 @@ acted on. Consequences, all normative:
      explicit wake, a pipe it polls beside its socket, the same
      on Linux and macOS: it reads the datagrams the kernel has
      queued, then ends. An empty datagram is an ordinary frame
-     to it, rejected as too short and counted as a drop, never
+     to it, rejected as too short and counted as a drop
+     (`dropped_decode`; § Payload type below), never
      its stop (2026-11-06, downstream handoff: a zero-byte
      datagram was the reader's stop sentinel — what a
      `shutdown()` of the socket produced on Linux — so one ended
@@ -2793,10 +2804,14 @@ payload picks the consumer mode:
   `bounded[T; N]` or `[T; N]` of any of those as a JSON array (more
   elements than `N` is `too_long`, fewer than a fixed array's
   `too_short`; an absent `bounded` field is empty). A `Decimal<S>`
-  field is a JSON number read at the field's scale, every digit kept; a
-  number with a nonzero digit past the scale (or not a number) is
-  `JsonError { kind: "wrong_type", field }`, never truncated or read as
-  zero (spec/types.md § Decimal<S>). The key is the tag value, else
+  field is a JSON number read at the field's scale, every digit kept,
+  an exponent applied exactly (`1e-7`, `1.50E+1`; 2026-11-07,
+  downstream handoff); a number with a nonzero digit past the scale,
+  one whose mantissa no i128 holds, a spelling that is no JSON number
+  (`+1`, `.5`, `1.`, `01`), or not a number is `JsonError { kind:
+  "wrong_type", field }`, never truncated or read as zero
+  (spec/types.md § Decimal<S>, spec/api.md § Codecs). The key is the
+  tag value, else
   the field name; unmatched keys (and nested objects/arrays under them)
   are skipped. A missing field raises `JsonError { kind: "missing_field",
   field }` unless the field declares a default, which fills it: a
@@ -2804,7 +2819,11 @@ payload picks the consumer mode:
   literal (`= Instrument { sym: "Y", tick: 2 }`, its own fields' defaults
   filling what it leaves out), or any expression a field default may be;
   the codec builds it when the key is absent, exactly as the record's
-  own literal would.
+  own literal would. A key sent as `null` is a key absent (2026-11-07,
+  downstream handoff): the field takes that same default, whatever its
+  shape, or is `missing_field` with none, and a `null` after a value
+  leaves nothing of it (the last of a key sent twice wins); a
+  `std::json::Value` field alone holds `null` as its text.
   `from_json` is `fallible`, so callers must address it. The same tags
   drive emit: `Type::to_json(v) -> String` serializes a value back (bare
   numbers/bools, a Decimal's exact digits at its scale, escaped strings,
@@ -4582,6 +4601,26 @@ bus payload may carry a struct whose fields are primitives,
 Strings, Bytes, or other nested structs, at any depth. Serialize
 walks the field tree in declaration order; deserialize allocates
 each nested struct in the lazy global payload arena and recurses.
+A frame is decoded only as far as it reaches (2026-11-07, downstream
+handoff): one shorter than its type's minimum encoded size (its
+fixed fields and length prefixes; the empty datagram included) is
+refused before any field is read, and every read after that — a
+fixed field, a length prefix, the bytes a String or Bytes length
+announces, a nested struct's or an array element's fields — is held
+to what remains of the frame after it, never to the frame's whole
+length; a refused frame is dropped by the reader that received it and
+counted (`dropped_decode` in the counters dump), and nothing of the
+reader's previous frame is delivered as part of it. It used to be
+that an empty datagram was delivered as a zero-filled record, one
+after a valid frame replayed that frame, and a one-byte one delivered
+the previous frame with its first byte replaced. The rule is the
+transport readers' (the `udp://` and `unix://` readers, the
+early-ingress flush, the replay injector): a local cell is not a wire
+frame. In-process delivery — a publish materialized on the owner's
+thread, a cross-pool create cell — holds the program's own
+serializer's bytes and is decoded straight through, unchecked, so a
+create cell's dispatch stays one straight-line block (accept, the
+children's push, then birth, in the text's order).
 A payload-free enum field travels as its four-byte tag (so a topic
 `keyed_by` an enum field builds), and a `bounded[T; N]` of scalars or
 such enums and an array of scalars or structs are carried too. An
@@ -5351,13 +5390,22 @@ reads `self.draining` in its `run()`, and then its loops are its own:
 | reads it, and the check cannot prove it | a warning at each such loop | the author's code, bounded by the grace |
 
 **Manual control is the `run()`'s.** A locus takes the drain into its
-own hands when its `run()` reads `draining` (on any receiver: `self`,
-a locus reached through `self`, a locus-typed parameter), in its own
-body or in a fn or method of the program it calls, transitively (a
-call on `self`, or a bare call; another locus's method is not
-followed). A read in a handler, a `drain()` / `dissolve()` hook, or a
-method `run()` does not call does not make the `run()` manual (the
-flow rows' watches-drain column, `registry.md` § flows). The check's
+own hands when its `run()` reads its locus's `draining`, itself or
+through a fn or method of the program it calls, transitively, through
+any receiver that is the locus by declared type — `self`, a `let` alias
+of it (in its block), a parameter a method or free fn binds to it (a
+call on another locus that hands it this locus is followed), or a
+declared field path whose type is the locus (a call on a locus whose
+params declare a field of this locus's type, or of a holder of one,
+transitively, a collection or projection of it included, a type alias
+of it resolved to it, is followed, and its `self.<field>` is this
+locus: by declared types, not by construction) — or that the
+declarations cannot resolve (a type name they do not know is never
+taken as no locus), which is taken as a read. A read in a handler, a
+`drain()` / `dissolve()` hook, or a method `run()` does not call, or of
+another locus's `draining` (a holder's own `self.draining` included),
+does not make the `run()` manual (the flow rows' watches-drain column,
+`registry.md` § flows). The check's
 "Manual drain not honoured" rule (`verification.md` § Structural &
 design rules) says, conservatively, whether each loop of a manual
 `run()` stops on the flag; what it cannot prove it reports, never

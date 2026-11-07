@@ -80,16 +80,26 @@ pub enum Visited<'a> {
     Expr(&'a Expr),
     /// `or wait`: a publish that waits for room.
     OrWait,
+    /// A block is entered (before its statements) and left (after its
+    /// tail): the root body included, every nested one (an `if` arm, a
+    /// loop body, a match arm's block, an `or { … }`, a closure body) as
+    /// it is reached. A visitor that tracks a block's bindings scopes
+    /// them between the two.
+    Enter(&'a Block),
+    Leave(&'a Block),
 }
 
-/// Visit every statement and expression of `b`, pre-order.
+/// Visit every statement and expression of `b`, pre-order, each block
+/// bracketed by `Enter` and `Leave`.
 pub fn visit_block<'a>(b: &'a Block, f: &mut dyn FnMut(Visited<'a>)) {
+    f(Visited::Enter(b));
     for s in &b.stmts {
         visit_stmt(s, f);
     }
     if let Some(t) = &b.tail {
         visit_expr(t, f);
     }
+    f(Visited::Leave(b));
 }
 
 fn visit_if<'a>(i: &'a IfStmt, f: &mut dyn FnMut(Visited<'a>)) {

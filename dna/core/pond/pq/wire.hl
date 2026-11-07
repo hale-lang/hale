@@ -258,9 +258,11 @@ fn is_fail_fast_kind(kind: String) -> Bool {
     // "connection_refused": nothing listens on the port, and a redial
     // 150 ms later will find the same (GH #1030 — eight of them made a
     // store that is down cost each read over a second).
+    // "connect_timeout": the address did not answer within the dial's
+    // bound; eight more dials would hold the caller eight bounds long.
     return kind == "auth_failed" || kind == "unsupported"
         || kind == "startup_rejected" || kind == "tls"
-        || kind == "connection_refused";
+        || kind == "connection_refused" || kind == "connect_timeout";
 }
 
 // ===== sslmode / TLS negotiation policy =====

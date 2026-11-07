@@ -1,0 +1,78 @@
+// dna/api/tests/habitat_observer_test.hl — a read of the allocations
+// observes within its time (habitat_rows.hl `Observer`).
+//
+// The head serves its commands one at a time, so a read that observes
+// every allocation held every command behind it for as long as its asks
+// took: a host or an address that did not answer made the read, and the
+// CLI's `Commands::allocations` behind it, outlive the head's deadline. A
+// read observes within its budget, asks nothing more of a host that was
+// slow in it, and answers an allocation it did not ask of with what was
+// last observed of it and how long ago, or as not observed yet.
+import ".." as api;
+import "../../core" as dna;
+
+fn main() {
+    // an allocation on the operator's backends: its provider is asked
+    // nothing over the network, and its reading is the provider's own word
+    let operator = dna::Allocation {
+        role: "memory",
+        instance: "aaaaaaaaaaaa",
+        provider: "operator",
+        host: "local",
+    };
+    let seer = api::Observer { };
+
+    // ---- within the read's time: asked, and the reading kept
+    seer.begin();
+    let first = seer.observe(".", "aaaaaaaaaaaa/memory", operator);
+    std::test::assert_eq_str(
+        first.detail,
+        "the operator provider's: not observed by the habitat",
+        "observed while the read has time",
+    );
+    std::test::assert(seer.readings.contains("aaaaaaaaaaaa/memory"), "the reading is kept");
+
+    // ---- the read's time ran out: the last reading, said how old
+    seer.until = 1;
+    let late = seer.observe(".", "aaaaaaaaaaaa/memory", operator);
+    std::test::assert(
+        std::str::starts_with(
+            late.detail,
+            "the operator provider's: not observed by the habitat (observed ",
+        ),
+        "the last reading answers: " + late.detail,
+    );
+    std::test::assert(
+        std::str::ends_with(late.detail, " ago: the read's time ran out before it)"),
+        "and says why it was not asked again: " + late.detail,
+    );
+    // one never observed is said so
+    std::test::assert_eq_str(
+        seer.observe(".", "bbbbbbbbbbbb/memory", operator).detail,
+        "not observed yet: the read's time ran out before it; the next read asks",
+        "nothing observed yet",
+    );
+
+    // ---- a host slow in this read is not asked again in it
+    seer.begin();
+    seer.slow.put(api::SlowHost { host: "rack-a", read: seer.read });
+    let mut there = operator;
+    there.host = "rack-a";
+    std::test::assert_eq_str(
+        seer.observe(".", "cccccccccccc/memory", there).detail,
+        "not observed yet: rack-a was slow to answer in this read; the next read asks",
+        "a slow host is passed over in the read",
+    );
+    // the next read asks it again
+    seer.begin();
+    std::test::assert(!seer.was_slow("rack-a"), "slowness is the read's own");
+    std::test::assert_eq_str(
+        seer.observe(".", "cccccccccccc/memory", there).detail,
+        "the operator provider's: not observed by the habitat",
+        "asked again in the next read",
+    );
+
+    // ---- a span as it is said
+    std::test::assert_eq_str(api::seconds_said(4150000000), "4.1 s", "seconds, a tenth");
+    std::test::assert_eq_str(api::seconds_said(35000000000), "35.0 s", "whole seconds");
+}

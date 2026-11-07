@@ -2047,6 +2047,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_bus_register", bus_register_ty, None);
+        // 2026-11-07: declare void @lotus_bus_wire_decoder(ptr local, ptr
+        // wire) — the checked twin of a registered local decoder, which
+        // the transport readers use in its place.
+        let wire_decoder_ty = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module.add_function("lotus_bus_wire_decoder", wire_decoder_ty, None);
         // F.31 Phase 4: pool-aware register.
         // declare void @lotus_bus_register_with_pool(ptr subject, ptr self,
         //   ptr handler, ptr mailbox, ptr deserialize, ptr coop_pool)

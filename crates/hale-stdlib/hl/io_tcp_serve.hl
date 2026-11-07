@@ -437,6 +437,132 @@ fn __http_chunk_feed(
     return __StdHttpChunkFeed { state: state, need: need, consumed: pos };
 }
 
+// A request's framing, read from its header block before any body byte
+// is read (`__http_framing`): `bad` is the 400 to answer, or empty;
+// `chunked` whether the body comes chunked; `length` its declared
+// `Content-Length` (0 when none).
+type __StdHttpFraming { bad: String; chunked: Bool; length: Int; }
+
+// The framing a header block declares (`block`: the request line and
+// the header lines, CRLF-separated, without the blank line), read as
+// RFC 9112 has a server read it (2026-11-07, review of #1869: the
+// Server took the first `Transfer-Encoding` line and matched `chunked`
+// in it as a substring, beside any `Content-Length`). Whitespace
+// between a header's name and its colon refuses the request (§ 5.1: a
+// proxy in front may have read the line as that header where this
+// Server would not). `Transfer-Encoding` is a comma-separated list
+// across every line carrying it, accepted only when it is exactly
+// `chunked` (§ 6.1: the final coding must be chunked, and the Server
+// applies no other coding, so any other member — `xchunked`, `chunked,
+// gzip`, `gzip, chunked`, a `gzip` line before a `chunked` one — is one
+// it cannot undo); a `Content-Length` beside it refuses the request too
+// (§ 6.3: the two frame the body differently, and a proxy in front may
+// have chosen the other).
+fn __http_framing(block: String) -> __StdHttpFraming {
+    let total = len(block);
+    let mut length = 0;
+    let mut has_length = false;
+    let mut te_lines = 0;
+    let mut te_codings = 0;
+    let mut te_last = "";
+    // past the request line
+    let first = std::str::index_of(block, "\r\n");
+    let mut cursor = if first < 0 { total } else { first + 2 };
+    while cursor < total {
+        let rel = std::str::index_of(block[cursor..total], "\r\n");
+        let line_end = if rel < 0 { total } else { cursor + rel };
+        let line = block[cursor..line_end];
+        cursor = if rel < 0 { total } else { line_end + 2 };
+        let colon = std::str::index_of(line, ":");
+        if colon <= 0 { continue; }
+        let before = line[(colon - 1)..colon];
+        if before == " " || before == "\t" {
+            return __StdHttpFraming {
+                bad: "whitespace before a header's colon",
+                chunked: false,
+                length: 0,
+            };
+        }
+        let name = std::str::lower(line[0..colon]);
+        let value = line[(colon + 1)..len(line)];
+        if name == "content-length" {
+            if !has_length {
+                has_length = true;
+                length = std::str::parse_int(std::str::trim(value)) or 0;
+            }
+        } else if name == "transfer-encoding" {
+            te_lines = te_lines + 1;
+            // each member of the list; an empty one is skipped (RFC 9110
+            // § 5.6.1)
+            let vlen = len(value);
+            let mut at = 0;
+            while at <= vlen {
+                let crel = if at < vlen { std::str::index_of(value[at..vlen], ",") } else { -1 };
+                let mend = if crel < 0 { vlen } else { at + crel };
+                let member = std::str::lower(std::str::trim(value[at..mend]));
+                if len(member) > 0 {
+                    te_codings = te_codings + 1;
+                    te_last = member;
+                }
+                at = mend + 1;
+            }
+        }
+    }
+    if te_lines > 0 {
+        if te_codings != 1 || te_last != "chunked" {
+            return __StdHttpFraming {
+                bad: "unsupported transfer encoding",
+                chunked: false,
+                length: 0,
+            };
+        }
+        if has_length {
+            return __StdHttpFraming {
+                bad: "Transfer-Encoding with Content-Length",
+                chunked: false,
+                length: 0,
+            };
+        }
+        return __StdHttpFraming { bad: "", chunked: true, length: 0 };
+    }
+    return __StdHttpFraming { bad: "", chunked: false, length: length };
+}
+
+// The header block a chunked request's handler sees: the block as it
+// came less every `Transfer-Encoding` and `Content-Length` line, then
+// `Content-Length: <body_len>`, the de-chunked body's own framing, so a
+// handler that copies the request's headers onto an upstream request
+// frames what it forwards (2026-11-07, review of #1869: the handler saw
+// `Transfer-Encoding: chunked` beside a body that no longer was).
+// Built in one pass through a builder: linear in the block.
+fn __http_strip_framing(block: String, body_len: Int) -> String {
+    let total = len(block);
+    let out = std::bytes::BytesBuilder { initial_cap: total + 64 };
+    let first = std::str::index_of(block, "\r\n");
+    let mut cursor = total;
+    if first < 0 {
+        out.append_str(block);
+        out.append_str("\r\n");
+    } else {
+        out.append_str(block[0..(first + 2)]);
+        cursor = first + 2;
+    }
+    while cursor < total {
+        let rel = std::str::index_of(block[cursor..total], "\r\n");
+        let line_end = if rel < 0 { total } else { cursor + rel };
+        let line = block[cursor..line_end];
+        cursor = if rel < 0 { total } else { line_end + 2 };
+        let colon = std::str::index_of(line, ":");
+        let name = if colon < 0 { "" } else { std::str::lower(line[0..colon]) };
+        if name != "transfer-encoding" && name != "content-length" {
+            out.append_str(line);
+            out.append_str("\r\n");
+        }
+    }
+    out.append_str("Content-Length: " + to_string(body_len) + "\r\n\r\n");
+    return std::str::from_bytes(out.finish() or std::bytes::from_string(""));
+}
+
 // Per-connection helper. Reassembles one full request before
 // dispatch: accumulate recv(8192) chunks until the `\r\n\r\n`
 // header terminator arrives, then until `Content-Length` body
@@ -460,8 +586,12 @@ fn __http_chunk_feed(
 // `too_large` (the Server's, `413 payload too large` unless set)
 // before buffering; overflow without a complete header block closes
 // without a response (the framing can't be trusted). Keep-alive stays
-// unsupported (Connection: close). A request body sent as
-// `Transfer-Encoding: chunked` is framed as it arrives
+// unsupported (Connection: close). The framing is read from the header
+// block once it is whole (`__http_framing`), before a body byte is
+// read: whitespace before a header's colon, a `Transfer-Encoding` that
+// is not exactly `chunked` across all its lines, or one beside a
+// `Content-Length`, answers 400 and reads no body. A request body sent
+// as `Transfer-Encoding: chunked` is framed as it arrives
 // (`__http_chunk_feed`): each read is consumed through the framing
 // state, a chunk's data goes to the body builder as it is read, and only
 // the bytes a read leaves unfinished (a partial size line, a CRLF, a
@@ -475,7 +605,9 @@ fn __http_chunk_feed(
 // so a chunked body over the cap answers `too_large` as an over-cap
 // Content-Length does; malformed framing, or a body cut off before its
 // last chunk, answers 400 (2026-11-06, downstream handoff: the handler
-// saw the raw chunk framing, or an empty body).
+// saw the raw chunk framing, or an empty body). The handler sees the
+// de-chunked body under its own `Content-Length`, the chunked framing's
+// headers removed (`__http_strip_framing`).
 fn __http_handle_one_conn(
     conn_fd: Int,
     h: std::http::Handler,
@@ -504,6 +636,8 @@ fn __http_handle_one_conn(
     // data with `cs_need` bytes left, 2 the CRLF after it, 3 trailers,
     // 4 done, 5 malformed)
     let mut chunked = false;
+    // the 400 the header block earned, if any (`__http_framing`)
+    let mut bad_request = "";
     let pend = std::bytes::BytesBuilder { initial_cap: 256 };
     let body = std::bytes::BytesBuilder { initial_cap: 8192 };
     let mut cs_state = 0;
@@ -549,16 +683,18 @@ fn __http_handle_one_conn(
             let at = std::str::index_of(probe, "\r\n\r\n");
             if at >= 0 {
                 header_end = total - len(carry) + at;
-                // what has come so far, once: the header block and the
-                // body's first bytes
-                let partial = std::http::parse_request(
-                    std::str::from_bytes(buf.snapshot() or std::bytes::from_string("")),
+                // the framing the header block declares, read once it
+                // is whole and before any body byte is
+                let snap = buf.snapshot() or std::bytes::from_string("");
+                let framing = __http_framing(
+                    std::str::from_bytes(std::bytes::slice(snap, 0, header_end)),
                 );
-                need = std::str::parse_int(
-                    std::http::header(partial, "Content-Length")) or 0;
-                let te = std::str::lower(
-                    std::http::header(partial, "Transfer-Encoding"));
-                chunked = std::str::index_of(te, "chunked") >= 0;
+                if len(framing.bad) > 0 {
+                    bad_request = framing.bad;
+                    break;
+                }
+                need = framing.length;
+                chunked = framing.chunked;
                 if chunked {
                     // the body's first bytes, after the terminator
                     let off = header_end + 4 - total;
@@ -602,6 +738,15 @@ fn __http_handle_one_conn(
         // response (Stream scope-exit closes the fd).
         return;
     }
+    if len(bad_request) > 0 {
+        // the header block's framing cannot be trusted: no body was read
+        std::http::write_response(s, std::http::Response {
+            status: 400,
+            content_type: "text/plain",
+            body: bad_request,
+        });
+        return;
+    }
     if too_large {
         std::http::write_response(s, too_large_resp);
         return;
@@ -622,9 +767,13 @@ fn __http_handle_one_conn(
     }
     let full = buf.finish() or std::bytes::from_string("");
     let raw = if chunked {
-        // the header block as it came, then the de-chunked body
-        std::str::from_bytes(std::bytes::slice(full, 0, header_end + 4))
-            + std::str::from_bytes(body.finish() or std::bytes::from_string(""))
+        // the header block less the chunked framing's headers, under the
+        // de-chunked body's own Content-Length, then that body
+        let body_len = body.len();
+        __http_strip_framing(
+            std::str::from_bytes(std::bytes::slice(full, 0, header_end)),
+            body_len,
+        ) + std::str::from_bytes(body.finish() or std::bytes::from_string(""))
     } else {
         std::str::from_bytes(full)
     };

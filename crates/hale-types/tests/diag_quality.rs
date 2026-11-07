@@ -1020,16 +1020,19 @@ fn a_stage_less_terminal_on_a_form_locus_names_its_iteration_surface() {
 }
 
 /// A block used as a value whose trailing `match` leaves without a value
-/// in every arm (spec/semantics.md, `match` as a block's value) is refused
-/// at the block, whatever consumes it: a `let`, a match arm, an `if`
-/// expression's arm, an `or` substitute, a call argument (Int, String,
-/// Bytes), a `return`, an assignment, a record field, a Bool condition, an
-/// operand of `&&` / `||`, a `while` condition, a match guard — the
+/// in every arm (spec/semantics.md, `match` as a block's value) is a
+/// diverging block: refused where a value is required of it and nothing
+/// else supplies one — a `let`, a call argument (Int, String, Bytes), a
+/// `return`, an assignment, a record field, a Bool condition, an operand
+/// of `&&` / `||`, a `while` condition, a match guard (the last four the
 /// shapes whose lowering would leave live blocks open after the
-/// divergence (downstream handoff review, 2026-11-07). The judgment is
-/// transitive (an `if … else …` or a nested `match` each of whose
-/// branches leaves, an endless `while true`); a trailing `match` with a
-/// diverging arm beside a valued one is the join case and passes.
+/// divergence; downstream handoff review, 2026-11-07) — and legal where
+/// a diverging expression is: a match expression's block arm, an `if`
+/// expression's arm beside one that supplies the value, an `or`
+/// substitute (the review's finding 5: v0.32.7 built the arm shape). The
+/// judgment is transitive (an `if … else …` or a nested `match` each of
+/// whose branches leaves, an endless `while true`); a trailing `match`
+/// with a diverging arm beside a valued one is the join case and passes.
 #[test]
 fn a_block_whose_trailing_match_leaves_in_every_arm_is_refused() {
     let div = "{ match n { 0 -> { return 1; }, _ -> { return 2; } } }";
@@ -1073,9 +1076,27 @@ fn a_block_whose_trailing_match_leaves_in_every_arm_is_refused() {
     );
     let ds = diags(&src);
     let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("this block ends in a `match` whose every arm leaves without a value")).collect();
-    assert_eq!(hits.len(), 16, "{ds:?}");
+    assert_eq!(hits.len(), 13, "{ds:?}");
     assert!(hits[0].contains("give an arm a value, or end the block with `return`"), "{hits:?}");
-    assert_eq!(ds.len(), 16, "nothing else, and `joined` passes: {ds:?}");
+    assert_eq!(ds.len(), 13, "nothing else, and `via_arm`, `via_if`, `via_or` and `joined` pass: {ds:?}");
+
+    // Legal where a diverging expression is, nested arms included: a
+    // match arm beside valued arms, beside none, an `if` arm, an `or`
+    // substitute with statements before its match; the diag names none.
+    let src = format!(
+        r#"
+        type E {{ k: Int = 0; }}
+        fn risky(n: Int) -> Int fallible(E) {{ if n > 0 {{ fail E {{ k: n }}; }} return n; }}
+        fn via_arm(n: Int) -> Int {{ let x = match n {{ 0 -> {{ 10 }}, _ -> {div} }}; return x; }}
+        fn all_arms(n: Int) -> Int {{ let x = match n {{ 0 -> {{ return 10; }}, _ -> {div} }}; return x; }}
+        fn via_if(n: Int) -> Int {{ let x = if n > 5 {{ match n {{ 6 -> {{ return 6; }}, _ -> {{ return 7; }} }} }} else {{ 9 }}; return x; }}
+        fn via_else_if(n: Int) -> Int {{ let x = if n > 5 {{ 1 }} else if n > 2 {{ 2 }} else {div}; return x; }}
+        fn via_or(n: Int) -> Int {{ let x = risky(n) or {{ println("err"); match err.k {{ 1 -> {{ return 21; }}, _ -> {{ return 22; }} }} }}; return x; }}
+        fn main() {{ println(via_arm(1), all_arms(1), via_if(1), via_else_if(1), via_or(0)); }}
+    "#
+    );
+    let ds = diags(&src);
+    assert!(ds.is_empty(), "{ds:?}");
 }
 
 /// The one-owner rule (spec/memory.md, invariant 3 of the per-method
