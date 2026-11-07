@@ -353,6 +353,7 @@ ns std::json open_prefixes=[]
   unescape_string pure
   valid pure
   valid_object pure
+  number_end pure
 ns std::json::Value open_prefixes=[]
   parse pure
   null pure
@@ -968,6 +969,7 @@ std::json::iter_substring | lookup=json@2 | locus=false | effects=pure | sig=(Na
 std::json::next_non_ws | lookup=json@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_non_ws
 std::json::next_quote_or_bs | lookup=json@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_quote_or_bs
 std::json::next_struct_or_quote | lookup=json@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_struct_or_quote
+std::json::number_end | lookup=json@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=number_end
 std::json::obj_key_eq | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=obj_key_eq
 std::json::obj_key_len | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan)) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=obj_key_len
 std::json::obj_key_string | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonObjectIterSpan), Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=obj_key_string
