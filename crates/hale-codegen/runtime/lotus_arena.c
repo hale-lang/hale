@@ -141,6 +141,16 @@ void lotus_diag_errno(int level, const char *logger, const char *msg, const char
 void lotus_diag_field(char *buf, size_t cap, const char *key, const char *value);
 void lotus_diag_field_int(char *buf, size_t cap, const char *key, int64_t value);
 
+/* The level a failed send to a peer is reported at: the peer hanging up
+ * (EPIPE, ECONNRESET: a client that closed before it read the answer)
+ * is an expected condition and not a fault of the program, so it is a
+ * DEBUG record, written only when HALE_LOG names debug (downstream
+ * handoff: every early close of a client was an ERROR line on stderr,
+ * outside the program's std::log sinks); any other errno stays ERROR. */
+static inline int lotus_diag_peer_level(int err) {
+    return (err == EPIPE || err == ECONNRESET) ? 4 : 3;
+}
+
 /* async_io pool backend availability. The per-pool readiness poller +
  * wake channel + ucontext coroutines exist on glibc Linux (epoll +
  * eventfd), behind the wasm POSIX shim (which stubs the epoll calls),
@@ -21823,7 +21833,7 @@ int lotus_transport_send(lotus_transport_t *t,
         hdr[1] = (t->send_seq & 0xFFFFFFFFFFFFULL) | ((o & 0xFFFFULL) << 48);
         if (lotus__transport_write_full(t->conn_fd, hdr, sizeof(hdr)) != 0
             || lotus__transport_write_full(t->conn_fd, buf, len) != 0) {
-            lotus_diag_errno(3, "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
+            lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
             return -1;
         }
         return 0;
@@ -21833,7 +21843,7 @@ int lotus_transport_send(lotus_transport_t *t,
         n = send(t->conn_fd, buf, len, 0);
     } while (n < 0 && errno == EINTR);   /* GH #468: a signal is not a send failure */
     if (n < 0) {
-        lotus_diag_errno(3, "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
+        lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
         return -1;
     }
     return 0;
@@ -22164,11 +22174,11 @@ int lotus_tcp_send(lotus_tcp_t *t, const void *buf, size_t len) {
     unsigned char header[8];
     lotus__u64_to_le((uint64_t)len, header);
     if (lotus__tcp_write_full(t->conn_fd, header, sizeof(header)) < 0) {
-        lotus_diag_errno(3, "lotus.tcp", "header failed", "lotus_tcp_send: header", errno, NULL);
+        lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.tcp", "header failed", "lotus_tcp_send: header", errno, NULL);
         return -1;
     }
     if (len > 0 && lotus__tcp_write_full(t->conn_fd, buf, len) < 0) {
-        lotus_diag_errno(3, "lotus.tcp", "payload failed", "lotus_tcp_send: payload", errno, NULL);
+        lotus_diag_errno(lotus_diag_peer_level(errno), "lotus.tcp", "payload failed", "lotus_tcp_send: payload", errno, NULL);
         return -1;
     }
     return 0;
@@ -22713,9 +22723,26 @@ static char *lotus_diag_render(int format, int level, const char *logger, const 
     return b.p;
 }
 
+/* Whether the runtime's DEBUG and TRACE records are written: only when
+ * HALE_LOG names `debug` or `trace` (case-insensitive; read once). An
+ * unset or other value leaves them unwritten — they are the runtime's
+ * own debugging, asked for, where std::log's threshold filters nothing
+ * when unset. INFO, WARN and ERROR records are written regardless. */
+static int lotus_diag_debug_enabled(void) {
+    static _Atomic int on = -1;
+    int v = atomic_load_explicit(&on, memory_order_relaxed);
+    if (v >= 0) return v;
+    const char *e = getenv("HALE_LOG");
+    v = (e && (strcasecmp(e, "debug") == 0 || strcasecmp(e, "trace") == 0)) ? 1 : 0;
+    atomic_store_explicit(&on, v, memory_order_relaxed);
+    return v;
+}
+
 /* Write one runtime record to stderr. `fields` is logfmt text, built
- * with `lotus_diag_field` or empty. */
+ * with `lotus_diag_field` or empty. A DEBUG or TRACE record is written
+ * only under HALE_LOG=debug (`lotus_diag_debug_enabled`). */
 void lotus_diag(int level, const char *logger, const char *msg, const char *fields) {
+    if ((level == 4 || level == 5) && !lotus_diag_debug_enabled()) return;
     char *line = lotus_diag_render(lotus_diag_format(), level, logger, msg, fields, (int64_t)time(NULL));
     if (!line) return;
     size_t n = strlen(line);
@@ -25143,8 +25170,9 @@ int lotus_tcp_send_str(int fd, const char *msg) {
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (lotus_io_wait_writable(fd, lotus_send_stall_deadline(fd, &stall)) == 0) continue;
         }
-        lotus_io_status_set(errno ? errno : EIO);
-        lotus_diag_errno(3, "lotus.tcp", "write failed", "lotus_tcp_send_str: write", errno, NULL);
+        int err = errno ? errno : EIO;
+        lotus_io_status_set(err);
+        lotus_diag_errno(lotus_diag_peer_level(err), "lotus.tcp", "write failed", "lotus_tcp_send_str: write", err, NULL);
         return -1;
     }
     return 0;
@@ -25250,8 +25278,9 @@ static int lotus_tcp_send_bytes_impl(int fd, const void *bytes_ptr, int64_t unti
                 return -1;
             }
         }
-        lotus_io_status_set(errno ? errno : EIO);
-        lotus_diag_errno(3, "lotus.tcp", "write failed", "lotus_tcp_send_bytes: write", errno, NULL);
+        int err = errno ? errno : EIO;
+        lotus_io_status_set(err);
+        lotus_diag_errno(lotus_diag_peer_level(err), "lotus.tcp", "write failed", "lotus_tcp_send_bytes: write", err, NULL);
         return -1;
     }
     return 0;

@@ -4545,6 +4545,19 @@ time (RFC 3339 UTC), a level, a logger naming the runtime's part
 time=2026-10-19T07:31:08Z level=error logger=lotus.tcp msg="accept failed" op="lotus_tcp_accept_one: accept" errno=9 error="Bad file descriptor"
 ```
 
+The level is the condition's: a failed call the program did not cause
+and could not avoid is not an error. A send to a peer that has hung
+up — `EPIPE` or `ECONNRESET` from a write on a TCP connection or a bus
+transport, a client that closed before it read the answer — is a
+`debug` record (2026-11-06, downstream handoff: it was an `error` line
+on stderr for every early close, outside the program's `std::log`
+sinks and under no level filter); any other errno on the same write
+is an `error`. The runtime writes its `debug` and `trace` records only
+when `HALE_LOG` names `debug` or `trace`; unset or any other value
+leaves them unwritten, where `std::log`'s own threshold filters
+nothing when unset, because these are the runtime's debugging, asked
+for. `info`, `warn` and `error` records are written regardless of
+`HALE_LOG`.
 A failed system call carries `op` (the call and step it used to print
 as `fn: step`), `errno` and `error` (its `strerror`); a TLS failure
 carries OpenSSL's error queue as one `ssl_error` field, where it was
@@ -4723,7 +4736,7 @@ its behavior as described in this document.
 | `OTEL_SERVICE_NAME=<name>` | `hale` | The `service.name` of an `Otlp` backend whose `service` is empty. |
 | `OTEL_RESOURCE_ATTRIBUTES=<k=v,…>` | unset | More resource attributes on every export of an `Otlp` backend. |
 | `HALE_LOG_FORMAT=<format>` | `logfmt` | The record format of `std::log`'s `StdoutSink` and `FileSink` (`spec/stdlib.md` § `std::log`) and of the runtime's own diagnostics (§ Runtime diagnostics are records): `logfmt`, `json`, or `text` (the format before records); a sink's `format:` param overrides it for that sink, and an unknown name is `logfmt`. |
-| `HALE_LOG=<level>` | unset: no filtering | `std::log` drops events below this level (`debug`, `info`, `warn`, `error`, case-insensitive). Anything unrecognized, and an unset variable, filters nothing, so a typo cannot discard the logs it was set to see. |
+| `HALE_LOG=<level>` | unset: no filtering | `std::log` drops events below this level (`debug`, `info`, `warn`, `error`, case-insensitive). Anything unrecognized, and an unset variable, filters nothing, so a typo cannot discard the logs it was set to see. The runtime's own `debug` and `trace` records (§ Runtime diagnostics are records: a peer that hung up on a send) are written only under `debug` or `trace`; its `info`, `warn` and `error` records always. |
 | `HALE_VAULT_DIR=<dir>` | `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`, else `/tmp/hale-vault` | The local vault directory a `vault:` source of `std::secret` reads (a file per name). |
 | `HALE_VAULT_ADDR=<url>` | unset | When set, a `vault:` source resolves over the vault's HTTP API at `<url>/v1/secret/<name>` instead of the local directory. |
 | `HALE_VAULT_TOKEN=<token>` | unset | The bearer token for `HALE_VAULT_ADDR`; empty, the lookup fails closed. |
