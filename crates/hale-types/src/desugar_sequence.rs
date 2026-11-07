@@ -10,7 +10,8 @@
 //! In order:
 //!
 //! 1. JSON parsers: `json_gen` synthesizes `__json_parse_<T>` and
-//!    rewrites `T::from_json` (per program).
+//!    rewrites `T::from_json` (per program), then `alias::T::from_json`
+//!    through the rename table (bundle-wide).
 //! 2. serve sites: `client_expand` turns an `api::client` param into a
 //!    client of its surface, then `rpc_expand` turns an `api::serve` into an exposure,
 //!    its surface's rows into an adapter and its receivers' plumbing
@@ -73,7 +74,7 @@ pub struct Sequence<'a> {
 pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
     // Each program's parsers in their own parse space, past every file and
     // every other program's (`JSON_SYNTH_BASE`).
-    hale_syntax::json_gen::generate_json_parsers_in(programs);
+    hale_syntax::json_gen::generate_json_parsers_in(programs, seq.import_renames);
     // GH #1417 (R2a): a serve site becomes an exposure, its surface's rows
     // an adapter and its receivers' plumbing (`rpc_expand`).
     // GH #1592 S3: the main locus's observe backends as hidden params.

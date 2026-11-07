@@ -195,7 +195,7 @@ fn generated_json_codecs_share_no_offset() {
     let mut pa = parse_source(a).expect("parse");
     let mut pb = parse_source_at(b, a.len() as u32 + 1).expect("parse");
     let (na, nb) = (pa.items.len(), pb.items.len());
-    hale_syntax::json_gen::generate_json_parsers_in(&mut [&mut pa, &mut pb]);
+    hale_syntax::json_gen::generate_json_parsers_in(&mut [&mut pa, &mut pb], &[]);
     let window = |items: &[hale_syntax::ast::TopDecl]| {
         assert!(!items.is_empty(), "the codecs are generated");
         let start = items.iter().map(|d| d.span().start.0).min().unwrap();

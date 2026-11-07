@@ -2794,7 +2794,11 @@ payload picks the consumer mode:
   record with no `json:` tag is ("`Plain::from_json`: `Plain` declares
   no `json:` field tag, which is what gives a record its JSON codec; tag
   a field, `id: Int `json:"id"`;`"), of an enum, and a call of another
-  arity; a program the check admits builds. An unbounded `[T]` is not a
+  arity; a program the check admits builds. Through an import the call
+  names the library's declaration as a construction through an import
+  does (`pricing::Observation::from_json(text)`,
+  `pricing::Observation::to_json(v)`), and the library's own
+  `Observation::to_json` is the same codec. An unbounded `[T]` is not a
   field's: Hale sequences are locus-owned (there is no heap-owning value
   collection), so a JSON array of unknown length is read by walking the
   array cursor and pushing into a `@form(vec)` locus cell (see

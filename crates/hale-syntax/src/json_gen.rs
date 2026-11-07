@@ -2180,18 +2180,56 @@ pub fn generate_json_parsers(program: &mut Program) {
 }
 
 /// [`generate_json_parsers`] over every program of a bundle, each
-/// program's chunk past every chunk generated before it.
-pub fn generate_json_parsers_in(programs: &mut [&mut Program]) {
+/// program's chunk past every chunk generated before it. Then a call
+/// through an import, `alias::T::from_json(s)` or `alias::T::to_json(v)`,
+/// names the library's declaration the way a construction through an
+/// import does: `renames` is the build's cross-seed table (`alias::T` →
+/// merged), and a path it maps to a record whose codec a program wrote
+/// is rewritten to that codec. A path the table does not know, or whose
+/// record has no codec, is left as written, for the checker to refuse
+/// (`json_codec_laws`).
+pub fn generate_json_parsers_in(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) {
+    let mut carried: HashSet<String> = HashSet::new();
     for i in 0..programs.len() {
         let base = next_synth_base(programs.iter().map(|p| &**p));
-        generate_json_parsers_at(programs[i], base);
+        carried.extend(generate_json_parsers_at(programs[i], base));
+    }
+    if renames.is_empty() || carried.is_empty() {
+        return;
+    }
+    for p in programs.iter_mut() {
+        rewrite_items(&mut p.items, &mut |e: &mut Expr| {
+            let Expr::Call { callee, args, span, .. } = e else { return };
+            if args.len() != 1 {
+                return;
+            }
+            let Expr::Path(qn) = callee.as_ref() else { return };
+            let n = qn.segments.len();
+            if n < 3 {
+                return;
+            }
+            let prefix = match qn.segments[n - 1].name.as_str() {
+                "from_json" => TIER2.decode,
+                "to_json" => TIER2.encode,
+                _ => return,
+            };
+            let head: Vec<&str> = qn.segments[..n - 1].iter().map(|s| s.name.as_str()).collect();
+            let Some((_, merged)) = renames.iter().find(|(k, _)| k.iter().map(String::as_str).eq(head.iter().copied())) else {
+                return;
+            };
+            if !carried.contains(merged) {
+                return;
+            }
+            *callee = Box::new(Expr::Ident(Ident::new(format!("{prefix}{merged}"), *span)));
+        });
     }
 }
 
-fn generate_json_parsers_at(program: &mut Program, base: u32) {
+/// The program's codecs, generated; the tagged records they are for.
+fn generate_json_parsers_at(program: &mut Program, base: u32) -> HashSet<String> {
     let Tier2 { types, enums, tagged } = collect_tier2(program);
     if types.is_empty() {
-        return;
+        return tagged;
     }
 
     let mut existing_fns: HashSet<String> = HashSet::new();
@@ -2243,12 +2281,13 @@ fn generate_json_parsers_at(program: &mut Program, base: u32) {
                     "json_gen: generated parser did not parse: {}",
                     ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
                 );
-                return;
+                return HashSet::new();
             }
         }
     }
 
     rewrite_tier2_calls(&mut program.items, &tagged);
+    tagged
 }
 
 /// `T::from_json(s)` / `T::to_json(o)` with `T` one of `names` ->

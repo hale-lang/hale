@@ -78,6 +78,7 @@ let roundtrip = Person::from_json(encoded) or raise;
   - **Enums**: a payload-free variant is its name as a JSON string (`"Buy"`), read back by name; a name no variant has is `wrong_type` for the field. A variant with values is written as the api codec writes it (`{"Circle": 1.5}`).
   - **Nested records**: Any field whose type is another record of the seed is parsed and serialized recursively, by that record's own codec (its keys its fields' tags, else their names), whether or not it declares a `json:` tag of its own.
   - **Lists**: a `bounded[T; N]` or `[T; N]` of any of those is a JSON array; more elements than `N` is `too_long`, fewer than a fixed array's `too_short`, and an absent `bounded` field is empty.
+- **Through an import**: `pricing::Observation::from_json(text)` and `pricing::Observation::to_json(v)` name the library's declaration, as `pricing::Observation { … }` does; the library's own `Observation::to_json` is the same codec.
 - **The check is the gate**: a tagged record with a field the codec does not carry (`Bytes`, an unbounded `[T]`, a tuple), in it or in a record it reaches, has no codec, and `hale check` refuses the call naming the field: `` `Export::from_json`: `Export` has a field `raw: Bytes`, which the JSON codec does not carry ``. A call on a record with no `json:` tag is refused with the tag to write, and a call on an enum, or with two arguments, is refused too. A program that checks builds.
 
 > [!NOTE]
