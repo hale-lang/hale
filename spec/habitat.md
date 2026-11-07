@@ -1215,14 +1215,17 @@ containers by default (`show`: the habitat's, those carrying
 compete with; a placed service is always the habitat's) and filters by
 organism and host, both kinds alike. `Hosts` is its home: at its top a
 table, one row a machine, of its memory and main disk (`/`, a Mac's
-`/System/Volumes/Data`), each total, in use and free with a gauge of the
-share used (amber from 75%, red from 90%), and its CPU busy over 5
+`/System/Volumes/Data`), each total, in use and free and the share used,
+and its CPU busy over 5
 minutes, memory in use read as `memory-pressure` reads it, and its
 NVIDIA GPUs: busy (their average utilization), memory and memory in use
 (their framebuffers summed, shown only when every GPU of the machine
 reports its own: a GB10's is blank, its memory the machine's), the
 hottest's temperature and their power draw summed, blank on a machine
-without one; then whether
+without one. Each share (memory and disk used, CPU and GPU busy) is a
+percent with a gauge of it in the column after (amber from 75%, red from
+90%); the gauge shows no value of its own, so its bar is the whole cell
+and every row's starts and ends alike. Then whether
 each machine answers, its uptime, CPUs and memory, and over time CPU busy,
 load per core, memory used, disk used, network and disk throughput, for
 Linux and macOS alike, and a Linux machine's CPU frequency. Its data is `<habitat>/grafana/data`. The operator
