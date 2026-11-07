@@ -25563,6 +25563,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let (q, _) = self.lower_binop(*op, lv, rv, &CodegenTy::Duration)?;
                     return Ok((q, CodegenTy::Int));
                 }
+                // GH #1076: a comparison the checker typed between two
+                // representations of the unit dialect (a `Duration` and a
+                // refinement of it at the same denomination, which is the
+                // `Int` it counts; a `Time` and a refinement of it) is the
+                // signed comparison of their counts: a side that changed
+                // denomination was converted where it stands, and a
+                // comparison records no operator row (downstream handoff:
+                // `a == b` with `b: Duration in ns` was refused here as
+                // operands of mixed types).
+                if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
+                    && lt != rt
+                    && crate::conversion::is_quantity_repr(&lt)
+                    && crate::conversion::is_quantity_repr(&rt)
+                {
+                    return self.lower_binop(*op, lv, rv, &CodegenTy::Int);
+                }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
                         "binary op operands of mixed types {:?} and {:?}",

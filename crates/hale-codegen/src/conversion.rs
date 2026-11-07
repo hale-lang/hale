@@ -639,8 +639,9 @@ pub(crate) fn quantity_repr(t: &hale_types::ty::Ty) -> CodegenTy {
 }
 
 /// Whether a value lowered as `ty` is one a conversion of the unit
-/// dialect converts: an `Int`, or a `Duration` or `Time` (U4).
-fn is_quantity_repr(ty: &CodegenTy) -> bool {
+/// dialect converts: an `Int`, or a `Duration` or `Time` (U4). Two such
+/// values the checker compared are compared as the counts they are.
+pub(crate) fn is_quantity_repr(ty: &CodegenTy) -> bool {
     matches!(ty, CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time)
 }
 
