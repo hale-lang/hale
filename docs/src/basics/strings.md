@@ -25,7 +25,7 @@ fn main() {
 | `std::str::replace(s, old, new)` | `(String, String, String) -> String` | Replaces all occurrences of `old` with `new` |
 | `std::str::contains(s, sub)` | `(String, String) -> Bool` | True if `s` contains `sub` (also available as builtin `contains`) |
 | `std::str::starts_with(s, pre)` / `ends_with(s, suf)` | `(String, String) -> Bool` | Prefix / suffix test (`starts_with` is also a builtin) |
-| `std::str::substring(s, start, len)` | `(String, Int, Int) -> String` | Extracts `len` bytes starting at byte offset `start` |
+| `std::str::substring(s, lo, hi)` | `(String, Int, Int) -> String` | The bytes from offset `lo` up to, not including, `hi` (the same slice as `s[lo..hi]`; both ends are clamped into the string) |
 | `std::str::index_of(s, sub)` / `index_of_from(s, sub, pos)` | `(String, String, ...) -> Int` | Byte offset of first match, or `-1` if absent |
 | `std::str::split_into(s, sep, out)` | `(String, String, VecLocus) -> ()` | Splits `s` by `sep` into a caller-owned `@form(vec)` of `String` |
 | `std::str::join(items, sep)` | `(VecLocus, String) -> String` | Joins elements of a `@form(vec)` of `String` with `sep` |
