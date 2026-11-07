@@ -397,7 +397,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     ));
     match hale_codegen::build_resolved(view, &output, &options) {
         Ok(()) => {
-            eprintln!("built: {}", output.display());
+            eprintln!("built: {}{}", output.display(), tuned_for(&options));
             if let hale_codegen::CompileTarget::Foreign(spec) = options.target {
                 if !spec.links_from(&hale_codegen::target::TargetSpec::host()) {
                     eprintln!(
@@ -526,4 +526,28 @@ pub(crate) fn run_build_or_run(cmd: &str, args: &[String]) -> ExitCode {
         return code;
     }
     return run_program(&target, &user_args, options, false);
+}
+
+/// What the `built:` line adds about the CPU the binary is tuned
+/// for, so a binary carried to another machine is not a surprise:
+/// the host's by default (named, with the flag that builds one that
+/// travels), the portable baseline, or the CPU named. A cross build
+/// at the default is generic (GH #970); a wasm32 module is always
+/// generic and says nothing.
+fn tuned_for(options: &hale_codegen::BuildOptions) -> String {
+    use hale_codegen::{CompileTarget, TargetCpu};
+    match (&options.target, &options.target_cpu) {
+        (CompileTarget::Wasm32, _) => String::new(),
+        (CompileTarget::Foreign(_), TargetCpu::Native) => " (generic CPU)".to_string(),
+        // LLVM names the host's CPU when it knows the model; for a
+        // newer one it says `generic` while the host's features still
+        // apply, so the name is given only when it is one.
+        (_, TargetCpu::Native) => {
+            let name = hale_codegen::host_cpu_name();
+            let named = if name.is_empty() || name == "generic" { String::new() } else { format!(", {name}") };
+            format!(" (tuned for this host's CPU{named}; --target-cpu portable for a binary that runs elsewhere)")
+        }
+        (_, TargetCpu::X86_64V3) => " (portable baseline)".to_string(),
+        (_, TargetCpu::Named(name)) => format!(" (tuned for {name})"),
+    }
 }

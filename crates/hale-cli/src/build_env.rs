@@ -100,8 +100,10 @@ pub(crate) fn options_fingerprint(o: &BuildOptions) -> String {
     // them made every recording of a built binary "different build
     // inputs". The constant keeps the string `run` has always stamped.
     let mut fp = format!(
-        "target={:?};cpu={:?};dev={};debug=false",
-        o.target, o.target_cpu, o.dev_profile
+        "target={:?};cpu={};dev={};debug=false",
+        o.target,
+        o.target_cpu.identity(),
+        o.dev_profile
     );
     // GH #904: the FFI surface is part of what the executable IS —
     // two builds of one source that link different C are different

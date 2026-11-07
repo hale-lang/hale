@@ -3574,14 +3574,16 @@ the build options are the ones the compiling command was GIVEN
 fingerprinted the defaults), so a recording made under `hale run
 --dev` is admitted by `hale replay --dev` and by no default
 replay. The target CPU is the one option a replay finds for itself:
-`hale build` defaults to the portable baseline and `hale run` to the
-host CPU, and the recording carries only its identity's digest, so
+a build is tuned to the host unless `--target-cpu portable` said
+otherwise, and the recording carries only its identity's digest, so
 without `--target-cpu` a replay whose host-CPU identity is not the
-recording's computes the identity at each other target CPU and, when
-one is the recording's, rebuilds at that CPU (and says so on stderr).
-A recording of a `hale build` binary is admitted by `hale replay` with
-no flag; one of `hale run` matches at the host CPU first, as before;
-an explicit `--target-cpu` is never second-guessed. `hale build`, `hale run` and `hale replay` compute the
+recording's computes the identity at the portable baseline and, when
+that is the recording's, rebuilds at it (and says so on stderr). A
+recording of a portable build is admitted by `hale replay` with no
+flag; one of a host-tuned build matches at the host CPU first; a
+build for a named CPU is replayed with `--target-cpu <cpu>` (a name
+is not findable from a digest); an explicit `--target-cpu` is never
+second-guessed. `hale build`, `hale run` and `hale replay` compute the
 options one way (F.40 phase 4, I2): the command's flags, `--env`'s
 role table (`replay --env` resolves the environment as `run --env`
 does, so a recording made under `--env prod` is admitted by `hale
@@ -4407,35 +4409,54 @@ Defined in `crates/hale-codegen/runtime/lotus_arena.c`
 
 What the compiler emits for a native `hale build`:
 
-- **O3, and a portable CPU for an artifact.** Native builds run
-  LLVM's aggressive (O3) pipeline — both the module passes and
-  the backend codegen level. `hale build` emits an artifact, so
-  by default it targets the **portable baseline**: `x86-64-v3`
-  (AVX2 + BMI2 + FMA) on x86-64, a generic CPU on aarch64 and
-  every other architecture, and the runtime TUs with it
-  (`-march=x86-64-v3` on x86-64, no `-march` elsewhere). A binary
-  built on one machine runs on any machine of its architecture
-  that meets that floor: tuned to the build machine instead, a
-  binary built on a CI runner took the runner's CPU extensions
-  (SVE on an Arm server, AVX-512 on an x86 one) with it and died
-  with SIGILL on another CPU of the same architecture. `hale run`,
-  `hale test`, `hale bench` and `hale replay` build what they then
-  run here, so they tune to the **host CPU**
+- **O3, tuned to the host CPU.** Native builds run LLVM's
+  aggressive (O3) pipeline — both the module passes and the
+  backend codegen level — and tune to the **host CPU**
   (`target-cpu`/`target-features` from the build machine, and
   `-march=native` for the runtime TUs except on macOS), which
-  unlocks autovectorization across all generated code (e.g.
-  AVX-512 on a capable host) and is **not portable across
-  microarchitectures**. So does the build of the toolchain's own
-  cache (`hale iris`, the DNA host), which runs where it is built.
-- **`--target-cpu native | baseline`.** Overrides the command's
-  default. `native` is the host-tuned build; `hale build
-  --target-cpu native` is for a binary that only runs on the
-  machine that built it (or on identical hosts). `baseline` (also
-  spelled `portable` or `x86-64-v3`) is the portable baseline
-  above, for **distributed artifacts**. The emitted module
-  self-describes its subtarget via per-function
-  `target-cpu`/`target-features` attributes, so the choice is
-  carried into bitcode (it survives LTO).
+  unlocks autovectorization across all generated code (AVX-512 on
+  a capable host) and is **not portable across
+  microarchitectures**. That is the default of every verb, `hale
+  build` included: a binary is built on the machine that runs it
+  (the habitat installs the toolchain on each host and builds
+  there; `hale run`, `hale test`, `hale bench`, `hale replay` and
+  the toolchain's own cache, `hale iris` and the DNA host, run
+  what they build), or for a machine the builder names. `hale
+  build` says on its `built:` line which CPU the binary is tuned
+  for. (From 2026-11-02 to 2026-11-07 `hale build` defaulted to
+  the portable baseline below, after an image built on a CI
+  runner's Arm CPU took that CPU's extensions with it and died
+  with SIGILL under Docker on another; the one build whose machine
+  is unknown, a published image, names the baseline where it is
+  made, and the default cost every other build the host's vector
+  width.)
+- **`--target-cpu native | portable | <cpu>`.** Overrides the
+  default. `native` is the host-tuned build. `portable` (also
+  spelled `baseline` or `x86-64-v3`) is the **portable baseline**
+  for an artifact whose machine is unknown: `x86-64-v3` (AVX2 +
+  BMI2 + FMA) on x86-64, a generic CPU on aarch64 and every other
+  architecture, and the runtime TUs with it (`-march=x86-64-v3` on
+  x86-64, no `-march` elsewhere); a binary built on one machine
+  then runs on any machine of its architecture that meets that
+  floor. Any other word is **one CPU by LLVM's name** (`znver4`,
+  `neoverse-v2`, `apple-m3`, `x86-64-v4`), for a binary built here
+  for a known machine elsewhere: the Hale module takes that CPU
+  and its own feature set, nothing of the host's, and the runtime
+  TUs `-march=<cpu>` on x86-64 and `-mcpu=<cpu>` elsewhere (macOS
+  included; a cross build hands zig the name in its spelling,
+  `-mcpu=x86_64_v4`). A name the compiler's own LLVM does not know
+  is refused before any code is emitted, naming the CPUs that LLVM
+  knows: the table is read from that LLVM's `llc -mcpu=help` when
+  the compiler is built, kept to the CPUs `llc` emits the triple's
+  code for (`-mcpu=help` lists the whole x86 family, 32-bit ones
+  included, for an x86-64 triple), not from the system clang, whose
+  version can differ. The compiler that builds the target's runtime must
+  know the name as well (the host's clang; `zig cc` for a Linux
+  cross target; none for a Darwin object-only build) and is refused
+  by name when it does not. The emitted module self-describes its
+  subtarget via per-function `target-cpu`/`target-features`
+  attributes, so the choice is carried into bitcode (it survives
+  LTO).
 - **`LOTUS_LTO=1` — opt-in full-LTO.** Read at *build time*.
   Emits the Hale module as LLVM bitcode and compiles the lotus C
   runtime TUs with `-flto`, so the final `clang -flto -O3
