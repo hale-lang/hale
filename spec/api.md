@@ -2454,8 +2454,11 @@ trailing zeros dropped, never an exponent), a field, a list's element
 and a whole value alike, and the decoder reads a JSON number at the
 field's scale with every digit kept (`std::str::range_parse_decimal`
 at `S`): zeros past the scale are the same number, a nonzero digit past
-it is `wrong_type` for the field, never a truncation, and a string, a
-bool or an object is `wrong_type` too, as for any number. Its schema is
+it is `wrong_type` for the field, never a truncation, a mantissa no
+i128 holds at the scale is `wrong_type` as well, never a wrong number
+(2026-11-07, downstream handoff: `12345678901234567890123456789012.5`
+at scale 8 decoded to a negative value), and a string, a bool or an
+object is `wrong_type` too, as for any number. Its schema is
 `{"type": "number", "x-hale-type": "Decimal<2>"}`: a reader that keeps
 the digits reads the scale there, and one that does not reads a JSON
 number. Protobuf carries it as its digits in a `string` (proto3 has no

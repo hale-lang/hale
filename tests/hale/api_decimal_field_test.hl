@@ -44,6 +44,18 @@ fn main() {
     let z = Order::api_decode("{\"total\":12.3400}") or raise;
     std::test::assert(z.total == 12.34d, "trailing zeros past the scale");
     refused("{\"total\":12.345}", "total", "a third place is no Decimal<2>");
+    // a mantissa no i128 holds is the field's wrong_type, never a wrong
+    // number (downstream handoff: it decoded to a negative value)
+    refused(
+        "{\"total\":12345678901234567890123456789012345678.5}",
+        "total",
+        "a number past i128 at scale 2",
+    );
+    refused(
+        "{\"total\":1,\"lines\":[{\"sku\":\"a\",\"px\":99999999999999999999999999999999999999}]}",
+        "px",
+        "an element past i128, named by its own field",
+    );
     refused("{\"total\":\"12.34\"}", "total", "a string is no number");
     refused(
         "{\"total\":1,\"lines\":[{\"sku\":\"a\",\"px\":0.001}]}",
