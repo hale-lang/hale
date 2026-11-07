@@ -69,7 +69,7 @@ let rate = Float(hits) / Float(total);   // 0.375 (widens before division)
 let truncated = Int(3.9);                // 3 (truncates toward zero)
 ```
 
-`Int(x)` and `Float(x)` are the only primitive cast expressions in the language; type names like `String(x)`, `Bool(x)`, and `Bytes(x)` are not casts and are rejected at compile time.
+`Int(x)` and `Float(x)` are the only primitive cast expressions in the language; type names like `String(x)`, `Bool(x)`, and `Bytes(x)` are not casts and are rejected at compile time. Neither cast takes a `Decimal<S>`: `Int(d)` is refused by `hale check` (a Decimal has no `Int`; `d.rescale(0) or trunc` is its whole part as a `Decimal<0>`, and `Int(std::decimal::to_float(d))` its nearest `Int` through `Float`), and `Float(d)` points at `std::decimal::to_float(d)`.
 
 ### `std::math` Functions and IEEE-754 Semantics
 

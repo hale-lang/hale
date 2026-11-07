@@ -216,3 +216,35 @@ fn if_and_match_arms_join_by_scale() {
     let (_, msg) = one("fn main() {\n    let a: Decimal<2> = 1d;\n    let b: Decimal = 1d;\n    let k = 1;\n    let y = match k { 0 -> a, _ -> b, };\n}\n");
     assert_eq!(msg, "match expression arms have mismatched types: `Decimal<2>` vs `Decimal`");
 }
+
+/// `Int(x)` and `Float(x)` take an `Int` or a `Float` (spec/types.md §
+/// Explicit numeric conversions); a Decimal has no `Int` cast, and the
+/// build refused `Int(d)` after the check had passed it (downstream
+/// handoff). The check refuses it at the argument, naming the rule and
+/// the conversions that exist.
+#[test]
+fn an_int_or_float_cast_of_a_decimal_is_refused_at_the_argument() {
+    let (at, msg) = one("fn main() {\n    let x: Decimal<6> = 3.75d;\n    println(Int(x));\n}\n");
+    assert_eq!(at, "x");
+    assert_eq!(
+        msg,
+        "`Int(…)` takes an `Int` or a `Float`, and `Decimal<6>` is neither: a Decimal changes scale by \
+         `.rescale(T)`; an `Int` of a Decimal is not a cast: `d.rescale(0) or trunc` is its whole part (a \
+         `Decimal<0>`), and `Int(std::decimal::to_float(d))` its nearest `Int` through `Float`"
+    );
+    let (at, msg) = one("fn main() {\n    let x = 3.75d;\n    println(Float(x));\n}\n");
+    assert_eq!(at, "x");
+    assert_eq!(
+        msg,
+        "`Float(…)` takes an `Int` or a `Float`, and `Decimal` is neither: a Decimal changes scale by \
+         `.rescale(T)`; its `Float` is `std::decimal::to_float(d)`"
+    );
+    // The conversions the message names check.
+    assert_eq!(
+        located(
+            "fn main() {\n    let x: Decimal<6> = 3.75d;\n    let whole = x.rescale(0) or trunc;\n    \
+             let near = Int(std::decimal::to_float(x));\n    println(whole, \" \", near);\n}\n"
+        ),
+        Vec::new()
+    );
+}

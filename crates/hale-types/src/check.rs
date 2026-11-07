@@ -22432,6 +22432,37 @@ impl<'a> Checker<'a> {
                                 self.check_fmt_builtin(args, callee);
                                 return Ty::Prim(PrimType::String);
                             }
+                            // `Int(x)` and `Float(x)` take an `Int` or a `Float`
+                            // (spec/types.md § Explicit numeric conversions); a
+                            // `Decimal<S>` is neither, and it has no `Int`: its
+                            // scale changes by `.rescale(T)`, and its `Float` is
+                            // `std::decimal::to_float(d)`. The build refused the
+                            // cast after the check had passed it (downstream
+                            // handoff). A scalar's `Int(x)` was answered above.
+                            "Int" | "Float" => {
+                                for a in args {
+                                    let at = self.check_expr(a);
+                                    if let Ty::Prim(PrimType::Decimal(_)) = at {
+                                        let out = if id.name == "Int" {
+                                            "an `Int` of a Decimal is not a cast: `d.rescale(0) or trunc` is \
+                                             its whole part (a `Decimal<0>`), and `Int(std::decimal::to_float(d))` \
+                                             its nearest `Int` through `Float`"
+                                        } else {
+                                            "its `Float` is `std::decimal::to_float(d)`"
+                                        };
+                                        self.diags.push(Diag::ty(
+                                            a.span(),
+                                            format!(
+                                                "`{}(…)` takes an `Int` or a `Float`, and `{}` is neither: a Decimal \
+                                                 changes scale by `.rescale(T)`; {}",
+                                                id.name,
+                                                at.display(),
+                                                out
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
                             "abs" | "min" | "max" => {
                                 for a in args {
                                     let at = self.check_expr(a);

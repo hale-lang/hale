@@ -20204,10 +20204,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// v1.x-11: lower `Int(x)` — explicit Float → Int narrowing.
     /// Float arg lowers via `fptosi` (round-toward-zero); Int arg
-    /// is the identity. Decimal narrowing currently uses the same
-    /// fptosi after reading the cell, so Decimal → Int also works.
-    /// Other types are rejected so silent narrowing doesn't sneak
-    /// in through inference.
+    /// is the identity. Other types are rejected so silent narrowing
+    /// doesn't sneak in through inference; a `Decimal<S>` argument is
+    /// the check's refusal (it has no `Int`: `d.rescale(0)` is its
+    /// whole part at scale 0, `std::decimal::to_float(d)` its `Float`).
     fn lower_int_cast_builtin(
         &mut self,
         args: &[Expr],

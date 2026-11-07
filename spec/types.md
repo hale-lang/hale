@@ -1089,7 +1089,14 @@ for the narrowing direction (LLVM `fptosi` / `sitofp`):
   identity on its own type, and rejects any other argument type.
   They are the only two numeric casts: there is no `String(x)`,
   `Bool(x)`, `Bytes(x)` or `Decimal(x)` — those names are types; a
-  Decimal changes scale by `d.rescale(T)` (§ Decimal<S>).
+  Decimal changes scale by `d.rescale(T)` (§ Decimal<S>), and has no
+  `Int` or `Float` cast: `Int(d)` and `Float(d)` of a `Decimal<S>` are
+  check errors at the argument naming this rule ("\`Int(…)\` takes an
+  \`Int\` or a \`Float\`, and \`Decimal<6>\` is neither: a Decimal changes
+  scale by \`.rescale(T)\`; an \`Int\` of a Decimal is not a cast:
+  \`d.rescale(0) or trunc\` is its whole part (a \`Decimal<0>\`), and
+  \`Int(std::decimal::to_float(d))\` its nearest \`Int\` through
+  \`Float\`"), never a build error after a passing check.
   `Duration(x)` and `Time(x)` are the unit dialect's conversions of a
   value of the time component (spec/units.md § Conversions), never of
   an `Int` (`n * 1ns` makes a count a `Duration`).
