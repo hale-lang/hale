@@ -715,7 +715,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in th
 == crates/hale-stdlib/hl/hex.hl#d83ba4a5
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
-== crates/hale-stdlib/hl/http_client.hl#b5d700ce
+== crates/hale-stdlib/hl/http_client.hl#27d5f5bd
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
@@ -3819,7 +3819,11 @@ row	~.r	Hard	main	inherited
 == crates/hale-codegen/tests/held_field_view.rs#7bb6103d
 row	H@main1	H	main	default
 
-== crates/hale-codegen/tests/http_chunked_request.rs#a2ccb8fb
+== crates/hale-codegen/tests/http_chunked_request.rs#113cfd53
+shared	__StdHttpServer@main1	__StdHttpServer #a56eb774
+shared	dynamic	sites in the seed #069c8230
+
+== crates/hale-codegen/tests/http_chunked_request.rs#9f84e8ab
 shared	__StdHttpServer@main1	__StdHttpServer #a56eb774
 shared	dynamic	sites in the seed #069c8230
 
