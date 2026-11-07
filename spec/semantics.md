@@ -5341,9 +5341,11 @@ SIGINT or SIGTERM:
    100 ms slice (at once, on an `async_io` pool), and a
    deadline-bounded park on an `async_io` pool — a `recv` with a
    timeout — reports its timeout. A timed wait that **begins during
-   the drain** in the `run()` of a locus whose code reads `draining`
-   (one of the program's own; a standard-library locus's bodies run in
-   their caller's frame) returns at once the same way, until that `run()` has read
+   the drain** in a `run()` that reads `draining`, itself or through a
+   fn or method of the program it calls (one of the program's own loci;
+   a standard-library locus's bodies run in their caller's frame; a read
+   in a handler or a hook does not make the `run()` one that reads it)
+   returns at once the same way, until that `run()` has read
    `draining` as `true`: a `while !self.draining { work();
    std::time::sleep(30s); }` loop that was in `work()` when the
    signal landed reaches its check instead of sleeping the full 30 s
@@ -5463,13 +5465,17 @@ work) serves for as long as they do. (2026-10-19: GH #1659 had the
 tree's drain stop every listener, which cut such a program's servers,
 one bound before the drain and one bound after alike; downstream
 handoff.) With no `run()` (an empty one is the same program), the
-tree's drain begins once the `run()` of each pinned child that does not
-read `draining` has returned, on the eager and the deferred spine
+tree's drain begins once the `run()` of each pinned child whose `run()`
+does not read `draining` has returned, on the eager and the deferred spine
 alike: a sleep such a `run()` is in is not cut short, a sibling that
 watches the drain keeps serving until then, and what such a `run()`
 publishes in its last moments reaches a pinned sibling that still
-consumes, in any declaration order; a child that reads `draining` is
-what the drain ends, so it is not waited for. (2026-11-06, downstream
+consumes, in any declaration order; a child whose `run()` reads
+`draining` (itself or through a fn or method it calls) is what the
+drain ends, so it is not waited for. A read in the child's handler or
+`drain()` hook does not count: such a child was not waited for, and a
+pinned publisher whose hook read the flag lost its deliveries again
+(GH #1858, the review of the fix below). (2026-11-06, downstream
 handoff: the teardown joined the pinned children in declaration order
 right after the tree was built, so the pinned subscriber declared
 first was shut down while the pinned publisher declared after it was

@@ -51,15 +51,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// A `run()`, `drain()` or `dissolve()` body is a wait frame
     /// (spec/semantics.md § Drain cascade, step 2). The run() of a locus
-    /// that reads `draining` watches the drain: a timed wait it (or what
-    /// it calls) begins during a drain it has not yet read returns at
-    /// once, so its loop reaches its check. Every other run() and the two
-    /// hooks are frames that cut nothing beyond the in-progress cut, so a
-    /// hook a watching run() reaches does not inherit its cut. Whether
-    /// `locus` reads `draining` is known once every body has lowered: the
-    /// private flag `lotus.reads_drain.<locus>` is 0 until the end of
-    /// `lower_program` writes its initializer. The frame it replaces is
-    /// the value returned, put back at every return
+    /// whose run() reads `draining` (itself or through what it calls: the
+    /// flow rows' watches-drain column, `LocusInfo::run_watches_drain`)
+    /// watches the drain: a timed wait it (or what it calls) begins
+    /// during a drain it has not yet read returns at once, so its loop
+    /// reaches its check. Every other run() and the two hooks are frames
+    /// that cut nothing beyond the in-progress cut, so a hook a watching
+    /// run() reaches does not inherit its cut. (GH #1858: a read in a
+    /// handler or a hook used to make the run() watch too.) The frame it
+    /// replaces is the value returned, put back at every return
     /// ([`Self::emit_wait_frame_leaves`]). `None` for the other hooks,
     /// where no drain reaches the program (`DrainTerm` omitted), and for
     /// the standard library's loci (`__Std…`): their bodies run in their
@@ -79,24 +79,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let i64_t = self.context.i64_type();
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
-        let watches = if kind == "run" {
-            let gname = format!("lotus.reads_drain.{locus}");
-            let g = match self.module.get_global(&gname) {
-                Some(g) => g,
-                None => {
-                    let g = self.module.add_global(i64_t, None, &gname);
-                    g.set_linkage(inkwell::module::Linkage::Private);
-                    g.set_initializer(&i64_t.const_zero());
-                    g
-                }
-            };
-            self.builder
-                .build_load(i64_t, g.as_pointer_value(), "wait.frame.watches")
-                .map_err(e)?
-                .into_int_value()
-        } else {
-            i64_t.const_zero()
-        };
+        let watches = kind == "run" && self.user_loci.get(locus).is_some_and(|i| i.run_watches_drain);
+        let watches = i64_t.const_int(watches as u64, false);
         let frame = self.wait_frame_global();
         let prev = self
             .builder

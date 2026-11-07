@@ -261,6 +261,32 @@ fn a_main_with_no_run_delivers_what_its_pinned_children_publish_under_asan() {
     assert_three_deliveries(&out);
 }
 
+/// The same program, with a `draining` read the publisher's `run()` does
+/// not make: one in its `drain()` hook, one in a method nothing calls. A
+/// read outside `run()` (and what it calls) does not make the run one the
+/// drain ends, so the main locus still waits for it before its tree's
+/// drain (GH #1858; the #1869 review's finding 2: the read in the hook
+/// made the publisher "watch" the drain, the main locus did not wait for
+/// it, and every delivery was lost again, silently).
+#[test]
+fn a_draining_read_outside_run_does_not_skip_the_wait_for_it() {
+    let extra = "        drain() { if self.draining { println(\"pub saw it\"); } println(\"pub drain hook\"); }\n\
+                 \x20       fn stopping() -> Bool { return self.draining; }\n";
+    let src = STORE_AND_PUB.replacen(
+        "            println(\"pub run done\");\n        }\n",
+        &format!("            println(\"pub run done\");\n        }}\n{extra}"),
+        1,
+    );
+    assert!(src.contains("pub drain hook"), "the hook is in the program");
+    let bin = harness::unique_bin("tree_drain_hook_reads");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+    let out = run_bounded(&bin, 20, &[]);
+    let _ = std::fs::remove_file(&bin);
+    assert_three_deliveries(&out);
+    let l = lines(&out);
+    assert!(pos(&l, "pub run done") < pos(&l, "pub drain hook"), "{}", l.join("\n"));
+}
+
 /// The same main locus with a pinned worker that does not read
 /// `draining` beside a pinned child that loops on it: the tree's drain
 /// begins once the worker's `run()` has returned, so the loop sees it

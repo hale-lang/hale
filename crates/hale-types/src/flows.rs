@@ -38,7 +38,11 @@
 //! ([`RunRow`]): whether its `run()` is *long-running* (a body of its
 //! own) and whether it *never returns*. The checker asks both, of
 //! different rules, so they are two columns, never one predicate
-//! (F.40 phase 3, E2).
+//! (F.40 phase 3, E2). A third column says whether the `run()` *watches
+//! the drain*: it reads `draining`, itself or through a fn or method of
+//! the program it calls (GH #1858). Such a locus takes the drain into
+//! its own hands; a read anywhere else (a handler, a hook, a method
+//! only another locus calls) does not.
 
 use std::collections::BTreeMap;
 
@@ -121,6 +125,15 @@ pub struct RunRow {
     pub long_running: bool,
     /// The terminal `while`, when the body never returns.
     pub never_returns: Option<Span>,
+    /// GH #1858: the `run()` reads `draining` (on any receiver), in its
+    /// own body or in a fn or method of the program it calls,
+    /// transitively ([`run_reads_draining`]). Such a locus stops on the
+    /// drain by its own code: lowering places no drain stops in its
+    /// loops, a wait it begins during the drain is cut only until it has
+    /// read the flag, and a parent does not wait for its `run()` before a
+    /// tree's drain. A read in a handler, a hook or another method does
+    /// not count. `false` with no `run()`.
+    pub watches_drain: bool,
 }
 
 /// The `flows` family's rows, with what a template clause is resolved
@@ -150,6 +163,19 @@ impl FlowRows {
     /// The run row of a declaration the rows were surveyed over.
     pub fn run_of(&self, decl: &LocusDecl) -> Option<&RunRow> {
         self.runs.iter().find(|r| r.locus == decl.name.name && r.span == decl.span)
+    }
+
+    /// Whether `decl`'s `run()` watches the drain (the [`RunRow`]'s
+    /// column). A specialization lowering created (a generic's, under a
+    /// name of its own) is the template's declaration substituted, so it
+    /// is found by the template's span. A declaration with no row (one
+    /// the rows were not surveyed over) answers `true`: lowering then
+    /// leaves its loops to it, as before GH #1858, rather than stop a
+    /// loop whose author may have written its own stop.
+    pub fn run_watches_drain(&self, decl: &LocusDecl) -> bool {
+        self.run_of(decl)
+            .or_else(|| self.runs.iter().find(|r| r.span == decl.span))
+            .map_or(true, |r| r.watches_drain)
     }
 
     /// The loci a specialization of `template` makes flows: each of the
@@ -194,7 +220,7 @@ impl FlowRows {
         let mut by_child: BTreeMap<String, Vec<FlowClause>> = BTreeMap::new();
         let mut runs: Vec<RunRow> = Vec::new();
         let mut concrete: Vec<String> = Vec::new();
-        walk(stdlib_items, &self, &mut by_child, &mut runs, &mut concrete);
+        walk(stdlib_items, &self, &FreeFns::new(), &mut by_child, &mut runs, &mut concrete);
         for (child, mut clauses) in by_child {
             clauses.sort_by_key(|c| c.span.start.as_usize());
             self.flows.push(Flow { child, clauses });
@@ -251,9 +277,10 @@ fn mentions_param(ty: &TypeExpr, generics: &[String]) -> bool {
         || generic_args.iter().any(|a| mentions_param(a, generics))
 }
 
-fn walk(
-    items: &[TopDecl],
+fn walk<'a>(
+    items: &'a [TopDecl],
     rows: &FlowRows,
+    free_fns: &FreeFns<'a>,
     out: &mut BTreeMap<String, Vec<FlowClause>>,
     runs: &mut Vec<RunRow>,
     concrete: &mut Vec<String>,
@@ -273,6 +300,7 @@ fn walk(
                     span: l.span,
                     long_running: run.is_some_and(|b| !b.stmts.is_empty()),
                     never_returns: run.and_then(|b| run_statically_nonreturning(b, l)),
+                    watches_drain: run.is_some_and(|b| run_reads_draining(b, l, free_fns)),
                 });
                 let generics: Vec<String> = l.generics.iter().map(|g| g.name.name.clone()).collect();
                 for member in &l.members {
@@ -309,7 +337,7 @@ fn walk(
                     });
                 }
             }
-            TopDecl::Module(m) => walk(&m.items, rows, out, runs, concrete),
+            TopDecl::Module(m) => walk(&m.items, rows, free_fns, out, runs, concrete),
             _ => {}
         }
     }
@@ -330,8 +358,9 @@ pub fn survey(programs: &[&Program], import_renames: &[(Vec<String>, String)]) -
     let mut by_child: BTreeMap<String, Vec<FlowClause>> = BTreeMap::new();
     let mut runs: Vec<RunRow> = Vec::new();
     let mut concrete: Vec<String> = Vec::new();
+    let free_fns = free_fns_of(programs);
     for p in programs {
-        walk(&p.items, &rows, &mut by_child, &mut runs, &mut concrete);
+        walk(&p.items, &rows, &free_fns, &mut by_child, &mut runs, &mut concrete);
     }
     rows.runs = runs;
     rows.concrete = concrete;
@@ -343,6 +372,106 @@ pub fn survey(programs: &[&Program], import_renames: &[(Vec<String>, String)]) -
         })
         .collect();
     rows
+}
+
+// === the run()'s drain reads: the watches-drain column (GH #1858) =====
+
+/// The program's free fns by name, a module's included: what a bare call
+/// in a `run()` reaches.
+pub type FreeFns<'a> = BTreeMap<&'a str, &'a hale_syntax::ast::FnDecl>;
+
+/// The free fns of `programs`, a module's included; the first declaration
+/// of a name wins.
+pub fn free_fns_of<'a>(programs: &[&'a Program]) -> FreeFns<'a> {
+    let mut free_fns = FreeFns::new();
+    for program in programs {
+        for item in hale_syntax::ast::flat_decls(&program.items) {
+            if let TopDecl::Fn(f) = item {
+                free_fns.entry(f.name.name.as_str()).or_insert(f);
+            }
+        }
+    }
+    free_fns
+}
+
+/// The bodies `body` calls that the walk follows: a method of `decl`'s
+/// called on `self` (`self.m()`), and a bare call (`m()`), which may be a
+/// method of `decl`'s or a free fn. A call on another receiver (another
+/// locus's method) is not followed.
+pub fn followed_callees<'a>(
+    body: &'a Block,
+    decl: &'a LocusDecl,
+    free_fns: &FreeFns<'a>,
+) -> Vec<(bool, &'a str, &'a Block)> {
+    use crate::listener_window::{visit_block, Visited};
+    let mut names: Vec<(bool, &'a str)> = Vec::new();
+    visit_block(body, &mut |v| {
+        let Visited::Expr(Expr::Call { callee, .. }) = v else { return };
+        match callee.as_ref() {
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+            {
+                names.push((true, name.name.as_str()));
+            }
+            Expr::Ident(id) => {
+                names.push((true, id.name.as_str()));
+                names.push((false, id.name.as_str()));
+            }
+            _ => {}
+        }
+    });
+    names
+        .into_iter()
+        .filter_map(|(method, name)| {
+            let body = if method {
+                decl.members.iter().find_map(|m| match m {
+                    LocusMember::Fn(f) if f.name.name == name => Some(&f.body),
+                    _ => None,
+                })
+            } else {
+                free_fns.get(name).map(|f| &f.body)
+            };
+            body.map(|b| (method, name, b))
+        })
+        .collect()
+}
+
+/// Whether `body` reads `draining` (on any receiver) itself.
+pub fn block_reads_draining(body: &Block) -> bool {
+    use crate::listener_window::{visit_block, Visited};
+    let mut found = false;
+    visit_block(body, &mut |v| {
+        if let Visited::Expr(Expr::Field { name, .. }) = v {
+            if name.name == "draining" {
+                found = true;
+            }
+        }
+    });
+    found
+}
+
+/// Whether a `run()` body of `decl`'s, or a fn or method of the program it
+/// calls (transitively, [`followed_callees`]), reads `draining`: the
+/// watches-drain column of the run row. A read only another locus's
+/// method makes (`self.child.stopping()`) is not followed.
+pub fn run_reads_draining<'a>(run: &'a Block, decl: &'a LocusDecl, free_fns: &FreeFns<'a>) -> bool {
+    fn go<'a>(
+        body: &'a Block,
+        decl: &'a LocusDecl,
+        free_fns: &FreeFns<'a>,
+        seen: &mut std::collections::BTreeSet<(bool, &'a str)>,
+    ) -> bool {
+        if block_reads_draining(body) {
+            return true;
+        }
+        for (method, name, callee) in followed_callees(body, decl, free_fns) {
+            if seen.insert((method, name)) && go(callee, decl, free_fns, seen) {
+                return true;
+            }
+        }
+        false
+    }
+    go(run, decl, free_fns, &mut std::collections::BTreeSet::new())
 }
 
 // === statically non-returning run(): the never-returns column =====
@@ -543,6 +672,33 @@ mod tests {
         assert_eq!(col("Idle"), (false, false));
         assert_eq!(col("Plain"), (false, false));
         assert_eq!(col("Nested"), (true, true));
+    }
+
+    /// GH #1858: the watches-drain column is the `run()`'s own reads of
+    /// `draining`, through the methods and free fns it calls; a read in a
+    /// hook, a handler or a method the run does not call does not count,
+    /// nor does one only another locus's method makes.
+    #[test]
+    fn watches_drain_is_the_run_s_reads_and_what_it_calls() {
+        let src = "locus Direct { run() { while !self.draining { } } }\n\
+                   locus ViaMethod { fn stop() -> Bool { return self.draining; } run() { while !self.stop() { } } }\n\
+                   locus ViaFree { run() { while !gate(self) { } } }\n\
+                   fn gate(l: ViaFree) -> Bool { return l.draining; }\n\
+                   locus Hook { run() { while true { } } drain() { if self.draining { } } }\n\
+                   locus Handler { fn on(x: Int) { if self.draining { } } run() { } }\n\
+                   locus Uncalled { fn stop() -> Bool { return self.draining; } run() { } }\n\
+                   locus NoRun { fn stop() -> Bool { return self.draining; } }\n\
+                   fn main() { }\n";
+        let p = hale_syntax::parse_source(src).expect("parse");
+        let rows = survey(&[&p], &[]);
+        let watches = |name: &str| rows.runs.iter().find(|r| r.locus == name).expect("a run row").watches_drain;
+        assert!(watches("Direct"));
+        assert!(watches("ViaMethod"));
+        assert!(watches("ViaFree"));
+        assert!(!watches("Hook"));
+        assert!(!watches("Handler"));
+        assert!(!watches("Uncalled"));
+        assert!(!watches("NoRun"));
     }
 
     /// A clause's child is the locus lowering names: an alias is
