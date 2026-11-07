@@ -4446,8 +4446,10 @@ What the compiler emits for a native `hale build`:
   is refused before any code is emitted, naming the CPUs that LLVM
   knows: the table is read from that LLVM's `llc -mcpu=help` when
   the compiler is built, not from the system clang, whose version
-  can differ. The runtime's clang must know the name as well, and
-  is refused by name when it does not. The emitted module self-describes its
+  can differ. The compiler that builds the target's runtime must
+  know the name as well (the host's clang; `zig cc` for a Linux
+  cross target; none for a Darwin object-only build) and is refused
+  by name when it does not. The emitted module self-describes its
   subtarget via per-function `target-cpu`/`target-features`
   attributes, so the choice is carried into bitcode (it survives
   LTO).

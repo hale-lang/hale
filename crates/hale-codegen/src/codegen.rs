@@ -1021,13 +1021,21 @@ fn zig_cpu_spelling(name: &str) -> String {
 /// unknown one ("64-bit code requested on a subtarget that doesn't
 /// support it"), or takes it as generic with a warning on aarch64. The
 /// table is the linked LLVM's own ([`known_cpus`]), not the system
-/// clang's, whose version can differ (an Apple clang 21 knows `znver4`;
-/// LLVM 18 does not). The clang the runtime TUs are compiled with must
-/// know the name too, and is asked next (`-march=` on x86-64, `-mcpu=`
-/// elsewhere, an empty translation unit); a clang that is missing or
-/// fails for another reason says nothing here, the runtime compile
-/// reports it.
-fn check_cpu_name(name: &str, target: &crate::target::TargetSpec) -> Result<(), CodegenError> {
+/// clang's, whose version can differ (an Apple clang 21 knows `znver5`;
+/// LLVM 18 does not). The compiler that builds the target's runtime
+/// TUs must know the name too, and is asked next with an empty
+/// translation unit: the host's clang for the host target (`-march=`
+/// on x86-64, `-mcpu=` elsewhere), `zig cc -target` for a Linux cross
+/// target (zig's spelling), and nothing for a target whose runtime is
+/// not compiled here (a Darwin object-only build). A compiler that is
+/// missing or fails for another reason says nothing here: the runtime
+/// compile, or the link, reports it.
+fn check_cpu_name(
+    name: &str,
+    target: &crate::target::TargetSpec,
+    is_foreign: bool,
+    options: &BuildOptions,
+) -> Result<(), CodegenError> {
     let known = known_cpus(target.arch);
     if known.is_empty() {
         return Err(CodegenError::LlvmInit(format!(
@@ -1043,23 +1051,38 @@ fn check_cpu_name(name: &str, target: &crate::target::TargetSpec) -> Result<(), 
             known.join(", ")
         )));
     }
-    let flag = if target.arch == crate::target::TargetArch::X86_64 {
-        format!("-march={name}")
+    let (mut cmd, flag, who): (Command, String, String) = if !is_foreign {
+        let clang = resolve_tool("clang");
+        let flag = if target.arch == crate::target::TargetArch::X86_64 {
+            format!("-march={name}")
+        } else {
+            format!("-mcpu={name}")
+        };
+        let mut c = Command::new(&clang);
+        c.arg(format!("--target={}", target.triple));
+        (c, flag, format!("the runtime's C compiler ({clang})"))
+    } else if target.zig_target().is_some() && target.links_from(&crate::target::TargetSpec::host()) {
+        let Ok((cc, _)) = cross_cc(target, options) else { return Ok(()) };
+        let mut c = Command::new(&cc[0]);
+        c.args(&cc[1..]);
+        (c, format!("-mcpu={}", zig_cpu_spelling(name)), format!("the cross runtime's C compiler ({})", cc.join(" ")))
     } else {
-        format!("-mcpu={name}")
+        return Ok(());
     };
-    let clang = resolve_tool("clang");
-    let probe = Command::new(&clang)
-        .args([&format!("--target={}", target.triple), &flag, "-x", "c", "-fsyntax-only", "-"])
+    let probe = cmd
+        .args([&flag, "-x", "c", "-fsyntax-only", "-"])
         .stdin(std::process::Stdio::null())
         .output();
     let Ok(out) = probe else { return Ok(()) };
-    if out.status.success() || !String::from_utf8_lossy(&out.stderr).contains("unknown target CPU") {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let about_the_cpu = stderr.contains("unknown target CPU") || stderr.to_ascii_lowercase().contains("cpu");
+    if out.status.success() || !about_the_cpu {
         return Ok(());
     }
+    let said = stderr.lines().find(|l| l.contains("error")).unwrap_or_default().trim();
     Err(CodegenError::LlvmInit(format!(
-        "--target-cpu {name}: LLVM knows it, but the runtime's C compiler ({clang}) does not; \
-         the runtime is compiled with that clang, so it needs one that knows the CPU"
+        "--target-cpu {name}: LLVM knows it, but {who} does not ({said}); the runtime is compiled \
+         with that compiler, so it needs one that knows the CPU"
     )))
 }
 
@@ -1664,7 +1687,7 @@ fn build_resolved_lowered(
             // host or foreign alike; LLVM's own feature set for that
             // CPU applies, nothing of the host's.
             TargetCpu::Named(name) => {
-                check_cpu_name(name, &target_spec)?;
+                check_cpu_name(name, &target_spec, is_foreign, options)?;
                 (name.clone(), String::new())
             }
         }
