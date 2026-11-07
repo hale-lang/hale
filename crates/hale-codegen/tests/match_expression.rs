@@ -242,3 +242,61 @@ fn match_expr_diverging_block_value_through_every_consumer() {
     assert!(status.success(), "{status:?}");
     assert_eq!(out, "1 2\n6 7 10 11\n100 21 22\n31 32\n41 42\n51 52\n");
 }
+
+/// The diverged value's consumer may want a type other than the
+/// placeholder's: a String or Bytes parameter, a String return, store or
+/// record field, a Bool condition. Each refuses the placeholder, and the
+/// refusal is unreachable code's: the statement is terminated and the
+/// build goes on. An Int parameter takes the placeholder as a well-typed
+/// `i64 undef` (it was an `i32`, which the CLI build's verifier caught:
+/// downstream handoff review, 2026-11-07). Every shape here is also in
+/// tests/hale/block_tail_match_test.hl, built by the CLI.
+#[test]
+fn match_expr_diverging_block_value_into_typed_consumers() {
+    let src = r#"
+        type Rec { name: String = ""; }
+        fn twice(n: Int) -> Int { return n * 2; }
+        fn shout(s: String) -> String { return s + "!"; }
+        fn size(b: Bytes) -> Int { return len(b); }
+        fn int_arg(n: Int) -> Int {
+            let x = twice({ match n { 0 -> { return 1; }, _ -> { return 2; } } });
+            return x;
+        }
+        fn string_arg(n: Int) -> String {
+            let x = shout({ match n { 0 -> { return "a"; }, _ -> { return "b"; } } });
+            return x;
+        }
+        fn bytes_arg(n: Int) -> Int {
+            let x = size({ match n { 0 -> { return 11; }, _ -> { return 12; } } });
+            return x;
+        }
+        fn string_return(n: Int) -> String {
+            return { match n { 0 -> { return "c"; }, _ -> { return "d"; } } };
+        }
+        fn string_assign(n: Int) -> String {
+            let mut s = "";
+            s = { match n { 0 -> { return "e"; }, _ -> { return "f"; } } };
+            return s;
+        }
+        fn string_field(n: Int) -> String {
+            let r = Rec { name: { match n { 0 -> { return "g"; }, _ -> { return "h"; } } } };
+            return r.name;
+        }
+        fn bool_cond(n: Int) -> Int {
+            if { match n { 0 -> { return 21; }, _ -> { return 22; } } } { return 0; }
+            return 1;
+        }
+        fn main() {
+            println(int_arg(0), " ", int_arg(1));
+            println(string_arg(0), " ", string_arg(1));
+            println(bytes_arg(0), " ", bytes_arg(1));
+            println(string_return(0), " ", string_return(1));
+            println(string_assign(0), " ", string_assign(1));
+            println(string_field(0), " ", string_field(1));
+            println(bool_cond(0), " ", bool_cond(1));
+        }
+    "#;
+    let (out, status) = build_and_run("diverging_typed_consumers", src);
+    assert!(status.success(), "{status:?}");
+    assert_eq!(out, "1 2\na b\n11 12\nc d\ne f\ng h\n21 22\n");
+}

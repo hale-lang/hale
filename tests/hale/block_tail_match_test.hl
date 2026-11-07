@@ -98,7 +98,135 @@ fn choose_block(n: Int) -> Int {
     return x;
 }
 
+type Rec {
+    name: String = "";
+}
+
+fn twice(n: Int) -> Int {
+    return n * 2;
+}
+
+fn shout(s: String) -> String {
+    return s + "!";
+}
+
+fn size(b: Bytes) -> Int {
+    return len(b);
+}
+
+fn int_arg(n: Int) -> Int {
+    let x = twice({
+        match n {
+            0 -> {
+                return 1;
+            },
+            _ -> {
+                return 2;
+            },
+        }
+    });
+    return x;
+}
+
+fn string_arg(n: Int) -> String {
+    let x = shout({
+        match n {
+            0 -> {
+                return "a";
+            },
+            _ -> {
+                return "b";
+            },
+        }
+    });
+    return x;
+}
+
+fn bytes_arg(n: Int) -> Int {
+    let x = size({
+        match n {
+            0 -> {
+                return 11;
+            },
+            _ -> {
+                return 12;
+            },
+        }
+    });
+    return x;
+}
+
+fn string_return(n: Int) -> String {
+    return {
+        match n {
+            0 -> {
+                return "c";
+            },
+            _ -> {
+                return "d";
+            },
+        }
+    };
+}
+
+fn string_assign(n: Int) -> String {
+    let mut s = "";
+    s = {
+        match n {
+            0 -> {
+                return "e";
+            },
+            _ -> {
+                return "f";
+            },
+        }
+    };
+    return s;
+}
+
+fn string_field(n: Int) -> String {
+    let r = Rec {
+        name: {
+            match n {
+                0 -> {
+                    return "g";
+                },
+                _ -> {
+                    return "h";
+                },
+            }
+        },
+    };
+    return r.name;
+}
+
+fn bool_cond(n: Int) -> Int {
+    if {
+        match n {
+            0 -> {
+                return 21;
+            },
+            _ -> {
+                return 22;
+            },
+        }
+    } {
+        return 0;
+    }
+    return 1;
+}
+
 fn main() {
+    std::test::assert_eq_int(int_arg(0), 1, "a diverging block as an Int argument");
+    std::test::assert_eq_int(int_arg(1), 2, "its other arm");
+    std::test::assert_eq_str(string_arg(0), "a", "a diverging block as a String argument");
+    std::test::assert_eq_str(string_arg(1), "b", "its other arm");
+    std::test::assert_eq_int(bytes_arg(0), 11, "a diverging block as a Bytes argument");
+    std::test::assert_eq_str(string_return(1), "d", "a diverging block as a String return");
+    std::test::assert_eq_str(string_assign(0), "e", "a diverging block as a String assignment");
+    std::test::assert_eq_str(string_field(1), "h", "a diverging block as a String record field");
+    std::test::assert_eq_int(bool_cond(0), 21, "a diverging block as a Bool condition");
+    std::test::assert_eq_int(bool_cond(3), 22, "its other arm");
     std::test::assert_eq_int(
         choose_block(0),
         1,

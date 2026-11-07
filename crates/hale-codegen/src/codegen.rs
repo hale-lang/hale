@@ -12661,6 +12661,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// and note it for the statement boundary (downstream handoff
     /// review, 2026-11-06: a `let` of such a block stored after an
     /// `unreachable`, "Terminator found in the middle of a basic block").
+    /// The value a diverged lowering hands its consumer: an `Int`'s
+    /// `i64 undef`, so a consumer that takes an `Int` (a call's
+    /// parameter, an operand) builds a well-typed instruction in the
+    /// dead block; a consumer that wants another type refuses it, and
+    /// the statement boundary takes that refusal as the end of the
+    /// statement (`lower_stmt`).
+    fn dead_placeholder(&self) -> BasicValueEnum<'ctx> {
+        self.context.i64_type().get_undef().into()
+    }
+
     fn continue_dead(&mut self, what: &str) -> Result<(), CodegenError> {
         let func = self
             .builder
@@ -12741,10 +12751,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // the tail. Synthesize a placeholder value so the
                     // caller can build the phi shape; it will not be
                     // selected at runtime because the branch is closed.
-                    let i32_ty = self.context.i32_type();
-                    let undef = i32_ty.get_undef();
                     return Ok((
-                        undef.into(),
+                        self.dead_placeholder(),
                         CodegenTy::Int,
                         BlockEnd::Terminated,
                     ));
@@ -17307,7 +17315,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<BlockEnd, CodegenError> {
         let r = self.lower_stmt_traced(stmt, scope);
         // A value lowering inside the statement ended control flow
-        // (`continue_dead`): the statement is terminated.
+        // (`continue_dead`): the statement is terminated. A consumer
+        // that refused the placeholder's type on the way (a String
+        // parameter, a Bool condition, a String return, store or field)
+        // refused unreachable code: whatever it emitted before refusing
+        // is in a block nothing reaches, closed here, and the statement
+        // is terminated all the same (downstream handoff review,
+        // 2026-11-07).
+        if self.dead_continuation && r.is_err() {
+            self.dead_continuation = false;
+            if let Some(bb) = self.builder.get_insert_block() {
+                if bb.get_terminator().is_none() {
+                    self.builder
+                        .build_unreachable()
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            return Ok(BlockEnd::Terminated);
+        }
         if matches!(r, Ok(BlockEnd::Open)) && self.seal_dead()? {
             return Ok(BlockEnd::Terminated);
         }
@@ -22415,8 +22440,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // emits after this: into a dead block, not after the
             // terminator. A consumer that reads the end clears the note.
             self.continue_dead("match")?;
-            let undef = self.context.i32_type().get_undef();
-            return Ok((undef.into(), CodegenTy::Int, BlockEnd::Terminated));
+            return Ok((self.dead_placeholder(), CodegenTy::Int, BlockEnd::Terminated));
         }
         let result_ty = cap.arm_values[0].1.clone();
         for (_, ty, _) in &cap.arm_values {
@@ -26764,12 +26788,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the merge block as unreachable.
         if then_end == BlockEnd::Terminated && else_end == BlockEnd::Terminated {
             self.builder.position_at_end(merge_bb);
-            let undef = self.context.i32_type().get_undef();
             self.builder
                 .build_unreachable()
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.continue_dead("if")?;
-            return Ok((undef.into(), then_ty));
+            return Ok((self.dead_placeholder(), then_ty));
         }
 
         self.builder.position_at_end(merge_bb);

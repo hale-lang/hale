@@ -1144,6 +1144,7 @@ crates/hale-codegen/tests/match_expression.rs#3 da30122a7e0ccfe2
 crates/hale-codegen/tests/match_expression.rs#5 f21fbc665a9c2254
 crates/hale-codegen/tests/match_expression.rs#6 98b0ee40261e7804
 crates/hale-codegen/tests/match_expression.rs#7 324059ccc2fe06ba
+crates/hale-codegen/tests/match_expression.rs#8 e21c98ac9624b8fa
 crates/hale-codegen/tests/math_and_int_float.rs#0 f21fbc665a9c2254
 crates/hale-codegen/tests/math_and_int_float.rs#1 f21fbc665a9c2254
 crates/hale-codegen/tests/math_and_int_float.rs#2 f21fbc665a9c2254
