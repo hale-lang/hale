@@ -43,7 +43,7 @@ compiler or stdlib repair is included.
 
 ## F.2 — Names and scoped statement cleanup
 
-**Status (2026-11-06):** FIXED upstream in hale v0.24.0 (#1531): `restart`, `capacity`, `run`, `release`, `drain` and the other framework words are contextual keywords and can name locals, fields, fns and methods. The renames here can stay.
+**Status (2026-11-06):** PARTLY FIXED upstream in hale v0.24.0 (#1531): `capacity`, `publish`, `restart` and the other framework words are contextual keywords and can name locals, record fields, free fns and methods. Still refused on v0.32.7 (verified with `hale check`): a locus method cannot be named `run`, `drain` or `release` (those names are the lifecycle hooks) or `draining` (the drain flag every locus carries), and `restart` cannot name a free fn (at statement head it is the recovery statement). The renames here can stay; a method named for a hook must keep its rename.
 
 `restart` and `capacity` are reserved Hale words; local bindings and methods use
 other names. Prepared-statement cleanup is implemented by a scoped locus, not by
