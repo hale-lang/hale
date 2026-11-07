@@ -186,3 +186,59 @@ fn match_expr_arm_block_whose_trailing_match_diverges_in_every_arm() {
     assert!(status.success(), "{status:?}");
     assert_eq!(out, "1\n3\n");
 }
+
+/// A block in value position whose trailing `match` diverges in every
+/// arm ends control flow, and the consumer of the value — a `let`, an
+/// `if` expression's arms, an `or` substitute, a call argument, a
+/// `return`, an assignment — emits nothing live after it: the lowering
+/// continues in a block nothing reaches, sealed at the statement
+/// boundary. Until 2026-11-06 (downstream handoff review) the `let`
+/// stored its binding after the match's `unreachable` ("Terminator
+/// found in the middle of a basic block") and the build failed.
+#[test]
+fn match_expr_diverging_block_value_through_every_consumer() {
+    let src = r#"
+        type E { k: Int = 0; }
+        fn risky(n: Int) -> Int fallible(E) { if n > 0 { fail E { k: n }; } return n; }
+        fn twice(n: Int) -> Int { return n * 2; }
+        fn via_let(n: Int) -> Int {
+            let x = { match n { 0 -> { return 1; }, _ -> { return 2; } } };
+            return x;
+        }
+        fn via_if(n: Int) -> Int {
+            let x = if n > 5 {
+                match n { 6 -> { return 6; }, _ -> { return 7; } }
+            } else {
+                match n { 0 -> { return 10; }, _ -> { return 11; } }
+            };
+            return x;
+        }
+        fn via_or(n: Int) -> Int {
+            let x = risky(n) or { match err.k { 1 -> { return 21; }, _ -> { return 22; } } };
+            return x + 100;
+        }
+        fn via_arg(n: Int) -> Int {
+            let x = twice({ match n { 0 -> { return 31; }, _ -> { return 32; } } });
+            return x;
+        }
+        fn via_return(n: Int) -> Int {
+            return { match n { 0 -> { return 41; }, _ -> { return 42; } } };
+        }
+        fn via_assign(n: Int) -> Int {
+            let mut x = 0;
+            x = { match n { 0 -> { return 51; }, _ -> { return 52; } } };
+            return x;
+        }
+        fn main() {
+            println(via_let(0), " ", via_let(3));
+            println(via_if(6), " ", via_if(9), " ", via_if(0), " ", via_if(2));
+            println(via_or(0), " ", via_or(1), " ", via_or(2));
+            println(via_arg(0), " ", via_arg(1));
+            println(via_return(0), " ", via_return(1));
+            println(via_assign(0), " ", via_assign(1));
+        }
+    "#;
+    let (out, status) = build_and_run("diverging_block_consumers", src);
+    assert!(status.success(), "{status:?}");
+    assert_eq!(out, "1 2\n6 7 10 11\n100 21 22\n31 32\n41 42\n51 52\n");
+}

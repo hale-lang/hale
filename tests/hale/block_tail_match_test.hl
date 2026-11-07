@@ -84,7 +84,27 @@ fn choose(n: Int) -> Int {
     return x;
 }
 
+fn choose_block(n: Int) -> Int {
+    let x = {
+        match n {
+            0 -> {
+                return 1;
+            },
+            _ -> {
+                return 2;
+            },
+        }
+    };
+    return x;
+}
+
 fn main() {
+    std::test::assert_eq_int(
+        choose_block(0),
+        1,
+        "a let block whose trailing match diverges in every arm",
+    );
+    std::test::assert_eq_int(choose_block(4), 2, "its other arm");
     std::test::assert_eq_int(
         choose(0),
         1,

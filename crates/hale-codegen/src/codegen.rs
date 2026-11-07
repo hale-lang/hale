@@ -1768,6 +1768,7 @@ fn build_resolved_lowered(
         placement: &resolved.placement,
         owner_site: None,
         in_fresh_temp_hook: false,
+        dead_continuation: false,
         current_fn_skip_exit_drain: false,
         bus_inert,
         xpool_check: !is_wasm && !options.no_xpool_backstop,
@@ -4714,6 +4715,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// GH #402: re-entry guard for the fresh-temp hook, cleared
     /// immediately on entry so nested calls still get their own.
     pub(crate) in_fresh_temp_hook: bool,
+    /// A value lowering ended control flow (every arm of a match or an
+    /// `if` in value position diverged, a block's statements returned)
+    /// and moved the builder to a `dead.*` block, so what its consumer
+    /// emits after it (a `let`'s store, an argument's call) lands in a
+    /// block nothing reaches instead of after a terminator. The next
+    /// statement boundary seals that block (`seal_dead`) and reports
+    /// the statement terminated.
+    pub(crate) dead_continuation: bool,
     pub(crate) current_fn_skip_exit_drain: bool,
     /// Static drain elision (2026-08-03): true when the merged
     /// program can never enqueue a bus cell (no topics, no bus
@@ -12610,6 +12619,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // lower_block_as_expr instead.
         if let Some(tail) = &block.tail {
             let _ = self.lower_expr(tail, scope)?;
+            if self.seal_dead()? {
+                return Ok(BlockEnd::Terminated);
+            }
         }
         Ok(BlockEnd::Open)
     }
@@ -12642,6 +12654,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !rebound && !escapes {
             self.xpool_fresh_slots.insert(*slot);
         }
+    }
+
+    /// A value lowering ended control flow: continue in a fresh block
+    /// nothing reaches, so the consumer's emissions stay well-formed,
+    /// and note it for the statement boundary (downstream handoff
+    /// review, 2026-11-06: a `let` of such a block stored after an
+    /// `unreachable`, "Terminator found in the middle of a basic block").
+    fn continue_dead(&mut self, what: &str) -> Result<(), CodegenError> {
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .ok_or_else(|| CodegenError::Unsupported("a value lowering with no function".into()))?;
+        let bb = self.context.append_basic_block(func, &format!("dead.{what}"));
+        self.builder.position_at_end(bb);
+        self.dead_continuation = true;
+        Ok(())
+    }
+
+    /// The statement boundary after a value lowering ended control flow:
+    /// when the builder still sits in the dead block that lowering
+    /// opened, close it (`unreachable`) and say so, so the enclosing
+    /// walk stops; when control flow joined a live block since (an
+    /// `or`'s phi), clear the note and go on.
+    pub(crate) fn seal_dead(&mut self) -> Result<bool, CodegenError> {
+        if !self.dead_continuation {
+            return Ok(false);
+        }
+        self.dead_continuation = false;
+        let Some(bb) = self.builder.get_insert_block() else { return Ok(false) };
+        let dead = bb.get_name().to_str().is_ok_and(|n| n.starts_with("dead."));
+        if !dead {
+            return Ok(false);
+        }
+        if bb.get_terminator().is_none() {
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(true)
     }
 
     /// Lower a block in expression-context: lower its statements for
@@ -12699,10 +12751,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+        let terminated = |cx: &mut Self, v: BasicValueEnum<'ctx>, ty: CodegenTy| -> Result<(BasicValueEnum<'ctx>, CodegenTy, BlockEnd), CodegenError> {
+            // The tail's own lowering ended control flow: the block
+            // did, and its value is the placeholder.
+            let end = if cx.seal_dead()? { BlockEnd::Terminated } else { BlockEnd::Open };
+            Ok((v, ty, end))
+        };
         match &block.tail {
             Some(tail) => {
                 let (v, ty) = self.lower_expr(tail, scope)?;
-                Ok((v, ty, BlockEnd::Open))
+                terminated(self, v, ty)
             }
             // A trailing `match` (the block's last statement, no tail)
             // is the block's value in a block used as one
@@ -12716,7 +12774,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // as a block with no trailing expression, where the same
             // block ending in `if … else …` built (downstream handoff).
             None => match block.stmts.last() {
-                Some(Stmt::Match(m)) => self.lower_match_value(m, scope),
+                Some(Stmt::Match(m)) => {
+                    let (v, ty, end) = self.lower_match_value(m, scope)?;
+                    if end == BlockEnd::Terminated {
+                        // The match opened a dead block for a value
+                        // consumer; this caller reads the end instead,
+                        // so close that block here.
+                        self.seal_dead()?;
+                        return Ok((v, ty, end));
+                    }
+                    terminated(self, v, ty)
+                }
                 _ => Err(CodegenError::Unsupported(
                     "block used as expression has no trailing expression"
                         .to_string(),
@@ -17238,6 +17306,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         let r = self.lower_stmt_traced(stmt, scope);
+        // A value lowering inside the statement ended control flow
+        // (`continue_dead`): the statement is terminated.
+        if matches!(r, Ok(BlockEnd::Open)) && self.seal_dead()? {
+            return Ok(BlockEnd::Terminated);
+        }
         // A place's value assigned into a part of a local (`h.f = <place>`,
         // `xs[i] = <place>`) makes the part another name's again: its
         // copy-on-write flag is cleared after the store
@@ -22147,7 +22220,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (arm_v, arm_ty, arm_end) = match &arm.body {
                     MatchArmBody::Expr(e) => {
                         let (v, ty) = self.lower_expr(e, scope)?;
-                        (v, ty, BlockEnd::Open)
+                        let end = if self.seal_dead()? { BlockEnd::Terminated } else { BlockEnd::Open };
+                        (v, ty, end)
                     }
                     MatchArmBody::Block(b) => {
                         let mut arm_scope = Scope {
@@ -22179,7 +22253,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             self.lower_stmt(&s, scope)?
                         } else {
                             let _ = self.lower_expr(e, scope)?;
-                            BlockEnd::Open
+                            if self.seal_dead()? { BlockEnd::Terminated } else { BlockEnd::Open }
                         }
                     }
                     MatchArmBody::Block(b) => self.lower_block(b, scope)?,
@@ -22337,6 +22411,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder
                 .build_unreachable()
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // A consumer that takes the value (`lower_expr`'s match arm)
+            // emits after this: into a dead block, not after the
+            // terminator. A consumer that reads the end clears the note.
+            self.continue_dead("match")?;
             let undef = self.context.i32_type().get_undef();
             return Ok((undef.into(), CodegenTy::Int, BlockEnd::Terminated));
         }
@@ -26282,7 +26360,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let mut inner = Scope {
                     locals: scope.locals.clone(),
                 };
-                let (v, ty, _end) = self.lower_block_as_expr(block, &mut inner)?;
+                let (v, ty, end) = self.lower_block_as_expr(block, &mut inner)?;
+                if end == BlockEnd::Terminated {
+                    // The block ended control flow: what the consumer
+                    // emits next goes to a dead block, and the next
+                    // statement boundary reports it terminated.
+                    self.continue_dead("block")?;
+                }
                 Ok((v, ty))
             }
             Expr::Or { inner, disposition, .. } => {
@@ -26684,6 +26768,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder
                 .build_unreachable()
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.continue_dead("if")?;
             return Ok((undef.into(), then_ty));
         }
 
