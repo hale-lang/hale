@@ -410,22 +410,26 @@ fn a_recording_carries_the_build_options_it_was_made_under() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `hale build` emits a binary for the portable baseline by default and
-/// `hale run` / `hale replay` build for the host, so a recording made by
-/// a built binary names a CPU the replay's own default is not. The
-/// replay finds the CPU whose identity the recording carries and
-/// rebuilds at it: admitted with no flag, and saying so. An explicit
-/// `--target-cpu native` is not second-guessed, and is refused by the
-/// identity, which is what shows the adoption is not an admission
-/// bypass.
+/// A `--target-cpu portable` build names a CPU the replay's own
+/// default (the host's) is not. The replay finds the CPU whose identity
+/// the recording carries and rebuilds at it: admitted with no flag, and
+/// saying so. An explicit `--target-cpu native` is not second-guessed,
+/// and is refused by the identity, which is what shows the adoption is
+/// not an admission bypass. A plain `hale build` is host-tuned, says so
+/// on its `built:` line, and its recording replays with nothing said.
 #[test]
 fn a_built_binarys_recording_replays_at_the_cpu_it_was_built_for() {
     let dir = workdir("builtcpu");
     let prog = dir.join("demo.hl");
     std::fs::write(&prog, "fn main() { let x = 1 + 1; }\n").unwrap();
     let bin = dir.join("demo-bin");
-    let out = hale().arg("build").arg(&prog).arg("-o").arg(&bin).output().expect("hale build");
+    let out = hale().arg("build").arg(&prog).arg("-o").arg(&bin).args(["--target-cpu", "portable"]).output().expect("hale build");
     assert!(out.status.success(), "hale build: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("(portable baseline)"),
+        "the built line names the CPU: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let rec = dir.join("built.halerec");
     let out = Command::new(&bin).env("LOTUS_OBS_RECORD", &rec).output().expect("run built binary");
     assert!(out.status.success(), "recorded run failed: {}", String::from_utf8_lossy(&out.stderr));
@@ -439,7 +443,7 @@ fn a_built_binarys_recording_replays_at_the_cpu_it_was_built_for() {
         stderr
     );
     assert!(
-        stderr.contains("`--target-cpu baseline` build"),
+        stderr.contains("`--target-cpu portable` build"),
         "and the replay says which CPU it rebuilt for: {}",
         stderr
     );
@@ -460,6 +464,21 @@ fn a_built_binarys_recording_replays_at_the_cpu_it_was_built_for() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(out.status.success(), "a `hale run` recording replays: {}", stderr);
     assert!(!stderr.contains("--target-cpu"), "at the host CPU, adopting nothing: {}", stderr);
+
+    // So does a plain `hale build`'s: host-tuned by default, and the
+    // built line says which CPU.
+    let host_bin = dir.join("demo-host");
+    let out = hale().arg("build").arg(&prog).arg("-o").arg(&host_bin).output().expect("hale build");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "hale build: {stderr}");
+    assert!(stderr.contains("tuned for this host's CPU"), "the built line names the CPU: {stderr}");
+    let host_rec = dir.join("host.halerec");
+    let out = Command::new(&host_bin).env("LOTUS_OBS_RECORD", &host_rec).output().expect("run built binary");
+    assert!(out.status.success(), "recorded run failed: {}", String::from_utf8_lossy(&out.stderr));
+    let out = hale().arg("replay").arg(&host_rec).arg(&prog).output().expect("hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "a host-tuned build's recording replays: {stderr}");
+    assert!(!stderr.contains("--target-cpu"), "adopting nothing: {stderr}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -52,7 +52,7 @@ Every `.halerec` file records four streams:
 | `--allow-live-effects` | Permits replaying a program whose call graph reaches unjournaled `syscall`, `ffi`, or `unclassified` effects. |
 | `--allow-unverified-model` | Bypasses the executable identity hash check to replay against modified source code or unstamped recordings. |
 | `--dev` / `--env <name>` | Passes the build flags used when the recording was created (required to match the recorded execution identity). |
-| `--target-cpu <native\|baseline>` | The CPU to rebuild for. Without it, the replay uses the CPU the recording was made with: the portable baseline for a `hale build` binary, the host's for `hale run`. |
+| `--target-cpu <native\|portable\|cpu>` | The CPU to rebuild for. Without it, the replay uses the CPU the recording was made with: the host's by default, or the portable baseline for a `--target-cpu portable` build. A build for a named CPU is replayed with that name. |
 
 ### Three-Stage Replay Admission
 

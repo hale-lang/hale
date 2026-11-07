@@ -202,15 +202,13 @@ For live arena residency profiling (`LOTUS_ARENA_RESIDENCY=1`, `LOTUS_ARENA_LOG_
 
 ## Build-Time Optimization Flags
 
-Native builds compile at `-O3`. Which CPU they are tuned for depends on the command:
-
-- `hale build` emits an artifact, and an artifact travels, so by default it targets the **portable baseline** (`--target-cpu baseline`): `x86-64-v3` (AVX2 + BMI2 + FMA) on x86-64 and a generic CPU on aarch64. A binary built on a CI runner then runs on any machine of the same architecture. Tuned to the runner's own CPU, it can stop with `SIGILL` on another one.
-- `hale run`, `hale test`, `hale bench` and `hale replay` build a binary that runs on this machine right away, so they tune for the host CPU (`--target-cpu native`), enabling host-specific SIMD autovectorization (such as AVX-512 or SVE).
+By default, `hale build` and every other verb compile native binaries at `-O3` tuned for the host CPU (`--target-cpu native`), enabling host-specific SIMD autovectorization (such as AVX-512 or SVE). A binary is built on the machine that runs it (the habitat installs the toolchain on each host and builds there), or for a machine you name. `hale build`'s `built:` line says which CPU the binary is tuned for.
 
 | Option / Variable | Effect | When to Use |
 |---|---|---|
-| `--target-cpu baseline` *(default for `hale build`)* | Targets the portable baseline: `x86-64-v3` on x86-64, generic on aarch64. `portable` and `x86-64-v3` are accepted spellings. | Images and binaries that are built in one place and run in another. |
-| `--target-cpu native` *(default for `run`, `test`, `bench`, `replay`)* | Optimizes and vectorizes for the build machine's exact CPU. | A binary that only ever runs on the machine that built it, or on identical hosts (`hale build --target-cpu native`). |
+| `--target-cpu native` *(default)* | Optimizes and vectorizes for the build machine's exact CPU. Not portable across microarchitectures. | Local execution and a binary that runs where it is built, or on identical hosts. |
+| `--target-cpu portable` | Targets the portable baseline: `x86-64-v3` (AVX2 + BMI2 + FMA) on x86-64, generic on aarch64. `baseline` and `x86-64-v3` are accepted spellings. | A published image or any artifact whose machine is unknown: it then runs on any machine of its architecture that meets the floor. |
+| `--target-cpu <cpu>` | One CPU by LLVM's name (`znver4`, `neoverse-v2`, `apple-m3`, `x86-64-v4`). A name the compiler's LLVM does not know is refused before codegen, listing the CPUs it knows. | A binary built here for a known machine elsewhere. |
 | `LOTUS_LTO=1` | Enables full Link-Time Optimization across generated code and the C runtime (requires `lld` on `PATH`; links ~3–4x slower). | Release and benchmark builds (`LOTUS_LTO=1 hale build myservice/`). |
 
 ## Runtime Performance Profile
