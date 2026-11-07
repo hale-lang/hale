@@ -146,7 +146,7 @@ let label = {
 
 A block whose final item ends with `;` has no value (`()`) and cannot be used where a value is expected.
 
-A block whose last item is a `match` (no `;` after its closing brace) takes the match's value where the block is used as one — a `let`'s block, an arm of a `match` or `if` expression — so an arm can bind a local and then match on it (at least one arm must yield a value; a `match` whose every arm `return`s is no value, and `hale check` says so):
+A block whose last item is a `match` (no `;` after its closing brace) takes the match's value where the block is used as one — a `let`'s block, an arm of a `match` or `if` expression — so an arm can bind a local and then match on it. A trailing `match` whose every arm `return`s makes the block a diverging one: fine as a match arm, as an `if` arm beside one that yields the value, or as an `or { … }` substitute, but where the block alone must supply a value (a `let`'s block, a call argument, a condition, an operand of `&&`), `hale check` refuses it, as it refuses `let x = { return 1; };`:
 
 ```hale,fragment
 let label = match kind {

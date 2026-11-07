@@ -1,11 +1,24 @@
 //! `std::http::Server` reads a `Transfer-Encoding: chunked` request body
 //! (downstream handoff, 2026-11-06): the handler saw the raw chunk
 //! framing, or an empty body, since the per-connection loop read
-//! `Content-Length` bodies only. The body is now read to its last chunk
-//! and de-chunked with the client's scanner before the handler sees it;
-//! malformed framing, or a body cut off before its last chunk, answers
-//! 400; a chunked request over `max_request_bytes` answers `too_large`
-//! as an over-cap `Content-Length` does.
+//! `Content-Length` bodies only. The body is read through the framing
+//! as it arrives (`__http_chunk_feed`, a state machine fed one read at
+//! a time) and the handler sees the de-chunked body under its own
+//! `Content-Length`, the chunked framing's headers removed; malformed
+//! framing, or a body cut off before its last chunk, answers 400; a
+//! chunked request over `max_request_bytes` answers `too_large` as an
+//! over-cap `Content-Length` does.
+//!
+//! The framing is read as RFC 9112 has a server read it (review of
+//! #1869, 2026-11-07): a chunk size is one to fifteen hex digits followed
+//! by nothing but whitespace and a `;` extension (`10000000000000000`
+//! wrapped to 0 and read the rest of the body as trailers, `0x5` was 0,
+//! `5zz` was 5); `Transfer-Encoding` is the comma-separated list of all
+//! its lines and must be exactly `chunked`; `Transfer-Encoding` beside a
+//! `Content-Length`, and whitespace before a header's colon, answer 400
+//! however the bytes were segmented.
+//!
+//! The tests read the server's port from `/proc`, so they are Linux-only.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -19,14 +32,17 @@ mod build_opts;
 #[path = "support/child.rs"]
 mod child;
 
-// The repro's echo: the body's length and bytes, as the handler saw them.
+// The repro's echo: the body's length and bytes, and the framing headers,
+// as the handler saw them.
 const ECHO_SERVER: &str = r#"
     locus Echo {
         fn handle(req: std::http::Request) -> std::http::Response {
             return std::http::Response {
                 status: 200,
                 content_type: "text/plain",
-                body: "len=" + to_string(len(req.body)) + " body=[" + req.body + "]",
+                body: "len=" + to_string(len(req.body)) + " body=[" + req.body + "]"
+                    + " te=[" + std::http::header(req, "Transfer-Encoding") + "]"
+                    + " cl=[" + std::http::header(req, "Content-Length") + "]",
             };
         }
     }
@@ -83,7 +99,7 @@ fn a_chunked_request_body_reaches_the_handler_de_chunked() {
     // the repro's request, headers and body in one write
     let (status, body) = raw(port, b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
     assert!(status.starts_with("HTTP/1.1 200"), "{status}");
-    assert_eq!(body, "len=5 body=[hello]");
+    assert_eq!(body, "len=5 body=[hello] te=[] cl=[5]");
 
     // several chunks, a chunk extension and trailers, headers and body
     // in separate segments
@@ -98,17 +114,17 @@ fn a_chunked_request_body_reaches_the_handler_de_chunked() {
     s.read_to_end(&mut resp).unwrap();
     let text = String::from_utf8_lossy(&resp);
     assert!(text.starts_with("HTTP/1.1 200"), "{text}");
-    assert!(text.ends_with("len=7 body=[abcdefg]"), "{text}");
+    assert!(text.ends_with("len=7 body=[abcdefg] te=[] cl=[7]"), "{text}");
 
     // a body whose chunk data holds a blank line of its own
     let (status, body) = raw(port, b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n6\r\na\r\n\r\nb\r\n0\r\n\r\n");
     assert!(status.starts_with("HTTP/1.1 200"), "{status}");
-    assert_eq!(body, "len=6 body=[a\r\n\r\nb]");
+    assert_eq!(body, "len=6 body=[a\r\n\r\nb] te=[] cl=[6]");
 
     // a Content-Length body is served as before
     let (status, body) = raw(port, b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nxyz");
     assert!(status.starts_with("HTTP/1.1 200"), "{status}");
-    assert_eq!(body, "len=3 body=[xyz]");
+    assert_eq!(body, "len=3 body=[xyz] te=[] cl=[3]");
 
     drop(child);
     let _ = std::fs::remove_file(&bin);
@@ -134,6 +150,183 @@ fn malformed_or_over_cap_chunked_framing_is_refused() {
     big.extend_from_slice(b"\r\n0\r\n\r\n");
     let (status, _) = raw(port, &big);
     assert!(status.starts_with("HTTP/1.1 413"), "{status}");
+
+    drop(child);
+    let _ = std::fs::remove_file(&bin);
+}
+
+/// One raw request on its own connection, written in two segments with a
+/// pause between them.
+fn raw_split(port: u16, request: &[u8], at: usize) -> (String, String) {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    s.write_all(&request[..at]).expect("write the first segment");
+    std::thread::sleep(Duration::from_millis(50));
+    s.write_all(&request[at..]).expect("write the second segment");
+    let mut resp = Vec::new();
+    s.read_to_end(&mut resp).expect("read the response");
+    let text = String::from_utf8_lossy(&resp).to_string();
+    let status = text.lines().next().unwrap_or("").to_string();
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+    (status, body)
+}
+
+const CHUNKED_HEAD: &[u8] = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n";
+
+/// A chunk size is one to fifteen hex digits, then at most whitespace
+/// and a `;` extension (RFC 9112 § 7.1). The first cut's `v * 16 + d`
+/// had no digit limit and stopped at the first non-hex byte, so a
+/// 17-digit size wrapped to 0 and the rest of the body, a smuggled
+/// request line included, was read as trailers (200, empty body); `0x5`
+/// was 0 and `5zz` was 5.
+#[test]
+fn a_chunk_size_is_at_most_fifteen_hex_digits_then_an_extension() {
+    let (child, port, bin) = serve();
+    let req = |framing: &[u8]| {
+        let mut r = CHUNKED_HEAD.to_vec();
+        r.extend_from_slice(framing);
+        r
+    };
+
+    // the wraparound: 2^64 as a size
+    let (status, body) = raw(port, &req(b"10000000000000000\r\nGET /smuggled HTTP/1.1\r\n\r\n"));
+    assert!(status.starts_with("HTTP/1.1 400"), "{status} {body}");
+    // sixteen digits, even of zeros: over the limit
+    let (status, _) = raw(port, &req(b"0000000000000005\r\nhello\r\n0\r\n\r\n"));
+    assert!(status.starts_with("HTTP/1.1 400"), "{status}");
+    // fifteen is a size
+    let (status, body) = raw(port, &req(b"000000000000005\r\nhello\r\n0\r\n\r\n"));
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    assert_eq!(body, "len=5 body=[hello] te=[] cl=[5]");
+    // a byte after the digits that is not whitespace or `;`
+    for framing in [&b"0x5\r\nhello\r\n0\r\n\r\n"[..], b"5zz\r\nhello\r\n0\r\n\r\n", b"5-\r\nhello\r\n0\r\n\r\n", b"5\r\nhello\r\n0x\r\n\r\n"] {
+        let (status, body) = raw(port, &req(framing));
+        assert!(status.starts_with("HTTP/1.1 400"), "{status} {body} for {:?}", String::from_utf8_lossy(framing));
+        assert_eq!(body, "malformed chunked request body");
+    }
+    // an extension, with and without whitespace before it; trailing whitespace
+    for framing in [&b"5;ext=1\r\nhello\r\n0\r\n\r\n"[..], b"5 ; ext=1\r\nhello\r\n0\r\n\r\n", b"5 \r\nhello\r\n0\t\r\n\r\n", b"5\t;x\r\nhello\r\n0\r\n\r\n"] {
+        let (status, body) = raw(port, &req(framing));
+        assert!(status.starts_with("HTTP/1.1 200"), "{status} for {:?}", String::from_utf8_lossy(framing));
+        assert_eq!(body, "len=5 body=[hello] te=[] cl=[5]");
+    }
+
+    drop(child);
+    let _ = std::fs::remove_file(&bin);
+}
+
+/// `Transfer-Encoding` is the comma-separated list of every line carrying
+/// it, accepted only when it is exactly `chunked` (RFC 9112 § 6.1: the
+/// final coding must be chunked, and the Server applies no other). The
+/// first cut matched `chunked` as a substring of the first line, so
+/// `xchunked` and `chunked, gzip` were de-chunked, `gzip, chunked` handed
+/// the handler gzip bytes, and a `gzip` line before a `chunked` line, or
+/// whitespace before the colon, handed it the raw chunk framing.
+#[test]
+fn transfer_encoding_is_the_list_of_all_its_lines_and_exactly_chunked() {
+    let (child, port, bin) = serve();
+    let req = |headers: &str| format!("POST / HTTP/1.1\r\nHost: x\r\n{headers}\r\n5\r\nhello\r\n0\r\n\r\n").into_bytes();
+
+    for (headers, answer) in [
+        ("Transfer-Encoding: xchunked\r\n", "unsupported transfer encoding"),
+        ("Transfer-Encoding: chunked, gzip\r\n", "unsupported transfer encoding"),
+        ("Transfer-Encoding: gzip, chunked\r\n", "unsupported transfer encoding"),
+        ("Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n", "unsupported transfer encoding"),
+        ("Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n", "unsupported transfer encoding"),
+        ("Transfer-Encoding: \r\n", "unsupported transfer encoding"),
+        ("Transfer-Encoding : chunked\r\n", "whitespace before a header's colon"),
+        ("Transfer-Encoding\t: chunked\r\n", "whitespace before a header's colon"),
+        ("X-Other : 1\r\nTransfer-Encoding: chunked\r\n", "whitespace before a header's colon"),
+    ] {
+        let (status, body) = raw(port, &req(headers));
+        assert!(status.starts_with("HTTP/1.1 400"), "{status} for {headers:?}");
+        assert_eq!(body, answer, "for {headers:?}");
+    }
+    // the coding's name is case-insensitive, and empty list members are
+    // skipped (RFC 9110 § 5.6.1)
+    for headers in ["Transfer-Encoding: Chunked\r\n", "transfer-encoding: CHUNKED\r\n", "Transfer-Encoding: , chunked ,\r\n", "Transfer-Encoding:chunked\r\n"] {
+        let (status, body) = raw(port, &req(headers));
+        assert!(status.starts_with("HTTP/1.1 200"), "{status} for {headers:?}");
+        assert_eq!(body, "len=5 body=[hello] te=[] cl=[5]", "for {headers:?}");
+    }
+
+    drop(child);
+    let _ = std::fs::remove_file(&bin);
+}
+
+/// `Transfer-Encoding` beside a `Content-Length` is refused (RFC 9112
+/// § 6.3: a server rejects the pair) whatever the segmentation of the
+/// bytes across reads: the first cut's answer depended on it (200 in one
+/// write, the cap's 413 when split).
+#[test]
+fn transfer_encoding_with_content_length_is_refused_however_segmented() {
+    let (child, port, bin) = serve();
+    let request = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+    let head = request.iter().collect::<Vec<_>>().windows(4).position(|w| w == [&b'\r', &b'\n', &b'\r', &b'\n']).unwrap() + 4;
+
+    let (status, body) = raw(port, request);
+    assert!(status.starts_with("HTTP/1.1 400"), "{status}");
+    assert_eq!(body, "Transfer-Encoding with Content-Length");
+    // headers and body in separate segments
+    let (status, body) = raw_split(port, request, head);
+    assert!(status.starts_with("HTTP/1.1 400"), "{status}");
+    assert_eq!(body, "Transfer-Encoding with Content-Length");
+    // the split inside the header block, between the two framing lines
+    let (status, body) = raw_split(port, request, 50);
+    assert!(status.starts_with("HTTP/1.1 400"), "{status}");
+    assert_eq!(body, "Transfer-Encoding with Content-Length");
+    // the Content-Length first, and a declared length over the cap
+    let (status, body) = raw(port, b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 999999\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
+    assert!(status.starts_with("HTTP/1.1 400"), "{status}");
+    assert_eq!(body, "Transfer-Encoding with Content-Length");
+
+    drop(child);
+    let _ = std::fs::remove_file(&bin);
+}
+
+/// The handler sees the de-chunked body under its own `Content-Length`,
+/// the request's `Transfer-Encoding` and any `Content-Length` line gone,
+/// so a handler copying the headers onto an upstream request frames what
+/// it forwards. The other headers, and the request line, are as they came.
+#[test]
+fn the_handler_sees_the_de_chunked_body_under_its_own_content_length() {
+    const HEADER_ECHO: &str = r#"
+        locus Echo {
+            fn handle(req: std::http::Request) -> std::http::Response {
+                return std::http::Response {
+                    status: 200,
+                    content_type: "text/plain",
+                    body: req.method + " " + req.path + "\n" + req.headers + "\n[" + req.body + "]",
+                };
+            }
+        }
+        fn main() {
+            std::http::Server {
+                host: "127.0.0.1",
+                port: 0,
+                handler: Echo { },
+                max_request_bytes: 4096,
+                ready_signal: "ready"
+            };
+        }
+    "#;
+    let bin = harness::unique_bin("http_chunked_headers");
+    build_opts::build_source(HEADER_ECHO, &bin, &build_opts::options()).expect("build");
+    let mut child = Command::new(&bin).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn the server");
+    let stdout = child.stdout.take().unwrap();
+    let mut child = Stopped(child);
+    let mut ready = String::new();
+    let _ = BufReader::new(stdout).read_line(&mut ready);
+    assert_eq!(ready.trim(), "ready", "the server did not start");
+    let port = child::tcp_port(&mut child.0);
+
+    let (status, body) = raw(port, b"POST /up?x=1 HTTP/1.1\r\nHost: x\r\nX-Before: a\r\nTransfer-Encoding: chunked\r\nX-After: b\r\n\r\n3\r\nabc\r\n4\r\ndefg\r\n0\r\n\r\n");
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    assert_eq!(body, "POST /up?x=1\nHost: x\r\nX-Before: a\r\nX-After: b\r\nContent-Length: 7\n[abcdefg]");
+    // a Content-Length request's headers are as they came
+    let (status, body) = raw(port, b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nX-After: b\r\n\r\nxyz");
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    assert_eq!(body, "POST /\nHost: x\r\nContent-Length: 3\r\nX-After: b\n[xyz]");
 
     drop(child);
     let _ = std::fs::remove_file(&bin);

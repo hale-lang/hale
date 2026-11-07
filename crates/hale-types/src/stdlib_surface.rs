@@ -1160,6 +1160,10 @@ pub const SURFACES: &[NsSurface] = &[
             // with unique literal keys.
             row!("valid", PURE, [Str] -> Bool, HaleBody("__json_valid")),
             row!("valid_object", PURE, [Str] -> Bool, HaleBody("__json_valid_object")),
+            // 2026-11-07: the index just past the JSON number at `from`
+            // (RFC 8259 § 6), or -1; what a generated codec holds a
+            // Decimal field's text to before it reads the digits.
+            row!("number_end", PURE, [Str, Int, Int] -> Int, HaleBody("__json_number_end")),
         ],
         open_prefixes: &[],
     },

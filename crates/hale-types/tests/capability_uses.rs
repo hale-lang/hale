@@ -129,7 +129,7 @@ fn a_construction_is_refused_at_the_literal_with_its_lifecycle() {
                 37,
                 &format!(
                     "`std::http` is unavailable under {{selector}}: {http} — witness: {take} → `__StdIoTcpConnInline` \
-                     → `birth()` → `std::http::Responder::serve` → `__http_handle_one_conn` → `std::http::parse_request`"
+                     → `birth()` → `std::http::Responder::serve` → `__http_handle_one_conn` → `std::http::write_response`"
                 ),
             ),
             (

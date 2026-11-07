@@ -72,14 +72,20 @@ fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
 
 /// The statements that bind `var` to the value of the JSON document `json`
 /// (a Hale expression of text), running `fail` (statements that end in a
-/// `return`) when a record's codec refuses it.
-fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &str, what: &str) -> Result<String, String> {
+/// `return`, given the expression of why: the error's kind and what it
+/// names) when a record's codec, or a Decimal's parse, refuses it.
+fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &dyn Fn(&str) -> String, what: &str) -> Result<String, String> {
     Ok(match f {
         // read at the field's scale: the annotated binding gives
-        // `parse_decimal` its scale, and a digit past it is the zero the
-        // client reads where a reply holds no number it can parse
+        // `parse_decimal` its scale, and a reply holding no number it can
+        // read (a digit past the scale, a mantissa past i128, no number)
+        // is an error through the call's outcome, as any wrong type is,
+        // never `0d` (2026-11-07, downstream handoff)
         FieldSchema::Scalar { hale_type: Some(t), .. } if t.starts_with("Decimal<") => {
-            format!("let {var}: {t} = std::str::parse_decimal(std::str::trim({json})) or 0d;\n")
+            format!(
+                "let {var}: {t} = std::str::parse_decimal(std::str::trim({json})) or {{ {} }};\n",
+                fail("err.kind + \": \" + err.input")
+            )
         }
         FieldSchema::Scalar { json: kind, .. } => format!(
             "let {var} = {};\n",
@@ -91,7 +97,7 @@ fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &str, what: &str) -
             }
         ),
         FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => {
-            format!("let {var} = {}::api_decode({json}) or {{ {fail} }};\n", type_ident(name))
+            format!("let {var} = {}::api_decode({json}) or {{ {} }};\n", type_ident(name), fail("err.kind + \": \" + err.field"))
         }
         FieldSchema::Time => format!("let {var} = std::time::parse_time(api_scalar_str({json})) or {EPOCH};\n"),
         FieldSchema::Any
@@ -297,20 +303,18 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
     out.push_str(&format!("fn {fn_name}(endpoint: String, bearer: String{params}) -> {outcome} {{\n"));
     out.push_str(&format!("    let raw = api_call(endpoint, bearer, {}, {}, {payload});\n", hale_lit(&m.name), hale_lit(&m.digest)));
     // a reply the codec refuses is a lost answer, named
-    let lost = |part: &str| {
-        format!("return {outcome}::Lost(\"the {part} did not decode: \" + err.kind + \": \" + err.field);")
-    };
+    let lost = |part: &str, why: &str| format!("return {outcome}::Lost(\"the {part} did not decode: \" + {why});");
     match &m.response {
         Some(r) => {
             out.push_str("    if raw.outcome == 0 {\n");
-            out.push_str(&format!("        {}", decode_into(r, "raw.body", "value", &lost("result"), &format!("{what} response"))?));
+            out.push_str(&format!("        {}", decode_into(r, "raw.body", "value", &|why| lost("result", why), &format!("{what} response"))?));
             out.push_str(&format!("        return {outcome}::Result(value);\n    }}\n"));
         }
         None => out.push_str(&format!("    if raw.outcome == 0 {{ return {outcome}::Result; }}\n")),
     }
     if let ClientError::Type(e) = &m.error {
         out.push_str("    if raw.outcome == 1 {\n");
-        out.push_str(&format!("        {}", decode_into(e, "raw.body", "error", &lost("handler error"), &format!("{what} error"))?));
+        out.push_str(&format!("        {}", decode_into(e, "raw.body", "error", &|why| lost("handler error", why), &format!("{what} error"))?));
         out.push_str(&format!("        return {outcome}::HandlerError(error);\n    }}\n"));
     }
     out.push_str(&format!("    if raw.outcome == 2 {{ return {outcome}::Refusal(api_refusal(raw)); }}\n"));
@@ -336,9 +340,7 @@ fn stream_decl(s: &ClientStream) -> Result<String, String> {
         s.payload.as_ref().unwrap_or(&FieldSchema::Unformed),
         "payload",
         "value",
-        &format!(
-            "self.ended = \"a payload did not decode: \" + err.kind + \": \" + err.field; return {event}::Lost(self.ended);"
-        ),
+        &|why: &str| format!("self.ended = \"a payload did not decode: \" + {why}; return {event}::Lost(self.ended);"),
         &format!("{what} payload"),
     )?;
     let roles = if s.requires.is_empty() { "none".to_string() } else { s.requires.join(", ") };
@@ -482,4 +484,28 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
         hale_syntax::fmt::FmtError::Changed(_) => "the formatter altered the generated client (a generator bug)".to_string(),
     })?;
     Ok(formatted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A reply the client cannot read as its `Decimal<S>` is an error
+    /// through the call's outcome, never `0d` (2026-11-07, downstream
+    /// handoff).
+    #[test]
+    fn an_unreadable_decimal_reply_is_the_lost_outcome_not_zero() {
+        let dec = FieldSchema::Scalar { json: "number", hale_type: Some("Decimal<2>".to_string()), unit: None };
+        let src = decode_into(&dec, "raw.body", "value", &|why| format!("return Outcome::Lost(\"did not decode: \" + {why});"), "a response")
+            .expect("a Decimal response is formed");
+        assert_eq!(
+            src,
+            "let value: Decimal<2> = std::str::parse_decimal(std::str::trim(raw.body)) or { return Outcome::Lost(\"did not decode: \" + err.kind + \": \" + err.input); };\n"
+        );
+        assert!(!src.contains("or 0d"), "{src}");
+        // a record's refusal names the field, a parse's its input
+        let rec = decode_into(&FieldSchema::Ref("Priced".to_string()), "raw.body", "value", &|why| format!("return Outcome::Lost({why});"), "a response")
+            .expect("a record response is formed");
+        assert_eq!(rec, "let value = Priced::api_decode(raw.body) or { return Outcome::Lost(err.kind + \": \" + err.field); };\n");
+    }
 }

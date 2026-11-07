@@ -3,7 +3,9 @@
 //! ERROR record on stderr for every such write (`lotus.tcp` "write
 //! failed", EPIPE or ECONNRESET), outside the program's `std::log` sinks
 //! and under no level filter. The peer hanging up is now a DEBUG record,
-//! written only under `HALE_LOG=debug`; any other errno stays ERROR.
+//! written only under `HALE_LOG=debug`; any other errno stays ERROR. (A
+//! bus binding `LOTUS_BUS_CONFIG` configured, which no locus serves, is
+//! the exception: its first lost send is a WARN record, `bus_config.rs`.)
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -102,5 +104,8 @@ fn a_client_hanging_up_is_not_an_error_record() {
         .find(|l| l.contains("write failed"))
         .unwrap_or_else(|| panic!("no record of the hang-up under HALE_LOG=debug:\n{err}"));
     assert!(line.contains("level=debug") && line.contains("logger=lotus.tcp"), "{line}");
-    assert!(line.contains("errno=32") || line.contains("errno=104"), "EPIPE or ECONNRESET: {line}");
+    // the platform's constants: ECONNRESET is 104 on Linux and 54 on macOS
+    let epipe = format!("errno={} ", libc::EPIPE);
+    let reset = format!("errno={} ", libc::ECONNRESET);
+    assert!(line.contains(&epipe) || line.contains(&reset), "EPIPE ({}) or ECONNRESET ({}): {line}", libc::EPIPE, libc::ECONNRESET);
 }

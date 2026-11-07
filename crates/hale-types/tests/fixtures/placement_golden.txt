@@ -715,7 +715,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in th
 == crates/hale-stdlib/hl/hex.hl#d83ba4a5
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
-== crates/hale-stdlib/hl/http_client.hl#b5d700ce
+== crates/hale-stdlib/hl/http_client.hl#27d5f5bd
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
@@ -2049,6 +2049,9 @@ row	Writer@main2	Writer	main	default
 row	Pub@main2	Pub	main	default
 row	Sub@main1	Sub	main	default
 
+== crates/hale-codegen/tests/bus_config.rs#e2e82fed
+row	Pub@main1	Pub	main	default
+
 == crates/hale-codegen/tests/bus_cross_thread_drain.rs#5ba37d6c
 root	App	the entry
 domain	pinned:App@literal1.flood
@@ -2532,6 +2535,16 @@ row	App@literal1.s	Sub	main	default
 
 == crates/hale-codegen/tests/bus_udp_ingress.rs#64582bbf
 row	Pub@main1	Pub	main	default
+
+== crates/hale-codegen/tests/bus_udp_ingress.rs#38648fc7
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.s	Sub	main	default
+
+== crates/hale-codegen/tests/bus_udp_ingress.rs#38dce239
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.s	Sub	main	default
 
 == crates/hale-codegen/tests/bus_udp_transport.rs#b5d4711d
 row	Sub@main1	Sub	main	default
@@ -3819,7 +3832,11 @@ row	~.r	Hard	main	inherited
 == crates/hale-codegen/tests/held_field_view.rs#7bb6103d
 row	H@main1	H	main	default
 
-== crates/hale-codegen/tests/http_chunked_request.rs#a2ccb8fb
+== crates/hale-codegen/tests/http_chunked_request.rs#113cfd53
+shared	__StdHttpServer@main1	__StdHttpServer #a56eb774
+shared	dynamic	sites in the seed #069c8230
+
+== crates/hale-codegen/tests/http_chunked_request.rs#9f84e8ab
 shared	__StdHttpServer@main1	__StdHttpServer #a56eb774
 shared	dynamic	sites in the seed #069c8230
 

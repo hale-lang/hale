@@ -44,7 +44,7 @@
 //! its own hands; a read anywhere else (a handler, a hook, a method
 //! only another locus calls) does not.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     Block, ElseBranch, Expr, IfStmt, LValueSeg, LifecycleKind, Literal, LocusDecl, LocusMember,
@@ -220,7 +220,7 @@ impl FlowRows {
         let mut by_child: BTreeMap<String, Vec<FlowClause>> = BTreeMap::new();
         let mut runs: Vec<RunRow> = Vec::new();
         let mut concrete: Vec<String> = Vec::new();
-        walk(stdlib_items, &self, &FreeFns::new(), &mut by_child, &mut runs, &mut concrete);
+        walk(stdlib_items, &self, &DrainReads::empty(), &mut by_child, &mut runs, &mut concrete);
         for (child, mut clauses) in by_child {
             clauses.sort_by_key(|c| c.span.start.as_usize());
             self.flows.push(Flow { child, clauses });
@@ -280,7 +280,7 @@ fn mentions_param(ty: &TypeExpr, generics: &[String]) -> bool {
 fn walk<'a>(
     items: &'a [TopDecl],
     rows: &FlowRows,
-    free_fns: &FreeFns<'a>,
+    reads: &DrainReads<'a>,
     out: &mut BTreeMap<String, Vec<FlowClause>>,
     runs: &mut Vec<RunRow>,
     concrete: &mut Vec<String>,
@@ -300,7 +300,7 @@ fn walk<'a>(
                     span: l.span,
                     long_running: run.is_some_and(|b| !b.stmts.is_empty()),
                     never_returns: run.and_then(|b| run_statically_nonreturning(b, l)),
-                    watches_drain: run.is_some_and(|b| run_reads_draining(b, l, free_fns)),
+                    watches_drain: run.is_some_and(|b| run_reads_draining(b, l, reads)),
                 });
                 let generics: Vec<String> = l.generics.iter().map(|g| g.name.name.clone()).collect();
                 for member in &l.members {
@@ -337,7 +337,7 @@ fn walk<'a>(
                     });
                 }
             }
-            TopDecl::Module(m) => walk(&m.items, rows, free_fns, out, runs, concrete),
+            TopDecl::Module(m) => walk(&m.items, rows, reads, out, runs, concrete),
             _ => {}
         }
     }
@@ -358,9 +358,9 @@ pub fn survey(programs: &[&Program], import_renames: &[(Vec<String>, String)]) -
     let mut by_child: BTreeMap<String, Vec<FlowClause>> = BTreeMap::new();
     let mut runs: Vec<RunRow> = Vec::new();
     let mut concrete: Vec<String> = Vec::new();
-    let free_fns = free_fns_of(programs);
+    let reads = DrainReads::of(programs);
     for p in programs {
-        walk(&p.items, &rows, &free_fns, &mut by_child, &mut runs, &mut concrete);
+        walk(&p.items, &rows, &reads, &mut by_child, &mut runs, &mut concrete);
     }
     rows.runs = runs;
     rows.concrete = concrete;
@@ -394,46 +394,341 @@ pub fn free_fns_of<'a>(programs: &[&'a Program]) -> FreeFns<'a> {
     free_fns
 }
 
-/// The bodies `body` calls that the walk follows: a method of `decl`'s
-/// called on `self` (`self.m()`), and a bare call (`m()`), which may be a
-/// method of `decl`'s or a free fn. A call on another receiver (another
-/// locus's method) is not followed.
+/// What a receiver expression names, as far as the declarations tell: a
+/// locus by its declared name, something that is no locus (a primitive,
+/// a declared record or enum, a fn with no value), or unresolved. The
+/// walk is conservative in the safe direction on `Unknown`: a
+/// `.draining` read on it counts, and a method call on it is followed.
+/// (The safe direction: a `run()` wrongly taken to watch the drain is
+/// not waited for, the behaviour before #1869; one wrongly taken not
+/// to is awaited by a `main` with no `run()` and never ends.)
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Receiver {
+    Locus(String),
+    NotLocus,
+    Unknown,
+}
+
+/// The declarations the watches-drain walk resolves receivers against:
+/// every locus name, each locus's params fields and what each holds by
+/// its declared type, each locus's methods, and the free fns by name.
+pub struct DrainReads<'a> {
+    loci: BTreeSet<&'a str>,
+    /// `type X = Y;` declarations: a field or parameter typed `X` is
+    /// classified by `Y`, transitively.
+    aliases: BTreeMap<&'a str, &'a TypeExpr>,
+    /// The other declared types (records, enums): no locus.
+    records: BTreeSet<&'a str>,
+    fields: BTreeMap<&'a str, BTreeMap<&'a str, Receiver>>,
+    methods: BTreeMap<&'a str, BTreeMap<&'a str, &'a hale_syntax::ast::FnDecl>>,
+    free_fns: FreeFns<'a>,
+}
+
+impl<'a> DrainReads<'a> {
+    /// No declarations: every receiver unresolved.
+    pub fn empty() -> Self {
+        DrainReads {
+            loci: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+            records: BTreeSet::new(),
+            fields: BTreeMap::new(),
+            methods: BTreeMap::new(),
+            free_fns: FreeFns::new(),
+        }
+    }
+
+    /// The rows of `programs`' declarations, a module's included.
+    pub fn of(programs: &[&'a Program]) -> Self {
+        let mut rows = DrainReads::empty();
+        rows.free_fns = free_fns_of(programs);
+        for program in programs {
+            for item in hale_syntax::ast::flat_decls(&program.items) {
+                match item {
+                    TopDecl::Locus(l) => {
+                        rows.loci.insert(l.name.name.as_str());
+                        let methods = rows.methods.entry(l.name.name.as_str()).or_default();
+                        for m in &l.members {
+                            if let LocusMember::Fn(f) = m {
+                                methods.entry(f.name.name.as_str()).or_insert(f);
+                            }
+                        }
+                    }
+                    TopDecl::Type(t) => match &t.body {
+                        hale_syntax::ast::TypeDeclBody::Alias(target) => {
+                            rows.aliases.entry(t.name.name.as_str()).or_insert(target);
+                        }
+                        _ => {
+                            rows.records.insert(t.name.name.as_str());
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+        for program in programs {
+            for item in hale_syntax::ast::flat_decls(&program.items) {
+                let TopDecl::Locus(l) = item else { continue };
+                let mut fields = BTreeMap::new();
+                for m in &l.members {
+                    let LocusMember::Params(params) = m else { continue };
+                    for p in &params.params {
+                        let kind = match (&p.ty, &p.init) {
+                            (Some(ty), _) => rows.kind_of_type(ty),
+                            (None, hale_syntax::ast::ParamInit::Value(e)) => rows.kind_of_expr(e, &Env::default()),
+                            (None, hale_syntax::ast::ParamInit::Inferred) => Receiver::Unknown,
+                        };
+                        fields.insert(p.name.name.as_str(), kind);
+                    }
+                }
+                rows.fields.insert(l.name.name.as_str(), fields);
+            }
+        }
+        rows
+    }
+
+    /// The locus a type names: a declared locus by its bare name (an
+    /// imported one by its last segment, when that is a declared name), a
+    /// type alias by its target, transitively (`type WorkerRef = Worker;`
+    /// hides the locus from nothing), else no locus (a primitive, a
+    /// declared record or enum) or, for a name the rows cannot place,
+    /// unresolved — never no locus, since an unresolved name may be this
+    /// locus and the wrong answer there is a hang. A collection or
+    /// projection of a locus holds that locus.
+    fn kind_of_type(&self, ty: &TypeExpr) -> Receiver {
+        self.kind_of_type_within(ty, 0)
+    }
+
+    fn kind_of_type_within(&self, ty: &TypeExpr, depth: usize) -> Receiver {
+        match ty {
+            TypeExpr::Named { path, .. } => self.kind_of_name_within(path, depth),
+            TypeExpr::Primitive(..) => Receiver::NotLocus,
+            TypeExpr::Projection { inner, .. } | TypeExpr::Array { elem: inner, .. } | TypeExpr::Bounded { elem: inner, .. } => {
+                self.kind_of_type_within(inner, depth)
+            }
+            _ => Receiver::Unknown,
+        }
+    }
+
+    fn kind_of_name(&self, path: &hale_syntax::ast::QualifiedName) -> Receiver {
+        self.kind_of_name_within(path, 0)
+    }
+
+    fn kind_of_name_within(&self, path: &hale_syntax::ast::QualifiedName, depth: usize) -> Receiver {
+        let Some(last) = path.segments.last() else { return Receiver::Unknown };
+        let name = last.name.as_str();
+        if self.loci.contains(name) {
+            Receiver::Locus(last.name.clone())
+        } else if let Some(target) = self.aliases.get(name) {
+            // An alias chain is finite; a cycle (refused by the check) is
+            // cut as unresolved.
+            if depth > 32 {
+                Receiver::Unknown
+            } else {
+                self.kind_of_type_within(target, depth + 1)
+            }
+        } else if path.segments.len() == 1 && self.records.contains(name) {
+            Receiver::NotLocus
+        } else {
+            Receiver::Unknown
+        }
+    }
+
+    /// The loci that MAY hold `this`, by declared types: a locus whose
+    /// params declare a field whose type is `this` (or a collection or
+    /// projection of it), or a field whose type is such a holder,
+    /// transitively, or a field the rows cannot type (taken as one).
+    fn holders_of(&self, this: &str) -> BTreeSet<String> {
+        let mut holders: BTreeSet<String> = BTreeSet::new();
+        loop {
+            let before = holders.len();
+            for (locus, fields) in &self.fields {
+                if holders.contains(*locus) {
+                    continue;
+                }
+                let holds = fields.values().any(|k| match k {
+                    Receiver::Locus(l) => l == this || holders.contains(l),
+                    Receiver::Unknown => true,
+                    Receiver::NotLocus => false,
+                });
+                if holds {
+                    holders.insert(locus.to_string());
+                }
+            }
+            if holders.len() == before {
+                return holders;
+            }
+        }
+    }
+
+    /// What `e` names as a receiver, under the body's bindings `env`.
+    fn kind_of_expr(&self, e: &Expr, env: &Env) -> Receiver {
+        match e {
+            Expr::KwSelf(_) => env.this.clone().map_or(Receiver::Unknown, Receiver::Locus),
+            Expr::Ident(id) => env.names.get(id.name.as_str()).cloned().unwrap_or(Receiver::Unknown),
+            Expr::Struct { path, .. } => self.kind_of_name(path),
+            Expr::Literal(..) => Receiver::NotLocus,
+            Expr::Field { receiver, name, .. } => match self.kind_of_expr(receiver, env) {
+                Receiver::Locus(l) => self
+                    .fields
+                    .get(l.as_str())
+                    .and_then(|f| f.get(name.name.as_str()))
+                    .cloned()
+                    .unwrap_or(Receiver::Unknown),
+                _ => Receiver::Unknown,
+            },
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Ident(id) => match self.free_fns.get(id.name.as_str()) {
+                    Some(f) => f.ret.as_ref().map_or(Receiver::NotLocus, |t| self.kind_of_type(t)),
+                    None => Receiver::Unknown,
+                },
+                // A method's result: unresolved, so a read on it counts.
+                _ => Receiver::Unknown,
+            },
+            _ => Receiver::Unknown,
+        }
+    }
+}
+
+/// A body's bindings: what `self` is (the locus whose body it is;
+/// nothing in a free fn), and each name's receiver.
+#[derive(Default, Clone, Debug)]
+pub struct Env {
+    this: Option<String>,
+    names: BTreeMap<String, Receiver>,
+}
+
+/// One body's callees the walk follows, with the bindings each is
+/// entered under: the locus whose method it is (`None` for a free fn),
+/// its name, its declaration, and the receivers its parameters are bound
+/// to (by the parameter's declared type where that names a locus or
+/// rules one out, else by what the argument names). Followed: this
+/// locus's own method called on `self`, an alias of it or an unresolved
+/// receiver; another locus's method when the call hands it this locus
+/// (or something unresolved) or when that locus's declared fields may
+/// hold this one (`holders`); a bare call, as a free fn and as a method
+/// of the body's locus. The flag `read` comes back set when the body
+/// reads this locus's `draining` itself — on `self`, an alias, a
+/// parameter, a declared field path of this locus's type, or a receiver
+/// the rows cannot resolve — or hands this locus to a method the rows
+/// cannot find (a builtin's, a stdlib locus's), which is taken as a
+/// read. A `let` binds its name for the rest of its block only
+/// (`Visited::Enter` / `Leave`), so an inner shadow never changes the
+/// receiver of an expression outside it.
 pub fn followed_callees<'a>(
     body: &'a Block,
-    decl: &'a LocusDecl,
-    free_fns: &FreeFns<'a>,
-) -> Vec<(bool, &'a str, &'a Block)> {
+    this: &str,
+    holders: &BTreeSet<String>,
+    env: Env,
+    rows: &DrainReads<'a>,
+    read: &mut bool,
+) -> Vec<(Option<String>, &'a str, &'a hale_syntax::ast::FnDecl, Env)> {
     use crate::listener_window::{visit_block, Visited};
-    let mut names: Vec<(bool, &'a str)> = Vec::new();
+    let this_r = Receiver::Locus(this.to_string());
+    let reaches_this = |r: &Receiver| matches!(r, Receiver::Unknown) || *r == this_r;
+    // (the locus whose method, or None for a free fn; name; args; env at the call)
+    let mut callees: Vec<(Option<String>, &'a str, &'a [Expr], Env)> = Vec::new();
+    let mut scopes: Vec<Env> = vec![env];
     visit_block(body, &mut |v| {
-        let Visited::Expr(Expr::Call { callee, .. }) = v else { return };
-        match callee.as_ref() {
-            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
-                if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
-            {
-                names.push((true, name.name.as_str()));
+        let env = scopes.last().expect("a block's bindings");
+        match v {
+            Visited::Enter(_) => {
+                let inner = env.clone();
+                scopes.push(inner);
             }
-            Expr::Ident(id) => {
-                names.push((true, id.name.as_str()));
-                names.push((false, id.name.as_str()));
+            Visited::Leave(_) => {
+                scopes.pop();
             }
+            Visited::Stmt(Stmt::Let { name, ty, value, .. }) => {
+                let kind = match ty.as_ref().map(|t| rows.kind_of_type(t)) {
+                    Some(known) if known != Receiver::Unknown => known,
+                    _ => rows.kind_of_expr(value, env),
+                };
+                scopes.last_mut().expect("a block's bindings").names.insert(name.name.clone(), kind);
+            }
+            Visited::Expr(Expr::Field { receiver, name, .. }) if name.name == "draining" => {
+                if reaches_this(&rows.kind_of_expr(receiver, env)) {
+                    *read = true;
+                }
+            }
+            Visited::Expr(Expr::Call { callee, args, .. }) => match callee.as_ref() {
+                Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+                    let name = name.name.as_str();
+                    let hands_this = args.iter().any(|a| rows.kind_of_expr(a, env) == this_r);
+                    let may_hand_this = hands_this || args.iter().any(|a| rows.kind_of_expr(a, env) == Receiver::Unknown);
+                    match rows.kind_of_expr(receiver, env) {
+                        // This locus's own method, whatever it is handed.
+                        Receiver::Locus(l) if l == this => {
+                            callees.push((Some(l), name, args.as_slice(), env.clone()));
+                        }
+                        // Another locus's method, when the call hands it
+                        // this locus (or something unresolved), or when
+                        // its declared fields may hold this locus: the
+                        // read may be on that argument or through
+                        // `self.<field>`. One the rows cannot find (a
+                        // stdlib locus's, a builtin's) that is handed this
+                        // locus is taken as a read.
+                        Receiver::Locus(l) => {
+                            if may_hand_this || holders.contains(&l) {
+                                if rows.methods.get(l.as_str()).and_then(|m| m.get(name)).is_some() {
+                                    callees.push((Some(l), name, args.as_slice(), env.clone()));
+                                } else if hands_this {
+                                    *read = true;
+                                }
+                            }
+                        }
+                        Receiver::NotLocus => {}
+                        // An unresolved receiver: this locus's method of
+                        // the name, every holder's, and, when the call
+                        // hands this locus (or something unresolved),
+                        // every locus's; none found and this locus handed
+                        // over is a read.
+                        Receiver::Unknown => {
+                            let mut any = false;
+                            if rows.methods.get(this).and_then(|m| m.get(name)).is_some() {
+                                callees.push((Some(this.to_string()), name, args.as_slice(), env.clone()));
+                                any = true;
+                            }
+                            for (l, methods) in &rows.methods {
+                                if *l != this && methods.contains_key(name) && (may_hand_this || holders.contains(*l)) {
+                                    callees.push((Some(l.to_string()), name, args.as_slice(), env.clone()));
+                                    any = true;
+                                }
+                            }
+                            if !any && hands_this {
+                                *read = true;
+                            }
+                        }
+                    }
+                }
+                Expr::Ident(id) => {
+                    callees.push((None, id.name.as_str(), args.as_slice(), env.clone()));
+                    if let Some(l) = &env.this {
+                        callees.push((Some(l.clone()), id.name.as_str(), args.as_slice(), env.clone()));
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     });
-    names
-        .into_iter()
-        .filter_map(|(method, name)| {
-            let body = if method {
-                decl.members.iter().find_map(|m| match m {
-                    LocusMember::Fn(f) if f.name.name == name => Some(&f.body),
-                    _ => None,
-                })
-            } else {
-                free_fns.get(name).map(|f| &f.body)
+    let mut out = Vec::new();
+    for (of, name, args, env) in callees {
+        let callee = match &of {
+            Some(l) => rows.methods.get(l.as_str()).and_then(|m| m.get(name)).copied(),
+            None => rows.free_fns.get(name).copied(),
+        };
+        let Some(f) = callee else { continue };
+        let mut names = BTreeMap::new();
+        for (i, p) in f.params.iter().enumerate() {
+            let kind = match rows.kind_of_type(&p.ty) {
+                Receiver::Unknown => args.get(i).map_or(Receiver::Unknown, |a| rows.kind_of_expr(a, &env)),
+                known => known,
             };
-            body.map(|b| (method, name, b))
-        })
-        .collect()
+            names.insert(p.name.name.clone(), kind);
+        }
+        out.push((of.clone(), name, f, Env { this: of, names }));
+    }
+    out
 }
 
 /// Whether `body` reads `draining` (on any receiver) itself.
@@ -450,28 +745,39 @@ pub fn block_reads_draining(body: &Block) -> bool {
     found
 }
 
-/// Whether a `run()` body of `decl`'s, or a fn or method of the program it
-/// calls (transitively, [`followed_callees`]), reads `draining`: the
-/// watches-drain column of the run row. A read only another locus's
-/// method makes (`self.child.stopping()`) is not followed.
-pub fn run_reads_draining<'a>(run: &'a Block, decl: &'a LocusDecl, free_fns: &FreeFns<'a>) -> bool {
-    fn go<'a>(
-        body: &'a Block,
-        decl: &'a LocusDecl,
-        free_fns: &FreeFns<'a>,
-        seen: &mut std::collections::BTreeSet<(bool, &'a str)>,
-    ) -> bool {
-        if block_reads_draining(body) {
+/// Whether a `run()` body of `decl`'s reads `decl`'s `draining`: the
+/// watches-drain column of the run row. In its own body, or in a method
+/// (of `decl`'s, or of another locus's when a call hands it `decl` or
+/// when that locus's params declare a field that may hold `decl`) or a
+/// free fn it calls, transitively ([`followed_callees`]), through any
+/// receiver that resolves to `decl` by declared type — `self` in its own
+/// bodies, a `let` alias of it in its block, a parameter bound to it, a
+/// declared field path whose type is `decl` (by declared types, not by
+/// construction) — or that the rows cannot resolve, which is taken as a
+/// read. A read of another locus's `draining` (a holder's own
+/// `self.draining`), and a read in a handler, a hook or a method the
+/// `run()` never reaches, is not the `run()`'s. Callees are entered once
+/// per name and binding of their parameters.
+pub fn run_reads_draining<'a>(run: &'a Block, decl: &'a LocusDecl, rows: &DrainReads<'a>) -> bool {
+    let this = decl.name.name.as_str();
+    let holders = rows.holders_of(this);
+    let mut seen: BTreeSet<(Option<String>, &'a str, Vec<Receiver>)> = BTreeSet::new();
+    let mut pending: Vec<(&'a Block, Env)> =
+        vec![(run, Env { this: Some(this.to_string()), names: BTreeMap::new() })];
+    while let Some((body, env)) = pending.pop() {
+        let mut read = false;
+        let callees = followed_callees(body, this, &holders, env, rows, &mut read);
+        if read {
             return true;
         }
-        for (method, name, callee) in followed_callees(body, decl, free_fns) {
-            if seen.insert((method, name)) && go(callee, decl, free_fns, seen) {
-                return true;
+        for (of, name, f, env) in callees {
+            let key = (of, name, env.names.values().cloned().collect());
+            if seen.insert(key) {
+                pending.push((&f.body, env));
             }
         }
-        false
     }
-    go(run, decl, free_fns, &mut std::collections::BTreeSet::new())
+    false
 }
 
 // === statically non-returning run(): the never-returns column =====
@@ -699,6 +1005,62 @@ mod tests {
         assert!(!watches("Handler"));
         assert!(!watches("Uncalled"));
         assert!(!watches("NoRun"));
+    }
+
+    /// The read is reached through any receiver that is the locus by
+    /// declared type, not only a literal `self` (the #1869 review's
+    /// follow-ups, 2026-11-07, each a teardown hang when missed): a `let`
+    /// alias, an alias handed to a free fn, another locus's method handed
+    /// this locus as an argument, a holder's declared field (`Watch {
+    /// target: self }` read as `self.target.draining`), a two-level
+    /// holder chain, and an alias an inner block shadows (the bindings
+    /// are scoped, so the loop's `w` is still the locus). The other side:
+    /// a holder's method reading only its own `self.draining`, with or
+    /// without the locus as an argument, is another locus's read; a
+    /// `run()` reading a child's `draining` reads another locus's. A
+    /// holder's field typed by an alias (a chain of two) is the locus it
+    /// aliases; an alias of another locus is that other locus.
+    #[test]
+    fn watches_drain_is_reached_through_aliases_arguments_and_declared_fields() {
+        let src = "locus Alias { fn stop() -> Bool { return self.draining; } run() { let w = self; while !w.stop() { } } }
+                   fn gate(w: FreeAlias) -> Bool { return w.draining; }
+                   locus FreeAlias { run() { let w = self; while !gate(w) { } } }
+                   locus Watch { fn stopped(w: ByArg) -> Bool { return w.draining; } fn own(w: ByArg) -> Bool { return self.draining; } }
+                   locus ByArg { params { watcher: Watch = Watch { }; } run() { while !self.watcher.stopped(self) { } } }
+                   locus ByArgOwn { params { watcher: Watch = Watch { }; } run() { while !self.watcher.own(self) { } } }
+                   locus Keeper { params { target: ByField; } fn stopped() -> Bool { return self.target.draining; } fn own() -> Bool { return self.draining; } }
+                   locus ByField { run() { let k = Keeper { target: self }; while !k.stopped() { } } }
+                   locus ByFieldOwn { params { k: Keeper; } run() { while !self.k.own() { } } }
+                   locus Inner { params { target: ByChain; } }
+                   locus Outer { params { inner: Inner; } fn stopped() -> Bool { return self.inner.target.draining; } }
+                   locus ByChain { run() { let o = Outer { inner: Inner { target: self } }; while !o.stopped() { } } }
+                   locus Other { params { n: Int = 0; } }
+                   locus Shadow { run() { let w = self; if true { let w = Other { }; println(w.n); } while !w.draining { } } }
+                   locus Child { params { n: Int = 0; } }
+                   locus ReadsChild { params { c: Child = Child { }; } run() { while !self.c.draining { } } }
+                   type AliasedRef = ByAlias;
+                   type AliasedRefRef = AliasedRef;
+                   locus AliasKeeper { params { target: AliasedRefRef; } fn stopped() -> Bool { return self.target.draining; } }
+                   locus ByAlias { run() { let k = AliasKeeper { target: self }; while !k.stopped() { } } }
+                   type OtherRef = Other;
+                   locus OtherKeeper { params { target: OtherRef; } fn stopped() -> Bool { return self.target.draining; } }
+                   locus ByOtherAlias { params { k: OtherKeeper; } run() { while !self.k.stopped() { } } }
+                   fn main() { }
+";
+        let p = hale_syntax::parse_source(src).expect("parse");
+        let rows = survey(&[&p], &[]);
+        let watches = |name: &str| rows.runs.iter().find(|r| r.locus == name).expect("a run row").watches_drain;
+        assert!(watches("Alias"));
+        assert!(watches("FreeAlias"));
+        assert!(watches("ByArg"));
+        assert!(!watches("ByArgOwn"));
+        assert!(watches("ByField"));
+        assert!(!watches("ByFieldOwn"));
+        assert!(watches("ByChain"));
+        assert!(watches("Shadow"));
+        assert!(!watches("ReadsChild"));
+        assert!(watches("ByAlias"), "a type alias hides the locus from nothing");
+        assert!(!watches("ByOtherAlias"), "an alias of another locus is that locus");
     }
 
     /// A clause's child is the locus lowering names: an alias is
