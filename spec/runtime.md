@@ -4121,6 +4121,9 @@ for replay-under-a-different-plan) is the next milestone.
   pool polls beside its listening fd (`lotus_drain_wait_fd`), the wake
   signal (`SIGURG`, installed without `SA_RESTART`, its handler empty)
   to every thread registered in a blocking TCP, TLS or UDP receive
+  made in a `run()` or `fn main` (wait frame not 0: a handler's, a
+  hook's and a standard-library coroutine's untimed waits are left
+  alone, so a server's connections answer the calls in flight)
   (`lotus_kwait_enter` / `lotus_kwait_leave` around the syscall: a
   thread-local slot and two atomic stores, so a receive stays one
   syscall), whose syscall then returns `EINTR` and answers its closed

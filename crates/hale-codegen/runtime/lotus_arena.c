@@ -14791,16 +14791,18 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
 /* GH #1039: whether the drain ends parked coroutine `c`'s park now. A
  * timed park: one already in progress when the drain began, or one
  * begun during it in a frame the drain cuts (`lotus_drain_cuts_frame`).
- * GH #1858: an untimed park (a plain accept, a recv with no timeout) the
- * same way, but only on a stop (a signal's drain, a failed test's), never
- * a tree's: it then answers its closed outcome. */
+ * GH #1858: an untimed park (a plain accept, a recv with no timeout) made
+ * in a `run()` (frame not 0) the same way, but only on a stop (a signal's
+ * drain, a failed test's), never a tree's: it then answers its closed
+ * outcome. A handler's or a standard-library coroutine's untimed park (a
+ * server's connection, answering the calls in flight) is left alone. */
 #define LOTUS_SHUTDOWN_DRAIN_CUTS_MAX 64
 static inline int lotus_coro_drain_due(const lotus_coro_t *c, int draining) {
     if (c->park_deadline_ns > 0) {
         return (draining && c->park_pre_drain)
             || lotus_drain_cuts_frame(c->park_wait_frame);
     }
-    return c->parked_fd >= 0 && lotus_drain_stopping()
+    return c->parked_fd >= 0 && c->park_wait_frame != 0 && lotus_drain_stopping()
         && (c->park_pre_stop || lotus_drain_cuts_frame(c->park_wait_frame));
 }
 
@@ -15200,15 +15202,19 @@ void lotus_drain_stop_raise(int64_t bit) {
 #endif
 }
 
-/* GH #1858: whether a stop ends a blocking wait that begins now on this
- * thread: 0 it does not (no stop pipe; or a stop is up and this frame is
- * not one it cuts: a hook pacing a flush, a handler, a watching run()
- * that has seen it); 1 it already has (a stop is up and the frame is one
- * it cuts: a `run()` the runtime stops, `fn main`, a watching run() that
- * has not looked); 2 the wait watches the stop pipe (no stop yet: one
- * that begins while the wait is in progress ends it). */
+/* GH #1858: whether a stop ends a blocking untimed wait (an accept, a
+ * receive) that begins now on this thread. Only a wait made in a `run()`
+ * — one the runtime stops (frame -1), `fn main`'s, or a watching one
+ * (frame > 0) — is ever ended: a handler's, a hook's and a standard-
+ * library coroutine's own (frame 0: a server's connections, which answer
+ * the calls in flight before they close) wait as they always did. 0 it
+ * does not (no stop pipe, frame 0, or a stop is up and the frame is not
+ * one it cuts: a watching run() that has seen it); 1 it already has (a
+ * stop is up and the frame is one it cuts); 2 the wait watches for the
+ * stop (none yet: one that begins while the wait is in progress ends
+ * it). */
 int lotus_drain_wait_mode(void) {
-    if (g_stop_pipe[0] < 0) return 0;
+    if (g_stop_pipe[0] < 0 || t_wait_frame == 0) return 0;
     if (!lotus_drain_stopping()) return 2;
     return lotus_drain_cuts_frame(t_wait_frame) ? 1 : 0;
 }

@@ -600,9 +600,13 @@ covers it.
 The rule is the same on main, a pinned thread, a classic pool (a receive
 is interrupted by the runtime's wake signal, an accept polls its stop
 pipe; a receive is still one syscall) and an `async_io` pool (where the
-pool's sweep resumes the park). A wait **in progress** when
-the drain begins is woken wherever it is, a handler's or a hook's
-included. A wait that **begins during the drain** returns at once in a
+pool's sweep resumes the park). An untimed wait (an accept, a receive
+with no timeout) is woken only where a `run()` (what it calls included)
+or `fn main` makes it: one in a handler, a hook, or a standard-library
+coroutine (a server's connection answering the calls in flight) waits
+as it did, the listeners' stop and the grace bounding it. A `sleep` **in
+progress** when the drain begins is cut short wherever it is. A wait in
+a `run()` that **begins during the drain** returns at once in a
 `run()` the runtime stops (one that never reads `draining`), in `fn
 main`'s own body, and in a `run()` that reads `draining` until it has
 read it as `true`; in a `drain()` / `dissolve()` hook, a handler, or a

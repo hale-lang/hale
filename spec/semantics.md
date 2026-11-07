@@ -5389,15 +5389,19 @@ SIGINT or SIGTERM:
    back-edge check above ends its loop.
 2. Waits return early, so a loop reaches its back-edge or its check:
    - A wait **already in progress** returns: a `std::time::sleep` at
-     its next 100 ms slice (at once on an `async_io` pool), a
-     deadline-bounded park on an `async_io` pool with its timeout, and
-     every untimed blocking wait with its existing closed or empty
-     outcome — no new variant, so the `or` its caller already writes
-     covers it (`stdlib.md` § "What a drain does to a wait"): an
+     its next 100 ms slice (at once on an `async_io` pool) and a
+     deadline-bounded park on an `async_io` pool with its timeout,
+     wherever they are; and an untimed blocking wait made in a `run()`
+     (what it calls included) or in `fn main` with its existing closed
+     or empty outcome — no new variant, so the `or` its caller already
+     writes covers it (`stdlib.md` § "What a drain does to a wait"): an
      `accept` its closed `-1`, a TCP or TLS `recv` the empty answer a
      peer's close gives (`recv_into` `0`), a UDP `recv` its timeout's,
      on main, a classic pool, an `async_io` pool and a pinned thread
-     alike.
+     alike. An untimed wait a handler, a hook or a standard-library
+     coroutine makes (a server's connection, which answers the calls in
+     flight before it closes) is not ended by the stop; the listeners'
+     stop (step 3) and the grace bound it.
    - A wait that **begins during the drain** returns at once, in the
      same way, when it is made in a `run()` the runtime stops (not
      manual) or in `fn main`'s own body, or in a manual `run()` that has
