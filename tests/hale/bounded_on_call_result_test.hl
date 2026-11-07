@@ -1,0 +1,52 @@
+// The bounded intrinsics dispatch on their first argument's type
+// (spec/types.md § bounded[T; N]), so the argument may be a call's
+// result or an `or` expression, not only a local or a field chain:
+// `count(s.plain().rows)`, `at((s.keys() or Rows { }).rows, 0)`.
+// Until 2026-11-06 the check accepted these and the build refused
+// them as a call to an unknown free fn `count` / `at` (downstream
+// handoff).
+
+type Rows { rows: bounded[Int; 8]; }
+
+fn make(k: Int) -> Rows {
+    let r = Rows { };
+    push(r.rows, k) or discard;
+    push(r.rows, k + 1) or discard;
+    return r;
+}
+
+locus Store {
+    fn keys() -> Rows fallible(IndexError) {
+        let r = Rows { };
+        push(r.rows, 1) or discard;
+        push(r.rows, 2) or discard;
+        return r;
+    }
+    fn plain() -> Rows {
+        let r = Rows { };
+        push(r.rows, 7) or discard;
+        return r;
+    }
+    fn own_count() -> Int {
+        return count(self.plain().rows);
+    }
+}
+
+fn main() {
+    let s = Store { };
+    std::test::assert_eq_int(
+        count((s.keys() or Rows { }).rows),
+        2,
+        "count over an or-expression's field",
+    );
+    std::test::assert_eq_int(count(s.plain().rows), 1, "count over a method result's field");
+    std::test::assert_eq_int(at(s.plain().rows, 0) or 0, 7, "at over a method result's field");
+    std::test::assert_eq_int(
+        at((s.keys() or Rows { }).rows, 1) or 0,
+        2,
+        "at over an or-expression's field",
+    );
+    std::test::assert_eq_int(count(make(3).rows), 2, "count over a free fn result's field");
+    std::test::assert_eq_int(at(make(3).rows, 1) or 0, 4, "at over a free fn result's field");
+    std::test::assert_eq_int(s.own_count(), 1, "count over a self method result's field");
+}

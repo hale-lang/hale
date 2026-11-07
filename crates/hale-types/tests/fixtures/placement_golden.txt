@@ -8391,6 +8391,9 @@ row	Box@main2	Box	main	default
 row	Counter@main1	Counter	main	default
 dynamic	Mx	on main	in the seed
 
+== tests/hale/bounded_on_call_result_test.hl
+row	Store@main1	Store	main	default
+
 == tests/hale/bounded_time_test.hl
 root	Clock	the entry
 row	Clock@literal1	Clock	main	default

@@ -13171,7 +13171,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// The declaration used for a locus's emitted methods, retaining
     /// source identities while substituting its type arguments.
-    fn locus_declaration(&self, name: &str) -> Option<&LocusDecl> {
+    pub(crate) fn locus_declaration(&self, name: &str) -> Option<&LocusDecl> {
         self.specialized_locus_decls
             .get(name)
             .or_else(|| self.locus_decls_by_name.get(name).copied())
