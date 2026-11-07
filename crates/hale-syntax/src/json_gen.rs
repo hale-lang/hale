@@ -14,7 +14,7 @@
 //!     UNLESS the field declares a default, which the codec keeps (a
 //!     literal as the field's initial value, any other expression built
 //!     when the key is absent).
-//!   - field types: what the api codecs carry of a field (`classify_field`,
+//!   - field types: what the api codecs carry of a field (`field_codec_shape`,
 //!     spec/api.md § Codecs): Int / Float / Bool / String / `Decimal<S>` (a
 //!     JSON number, its exact digits at the field's scale; a number with a
 //!     nonzero digit past the scale is the field's `wrong_type`, never a
@@ -612,7 +612,7 @@ fn field_reach(kind: &FieldKind, out: &mut Vec<Reach>) {
 /// enums their fields reach (spec/semantics.md § Metadata tags): the
 /// types the record codecs are generated for, their enums, and the tagged
 /// records among them, whose `T::from_json` / `T::to_json` the calls name.
-/// A field is what the api codec carries of it ([`classify_field`]): a
+/// A field is what the api codec carries of it ([`field_codec_shape`]): a
 /// scalar, a unit scalar, a `Time`, a `Duration`, a `std::json::Value`, an
 /// enum, a record of the program, or a list of any of those; a tagged
 /// record with a field the codec cannot carry, or that reaches a record or
@@ -677,7 +677,7 @@ fn collect_tier2(program: &Program) -> Tier2 {
             let jfields: Option<Vec<JsonField>> = fields
                 .iter()
                 .enumerate()
-                .map(|(at, f)| classify_field(f, at, &scalars, &aliases, &enum_kinds, &records))
+                .map(|(at, f)| field_codec_shape(f, at, &scalars, &aliases, &enum_kinds, &records))
                 .collect();
             let t = jfields.filter(|fs| !fs.is_empty()).map(|fields| JsonType {
                 name: name.clone(),
@@ -3466,7 +3466,7 @@ fn elem_of(
 /// (the record's pairs are marked over its fields). `None` where the
 /// codec cannot carry the field: a list of lists, a map whose value it
 /// cannot carry, a type it carries no way.
-fn classify_field(
+fn field_codec_shape(
     f: &crate::ast::StructField,
     at: usize,
     scalars: &std::collections::BTreeMap<String, Conv>,
@@ -3605,7 +3605,7 @@ fn collect_api_types(
                 let mut jfields: Vec<JsonField> = fields
                     .iter()
                     .enumerate()
-                    .filter_map(|(at, f)| classify_field(f, at, scalars, aliases, enums, records))
+                    .filter_map(|(at, f)| field_codec_shape(f, at, scalars, aliases, enums, records))
                     .collect();
                 mark_presence(fields, aliases, &mut jfields);
                 out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None, lifted_clear: None });
