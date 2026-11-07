@@ -167,6 +167,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((self.context.i64_type().const_int(count as u64, true).into(), ty))
     }
 
+    /// GH #1076: the constant a negated quantity literal (`-3b`) is where
+    /// it flows: the checker converted the negated count at compile time
+    /// and recorded it on the negation's row, so the negation emits that
+    /// count and no arithmetic (downstream handoff: lowered as the
+    /// literal's own count negated, the exact conversion the check
+    /// proved, `-3b` into a type counted in thirds of `b`, was lost).
+    /// `None` where the negation has no such row: it is the negation of
+    /// the literal's value then.
+    pub(crate) fn negated_literal_count(&self, span: Span) -> Option<(i64, CodegenTy)> {
+        if !self.typed.has_quantity_rows() {
+            return None;
+        }
+        let row = self.row(SiteKind::value(span))?;
+        Some((row.count?, quantity_repr(&row.to)))
+    }
+
     /// GH #1076 (U4): what an arithmetic operator over a quantity or a
     /// point at `span` results in, from its row: the representation the
     /// operation is emitted in (`Int * Duration` a `Duration`, `Time -

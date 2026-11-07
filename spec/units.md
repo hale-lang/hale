@@ -420,11 +420,17 @@ not is a narrowing like any other, which the target's `round:`
 discharges at compile time or the check refuses. Literal arithmetic is
 not folded: `3s + 500ms` is two constants and an addition.
 
+A negated literal (`-3b`) is the literal of the negated count, and
+flows and is cast as one: its conversion is computed at compile time
+from that count, so `-3b` into a type counted in thirds of `b` is
+exact where `3b` is, and a remainder is refused where `3b`'s is.
+
 ```hale,fragment
 let d: Duration = 3s;      // the constant 3000000000
 let b: Bucket = 150ms;     // 1 Bucket: Bucket rounds down, at compile time
 let t: Seconds = 2_000ms;  // 2, exact
 let u: Seconds = 1500ms;   // error: `Seconds` from `Duration` divides by 1,000,000,000: …
+let n: Seconds = -2_000ms; // -2, exact: the negated count converts as the count does
 ```
 
 An **integer literal** where a value of an identity or a range is

@@ -64,7 +64,7 @@ type TempDelta = quantity Int in mK;
 ```
 
 - **No shadowing builtin type names:** Neither a `unit` nor a `type` may use a built-in type name (for example, `Bytes` is the binary buffer primitive, so a byte quantity is named `ByteCount`).
-- **Literal token rules:** In expressions, a number and its unit suffix must be written as a single token with no space (`1_250_000USD`, `4KiB`, `500ms`). In declarations (`unit` equations, `in <unit>`, and `origin:` clauses), whitespace between the multiplier and unit is optional (`1024 B` or `1024B`).
+- **Literal token rules:** In expressions, a number and its unit suffix must be written as a single token with no space (`1_250_000USD`, `4KiB`, `500ms`). In declarations (`unit` equations, `in <unit>`, and `origin:` clauses), whitespace between the multiplier and unit is optional (`1024 B` or `1024B`). A negated literal (`-2_000ms`) converts at compile time from its negated count, so it is exact wherever the positive literal is (`let s: Seconds = -2_000ms;` is `-2s`).
 - **Standard library time units:** The standard library pre-declares `ns`, `us`, `ms`, `s`, `min`, `h`, and `day`, along with `Duration` (`quantity Int in ns`) and `Time` (`point Duration`). User programs can extend the time component by defining derived units (`unit frame_tick = 16 ms;`).
 
 ## Conversions, `.split()`, and Boundary Types

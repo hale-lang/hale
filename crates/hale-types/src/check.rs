@@ -19737,13 +19737,16 @@ impl<'a> Checker<'a> {
             row.policy = policy.map(|policy| Discharge::Round { policy, from_type: true });
         }
         let site = self.site(SiteKind::value(value.span()));
-        if let Expr::Literal(Literal::Quantity { value: written, unit }, span) = value {
+        if let Some((written, unit, negated)) = written_quantity_literal(value) {
             // A literal's conversion is computed here, from its count of
             // its own type: a whole number of the target is exact,
-            // whatever the factor.
+            // whatever the factor. A negated literal is the literal of
+            // the negated count (downstream handoff: `-3b` was converted
+            // at run time, and refused where `3b` was exact).
             // A literal refused where it is written (a count no `Int`
             // holds) has no count to convert, and no second error.
-            let Ok((_, n)) = self.scalars.quantity_literal(*written, unit) else { return };
+            let Ok((_, n)) = self.scalars.quantity_literal(written, unit) else { return };
+            let n = if negated { -n } else { n };
             if narrows && crate::unit_quantities::convert_count(n, &scale, None).is_some() {
                 row.kind = ConversionKind::Widening;
                 row.policy = None;
@@ -19825,11 +19828,13 @@ impl<'a> Checker<'a> {
                 return Ty::Unknown;
             }
             Ok(scale) => {
-                // A literal's cast is the literal flowing into `T`, at
-                // compile time, when its count is a whole number of `T` or
-                // `T` rounds it: the cast itself then changes nothing.
-                if let Expr::Literal(Literal::Quantity { value: n, unit }, _) = arg {
-                    let Ok((_, n)) = self.scalars.quantity_literal(*n, unit) else { return to };
+                // A literal's cast (a negated literal's too) is the literal
+                // flowing into `T`, at compile time, when its count is a
+                // whole number of `T` or `T` rounds it: the cast itself
+                // then changes nothing.
+                if let Some((n, unit, negated)) = written_quantity_literal(arg) {
+                    let Ok((_, n)) = self.scalars.quantity_literal(n, unit) else { return to };
+                    let n = if negated { -n } else { n };
                     if crate::unit_quantities::convert_count(n, &scale, q.policy).is_some() {
                         self.record_scale(arg, &from, &to, scale, q.policy);
                         let one = crate::typed_bodies::Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 };
@@ -26613,5 +26618,19 @@ mod store_origin_tests {
         assert!(std_result_may_hold(&["std", "no", "such_fn"], Some("Registry"), &d));
         assert!(std_result_may_hold(&gauge, None, &d), "an argument of unknown type");
         assert!(!std_result_may_hold(&["std", "str", "upper"], Some("W"), &d), "a primitive result");
+    }
+}
+
+/// GH #1076: a quantity literal as written, `3b` or `-3b`: its magnitude,
+/// its unit and whether it is negated. A negated literal is the literal
+/// of the negated count wherever it flows (spec/units.md § Literals).
+fn written_quantity_literal(e: &Expr) -> Option<(i64, &str, bool)> {
+    match e {
+        Expr::Literal(Literal::Quantity { value, unit }, _) => Some((*value, unit.as_str(), false)),
+        Expr::Unary { op: UnaryOp::Neg, operand, .. } => match operand.as_ref() {
+            Expr::Literal(Literal::Quantity { value, unit }, _) => Some((*value, unit.as_str(), true)),
+            _ => None,
+        },
+        _ => None,
     }
 }

@@ -1038,3 +1038,35 @@ fn inexact_error_is_a_builtin_in_every_program() {
     assert!(injected("type Byte = Int { range: 0..256; }\nfn main() { println(1); }\n"));
     assert!(injected("fn main() { let a: Decimal<18> = 1d; let b = a.rescale(2) or raise; }\n"));
 }
+
+/// GH #1076: a negated quantity literal is the literal of the negated
+/// count, converted at compile time where it flows: exact where the
+/// positive literal is, refused for a remainder where the positive is
+/// (downstream handoff: `-3b` into a type counted in thirds of `b` was
+/// refused as a division no policy discharged, while `3b` was exact).
+#[test]
+fn a_negated_literal_converts_at_compile_time() {
+    assert_eq!(errors("    let s: Seconds = -2000msec;\n    let c = Seconds(-2000msec);\n"), Vec::new());
+    assert_eq!(
+        errors("    let s: Seconds = -1500msec;\n"),
+        vec![(
+            "-1500msec".to_string(),
+            "`Seconds` from `Span` divides by 1,000,000,000: say what happens to the remainder: convert explicitly \
+             (`.in(u) or floor`, `Seconds(…) or half_even`, `or <value>`, `or raise`), or give `Seconds` a `round:` \
+             policy"
+                .to_string()
+        )]
+    );
+    // The row at the negation carries the converted count, and the
+    // literal inside it its own.
+    let found: Vec<(String, Option<i64>, ConversionKind, String)> =
+        rows("    let s: Seconds = -2000msec;\n").into_iter().map(|r| (r.at, r.count, r.kind, r.to)).collect();
+    assert_eq!(
+        found,
+        vec![
+            ("-2000msec".to_string(), Some(-2), ConversionKind::Widening, "Seconds".to_string()),
+            ("2000msec".to_string(), Some(2_000_000_000), ConversionKind::Widening, "Span".to_string()),
+        ]
+    );
+}
+

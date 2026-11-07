@@ -25572,6 +25572,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_binop(*op, lv, rv, &lt)
             }
             Expr::Unary { op, operand, span } => {
+                // GH #1076: a negated quantity literal where it flows is the
+                // constant its row says (`conversion::negated_literal_count`).
+                if *op == UnaryOp::Neg {
+                    if let Expr::Literal(Literal::Quantity { .. }, _) = operand.as_ref() {
+                        if let Some((count, ty)) = self.negated_literal_count(*span) {
+                            return Ok((self.context.i64_type().const_int(count as u64, true).into(), ty));
+                        }
+                    }
+                }
                 let (v, t) = self.lower_expr(operand, scope)?;
                 // GH #1076 (U4): the checker's refusal, where it is.
                 if *op == UnaryOp::Neg && t == CodegenTy::Time {

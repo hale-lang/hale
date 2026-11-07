@@ -43,6 +43,13 @@ type TempDelta = quantity Int in mK;
 type Kelvin = point TempDelta;
 type Celsius = point TempDelta { origin: 273_150 mK; }
 
+// A unit that is a fraction of another, so a count of the coarser is
+// reached by a division a literal proves exact.
+unit stride;
+unit pace = 2 / 3 stride;
+type Walk = quantity Int in pace;
+type Strides = Walk in stride;
+
 type WireStamp = Instant in usec { round: floor; }
 type Bucket = Span in 100 msec { round: floor; }
 type Ledger = Money { round: half_even; }
@@ -151,6 +158,7 @@ fn main() {
     std::test::assert(spread == 3tick, "the spread is a quantity of ticks");
     let mid = q.bid + (spread / 2 or floor);
     std::test::assert(mid == Price(101tick), "half a tick does not exist: floor");
+
     // let mid = (bid + ask) / 2;        // type error: Price + Price
 
     // Money and ratios: the product is exact at the product of the two
@@ -217,6 +225,22 @@ fn main() {
     let (w, r) = late.split(sec);
     std::test::assert_eq_int(w, -2, "the whole part is floored");
     std::test::assert(r == 500msec, "so the rest is never negative");
+    // A negated literal is the literal of the negated count: `-3pace` is
+    // exactly `-2stride`, as `3pace` is `2stride` (downstream handoff: the
+    // negation was converted at run time, and refused for its divisor).
+    let forward: Strides = 3pace;
+    std::test::assert_eq_str(
+        to_string(forward),
+        "2stride",
+        "3 paces of 2/3 stride: 2 strides, exact",
+    );
+    let back: Strides = -3pace;
+    std::test::assert_eq_str(to_string(back), "-2stride", "and negated, still exact");
+    std::test::assert(back == 0stride - forward, "the negation of the positive");
+    let cast = Strides(-3pace);
+    std::test::assert(cast == back, "a literal's cast, negated the same way");
+    let secs: Seconds = -2000msec;
+    std::test::assert(secs == 0sec - 2sec, "a negated time literal, exact in seconds");
     let mut total = 0cent;
     total += 5USD;
     total -= 1cent;
