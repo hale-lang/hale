@@ -597,9 +597,10 @@ covers it.
 | `std::io::udp::recv`, `__recv`, `recv_with_source` | its timeout's failure (`would_block`): a datagram socket has no close to report |
 | `std::io::udp::recv_into` | `-2`, its timeout |
 
-The rule is the same on main, a pinned thread, a classic pool (where the
-wait polls the runtime's stop pipe beside its fd) and an `async_io` pool
-(where the pool's sweep resumes the park). A wait **in progress** when
+The rule is the same on main, a pinned thread, a classic pool (a receive
+is interrupted by the runtime's wake signal, an accept polls its stop
+pipe; a receive is still one syscall) and an `async_io` pool (where the
+pool's sweep resumes the park). A wait **in progress** when
 the drain begins is woken wherever it is, a handler's or a hook's
 included. A wait that **begins during the drain** returns at once in a
 `run()` the runtime stops (one that never reads `draining`), in `fn

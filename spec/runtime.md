@@ -4117,10 +4117,17 @@ for replay-under-a-different-plan) is the next milestone.
   `lotus_process_draining_flag` (which every `self.draining` read
   loads, beside the locus's own `__drain_requested`, and every
   back-edge check tests, masked to the stop bits, signal and failed
-  test), a byte on the stop pipe every blocking wait off an `async_io`
-  pool polls beside its own fd (`lotus_drain_wait_fd`: an accept, a
-  TCP, TLS or UDP receive), and a wake for every `async_io` pool so the
-  parks the stop cuts are resumed (`lotus_coro_drain_due`). It then
+  test), a byte on the stop pipe a blocking accept off an `async_io`
+  pool polls beside its listening fd (`lotus_drain_wait_fd`), the wake
+  signal (`SIGURG`, installed without `SA_RESTART`, its handler empty)
+  to every thread registered in a blocking TCP, TLS or UDP receive
+  (`lotus_kwait_enter` / `lotus_kwait_leave` around the syscall: a
+  thread-local slot and two atomic stores, so a receive stays one
+  syscall), whose syscall then returns `EINTR` and answers its closed
+  outcome — sent again every 20 ms through the grace, for a receive that
+  registered just before the stop and entered its syscall just after —
+  and a wake for every `async_io` pool so the parks the stop cuts are
+  resumed (`lotus_coro_drain_due`). It then
   stops the named listeners and waits out the grace
   (`LOTUS_DRAIN_GRACE_MS`, default 5000); past it the watcher prints
   one line — the signal, and what the drain was still waiting on
