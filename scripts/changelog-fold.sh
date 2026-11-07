@@ -93,5 +93,17 @@ if [ "${#fragments[@]}" -gt 0 ]; then
     git rm -q -f -- "${fragments[@]}"
 fi
 
+# README.md states the release under "Where the language stands";
+# it went stale by ten releases once (downstream handoff), so the
+# fold moves it. Exactly one such line, or the fold says so.
+readme=README.md
+stands=$(grep -c '^Hale is at \*\*v[0-9][0-9.]*\*\* ([0-9-]*) and pre-1.0' "$readme" || true)
+if [ "$stands" -ne 1 ]; then
+    echo "changelog-fold: expected exactly one 'Hale is at **vX.Y.Z** (date) and pre-1.0' line in $readme, found $stands" >&2
+    exit 1
+fi
+sed -i -E "s/^Hale is at \*\*v[0-9][0-9.]*\*\* \([0-9-]*\) and pre-1\.0/Hale is at **$version** ($date) and pre-1.0/" "$readme"
+
 echo "folded ${#fragments[@]} fragment(s) into $changelog under '## $version — $headline ($date)'"
+echo "set $readme: Hale is at $version ($date)"
 echo "next: write the release page above the item-level list, then review 'git diff'"
