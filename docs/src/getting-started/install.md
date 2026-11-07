@@ -62,7 +62,7 @@ When you run `hale build` or `hale run`, the compiler emits native object code, 
 Building the `hale` compiler from source requires:
 
 - **Rust 1.95+**
-- **LLVM 18 development libraries** (`llvm-config-18` on `PATH` or `LLVM_SYS_180_PREFIX` set; LLVM 17, 19, and 20 are not compatible)
+- **LLVM 18 development libraries** (`llvm-config-18` on `PATH` or `LLVM_SYS_180_PREFIX` set, with its `llc` beside it, which the build reads for the CPU names `--target-cpu` accepts; LLVM 17, 19, and 20 are not compatible)
 - **clang**, **lld**, **OpenSSL** headers, **zlib** headers, and **git**
 
 ### Install Build Dependencies

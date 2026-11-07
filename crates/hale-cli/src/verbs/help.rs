@@ -249,7 +249,7 @@ that is not a flag is the target, as in `hale check`:
                                    unknown machine: x86-64-v3 on
                                    x86-64, generic on aarch64; any other
                                    word is one CPU by LLVM's name
-                                   (znver5, neoverse-v2) for a known
+                                   (znver4, neoverse-v2) for a known
                                    machine elsewhere
   -o, --out <path>                 write the artifact to <path> instead
                                    of beside the target (`build` only:

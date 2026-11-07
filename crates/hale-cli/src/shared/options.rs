@@ -944,7 +944,7 @@ pub(crate) fn flag_value_in(
 
 /// `--target-cpu`'s value: `native`, the portable baseline in its three
 /// spellings, or one CPU by LLVM's name. A name is a word of letters,
-/// digits and `-_.+` (`znver5`, `neoverse-v2`, `apple-m3`, `x86-64-v4`);
+/// digits and `-_.+` (`znver4`, `neoverse-v2`, `apple-m3`, `x86-64-v4`);
 /// whether LLVM knows it is the build's to say.
 pub(crate) fn parse_target_cpu(v: &str) -> Result<hale_codegen::TargetCpu, String> {
     match v {
@@ -958,7 +958,7 @@ pub(crate) fn parse_target_cpu(v: &str) -> Result<hale_codegen::TargetCpu, Strin
             Ok(hale_codegen::TargetCpu::Named(name.to_string()))
         }
         other => Err(format!(
-            "--target-cpu: `{other}` is not a CPU (native|portable|<LLVM cpu name, e.g. znver5>)"
+            "--target-cpu: `{other}` is not a CPU (native|portable|<LLVM cpu name, e.g. znver4>)"
         )),
     }
 }
@@ -999,9 +999,9 @@ mod tests {
             assert_eq!(o.target_cpu, TargetCpu::PORTABLE, "{spelling}");
             assert!(crate::build_env::options_fingerprint(&o).contains(";cpu=X86_64V3;"));
         }
-        let named = parse_build_options("build", &args(&["--target-cpu", "znver5"])).unwrap();
-        assert_eq!(named.target_cpu, TargetCpu::Named("znver5".to_string()));
-        assert!(crate::build_env::options_fingerprint(&named).contains(";cpu=znver5;"));
+        let named = parse_build_options("build", &args(&["--target-cpu", "znver4"])).unwrap();
+        assert_eq!(named.target_cpu, TargetCpu::Named("znver4".to_string()));
+        assert!(crate::build_env::options_fingerprint(&named).contains(";cpu=znver4;"));
         let err = parse_build_options("build", &args(&["--target-cpu", "zn ver5"])).unwrap_err();
         assert!(err.contains("is not a CPU"), "{err}");
     }

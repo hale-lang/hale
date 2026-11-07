@@ -4436,13 +4436,18 @@ What the compiler emits for a native `hale build`:
   architecture, and the runtime TUs with it (`-march=x86-64-v3` on
   x86-64, no `-march` elsewhere); a binary built on one machine
   then runs on any machine of its architecture that meets that
-  floor. Any other word is **one CPU by LLVM's name** (`znver5`,
+  floor. Any other word is **one CPU by LLVM's name** (`znver4`,
   `neoverse-v2`, `apple-m3`, `x86-64-v4`), for a binary built here
   for a known machine elsewhere: the Hale module takes that CPU
   and its own feature set, nothing of the host's, and the runtime
   TUs `-march=<cpu>` on x86-64 and `-mcpu=<cpu>` elsewhere (macOS
-  included); a name LLVM does not know is refused by the runtime's
-  compile, which names it. The emitted module self-describes its
+  included; a cross build hands zig the name in its spelling,
+  `-mcpu=x86_64_v4`). A name the compiler's own LLVM does not know
+  is refused before any code is emitted, naming the CPUs that LLVM
+  knows: the table is read from that LLVM's `llc -mcpu=help` when
+  the compiler is built, not from the system clang, whose version
+  can differ. The runtime's clang must know the name as well, and
+  is refused by name when it does not. The emitted module self-describes its
   subtarget via per-function `target-cpu`/`target-features`
   attributes, so the choice is carried into bitcode (it survives
   LTO).

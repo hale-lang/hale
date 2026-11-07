@@ -208,7 +208,7 @@ By default, `hale build` and every other verb compile native binaries at `-O3` t
 |---|---|---|
 | `--target-cpu native` *(default)* | Optimizes and vectorizes for the build machine's exact CPU. Not portable across microarchitectures. | Local execution and a binary that runs where it is built, or on identical hosts. |
 | `--target-cpu portable` | Targets the portable baseline: `x86-64-v3` (AVX2 + BMI2 + FMA) on x86-64, generic on aarch64. `baseline` and `x86-64-v3` are accepted spellings. | A published image or any artifact whose machine is unknown: it then runs on any machine of its architecture that meets the floor. |
-| `--target-cpu <cpu>` | One CPU by LLVM's name (`znver5`, `neoverse-v2`, `apple-m3`, `x86-64-v4`). A name LLVM does not know fails the build, naming it. | A binary built here for a known machine elsewhere. |
+| `--target-cpu <cpu>` | One CPU by LLVM's name (`znver4`, `neoverse-v2`, `apple-m3`, `x86-64-v4`). A name the compiler's LLVM does not know is refused before codegen, listing the CPUs it knows. | A binary built here for a known machine elsewhere. |
 | `LOTUS_LTO=1` | Enables full Link-Time Optimization across generated code and the C runtime (requires `lld` on `PATH`; links ~3–4x slower). | Release and benchmark builds (`LOTUS_LTO=1 hale build myservice/`). |
 
 ## Runtime Performance Profile

@@ -937,7 +937,7 @@ impl CompileTarget {
 /// ([`TargetCpu::PORTABLE`]) for an artifact built in one place to run
 /// on an unknown machine of its architecture: x86-64-v3 (AVX2+BMI2+FMA)
 /// on x86-64, generic everywhere else. `Named` is one CPU by LLVM's
-/// name (`znver5`, `neoverse-v2`, `apple-m3`): a binary built here for
+/// name (`znver4`, `neoverse-v2`, `apple-m3`): a binary built here for
 /// a known host elsewhere. Ignored on the wasm32 target (always
 /// generic).
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
@@ -982,48 +982,84 @@ impl TargetCpu {
     }
 }
 
-/// The name LLVM gives this machine's CPU (`znver5`, `apple-m3`): what
+/// The name LLVM gives this machine's CPU (`znver4`, `apple-m3`): what
 /// [`TargetCpu::Native`] tunes a native build for. `generic` for a
 /// model newer than this LLVM; the host's features still apply.
 pub fn host_cpu_name() -> String {
     TargetMachine::get_host_cpu_name().to_string()
 }
 
-/// Refuses a `--target-cpu <name>` LLVM does not know for the target,
-/// before a target machine is made for it: LLVM has no C API that
-/// lists a target's CPUs, and it aborts the process at a target
-/// machine for an unknown one ("64-bit code requested on a subtarget
-/// that doesn't support it"). The clang the runtime TUs are compiled
-/// with is asked instead (`-march=` on x86-64, `-mcpu=` elsewhere, an
-/// empty translation unit); its refusal names the CPUs it does know,
-/// and that is the message. A clang that is missing or fails for any
-/// other reason says nothing here: the runtime compile reports it.
+/// The CPU names the linked LLVM knows, per architecture, read from
+/// that LLVM's own `llc -mcpu=help` when this crate was built
+/// (`build.rs`), with its version.
+pub mod llvm_cpus {
+    include!(concat!(env!("OUT_DIR"), "/llvm_cpus.rs"));
+}
+
+/// The CPU names the linked LLVM knows for `arch`: what
+/// `--target-cpu <cpu>` accepts. Empty when the build found no `llc`
+/// beside its `llvm-config`. wasm32 is always generic and has none.
+pub fn known_cpus(arch: crate::target::TargetArch) -> &'static [&'static str] {
+    match arch {
+        crate::target::TargetArch::X86_64 => llvm_cpus::X86_64,
+        crate::target::TargetArch::Aarch64 => llvm_cpus::AARCH64,
+        crate::target::TargetArch::Wasm32 => &[],
+    }
+}
+
+/// zig's spelling of an LLVM CPU name for `zig cc -mcpu=`: the dashes
+/// are underscores (`x86-64-v4` is `x86_64_v4`, `neoverse-v2` is
+/// `neoverse_v2`); zig reads `-mcpu=neoverse-v2` as the CPU `neoverse`
+/// with a feature `v2` and refuses it.
+fn zig_cpu_spelling(name: &str) -> String {
+    name.replace('-', "_")
+}
+
+/// Refuses a `--target-cpu <name>` the linked LLVM does not know for
+/// the target, before a target machine is made for it: LLVM's C API
+/// lists no CPUs and aborts the process at a target machine for an
+/// unknown one ("64-bit code requested on a subtarget that doesn't
+/// support it"), or takes it as generic with a warning on aarch64. The
+/// table is the linked LLVM's own ([`known_cpus`]), not the system
+/// clang's, whose version can differ (an Apple clang 21 knows `znver4`;
+/// LLVM 18 does not). The clang the runtime TUs are compiled with must
+/// know the name too, and is asked next (`-march=` on x86-64, `-mcpu=`
+/// elsewhere, an empty translation unit); a clang that is missing or
+/// fails for another reason says nothing here, the runtime compile
+/// reports it.
 fn check_cpu_name(name: &str, target: &crate::target::TargetSpec) -> Result<(), CodegenError> {
+    let known = known_cpus(target.arch);
+    if known.is_empty() {
+        return Err(CodegenError::LlvmInit(format!(
+            "--target-cpu {name}: this hale was built without its LLVM's CPU table (no `llc` beside \
+             `llvm-config` when it was built), so only `native` and `portable` are available"
+        )));
+    }
+    if !known.contains(&name) {
+        return Err(CodegenError::LlvmInit(format!(
+            "--target-cpu {name}: LLVM {} knows no such CPU for {}; it knows: {}",
+            llvm_cpus::LLVM_VERSION,
+            target.triple,
+            known.join(", ")
+        )));
+    }
     let flag = if target.arch == crate::target::TargetArch::X86_64 {
         format!("-march={name}")
     } else {
         format!("-mcpu={name}")
     };
-    let probe = Command::new(resolve_tool("clang"))
+    let clang = resolve_tool("clang");
+    let probe = Command::new(&clang)
         .args([&format!("--target={}", target.triple), &flag, "-x", "c", "-fsyntax-only", "-"])
         .stdin(std::process::Stdio::null())
         .output();
     let Ok(out) = probe else { return Ok(()) };
-    if out.status.success() {
+    if out.status.success() || !String::from_utf8_lossy(&out.stderr).contains("unknown target CPU") {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    if !stderr.contains("unknown target CPU") {
-        return Ok(());
-    }
-    let known = stderr
-        .lines()
-        .find_map(|l| l.split_once("valid target CPU values are:").map(|(_, v)| v.trim().to_string()))
-        .unwrap_or_default();
     Err(CodegenError::LlvmInit(format!(
-        "--target-cpu {name}: LLVM knows no such CPU for {}{}",
-        target.triple,
-        if known.is_empty() { String::new() } else { format!("; it knows: {known}") }
+        "--target-cpu {name}: LLVM knows it, but the runtime's C compiler ({clang}) does not; \
+         the runtime is compiled with that clang, so it needs one that knows the CPU"
     )))
 }
 
@@ -3154,7 +3190,7 @@ fn link_cross(
         TargetCpu::X86_64V3 if target.arch == crate::target::TargetArch::X86_64 => {
             rt_cflags.push("-mcpu=x86_64_v3".into());
         }
-        TargetCpu::Named(name) => rt_cflags.push(format!("-mcpu={name}")),
+        TargetCpu::Named(name) => rt_cflags.push(format!("-mcpu={}", zig_cpu_spelling(name))),
         TargetCpu::Native | TargetCpu::X86_64V3 => {}
     }
     rt_cflags.push(format!("-I{}", sysroot.join("include").display()));
@@ -39354,5 +39390,37 @@ fn xpool_walk_receivers_apart(
     }
     if let Some(t) = tail {
         xpool_walk_expr(t, &mut wrapped, on_assign);
+    }
+}
+
+#[cfg(test)]
+mod target_cpu_tests {
+    use super::{known_cpus, zig_cpu_spelling, llvm_cpus};
+    use crate::target::TargetArch;
+
+    /// The table is the linked LLVM's: it names the x86-64 levels and
+    /// the CPUs every LLVM 18 knows, and nothing for wasm32.
+    #[test]
+    fn the_cpu_table_is_the_linked_llvms() {
+        assert!(llvm_cpus::LLVM_VERSION.starts_with("18."), "{}", llvm_cpus::LLVM_VERSION);
+        let x86 = known_cpus(TargetArch::X86_64);
+        for name in ["x86-64", "x86-64-v3", "x86-64-v4", "znver4", "sapphirerapids"] {
+            assert!(x86.contains(&name), "{name} missing from {}", x86.len());
+        }
+        assert!(!x86.contains(&"znver9"));
+        let arm = known_cpus(TargetArch::Aarch64);
+        for name in ["generic", "neoverse-v2", "apple-m1"] {
+            assert!(arm.contains(&name), "{name} missing from {}", arm.len());
+        }
+        assert!(!arm.contains(&"x86-64-v3"));
+        assert!(known_cpus(TargetArch::Wasm32).is_empty());
+    }
+
+    /// zig spells an LLVM CPU with underscores.
+    #[test]
+    fn zig_spells_a_cpu_with_underscores() {
+        assert_eq!(zig_cpu_spelling("x86-64-v4"), "x86_64_v4");
+        assert_eq!(zig_cpu_spelling("neoverse-v2"), "neoverse_v2");
+        assert_eq!(zig_cpu_spelling("znver4"), "znver4");
     }
 }
