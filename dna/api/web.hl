@@ -1,97 +1,41 @@
-// The optional browser shell is ten static files, loaded before listening.
-// No network proxy exists.
+// The optional browser shell is three static files, loaded before
+// listening: the face (`index.html`), its script (`app.js`) and its
+// stylesheet (`styles.css`). No network proxy exists.
 locus WebAssets {
     params {
         enabled: Bool = false;
         index: String = "";
         app: String = "";
-        application: String = "";
-        definition_draft: String = "";
-        organization_draft: String = "";
-        knowledge_draft: String = "";
-        task_administration: String = "";
-        projects: String = "";
-        task_create: String = "";
         styles: String = "";
         error: String = "";
     }
     fn load(root: String) -> Bool {
         self.enabled = false;
-        self.error = "face-webroot must contain readable, nonempty index.html, application.js, definition-draft.js, organization-draft.js, knowledge-draft.js, task-administration.js, projects.js, task-create.js, app.js and styles.css";
+        self.error = "face-webroot must contain readable, nonempty index.html, app.js and styles.css";
         if len(root) == 0 || std::str::contains(root, "\n") || std::str::contains(root, "\r") {
             return false;
         }
         // No fallback to the project root or the process's working directory.
         self.index = std::io::fs::read_file(root + "/index.html") or "";
-        self.application = std::io::fs::read_file(root + "/application.js") or "";
-        self.definition_draft = std::io::fs::read_file(root + "/definition-draft.js") or "";
-        self.organization_draft = std::io::fs::read_file(root + "/organization-draft.js") or "";
-        self.knowledge_draft = std::io::fs::read_file(root + "/knowledge-draft.js") or "";
-        self.task_administration = std::io::fs::read_file(root + "/task-administration.js") or "";
-        self.projects = std::io::fs::read_file(root + "/projects.js") or "";
-        self.task_create = std::io::fs::read_file(root + "/task-create.js") or "";
         self.app = std::io::fs::read_file(root + "/app.js") or "";
         self.styles = std::io::fs::read_file(root + "/styles.css") or "";
-        self.enabled = len(self.index) > 0
-            && len(self.application) > 0
-            && len(self.definition_draft) > 0
-            && len(self.organization_draft) > 0
-            && len(self.knowledge_draft) > 0
-            && len(self.task_administration) > 0
-            && len(self.projects) > 0
-            && len(self.task_create) > 0
-            && len(self.app) > 0
-            && len(self.styles) > 0;
+        self.enabled = len(self.index) > 0 && len(self.app) > 0 && len(self.styles) > 0;
         if self.enabled { self.error = ""; }
         return self.enabled;
     }
     fn serves(path: String) -> Bool {
-        return self.enabled
-            && (
-                path == "/"
-                    || path == "/application.js"
-                    || path == "/definition-draft.js"
-                    || path == "/organization-draft.js"
-                    || path == "/knowledge-draft.js"
-                    || path == "/task-administration.js"
-                    || path == "/projects.js"
-                    || path == "/task-create.js"
-                    || path == "/app.js"
-                    || path == "/styles.css"
-            );
+        return self.enabled && (path == "/" || path == "/app.js" || path == "/styles.css");
     }
     fn response(path: String) -> std::http::Response {
         let content_type = if path == "/" {
             "text/html; charset=utf-8"
-        } else if path == "/app.js"
-            || path == "/application.js"
-            || path == "/definition-draft.js"
-            || path == "/organization-draft.js"
-            || path == "/knowledge-draft.js"
-            || path == "/task-administration.js"
-            || path == "/projects.js"
-            || path == "/task-create.js"
-        {
+        } else if path == "/app.js" {
             "text/javascript; charset=utf-8"
         } else {
             "text/css; charset=utf-8"
         };
         let body = if path == "/" {
             self.index
-        } else if path == "/application.js" {
-            self.application
-        } else if path == "/definition-draft.js" {
-            self.definition_draft
-        } else if path == "/organization-draft.js" {
-            self.organization_draft
-        } else if path == "/knowledge-draft.js" {
-            self.knowledge_draft
-        } else if path == "/task-administration.js" {
-            self.task_administration
-        } else if path == "/projects.js" {
-            self.projects
-        } else if path == "/task-create.js" {
-            self.task_create
         } else if path == "/app.js" {
             self.app
         } else {

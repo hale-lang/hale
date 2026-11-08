@@ -1415,6 +1415,66 @@ locus GovernanceCommands {
                 return "";
             }
         }
+        // A graph proposal (a hole, a hold) or a family (an opening's
+        // position with its mandate, a batch's members) carries graph rows,
+        // not a knowledge document: a hole has no text to read, and a family
+        // is proposed as its members' knowledge and a receipt the Review
+        // names, with no `knowledge.proposed` row of its own. The Review's
+        // row is the subject here: its pin, its state and the caller's
+        // standing. The organization's Review decides it, as it decides the
+        // CLI's verdict on the same proposal.
+        if command.operation == "dna.review.verdict" {
+            let fam = review_row(j, command.target_id);
+            let raw = if std::str::starts_with(command.subject_digest, "sha256:") {
+                command.subject_digest[7..len(command.subject_digest)]
+            } else {
+                command.subject_digest
+            };
+            // the same for any proposal whose document the practice reader
+            // cannot read as a knowledge document (a seeded mandate, a
+            // design document): the Review row is the subject
+            let unread = queries.practice_of(command.subject_digest);
+            if len(fam.id) > 0
+                && fam.knowledge_digest == command.subject_digest
+                && fam.subject_digest == command.subject_digest
+                && (
+                    dna::word_in(
+                        dna::native_json_string(receipts.read(raw), "kind"),
+                        "graph family",
+                    )
+                        || (len(unread.id) > 0 && !unread.text_available)
+                )
+            {
+                if fam.state != "pending" || fam.is_mutation { return "stale_subject"; }
+                let codec = GovernanceCommandCodec { };
+                let mut n = 0;
+                while n < j.revision() {
+                    let decided = j.read(n);
+                    if decided.kind == "review.command_decided"
+                        && codec.string(decided.body, "review_id") == command.target_id
+                        && codec.string(decided.body, "subject_digest") == command.subject_digest
+                        && std::json::find_bool_field(decided.body, "accepted")
+                        && std::json::find_bool_field(decided.body, "settled")
+                    {
+                        return "stale_subject";
+                    }
+                    n = n + 1;
+                }
+                // a governance Review requiring the Board admits its author's
+                // verdict (spec/dna.md, Signers from the route); any other
+                // refuses its author
+                if context.principal_name == fam.author && fam.required_authority != "board" {
+                    return "forbidden";
+                }
+                return verdict_standing(
+                    j,
+                    command.target_id,
+                    context.principal_name,
+                    grant.authority,
+                    fam.required_authority,
+                );
+            }
+        }
         let p = queries.practice_of(command.subject_digest);
         if len(p.id) == 0 || !p.text_available { return "stale_subject"; }
         if command.operation == "dna.practice.propose" {

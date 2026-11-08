@@ -52,10 +52,11 @@ To serve the face as well, pass its static directory as the third argument:
 ./target/seeds/api/api /absolute/path/to/a/dna-project 8792 "$PWD/dna/face/web"
 ```
 
-Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/application.js`,
-`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js`, `/projects.js`, `/task-create.js` and `/styles.css`.
-URLs never become filesystem paths. All ten assets must exist and be nonempty
-at startup. They are loaded once, so restart after changing them. API-only mode
+Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js` and
+`/styles.css`: the face (`dna/face/web`), the basic org chart, board and
+knowledge screens over the head's surface. URLs never become filesystem
+paths. All three assets must exist and be nonempty at startup. They are
+loaded once, so restart after changing them. API-only mode
 retains its existing routes. No legacy mutation routes are enabled in either
 mode. Browser assets and authentication share the API origin; there is no
 cross-origin API contract, and the CSP's `connect-src` is the API's own origin
@@ -353,7 +354,7 @@ the [Knowledge commands](#knowledge-commands).
 
 The caller is the socket peer: `dna.unix.member` maps its uid to a
 person, and rows record `local/<person>`. `TaskCreate`,
-`CommandLookup` and `BatchPreview` need no role — any authenticated peer may call them;
+`CommandLookup` and `BatchPreview` need no role — any authenticated peer may call them; so do the surface's reads the face draws its screens from, `Commands::index`, `Commands::org` (the org chart: the graph's positions, stated and proposed, with what each sits under, holds and signs) and `Commands::tasks` (the handed Tasks, from the record and its Ledger as one), which the face calls through the same `POST …/commands` relay as `Index`, `Org` and `Tasks`;
 the other calls are refused `unauthorized` (naming what the row requires)
 unless the mapped person holds the named role. Every reply is a `CommandReply { ok, code, application_id, head,
 revision, receipt }`, its receipt exactly what an HTTP command receipt
