@@ -8,6 +8,17 @@ behavior.
 
 ## Unreleased
 
+## v0.32.9 — first-run messages say why and what next (2026-11-08)
+
+**A first run says what went wrong and what to do next.** An exporter download that fails names its cause (curl's error, a checksum that differs, an image docker could not pull) and the command that retries it, and every download retries a short blip first. When the habitat's models provider serves a tenant nothing, graft, apply, `hale habitat models` and `hale habitat status` end in one `next` line in the provider's own words: who pays is a person's decision, where to grant it, and where the provider answers. The habitat never grants an account itself.
+
+The item-level notes follow.
+
+### Fixed
+
+- An exporter install whose download failed says why on its own line, with what retries it (`node    local: no exporter: the download from github.com failed (curl 56: Connection died, tried 5 times before giving up); \`hale habitat up\` again retries it`), instead of leaking curl's raw line above `it failed and said nothing`. Every exporter download rides out a short blip: the macOS archive through curl's retries (`--retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 10`), and the node exporter's, cAdvisor's and the GPU exporter's images pulled first, five tries two seconds apart (`docker could not pull <image> (…)` when they all fail).
+- The habitat's models provider's `grant` reaches the person on a first run. Grafting the provider waits for it to answer before asking what it serves each tenant, `hale habitat apply` maps every tenant again when it applies the provider's services, and both (and `hale habitat models`) end in one `next` line in the provider's words, saying where it answers: `next    voice serves no model to voice and habitat yet, and who pays is yours to decide: grant <habitat>-habitat's project accounts in voice's admin UI (Projects) (voice answers at http://…/), then \`hale habitat models --all\``. `hale habitat status` asks the provider what it serves the habitat and says the same line while it serves nothing. The habitat still grants nothing itself.
+
 ## v0.32.8 — the drain is the runtime's (2026-11-07)
 
 **A signal stops every program, and it exits 0** (RFC #1858). SIGINT and SIGTERM no longer depend on the author threading `self.draining` through every loop. The runtime ends each `run()` loop that does not read the flag between two iterations, wakes every blocking wait (an untimed `accept` or `recv` included, returning the outcome it already has for "nothing came"), runs the `drain()` and `dissolve()` hooks, and exits 0. Reading `self.draining` in `run()` is the opt-in to stopping by your own code, and `hale check` warns at such a loop it cannot see stop on the flag. A program that used to die by the signal with exit 143 now exits 0 with its hooks run: a supervisor or test that expected 143 should expect 0.
