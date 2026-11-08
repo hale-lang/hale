@@ -376,12 +376,12 @@ readers = ["api"]
         let one = |t: &str| vec![t.to_string()];
         assert_eq!(
             grant_next("voice", at, "home", Some("grant tenant-{organism} accounts in voice's admin UI (Projects)"), &one("todo"), "hale habitat models todo").unwrap(),
-            "next    voice serves no model to todo yet, and who pays is yours to decide: grant tenant-todo accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models todo`"
+            format!("{:<8}voice serves no model to todo yet, and who pays is yours to decide: grant tenant-todo accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models todo`", "next")
         );
         // the habitat's name, as its services are handed it, beside the tenant's
         assert_eq!(
             grant_next("voice", at, "home", Some("grant {habitat}-{organism}'s project accounts in voice's admin UI (Projects)"), &one("habitat"), "hale habitat models habitat").unwrap(),
-            "next    voice serves no model to habitat yet, and who pays is yours to decide: grant home-habitat's project accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models habitat`"
+            format!("{:<8}voice serves no model to habitat yet, and who pays is yours to decide: grant home-habitat's project accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models habitat`", "next")
         );
         assert!(grant_next("voice", at, "home", Some("grant {habitat}-habitat's project accounts, then {habitat}-{organism}'s"), &one("todo"), "hale habitat models todo").unwrap().contains(": grant home-habitat's project accounts, then home-todo's (voice"));
         // voice's own sentence: the habitat's project, which every tenant
@@ -389,12 +389,12 @@ readers = ["api"]
         let starved = vec!["voice".to_string(), "todo".to_string(), "habitat".to_string()];
         assert_eq!(
             grant_next("voice", at, "home", Some("grant {habitat}-habitat's project accounts in voice's admin UI (Projects)"), &starved, "hale habitat models --all").unwrap(),
-            "next    voice serves no model to voice, todo and habitat yet, and who pays is yours to decide: grant home-habitat's project accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models --all`"
+            format!("{:<8}voice serves no model to voice, todo and habitat yet, and who pays is yours to decide: grant home-habitat's project accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models --all`", "next")
         );
         // a sentence of each tenant's own, each said
         assert!(grant_next("voice", at, "home", Some("grant tenant-{organism}"), &starved[..2], "hale habitat models --all").unwrap().contains(": grant tenant-voice; grant tenant-todo (voice answers"));
         // no sentence declared: what maps them once one is served
-        assert_eq!(grant_next("other", at, "home", None, &one("todo"), "hale habitat models todo").unwrap(), "next    other serves no model to todo yet (other answers at http://127.0.0.1:18080/): once it serves them, `hale habitat models todo` maps them");
+        assert_eq!(grant_next("other", at, "home", None, &one("todo"), "hale habitat models todo").unwrap(), format!("{:<8}other serves no model to todo yet (other answers at http://127.0.0.1:18080/): once it serves them, `hale habitat models todo` maps them", "next"));
         assert_eq!(grant_next("voice", at, "home", Some("grant"), &[], "hale habitat models --all"), None, "every tenant served: nothing next");
     }
 

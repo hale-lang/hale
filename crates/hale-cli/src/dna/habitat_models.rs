@@ -597,7 +597,7 @@ mod tests {
         let fed = vec![("voice".to_string(), Fed::Nothing), ("habitat".to_string(), Fed::Nothing)];
         assert_eq!(
             next_lines(&p, at, "home", &fed, "hale habitat models --all"),
-            vec!["next    voice serves no model to voice and habitat yet, and who pays is yours to decide: grant home-habitat's project accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models --all`".to_string()]
+            vec![format!("{:<8}voice serves no model to voice and habitat yet, and who pays is yours to decide: grant home-habitat's project accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models --all`", "next")]
         );
         // granted: nothing next
         assert!(next_lines(&p, at, "home", &[("voice".to_string(), Fed::Served), ("habitat".to_string(), Fed::Served)], "hale habitat models --all").is_empty());
@@ -605,7 +605,7 @@ mod tests {
         let fed = vec![("voice".to_string(), Fed::Unanswered("http://127.0.0.1:18080/v1/models did not answer".into())), ("habitat".to_string(), Fed::Served)];
         assert_eq!(
             next_lines(&p, at, "home", &fed, "hale habitat models --all"),
-            vec!["next    voice did not say what it serves voice (http://127.0.0.1:18080/v1/models did not answer): `hale habitat models --all` asks it again and maps them".to_string()]
+            vec![format!("{:<8}voice did not say what it serves voice (http://127.0.0.1:18080/v1/models did not answer): `hale habitat models --all` asks it again and maps them", "next")]
         );
     }
 

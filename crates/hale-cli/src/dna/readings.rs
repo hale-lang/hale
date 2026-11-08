@@ -1191,7 +1191,7 @@ mod tests {
         assert!(fetched.ends_with(&format!("https://github.com/prometheus/node_exporter/releases/download/v{NODE_EXPORTER_VERSION}/node_exporter-{NODE_EXPORTER_VERSION}.darwin-arm64.tar.gz")), "{fetched}");
         assert_eq!(
             install_line("local", &said, "`hale habitat up` again retries it"),
-            "node    local: no exporter: the download from github.com failed (curl 56: Connection died, tried 5 times before giving up); `hale habitat up` again retries it"
+            format!("{:<8}local: no exporter: the download from github.com failed (curl 56: Connection died, tried 5 times before giving up); `hale habitat up` again retries it", "node")
         );
         // curl saying nothing at all: its exit
         let (_, said, _, _) = mac_install("silent", "exit 6");
