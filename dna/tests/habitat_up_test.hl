@@ -10,8 +10,9 @@
 // record. `status` reads the rows; `down` stops the compose project and
 // keeps its volumes; `up` again brings them back and migrates only the
 // habitat's own memory and nerves, never a tenant's. The habitat is this
-// test file's own (`hale test` gives each file one). Without docker compose
-// nothing here is exercised.
+// test file's own (`hale test` gives each file one). Its organization seed
+// is committed with its genome, the tree the face reads. Without docker
+// compose nothing here is exercised.
 
 import "../core" as dna;
 import "../core/pond/db" as db;
@@ -33,6 +34,26 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 }
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// Whether the genome's organization seed is committed and its tree clean:
+// the face reads the organization from HEAD's tree, never the checkout.
+// What git says, when it is not.
+fn seed_uncommitted(genome: String) -> String {
+    let tracked = "\n" + dna::run_tool("git\n-C\n" + genome + "\nls-files").stdout;
+    let dirty = dna::run_tool("git\n-C\n" + genome + "\nstatus\n--porcelain").stdout;
+    let seeded = std::str::contains(tracked, "\ndna/org/main.hl\n")
+        && std::str::contains(tracked, "\ndna/org/law.hl\n")
+        && std::str::contains(tracked, "\nhale.toml\n")
+        && std::str::contains(tracked, "\nhale.lock\n")
+        && std::str::contains(tracked, "\n.gitignore\n");
+    let kept_out = !std::str::contains(tracked, "\nvendor/")
+        && !std::str::contains(tracked, "\n.hale/");
+    return if seeded && kept_out && len(dirty) == 0 {
+        ""
+    } else {
+        "tracked:" + tracked + "\nstatus:\n" + dirty
+    };
+}
 
 // How many times `needle` occurs in `text`.
 fn occurrences(text: String, needle: String) -> Int {
@@ -227,6 +248,13 @@ fn main() {
             "`law` **Only the habitat's acts provision.**",
         ),
         "whose document carries its law",
+    );
+    // its organization seed committed with the genome, by the birth that
+    // resumed after stopping part way; vendor/dna and .hale kept out
+    let unseeded = seed_uncommitted(genome);
+    std::test::assert(
+        len(unseeded) == 0,
+        "the birth commits the genome's organization seed, its tree clean: " + unseeded,
     );
     let key = dna::allocation_key(genome);
     std::test::assert_eq_int(len(key), 12, "the habitat has a record identity");
@@ -912,6 +940,26 @@ fn main() {
         ),
         "the tenant's record is on the habitat's memory again: " + after,
     );
+
+    // ---- a habitat born before its birth committed the seed (the seed,
+    // its manifest and lock untracked beside the toolchain's files) has it
+    // committed by its next `up`
+    let unseed = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && git rm -r -q --cached dna hale.toml hale.lock .gitignore && git -c user.name=t -c user.email=t@dna -c commit.gpgsign=false commit -qm unseeded && ! git cat-file -e HEAD:dna/org\nsh\n"
+            + genome,
+    );
+    std::test::assert(
+        unseed.code == 0 && len(seed_uncommitted(genome)) > 0,
+        "the seed is untracked again: " + unseed.stderr,
+    );
+    let healed = in_dir(scratch, toolchain() + "\nhabitat\nup");
+    std::test::assert(
+        healed.code == 0
+            && std::str::contains(healed.stdout, "commit  " + genome + " (the organization seed"),
+        "the next up commits the seed: " + healed.stdout + healed.stderr,
+    );
+    let reseeded = seed_uncommitted(genome);
+    std::test::assert(len(reseeded) == 0, "and the genome's tree is clean: " + reseeded);
 
     let stopped = in_dir(scratch, toolchain() + "\nhabitat\ndown");
     std::test::assert_eq_int(stopped.code, 0, "and down again: " + stopped.stderr);

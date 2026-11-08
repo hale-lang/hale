@@ -2307,6 +2307,9 @@ fn bring_up(backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, 
     // resumed from them (memory that is merely down is never mistaken for
     // a birth that did not happen)
     if manifest_pin(&genome.join("hale.toml")).ok().flatten().is_some() && !birth_pending().exists() {
+        // a habitat born before its seed was committed at birth has it
+        // committed here, by the next `up`
+        out.extend(commit_seed(&genome)?);
         progress("migrating the habitat's memory and nerves");
         out.extend(migrate_lines(&genome)?);
     } else {
@@ -2389,12 +2392,13 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
             std::fs::write(&path, f.content).map_err(|e| format!("write {}: {e}", path.display()))?;
         }
     }
-    let git = |args: &[&str]| Command::new("git").arg("-C").arg(genome).args(["-c", "user.name=habitat", "-c", "user.email=habitat@localhost"]).args(args).output().map_err(|e| e.to_string());
     if !genome.join(".git").exists() {
-        git(&["init", "-q", "-b", "main"])?;
+        genome_git(genome, &["init", "-q", "-b", "main"])?;
     }
-    git(&["add", "-A"])?;
-    let _ = git(&["commit", "-q", "-m", "the habitat's genome"])?;
+    // the toolchain's files by name, never `add -A`: a birth resumed after
+    // stopping before its .gitignore was written would commit vendor/dna
+    let shipped: Vec<&str> = hale_dna::HABITAT_FILES.iter().map(|f| f.path.strip_prefix("dna/habitat/").unwrap_or(f.path)).collect();
+    commit_paths(genome, &shipped, "the habitat's genome")?;
     let mut out = Vec::new();
     if !birth_pending().exists() {
         std::fs::write(birth_pending(), "").map_err(|e| format!("write {}: {e}", birth_pending().display()))?;
@@ -2428,6 +2432,9 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
             out.extend(super::init_under(genome, false, super::Lineage::Habitat)?);
         }
     }
+    // what init wrote, committed now, before a later step can stop the
+    // birth: the face reads the organization from HEAD's tree
+    out.extend(commit_seed(genome)?);
     // the bootstrap's allocations, the habitat's own memory and nerves,
     // made before its record existed: their rows, now it does
     let n = flush_pending()?;
@@ -2484,6 +2491,51 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
     // whole
     let _ = std::fs::remove_file(birth_pending());
     Ok(out)
+}
+
+/// What init writes into the habitat's genome to be committed: the
+/// organization seed, the manifest (the record's pin) and its lock, and the
+/// ignore lines that keep vendor/dna and .hale (the head's DSN, the
+/// baseline) out of git. Nothing else init or birth writes belongs in git:
+/// the vault, the allocations, the profile row and the birth's markers live
+/// beside the genome, never in it.
+const GENOME_SEED: &[&str] = &[".gitignore", "hale.toml", "hale.lock", "dna/org"];
+
+/// The genome's seed committed when it is not already: the face and the
+/// head read the organization from HEAD's tree, never the checkout. A line
+/// when a commit was made.
+fn commit_seed(genome: &Path) -> Result<Option<String>, String> {
+    let made = commit_paths(genome, GENOME_SEED, "the habitat's organization seed")?;
+    Ok(made.then(|| format!("{:<8}{} (the organization seed under dna/org, hale.toml, hale.lock, .gitignore)", "commit", genome.display())))
+}
+
+/// `git` in the habitat's genome, as the habitat (no person's identity,
+/// no signing key): an error names what git said.
+fn genome_git(genome: &Path, args: &[&str]) -> Result<String, String> {
+    let o = Command::new("git").arg("-C").arg(genome).args(["-c", "user.name=habitat", "-c", "user.email=habitat@localhost", "-c", "commit.gpgsign=false"]).args(args).output().map_err(|e| format!("git: {e}"))?;
+    if !o.status.success() {
+        return Err(format!("git {} in {}: {}", args.join(" "), genome.display(), String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+/// The genome's `paths` that exist committed, by name (whatever else the
+/// tree holds is left as it is): whether a commit was made, none when HEAD
+/// holds them as they are.
+fn commit_paths<'a>(genome: &Path, paths: &[&'a str], message: &'a str) -> Result<bool, String> {
+    let present: Vec<&str> = paths.iter().copied().filter(|p| genome.join(p).exists()).collect();
+    if present.is_empty() {
+        return Ok(false);
+    }
+    let with = |head: Vec<&'a str>| -> Vec<&'a str> { head.into_iter().chain(["--"]).chain(present.iter().copied()).collect() };
+    genome_git(genome, &with(vec!["add"]))?;
+    // unborn HEAD, or one that holds them otherwise
+    let born = genome_git(genome, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok();
+    if born && genome_git(genome, &with(vec!["diff", "--cached", "--quiet"])).is_ok() {
+        return Ok(false);
+    }
+    genome_git(genome, &with(vec!["commit", "-q", "-m", message]))?;
+    Ok(true)
 }
 
 /// Whether the habitat's record was born, as memory says.
@@ -4844,5 +4896,43 @@ mod tests {
         down_under_with(&d, &mut dock).unwrap();
         assert!(!touched, "nothing was taken down");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A genome born before its seed was committed at birth: the toolchain's
+    /// files in HEAD, the seed and the manifest beside them untracked. The
+    /// seed is committed by name, what .gitignore keeps out stays out, and a
+    /// second call commits nothing.
+    #[test]
+    fn the_seed_is_committed_and_nothing_ignored_is() {
+        use super::{commit_paths, commit_seed, genome_git};
+        let g = root("seed");
+        let write = |rel: &str, text: &str| {
+            let p = g.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        write("README.md", "the habitat\n");
+        write("ui/index.html", "<html></html>\n");
+        genome_git(&g, &["init", "-q", "-b", "main"]).unwrap();
+        assert!(commit_paths(&g, &["README.md", "ui/index.html"], "the habitat's genome").unwrap());
+        write(".gitignore", "/vendor/\n/.hale/\n");
+        write("hale.toml", "[deps]\n\n[dna]\nrecord = \"abc\"\n");
+        write("hale.lock", "[dna]\ntoolchain = \"0\"\n");
+        write("dna/org/main.hl", "fn main() {}\n");
+        write("vendor/dna/core.hl", "// toolchain-owned\n");
+        write(".hale/dna/memory.env", "HALE_DNA_MEMORY_DSN_HEAD=postgres://secret\n");
+        write("notes.txt", "not the habitat's\n");
+        assert!(commit_seed(&g).unwrap().is_some(), "the seed is committed");
+        let tracked = genome_git(&g, &["ls-files"]).unwrap();
+        for f in [".gitignore", "hale.toml", "hale.lock", "dna/org/main.hl", "README.md", "ui/index.html"] {
+            assert!(tracked.lines().any(|l| l == f), "{f} is committed: {tracked}");
+        }
+        assert!(!tracked.contains("vendor/") && !tracked.contains(".hale/") && !tracked.contains("notes.txt"), "nothing ignored or unnamed is: {tracked}");
+        assert_eq!(genome_git(&g, &["status", "--porcelain"]).unwrap(), "?? notes.txt\n");
+        // committed once: the next `up` finds nothing to commit
+        let head = genome_git(&g, &["rev-parse", "HEAD"]).unwrap();
+        assert!(commit_seed(&g).unwrap().is_none());
+        assert_eq!(genome_git(&g, &["rev-parse", "HEAD"]).unwrap(), head);
+        let _ = std::fs::remove_dir_all(&g);
     }
 }

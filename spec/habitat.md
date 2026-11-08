@@ -727,6 +727,15 @@ from the bundled nursery, all through the face.
   record's key, its SSH key and Forgejo token; a slot of the habitat's own
   stays). The `up` after the cause is gone (a disk freed) births the
   habitat whole, and the next changes nothing.
+- The genome is committed as it is born, since the head and the face
+  read it from git (its organization from `HEAD`'s tree): the toolchain's
+  files in one commit, then, once its organization is written, the seed
+  under `dna/org`, `hale.toml` (the record's pin), `hale.lock` and
+  `.gitignore` in another, each by name, so nothing the ignore file keeps
+  out (`vendor/`, `.hale/`) and nothing else in the directory is ever
+  committed. A birth resumed commits what it wrote; an `up` on a habitat
+  born whose seed is not committed commits it, and otherwise commits
+  nothing.
 
 ## Destroying: plan, then confirm
 
