@@ -15369,6 +15369,13 @@ static size_t lotus_drain_waiting_on(char *buf, size_t cap) {
 static void *lotus_drain_watcher(void *arg) {
     (void)arg;
     char b;
+    /* Wait in poll(2), and read only once the byte is there: the
+     * watcher runs in every program now (GH #1858), and a read(2) it
+     * began whenever its thread was first scheduled would land in the
+     * process-wide `std::diag::syscall_count("read")` gate between a
+     * program's own two looks at it. */
+    struct pollfd wp = { .fd = g_drain_pipe[0], .events = POLLIN, .revents = 0 };
+    while (poll(&wp, 1, -1) < 0 && errno == EINTR) { wp.revents = 0; }
     while (read(g_drain_pipe[0], &b, 1) < 0 && errno == EINTR) {}
     lotus_drain_stop_raise(LOTUS_DRAIN_SIGNAL);
     /* A server stops accepting and drains what it accepted. */
