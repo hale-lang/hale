@@ -1,0 +1,68 @@
+// dna/api/task_rows.hl — the handed Tasks as the face's board reads them:
+// one row of the head's surface, `Commands::tasks`.
+//
+// A Task's rows are the Ledger's (GH #1590), read with the record's as one
+// routed journal and projected by the operations' `TaskProjection`, the
+// projection `Commands::take_task` and `Commands::complete_task` decide on
+// (solo_tasks.hl). The HTTP tasks read (tasks.hl) answers only a fixture's
+// trusted-local head; this row answers wherever the head reaches the
+// record's Ledger, as the signed-in person, so a hosted face shows the
+// board. Each Task is the wire the HTTP read uses (`TaskWire.row`), so one
+// shape serves both. A read: it writes nothing.
+import "../core" as dna;
+import "../operations" as ops;
+
+// What the face asks: at most `limit` Tasks.
+type TasksAsk { limit: Int = 200; }
+
+// `tasks`: a JSON array of the projection's rows (id, outcome, state,
+// assignee, obligation, waiting, acceptance and evidence, history, usage).
+// `why` says why the board cannot be read when `ok` is false: the Ledger
+// out of reach (`task_source_unavailable`) or the projection refusing its
+// rows.
+type TaskRows {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    revision: Int = 0;
+    ledger_revision: Int = 0;
+    tasks: String = "[]";
+}
+
+fn task_rows(root: String, limit: Int) -> TaskRows {
+    let cap = if limit < 1 { 1 } else if limit > 1000 { 1000 } else { limit };
+    let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
+    if !ledger.ready() {
+        return TaskRows {
+            code: "task_source_unavailable",
+            why: "the record's Ledger is not reachable from this head (memory is not up, or the head has no DSN)",
+        };
+    }
+    let record = dna::RecordJournal { repo: root, author: "api" };
+    let moved = record.refresh();
+    let read = ledger.refresh();
+    let j = dna::RoutedJournal { record: record, ledger: ledger };
+    let p = ops::TaskProjection {
+        j: j,
+        visibility: ops::Queries { j: j, routed: true },
+        routed: true,
+    };
+    if !p.load() {
+        return TaskRows { code: p.code, why: "the Task projection refused the record's rows" };
+    }
+    let wire = TaskWire { };
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut i = 0;
+    while i < p.count() && i < cap {
+        b.value(wire.row(p, p.at(i)));
+        i = i + 1;
+    }
+    b.end_array();
+    return TaskRows {
+        ok: true,
+        revision: record.revision(),
+        ledger_revision: ledger.revision(),
+        tasks: b.result(),
+    };
+}

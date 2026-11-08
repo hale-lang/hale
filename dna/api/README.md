@@ -53,9 +53,12 @@ To serve the face as well, pass its static directory as the third argument:
 ```
 
 Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/application.js`,
-`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js`, `/projects.js`, `/task-create.js` and `/styles.css`.
-URLs never become filesystem paths. All ten assets must exist and be nonempty
-at startup. They are loaded once, so restart after changing them. API-only mode
+`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js`, `/projects.js`, `/task-create.js` and `/styles.css`,
+and, when the webroot holds them, the next face's `/next`, `/next.js` and
+`/next.css` (`dna/face/web/next.html`: the basic org chart, board and
+knowledge screens over the head's surface).
+URLs never become filesystem paths. All ten shell assets must exist and be
+nonempty at startup; the next face's three are served together or not at all. They are loaded once, so restart after changing them. API-only mode
 retains its existing routes. No legacy mutation routes are enabled in either
 mode. Browser assets and authentication share the API origin; there is no
 cross-origin API contract, and the CSP's `connect-src` is the API's own origin
@@ -353,7 +356,7 @@ the [Knowledge commands](#knowledge-commands).
 
 The caller is the socket peer: `dna.unix.member` maps its uid to a
 person, and rows record `local/<person>`. `TaskCreate`,
-`CommandLookup` and `BatchPreview` need no role — any authenticated peer may call them;
+`CommandLookup` and `BatchPreview` need no role — any authenticated peer may call them; so do the surface's reads the face draws its basic screens from, `Commands::index`, `Commands::org` (the org chart: the graph's positions, stated and proposed, with what each sits under, holds and signs) and `Commands::tasks` (the handed Tasks, from the record and its Ledger as one), relayed from the face as `POST /api/hale/v1/head/surface/call/<member>`;
 the other calls are refused `unauthorized` (naming what the row requires)
 unless the mapped person holds the named role. Every reply is a `CommandReply { ok, code, application_id, head,
 revision, receipt }`, its receipt exactly what an HTTP command receipt

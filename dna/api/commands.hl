@@ -1087,6 +1087,20 @@ locus CommandAdmission {
         self.seer.begin();
         return record_index(self.root, a.limit, self.seer);
     }
+    // The org chart as the face reads it (org_chart.hl): the graph's
+    // positions, stated and proposed, with what each sits under, holds,
+    // signs and is fitted with. A read.
+    fn org(a: OrgAsk, ctx: std::api::Context) -> OrgChart {
+        if self.personless(ctx) { return OrgChart { why: "forbidden" }; }
+        self.seer.begin();
+        return org_chart(self.root, a.limit, self.seer);
+    }
+    // The handed Tasks as the face's board reads them (task_rows.hl), from
+    // the record and its Ledger as one. A read.
+    fn tasks(a: TasksAsk, ctx: std::api::Context) -> TaskRows {
+        if self.personless(ctx) { return TaskRows { code: "forbidden", why: "forbidden" }; }
+        return task_rows(self.root, a.limit);
+    }
     // The habitat's hosts, allocations and policy (habitat_rows.hl): reads,
     // so any authenticated caller the record knows may ask.
     fn hosts(a: HabitatAsk, ctx: std::api::Context) -> HostRows {
@@ -1311,6 +1325,12 @@ locus Commands {
     fn index(a: IndexAsk, ctx: std::api::Context) -> RecordIndex {
         return self.admission.index(a, ctx);
     }
+    fn org(a: OrgAsk, ctx: std::api::Context) -> OrgChart {
+        return self.admission.org(a, ctx);
+    }
+    fn tasks(a: TasksAsk, ctx: std::api::Context) -> TaskRows {
+        return self.admission.tasks(a, ctx);
+    }
     fn hosts(a: HabitatAsk, ctx: std::api::Context) -> HostRows {
         return self.admission.hosts(a, ctx);
     }
@@ -1467,6 +1487,10 @@ api HeadCommands {
     rpc Commands::lookup;
     // The record as the standard face's index reads it: a read.
     rpc Commands::index;
+    // The org chart (org_chart.hl) and the handed Tasks (task_rows.hl) as
+    // the face reads them: reads.
+    rpc Commands::org;
+    rpc Commands::tasks;
     // The structure: every mutation is a head command whose handler writes
     // the rows its CLI verb writes, and the UI is a client of this surface.
     // `vacate` is a one-step batch (`vacate <position> <holder>`).

@@ -10,6 +10,33 @@ The frontend is ten static files, served beside the native Hale API or by an
 independent static host. It has no
 build step, runtime package dependencies, database connection or domain engine.
 
+## The next face
+
+`web/next.html`, `web/next.js` and `web/next.css` are the face's next shape,
+served at `/next` behind the same gate as the shell: three basic screens over
+the head's surface, with none of the drafting, projects or source workspaces
+the shell carries.
+
+- **Organization**: the org chart as the graph states it, read from
+  `Commands::org`: every position under what it sits under, who holds it,
+  whether its mandate is ratified, and the positions the record proposes and
+  the Board has not decided (dashed, with their Review); a grafted organism is
+  a child organization, linked to its own face. Selecting a position shows
+  its mandate and holders; filling it (`HoldFill`) and opening one under it
+  (`PositionOpen`) are the record's commands, each a Board Review.
+- **Board**: handed Tasks (`Commands::tasks`, through the record's Ledger) and
+  Reviews as columns, `Handed`, `Needs a verdict`, `Settled`, `Done`; a card
+  opens the Review or Task, and a verdict (`ReviewVerdict`), taking a Task
+  (`Commands::take_task`) or reporting it done (`Commands::complete_task`) are
+  the record's commands.
+- **Knowledge**: every node the record holds, by kind, with search; a node's
+  text, author, state, its bindings and edges; proposing, revising and
+  retiring a node (`KnowledgeNode*`) go to the record's Knowledge policy.
+
+Every write is a command the signed-in person could issue from the CLI, and
+every refusal is shown as the row answered it. The shell at `/` is unchanged;
+the next face replaces it once it covers the basics.
+
 The [design direction](DESIGN.md) describes the intended spatial instrument
 and its visual acceptance requirements.
 

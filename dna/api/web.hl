@@ -13,6 +13,11 @@ locus WebAssets {
         projects: String = "";
         task_create: String = "";
         styles: String = "";
+        // the next face (`/next`, its script and stylesheet): served when the
+        // webroot holds them, absent otherwise
+        next: String = "";
+        next_js: String = "";
+        next_css: String = "";
         error: String = "";
     }
     fn load(root: String) -> Bool {
@@ -32,6 +37,9 @@ locus WebAssets {
         self.task_create = std::io::fs::read_file(root + "/task-create.js") or "";
         self.app = std::io::fs::read_file(root + "/app.js") or "";
         self.styles = std::io::fs::read_file(root + "/styles.css") or "";
+        self.next = std::io::fs::read_file(root + "/next.html") or "";
+        self.next_js = std::io::fs::read_file(root + "/next.js") or "";
+        self.next_css = std::io::fs::read_file(root + "/next.css") or "";
         self.enabled = len(self.index) > 0
             && len(self.application) > 0
             && len(self.definition_draft) > 0
@@ -45,7 +53,17 @@ locus WebAssets {
         if self.enabled { self.error = ""; }
         return self.enabled;
     }
+    // Whether the webroot holds the next face, whole.
+    fn has_next() -> Bool {
+        return self.enabled
+            && len(self.next) > 0
+            && len(self.next_js) > 0
+            && len(self.next_css) > 0;
+    }
     fn serves(path: String) -> Bool {
+        if self.has_next() && (path == "/next" || path == "/next.js" || path == "/next.css") {
+            return true;
+        }
         return self.enabled
             && (
                 path == "/"
@@ -61,9 +79,10 @@ locus WebAssets {
             );
     }
     fn response(path: String) -> std::http::Response {
-        let content_type = if path == "/" {
+        let content_type = if path == "/" || path == "/next" {
             "text/html; charset=utf-8"
-        } else if path == "/app.js"
+        } else if path == "/next.js"
+            || path == "/app.js"
             || path == "/application.js"
             || path == "/definition-draft.js"
             || path == "/organization-draft.js"
@@ -78,6 +97,12 @@ locus WebAssets {
         };
         let body = if path == "/" {
             self.index
+        } else if path == "/next" {
+            self.next
+        } else if path == "/next.js" {
+            self.next_js
+        } else if path == "/next.css" {
+            self.next_css
         } else if path == "/application.js" {
             self.application
         } else if path == "/definition-draft.js" {

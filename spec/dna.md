@@ -3601,7 +3601,11 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   the decision it made and writes nothing. The typed `dna.review.verdict`
   command applies the same standing, over the latest `review.routed`
   row, in every Review profile (a practice, a binding, an edge, a
-  prepared source), naming its reviewer by the principal; its refusal is
+  prepared source, and every proposal of the organization's own a Review
+  decides: its purpose, a position's mandate, a hole or a hold as a graph
+  proposal, a batch's family, a design document — the head's pre-check
+  admits a knowledge proposal of any of those kinds, and the Review
+  decides it), naming its reviewer by the principal; its refusal is
   `forbidden` on the wire, and the admission's result carries a `why`
   naming what the Review requires, as the Review's own refusal does; the plain path
   (`hale dna review <id> approve --as <who>`) names its reviewer as the
@@ -6842,6 +6846,35 @@ are no route of it. The browser's traffic keeps relaying as the browser
 sent it (the head's browser routes are not rows of a surface); the face's
 own reads go through a client.
 
+**The chart and the board.** Two more reads of `HeadCommands` serve the
+face's basic screens, beside the index and relayed as it is: `Commands::org`
+(`dna/api/org_chart.hl`) takes `{limit}` and answers the record's revision,
+its purpose, its **positions** (a JSON array: each `position` node the graph
+states, with `id`, `name`, `text`, `under` (the parent of its `unfold` edge,
+`""` under the purpose), `holders` and `reviews` (the second members of its
+`holds` and `reviews` edges), `roles` (its equipment), `mandate` (`ratified`
+when a mandate idea targeting it was ratified and not retired, `proposed`
+while one awaits the Board, else `none`) and `state: "stated"`; then every
+position the record **proposes** and the Board has not decided (a graph
+or family proposal whose receipt carries a `position` node the graph does
+not state), with `state: "proposed"` and `review` the Review that awaits,
+so the face shows what is pending as pending and never as absent), its
+**parts** (the nodes positions sit under that are not positions: `id`,
+`kind`, `name`, `text`) and its **organisms** as the index lists them. It
+is read from the record's rows alone (`dna::record_graph_bodies`), never
+from memory, so it answers wherever the record does, and the org chart it
+states is the graph's (**The repository's graph**): the face draws the
+tree from `under`, never from a name's spelling. `Commands::tasks`
+(`dna/api/task_rows.hl`) takes `{limit}` and answers the handed Tasks the
+operations' `TaskProjection` projects from the record and its Ledger read as
+one (each as the HTTP tasks read's row: id, outcome, state, assignee,
+obligation, waiting, acceptance and evidence, history, usage), with the
+record's and the Ledger's revisions; where the head cannot reach the Ledger
+it answers `ok: false` with `code: task_source_unavailable` and why. The
+HTTP tasks read answers only a trusted-local session; this row answers as
+the signed-in person wherever the Ledger is reached, which is what a
+hosted face's board needs. Both write nothing.
+
 **The index.** `GET /index` on the face is the record's index: a static
 page, plain HTML in the shell's stylesheet and no script, generated on
 each request. Behind the head's read as the person's session (the same
@@ -6948,8 +6981,8 @@ placement), never the program `dna/host`. They are reads any authenticated
 caller the record knows may ask, they write nothing, and the head relays
 them from the face as it relays the index: `POST
 /api/hale/v1/head/surface/call/<member>` for the surface's reads
-(`Commands::index`, `::hosts`, `::allocations`, `::policy`) and no other
-member. `habitat.host` and `habitat.policy` are row kinds of the habitat's
+(`Commands::index`, `::org`, `::tasks`, `::hosts`, `::allocations`,
+`::policy`) and no other member. `habitat.host` and `habitat.policy` are row kinds of the habitat's
 record, written by `hale habitat up`; an allocation's provider and host
 are fields of the existing `habitat.allocated` row. `Commands::hosts`
 leaves out a removed host. Four Board rows (`requires: [owner]`) manage

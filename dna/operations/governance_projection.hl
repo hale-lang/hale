@@ -3,6 +3,11 @@
 // protection, redaction or a move to Ledger cannot expose them indirectly.
 import "../core" as dna;
 
+// The knowledge kinds a Review decides: a proposal of any of these is a
+// candidate for `dna.review.verdict` (dna/core: knowledge_record.hl,
+// positions.hl, batch.hl, graph_holes.hl write them).
+const GOVERNANCE_CANDIDATE_KINDS: String = "idea concept practice task_concept retirement purpose mandate graph family design document";
+
 type GovernanceProjectionFact {
     found: Bool = false;
     invalid: Bool = false;
@@ -119,13 +124,12 @@ locus GovernanceProjection {
         let kind = codec.string(row.body, "kind");
         let author = codec.string(row.body, "author");
         let target = codec.string(row.body, "target");
-        if (
-            kind != "idea"
-                && kind != "concept"
-                && kind != "practice"
-                && kind != "task_concept"
-                && kind != "retirement"
-        )
+        // every kind the record proposes for the Board to decide: an idea or
+        // a practice, and the organization's own proposals (its purpose, a
+        // position's mandate, a hole or a hold as a graph proposal, a
+        // batch's family, a design document), so a face's verdict reaches
+        // every Review the CLI's does; the organization's Review admits it
+        if !dna::word_in(kind, GOVERNANCE_CANDIDATE_KINDS)
             || !codec.bounded(author, 256, true, false)
             || !codec.bounded(target, 256, true, false)
             || !codec.bounded(codec.string(row.body, "name"), 256, false, false)

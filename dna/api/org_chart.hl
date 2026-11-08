@@ -1,0 +1,384 @@
+// dna/api/org_chart.hl — the org chart as the face reads it: one row of the
+// head's surface, `Commands::org`.
+//
+// The org chart is the graph (spec/dna.md, The repository's graph): its
+// `position` nodes, the node each sits under (`unfold`), who holds it
+// (`holds`), what it signs (`reviews`), the roles it is fitted with and
+// whether its mandate is ratified. The record states it as rows and this
+// read builds it from them (`dna::record_graph_bodies`), the way
+// `Commands::index` does; nothing here reads memory, so the chart answers
+// wherever the record does. Beside the stated positions it lists the ones
+// the record proposes and the Board has not yet decided (a hole, an
+// opening, a batch's member), so the face shows what is pending as pending
+// and never as absent. A grafted organism is a child organization: it is
+// listed as the index lists it, with its face's address, and its own chart
+// is its own head's.
+//
+// A read: any authenticated caller the record knows may ask; it writes
+// nothing and decides nothing.
+import "../core" as dna;
+
+// What the face asks: at most `limit` positions, parts and organisms each.
+type OrgAsk { limit: Int = 200; }
+
+// `positions`: a JSON array of {id, name, text, under, holders, reviews,
+// roles, mandate, state}; `under` the id of the node the position sits
+// under ("" for the purpose's own), `holders` and `reviews` arrays of node
+// ids, `roles` the equipment, `mandate` `ratified` | `proposed` | `none`,
+// `state` `stated` (in the graph) or `proposed` (awaiting the Board, with
+// `review` the Review's id). `parts`: the nodes positions sit under that are
+// not positions themselves, {id, kind, name, text}. `organisms`: as the
+// index lists them.
+type OrgChart {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    purpose: String = "";
+    positions: String = "[]";
+    parts: String = "[]";
+    organisms: String = "[]";
+}
+
+// The ids after `<kind>:<anchor>|` in the graph's edge lines, one a line:
+// the second member of every pair edge of `kind` anchored at `anchor`.
+@bounded_by(lines)
+fn org_pair_seconds(lines: String, kind: String, anchor: String) -> String {
+    let key = "\n" + kind + ":" + anchor + "|";
+    let mut out = "";
+    let mut from = 0;
+    while from < len(lines) {
+        let at = std::str::index_of(lines[from..len(lines)], key);
+        if at < 0 { return out; }
+        let start = from + at + len(key);
+        let rest = lines[start..len(lines)];
+        let tab = std::str::index_of(rest, "\t");
+        if tab < 0 { return out; }
+        out = out + rest[0..tab] + "\n";
+        from = start + tab;
+    }
+    return out;
+}
+
+// The parent of `child` by the first `unfold` edge that names it ("" when
+// none does): the id between `unfold:` and `|<child>`.
+@bounded_by(lines)
+fn org_under(lines: String, child: String) -> String {
+    let key = "|" + child + "\t";
+    let mut from = 0;
+    while from < len(lines) {
+        let at = std::str::index_of(lines[from..len(lines)], key);
+        if at < 0 { return ""; }
+        let end = from + at;
+        // back to the start of this line
+        let mut start = end;
+        while start > 0 && lines[(start - 1)..start] != "\n" { start = start - 1; }
+        let id = lines[start..end];
+        if std::str::starts_with(id, "unfold:") { return id[7..len(id)]; }
+        from = end + len(key);
+    }
+    return "";
+}
+
+// A JSON array of the lines of `s`.
+fn org_strings(s: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut rest = s;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { b.string_value(rest); rest = ""; } else {
+            if nl > 0 { b.string_value(rest[0..nl]); }
+            rest = rest[(nl + 1)..len(rest)];
+        }
+    }
+    b.end_array();
+    return b.result();
+}
+
+// The mandates the record holds for positions: `<position id>\t<state>` a
+// line, `ratified` when a mandate idea targeting it was ratified and not
+// retired, else `proposed` while one awaits the Board.
+@bounded_by(j)
+fn org_mandates(j: dna::Journal) -> String {
+    let mut proposed = ""; // `<digest>\t<position>` a line
+    let mut ratified = "\n";
+    let mut gone = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "knowledge.proposed"
+            && std::json::find_string_field(e.body, "kind") == "mandate"
+        {
+            let target = std::json::find_string_field(e.body, "target");
+            if std::str::starts_with(target, "position:") {
+                proposed = proposed + e.entity + "\t" + target + "\n";
+            }
+        }
+        if e.kind == "knowledge.ratified" { ratified = ratified + e.entity + "\n"; }
+        if e.kind == "knowledge.retired" || e.kind == "knowledge.declined"
+            || e.kind == "knowledge.refused" {
+                gone = gone + e.entity + "\n";
+            }
+        i = i + 1;
+    }
+    let mut out = "\n";
+    let mut rest = proposed;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        let digest = line[0..tab];
+        let position = line[(tab + 1)..len(line)];
+        if std::str::contains(gone, "\n" + digest + "\n") { continue; }
+        let state = if std::str::contains(ratified, "\n" + digest + "\n") {
+            "ratified"
+        } else {
+            "proposed"
+        };
+        // a ratified mandate stands over a proposed one for the same position
+        if std::str::contains(out, "\n" + position + "\tratified\n") { continue; }
+        out = std::str::replace(out, "\n" + position + "\tproposed\n", "\n");
+        out = out + position + "\t" + state + "\n";
+    }
+    return out;
+}
+
+// A digest's hex, with or without its `sha256:` prefix.
+fn org_raw(digest: String) -> String {
+    return if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+}
+
+// The kind a node id names (`seed:api` is `seed`), "" when it names none.
+fn org_kind_of(id: String) -> String {
+    let colon = std::str::index_of(id, ":");
+    return if colon > 0 { id[0..colon] } else { "" };
+}
+
+fn org_mandate_of(mandates: String, position: String) -> String {
+    let key = "\n" + position + "\t";
+    let at = std::str::index_of(mandates, key);
+    if at < 0 { return "none"; }
+    let rest = mandates[(at + len(key))..len(mandates)];
+    return rest[0..std::str::index_of(rest, "\n")];
+}
+
+// The positions the record proposes and the Board has not decided: each
+// `knowledge.proposed` of kind `graph` or `family` whose receipt carries a
+// `graph.node` of kind `position` the graph does not state, with the
+// Review that awaits. `<position id>\t<name>\t<text>\t<under>\t<review>` a line.
+@bounded_by(j)
+fn org_proposed(j: dna::Journal, receipts: dna::Receipts, graph: String) -> String {
+    let mut decided = "\n";
+    // the Review each proposal awaits: `review.requested review:<id>` names
+    // the proposal by `knowledge_digest` (a batch's family carries no
+    // `review_id` of its own)
+    let mut reviews = "\n"; // `<digest>\t<review id>` a line
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "knowledge.ratified" || e.kind == "knowledge.retired"
+            || e.kind == "knowledge.declined" || e.kind == "knowledge.refused" {
+                decided = decided + e.entity + "\n";
+            }
+        if e.kind == "review.requested" && std::str::starts_with(e.entity, "review:") {
+            let digest = std::json::find_string_field(e.body, "knowledge_digest");
+            if len(digest) > 0 {
+                reviews = reviews + digest + "\t" + e.entity[7..len(e.entity)] + "\n";
+            }
+        }
+        i = i + 1;
+    }
+    let mut out = "";
+    let mut seen = "\n";
+    i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind != "knowledge.proposed" { i = i + 1; continue; }
+        let kind = std::json::find_string_field(e.body, "kind");
+        if kind != "graph" && kind != "family" { i = i + 1; continue; }
+        if std::str::contains(decided, "\n" + e.entity + "\n") { i = i + 1; continue; }
+        let mut review = std::json::find_string_field(e.body, "review_id");
+        if len(review) == 0 {
+            let rkey = "\n" + e.entity + "\t";
+            let rat = std::str::index_of(reviews, rkey);
+            if rat >= 0 {
+                let rrest = reviews[(rat + len(rkey))..len(reviews)];
+                review = rrest[0..std::str::index_of(rrest, "\n")];
+            }
+        }
+        let mut digests = e.entity + "\n";
+        if kind == "family" {
+            // the family's graph members: `<name> <digest>` a line in `ideas`
+            let doc = receipts.read(org_raw(e.entity));
+            let mut ideas = dna::native_json_string(doc, "ideas");
+            digests = "";
+            while len(ideas) > 0 {
+                let nl = std::str::index_of(ideas, "\n");
+                let line = if nl < 0 { ideas } else { ideas[0..nl] };
+                ideas = if nl < 0 { "" } else { ideas[(nl + 1)..len(ideas)] };
+                let sp = std::str::index_of(line, " ");
+                if sp > 0 { digests = digests + line[(sp + 1)..len(line)] + "\n"; }
+            }
+        }
+        while len(digests) > 0 {
+            let nl = std::str::index_of(digests, "\n");
+            let digest = digests[0..nl];
+            digests = digests[(nl + 1)..len(digests)];
+            let doc = receipts.read(org_raw(digest));
+            if len(doc) == 0 || dna::native_json_string(doc, "kind") != "graph" { continue; }
+            let mut unfolds = ""; // `<child>\t<parent>` a line, from this doc's rows
+            let mut nodes = ""; // `<id>\t<name>\t<text>` a line
+            let mut it = std::json::array_first(std::json::find_field_raw(doc, "rows"));
+            while !it.done {
+                let k = std::json::find_string_field(it.element, "kind");
+                let id = std::json::find_string_field(it.element, "entity");
+                let body = std::json::find_string_field(it.element, "body");
+                if k == "graph.node" && std::str::starts_with(id, "position:") {
+                    nodes = nodes + id + "\t" + std::json::find_string_field(body, "name") + "\t"
+                        + std::str::replace(std::json::find_string_field(body, "text"), "\t", " ")
+                        + "\n";
+                }
+                if k == "graph.edge" && std::str::starts_with(id, "unfold:") {
+                    unfolds = unfolds + dna::graph_member(body, "child") + "\t"
+                        + dna::graph_member(body, "parent") + "\n";
+                }
+                it = std::json::array_next(it);
+            }
+            while len(nodes) > 0 {
+                let n2 = std::str::index_of(nodes, "\n");
+                let line = nodes[0..n2];
+                nodes = nodes[(n2 + 1)..len(nodes)];
+                let id = line[0..std::str::index_of(line, "\t")];
+                if std::str::contains(graph, "\n" + id + "\t")
+                    || std::str::contains(seen, "\n" + id + "\n")
+                {
+                    continue;
+                }
+                seen = seen + id + "\n";
+                let mut under = "";
+                let ukey = "\n" + id + "\t";
+                let uat = std::str::index_of("\n" + unfolds, ukey);
+                if uat >= 0 {
+                    let urest = ("\n" + unfolds)[(uat + len(ukey))..(len(unfolds) + 1)];
+                    under = urest[0..std::str::index_of(urest, "\n")];
+                }
+                out = out + line + "\t" + under + "\t" + review + "\n";
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+fn org_chart(root: String, limit: Int, seer: Observer) -> OrgChart {
+    let cap = if limit < 1 { 1 } else if limit > 1000 { 1000 } else { limit };
+    let j = dna::RecordJournal { repo: root, author: "api" };
+    let moved = j.refresh();
+    let receipts = dna::MemoryReceipts { repo: root };
+    let graph = dna::record_graph_bodies(j, receipts);
+    let mandates = org_mandates(j);
+
+    let positions = std::json::Builder { };
+    positions.begin_array();
+    let parts = std::json::Builder { };
+    parts.begin_array();
+    let mut purpose = "";
+    let mut n_positions = 0;
+    let mut n_parts = 0;
+    let mut unders = "\n"; // the ids positions sit under, each once
+    let mut rest = graph;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let tab = std::str::index_of(line, "\t");
+        if len(line) == 0 || tab < 0 { continue; }
+        let id = line[0..tab];
+        let body = line[(tab + 1)..len(line)];
+        if std::str::starts_with(id, "purpose:") && len(purpose) == 0 {
+            let text = std::json::find_string_field(body, "text");
+            purpose = if len(text) > 0 { text } else { std::json::find_string_field(body, "name") };
+        }
+        if !std::str::starts_with(id, "position:") || n_positions >= cap { continue; }
+        let under = org_under(graph, id);
+        if len(under) > 0 && !std::str::contains(unders, "\n" + under + "\n") {
+            unders = unders + under + "\n";
+        }
+        positions.begin_object();
+        positions.string_field("id", id);
+        positions.string_field("name", id[9..len(id)]);
+        positions.string_field("text", std::json::find_string_field(body, "text"));
+        positions.string_field("under", under);
+        positions.field("holders", org_strings(index_holders(graph, id)));
+        positions.field("reviews", org_strings(org_pair_seconds(graph, "reviews", id)));
+        let roles = std::json::find_field_raw(
+            std::json::find_field_raw(body, "equipment"),
+            "roles",
+        );
+        positions.field("roles", if len(roles) > 0 { roles } else { "[]" });
+        positions.string_field("mandate", org_mandate_of(mandates, id));
+        positions.string_field("state", "stated");
+        positions.string_field("review", "");
+        positions.end_object();
+        n_positions = n_positions + 1;
+    }
+    // the proposed positions, after the stated ones
+    let mut proposed = org_proposed(j, receipts, graph);
+    while len(proposed) > 0 && n_positions < cap {
+        let nl = std::str::index_of(proposed, "\n");
+        let line = proposed[0..nl];
+        proposed = proposed[(nl + 1)..len(proposed)];
+        let t1 = std::str::index_of(line, "\t");
+        let r1 = line[(t1 + 1)..len(line)];
+        let t2 = std::str::index_of(r1, "\t");
+        let r2 = r1[(t2 + 1)..len(r1)];
+        let t3 = std::str::index_of(r2, "\t");
+        let r3 = r2[(t3 + 1)..len(r2)];
+        let t4 = std::str::index_of(r3, "\t");
+        let id = line[0..t1];
+        let under = r3[0..t4];
+        if len(under) > 0 && !std::str::contains(unders, "\n" + under + "\n") {
+            unders = unders + under + "\n";
+        }
+        positions.begin_object();
+        positions.string_field("id", id);
+        positions.string_field("name", r1[0..t2]);
+        positions.string_field("text", r2[0..t3]);
+        positions.string_field("under", under);
+        positions.field("holders", "[]");
+        positions.field("reviews", "[]");
+        positions.field("roles", "[]");
+        positions.string_field("mandate", org_mandate_of(mandates, id));
+        positions.string_field("state", "proposed");
+        positions.string_field("review", r3[(t4 + 1)..len(r3)]);
+        positions.end_object();
+        n_positions = n_positions + 1;
+    }
+    positions.end_array();
+    // the parts: every node a position sits under that is not a position
+    let mut us = unders[1..len(unders)];
+    while len(us) > 0 && n_parts < cap {
+        let nl = std::str::index_of(us, "\n");
+        let id = us[0..nl];
+        us = us[(nl + 1)..len(us)];
+        if std::str::starts_with(id, "position:") { continue; }
+        let body = dna::graph_body_of(graph, id);
+        parts.begin_object();
+        parts.string_field("id", id);
+        parts.string_field("kind", org_kind_of(id));
+        parts.string_field("name", std::json::find_string_field(body, "name"));
+        parts.string_field("text", std::json::find_string_field(body, "text"));
+        parts.end_object();
+        n_parts = n_parts + 1;
+    }
+    parts.end_array();
+    return OrgChart {
+        ok: true,
+        revision: j.revision(),
+        purpose: purpose,
+        positions: positions.result(),
+        parts: parts.result(),
+        organisms: index_organisms(root, j, cap, seer),
+    };
+}

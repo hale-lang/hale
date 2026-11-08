@@ -157,6 +157,34 @@ fn lookup_reply(o: hc::CommandsLookupOutcome) -> hc::CommandReply {
     };
 }
 
+fn org_of(sock: String) -> hc::OrgChart {
+    return match hc::commands_org(sock, "", hc::OrgAsk { limit: 200 }) {
+        hc::CommandsOrgOutcome::Result(r) -> r,
+        hc::CommandsOrgOutcome::Refusal(f) -> hc::OrgChart { why: refused(f) },
+        hc::CommandsOrgOutcome::ServerError -> hc::OrgChart { why: "server_error" },
+        hc::CommandsOrgOutcome::Lost(why) -> hc::OrgChart { why: "lost:" + why },
+    };
+}
+
+fn tasks_of(sock: String) -> hc::TaskRows {
+    return match hc::commands_tasks(sock, "", hc::TasksAsk { limit: 200 }) {
+        hc::CommandsTasksOutcome::Result(r) -> r,
+        hc::CommandsTasksOutcome::Refusal(f) -> hc::TaskRows { code: refused(f) },
+        hc::CommandsTasksOutcome::ServerError -> hc::TaskRows { code: "server_error" },
+        hc::CommandsTasksOutcome::Lost(why) -> hc::TaskRows { code: "lost:" + why },
+    };
+}
+
+// The JSON object in `positions` whose `id` is `id`, "" when none.
+fn position_in(positions: String, id: String) -> String {
+    let mut it = std::json::array_first(positions);
+    while !it.done {
+        if std::json::find_string_field(it.element, "id") == id { return it.element; }
+        it = std::json::array_next(it);
+    }
+    return "";
+}
+
 fn preview(sock: String, steps: String) -> hc::BatchPreview {
     return match hc::commands_preview_batch(sock, "", hc::BatchDraft { steps: steps }) {
         hc::CommandsPreviewBatchOutcome::Result(r) -> r,
@@ -321,7 +349,7 @@ locus App {
         // ---- unseated: the preview and the ungated rows only
         std::test::assert_eq_str(
             members_of(unseated),
-            "Commands::alerts Commands::allocations Commands::brief Commands::complete_task Commands::create_task Commands::hosts Commands::index Commands::lookup Commands::lookup_knowledge Commands::nurseries Commands::placements Commands::policy Commands::preview_batch Commands::saplings Commands::take_task Commands::uis",
+            "Commands::alerts Commands::allocations Commands::brief Commands::complete_task Commands::create_task Commands::hosts Commands::index Commands::lookup Commands::lookup_knowledge Commands::nurseries Commands::org Commands::placements Commands::policy Commands::preview_batch Commands::saplings Commands::take_task Commands::tasks Commands::uis",
             "unseated: the ungated rows, the preview among them: " + unseated,
         );
         let rows0 = self.rows();
@@ -396,6 +424,28 @@ locus App {
                 && has(seated, "\"name\":\"Commands::fill\"")
                 && has(seated, "\"name\":\"Commands::preview_batch\""),
             "seated: the structure rows are listed: " + members_of(seated),
+        );
+
+        // ---- the org chart, as the face reads it: the graph's positions
+        // with their holders, from the record alone
+        let chart = org_of(self.sock);
+        std::test::assert(chart.ok, "the chart is read: " + chart.why);
+        let agent = position_in(chart.positions, "position:agent");
+        std::test::assert(
+            len(agent) > 0
+                && std::json::find_string_field(agent, "state") == "stated"
+                && has(std::json::find_field_raw(agent, "holders"), "\"ada\""),
+            "the chart states the agent position, held by ada: " + agent,
+        );
+        std::test::assert(
+            len(position_in(chart.positions, "position:api/dev")) == 0,
+            "nothing the batch would open is in the chart yet",
+        );
+        // the board's Tasks: none handed, and the Ledger reached
+        let board = tasks_of(self.sock);
+        std::test::assert(
+            board.ok && board.tasks == "[]",
+            "no Task is handed yet: " + board.code + " " + board.why,
         );
 
         // ---- a batch the plan refuses: its why, and no row
@@ -498,6 +548,23 @@ locus App {
             );
             rest = rest[(nl + 1)..len(rest)];
         }
+
+        // ---- the chart lists what the batch proposes as proposed, with its Review
+        let chart2 = org_of(self.sock);
+        let dev = position_in(chart2.positions, "position:api/dev");
+        std::test::assert(
+            len(dev) > 0
+                && std::json::find_string_field(dev, "state") == "proposed"
+                && std::json::find_string_field(dev, "review") == filing.review_id
+                && std::json::find_string_field(dev, "mandate") == "proposed",
+            "the proposed api/dev, awaiting its Review: " + dev,
+        );
+        let reviewer = position_in(chart2.positions, "position:api/reviewer");
+        std::test::assert(
+            len(reviewer) > 0
+                && std::json::find_string_field(reviewer, "under") == "position:api/dev",
+            "api/reviewer under api/dev, as the batch opens it: " + reviewer,
+        );
 
         // ---- the same steps again: the Review they await, and no row
         let at2 = self.head();
