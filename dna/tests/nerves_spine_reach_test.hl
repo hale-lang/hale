@@ -1,0 +1,65 @@
+// dna/tests/nerves_spine_reach_test.hl — the spine's nerves URL is the one
+// this process dials. The organization's program `hale habitat graft`
+// writes connects to `dna::nerves_spine_url()` as it is; on macOS a
+// habitat's body runs it on the compose project's network, where the
+// recorded `127.0.0.1:<port>` of the nerves is the container's own
+// loopback and refuses, and the render names the host's as
+// `HALE_DNA_LOOPBACK_HOST`. Dialling the recorded address, the
+// organization never created its durable consumer: the host waited for a
+// pull that never came and relayed the same facts every tick, and no
+// Review settled. The URL is read from the environment, which a test does
+// not change in its own process, so this file runs itself once per case
+// with the case's environment and reads what the probe answers.
+
+import "../core" as dna;
+
+// Run this test's own binary as the probe, under `env` with `vars`
+// (newline-separated `NAME=value`, every nerves variable unset first).
+fn probe(vars: String) -> String {
+    let r = dna::run_tool(
+        "env\n-u\nHALE_DNA_LOOPBACK_HOST\n-u\nHALE_DNA_NATS_URL_SPINE\n" + vars
+            + std::env::arg(0) + "\n--probe\n",
+    );
+    std::test::assert_eq_int(r.code, 0, "the probe ran: " + r.stderr);
+    return std::str::trim(r.stdout);
+}
+
+fn main() {
+    if std::env::arg_or(1, "") == "--probe" {
+        // what the organization and the host's probe dial
+        println(dna::nerves_spine_url());
+        println(dna::reach_url(dna::nerves_spine_url()));
+        return;
+    }
+    let mac = probe(
+        "HALE_DNA_LOOPBACK_HOST=host.docker.internal\nHALE_DNA_NATS_URL_SPINE=nats://127.0.0.1:18570\n",
+    );
+    std::test::assert_eq_str(
+        mac,
+        "nats://host.docker.internal:18570\nnats://host.docker.internal:18570",
+        "on the project's network the recorded loopback is dialled at the named host, and the host's probe dials the same server",
+    );
+    let named = probe(
+        "HALE_DNA_LOOPBACK_HOST=host.docker.internal\nHALE_DNA_NATS_URL_SPINE=nats://localhost:4222\n",
+    );
+    std::test::assert_eq_str(
+        named,
+        "nats://host.docker.internal:4222\nnats://host.docker.internal:4222",
+        "`localhost` is this machine's loopback too",
+    );
+    let linux = probe("HALE_DNA_NATS_URL_SPINE=nats://127.0.0.1:18570\n");
+    std::test::assert_eq_str(
+        linux,
+        "nats://127.0.0.1:18570\nnats://127.0.0.1:18570",
+        "on the host's network (no loopback host named) the recorded address is dialled as it is",
+    );
+    let elsewhere = probe(
+        "HALE_DNA_LOOPBACK_HOST=host.docker.internal\nHALE_DNA_NATS_URL_SPINE=nats://nerves.example:4222\n",
+    );
+    std::test::assert_eq_str(
+        elsewhere,
+        "nats://nerves.example:4222\nnats://nerves.example:4222",
+        "a server on another host is dialled where it is recorded",
+    );
+    std::test::assert_eq_str(probe(""), "", "no nerves handed: no URL");
+}
