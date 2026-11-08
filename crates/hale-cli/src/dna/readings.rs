@@ -149,8 +149,36 @@ fn docker_labels(role: &str) -> String {
 /// What a script says it did, on its last line: `hale-node: <outcome>`.
 const OUTCOME: &str = "hale-node:";
 
+/// Every script's outcome marker: the line a terminal's run keeps back.
+pub(super) const OUTCOMES: [&str; 3] = [OUTCOME, CONTAINERS_OUTCOME, GPUS_OUTCOME];
+
+/// The shell every install script fetches with, after its `said`: `fail`
+/// says why the install stopped (`fail <why>`, never a raw line of curl's
+/// or docker's), `fetch <url> <file>` downloads riding out a short blip
+/// (curl's own retries, on every error, a connection given 10 s), and
+/// `pull <image>` pulls through `$d` unless docker has the image, five
+/// tries two seconds apart. Each one's error is its tool's last line.
+const FETCH: &str = r#"fail() { said "fail $*"; exit 0; }
+last_line() { printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -n 1; }
+fetch() {
+  why=$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 10 -o "$2" "$1" 2>&1) || {
+    c=$?; h=$(printf '%s' "$1" | sed 's#^[a-z]*://##; s#/.*##')
+    why=$(last_line "$why" | sed 's/^curl: (\([0-9]*\)) /curl \1: /')
+    fail "the download from $h failed (${why:-curl exit $c})"
+  }
+}
+pull() {
+  $d image inspect "$1" >/dev/null 2>&1 && return 0
+  i=1
+  while ! why=$($d pull "$1" 2>&1 >/dev/null); do
+    [ $i -lt 5 ] || fail "docker could not pull $1 ($(last_line "$why"))"
+    i=$((i + 1)); sleep 2
+  done
+}"#;
+
 /// The exporter installed on the machine the script runs on, or found: its
-/// last line says which (`ours <how>`, `theirs`, or `skip <why>`). `sudo` is
+/// last line says which (`ours <how>`, `theirs`, `skip <why>`, or `fail
+/// <why>` when a download or a step after it did not go through). `sudo` is
 /// how it asks for root where it must (a LaunchDaemon on a Mac with no GUI
 /// session; docker for a login outside its group): `sudo` at a terminal,
 /// `sudo -n` elsewhere, which then skips rather than fails.
@@ -171,6 +199,7 @@ pub(super) fn install_script(sudo: &str) -> String {
         r#"set -e
 S="{sudo}"; v={v}; p={p}; n={n}; l={l}
 said() {{ printf '{OUTCOME} %s\n' "$*"; }}
+{FETCH}
 readings() {{ if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 3 "http://127.0.0.1:$p/metrics"; elif command -v wget >/dev/null 2>&1; then wget -qO- -T 3 "http://127.0.0.1:$p/metrics"; fi; }}
 node_readings() {{ readings 2>/dev/null | grep -q '^node_'; }}
 case "$(uname -s)" in
@@ -179,6 +208,7 @@ Linux)
   want="{want}"
   if [ "$($d inspect -f '{{{{.State.Running}}}} {{{{index .Config.Labels "'$l'"}}}}' "$n" 2>/dev/null)" = "true $want" ]; then said "ours container"; exit 0; fi
   if ! $d inspect "$n" >/dev/null 2>&1 && node_readings; then said theirs; exit 0; fi
+  pull "prom/node-exporter:v$v"
   $d rm -f "$n" >/dev/null 2>&1 || true
   $d run -d --name "$n" --label "$l=$want" {labels} --restart unless-stopped --net host --pid host -v /:/host:ro,rslave "prom/node-exporter:v$v" --path.rootfs=/host --web.listen-address=":$p" {flags} >/dev/null
   said "ours container" ;;
@@ -195,8 +225,8 @@ Darwin)
   if [ -n "$R" ] && ! $R true 2>/dev/null; then said "skip sudo needs a terminal on this machine (a LaunchDaemon is root's)"; exit 0; fi
   if [ ! -x "$bin" ]; then
     t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
-    curl -fsSL -o "$t/ne.tgz" "https://github.com/prometheus/node_exporter/releases/download/v$v/node_exporter-$v.darwin-$a.tar.gz"
-    [ "$(shasum -a 256 "$t/ne.tgz" | cut -d' ' -f1)" = "$sum" ] || {{ echo "node_exporter $v: the download is not the release's (checksum)" >&2; exit 1; }}
+    fetch "https://github.com/prometheus/node_exporter/releases/download/v$v/node_exporter-$v.darwin-$a.tar.gz" "$t/ne.tgz"
+    [ "$(shasum -a 256 "$t/ne.tgz" | cut -d' ' -f1)" = "$sum" ] || fail "the download of node_exporter $v from github.com is not the release's (its checksum differs)"
     tar -xzf "$t/ne.tgz" -C "$t"
     $R mkdir -p "$(dirname "$bin")"
     $R install -m 755 "$t/node_exporter-$v.darwin-$a/node_exporter" "$bin"
@@ -208,7 +238,7 @@ Darwin)
   $R launchctl bootout "$dom/$l" >/dev/null 2>&1 || true
   $R launchctl bootstrap "$dom" "$plist"
   i=0; while [ $i -lt 20 ] && ! node_readings; do sleep 0.5; i=$((i + 1)); done
-  node_readings || {{ echo "node_exporter $v was started under launchd ($dom/$l) and does not answer on :$p" >&2; exit 1; }}
+  node_readings || fail "node_exporter $v was started under launchd ($dom/$l) and does not answer on :$p"
   said "ours $how" ;;
 *) said "skip $(uname -s) is neither Linux nor macOS" ;;
 esac
@@ -267,10 +297,12 @@ pub(super) fn containers_script(sudo: &str) -> String {
         r#"set -e
 S="{sudo}"; n={n}; l={l}; img={img}; p={p}; want="{want}"
 said() {{ printf '{CONTAINERS_OUTCOME} %s\n' "$*"; }}
+{FETCH}
 readings() {{ if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 5 "http://127.0.0.1:$p/metrics"; elif command -v wget >/dev/null 2>&1; then wget -qO- -T 5 "http://127.0.0.1:$p/metrics"; fi; }}
 if docker info >/dev/null 2>&1; then d=docker; elif $S docker info >/dev/null 2>&1; then d="$S docker"; else said "skip docker does not answer this login"; exit 0; fi
 if [ "$($d inspect -f '{{{{.State.Running}}}} {{{{index .Config.Labels "'$l'"}}}}' "$n" 2>/dev/null)" = "true $want" ]; then said ours; exit 0; fi
 if ! $d inspect "$n" >/dev/null 2>&1 && readings 2>/dev/null | grep -q '^container_'; then said theirs; exit 0; fi
+pull "$img"
 $d rm -f "$n" >/dev/null 2>&1 || true
 $d run -d --name "$n" --label "$l=$want" {labels} --restart unless-stopped --privileged --net host \
   -v /:/rootfs:ro -v /var/run:/var/run:ro -v /var/run/docker.sock:/var/run/docker.sock:ro -v /sys:/sys:ro -v /var/lib/docker/:/var/lib/docker:ro --device /dev/kmsg \
@@ -313,12 +345,14 @@ pub(super) fn gpus_script(sudo: &str) -> String {
         r#"set -e
 S="{sudo}"; n={n}; l={l}; img={img}; p={p}; want="{want}"
 said() {{ printf '{GPUS_OUTCOME} %s\n' "$*"; }}
+{FETCH}
 readings() {{ if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 5 "http://127.0.0.1:$p/metrics"; elif command -v wget >/dev/null 2>&1; then wget -qO- -T 5 "http://127.0.0.1:$p/metrics"; fi; }}
 [ "$(uname -s)" = Linux ] || {{ said "none $(uname -s)"; exit 0; }}
 if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then said "none no NVIDIA GPU"; exit 0; fi
 if docker info >/dev/null 2>&1; then d=docker; elif $S docker info >/dev/null 2>&1; then d="$S docker"; else said "skip docker does not answer this login"; exit 0; fi
 if [ "$($d inspect -f '{{{{.State.Running}}}} {{{{index .Config.Labels "'$l'"}}}}' "$n" 2>/dev/null)" = "true $want" ]; then said ours; exit 0; fi
 if ! $d inspect "$n" >/dev/null 2>&1 && readings 2>/dev/null | grep -q '^nvidia_smi_'; then said theirs; exit 0; fi
+pull "$img"
 $d rm -f "$n" >/dev/null 2>&1 || true
 if ! why=$($d run -d --name "$n" --label "$l=$want" {labels} --restart unless-stopped --net host \
   --gpus all -e NVIDIA_DRIVER_CAPABILITIES=utility "$img" --web.listen-address=":$p" 2>&1 >/dev/null); then
@@ -345,13 +379,15 @@ if [ -n "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; 
 }
 
 /// What a GPU exporter's install did, as `up` and `host add` say it: no
-/// line for a machine with no NVIDIA GPU (`none`).
-pub(super) fn gpus_line(on: &str, outcome: &str) -> Option<String> {
+/// line for a machine with no NVIDIA GPU (`none`). `again` is the command
+/// that retries a failed one, as the line's last words.
+pub(super) fn gpus_line(on: &str, outcome: &str, again: &str) -> Option<String> {
     let said = match outcome.split_once(' ').map_or((outcome, ""), |(a, b)| (a, b)) {
         ("none", _) => return None,
         ("ours", _) => format!("nvidia_gpu_exporter {GPU_EXPORTER_VERSION} on :{GPU_EXPORTER_PORT}, a container of the habitat's ({GPU_EXPORTER_NAME})"),
         ("theirs", _) => format!("a GPU exporter already answers on :{GPU_EXPORTER_PORT}: scraped as it is"),
         ("skip", why) => format!("no GPU exporter: {why}"),
+        ("fail", why) => format!("no GPU exporter: {why}; {again}"),
         _ => format!("no GPU exporter: the install said nothing it did ({outcome:?})"),
     };
     Some(format!("{:<8}{on}: {said}", "gpus"))
@@ -373,19 +409,22 @@ fn gpus_answer(outcome: &str) -> bool {
     matches!(outcome.split(' ').next(), Some("ours" | "theirs"))
 }
 
-/// What a container exporter's install did, as `up` and `host add` say it.
-pub(super) fn containers_line(on: &str, outcome: &str) -> String {
+/// What a container exporter's install did, as `up` and `host add` say it
+/// (`again` as `gpus_line`'s).
+pub(super) fn containers_line(on: &str, outcome: &str, again: &str) -> String {
     let said = match outcome.split_once(' ').map_or((outcome, ""), |(a, b)| (a, b)) {
         ("ours", _) => format!("cAdvisor {} on :{CADVISOR_PORT}, a container of the habitat's ({CADVISOR_NAME})", CADVISOR_IMAGE.rsplit(':').next().unwrap_or("")),
         ("theirs", _) => format!("a container exporter already answers on :{CADVISOR_PORT}: scraped as it is"),
         ("skip", why) => format!("no container exporter: {why}"),
+        ("fail", why) => format!("no container exporter: {why}; {again}"),
         _ => format!("no container exporter: the install said nothing it did ({outcome:?})"),
     };
     format!("containers {on}: {said}")
 }
 
-/// What an install's outcome means, as `up` and `host add` say it of `on`.
-pub(super) fn install_line(on: &str, outcome: &str) -> String {
+/// What an install's outcome means, as `up` and `host add` say it of `on`
+/// (`again` as `gpus_line`'s).
+pub(super) fn install_line(on: &str, outcome: &str, again: &str) -> String {
     let v = NODE_EXPORTER_VERSION;
     let p = NODE_EXPORTER_PORT;
     let said = match outcome.split_once(' ').map_or((outcome, ""), |(a, b)| (a, b)) {
@@ -394,20 +433,23 @@ pub(super) fn install_line(on: &str, outcome: &str) -> String {
         ("ours", "daemon") => format!("node_exporter {v} on :{p}, a launchd daemon ({NODE_EXPORTER_LABEL})"),
         ("theirs", _) => format!("an exporter already answers on :{p} with node readings: scraped as it is"),
         ("skip", why) => format!("no exporter: {why}"),
+        ("fail", why) => format!("no exporter: {why}; {again}"),
         _ => format!("no exporter: the install said nothing it did ({outcome:?})"),
     };
     format!("{:<8}{on}: {said}", "node")
 }
 
 /// A script run on this machine, its output read for the outcome (sudo
-/// asks on the terminal itself, never on the output). The outcome, or why
-/// the script failed.
+/// asks on the terminal itself, `/dev/tty`, never on the output). Its error
+/// output is captured at a terminal too: a failed script's reason is the
+/// line that says why, never a raw line of a tool's above it. The outcome,
+/// or why the script failed.
 pub(super) fn run_here(script: &str) -> Result<String, String> {
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
     let out = Command::new("sh")
         .args(["-c", script])
         .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
-        .stderr(if tty { Stdio::inherit() } else { Stdio::piped() })
+        .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("sh: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -438,8 +480,9 @@ pub(super) fn sudo_word(tty: bool) -> &'static str {
 /// This machine's exporters (its node's, its containers' and its GPUs'),
 /// installed here unless the run says not to: what each did, and whether
 /// a GPU exporter answers here now (`None` when none was installed: the
-/// run said not to).
-pub(super) fn install_here(label: &str) -> (Vec<String>, Option<bool>) {
+/// run said not to). `again` is the command that retries a failed install,
+/// as a line says it (``"`hale habitat up` again retries it"``).
+pub(super) fn install_here(label: &str, again: &str) -> (Vec<String>, Option<bool>) {
     if node_exporter_off() {
         return (Vec::new(), None);
     }
@@ -447,17 +490,17 @@ pub(super) fn install_here(label: &str) -> (Vec<String>, Option<bool>) {
     super::progress("installing the node, container and GPU exporters on this machine");
     let mut lines = vec![
         match run_here(&install_script(sudo_word(tty))) {
-            Ok(o) => install_line(label, &o),
+            Ok(o) => install_line(label, &o, again),
             Err(why) => format!("{:<8}{label}: no exporter: {why}", "node"),
         },
         match run_here(&containers_script(sudo_word(tty))) {
-            Ok(o) => containers_line(label, &o),
+            Ok(o) => containers_line(label, &o, again),
             Err(why) => format!("containers {label}: no container exporter: {why}"),
         },
     ];
     let gpus = match run_here(&gpus_script(sudo_word(tty))) {
         Ok(o) => {
-            lines.extend(gpus_line(label, &o));
+            lines.extend(gpus_line(label, &o, again));
             gpus_answer(&o)
         }
         Err(why) => {
@@ -470,20 +513,20 @@ pub(super) fn install_here(label: &str) -> (Vec<String>, Option<bool>) {
 
 /// The exporters installed on `host` over the person's login, as `up
 /// --host`, `host add` and `host probe` do it (its GPUs' only where it has
-/// an NVIDIA GPU).
-pub(super) fn install_over(host: &str, user: Option<&str>, port: Option<u16>) -> Vec<String> {
+/// an NVIDIA GPU; `again` as `install_here`'s).
+pub(super) fn install_over(host: &str, user: Option<&str>, port: Option<u16>, again: &str) -> Vec<String> {
     let mut lines = vec![
         match super::remote::login_script(host, user, port, install_script) {
-            Ok(o) => install_line(host, &o),
+            Ok(o) => install_line(host, &o, again),
             Err(why) => format!("{:<8}{host}: no exporter: {why}", "node"),
         },
         match super::remote::login_script(host, user, port, containers_script) {
-            Ok(o) => containers_line(host, &o),
+            Ok(o) => containers_line(host, &o, again),
             Err(why) => format!("containers {host}: no container exporter: {why}"),
         },
     ];
     match super::remote::login_script(host, user, port, gpus_script) {
-        Ok(o) => lines.extend(gpus_line(host, &o)),
+        Ok(o) => lines.extend(gpus_line(host, &o, again)),
         Err(why) => lines.push(format!("{:<8}{host}: no GPU exporter: {why}", "gpus")),
     }
     lines
@@ -842,8 +885,8 @@ mod tests {
     fn an_outcome_is_the_last_line_that_says_one() {
         assert_eq!(outcome_of("noise\nhale-node: ours daemon\r\n"), "ours daemon");
         assert_eq!(outcome_of("nothing"), "");
-        assert!(install_line("box", "theirs").contains("scraped as it is"));
-        assert!(install_line("box", "skip sudo needs a terminal").ends_with("no exporter: sudo needs a terminal"));
+        assert!(install_line("box", "theirs", "again").contains("scraped as it is"));
+        assert!(install_line("box", "skip sudo needs a terminal", "again").ends_with("no exporter: sudo needs a terminal"));
         assert_eq!(last_words("\nfirst\nlast\n", ""), "last");
     }
 
@@ -1054,9 +1097,9 @@ mod tests {
             assert!(std::process::Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
         }
         assert_eq!(outcome_of("x\nhale-gpus: skip docker gives no container the GPU\n"), "skip docker gives no container the GPU");
-        assert_eq!(gpus_line("box", "none no NVIDIA GPU"), None, "a machine with no GPU says nothing of one");
-        assert!(gpus_line("box", "ours").unwrap().starts_with(&format!("{:<8}box: nvidia_gpu_exporter {GPU_EXPORTER_VERSION} on :9835", "gpus")), "the line's word, in the column the node's and containers' lines use");
-        assert!(gpus_line("box", "theirs").unwrap().ends_with("scraped as it is"));
+        assert_eq!(gpus_line("box", "none no NVIDIA GPU", "again"), None, "a machine with no GPU says nothing of one");
+        assert!(gpus_line("box", "ours", "again").unwrap().starts_with(&format!("{:<8}box: nvidia_gpu_exporter {GPU_EXPORTER_VERSION} on :9835", "gpus")), "the line's word, in the column the node's and containers' lines use");
+        assert!(gpus_line("box", "theirs", "again").unwrap().ends_with("scraped as it is"));
         assert!(gpus_answer("ours") && gpus_answer("theirs") && !gpus_answer("skip x") && !gpus_answer("none Darwin") && !gpus_answer(""));
         assert!(lists_a_gpu("GPU 0: NVIDIA GB10 (UUID: GPU-0)\n") && !lists_a_gpu("No devices were found\n") && !lists_a_gpu(""));
         assert!(runtimes_offer_nvidia("{\"io.containerd.runc.v2\":{\"path\":\"runc\"},\"nvidia\":{\"path\":\"nvidia-container-runtime\"}}\n"));
@@ -1081,7 +1124,7 @@ mod tests {
         stub("nvidia-smi", if gpu { "echo 'GPU 0: NVIDIA GB10 (UUID: GPU-0)'" } else { "echo 'No devices were found'; exit 6" });
         stub("curl", "exit 7");
         let run = if run_ok { "echo 0123abc" } else { "echo 'docker: Error response from daemon: could not select device driver \"\" with capabilities: [[gpu]]' >&2; exit 125" };
-        stub("docker", &format!("echo \"$*\" >> '{}'\ncase \"$1\" in info|rm) exit 0 ;; inspect) exit 1 ;; run) {run} ;; esac", log.display()));
+        stub("docker", &format!("echo \"$*\" >> '{}'\ncase \"$1\" in info|rm|image) exit 0 ;; inspect) exit 1 ;; run) {run} ;; esac", log.display()));
         let out = std::process::Command::new("sh").args(["-c", &gpus_script("sudo -n")]).env("PATH", format!("{}:/usr/bin:/bin", d.display())).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let said = (outcome_of(&String::from_utf8_lossy(&out.stdout)), std::fs::read_to_string(&log).unwrap_or_default());
@@ -1101,6 +1144,99 @@ mod tests {
         let (said, asked) = gpus_run("notoolkit", "Linux", true, false);
         assert!(said.starts_with("skip docker gives no container the GPU (the NVIDIA Container Toolkit): docker: Error response from daemon: could not select device driver"), "{said}");
         assert_eq!(asked.lines().last(), Some("rm -f hale-gpu-exporter"), "{asked}");
+    }
+
+    /// A script run against stand-ins (`name`, its shell body) first on
+    /// `PATH`, with `HOME` the stand-ins' directory: its exit, outcome,
+    /// error output and what the stand-ins logged (`$LOG`).
+    fn stubbed(case: &str, script: &str, stubs: &[(&str, &str)]) -> (bool, String, String, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("hale-install-{}-{case}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let log = d.join("stubs.log");
+        for (name, body) in stubs {
+            let f = d.join(name);
+            std::fs::write(&f, format!("#!/bin/sh\nLOG='{}'\n{body}\n", log.display())).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let out = std::process::Command::new("sh").args(["-c", script]).env("PATH", format!("{}:/usr/bin:/bin", d.display())).env("HOME", &d).output().unwrap();
+        let said = (out.status.success(), outcome_of(&String::from_utf8_lossy(&out.stdout)), String::from_utf8_lossy(&out.stderr).into_owned(), std::fs::read_to_string(&log).unwrap_or_default());
+        std::fs::remove_dir_all(&d).ok();
+        said
+    }
+
+    /// A Mac with a GUI session and no exporter yet, whose `curl` answers
+    /// nothing on the exporter's port and downloads as `download` says.
+    fn mac_install(case: &str, download: &str) -> (bool, String, String, String) {
+        let curl = format!("case \"$*\" in *metrics*) exit 7 ;; esac\necho \"curl $*\" >> \"$LOG\"\n{download}");
+        stubbed(case, &install_script("sudo -n"), &[
+            ("uname", "case \"$1\" in -m) echo arm64 ;; *) echo Darwin ;; esac"),
+            ("launchctl", "case \"$2\" in gui/*/*) exit 1 ;; gui/*) exit 0 ;; esac; exit 1"),
+            ("curl", &curl),
+            ("shasum", "echo 0000  -"),
+            ("sleep", "exit 0"),
+        ])
+    }
+
+    #[test]
+    fn a_failed_download_says_why_in_the_line_never_as_a_raw_line() {
+        // curl failing past its retries, as a first run's did on a blip
+        let (ok, said, err, log) = mac_install("blip", "echo 'curl: (56) Connection died, tried 5 times before giving up' >&2; exit 56");
+        assert!(ok, "a failed download is an outcome, not a failed script: {err}");
+        assert_eq!(said, "fail the download from github.com failed (curl 56: Connection died, tried 5 times before giving up)");
+        assert!(err.is_empty(), "curl's own line never reaches the output: {err:?}");
+        let fetched = log.lines().find(|l| l.contains("node_exporter-")).expect("the download");
+        assert!(fetched.contains("--retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 10"), "a blip is ridden out: {fetched}");
+        assert!(fetched.ends_with(&format!("https://github.com/prometheus/node_exporter/releases/download/v{NODE_EXPORTER_VERSION}/node_exporter-{NODE_EXPORTER_VERSION}.darwin-arm64.tar.gz")), "{fetched}");
+        assert_eq!(
+            install_line("local", &said, "`hale habitat up` again retries it"),
+            "node    local: no exporter: the download from github.com failed (curl 56: Connection died, tried 5 times before giving up); `hale habitat up` again retries it"
+        );
+        // curl saying nothing at all: its exit
+        let (_, said, _, _) = mac_install("silent", "exit 6");
+        assert_eq!(said, "fail the download from github.com failed (curl exit 6)");
+        // a download that went through but is not the release's
+        let (ok, said, err, _) = mac_install("checksum", "while [ $# -gt 0 ]; do [ \"$1\" = -o ] && echo junk > \"$2\"; shift; done; exit 0");
+        assert!(ok && err.is_empty(), "{err}");
+        assert_eq!(said, format!("fail the download of node_exporter {NODE_EXPORTER_VERSION} from github.com is not the release's (its checksum differs)"));
+    }
+
+    #[test]
+    fn an_image_pull_rides_out_a_blip_and_says_why_when_it_does_not() {
+        // docker answers, has no cAdvisor yet, and pulls as `pull` says
+        let docker = |pull: &str| format!("echo \"docker $*\" >> \"$LOG\"\ncase \"$1 $2\" in 'image inspect') exit 1 ;; esac\ncase \"$1\" in info|rm|run) exit 0 ;; inspect) exit 1 ;; pull) {pull} ;; esac");
+        let blip = "n=$(grep -c '^docker pull' \"$LOG\"); [ \"$n\" -ge 3 ] && exit 0; echo 'Error response from daemon: Get \"https://ghcr.io/v2/\": net/http: TLS handshake timeout' >&2; exit 1";
+        let (ok, said, err, log) = stubbed("pull-blip", &containers_script("sudo -n"), &[("docker", &docker(blip)), ("curl", "exit 7"), ("sleep", "exit 0")]);
+        assert!(ok && err.is_empty(), "{err}");
+        assert_eq!(said, "ours", "two failed pulls and a third that goes through: {log}");
+        assert_eq!(log.lines().filter(|l| l.starts_with("docker pull ")).count(), 3);
+        assert!(log.lines().position(|l| l.starts_with("docker pull ")) < log.lines().position(|l| l.starts_with("docker run ")), "pulled before it runs: {log}");
+        let down = "echo 'Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp: lookup ghcr.io: no such host' >&2; exit 1";
+        let (ok, said, err, log) = stubbed("pull-down", &containers_script("sudo -n"), &[("docker", &docker(down)), ("curl", "exit 7"), ("sleep", "exit 0")]);
+        assert!(ok && err.is_empty(), "{err}");
+        assert_eq!(log.lines().filter(|l| l.starts_with("docker pull ")).count(), 5, "five tries");
+        assert!(!log.contains("docker run "), "nothing runs without its image: {log}");
+        assert_eq!(said, format!("fail docker could not pull {CADVISOR_IMAGE} (Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp: lookup ghcr.io: no such host)"));
+        assert_eq!(
+            containers_line("local", &said, "`hale habitat up` again retries it"),
+            format!("containers local: no container exporter: docker could not pull {CADVISOR_IMAGE} (Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp: lookup ghcr.io: no such host); `hale habitat up` again retries it")
+        );
+        assert!(gpus_line("box", "fail docker could not pull x (y)", "`hale habitat host probe box` again retries it").unwrap().ends_with("no GPU exporter: docker could not pull x (y); `hale habitat host probe box` again retries it"));
+        // an image docker has is never pulled again
+        let (_, said, _, log) = stubbed("pull-had", &containers_script("sudo -n"), &[("docker", "echo \"docker $*\" >> \"$LOG\"\ncase \"$1\" in inspect) exit 1 ;; esac; exit 0"), ("curl", "exit 7")]);
+        assert_eq!(said, "ours");
+        assert!(!log.contains("docker pull"), "{log}");
+        // the Linux node exporter's image the same way
+        assert!(install_script("sudo -n").contains("  pull \"prom/node-exporter:v$v\"\n"));
+        assert!(gpus_script("sudo -n").contains("\npull \"$img\"\n"));
+    }
+
+    #[test]
+    fn a_failed_script_at_a_terminal_still_says_why() {
+        // the reason is the script's own error output, captured, not shown above
+        assert_eq!(run_here("echo 'docker: permission denied' >&2; exit 1"), Err("docker: permission denied".to_string()));
+        assert_eq!(run_here("printf 'hale-node: fail the download from github.com failed (curl 7: x)\\n'"), Ok("fail the download from github.com failed (curl 7: x)".to_string()));
     }
 
     #[test]

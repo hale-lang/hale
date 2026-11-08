@@ -160,12 +160,12 @@ pub(super) fn login_script(host: &str, user: Option<&str>, port: Option<u16>, sc
             while let Some(i) = pending.find('\n') {
                 let line: String = pending.drain(..=i).collect();
                 let bare = line.trim_start_matches('\r');
-                if !bare.starts_with("hale-node:") && !bare.starts_with("hale-containers:") {
+                if !super::readings::OUTCOMES.iter().any(|m| bare.starts_with(m)) {
                     let _ = shown.write_all(line.as_bytes());
                 }
             }
             let p = pending.trim_start_matches('\r');
-            let held = ["hale-node:", "hale-containers:"].iter().any(|m| m.starts_with(p) || p.starts_with(m));
+            let held = super::readings::OUTCOMES.iter().any(|m| m.starts_with(p) || p.starts_with(m));
             if !pending.is_empty() && !held {
                 let _ = shown.write_all(pending.as_bytes());
                 pending.clear();
@@ -798,7 +798,7 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     }
     if !super::readings::node_exporter_off() {
         super::progress(&format!("installing the node, container and GPU exporters on {host}, over your SSH login"));
-        out.extend(super::readings::install_over(host, user, port));
+        out.extend(super::readings::install_over(host, user, port, &format!("`hale habitat up --host {host}` again retries it")));
     }
     Ok(out)
 }

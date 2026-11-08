@@ -192,17 +192,42 @@ pub(crate) fn served(body: &str, extension: Option<&str>) -> Result<Vec<Served>,
         .collect())
 }
 
-/// What the habitat called `habitat` says when the provider `provider`
-/// serves the tenant `organism` nothing yet: the provider's own `grant`
-/// sentence when it declares one (`{organism}` the tenant, `{habitat}` the
-/// habitat's name, as its services are handed it), and how to map them
-/// after.
-pub(crate) fn serve_none(provider: &str, organism: &str, habitat: &str, grant: Option<&str>, why: Option<&str>) -> String {
-    let why = why.map(|w| format!(" ({w})")).unwrap_or_default();
-    match grant {
-        Some(g) => format!("the habitat's models ({provider}) serve none for {organism} yet{why}: {}, then `hale habitat models {organism}`", g.replace("{organism}", organism).replace("{habitat}", habitat)),
-        None => format!("the habitat's models ({provider}) serve none for {organism} yet{why}: `hale habitat models {organism}` maps them once one is served"),
+/// Names as a sentence says them: `a`, `a and b`, `a, b and c`.
+fn listed(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
     }
+}
+
+/// The `next` line of the habitat called `habitat` when the provider
+/// `provider` (its service answering at `at`) serves the tenants `starved`
+/// nothing yet: who pays is a person's decision, never the habitat's, so
+/// the line is the provider's own `grant` sentence when it declares one
+/// (`{organism}` each tenant, `{habitat}` the habitat's name, as its
+/// services are handed it; a sentence the tenants share said once), where
+/// the provider answers, and `then`, the command that maps the tenants'
+/// models once it serves them. None when no tenant is starved.
+pub(crate) fn grant_next(provider: &str, at: &str, habitat: &str, grant: Option<&str>, starved: &[String], then: &str) -> Option<String> {
+    if starved.is_empty() {
+        return None;
+    }
+    let who = listed(starved);
+    let said = match grant {
+        Some(g) => {
+            let mut each: Vec<String> = Vec::new();
+            for t in starved {
+                let one = g.replace("{organism}", t).replace("{habitat}", habitat);
+                if !each.contains(&one) {
+                    each.push(one);
+                }
+            }
+            format!("{provider} serves no model to {who} yet, and who pays is yours to decide: {} ({provider} answers at {at}/), then `{then}`", each.join("; "))
+        }
+        None => format!("{provider} serves no model to {who} yet ({provider} answers at {at}/): once it serves them, `{then}` maps them"),
+    };
+    Some(format!("{:<8}{said}", "next"))
 }
 
 /// Who the habitat's own model rows are written by: a row in any other
@@ -347,20 +372,30 @@ readers = ["api"]
 
     #[test]
     fn a_tenant_served_nothing_is_told_what_to_do_in_the_providers_words() {
+        let at = "http://127.0.0.1:18080";
+        let one = |t: &str| vec![t.to_string()];
         assert_eq!(
-            serve_none("voice", "todo", "home", Some("grant tenant-{organism} accounts in voice's admin UI (Projects)"), None),
-            "the habitat's models (voice) serve none for todo yet: grant tenant-todo accounts in voice's admin UI (Projects), then `hale habitat models todo`"
+            grant_next("voice", at, "home", Some("grant tenant-{organism} accounts in voice's admin UI (Projects)"), &one("todo"), "hale habitat models todo").unwrap(),
+            "next    voice serves no model to todo yet, and who pays is yours to decide: grant tenant-todo accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models todo`"
         );
         // the habitat's name, as its services are handed it, beside the tenant's
         assert_eq!(
-            serve_none("voice", "habitat", "home", Some("grant {habitat}-{organism}'s project accounts in voice's admin UI (Projects)"), None),
-            "the habitat's models (voice) serve none for habitat yet: grant home-habitat's project accounts in voice's admin UI (Projects), then `hale habitat models habitat`"
+            grant_next("voice", at, "home", Some("grant {habitat}-{organism}'s project accounts in voice's admin UI (Projects)"), &one("habitat"), "hale habitat models habitat").unwrap(),
+            "next    voice serves no model to habitat yet, and who pays is yours to decide: grant home-habitat's project accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models habitat`"
         );
+        assert!(grant_next("voice", at, "home", Some("grant {habitat}-habitat's project accounts, then {habitat}-{organism}'s"), &one("todo"), "hale habitat models todo").unwrap().contains(": grant home-habitat's project accounts, then home-todo's (voice"));
+        // voice's own sentence: the habitat's project, which every tenant
+        // inherits, said once for all of them
+        let starved = vec!["voice".to_string(), "todo".to_string(), "habitat".to_string()];
         assert_eq!(
-            serve_none("voice", "todo", "home", Some("grant {habitat}-habitat's project accounts, then {habitat}-{organism}'s"), None),
-            "the habitat's models (voice) serve none for todo yet: grant home-habitat's project accounts, then home-todo's, then `hale habitat models todo`"
+            grant_next("voice", at, "home", Some("grant {habitat}-habitat's project accounts in voice's admin UI (Projects)"), &starved, "hale habitat models --all").unwrap(),
+            "next    voice serves no model to voice, todo and habitat yet, and who pays is yours to decide: grant home-habitat's project accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models --all`"
         );
-        assert_eq!(serve_none("voice", "todo", "home", None, Some("http://x answered 502")), "the habitat's models (voice) serve none for todo yet (http://x answered 502): `hale habitat models todo` maps them once one is served");
+        // a sentence of each tenant's own, each said
+        assert!(grant_next("voice", at, "home", Some("grant tenant-{organism}"), &starved[..2], "hale habitat models --all").unwrap().contains(": grant tenant-voice; grant tenant-todo (voice answers"));
+        // no sentence declared: what maps them once one is served
+        assert_eq!(grant_next("other", at, "home", None, &one("todo"), "hale habitat models todo").unwrap(), "next    other serves no model to todo yet (other answers at http://127.0.0.1:18080/): once it serves them, `hale habitat models todo` maps them");
+        assert_eq!(grant_next("voice", at, "home", Some("grant"), &[], "hale habitat models --all"), None, "every tenant served: nothing next");
     }
 
     fn latest(rows: &[(&str, &str, serde_json::Value)]) -> BTreeMap<(String, String), serde_json::Value> {

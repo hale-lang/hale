@@ -6296,13 +6296,25 @@ readers = ["api"]
   as `Commands::allocations` resolves it (spec/habitat.md § Placing and
   applying); one with no URL (loopback only on its host) seeds nothing, and
   the act says why. A provider that serves `T` nothing yet, or does not
-  answer, seeds nothing: `the habitat's models (<provider>) serve none for
-  <T> yet: <grant>, then \`hale habitat models <T>\``, with the provider's
-  `grant` sentence (`{organism}` replaced by `T`'s name, `{habitat}` by
-  the habitat's), or, when it
-  declares none or did not answer, `the habitat's models (<provider>) serve
-  none for <T> yet[ (why)]: \`hale habitat models <T>\` maps them once one
-  is served`.
+  answer, seeds nothing, and says so on `T`'s line: `<provider> serves no
+  model to <T> yet: its map is not pointed at the habitat's models`, or
+  `<provider> did not say what it serves <T> (<why>): …`.
+- **Who pays is a person's.** The habitat never grants a tenant anything
+  at its provider: which accounts the habitat's models spend is a person's
+  decision, so an act that found tenants served nothing ends in one line
+  for all of them, after every tenant's, that says what to do in the
+  provider's words: `next    <provider> serves no model to <T1>, <T2> and
+  <T3> yet, and who pays is yours to decide: <grant> (<provider> answers at
+  <its link>/), then \`<then>\``, the `grant` sentence filled for each
+  starved tenant (`{organism}` its name, `{habitat}` the habitat's) and
+  said once when they share it (voice's names the habitat's own project,
+  which every tenant's inherits), `<then>` `hale habitat models --all`
+  (`hale habitat models <T>` when that verb named one tenant). A provider
+  declaring no `grant`: `next    <provider> serves no model to <T> yet
+  (<provider> answers at <link>/): once it serves them, \`<then>\` maps
+  them`. Tenants the provider did not answer for: `next    <provider> did
+  not say what it serves <T…> (<why>): \`<then>\` asks it again and maps
+  them`, never the grant, which they may not need.
 - **The models list.** The OpenAI shape, the models the asking key may be
   served by: `{"data": [{"id": "<model>", "available": true|false,
   "capabilities": {"tools": true|false}}, …]}`, in the order the provider
@@ -6315,7 +6327,16 @@ readers = ["api"]
 - **When.** A graft does it for the organism it grafts, once its own
   services are placed (a sapling's, at the end of its graft), and grafting
   the provider does it for every organism the habitat holds and the
-  habitat's genome. `hale habitat
+  habitat's genome, after asking the provider's models list until it
+  answers at all (90 s at most: a first start may compile its api). `hale
+  habitat apply` on the habitat's machine does the same for every tenant
+  when it applied the provider's services allocation (`applied
+  <key>/services …`), so its grant is said where the provider came up.
+  `hale habitat status` asks the provider what it serves the habitat's
+  genome with the key the habitat holds for it (drawing none): `models
+  <provider> at <link>/ serves the habitat <n> model(s) (<ids>)`, or `…
+  serves the habitat no model yet` and the `next` line above, or why it
+  could not ask. `hale habitat
   models <organism>|--all [--plan]` does it again: for an organism grafted
   before the provider, or a model placed since (spec/habitat.md § Verbs);
   `--all` includes the genome, and `hale habitat models habitat` names it

@@ -929,7 +929,7 @@ socket), so the habitat's head must be up.
 | `graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, its application placed on the host `--host` names and each body part filled as planned (below). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; a git nursery's source may name a revision (`<url>#<tag-or-commit>`), and adding a repository the Board trusts at another revision re-pins it: the earlier source is retired (`state: removed`, `repinned` naming the new one), so the nursery is read at the revision named last; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
 | `forge <organism> forgejo\|github\|file\|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
-| `models <organism>\|--all [--plan]` | Points a grafted organism's model map (every one's and the habitat's own genome's with `--all`; the genome's alone as `models habitat`) at the habitat's models, as a graft does (`spec/dna.md`, The habitat's models): its key drawn in the provider's family and copied into its slot, the provider's reader vault restaged, the provider asked what it serves, and each category no person wrote mapped there in the name `hale habitat`. For an organism grafted before the provider, or a model placed since. `--plan` says what it would draw, copy and map, and does nothing. Refused when the habitat holds no models provider. Through a pointer it runs on the habitat's machine. |
+| `models <organism>\|--all [--plan]` | Points a grafted organism's model map (every one's and the habitat's own genome's with `--all`; the genome's alone as `models habitat`) at the habitat's models, as a graft does (`spec/dna.md`, The habitat's models): its key drawn in the provider's family and copied into its slot, the provider's reader vault restaged, the provider asked what it serves, and each category no person wrote mapped there in the name `hale habitat`; a tenant served nothing ends in the provider's `grant` as a `next` line. For an organism grafted before the provider, or a model placed since. `--plan` says what it would draw, copy and map, and does nothing. Refused when the habitat holds no models provider. Through a pointer it runs on the habitat's machine. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
 
 The free-standing birth verbs are retired (`spec/dna.md`, Graft): each
@@ -1087,8 +1087,21 @@ already answers on `:9100` with node readings is scraped as it is and
 never touched; a removal takes off only the habitat's own (the container
 by its label, the launchd job by its label). An install that cannot run
 (sudo with no terminal, docker the login cannot reach, another OS) says
-why and stops nothing: `up` and `host add` go on. `HALE_DNA_NODE_EXPORTER=off`
-turns all of it off for a run.
+why and stops nothing: `up` and `host add` go on. Every download an
+install makes rides out a short network blip: the macOS archive through
+curl's own retries (`--retry 5 --retry-delay 2 --retry-all-errors
+--connect-timeout 10`), and every image (the node exporter's, cAdvisor's,
+the GPU exporter's) pulled before its container runs, unless docker has
+it, in five tries two seconds apart. One that still fails stops that
+exporter's install, which says why on its own line, from the tool's last
+words and never as a raw line of the tool's above it, and how to retry:
+`node    local: no exporter: the download from github.com failed (curl 56:
+Connection died, tried 5 times before giving up); \`hale habitat up\` again
+retries it` (`hale habitat host probe <h>` for a host, `host join <name>`
+for a joined machine, `up --host <h>` for the habitat's machine there),
+and `docker could not pull <image> (<docker's last line>)` for an image.
+An install that fails otherwise says the last line of its error output.
+`HALE_DNA_NODE_EXPORTER=off` turns all of it off for a run.
 
 **Containers too.** Beside its node exporter every machine runs a
 container exporter: cAdvisor (`ghcr.io/google/cadvisor`, pinned) as the
