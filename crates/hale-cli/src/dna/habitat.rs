@@ -838,7 +838,7 @@ fn host(args: &[String]) -> ExitCode {
         let login = if remote::is_habitat_user(&field("user")) { None } else { Some(field("user")) };
         let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
         progress(&format!("checking the node, container and GPU exporters on {name}, over your SSH login"));
-        for l in readings::install_over(&name, login.as_deref(), port) {
+        for l in readings::install_over(&name, login.as_deref(), port, &format!("`hale habitat host probe {name}` again retries it")) {
             println!("{l}");
         }
     }
@@ -881,7 +881,7 @@ fn host(args: &[String]) -> ExitCode {
                                 // the machine's readings, over the same login the account was made over
                                 let login = if own_user { None } else { Some(field("user")) };
                                 progress(&format!("installing the node, container and GPU exporters on {name}, over your SSH login"));
-                                for l in readings::install_over(&name, login.as_deref(), if own_user { login_port } else { port }) {
+                                for l in readings::install_over(&name, login.as_deref(), if own_user { login_port } else { port }, &format!("`hale habitat host probe {name}` retries it")) {
                                     println!("{l}");
                                 }
                             }
@@ -936,7 +936,7 @@ fn host_join(name: &str) -> ExitCode {
     println!("{:<8}{name} (joined): ready, a host of the habitat on {at}", "host");
     println!("{:<8}the habitat never logs in here: no key, no account; this machine runs its own placements (`hale habitat organism place <organism> <command> --host local`, here)", "access");
     println!("{:<8}{at} reaches {name} on its services' ports alone: the exporters below, and what is placed here", "reached");
-    for l in readings::install_here(name).0 {
+    for l in readings::install_here(name, &format!("`hale habitat host join {name}` again retries it")).0 {
         println!("{l}");
     }
     ExitCode::SUCCESS
@@ -3216,7 +3216,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     }
     lines.extend(grafana_note);
     lines.extend(reflexes_line);
-    let (installed, gpus) = readings::install_here(&host_label_here());
+    let (installed, gpus) = readings::install_here(&host_label_here(), "`hale habitat up` again retries it");
     lines.extend(installed);
     // this machine among the GPUs its senses scrape, as the install found it
     readings::gpu_target_here(&dir, &host_label_here(), gpus)?;
@@ -3325,6 +3325,12 @@ fn status() -> ExitCode {
     if face_running().is_some() {
         if let Some(port) = mcp_port() {
             println!("{:<8}mcp://127.0.0.1:{port} (the head's commands over MCP: `hale mcp --app mcp://127.0.0.1:{port}`, the person's ID token in HALE_API_TOKEN)", "mcp");
+        }
+        // its models provider, and what it serves the habitat now
+        if head_read.as_ref().is_some_and(|(read, _)| read.is_ok()) {
+            for l in models::status_lines() {
+                println!("{l}");
+            }
         }
     }
     // the services placed on its hosts, under their hosts, as its record

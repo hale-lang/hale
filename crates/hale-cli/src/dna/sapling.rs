@@ -811,6 +811,14 @@ pub(super) fn apply_cmd(args: &[String]) -> std::process::ExitCode {
                     Err(e) => println!("{:<8}the habitat's face did not restart: {e}", "note"),
                 }
             }
+            // the models provider's services applied: every tenant mapped
+            // to what it serves now, and its grant said when it serves
+            // nothing (a habitat elsewhere does that there)
+            if !here && super::remote::pointer().is_none() {
+                for l in super::models::after_apply(&v.lines) {
+                    println!("{l}");
+                }
+            }
             if v.ok {
                 ExitCode::SUCCESS
             } else {

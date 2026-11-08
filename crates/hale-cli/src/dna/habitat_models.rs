@@ -201,11 +201,13 @@ fn provider_url(p: &Provider) -> Result<String, String> {
 }
 
 /// What the provider serves, asked at `url` with the key `key` as a bearer
-/// token (handed to curl on its stdin, never its arguments).
-fn served_at(url: &str, key: &str, extension: Option<&str>) -> Result<Vec<provides::Served>, String> {
+/// token (handed to curl on its stdin, never its arguments), waiting at
+/// most `secs` seconds.
+fn served_at(url: &str, key: &str, extension: Option<&str>, secs: u32) -> Result<Vec<provides::Served>, String> {
     use std::io::Write;
+    let secs = secs.to_string();
     let mut child = Command::new("curl")
-        .args(["-s", "-m", "15", "-w", "\n%{http_code}", "-H", "@-", url])
+        .args(["-s", "-m", &secs, "-w", "\n%{http_code}", "-H", "@-", url])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -238,11 +240,55 @@ fn map_rows(root: &Path) -> BTreeMap<(String, String), serde_json::Value> {
     out
 }
 
+/// Whether `url` answers at all (any status), asked again until it does or
+/// `secs` seconds passed: a provider's api just applied is often still
+/// starting (a first start compiles it), and what it serves is asked once
+/// it answers.
+fn wait_answers(url: &str, secs: u64) -> bool {
+    let begun = std::time::Instant::now();
+    loop {
+        let code = Command::new("curl").args(["-s", "-o", "/dev/null", "-m", "3", "-w", "%{http_code}", url]).stdin(Stdio::null()).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        if !code.is_empty() && code != "000" {
+            return true;
+        }
+        if begun.elapsed() >= std::time::Duration::from_secs(secs) {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+/// What a tenant is served by the habitat's models, as `wire` found it.
+#[derive(Debug, Clone, PartialEq)]
+enum Fed {
+    /// served (or a plan, which asks nothing)
+    Served,
+    /// the provider answered, and serves the tenant no model
+    Nothing,
+    /// the provider did not say what it serves (why)
+    Unanswered(String),
+}
+
+/// The `next` lines after `fed` (each tenant's name and what it is
+/// served) from the provider `p` answering at `url`, in the habitat called
+/// `habitat`: its grant for the tenants it serves nothing
+/// (`provides::grant_next`), and what to run once it answers for those it
+/// did not say. `then` maps them after.
+fn next_lines(p: &Provider, url: &str, habitat: &str, fed: &[(String, Fed)], then: &str) -> Vec<String> {
+    let starved: Vec<String> = fed.iter().filter(|(_, f)| *f == Fed::Nothing).map(|(n, _)| n.clone()).collect();
+    let mut out: Vec<String> = provides::grant_next(&p.org.name, url, habitat, p.decl.grant.as_deref(), &starved, then).into_iter().collect();
+    let unanswered: Vec<&str> = fed.iter().filter(|(_, f)| matches!(f, Fed::Unanswered(_))).map(|(n, _)| n.as_str()).collect();
+    if let Some(why) = fed.iter().find_map(|(_, f)| if let Fed::Unanswered(w) = f { Some(w) } else { None }) {
+        out.push(format!("{:<8}{} did not say what it serves {} ({why}): `{then}` asks it again and maps them", "next", p.org.name, unanswered.join(", ")));
+    }
+    out
+}
+
 /// The habitat's models wired for the tenant `t` from the provider `p`:
-/// what was done (or, with `plan`, what would be), a line each. An error
-/// is what stopped it, said by the caller as a note: a graft never fails
-/// on it.
-fn wire(t: &Organism, p: &Provider, plan: bool) -> Result<Vec<String>, String> {
+/// what was done (or, with `plan`, what would be), a line each, and what
+/// the tenant is served. An error is what stopped it, said by the caller
+/// as a note: a graft never fails on it.
+fn wire(t: &Organism, p: &Provider, plan: bool) -> Result<(Vec<String>, Fed), String> {
     let mut out = Vec::new();
     let tag = format!("{:<8}", "models");
     let url = provider_url(p).map_err(|why| format!("{why}: `hale habitat models {}` maps them once it is", t.name))?;
@@ -260,7 +306,7 @@ fn wire(t: &Organism, p: &Provider, plan: bool) -> Result<Vec<String>, String> {
         None if plan => {
             out.push(format!("{tag}would draw {}'s key at {}: the member `{label}` of `{}` ({member}), and restage {}'s reader vault where its services run", t.name, p.org.name, p.decl.key, p.org.name));
             out.push(format!("{tag}would copy it into {}'s slot {slot}, ask {models_url} what it serves, and map {}'s models there ({endpoint}) in the name `{}`", t.name, t.name, provides::SEEDED_BY));
-            return Ok(out);
+            return Ok((out, Fed::Served));
         }
         None => {
             let k = draw()?;
@@ -279,15 +325,15 @@ fn wire(t: &Organism, p: &Provider, plan: bool) -> Result<Vec<String>, String> {
         vault_put(&vault, &slot, &key)?;
         out.push(format!("{tag}copied into {}'s slot {slot}", t.name));
     }
-    let served = match served_at(&models_url, &key, p.decl.extension.as_deref()) {
+    let served = match served_at(&models_url, &key, p.decl.extension.as_deref(), 15) {
         Ok(s) if !s.is_empty() => s,
         Ok(_) => {
-            out.push(format!("{tag}{}", provides::serve_none(&p.org.name, &t.name, &super::habitat_label(), p.decl.grant.as_deref(), None)));
-            return Ok(out);
+            out.push(format!("{tag}{} serves no model to {} yet: its map is not pointed at the habitat's models", p.org.name, t.name));
+            return Ok((out, Fed::Nothing));
         }
         Err(why) => {
-            out.push(format!("{tag}{}", provides::serve_none(&p.org.name, &t.name, &super::habitat_label(), None, Some(&why))));
-            return Ok(out);
+            out.push(format!("{tag}{} did not say what it serves {} ({why}): its map is not pointed at the habitat's models", p.org.name, t.name));
+            return Ok((out, Fed::Unanswered(why)));
         }
     };
     let rows = provides::seed_rows(&served, &map_rows(&t.root), &endpoint, &slot);
@@ -296,11 +342,11 @@ fn wire(t: &Organism, p: &Provider, plan: bool) -> Result<Vec<String>, String> {
     let said = format!("think = {think}; tools, do = {}", tools.as_deref().unwrap_or("none (no served model returns tool calls)"));
     if rows.is_empty() {
         out.push(format!("{tag}{}'s map already says the habitat's models ({said}), or a person's rows hold it", t.name));
-        return Ok(out);
+        return Ok((out, Fed::Served));
     }
     if plan {
         out.push(format!("{tag}would map {} row(s) of {}'s model map at {endpoint} ({said}) in the name `{}`", rows.len(), t.name, provides::SEEDED_BY));
-        return Ok(out);
+        return Ok((out, Fed::Served));
     }
     let text: String = rows.iter().map(|(kind, entity, body)| serde_json::json!({ "kind": kind, "entity": entity, "body": body.to_string() }).to_string() + "\n").collect();
     let dna_dir = t.root.join(".hale/dna");
@@ -311,12 +357,41 @@ fn wire(t: &Organism, p: &Provider, plan: bool) -> Result<Vec<String>, String> {
     let _ = std::fs::remove_file(&file);
     let n: usize = seeded?.trim().parse().map_err(|e| format!("record-seed answered oddly: {e}"))?;
     out.push(format!("{tag}{}'s model map points at the habitat's models ({}, {endpoint}): {said}; {n} row(s) in the name `{}`", t.name, p.org.name, provides::SEEDED_BY));
-    Ok(out)
+    Ok((out, Fed::Served))
 }
 
-/// `wire`, its refusal a note.
-fn wire_lines(t: &Organism, p: &Provider, plan: bool) -> Vec<String> {
-    wire(t, p, plan).unwrap_or_else(|why| vec![format!("{:<8}{}'s map is not pointed at the habitat's models: {why}", "note", t.name)])
+/// `wire` for each of `targets`, each refusal a note, and the `next` lines
+/// after them (`next_lines`, `then` mapping them after).
+fn wire_all(targets: &[&Organism], p: &Provider, then: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut fed = Vec::new();
+    for t in targets {
+        match wire(t, p, false) {
+            Ok((lines, f)) => {
+                out.extend(lines);
+                fed.push((t.name.clone(), f));
+            }
+            Err(why) => out.push(format!("{:<8}{}'s map is not pointed at the habitat's models: {why}", "note", t.name)),
+        }
+    }
+    if let Ok(url) = provider_url(p) {
+        out.extend(next_lines(p, &url, &super::habitat_label(), &fed, then));
+    }
+    out
+}
+
+/// Every tenant wired from the provider `p` once its services were applied
+/// (by its graft, or by an apply): its api asked until it answers (a minute
+/// and a half at most: a first start compiles it), then every tenant, and
+/// what a person does next.
+fn wire_every_tenant(p: &Provider) -> Vec<String> {
+    if let Ok(url) = provider_url(p) {
+        let models_url = format!("{url}{}", p.decl.models_path);
+        super::progress(&format!("waiting for {}'s `{}` to answer on {url}", p.org.name, p.decl.service));
+        let _ = wait_answers(&models_url, 90);
+    }
+    let all = tenants();
+    wire_all(&all.iter().collect::<Vec<_>>(), p, "hale habitat models --all")
 }
 
 /// After a graft of the organism at `root`: its map pointed at the
@@ -332,9 +407,62 @@ pub(super) fn after_graft(root: &Path) -> Vec<String> {
     if p.org.record == t.record {
         // the provider itself: every organism it holds, the provider among
         // them, and the habitat's own genome
-        return tenants().iter().flat_map(|o| wire_lines(o, &p, false)).collect();
+        return wire_every_tenant(&p);
     }
-    wire_lines(t, &p, false)
+    wire_all(&[t], &p, &format!("hale habitat models {}", t.name))
+}
+
+/// After `hale habitat apply` on this machine's habitat, whose lines are
+/// `applied`: when it applied the models provider's services, every
+/// tenant wired again and what a person does next (`wire_every_tenant`),
+/// so the provider's grant is said where its services came up. Nothing
+/// otherwise.
+pub(super) fn after_apply(applied: &[String]) -> Vec<String> {
+    let Some(p) = provider_among(&grafted()) else { return Vec::new() };
+    if !applied_services(applied, &p.org.key) {
+        return Vec::new();
+    }
+    wire_every_tenant(&p)
+}
+
+/// Whether an apply's lines (`sapling::applied_lines`) say the services of
+/// the organism `key` applied.
+fn applied_services(applied: &[String], key: &str) -> bool {
+    let mine = format!("{:<8}{key}/services ", "applied");
+    applied.iter().any(|l| l.starts_with(&mine))
+}
+
+/// `hale habitat status`'s lines of the habitat's models: its provider,
+/// where it answers, and what it serves the habitat's own genome (asked
+/// with the habitat's key, never drawing one), with the provider's grant
+/// as the `next` line when it serves nothing. None without a provider.
+pub(super) fn status_lines() -> Vec<String> {
+    let Some(p) = provider_among(&grafted()) else { return Vec::new() };
+    let tag = format!("{:<8}", "models");
+    let url = match provider_url(&p) {
+        Ok(u) => u,
+        Err(why) => return vec![format!("{tag}{} provides them: {why}", p.org.name)],
+    };
+    let member = secrets::member_entry(&p.org.record, &p.decl.key, HABITAT_LABEL);
+    let Some(key) = crate::dna::vault_local_dir().and_then(|v| held(&v, &member)) else {
+        return vec![format!("{tag}{} at {url}/ provides them; the habitat's key there is not drawn yet: `hale habitat models --all` draws it and maps them", p.org.name)];
+    };
+    let fed = match served_at(&format!("{url}{}", p.decl.models_path), &key, p.decl.extension.as_deref(), 5) {
+        Ok(s) if !s.is_empty() => {
+            let ids: Vec<&str> = s.iter().map(|m| m.id.as_str()).take(3).collect();
+            let more = if s.len() > ids.len() { ", …" } else { "" };
+            return vec![format!("{tag}{} at {url}/ serves the habitat {} model(s) ({}{more})", p.org.name, s.len(), ids.join(", "))];
+        }
+        Ok(_) => Fed::Nothing,
+        Err(why) => Fed::Unanswered(why),
+    };
+    let first = match &fed {
+        Fed::Nothing => format!("{tag}{} at {url}/ serves the habitat no model yet", p.org.name),
+        _ => format!("{tag}{} at {url}/ did not say what it serves the habitat", p.org.name),
+    };
+    let mut out = vec![first];
+    out.extend(next_lines(&p, &url, &super::habitat_label(), &[(HABITAT_LABEL.to_string(), fed)], "hale habitat models --all"));
+    out
 }
 
 /// After `hale dna secret rotate <family> --member <label>` in the
@@ -403,14 +531,22 @@ pub(super) fn cmd(args: &[String]) -> ExitCode {
         _ => {}
     }
     let mut failed = false;
+    let mut fed = Vec::new();
     for t in targets {
         match wire(t, &p, plan) {
-            Ok(lines) => lines.iter().for_each(|l| println!("{l}")),
+            Ok((lines, f)) => {
+                lines.iter().for_each(|l| println!("{l}"));
+                fed.push((t.name.clone(), f));
+            }
             Err(why) => {
                 failed = true;
                 eprintln!("hale habitat models {}: {why}", t.name);
             }
         }
+    }
+    let then = if all { "hale habitat models --all".to_string() } else { format!("hale habitat models {name}") };
+    if let Ok(url) = provider_url(&p) {
+        next_lines(&p, &url, &super::habitat_label(), &fed, &then).iter().for_each(|l| println!("{l}"));
     }
     if failed {
         ExitCode::from(1)
@@ -446,6 +582,39 @@ mod tests {
         for ok in ["voice", "habitats", "my-habitat", "todo"] {
             assert!(refuse_reserved_name(ok).is_ok(), "{ok}");
         }
+    }
+
+    fn voice() -> Provider {
+        let decl = provides::Models { service: "api".into(), path: provides::DEFAULT_PATH.into(), models_path: provides::DEFAULT_MODELS_PATH.into(), key: "tenant-key".into(), extension: Some("voice".into()), grant: Some("grant {habitat}-habitat's project accounts in voice's admin UI (Projects)".into()) };
+        Provider { org: Organism { key: "0a1b2c3d4e5f".into(), name: "voice".into(), record: "0a1b2c3d4e5f".repeat(5), root: PathBuf::from("/nowhere"), genome: false }, decl }
+    }
+
+    #[test]
+    fn a_provider_serving_nothing_says_its_grant_once_as_the_next_line() {
+        let p = voice();
+        let at = "http://127.0.0.1:18080";
+        // the first run: voice serves no tenant, the habitat's own among them
+        let fed = vec![("voice".to_string(), Fed::Nothing), ("habitat".to_string(), Fed::Nothing)];
+        assert_eq!(
+            next_lines(&p, at, "home", &fed, "hale habitat models --all"),
+            vec![format!("{:<8}voice serves no model to voice and habitat yet, and who pays is yours to decide: grant home-habitat's project accounts in voice's admin UI (Projects) (voice answers at http://127.0.0.1:18080/), then `hale habitat models --all`", "next")]
+        );
+        // granted: nothing next
+        assert!(next_lines(&p, at, "home", &[("voice".to_string(), Fed::Served), ("habitat".to_string(), Fed::Served)], "hale habitat models --all").is_empty());
+        // a provider still starting: asked again, never a grant it may not need
+        let fed = vec![("voice".to_string(), Fed::Unanswered("http://127.0.0.1:18080/v1/models did not answer".into())), ("habitat".to_string(), Fed::Served)];
+        assert_eq!(
+            next_lines(&p, at, "home", &fed, "hale habitat models --all"),
+            vec![format!("{:<8}voice did not say what it serves voice (http://127.0.0.1:18080/v1/models did not answer): `hale habitat models --all` asks it again and maps them", "next")]
+        );
+    }
+
+    #[test]
+    fn an_apply_rewires_the_tenants_only_when_it_applied_the_providers_services() {
+        let lines = vec![format!("{:<8}0a1b2c3d4e5f/services on local (compose): up", "applied"), format!("{:<8}ffffffffffff/services on local (compose): up", "applied")];
+        assert!(applied_services(&lines, "0a1b2c3d4e5f"));
+        assert!(!applied_services(&lines, "0a1b2c3d4e5e"));
+        assert!(!applied_services(&[format!("{:<8}0a1b2c3d4e5f/services on local: no port", "refused")], "0a1b2c3d4e5f"), "a refused apply serves nothing to ask");
     }
 
     #[test]
