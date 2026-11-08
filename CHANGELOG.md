@@ -8,6 +8,113 @@ behavior.
 
 ## Unreleased
 
+## v0.32.8 — the drain is the runtime's (2026-11-07)
+
+**A signal stops every program, and it exits 0** (RFC #1858). SIGINT and SIGTERM no longer depend on the author threading `self.draining` through every loop. The runtime ends each `run()` loop that does not read the flag between two iterations, wakes every blocking wait (an untimed `accept` or `recv` included, returning the outcome it already has for "nothing came"), runs the `drain()` and `dissolve()` hooks, and exits 0. Reading `self.draining` in `run()` is the opt-in to stopping by your own code, and `hale check` warns at such a loop it cannot see stop on the flag. A program that used to die by the signal with exit 143 now exits 0 with its hooks run: a supervisor or test that expected 143 should expect 0.
+
+**Twenty-five friction fixes, and the review that followed them.** `hale check` is the gate: a program that checks builds, and a shape the spec does not support is refused at check with the form to write. Silent losses closed (a pinned publisher's deliveries, a `udp://` reader stopped by an empty datagram, a chunked request body); codecs carry enums, bounded lists, `Time`, `Duration`, `std::json::Value`, nested records and `Decimal` on the api wire; units convert through imported aliases. The review of that batch found and fixed:
+- a datagram shorter than its frame reaching a handler as an invented or replayed message (now dropped and counted);
+- a `Decimal` too large for 128 bits decoding to a wrong number (now refused);
+- a subscriber advisory that fired on working code;
+- chunked request framing parsed loosely (now strict; `Transfer-Encoding` with `Content-Length` is refused).
+
+**`hale build` tunes to the host CPU again.** `--target-cpu portable` builds a binary for a machine you don't know, and **anything shipped to another machine (an image, a release tarball) should say so**. `--target-cpu <cpu>` names a known machine elsewhere.
+
+**The head answers its commands promptly.** Every connect on the head's command path has a deadline, a read of the habitat's allocations observes within a budget and shows a host's last reading with its age when the budget runs out, and `status` says whether the head answered.
+
+**`hale api export`'s OpenAPI document lists one relative server.** A committed bundle compared with `hale api export --check` needs regenerating once.
+
+The Hosts dashboard's bars line up at any value.
+
+The item-level notes follow.
+
+### Check is the gate
+
+- `count()`, `at()`, `push()` and `set()` accept a bounded field reached through a call's result or an `or` expression (`count(s.plain().rows)`), where the build refused what the check accepted.
+- `len(v)` on a `@form(...)` locus is refused by `hale check` naming `v.len()`, instead of passing the check and failing the build.
+- A block that ends in a `match` takes the match's value where the block is used as one (a match arm's block, an `if` arm, a `let` block), as a block ending in `if … else …` already did. A trailing match whose every arm leaves without a value makes the block a diverging one: legal as a match arm, as an `if` arm beside one that supplies the value, or as an `or { … }` substitute; where the block alone must supply a value (a `let`, a call argument, a `return`, an assignment, a field, a condition, an operand of `&&` / `||`, a `while` condition, a match guard) `hale check` refuses it as a block with no value, where the build used to fail.
+- A publish written inside an `or { … }` arm, a `let`'s or an assignment's value, or a call argument is delivered; the build refused it as an unknown identifier.
+- `items[i]` on a `bounded[T; N]` field is refused by `hale check`, in value position and as an assignment target, naming `at(f, i)` and `set(f, i, x)`.
+- A chain terminal written on a `@form(vec)` or `@form(hashmap)` itself (`v.sum(0.0d)`) gets the hint an array gets, naming the form's iteration surface (`v.items.map(it).sum(…)`).
+- `Int(d)` and `Float(d)` of a `Decimal<S>` are refused by `hale check` naming the conversions to write (`d.rescale(0) or trunc`, `std::decimal::to_float(d)`).
+
+### Units
+
+- A locus param default of a `Duration` refinement (`d: Millis = 100ms`) builds.
+- A quantity or point declared in an imported seed converts through its alias (`lib::Instant(0ns)`, `lib::Celsius(25K)`), and a rounding policy after that cast (`lib::Metres(x) or half_even`) is accepted.
+- A negated quantity literal (`-3b`) converts at compile time, exact wherever the positive literal is.
+- A `Duration` or `Time` compares with a refinement at its own denomination (`Duration in ns`); the build no longer refuses operands of mixed types.
+- `min` and `max` accept two values of one quantity or point type at one unit and are that type; mixed units are refused with the rule named.
+
+### Lifecycle and bus
+
+- A `main` locus with no `run()` waits for its pinned children's `run()` (those that do not read `draining`) before draining its tree, so a pinned publisher's deliveries to a pinned subscriber declared before it are no longer lost silently.
+- `hale check` warns at a subscriber built as a statement (or an unkept local) in a `birth()`, a method or a free function, with neither `birth()` nor `run()` of its own and no child in its params that has a `run()`: it is torn down at the statement's end and can never hear; the warning says to `accept` it or hold it in a field. A statement literal inside a `run()` body, and a holder whose child runs, deliver and are not warned at.
+- A `udp://` topic listener keeps receiving after a zero-byte datagram, and its reader is stopped at shutdown by an explicit wake that works on Linux and macOS.
+
+### Codecs and api
+
+- A record's `from_json` / `to_json` carries an enum field (a variant by its name), a `bounded[T; N]` or `[T; N]` field, a `Time`, a `Duration`, a `std::json::Value` and a nested record with no tag of its own; a record the codec cannot carry is refused by `hale check` naming the field.
+- `alias::T::from_json(text)` and `alias::T::to_json(v)` resolve through an import alias.
+- A missing JSON key takes the field's default of any shape: a negative literal, a record literal (its own defaults filling what it leaves out), an enum variant.
+- An api surface carries `Decimal<S>`: a JSON number at its scale (schema `{"type": "number", "x-hale-type": "Decimal<S>"}`), its digits in a protobuf string, and the generated Hale client declares it at the server's scale.
+- `hale api export`'s OpenAPI document lists one relative server (`"url": "/"`), so a linter's `no-empty-servers` passes. The exported document therefore changed while the api digest did not: a bundle committed to a repository and held with `hale api export --check` has to be regenerated once, or the check reports it as differing.
+- A `ws::Hub` / `udp::Hub` literal in the main locus's params is built with or without a `bindings` row or a surface served over it; one written in another locus is refused naming the main locus as its place.
+
+### Stdlib and runtime
+
+- `std::http::Server` reads `Transfer-Encoding: chunked` request bodies: the handler sees the de-chunked body; malformed framing answers 400; a chunked body over `max_request_bytes` answers `too_large`.
+- A client hanging up before reading its response (EPIPE or ECONNRESET on the write) is no longer an ERROR line on stderr; it is a runtime `debug` record, written only under `HALE_LOG=debug`.
+
+### Docs
+
+- README names the current release, and `scripts/changelog-fold.sh` moves that line at every release.
+- spec/tokens.md: a plain `"…"` literal may span lines; the line break is part of the value as written.
+
+### Build
+
+- `hale build` tunes its binary to the host CPU again, as every other verb does; `--target-cpu portable` (also `baseline`, `x86-64-v3`) builds for the portable baseline, for a binary whose machine is unknown. Since v0.32.1 `hale build` had defaulted to the baseline, which halved a vectorized loop on an AVX-512 host.
+- `--target-cpu <cpu>` takes one CPU by LLVM's name (`znver4`, `neoverse-v2`, `apple-m3`, `x86-64-v4`) for a binary built here for a known machine elsewhere; a name the compiler's own LLVM does not know is refused before codegen, naming the CPUs it knows.
+- `hale build`'s `built:` line names the CPU the binary is tuned for.
+
+### Bus and codecs
+
+- A UDP or unix datagram shorter than its type's frame, or one whose String or Bytes length exceeds the bytes after it, is dropped and counted (`dropped_decode` in `LOTUS_BUS_COUNTERS_DUMP`) instead of reaching the handler as an invented or replayed message.
+- A Decimal whose mantissa no i128 holds is `wrong_type` (api and `from_json`) or `parse_decimal`'s error, instead of a wrong number.
+- A Decimal field is read by the JSON number grammar: exponents are accepted and exact at the field's scale; `+1`, `.5`, `1.` and `01` are `wrong_type`. A `null` for any field means the key is missing: the field takes its declared default of any shape; a required field's `null` is `missing_field`. The generated Hale client reports an unreadable Decimal reply as `Lost` instead of `0d`.
+
+### Lifecycle and check
+
+- A `run()` watches the drain (and a `main` with no `run()` does not await it) when it reads this locus's `draining` through a `let` alias, through a free fn or another locus's method handed the locus as an argument, through a helper holding it in a declared field, or past a shadowing inner binding; before, only a read on a literal `self` counted, and such a child was awaited while it waited for the drain.
+- The "subscriber torn down at its statement" advisory no longer fires on a literal built inside a `run()` body, or on a holder whose children run; `hale verify` passes on such programs again.
+- A block whose trailing `match` leaves in every arm is a diverging block, accepted as a match arm, an `if` arm beside a valued one, or an `or` block, and refused only where a value is required and nothing else supplies one (named in the diagnostic). The refusal #1869 added covered the match-arm shape that v0.32.7 built.
+
+### Stdlib and runtime
+
+- `std::http::Server` reads a chunked request's framing strictly: a chunk size is at most 15 hex digits followed only by whitespace or `;`; `Transfer-Encoding` with `Content-Length`, a `Transfer-Encoding` list whose final coding is not exactly `chunked` or that names a coding the Server does not support, and whitespace before a header's colon answer 400. The handler sees the de-chunked body with `Content-Length` set and no `Transfer-Encoding`.
+- A send to a dead peer of a configured binding (`LOTUS_BUS_CONFIG`, a `bindings { }` entry) logs a WARN once per binding, then debug; a locus-served binding keeps the debug record and its lost marking. The TLS send path follows the same rule.
+
+### Lifecycle and bus
+
+- A `main` locus with no `run()` waits for a pinned child's `run()` unless that `run()` itself reads `draining` (directly or through a fn or method it calls). A `draining` read in the child's handler, `drain()` hook or another method no longer counts, so a pinned publisher whose hook reads the flag no longer loses its deliveries silently. The same rule decides which `run()` a sleep begun during the drain is cut short in.
+
+### Habitat
+
+- A habitat's head no longer wedges on a dial nobody answers: its memory connection (pond/pq `PgConn`/`PgPool`, `connect_timeout_ms`, default 10 s, failing `connect_timeout` once instead of redialling), the index's probe of an organism's face and the compose provider's docker probes are bounded. One plain connect held the head's one-at-a-time commands for the kernel's ~2 min of SYN retries, so `hale habitat organism place` failed at `Commands::allocations` ("did not answer within the head's deadline") and `hale habitat status` took ~37 s.
+- `Commands::allocations`, the index's pulse and the brief observe within 12 s: a host slow in a read is not asked again in it, and an allocation the read had no time for answers its last reading and how old it is. A slow observation is logged by the head's API child with what it took.
+- `hale habitat status` prints a `head` line: whether the head answered its read of the allocations, in how long, or why not.
+
+### Changed: a signal stops every program, and it exits 0
+
+- **SIGINT and SIGTERM now stop every program the same way, and it exits `0`.** The runtime ends every `run()` loop that does not read `self.draining` between two iterations (a drain check at each loop's back-edge, in `run()` and in `fn main`'s own body), wakes every blocking wait, runs the `drain()` / `dissolve()` hooks and exits `0`. A program that used to die by the signal with its hooks unrun (exit `143` for SIGTERM, `130` for SIGINT) now exits `0` after them: **a supervisor or a test that expected `143` from a stopped program sees `0`.** `143` now means the drain's grace ran out (a loop that reads `draining` and does not stop on it, a blocking foreign call, a subprocess the program waits for) or a second signal.
+- A blocking wait in a `run()` (or in what it calls) woken by the drain returns the outcome it already has for "nothing came": `accept` returns its closed `-1`, a TCP or TLS `recv` the empty answer of a peer's close (`recv_into` `0`), a UDP `recv` its timeout; `std::time::sleep` returns early. An untimed `accept` or `recv` used to stay blocked until the grace ran out.
+- Reading `self.draining` in `run()` (or in a method or fn it calls) is the opt-in to stopping by your own code: no drain checks are placed in that locus's loops. `hale check` warns at such a loop it cannot see stop on the flag ("this loop reads `draining` but I can't see it stop on it"), naming the shapes it proves: `while !self.draining { … }`, or `if self.draining { break; }` first in the body.
+- The signal handling is installed in every program; the count of loci "able to answer a drain" is gone, and with it the check's "drain hook behind an endless run" warning.
+
+### Fixed
+
+- The Hosts dashboard's Now table lines its gauges up row under row: Grafana sized each gauge's value text to the longest value it had seen so far, so a row reading `7%` started and ended its bar elsewhere than one reading `42%` (and at a narrow width the bar went). Memory used, disk used, CPU busy and GPU busy are each a percent with a gauge of it in the column after, the gauge showing no value of its own, its bar the whole cell.
+
 ## v0.32.7 — stops that end promptly, and a Mac that links (2026-11-06)
 
 A patch release from the first run of a habitat and voice on a laptop, and from hale-lang/voice's review.
