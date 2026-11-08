@@ -317,7 +317,8 @@ function fillForm(n) {
     out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
     try {
       const reply = await command(S.app, "HoldFill", { request_id: requestId(), record_head: S.record.record_head, position: n.id, holder: holder.value.trim() });
-      out.replaceChildren(await settled(reply, `proposed ${holder.value.trim()} holding ${n.name}; the Board ratifies it`));
+      const refusal = await settled(reply, `proposed ${holder.value.trim()} holding ${n.name}; the Board ratifies it`);
+      if (refusal) out.replaceChildren(refusal);
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, "fill this position"),
@@ -342,7 +343,8 @@ function openPositionForm(org, under) {
         position: "position:" + name.value.trim(), text: text.value.trim(), mandate: mandate.value.trim(),
         under: under ? under.id : "",
       });
-      out.replaceChildren(await settled(reply, `proposed opening ${name.value.trim()} with its mandate; the Board ratifies both`));
+      const refusal = await settled(reply, `proposed opening ${name.value.trim()} with its mandate; the Board ratifies both`);
+      if (refusal) out.replaceChildren(refusal);
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, under ? "open a position under " + under.name : "open a position"),
@@ -357,13 +359,16 @@ function openPositionForm(org, under) {
 // A write that landed moves the record: read it again so every later
 // command carries the current head and the board shows what the write
 // opened, keeping the receipt in view on the screen it came from.
+// Answers the refusal's card for the form to show; a landed write's card
+// rides the re-rendered screen instead, and the form, now detached, gets
+// nothing back.
 async function settled(reply, said) {
   const card = receiptCard(reply, said);
   if (!reply || reply.ok === false) return card;
   S.receipt = { tab: S.route.tab, id: S.route.id, card };
   try { await loadAll(); } catch (e) { card.append(el("div", { class: "note" }, "the record could not be read again: " + errorText(e))); }
   render();
-  return card;
+  return null;
 }
 
 function receiptCard(reply, said) {
@@ -450,7 +455,8 @@ function verdictForm(r) {
     out.replaceChildren(el("div", { class: "receipt" }, "deciding…"));
     try {
       const reply = await command(S.app, "ReviewVerdict", { request_id: requestId(), review_id: r.id, subject_digest: r.subject_digest, verdict: choice.value, comment: comment.value.trim() });
-      out.replaceChildren(await settled(reply, `${choice.value} recorded on ${r.id}`));
+      const refusal = await settled(reply, `${choice.value} recorded on ${r.id}`);
+      if (refusal) out.replaceChildren(refusal);
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, "decide"),
@@ -546,7 +552,8 @@ function nodeForm(prev) {
     if (prev) payload.supersedes = prev.id;
     try {
       const reply = await command(S.app, prev ? "KnowledgeNodeRevise" : "KnowledgeNodePropose", payload);
-      out.replaceChildren(await settled(reply, prev ? `revision of ${prev.name} proposed` : `${kind.value} ${name.value.trim()} proposed`));
+      const refusal = await settled(reply, prev ? `revision of ${prev.name} proposed` : `${kind.value} ${name.value.trim()} proposed`);
+      if (refusal) out.replaceChildren(refusal);
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, prev ? `revise this ${prev.kind}` : "propose a node"),
@@ -568,7 +575,8 @@ function retireForm(node) {
     out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
     try {
       const reply = await command(S.app, "KnowledgeNodeRetire", { request_id: requestId(), record_head: S.record.record_head, id: node.id, rationale: rationale.value.trim() });
-      out.replaceChildren(await settled(reply, `retirement of ${node.name} proposed`));
+      const refusal = await settled(reply, `retirement of ${node.name} proposed`);
+      if (refusal) out.replaceChildren(refusal);
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, "retire this node"),
