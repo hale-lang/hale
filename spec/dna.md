@@ -7177,7 +7177,7 @@ otherwise.
 | `HALE_DNA_OWNER_KEYS=<keys>` | one owner | `<owner>=<key> …`, space-separated: the owners `memory migrate` writes for a shared record. The keys stay the record's; memory never holds signature bytes. |
 | `HALE_DNA_RECEIPT_KEY=<key>` | unset | Sixteen characters or more: the key evidence bodies are sealed under. The first key given is written; a different one later is refused, because bodies sealed under the first would no longer open. |
 | `HALE_DNA_NATS_URL_OWNER=<url>` | the nerves allocation | The owner user's URL: it creates the organization's stream (`hale habitat migrate`, `nerves migrate`); `dev` and `nerves urls` derive the roles' URLs on it. |
-| `HALE_DNA_NATS_URL_SPINE=<url>` | unset | The spine user's URL, handed to the process that is the spine. |
+| `HALE_DNA_NATS_URL_SPINE=<url>` | unset | The spine user's URL, handed to the process that is the spine as recorded. `dna::nerves_spine_url()` answers it as that process dials it (`dna::reach_url`), so the organization's program, which connects to what it answers, reaches the habitat's nerves at `HALE_DNA_LOOPBACK_HOST` in a macOS body. |
 | `HALE_DNA_NATS_URL_HEAD=<url>` | unset | The head user's URL: subscribes, publishes nothing. |
 | `HALE_DNA_NATS_URL_APP=<url>` | unset | The application's URL: publishes on its own subjects only. |
 | `HALE_DNA_NATS_URL_REFLEXES=<url>` | unset | The reflexes' URL: publishes on `<org>.app.reflexes.>` alone. |
