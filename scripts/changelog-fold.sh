@@ -102,7 +102,11 @@ if [ "$stands" -ne 1 ]; then
     echo "changelog-fold: expected exactly one 'Hale is at **vX.Y.Z** (date) and pre-1.0' line in $readme, found $stands" >&2
     exit 1
 fi
-sed -i -E "s/^Hale is at \*\*v[0-9][0-9.]*\*\* \([0-9-]*\) and pre-1\.0/Hale is at **$version** ($date) and pre-1.0/" "$readme"
+# a backup suffix glued to -i, so BSD sed (macOS) and GNU sed read it alike;
+# a bare `-i -E` on BSD takes `-E` as the suffix and edits nothing
+sed -i.fold -E "s/^Hale is at \*\*v[0-9][0-9.]*\*\* \([0-9-]*\) and pre-1\.0/Hale is at **$version** ($date) and pre-1.0/" "$readme"
+rm -f "$readme.fold"
+grep -q "^Hale is at \*\*$version\*\* ($date) and pre-1.0" "$readme" || { echo "changelog-fold: $readme still does not name $version" >&2; exit 1; }
 
 echo "folded ${#fragments[@]} fragment(s) into $changelog under '## $version — $headline ($date)'"
 echo "set $readme: Hale is at $version ($date)"
