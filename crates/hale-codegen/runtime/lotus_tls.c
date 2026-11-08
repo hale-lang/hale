@@ -108,7 +108,7 @@ int     lotus_io_wait_fd(int fd, uint32_t events, int64_t deadline_ns);
 int     lotus_drain_stop_up(void);
 int     lotus_kwait_enter(int fd);
 void    lotus_kwait_leave(void);
-int     lotus_kwait_ended(void);
+int     lotus_kwait_ended(int fd);
 /* Level-triggered epoll event bits; values mirror sys/epoll.h
  * (fallbacks match lotus_arena.c's non-Linux inert defines). */
 #ifndef EPOLLIN
@@ -813,7 +813,7 @@ static int lotus_tls__read_until(int handle, SSL *ssl, char *buf, int max,
         if (!async) lotus_kwait_leave();
         if (n >= 0) return n;
         int err = SSL_get_error(ssl, n);
-        if (!async && errno == EINTR && lotus_kwait_ended()) return 0;
+        if (!async && errno == EINTR && lotus_kwait_ended(raw_fd)) return 0;
         /* A `SO_RCVTIMEO` timeout on the underlying blocking fd surfaces as
          * SSL_ERROR_WANT_READ (or WANT_WRITE during a renegotiation read).
          * That is *retryable*, not fatal — distinguish it so a caller that

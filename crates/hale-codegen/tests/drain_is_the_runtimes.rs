@@ -319,3 +319,127 @@ fn the_back_edge_check_is_where_the_runtime_stops() {
     assert!(manual.iter().all(|b| !b.contains("loop.drain_stop")), "a run() that reads `draining` has none");
     assert!(helper.iter().all(|b| !b.contains("loop.drain_stop")), "a free fn's loop has none");
 }
+
+/// Run `src` (its `PORT` replaced by the port of a listener this test
+/// holds) as the peer of its one connection: once the program has said
+/// `up` (and, for `http`, sent its request), SIGTERM it, then 100 ms
+/// later interrupt it once more with the runtime's own wake signal
+/// (SIGURG), so a receive in progress sees an EINTR while the stop is
+/// certainly up, and only 200 ms after that write `answer` (as an HTTP
+/// response body, for `http`). How it ended and what it printed.
+fn answered_through_the_stop(tag: &str, src: &str, http: bool) -> (std::process::ExitStatus, String, String) {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+    let port = listener.local_addr().expect("addr").port();
+    let bin = harness::unique_bin(tag);
+    build_opts::build_source(&src.replace("PORT", &port.to_string()), &bin, &build_opts::options()).expect("build");
+    let mut child = Command::new(&bin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
+    let stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let err_reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+    let (tx, rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut r = BufReader::new(stdout);
+        let mut seen = String::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match r.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    seen.push_str(&line);
+                    if line.trim() == "up" {
+                        let _ = tx.send(());
+                    }
+                }
+            }
+        }
+        seen
+    });
+    let (mut conn, _) = listener.accept().expect("the program connects");
+    if http {
+        // the request, to its blank line
+        let mut req = Vec::new();
+        let mut byte = [0u8; 1];
+        while !req.ends_with(b"\r\n\r\n") {
+            match conn.read(&mut byte) {
+                Ok(1) => req.push(byte[0]),
+                _ => break,
+            }
+        }
+    }
+    if rx.recv_timeout(Duration::from_secs(30)).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("{tag}: the program never printed `up`:\n{}", reader.join().unwrap_or_default());
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let pid = child.id().to_string();
+    assert!(Command::new("kill").args(["-TERM", &pid]).status().expect("kill").success(), "sent SIGTERM");
+    std::thread::sleep(Duration::from_millis(100));
+    let _ = Command::new("kill").args(["-URG", &pid]).status();
+    std::thread::sleep(Duration::from_millis(200));
+    let answer: &[u8] = if http {
+        b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nanswer"
+    } else {
+        b"answer"
+    };
+    let _ = conn.write_all(answer);
+    drop(conn);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(s) = child.try_wait().expect("try_wait") {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{tag}: still running 20 s after SIGTERM:\n{}", reader.join().unwrap_or_default());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let _ = std::fs::remove_file(&bin);
+    (status, reader.join().expect("reader"), err_reader.join().expect("stderr reader"))
+}
+
+/// A receive with a timeout of its own keeps it through a stop, whatever
+/// interrupts it. The stop's wake signal is never sent to one, but on
+/// Linux the SIGTERM itself interrupts a receive on a socket with
+/// SO_RCVTIMEO (such a call is never restarted, SA_RESTART or not), and a
+/// wake signal sent to a thread that has just left a registered wait lands
+/// in whatever it calls next. Either EINTR, met once the stop was up, read
+/// as "the stop ended this wait": an HTTP call in flight came back empty,
+/// so a SIGTERM'd DNA leg reading its hat gave its lease back instead of
+/// letting it expire (legs_test, intermittently). Here the peer answers
+/// 300 ms after the signal and the call gets the answer: a raw receive in
+/// `fn main` and in a main locus's `run()`, and a `std::http` call.
+#[test]
+fn a_timed_receive_keeps_its_timeout_through_an_interruption() {
+    let recv = "        let c = std::io::tcp::__connect(\"127.0.0.1\", PORT);\n        std::io::tcp::set_recv_timeout(c, 5s) or discard;\n        println(\"up\");\n        let got = std::io::tcp::__recv(c, 64);\n        println(\"got [\" + got + \"]\");";
+    let cases = [
+        ("fn_main", format!("fn main() {{\n{recv}\n        println(\"after\");\n}}\n"), false),
+        ("run", program(None, "n: Int = 0;", recv), false),
+        (
+            "http",
+            "fn main() {\n    let r = std::http::get(\"http://127.0.0.1:PORT/hat\") or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + \" \" + err.detail) };\n    println(\"got [\" + to_string(r.status) + \" \" + std::str::from_bytes(r.body) + \"]\");\n    println(\"after\");\n}\n".to_string(),
+            true,
+        ),
+    ];
+    for (name, src, http) in cases {
+        let tag = format!("drain_runtime_timed_{name}");
+        // the http call blocks main from its dial to its answer: `up` comes
+        // first, and the test waits for the request itself before it signals
+        let src = if http { src.replacen("fn main() {\n", "fn main() {\n    println(\"up\");\n", 1) } else { src };
+        let (status, stdout, stderr) = answered_through_the_stop(&tag, &src, http);
+        let want = if http { "got [200 answer]" } else { "got [answer]" };
+        assert!(
+            stdout.lines().any(|l| l == want),
+            "{tag}: the receive got the answer, not its closed outcome ({status:?}):\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert_eq!(status.code(), Some(0), "{tag}: exit 0 after the stop:\nstdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+}
