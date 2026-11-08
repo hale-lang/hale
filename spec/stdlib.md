@@ -603,7 +603,10 @@ pipe; a receive is still one syscall) and an `async_io` pool (where the
 pool's sweep resumes the park). Off an `async_io` pool a receive on a
 socket with a timeout of its own (`set_recv_timeout`: an HTTP call's
 read, a liveness loop's) is not woken: it answers at its timeout as it
-always did, and a call cut in flight would leave its answer unknown; on
+always did, and a call cut in flight would leave its answer unknown.
+Nothing else that interrupts it during the drain ends it either (on
+Linux the signal itself interrupts a receive on such a socket): it goes
+on to its answer or its timeout; on
 an `async_io` pool such a receive is a timed park, which the drain has
 always cut with its timeout outcome. An untimed wait (an accept, a receive
 with no timeout) is woken only where a `run()` (what it calls included)

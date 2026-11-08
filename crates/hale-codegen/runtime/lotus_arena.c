@@ -15250,8 +15250,10 @@ int lotus_drain_stop_fd(void) {
  * caught by the watcher, which sends it again every 20 ms through the
  * grace. A thread past its syscall clears its slot first; the narrow
  * race where the signal lands after that interrupts only a runtime call
- * that retries on EINTR. A thread with no free slot (more than
- * LOTUS_KWAIT_MAX at once) waits for its own end, bounded by the grace. */
+ * that retries on EINTR (a receive among them: `lotus_kwait_ended` ends
+ * only a registered wait with no timeout of its own). A thread with no
+ * free slot (more than LOTUS_KWAIT_MAX at once) waits for its own end,
+ * bounded by the grace. */
 #define LOTUS_KWAIT_MAX 1024
 #ifdef SIGURG
 #define LOTUS_WAKE_SIG SIGURG
@@ -15263,6 +15265,10 @@ static struct {
     int       fd;        /* __atomic: the socket the wait reads */
 } g_kwait[LOTUS_KWAIT_MAX];
 static __thread int t_kwait_slot = -1;
+/* Whether this thread's current receive registered (`lotus_kwait_enter`
+ * in a wait the stop watches): only such a wait is one an EINTR during
+ * the stop may end (`lotus_kwait_ended`). */
+static __thread int t_kwait_armed = 0;
 static int g_kwait_signal_on = 0;
 int64_t lotus_sock_get_recv_timeout_ns(int fd);
 
@@ -15280,6 +15286,7 @@ static void lotus_kwait_on_signal(int sig) {
  * in flight could leave its answer unknown (the stopper reads the
  * timeout when it kicks, so the receive itself pays no syscall). */
 int lotus_kwait_enter(int fd) {
+    t_kwait_armed = 0;
     int mode = lotus_drain_wait_mode();
     /* (Only while a stop is up does the receive read its socket's
      * timeout: a timed one waits it out.) */
@@ -15305,6 +15312,7 @@ int lotus_kwait_enter(int fd) {
         __atomic_store_n(&g_kwait[slot].active, 0, __ATOMIC_RELEASE);
         return 1;
     }
+    t_kwait_armed = 1;
     return 0;
 }
 
@@ -15313,10 +15321,21 @@ void lotus_kwait_leave(void) {
     if (slot >= 0) __atomic_store_n(&g_kwait[slot].active, 0, __ATOMIC_RELEASE);
 }
 
-/* After an EINTR in a registered wait: whether the stop ended it (it was
- * in progress when the stop began, so it ends wherever it is). */
-int lotus_kwait_ended(void) {
-    return lotus_drain_stopping();
+/* After an EINTR in a receive on `fd`: whether the stop ended it — the
+ * wait registered (it was in progress when the stop began, so it ends
+ * wherever it is), the stop is up, and the socket has no timeout of its
+ * own: exactly the waits `lotus_kwait_kick` signals. Any other EINTR is
+ * not the stop's, and the receive goes on (its loop asks
+ * `lotus_kwait_enter` again, which ends an untimed wait the stop cuts).
+ * Such an EINTR is ordinary during a stop: on Linux the SIGTERM itself
+ * interrupts a receive on a socket with SO_RCVTIMEO (never restarted,
+ * SA_RESTART or not), and a wake signal sent to a thread just leaving
+ * a registered wait lands in what it calls next. Read as the stop's, it
+ * cut an HTTP call in flight (its read is timed) to an empty answer:
+ * a SIGTERM'd DNA leg reading its hat gave its lease back. */
+int lotus_kwait_ended(int fd) {
+    return t_kwait_armed && lotus_drain_stopping()
+        && lotus_sock_get_recv_timeout_ns(fd) <= 0;
 }
 
 /* Send the wake signal to every thread in a registered wait whose
@@ -15486,7 +15505,8 @@ int lotus_kwait_enter(int fd) {
 }
 void lotus_kwait_leave(void) {
 }
-int lotus_kwait_ended(void) {
+int lotus_kwait_ended(int fd) {
+    (void)fd;
     return 0;
 }
 #endif /* __wasm__ */
@@ -25015,7 +25035,7 @@ static ssize_t lotus_udp_recvfrom_async(int fd, void *buf, size_t cap,
         socklen_t local_len = slen ? *slen : 0;
         ssize_t n = recvfrom(fd, buf, cap, 0, src, slen ? &local_len : NULL);
         if (!async) lotus_kwait_leave();
-        if (n < 0 && errno == EINTR && !async && lotus_kwait_ended()) {
+        if (n < 0 && errno == EINTR && !async && lotus_kwait_ended(fd)) {
             errno = EAGAIN;
             return -1;
         }
@@ -25471,7 +25491,7 @@ const char *lotus_tcp_recv_str(int fd, int max_bytes) {
         if (!async) lotus_kwait_leave();
         if (n >= 0) break;
         if (errno == EINTR) {
-            if (!async && lotus_kwait_ended()) return empty;
+            if (!async && lotus_kwait_ended(fd)) return empty;
             continue;
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -32549,7 +32569,7 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
         if (!async) lotus_kwait_leave();
         if (n >= 0) break;
         if (errno == EINTR) {
-            if (!async && lotus_kwait_ended()) return lotus_bytes_empty_global();
+            if (!async && lotus_kwait_ended(fd)) return lotus_bytes_empty_global();
             continue;
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -35739,7 +35759,7 @@ int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {
         if (!async) lotus_kwait_leave();
         if (n >= 0) break;
         if (errno == EINTR) {
-            if (!async && lotus_kwait_ended()) return 0;
+            if (!async && lotus_kwait_ended(fd)) return 0;
             continue;
         }
         /* A SO_RCVTIMEO timeout surfaces as EAGAIN/EWOULDBLOCK — retryable,
@@ -35822,7 +35842,7 @@ int64_t lotus_tcp_recv_stamped(int fd, void *builder, int64_t max_bytes) {
         if (!async && lotus_kwait_enter(fd)) return 0;
         n = recvmsg(fd, &msg, 0);
         if (!async) lotus_kwait_leave();
-        if (n < 0 && errno == EINTR && !async && lotus_kwait_ended()) return 0;
+        if (n < 0 && errno == EINTR && !async && lotus_kwait_ended(fd)) return 0;
         if (n >= 0) break;
         if (errno == EINTR) continue;
         /* SO_RCVTIMEO timeout → EAGAIN/EWOULDBLOCK: retryable (-2),
@@ -35895,7 +35915,7 @@ int64_t lotus_udp_recv_into(int fd, void *builder, int64_t max_bytes) {
         if (!async && lotus_kwait_enter(fd)) return -2;
         n = recvfrom(fd, tail, (size_t)max_bytes, 0, NULL, NULL);
         if (!async) lotus_kwait_leave();
-        if (n < 0 && errno == EINTR && !async && lotus_kwait_ended()) return -2;
+        if (n < 0 && errno == EINTR && !async && lotus_kwait_ended(fd)) return -2;
         if (n >= 0) break;
         if (errno == EINTR) continue;
         /* 2026-07-14: EAGAIN/EWOULDBLOCK now returns -2 (retryable —
