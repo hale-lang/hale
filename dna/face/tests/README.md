@@ -42,7 +42,7 @@ with `test.use`:
 
 The `page` fixture fails a test on any unhandled JavaScript error.
 `command-wire.mjs` has `isWrite(request)` for proving a screen sent no
-mutation; `http-fixture.mjs` intercepts responses for error paths.
+mutation.
 
 ## The specs
 
