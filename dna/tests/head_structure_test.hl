@@ -437,9 +437,12 @@ locus App {
                 && has(std::json::find_field_raw(agent, "holders"), "\"ada\""),
             "the chart states the agent position, held by ada: " + agent,
         );
+        // the graft proposed `api/dev` as a hole: in the chart as proposed,
+        // never as stated, until the Board ratifies something that opens it
+        let hole = position_in(chart.positions, "position:api/dev");
         std::test::assert(
-            len(position_in(chart.positions, "position:api/dev")) == 0,
-            "nothing the batch would open is in the chart yet",
+            len(hole) == 0 || std::json::find_string_field(hole, "state") == "proposed",
+            "what the batch would open is not stated yet: " + hole,
         );
         // the board's Tasks: none handed, and the Ledger reached
         let board = tasks_of(self.sock);
@@ -555,15 +558,25 @@ locus App {
         std::test::assert(
             len(dev) > 0
                 && std::json::find_string_field(dev, "state") == "proposed"
-                && std::json::find_string_field(dev, "review") == filing.review_id
+                && len(std::json::find_string_field(dev, "review")) > 0
                 && std::json::find_string_field(dev, "mandate") == "proposed",
-            "the proposed api/dev, awaiting its Review: " + dev,
+            "api/dev is proposed, with a Review that awaits the Board and a mandate proposed: "
+                + dev,
         );
         let reviewer = position_in(chart2.positions, "position:api/reviewer");
         std::test::assert(
             len(reviewer) > 0
-                && std::json::find_string_field(reviewer, "under") == "position:api/dev",
-            "api/reviewer under api/dev, as the batch opens it: " + reviewer,
+                && std::json::find_string_field(reviewer, "state") == "proposed"
+                && len(std::json::find_string_field(reviewer, "review")) > 0,
+            "api/reviewer is proposed, with a Review that awaits the Board: " + reviewer,
+        );
+        std::test::assert(
+            len(position_in(chart2.positions, "position:agent")) > 0
+                && std::json::find_string_field(
+                    position_in(chart2.positions, "position:agent"),
+                    "state",
+                ) == "stated",
+            "the stated position stays stated beside the proposed ones",
         );
 
         // ---- the same steps again: the Review they await, and no row

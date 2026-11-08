@@ -317,7 +317,7 @@ function fillForm(n) {
     out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
     try {
       const reply = await command(S.app, "HoldFill", { request_id: requestId(), record_head: S.record.record_head, position: n.id, holder: holder.value.trim() });
-      out.replaceChildren(receiptCard(reply, `proposed ${holder.value.trim()} holding ${n.name}; the Board ratifies it`));
+      out.replaceChildren(await settled(reply, `proposed ${holder.value.trim()} holding ${n.name}; the Board ratifies it`));
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, "fill this position"),
@@ -342,7 +342,7 @@ function openPositionForm(org, under) {
         position: "position:" + name.value.trim(), text: text.value.trim(), mandate: mandate.value.trim(),
         under: under ? under.id : "",
       });
-      out.replaceChildren(receiptCard(reply, `proposed opening ${name.value.trim()} with its mandate; the Board ratifies both`));
+      out.replaceChildren(await settled(reply, `proposed opening ${name.value.trim()} with its mandate; the Board ratifies both`));
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, under ? "open a position under " + under.name : "open a position"),
@@ -352,6 +352,18 @@ function openPositionForm(org, under) {
     el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Propose the opening")),
     out,
   );
+}
+
+// A write that landed moves the record: read it again so every later
+// command carries the current head and the board shows what the write
+// opened, keeping the receipt in view on the screen it came from.
+async function settled(reply, said) {
+  const card = receiptCard(reply, said);
+  if (!reply || reply.ok === false) return card;
+  S.receipt = { tab: S.route.tab, id: S.route.id, card };
+  try { await loadAll(); } catch (e) { card.append(el("div", { class: "note" }, "the record could not be read again: " + errorText(e))); }
+  render();
+  return card;
 }
 
 function receiptCard(reply, said) {
@@ -438,7 +450,7 @@ function verdictForm(r) {
     out.replaceChildren(el("div", { class: "receipt" }, "deciding…"));
     try {
       const reply = await command(S.app, "ReviewVerdict", { request_id: requestId(), review_id: r.id, subject_digest: r.subject_digest, verdict: choice.value, comment: comment.value.trim() });
-      out.replaceChildren(receiptCard(reply, `${choice.value} recorded on ${r.id}`));
+      out.replaceChildren(await settled(reply, `${choice.value} recorded on ${r.id}`));
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, "decide"),
@@ -474,12 +486,14 @@ async function act(wrap, member, payload, said) {
     const reply = await command(S.app, member, payload);
     out.replaceChildren(reply.ok ? said + (reply.state ? " · " + reply.state : "") : "refused: " + (reply.code || (reply.refusal && reply.refusal.kind) || "") + " " + (reply.why || (reply.refusal && reply.refusal.reason) || ""));
     if (!reply.ok) out.classList.add("refused");
+    else { S.receipt = { tab: S.route.tab, id: S.route.id, card: out }; await loadAll(); render(); }
   } catch (e) { out.classList.add("refused"); out.replaceChildren(errorText(e)); }
 }
 
 // ---- knowledge: every node by kind, one node with its relations -----------
 
 const KIND_ORDER = ["purpose", "mandate", "practice", "idea", "concept", "graph", "design", "document"];
+const REVISABLE_KINDS = ["idea", "concept", "practice", "task_concept"];
 
 function renderKnowledge(main) {
   if (S.errors.knowledge) { main.append(stateCard("unavailable", "knowledge is unavailable: " + errorText(S.errors.knowledge))); return; }
@@ -495,7 +509,8 @@ function renderKnowledge(main) {
   } else {
     page.append(nodePage(node));
     readNodeRelations(node.id).then(rel => page.append(relations(node, rel)));
-    if (S.calls.has("KnowledgeNodeRevise") && node.accepted) page.append(nodeForm(node));
+    // the kinds a revision may carry (ops::KnowledgeNodeCommandCodec)
+    if (S.calls.has("KnowledgeNodeRevise") && node.accepted && REVISABLE_KINDS.includes(node.kind)) page.append(nodeForm(node));
     if (S.calls.has("KnowledgeNodeRetire") && node.accepted) page.append(retireForm(node));
   }
   main.append(el("div", { class: "kn" }, list, page));
@@ -527,14 +542,14 @@ function nodeForm(prev) {
   return el("form", { class: "act", onsubmit: async ev => {
     ev.preventDefault();
     out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
-    const payload = { request_id: requestId(), record_head: S.record.record_head, kind: kind.value, name: name.value.trim(), text: text.value, author: (S.principal && S.principal.name) || "", target: target.value.trim() || "org", rationale: rationale.value.trim() };
+    const payload = { request_id: requestId(), record_head: S.record.record_head, kind: prev ? prev.kind : kind.value, name: name.value.trim(), text: text.value, author: (S.principal && S.principal.name) || "", target: target.value.trim() || "org", rationale: rationale.value.trim() };
     if (prev) payload.supersedes = prev.id;
     try {
       const reply = await command(S.app, prev ? "KnowledgeNodeRevise" : "KnowledgeNodePropose", payload);
-      out.replaceChildren(receiptCard(reply, prev ? `revision of ${prev.name} proposed` : `${kind.value} ${name.value.trim()} proposed`));
+      out.replaceChildren(await settled(reply, prev ? `revision of ${prev.name} proposed` : `${kind.value} ${name.value.trim()} proposed`));
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
-    el("h3", {}, prev ? "revise this node" : "propose a node"),
+    el("h3", {}, prev ? `revise this ${prev.kind}` : "propose a node"),
     prev ? "" : el("label", {}, "kind", kind),
     el("label", {}, "name", name),
     el("label", {}, "text", text),
@@ -553,7 +568,7 @@ function retireForm(node) {
     out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
     try {
       const reply = await command(S.app, "KnowledgeNodeRetire", { request_id: requestId(), record_head: S.record.record_head, id: node.id, rationale: rationale.value.trim() });
-      out.replaceChildren(receiptCard(reply, `retirement of ${node.name} proposed`));
+      out.replaceChildren(await settled(reply, `retirement of ${node.name} proposed`));
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, "retire this node"),
@@ -631,6 +646,13 @@ function render() {
   if (S.route.tab === "org") renderOrg(main);
   else if (S.route.tab === "board") renderBoard(main);
   else renderKnowledge(main);
+  // a write's receipt stays in view on the screen it came from
+  const r = S.receipt;
+  if (r && r.tab === S.route.tab) {
+    const insp = main.querySelector(".insp") || main.querySelector(".node");
+    if (insp) insp.prepend(r.card);
+  }
+  S.receipt = null;
 }
 
 async function boot() {
