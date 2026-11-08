@@ -351,9 +351,6 @@ fn grafana_request(req: std::http::Request, header: String, person: String) -> S
 // The organization shell's address when `/` lands elsewhere (a habitat's
 // face lands on its operator face, `dna::face_home`).
 const ORGANIZATION_PATH: String = "/organization";
-// The next face (`dna/face/web/next.html`): the basic org chart, board
-// and knowledge screens, behind the same gate as the shell.
-const NEXT_PATH: String = "/next";
 
 // A redirect to a path of this face.
 fn moved(to: String) -> std::http::Response {
@@ -623,13 +620,7 @@ locus Face {
             return self.app_asset(req, path);
         }
         if req.method == "GET" && path == "/index" { return self.index_page(req); }
-        if req.method == "GET"
-            && (
-                path == "/"
-                    || path == ORGANIZATION_PATH
-                    || (path == NEXT_PATH && self.web.has_next())
-            )
-        {
+        if req.method == "GET" && (path == "/" || path == ORGANIZATION_PATH) {
             // the head's gate at `/`: 204 lets the shell out, anything else is the head's to say
             let mut at_root = req;
             at_root.path = if path == "/" { req.path } else { "/" };
@@ -640,8 +631,6 @@ locus Face {
             if gate.status != 204 { return self.hand_over(req, gate.raw); }
             let home = dna::face_home();
             if path == "/" && len(home) > 0 { return moved(home); }
-            // the next face: the basic org chart, board and knowledge screens
-            if path == NEXT_PATH { return self.web.response("/next"); }
             return self.web.response("/");
         }
         if req.method == "GET" && self.web.serves(path) && cut < 0 {

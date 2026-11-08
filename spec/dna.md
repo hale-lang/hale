@@ -6823,8 +6823,12 @@ The head serves surfaces only. The standard face stands in front of it,
 on the port the browser opens (8792; `--port`), the head on the loopback
 behind it (`--head-port`, 8796; it learns the face's as
 `HALE_DNA_PUBLIC_PORT`, its origin for sign-in, host checks and
-commands). The face serves `GET /` and the shell's assets from
-`dna/face/web` and `GET /app/…` from the attached project's `ui/`, and
+commands). The face is three static files (`dna/face/web`: `index.html`,
+`app.js`, `styles.css`), three screens over the head's surface: the org
+chart as the graph states it (**The chart and the board**, above), the
+board of handed Tasks and Reviews, and the knowledge the record holds,
+every write a command the signed-in person could issue from the CLI. The
+face serves `GET /` and those assets and `GET /app/…` from the attached project's `ui/`, and
 passes every other request to the head as the browser sent it: method,
 path and query, headers (cookie, origin, host) and body, the answer
 written back as it came, an event stream held open until either end closes.
@@ -6847,7 +6851,10 @@ sent it (the head's browser routes are not rows of a surface); the face's
 own reads go through a client.
 
 **The chart and the board.** Two more reads of `HeadCommands` serve the
-face's basic screens, beside the index and relayed as it is: `Commands::org`
+face's screens beside the index; the face calls all three through the
+record's commands relay (`POST …/commands`, the calls `Index`, `Org` and
+`Tasks`), as it sends every command, so one path carries its reads and its
+writes with or without a project head in front: `Commands::org`
 (`dna/api/org_chart.hl`) takes `{limit}` and answers the record's revision,
 its purpose, its **positions** (a JSON array: each `position` node the graph
 states, with `id`, `name`, `text`, `under` (the parent of its `unfold` edge,
@@ -6981,8 +6988,8 @@ placement), never the program `dna/host`. They are reads any authenticated
 caller the record knows may ask, they write nothing, and the head relays
 them from the face as it relays the index: `POST
 /api/hale/v1/head/surface/call/<member>` for the surface's reads
-(`Commands::index`, `::org`, `::tasks`, `::hosts`, `::allocations`,
-`::policy`) and no other member. `habitat.host` and `habitat.policy` are row kinds of the habitat's
+(`Commands::index`, `::hosts`, `::allocations`, `::policy`) and no other
+member. `habitat.host` and `habitat.policy` are row kinds of the habitat's
 record, written by `hale habitat up`; an allocation's provider and host
 are fields of the existing `habitat.allocated` row. `Commands::hosts`
 leaves out a removed host. Four Board rows (`requires: [owner]`) manage

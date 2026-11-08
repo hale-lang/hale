@@ -405,18 +405,8 @@ pub const HEAD_FILES: &[EmbeddedFile] = at![
     "dna/face/standard/index.hl",
     "dna/face/standard/main.hl",
     "dna/face/web/app.js",
-    "dna/face/web/application.js",
-    "dna/face/web/definition-draft.js",
     "dna/face/web/index.html",
-    "dna/face/web/knowledge-draft.js",
-    "dna/face/web/next.css",
-    "dna/face/web/next.html",
-    "dna/face/web/next.js",
-    "dna/face/web/organization-draft.js",
-    "dna/face/web/projects.js",
     "dna/face/web/styles.css",
-    "dna/face/web/task-administration.js",
-    "dna/face/web/task-create.js",
     "dna/face/start.sh",
 ];
 
