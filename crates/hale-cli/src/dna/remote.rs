@@ -702,8 +702,8 @@ fn face_of(head: &str) -> String {
 
 /// `hale habitat up --host <name> [--user <u>] [--port <n>]`, with `up`'s
 /// own flags (`rest`) passed on to the `up` run on the machine.
-pub(super) fn up(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image: Option<&str>, rest: &[String]) -> ExitCode {
-    match up_lines(host, user, port, name, image, rest) {
+pub(super) fn up(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image: Option<&str>, attach: bool, rest: &[String]) -> ExitCode {
+    match up_lines(host, user, port, name, image, attach, rest) {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");
@@ -717,7 +717,7 @@ pub(super) fn up(host: &str, user: Option<&str>, port: Option<u16>, name: &str, 
     }
 }
 
-fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image: Option<&str>, rest: &[String]) -> Result<Vec<String>, String> {
+fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image: Option<&str>, attach: bool, rest: &[String]) -> Result<Vec<String>, String> {
     let kept = pointer();
     if let Some(k) = &kept {
         if k["host"].as_str() != Some(host) || k["name"].as_str() != Some(name) {
@@ -738,6 +738,12 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     // a second `up` reconnects: the habitat there must be the one the
     // pointer names, by its record's identity
     let (_, _, before) = remote_state(&t, &m)?;
+    // a habitat already running there, and no pointer here: pointing a second
+    // directory at it is a choice, never what a shell that names another
+    // habitat's directory (XDG_DATA_HOME) does by itself
+    if let Some(why) = attach_refusal(host, kept.is_some(), &before, attach) {
+        return Err(why);
+    }
     if let Some(k) = &kept {
         let recorded = k["identity"].as_str().unwrap_or("");
         if !recorded.is_empty() && before != recorded {
@@ -792,7 +798,8 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     if !link.is_empty() {
         out.push(format!("{:<8}{link}", "sign in"));
     }
-    out.push(format!("{:<8}{}… ({})", "record", &identity[..12.min(identity.len())], if kept.is_some() { "reconnected; the pointer is the same habitat's" } else { "pointed at from this machine" }));
+    out.push(format!("{:<8}{}… ({})", "record", &identity[..12.min(identity.len())], if kept.is_some() { "reconnected; the pointer is the same habitat's" } else if attach { "attached: this machine points at it" } else { "pointed at from this machine" }));
+    out.push(format!("{:<8}{}{}", "pointer", pointer_path().display(), super::habitat_dir_named_by()));
     if !super::readings::grafana_off() {
         out.push(format!("{:<8}{face}{}", "grafana", super::readings::GRAFANA_PATH));
     }
@@ -803,11 +810,32 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     Ok(out)
 }
 
+/// Why `up --host` stops before it changes anything, when a habitat already
+/// runs on `host` (its record `before`) and this machine has no pointer to
+/// it: without `--attach` that is refused, saying where the pointer would
+/// go; `--attach` with nothing running there is refused too.
+fn attach_refusal(host: &str, pointed: bool, before: &str, attach: bool) -> Option<String> {
+    if pointed {
+        return None;
+    }
+    let here = format!("{}{}", pointer_path().display(), super::habitat_dir_named_by());
+    if !before.is_empty() && !attach {
+        return Some(format!(
+            "a habitat already runs on {host} (its record {}…) and this machine has no pointer to it at {here}: `--attach` points this machine at it; nothing was changed",
+            &before[..12.min(before.len())]
+        ));
+    }
+    if before.is_empty() && attach {
+        return Some(format!("no habitat runs on {host} to attach to: `hale habitat up --host {host}` without `--attach` brings one up; nothing was changed"));
+    }
+    None
+}
+
 /// `hale habitat status` of a habitat on another machine: the pointer, and
 /// what its head answers (`Commands::index`, `Commands::allocations`).
 pub(super) fn status(p: &serde_json::Value) -> ExitCode {
     let head = p["head"].as_str().unwrap_or("");
-    println!("habitat {} on {} ({}; this machine holds its pointer, {})", p["name"].as_str().unwrap_or(""), p["host"].as_str().unwrap_or(""), p["dir"].as_str().unwrap_or(""), pointer_path().display());
+    println!("habitat {} on {} ({}; this machine holds its pointer, {}{})", p["name"].as_str().unwrap_or(""), p["host"].as_str().unwrap_or(""), p["dir"].as_str().unwrap_or(""), pointer_path().display(), super::habitat_dir_named_by());
     println!("{:<8}{}", "name", p["name"].as_str().unwrap_or(""));
     let identity = p["identity"].as_str().unwrap_or("");
     println!("{:<8}on {} (record {}…)", "genome", p["host"].as_str().unwrap_or(""), &identity[..12.min(identity.len())]);
@@ -1507,6 +1535,20 @@ pub(super) fn refuse_local_up(p: &serde_json::Value) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // a habitat already running on the host and no pointer here is refused
+    // without `--attach`, saying where the pointer would be; `--attach` with
+    // nothing there is refused too; a pointer here is never in question
+    #[test]
+    fn an_up_with_no_pointer_never_attaches_by_itself() {
+        let refused = attach_refusal("box", false, "af14d5fbe788aaaa", false).unwrap();
+        assert!(refused.starts_with("a habitat already runs on box (its record af14d5fbe788…) and this machine has no pointer to it at "), "{refused}");
+        assert!(refused.contains(&pointer_path().display().to_string()) && refused.ends_with("`--attach` points this machine at it; nothing was changed"), "{refused}");
+        assert_eq!(attach_refusal("box", false, "af14d5fbe788aaaa", true), None);
+        assert_eq!(attach_refusal("box", false, "", false), None, "a new habitat there is brought up and pointed at");
+        assert!(attach_refusal("box", false, "", true).unwrap().starts_with("no habitat runs on box to attach to"));
+        assert_eq!(attach_refusal("box", true, "af14d5fbe788aaaa", false), None);
+    }
 
     // a script for `sh` reaches `sh` whatever the login shell: zsh, which
     // refuses a glob that matches nothing, runs the vault's family scan

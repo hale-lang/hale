@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use super::{host_run, local_habitat_dir, local_habitat_project, manifest_pin, memory_migrate, nerves_migrate, project, MemoryPlan, NervesPlan};
+use super::{habitat_dir_named_by, host_run, local_habitat_dir, local_habitat_project, manifest_pin, memory_migrate, nerves_migrate, project, MemoryPlan, NervesPlan};
 
 #[path = "sapling.rs"]
 mod sapling;
@@ -90,7 +90,7 @@ pub(super) fn trusts_nursery(source: &str) -> bool {
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
     r#"usage: hale habitat [--head <url>] up [--no-body] [--profile local] [--backends own|operator] [--name <name>] [--image <tag>]
-       hale habitat up --host <name> [--user <user>] [--port <n>] [--name <name>] [--image <tag>] [--backends own|operator]
+       hale habitat up --host <name> [--user <user>] [--port <n>] [--name <name>] [--image <tag>] [--backends own|operator] [--attach]
        hale habitat image build [<checkout>]
        hale habitat [--head <url>] graft <dir> [--attach] [--no-library] [--no-pack]
        hale habitat graft --resume <path on the habitat's machine> [flags]
@@ -166,7 +166,9 @@ up --host <name>     run the habitat on another machine, one with docker and
                      on its head and face at http://<name>:<port>, and keep
                      a pointer here (the name, the host, the head's URL and
                      launch token, the record's identity) in place of a
-                     habitat. The face and head bind the address <name>
+                     habitat; a habitat already running there with no
+                     pointer here is refused unless --attach, which points
+                     this machine at it. The face and head bind the address <name>
                      resolves to here. Every verb here reaches the head
                      through the pointer; `status` asks it, `down` runs
                      there over SSH (`--forget` planned and confirmed
@@ -2109,6 +2111,7 @@ fn up(args: &[String]) -> ExitCode {
     let mut on_host: Option<String> = None;
     let mut ssh_user: Option<String> = None;
     let mut ssh_port: Option<u16> = None;
+    let mut attach = false;
     // what `up` on the habitat's machine is handed of these flags
     let mut passed: Vec<String> = Vec::new();
     let mut i = 0;
@@ -2154,6 +2157,7 @@ fn up(args: &[String]) -> ExitCode {
                 asked_image = Some(args[i + 1].clone());
                 i += 1;
             }
+            "--attach" => attach = true,
             other => {
                 eprintln!("hale habitat up: `{other}` is not a flag of `up`\n{}", usage_text());
                 return ExitCode::from(2);
@@ -2168,6 +2172,10 @@ fn up(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if attach && on_host.is_none() {
+        eprintln!("hale habitat up: `--attach` points this machine at a habitat already running on another (`--host <name>`)\n{}", usage_text());
+        return ExitCode::from(2);
+    }
     if let Some(host) = on_host {
         if no_body || profile != "local" {
             eprintln!("hale habitat up --host: a habitat on another machine is the `local` profile with its body and face (no `--no-body`)");
@@ -2182,7 +2190,7 @@ fn up(args: &[String]) -> ExitCode {
             }
             None => DEFAULT_HABITAT_NAME.to_string(),
         };
-        return remote::up(&host, ssh_user.as_deref(), ssh_port, &name, asked_image.as_deref(), &passed);
+        return remote::up(&host, ssh_user.as_deref(), ssh_port, &name, asked_image.as_deref(), attach, &passed);
     }
     if let Some(p) = remote::pointer() {
         return remote::refuse_local_up(&p);
@@ -2301,7 +2309,7 @@ fn place(genome: &Path, backends: &str) -> Result<(), String> {
 /// allocation moves at its upgrade or with `hale habitat migrate`.
 fn bring_up(backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, String> {
     let genome = genome_dir();
-    let mut out = vec![format!("habitat local at {} (compose project {}; {backends} backends)", local_habitat_dir(), local_habitat_project())];
+    let mut out = vec![format!("habitat local at {}{} (compose project {}; {backends} backends)", local_habitat_dir(), habitat_dir_named_by(), local_habitat_project())];
     // born whole once its identity is pinned and no birth is pending: a
     // birth that stopped part way left its steps in `birth.pending`, and is
     // resumed from them (memory that is merely down is never mistaken for
@@ -3340,7 +3348,7 @@ fn mcp_port() -> Option<u16> {
 
 fn status() -> ExitCode {
     let genome = genome_dir();
-    println!("habitat local at {} (compose project {})", local_habitat_dir(), local_habitat_project());
+    println!("habitat local at {}{} (compose project {})", local_habitat_dir(), habitat_dir_named_by(), local_habitat_project());
     // its name, as its record holds it (the `habitat.profile` row)
     let recorded = rows_of(&genome).iter().rev().find(|r| r["kind"] == "habitat.profile").and_then(|r| r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())).and_then(|b| b["name"].as_str().map(str::to_string));
     let kept = std::fs::read_to_string(name_file()).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());

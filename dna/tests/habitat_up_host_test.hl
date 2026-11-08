@@ -286,6 +286,38 @@ fn main() {
         other.code != 0 && std::str::contains(other.stderr, "points at the habitat `remote-one`"),
         "a pointer names one habitat: " + other.stderr,
     );
+    // ---- a habitat running there and no pointer here (a shell naming
+    // another habitat's directory, a pointer lost): `up --host` changes
+    // nothing and says so, and `--attach` points this machine at it again
+    let identity = std::json::find_string_field(std::io::fs::read_file(pointer) or "", "identity");
+    dna::run_tool("mv\n" + pointer + "\n" + pointer + ".lost");
+    let unpointed = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\nup\n--host\nlocalhost\n--name\nremote-one",
+    );
+    std::test::assert(
+        unpointed.code != 0
+            && std::str::contains(unpointed.stderr, "a habitat already runs on localhost")
+            && std::str::contains(unpointed.stderr, "`--attach` points this machine at it")
+            && !std::io::fs::file_exists(pointer),
+        "an up with no pointer to a running habitat changes nothing: " + unpointed.stdout
+            + unpointed.stderr,
+    );
+    let attached = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\nup\n--host\nlocalhost\n--name\nremote-one\n--attach",
+    );
+    std::test::assert(
+        attached.code == 0
+            && std::str::contains(attached.stdout, "attached: this machine points at it")
+            && std::str::contains(attached.stdout, "pointer " + pointer)
+            && std::json::find_string_field(std::io::fs::read_file(pointer) or "", "identity")
+            == identity,
+        "--attach points this machine at the same habitat: " + attached.stdout + attached.stderr,
+    );
+    dna::run_tool("rm\n-f\n" + pointer + ".lost");
     let projects = dna::trim_nl(
         dna::run_tool(
             "sh\n-c\ndocker ps -aq | xargs -r docker inspect --format '{{index .Config.Labels \"com.docker.compose.project\"}} {{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' | grep -F \" $1\" | cut -d' ' -f1 | sort -u | head -n 1\nsh\n"
