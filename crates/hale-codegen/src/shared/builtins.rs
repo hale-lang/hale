@@ -872,31 +872,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_failure_await", await_ty, None);
-        // GH #1077: the live count of instances that can answer a drain,
-        // and by locus name (the second argument) so the drain grace's
-        // report can name the ones still alive.
-        let obs_ty = void_t.fn_type(
-            &[
-                self.context.i64_type().into(),
-                self.context.ptr_type(inkwell::AddressSpace::default()).into(),
-            ],
-            false,
-        );
-        self.module
-            .add_function("lotus_drain_observer_add", obs_ty, None);
-        // An instance counted out of the drain observers: when its run()
-        // has returned for good, or at its arena's destroy, whichever
-        // comes first (`self`, its locus's name).
-        let obs_out_ty = void_t.fn_type(
-            &[
-                self.context.ptr_type(inkwell::AddressSpace::default()).into(),
-                self.context.ptr_type(inkwell::AddressSpace::default()).into(),
-            ],
-            false,
-        );
-        self.module.add_function("lotus_drain_observer_enter", obs_out_ty, None);
-        self.module.add_function("lotus_drain_observer_finished", obs_out_ty, None);
-        self.module.add_function("lotus_drain_observer_leave", obs_out_ty, None);
         self.module.add_global(
             self.context.i64_type(),
             None,
@@ -2700,9 +2675,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // GH #1039: the whole-process drain. `self.draining` loads
         // the runtime's exported flag; the main prelude installs the
-        // SIGINT / SIGTERM handling when the program reads it.
-        // declare void @lotus_drain_signals_install(i64 observes_drain)
-        let drain_install_ty = void_t.fn_type(&[i64_t.into()], false);
+        // SIGINT / SIGTERM handling in every program a signal reaches
+        // (GH #1858).
+        // declare void @lotus_drain_signals_install()
+        let drain_install_ty = void_t.fn_type(&[], false);
         self.module.add_function(
             "lotus_drain_signals_install",
             drain_install_ty,

@@ -391,7 +391,13 @@ down," use the four-piece pattern. Spec reference:
   readable inside method bodies. True from the moment
   `violate` (or any drain trigger) fires until dissolve
   completes. Useful for "don't publish further after we
-  decided to wind down."
+  decided to wind down." You need not read it for a clean
+  stop: on SIGTERM / SIGINT the runtime ends every `run()`
+  loop that does not read it between iterations, wakes every
+  wait, runs the hooks and exits 0. Reading it in `run()`
+  takes the drain into your own hands (`while
+  !self.draining { … }`, then flush); `hale check` warns at a
+  loop of such a `run()` it cannot see stop on it.
 
 The canonical pattern for "catch error and shut this locus
 down" is a closure declaration + a member fn + one `violate`

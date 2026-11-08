@@ -113,6 +113,7 @@ pub mod unit_report;
 mod qualified_subjects;
 pub mod snapshot;
 pub mod resource_budget;
+pub mod drain_honour;
 pub mod flows;
 mod fn_values;
 mod shadowed_callees;

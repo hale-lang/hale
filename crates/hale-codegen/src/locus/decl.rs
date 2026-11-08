@@ -1420,6 +1420,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 arena_elidable: self.locus_elision(&l.name.name)?.arena,
                 empty_lifecycle: std::collections::BTreeSet::new(),
                 run_watches_drain: self.flows.run_watches_drain(l),
+                run_manual_drain: self.flows.run_manual_drain(l),
             },
         );
         Ok(())

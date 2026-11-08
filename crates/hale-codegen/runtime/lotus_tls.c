@@ -102,6 +102,13 @@ int64_t lotus_sock_get_send_timeout_ns(int fd);
  * point of this file waits through it, so the handshake, the reads and the
  * writes park on an async_io pool the way the plain-tcp primitives do. */
 int     lotus_io_wait_fd(int fd, uint32_t events, int64_t deadline_ns);
+/* GH #1858: the drain's stop (lotus_arena.c): whether one is up, and the
+ * registration a blocking read takes around its syscall so a stop's wake
+ * signal interrupts it (enter: 1 the stop already ended the wait). */
+int     lotus_drain_stop_up(void);
+int     lotus_kwait_enter(int fd);
+void    lotus_kwait_leave(void);
+int     lotus_kwait_ended(void);
 /* Level-triggered epoll event bits; values mirror sys/epoll.h
  * (fallbacks match lotus_arena.c's non-Linux inert defines). */
 #ifndef EPOLLIN
@@ -797,9 +804,16 @@ static int lotus_tls__read_until(int handle, SSL *ssl, char *buf, int max,
         if (until > 0 && (deadline <= 0 || deadline > until)) deadline = until;
     }
     for (;;) {
+        /* GH #1858: a stop (a signal's drain, a failed test's) ends a
+         * blocking read as the peer's close would (0): the thread is
+         * registered around the read (`lotus_kwait_enter`), so the stop's
+         * wake signal interrupts it. */
+        if (!async && lotus_kwait_enter(raw_fd)) return 0;
         int n = SSL_read(ssl, buf, max);
+        if (!async) lotus_kwait_leave();
         if (n >= 0) return n;
         int err = SSL_get_error(ssl, n);
+        if (!async && errno == EINTR && lotus_kwait_ended()) return 0;
         /* A `SO_RCVTIMEO` timeout on the underlying blocking fd surfaces as
          * SSL_ERROR_WANT_READ (or WANT_WRITE during a renegotiation read).
          * That is *retryable*, not fatal — distinguish it so a caller that
@@ -811,6 +825,9 @@ static int lotus_tls__read_until(int handle, SSL *ssl, char *buf, int max,
                 uint32_t ev = (err == SSL_ERROR_WANT_WRITE) ? EPOLLOUT
                                                             : EPOLLIN;
                 if (lotus_io_wait_fd(raw_fd, ev, deadline) == 0) continue;
+                /* GH #1858: a wait with no deadline only a stop ends:
+                 * closed. */
+                if (deadline == 0 && lotus_drain_stop_up()) return 0;
             }
             return -2;
         }

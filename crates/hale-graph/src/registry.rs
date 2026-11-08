@@ -1135,7 +1135,8 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("codegen (run elision, run-end reclaim and the release call: `Cx::is_flow`, one row read)", CG, "is_flow"),
             consumer_at("codegen (the generic-instantiation queue: each locus specialization it creates asks the row for its template's clauses, under the substitution its synthesis applies)", CG, "specialize("),
             consumer_at("codegen (the watches-drain column, read once per declaration into `LocusInfo::run_watches_drain`: a run()'s wait frame, and which pinned runs a main locus with no run() waits for before its tree's drain)", CG_DECL, "run_watches_drain"),
-            consumer_at("check (the drain-hook law reads the watches-drain column)", CHECK, "watches_drain"),
+            consumer_at("codegen (the manual-drain column, read once per declaration into `LocusInfo::run_manual_drain`: the back-edge stops of a run() that is not manual, and its wait frame, GH #1858)", CG_METHOD, "run_manual_drain"),
+            consumer_at("check (the drain-honour law reads the manual-drain column)", CHECK, "manual_drain"),
         ],
         invariants: &[
             "pool starvation and the birth-order trap are registered rules run as `law::Law`s over the run rows' columns and the placement table's rows for the deployed root (`RootRunRows`), their findings `law::Violation`s (phase 4, W5)",
@@ -1145,12 +1146,13 @@ pub const FAMILIES: &[Family] = &[
             "a `release(c: I)` naming an interface makes every locus satisfying `I` a flow (`FlowClause::admits`, filled by `FlowRows::admit_interfaces` with the snapshot's scope through the surfaces family's one conformance function, over the surveyed programs' non-generic loci), as the ownership graph makes the owner's `accept(c: I)` accept each; `is_flow` reads it beside `FlowClause::locus`",
             "every locus declaration, a module's included, has a run row (`RunRow`: the declaration's name and span, which `FlowRows::run_of` finds it by, and three columns: long-running and never-returns, the `nonreturning` family's two definitions, and watches-drain); the checker surveys no rows: its four readers share the snapshot's, handed in (`CheckInputs::flows`)",
             "watches-drain is a `run()` that reads its locus's `draining`, in its own body or in a fn or method of the program it calls, transitively (`flows::run_reads_draining`), through any receiver that is the locus by declared type (`self`, a `let` alias in its block, a parameter a method or free fn binds to it, a declared field path of its type through holders, collections and projections) or that the declarations cannot resolve; a read in a handler, a hook or a method the `run()` never reaches, or of another locus's `draining`, does not count (GH #1858). Lowering reads it by declaration (`FlowRows::run_watches_drain`; a specialization by its template's span), and a declaration the rows were not surveyed over answers that it watches, so lowering leaves its runs to it",
+            "manual-drain (GH #1858) is the same walk counting only the reads it resolves to the locus (an unresolved receiver, or the locus handed to a method the rows cannot find, is not a read): the safe answer differs by reader — a pinned-run await takes an unresolved read as watching (not awaited, the behaviour before #1869), the back-edge stops and the drain-honour law take it as not manual (stopped), since a run() wrongly taken as manual keeps a loop through the drain",
             "one survey per snapshot (F.40 phase 4, Q1): `flows` is a counted family (`Snapshot::demand_flows`, over the checked programs), and the check, the lifecycle plan, the lowering view, the editor's dependents relation and `check --flows` read that one. The view needs no correspondence: lowering reads the rows by locus name (`is_flow`, `specialize`), the stdlib declares no `release` clause and no type alias, and the resolver's declared loci hold the stdlib's over either program, so the merged program's survey was the checked one's in every clause row; its run rows for the stdlib's loci have no lowering reader. A bundle no snapshot holds (`check::check_bundle`, the tests' scope-taking check) surveys for itself",
         ],
         missing: Missing::Total("no row means the child is resident: no `release` clause names it, so its owner's cascade tears it down (`Cx::is_flow`)"),
-        tests: &["crates/hale-codegen/tests/release_reclaims_flow.rs", "crates/hale-codegen/tests/release_two_parents.rs", "crates/hale-codegen/tests/release_generic_owner.rs", "tests/hale/release_generic_owner_test.hl", "crates/hale-types/src/flows.rs (a_clause_names_the_locus_lowering_names, a_template_clause_names_the_specialization_s_argument)", "crates/hale-types/tests/demand_gate.rs (a_build_surveys_the_flows_once_and_lowering_reads_that_survey)"],
-        spec: &["spec/semantics.md § release(c) and flow children"],
-        owned: &[],
+        tests: &["crates/hale-codegen/tests/release_reclaims_flow.rs", "crates/hale-codegen/tests/release_two_parents.rs", "crates/hale-codegen/tests/release_generic_owner.rs", "tests/hale/release_generic_owner_test.hl", "crates/hale-types/src/flows.rs (a_clause_names_the_locus_lowering_names, a_template_clause_names_the_specialization_s_argument, watches_drain_is_the_run_s_reads_and_what_it_calls)", "crates/hale-types/tests/demand_gate.rs (a_build_surveys_the_flows_once_and_lowering_reads_that_survey)", "crates/hale-types/src/drain_honour.rs", "crates/hale-types/tests/drain_not_honoured.rs", "crates/hale-codegen/tests/drain_is_the_runtimes.rs"],
+        spec: &["spec/semantics.md § release(c) and flow children", "spec/semantics.md § Drain cascade (whole-process)", "spec/verification.md § Structural & design rules"],
+        owned: &[site("crates/hale-types/src/drain_honour.rs", "unhonoured_loops")],
         seams: &[Seam { symbol: "flows::survey(", allowed: &[(TLIB, 1), (SNAPSHOT, 1), (LIFECYCLE_DERIVE, 1)] }],
     },
     Family {
@@ -1639,16 +1641,16 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[],
         consumers: &[
             consumer_at("check (the nested-long-running-child rule reads the long-running column)", CHECK, "check_nested_long_running_child"),
-            consumer_at("check (the starvation, birth-order and drain-hook laws read the never-returns column)", CHECK, "never_returns"),
+            consumer_at("check (the starvation and birth-order laws read the never-returns column)", CHECK, "never_returns"),
         ],
         invariants: &[
             "two definitions, two columns of the flow rows' run row (`flows::RunRow`), named in spec/runtime.md § Typecheck enforcement: long-running is a `run()` body with a statement of its own (a nested child's `run()` completes before its parent's begins, so any body delays the parent, whether or not it returns), never-returns is a terminal `while` with no exit whose condition never flips false (only such a body starves the cells a pool runs after it); every body that never returns is long-running, not the converse, and a child whose `run()` is `std::time::sleep(1min)` keeps the long-running-child error",
             "the checker surveys the flow rows once per check and the four rules read the columns; none decides either question itself; a stdlib locus, whose body the checker does not see, is both when it is on the known-long-running allowlist (`KNOWN_LONG_RUNNING_STDLIB_LOCI`)",
         ],
         missing: Missing::Hole,
-        tests: &["crates/hale-types/tests/birth_order_trap.rs", "crates/hale-types/tests/drain_hook_behind_endless_run.rs", "crates/hale-codegen/tests/birth_order_trap.rs", "crates/hale-codegen/tests/nested_long_running_child.rs", "crates/hale-types/src/flows.rs (long_running_and_never_returns_are_two_columns)"],
+        tests: &["crates/hale-types/tests/birth_order_trap.rs", "crates/hale-codegen/tests/birth_order_trap.rs", "crates/hale-codegen/tests/nested_long_running_child.rs", "crates/hale-types/src/flows.rs (long_running_and_never_returns_are_two_columns)"],
         spec: &["spec/semantics.md", "spec/runtime.md § Typecheck enforcement"],
-        owned: &[site(CHECK, "check_pool_starvation"), site(CHECK, "check_birth_order"), site(CHECK, "check_drain_hook_behind_endless_run")],
+        owned: &[site(CHECK, "check_pool_starvation"), site(CHECK, "check_birth_order")],
         seams: &[Seam { symbol: "run_statically_nonreturning(", allowed: &[("crates/hale-types/src/flows.rs", 2)] }],
     },
     Family {
@@ -2750,13 +2752,13 @@ pub const RULES: &[Rule] = &[
         state: State::Canonical,
     },
     Rule {
-        id: "verification/structural/drain-hook-behind-endless-run",
-        title: "Drain hook behind an endless run",
-        // The flow rows' "never returns" column; the locus's `drain()` hook, its `run()` body and the fns and methods that body calls (for a `draining` read) are read off the declarations.
+        id: "verification/structural/drain-not-honoured",
+        title: "Manual drain not honoured",
+        // The flow rows' watches-drain column picks the loci; each one's `run()` body and the fns and methods it calls (their loops) are read off the declarations.
         reads: Reads::Rows(&["flows"]),
-        gist: "a `drain()` hook on a locus whose `run()` never returns and never reads `draining`, itself or through a fn it calls, so a SIGTERM's drain never reaches the hook (warning, at the hook, the witness the loop)",
+        gist: "a loop of a locus whose `run()` reads `draining` (so the runtime places no drain stops in its loops), in the `run()` or in a fn or method it calls, that neither tests the flag leading out (in its condition, or first in its body on every iteration) nor can end on its own (a `for`, a condition the loop can change, an exit no drain test guards) (warning, at the loop)",
         family: "flows",
-        evaluator: Some(site(CHECK, "check_drain_hook_behind_endless_run")),
+        evaluator: Some(site(CHECK, "check_drain_not_honoured")),
         state: State::Canonical,
     },
     Rule {

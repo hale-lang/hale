@@ -1585,10 +1585,10 @@ pub fn check_bundle_rules(
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
     check_accept_release(bundle, flows, &mut diags);
-    // GH #1838: a `drain()` hook its locus's endless `run()` keeps from
-    // running — a SIGTERM's drain never reaches it.
-    let rows = DrainHookRows { bundle, flows };
-    diags.extend(Law { rule: DRAIN_HOOK, eval: check_drain_hook_behind_endless_run }.diags(&rows));
+    // GH #1858: a locus whose `run()` reads `draining` stops on the drain
+    // by its own loops; one the analysis cannot see stop is reported.
+    let rows = DrainHonourRows { bundle, flows };
+    diags.extend(Law { rule: DRAIN_NOT_HONOURED, eval: check_drain_not_honoured }.diags(&rows));
     // A `@form(lru_cache)` eviction hook that puts into its own cache.
     check_lru_hook_puts(bundle, inputs.alloc_summary, &mut diags);
     // Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
@@ -4168,71 +4168,70 @@ fn check_subscriber_torn_down_at_its_statement(rows: &ScopeLocalSubscriberRows<'
 /// The birth-order trap.
 const BIRTH_ORDER: RuleId = RuleId::registered("verification/structural", "birth-order-trap");
 
-/// GH #1838: a drain hook behind an endless `run()`.
-const DRAIN_HOOK: RuleId = RuleId::registered("verification/structural", "drain-hook-behind-endless-run");
+/// GH #1858: a loop of a manual `run()` the analysis cannot see stop on
+/// the drain.
+const DRAIN_NOT_HONOURED: RuleId = RuleId::registered("verification/structural", "drain-not-honoured");
 
-/// What the drain-hook law reads: the bundle's locus declarations (their
-/// hooks and bodies, and the free fns a `run()` calls), and the flow rows'
-/// "never returns" column.
+/// What the drain-honour law reads: the bundle's locus declarations (their
+/// `run()` bodies, the methods and free fns those call), and the flow
+/// rows' watches-drain column.
 #[derive(Clone, Copy)]
-struct DrainHookRows<'r, 'a> {
+struct DrainHonourRows<'r, 'a> {
     bundle: &'r Bundle<'a>,
     flows: &'r crate::flows::FlowRows,
 }
 
-/// GH #1838: a `drain()` hook its locus's `run()` keeps from ever running.
+/// GH #1858: a loop a manual `run()` runs that does not provably stop on
+/// the drain.
 ///
-/// A hook runs at teardown, and teardown follows `run()`. A `run()` that
-/// statically never returns (the flow rows' "never returns" column: a
-/// terminal `while` with no exit whose condition never flips false) and
-/// never reads `draining` — not in its own body, and not in a fn or method
-/// of the program it calls, transitively — cannot answer the drain a
-/// SIGTERM raises: the drain's grace runs out and the signal ends the
-/// process with the hook unrun (spec/semantics.md § "Drain cascade
-/// (whole-process)"). Reported at the hook, the loop its witness. A locus
-/// of the standard library's (`__Std…`), and a hook with an empty body,
-/// are left alone; a `run()` that can end, or reads `draining`, is never
-/// reported.
-fn check_drain_hook_behind_endless_run(rows: &DrainHookRows<'_, '_>, out: &mut Vec<Violation>) {
-    let DrainHookRows { bundle, flows } = *rows;
+/// The runtime stops the loops of every `run()` that does not read
+/// `draining` at their back-edge. A locus whose `run()` reads it (the flow
+/// rows' watches-drain column: itself or through what it calls) takes the
+/// drain into its own hands: no back-edge stops, so each loop it runs, in
+/// its body or in a fn or method of the program it calls, must stop on
+/// the flag or end on its own (`drain_honour`'s rules). What the analysis
+/// cannot prove is a warning at the loop, naming the shape that would be
+/// seen: the author chose manual control and may have a reason, and the
+/// drain's grace stays the runtime's backstop. A locus of the standard
+/// library's (`__Std…`) is left alone.
+fn check_drain_not_honoured(rows: &DrainHonourRows<'_, '_>, out: &mut Vec<Violation>) {
+    let DrainHonourRows { bundle, flows } = *rows;
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let free_fns = crate::flows::free_fns_of(&programs);
+    let mut reported: BTreeSet<(usize, usize)> = BTreeSet::new();
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(l) = item else { return };
-            if l.name.name.starts_with("__Std") {
+            if l.name.name.starts_with("__Std") || !flows.run_of(l).is_some_and(|r| r.manual_drain) {
                 return;
             }
-            let Some(drain) = l.members.iter().find_map(|m| match m {
-                LocusMember::Lifecycle(lc)
-                    if lc.kind == LifecycleKind::Drain
-                        && !lc.synthesized
-                        && !crate::lifecycle::body_is_empty(&lc.body) =>
-                {
-                    Some(lc)
-                }
+            let Some(run) = l.members.iter().find_map(|m| match m {
+                LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run => Some(lc),
                 _ => None,
             }) else {
                 return;
             };
-            let Some(endless) = never_returns(flows, l) else { return };
-            // The run row's watches-drain column: the `run()` reads
-            // `draining`, itself or through what it calls.
-            if flows.run_of(l).is_some_and(|r| r.watches_drain) {
-                return;
-            }
-            out.push(
-                Violation::warning(
-                    DRAIN_HOOK,
-                    drain.span,
+            for u in crate::drain_honour::unhonoured_loops(&run.body, l, &free_fns) {
+                if !reported.insert((u.loop_span.start.as_usize(), u.loop_span.end.as_usize())) {
+                    continue;
+                }
+                let mut v = Violation::warning(
+                    DRAIN_NOT_HONOURED,
+                    u.loop_span,
                     format!(
-                        "locus `{}`: this `drain()` runs only when `run()` returns, and `run()` never \
-                         reads `self.draining`: read it in the loop (`while !self.draining {{ … }}`) \
-                         so a SIGTERM reaches this hook. As written, a SIGTERM or SIGINT waits out \
-                         the drain's grace and then ends the process with the hook unrun",
+                        "this loop reads `draining` but I can't see it stop on it: locus `{}`'s `run()` reads \
+                         `self.draining`, so the runtime leaves its loops to it. Test it in the condition \
+                         (`while !self.draining {{ … }}`), or first in the body (`if self.draining {{ break; }}`); \
+                         as written, a SIGTERM or SIGINT may wait out the drain's grace and end the process \
+                         by the signal",
                         l.name.name
                     ),
-                )
-                .step(endless, "this loop never ends, and nothing it runs reads `self.draining`"),
-            );
+                );
+                if let Some(f) = &u.in_fn {
+                    v = v.step(run.span, &format!("`run()` reaches it through `{f}`"));
+                }
+                out.push(v);
+            }
         });
     }
 }

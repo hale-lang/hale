@@ -254,25 +254,6 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         let raw = if !self.cells.emits(hale_types::capability::Obligation::DrainTerm)? {
             raw
         } else {
-            self.reads_draining = true;
-            // GH #1077: the locus whose code runs this read is the one
-            // that can answer a drain — the enclosing `self`, whatever
-            // receiver is read.
-            match self.current_self.as_ref().map(|cs| cs.locus_name.clone()) {
-                Some(reader) => {
-                    // Read in the reader's own run()? Anywhere else (a
-                    // handler, a hook, a method another locus calls) it
-                    // can answer a drain after run() has returned.
-                    let in_run = self.current_fn.is_some_and(|f| {
-                        self.user_loci.get(&reader).and_then(|r| r.methods.get("run")).is_some_and(|r| *r == f)
-                    });
-                    if !in_run {
-                        self.drain_reads_beyond_run.insert(reader.clone());
-                    }
-                    self.drain_observer_loci.insert(reader);
-                }
-                None => self.drain_read_outside_locus = true,
-            }
             let proc_raw = self.emit_process_draining_load("draining.process")?;
             // A read that sees the process drain tells the runtime: the
             // run() it runs in has seen it, so its later waits (a final
@@ -2151,7 +2132,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.emit_accepted_children_reclaim(info, self_ptr, locus_name)?;
                 }
                 ReclaimStep::Latch => {
-                    self.emit_drain_observer_out(locus_name, self_ptr, false)?;
                     self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
                 }
                 ReclaimStep::CancelQueuedRuns => {

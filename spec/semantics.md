@@ -4974,9 +4974,13 @@ the same locus, same constraint as a regular violate.
 While the locus is draining — after `violate` on it, or once the
 process drains on SIGINT / SIGTERM (§ "Drain cascade
 (whole-process)") — the synthetic `self.draining` field reads
-`true` from any locus method body. The canonical uses are a
-`run()` loop that ends on it (`while !self.draining { … }`) and
-suppressing downstream sends once the locus has escalated:
+`true` from any locus method body. Reading it is optional: the
+runtime stops a `run()` that never reads it on a signal by itself
+(GH #1858). A `run()` that reads it takes the drain into its own hands
+(no back-edge stops; § "Drain cascade (whole-process)"), the canonical
+shape a loop that ends on it (`while !self.draining { … }`) and then
+flushes. Elsewhere it suppresses downstream sends once the locus has
+escalated:
 
 ```hale,fragment
 fn on_tick(t: Tick) {
@@ -5371,53 +5375,109 @@ forced-shutdown scenarios.
 
 ## Drain cascade (whole-process)
 
+**The drain is the runtime's** (GH #1858). A SIGINT or SIGTERM stops
+every program the same way: the runtime ends every `run()` loop
+between two iterations and wakes every blocking wait, so `run()`
+returns, teardown runs the `drain()` / `dissolve()` hooks and the
+process exits 0. An author writes nothing for it. A locus that wants
+to decide for itself when to stop — flush a batch, finish a handshake —
+reads `self.draining` in its `run()`, and then its loops are its own:
+
+| The locus's `run()`… | The compiler | On SIGTERM |
+|---|---|---|
+| never reads `draining` | a drain stop at each loop's back-edge | its loops end between iterations, hooks run, exit 0 |
+| reads it, and the check proves its loops stop on it | nothing to report | the author's loop ends, hooks run, exit 0 |
+| reads it, and the check cannot prove it | a warning at each such loop | the author's code, bounded by the grace |
+
+**Manual control is the `run()`'s.** A locus takes the drain into its
+own hands when its `run()` reads its locus's `draining`, itself or
+through a fn or method of the program it calls, transitively, through
+any receiver that is the locus by declared type — `self`, a `let` alias
+of it (in its block), a parameter a method or free fn binds to it (a
+call on another locus that hands it this locus is followed), or a
+declared field path whose type is the locus (a call on a locus whose
+params declare a field of this locus's type, or of a holder of one,
+transitively, a collection or projection of it included, a type alias
+of it resolved to it, is followed, and its `self.<field>` is this
+locus: by declared types, not by construction) — or that the
+declarations cannot resolve (a type name they do not know is never
+taken as no locus), which is taken as a read. A read in a handler, a
+`drain()` / `dissolve()` hook, or a method `run()` does not call, or of
+another locus's `draining` (a holder's own `self.draining` included),
+does not make the `run()` manual (the flow rows' watches-drain column,
+`registry.md` § flows). The check's
+"Manual drain not honoured" rule (`verification.md` § Structural &
+design rules) says, conservatively, whether each loop of a manual
+`run()` stops on the flag; what it cannot prove it reports, never
+refuses: the author chose manual control, and the grace is the
+backstop.
+
+**Back-edge stops.** In the `run()` of a program's own locus that is
+not manual, and in `fn main`'s own body (the program's run), the
+compiler places a drain check at the back-edge of every loop the body
+holds lexically — `while` and every `for`, nested ones included; not a
+loop in a fn or method it calls, nor one in a closure. The check is one
+load of the runtime's flag and one branch, weighted cold, on every
+iteration, `@hot` and `@budget` code included. When a stop has begun
+the loop exits there, as a `break` written at the end of the iteration
+would: between two iterations, never inside one, with the iteration's
+state as the iteration left it. A `continue` goes through the same
+check. Code after the loop runs (the loop is left, not the `run()`), so
+a nested loop's stop ends the inner loop and the outer one's iteration
+finishes, then the outer loop ends at its own back-edge. The standard
+library's loci keep their own loops (their bodies read `draining`
+where they need to). A *stop* is a signal's drain or a failed test's
+unwind (`std::test`); a main locus's tree drain (below) is not one and
+ends no loop by itself.
+
 SIGINT or SIGTERM:
 
-1. The runtime raises the process drain. From then on every
-   locus's `self.draining` reads `true`, on every thread.
-2. Timed waits **already in progress** return early so a loop
-   reaches its check: such a `std::time::sleep` returns at its next
-   100 ms slice (at once, on an `async_io` pool), and a
-   deadline-bounded park on an `async_io` pool — a `recv` with a
-   timeout — reports its timeout. A timed wait that **begins during
-   the drain** in a `run()` that reads its locus's `draining`, itself or
-   through a fn or method of the program it calls, transitively,
-   through any receiver that is the locus by declared type — `self`, a
-   `let` alias of it (in its block), a parameter a method or free fn
-   binds to it (a call on another locus that hands it this locus is
-   followed), or a declared field path whose type is the locus (a call
-   on a locus whose params declare a field of this locus's type, or of
-   a holder of one, transitively, a collection or projection of it
-   included, a type alias of it resolved to it, is followed, and its
-   `self.<field>` is this locus: by declared types, not by
-   construction) — or that the declarations cannot resolve (a type
-   name they do not know is never taken as no locus), which is taken
-   as a read (one of the program's own
-   loci; a standard-library locus's bodies run in their caller's frame;
-   a read in a handler or a hook, or of another locus's `draining`, a
-   holder's own `self.draining` included, does not make the `run()`
-   one that reads it)
-   returns at once the same way, until that `run()` has read
-   `draining` as `true`: a `while !self.draining { work();
-   std::time::sleep(30s); }` loop that was in `work()` when the
-   signal landed reaches its check instead of sleeping the full 30 s
-   into the grace. The `run()` includes what it calls; a handler is
-   not part of it (one delivered inside the run()'s sleep neither
-   takes its cut nor ends it by reading `draining`). On an `async_io`
-   pool such a park is resumed before the pool's shutdown abandons
-   what is still parked, so the `run()` returns and is joined. Every
-   other wait begun after the drain runs its full length: a `drain()`
-   or `dissolve()` body pacing a flush, a `run()` pacing a final
-   flush after its loop has seen the drain, a handler, and the
-   `run()` of a locus that never reads `draining`. A drain raised
-   again later (a second tree's, then a signal's) cuts a `run()` that
-   saw the first one until it reads `draining` again. A receive
-   blocked in the kernel on a pinned or classic thread returns at its
-   own timeout, not earlier; an untimed wait (a plain `recv`) is not
-   interrupted. (2026-11-06: a sleep begun during the drain ran its
-   full length wherever it was made, so the loop above outlasted the
-   5 s grace and died by the signal, exit 143, with its hooks unrun;
-   reported from hale-lang/voice.)
+1. The runtime raises the process drain, a stop. From then on every
+   locus's `self.draining` reads `true`, on every thread, and every
+   back-edge check above ends its loop.
+2. Waits return early, so a loop reaches its back-edge or its check:
+   - A wait **already in progress** returns: a `std::time::sleep` at
+     its next 100 ms slice (at once on an `async_io` pool) and a
+     deadline-bounded park on an `async_io` pool with its timeout,
+     wherever they are; and an untimed blocking wait (an accept, a
+     receive on a socket with no `set_recv_timeout` of its own) made in
+     a `run()` (what it calls included) or in `fn main` with its existing closed
+     or empty outcome — no new variant, so the `or` its caller already
+     writes covers it (`stdlib.md` § "What a drain does to a wait"): an
+     `accept` its closed `-1`, a TCP or TLS `recv` the empty answer a
+     peer's close gives (`recv_into` `0`), a UDP `recv` its timeout's,
+     on main, a classic pool, an `async_io` pool and a pinned thread
+     alike. An untimed wait a handler, a hook or a standard-library
+     coroutine makes (a server's connection, which answers the calls in
+     flight before it closes) is not ended by the stop; the listeners'
+     stop (step 3) and the grace bound it.
+   - A wait that **begins during the drain** returns at once, in the
+     same way: in a manual `run()` that has not yet read `draining` as
+     `true` (what it calls included; a standard-library locus's bodies
+     run in their caller's frame); and in a `run()` the runtime stops,
+     or `fn main`, a `sleep` written in that body itself, and an untimed
+     wait anywhere it calls. So a loop that was mid-iteration when the
+     signal landed reaches its back-edge (or, manual, its `while
+     !self.draining` check) instead of starting a 30 s sleep into the
+     grace. A `sleep` in a fn or method a stopped `run()` calls runs its
+     length: a loop there has no back-edge stop, and cutting its sleeps
+     would only spin it. A handler is not part of the
+     `run()` (one delivered inside the run()'s wait neither takes its
+     cut nor ends it by reading `draining`). On an `async_io` pool such
+     a park is resumed before the pool's shutdown abandons what is
+     still parked, so the `run()` returns and is joined. Every other
+     wait begun during the drain runs its full length: a `drain()` or
+     `dissolve()` body pacing a flush, a manual `run()` pacing a final
+     flush after its loop has seen the drain, a handler. A drain raised
+     again later (a second tree's, then a signal's) cuts a manual
+     `run()` that saw the first one until it reads `draining` again.
+   - What no stop can wake is a **documented limit**, bounded by the
+     grace: a blocking foreign (`@ffi`) call, a subprocess the program
+     waits for (`std::process::run`, `wait`), a connect or an HTTP call
+     until its own deadline.
+   (2026-11-06: a sleep begun during the drain ran its full length
+   wherever it was made, and before GH #1858 an untimed wait was not
+   interrupted at all.)
 3. The process's listeners stop: every named listener's socket is
    shut down (as `std::io::tcp::stop(name)` does), so each accept
    loop — a `std::http::Server`'s, a `std::io::tcp::Listener`'s, the
@@ -5426,76 +5486,54 @@ SIGINT or SIGTERM:
    are answered (`stdlib.md` § "Shutdown is a drain, never a cut").
    A server used to keep accepting, and held the drain for the whole
    grace. (2026-10-19, downstream handoff.)
-4. Each `run()` that watches `self.draining` returns; one that
-   does not keeps running.
+4. Each `run()` returns: one the runtime stops at its next back-edge,
+   a manual one when its own code says so.
 5. Leaves dissolve first, each parent after its children, the
-   root last — the ordinary end-of-program teardown, which also
-   runs the runtime's own (schedulers, bus router, allocator,
-   the atexit hooks).
+   root last — the ordinary end-of-program teardown, which runs every
+   `drain()` and `dissolve()` hook and the runtime's own (schedulers,
+   bus router, allocator, the atexit hooks).
 6. Process exits 0.
+
+**Exit codes.** A program stopped by a signal exits **0** once its
+hooks have run, whatever it reads. Before GH #1858 a program that read
+`draining` nowhere and declared no hook died by the signal at once
+(`128 + signal`, 143 for SIGTERM) with its hooks unrun, and one that
+did (GH #1077, #1838) could hold the whole grace on a loop that never
+looked and then die by the signal all the same. A supervisor or a test
+that expected 143 from a stopped program now sees 0; 143 now means the
+grace ran out (a manual loop that did not stop, a wait no stop can
+wake) or a second signal.
 
 The drain has a **grace period**: if the process has not exited
 5 s after the signal (`LOTUS_DRAIN_GRACE_MS` sets it), the runtime
 writes one record (`runtime.md` § Runtime diagnostics are records:
 `logger=lotus.drain`, with `signal`, `grace_ms` and `waiting_on`) naming
-the signal — and what the drain was still
-waiting on: each cooperative pool with its mode, whether a worker is
-mid-iteration and in which locus, and how many cells queue behind it,
-then the live loci that can answer a drain (below), by name — restores the
-signal's default action and re-raises it — the process dies BY the signal, as it
-would with no runtime at all (a waiting parent sees it killed by
-that signal; a shell reports `128 + signal`) — so a `run()` that
-never reads `self.draining` cannot keep a stopped program alive. A
-**second** SIGINT / SIGTERM ends the process the same way at once.
+the signal — and what the drain was still waiting on: each cooperative
+pool with its mode, whether a worker is mid-iteration and in which
+locus, and how many cells queue behind it — restores the signal's
+default action and re-raises it: the process dies BY the signal, as it
+would with no runtime at all (a waiting parent sees it killed by that
+signal; a shell reports `128 + signal`). A **second** SIGINT / SIGTERM
+ends the process the same way at once.
 
-The handling is installed only in a program that reads
-`draining` somewhere, or one of whose own loci declares a `drain()`
-or `dissolve()` hook (GH #1838). A program that can do neither keeps
-the default action and ends at the signal with `128 + signal`, as
-if the runtime were not there. **What can answer a drain is a live
-instance** of a locus whose own code reads `draining` (GH #1077), or
-that declares a `drain()` or `dissolve()` hook with a body (GH #1838):
-the runtime counts each such instance from its instantiation to its
-teardown. A hook answers through teardown: the drain's step 5 runs it,
-once the locus's `run()` has returned, so a declared hook runs on a
-signal whenever that `run()` ends on the drain — it loops on
-`while !self.draining`, a sleep it waits in is cut short and it
-returns, a listener it serves is stopped — and not when it never
-returns: the grace runs out and the signal ends the process with the
-hook unrun. The check warns on that shape, a `drain()` on a locus
-whose `run()` never returns and never reads `draining`
-(`verification.md` § "Structural & design rules", "Drain hook behind
-an endless run"). The standard library's own loci (a file, a socket)
-are not counted for their hooks: those free what the process's end
-frees. (Before GH #1838 a hook did not count, so a program whose only
-answer to a drain was its `drain()` ended at the signal with the hook
-unrun.) A locus whose only `draining` reads are in its own `run()`
-is counted out sooner, once that `run()` has returned for good (no
-restart follows) and it has no subscription left to serve — exactly once,
-whichever of that and its teardown comes first (an admitted `run()` can
-outlive its teardown's start) — : a finished
-locus has nothing to drain, so a pinned child that already returned no
-longer holds the drain until its parent tears it down. A read anywhere
-else — a handler, a hook, a method another locus calls — or a
-declared `drain()` / `dissolve()` hook keeps the instance counted to
-its teardown, since it can still answer. A signal
-that finds none live — the read sits in an imported package the
-program never builds, or every instance that could have answered has
-already finished or ended — takes the signal's default
-action at once, exactly as a program without the read does, instead
-of waiting out the grace with nothing to drain. A `draining` read
-outside any locus body (a free function handed a locus) cannot be
-counted, so a program with one drains, and waits its grace, on
-every signal. The signal is caught, never
-blocked, so a subprocess the program spawns inherits the default
-disposition. (GH #1039: before 2026-09-24 the runtime caught
-neither signal, so every program ended at the signal and a
-`while !self.draining` loop never saw a drain.)
+The handling is installed in every program a signal can reach (not on
+wasm). The signal is caught, never blocked, so a subprocess the program
+spawns inherits the default disposition. (GH #1039: before 2026-09-24
+the runtime caught neither signal, so every program ended at the signal
+and a `while !self.draining` loop never saw a drain. GH #1077 and #1838
+then installed it only in a program that read `draining` or declared a
+`drain()` / `dissolve()` hook, and drained only while a live instance
+of such a locus was counted; GH #1858 retired the count, along with
+the check's "drain hook behind an endless run" warning: no hook is
+behind an endless run unless its locus chose manual control.)
 
 **When `main`'s `run()` ends first.** Teardown follows the
 ownership tree: when a `main` locus's `run()` returns, the first step
-of its teardown raises the drain for its tree, steps 1–3 above
-without a signal (`runtime.md` § "Lifecycle obligations", line 15).
+of its teardown raises the drain for its tree, steps 1–2 above
+without a signal and without a stop (`runtime.md` § "Lifecycle
+obligations", line 15): `self.draining` reads `true` and a timed wait
+in progress returns, but no back-edge check ends a loop and no untimed
+wait is woken.
 A child whose `run()` still loops on `while !self.draining` — pinned,
 on a classic cooperative pool or on an `async_io` one — sees it, a
 timed wait it is in returns early, its `run()` returns and it is
@@ -5507,7 +5545,8 @@ or `self.web.wait()` on an exposure param), and SIGINT / SIGTERM end that
 wait. A `main` that declares no `run()` and holds an exposure's listener
 is given the run that waits on its exposures (spec/api.md § Serving).
 A child's `run()` that never reads `self.draining` keeps the process
-alive until it returns, as under a signal. **`main`'s `run()` returning
+alive until it returns (a signal's stop ends its loops; the tree's
+drain does not). **`main`'s `run()` returning
 does not cut a live listener:** the tree's drain does not take step 3
 above, so a server the tree runs on main or on a pinned thread — its
 own param, or one a pinned child's `run()` builds — keeps accepting,

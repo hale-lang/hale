@@ -1322,7 +1322,7 @@ locus App {
         }
         std::test::assert(
             self.has_row("effect.redelivered", "attempt:" + a10),
-            "the lease expired with no outcome: the owner asks again",
+            "the lease expired with no outcome: the owner asks again: " + self.attempt_rows(a10),
         );
         // GH #989: a closure the owner absorbed, named in the record once for
         // the lease, before the attempt was asked again

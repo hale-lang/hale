@@ -429,8 +429,6 @@ pub enum Obligation {
     ObservationIdentity,
     /// `lotus_io_init` (SIGPIPE) and `lotus_drain_signals_install`.
     SignalInstall,
-    /// The drain observer (`lotus.observes_drain.<locus>`).
-    DrainObserver,
     /// The process-draining term: `self.draining`, the restart gate and
     /// `sleep`'s cut-short read `lotus_process_draining_flag`.
     DrainTerm,
@@ -452,11 +450,10 @@ pub enum Obligation {
 }
 
 impl Obligation {
-    pub const ALL: [Obligation; 11] = [
+    pub const ALL: [Obligation; 10] = [
         Obligation::ReplayIngress,
         Obligation::ObservationIdentity,
         Obligation::SignalInstall,
-        Obligation::DrainObserver,
         Obligation::DrainTerm,
         Obligation::BindingConfig,
         Obligation::PoolJoin,
@@ -471,7 +468,6 @@ impl Obligation {
             Obligation::ReplayIngress => "ReplayIngress",
             Obligation::ObservationIdentity => "ObservationIdentity",
             Obligation::SignalInstall => "SignalInstall",
-            Obligation::DrainObserver => "DrainObserver",
             Obligation::DrainTerm => "DrainTerm",
             Obligation::BindingConfig => "BindingConfig",
             Obligation::PoolJoin => "PoolJoin",
@@ -1705,11 +1701,6 @@ const OBSERVATION_IDENTITY: ObligationCell = emit(
 );
 const SIGNAL_INSTALL: ObligationCell =
     emit(CG_SIGNALS, "main ignores SIGPIPE and installs the drain signals", SPEC_DRAIN);
-const DRAIN_OBSERVER: ObligationCell = emit(
-    "crates/hale-codegen/src/codegen.rs::lotus.observes_drain.",
-    "a locus that reads the drain is counted",
-    SPEC_DRAIN,
-);
 const DRAIN_TERM: ObligationCell = emit(
     "crates/hale-codegen/src/codegen.rs::lotus_process_draining_flag",
     "`self.draining`, the restart gate and `sleep` read the process flag",
@@ -1781,12 +1772,6 @@ pub const OBLIGATIONS: &[ObligationRow] = &[
         SIGNAL_INSTALL,
         SIGNAL_INSTALL,
         omit(SIGNALS, CG_SIGNALS, "no signal reaches the module", SPEC_DRAIN),
-    ),
-    ob_row(
-        Obligation::DrainObserver,
-        DRAIN_OBSERVER,
-        DRAIN_OBSERVER,
-        omit(SIGNALS, "crates/hale-codegen/src/codegen.rs::lotus.observes_drain.", "no drain signal arrives", SPEC_DRAIN),
     ),
     ob_row(
         Obligation::DrainTerm,

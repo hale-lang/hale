@@ -1785,10 +1785,6 @@ fn build_resolved_lowered(
             .map(|(segs, mangled)| (segs.clone(), mangled.clone()))
             .collect(),
         key_extractors: BTreeMap::new(),
-        reads_draining: false,
-        drain_observer_loci: BTreeSet::new(),
-        drain_read_outside_locus: false,
-        drain_reads_beyond_run: BTreeSet::new(),
         bus_state: None,
         shm_ring_subjects: std::collections::BTreeMap::new(),
         routing_key_subjects: std::collections::BTreeMap::new(),
@@ -1901,6 +1897,7 @@ fn build_resolved_lowered(
         dead_continuation: false,
         current_fn_skip_exit_drain: false,
         bus_inert,
+        backedge_stop_fn: None,
         xpool_check: !is_wasm && !options.no_xpool_backstop,
         xpool_check_off: false,
         xpool_shared: false,
@@ -4066,32 +4063,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// payload to derive the routing key a listen binding never
     /// received — the same (key_lo, key_hi) the publish site computes.
     key_extractors: BTreeMap<String, inkwell::values::FunctionValue<'ctx>>,
-    /// GH #1039: set when any body lowers a `draining` read (GH #1838:
-    /// or a program's locus declares a `drain()` / `dissolve()` hook). The main
-    /// prelude installs the SIGINT / SIGTERM drain only for such a
-    /// program — one that cannot observe the drain keeps the default
-    /// signal action. Read at the END of `lower_program` (bodies may
-    /// lower after the prelude), through `lotus.reads_draining`.
-    pub(crate) reads_draining: bool,
-    /// GH #1077: the loci whose own code reads `draining` — the ones
-    /// that can answer a drain — and (GH #1838) those that declare a
-    /// `drain()` or `dissolve()` hook. Their live instances are counted at
-    /// run time (`lotus_drain_observer_add`), so a signal that finds
-    /// none of them takes the signal's default action instead of
-    /// waiting out the grace.
-    pub(crate) drain_observer_loci: BTreeSet<String>,
-    /// GH #1077: a `draining` read outside any locus body (a free fn
-    /// handed a locus): its reader cannot be counted, so the drain
-    /// keeps its grace unconditionally.
-    pub(crate) drain_read_outside_locus: bool,
-    /// Of `drain_observer_loci`, those whose code reads `draining`
-    /// somewhere other than their own `run()` (a handler, a hook, a
-    /// method another locus may call), or declare a `drain()` or
-    /// `dissolve()` hook (GH #1838). The rest answer a drain only
-    /// from run(), so an instance of one is counted out as soon as its
-    /// run() has returned for good and it has no subscription left to
-    /// serve: a finished locus has nothing to drain.
-    pub(crate) drain_reads_beyond_run: BTreeSet<String>,
+    /// GH #1858: the loop back-edges of this fn take the drain's stop:
+    /// set while the body of a `run()` the runtime stops (its locus's
+    /// run() never reads `draining`) or of `fn main` lowers. A nested
+    /// fn (a closure) lowers under its own `current_fn`, so its loops do
+    /// not take it.
+    pub(crate) backedge_stop_fn: Option<FunctionValue<'ctx>>,
     /// Bus state generated when any locus declares a subscribe.
     /// `Some` iff the program contains at least one `bus subscribe`
     /// declaration. Bus storage itself lives in the C runtime
@@ -6144,6 +6121,12 @@ pub(crate) struct LocusInfo<'ctx> {
     /// is cut until it reads the flag), and a main locus with no run()
     /// does not wait for it before its tree's drain.
     pub(crate) run_watches_drain: bool,
+    /// GH #1858: the flow rows' `manual_drain` column for this locus's
+    /// declaration (`FlowRows::run_manual_drain`): its `run()` definitely
+    /// reads `draining`, so it is manual: no back-edge stops in its loops,
+    /// and its wait frame watches the drain (1) where every other run()'s
+    /// is a stopped one (-1).
+    pub(crate) run_manual_drain: bool,
 }
 
 /// F.22 slot record carried on every LocusInfo. v1 surface:
@@ -9103,12 +9086,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get_nth_param(0)
                 .expect("run_end self_ptr param")
                 .into_pointer_value();
-            // GH #1077: run() has returned for good; with no
-            // subscription to serve, this instance has nothing left to
-            // drain.
-            if info.subscriptions.is_empty() {
-                self.emit_drain_observer_out(locus_name, self_arg, true)?;
-            }
             // 2026-05-30: reclaim this locus when run() completes if
             // EITHER (a) it's a FLOW — some parent declares
             // `release(c: ThisType)`, so run-completion reclaims it (a
@@ -10665,26 +10642,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
-        // GH #1039: SIGINT / SIGTERM begin the whole-process drain
-        // — for a program that reads `draining` anywhere. Which
-        // is known only once every body has lowered, so the
-        // argument is a private global whose initializer the end
-        // of `lower_program` writes.
+        // GH #1039: SIGINT / SIGTERM begin the whole-process drain — in
+        // every program a signal reaches (GH #1858: before, only in one
+        // that read `draining` or declared a hook).
         if self.cells.emits(Obligation::SignalInstall)? {
-            let i64_t = self.context.i64_type();
-            let reads = self.module.add_global(i64_t, None, "lotus.reads_draining");
-            reads.set_linkage(inkwell::module::Linkage::Private);
-            reads.set_initializer(&i64_t.const_zero());
-            let observes = self
-                .builder
-                .build_load(i64_t, reads.as_pointer_value(), "drain.observes")
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let install = self
                 .module
                 .get_function("lotus_drain_signals_install")
                 .expect("lotus_drain_signals_install declared");
             self.builder
-                .build_call(install, &[observes.into()], "drain.install")
+                .build_call(install, &[], "drain.install")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         if self.cells.emits(Obligation::BindingConfig)? {
@@ -10753,7 +10720,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         let mut scope = Scope::default();
-        let end = self.in_body(main_decl.id, |cx| cx.lower_block(&main_decl.body, &mut scope))?;
+        // GH #1858: `fn main`'s own body is the program's run, one the
+        // runtime stops: its loops end at their back-edge on a stop, and a
+        // wait begun in it during a stop returns at once (wait frame -1;
+        // a hook or a run() it reaches enters its own).
+        let main_stops = self.cells.emits(Obligation::DrainTerm)?;
+        if main_stops {
+            let frame = match self.module.get_global("lotus_wait_frame") {
+                Some(g) => g,
+                None => {
+                    let g = self.module.add_global(self.context.i64_type(), None, "lotus_wait_frame");
+                    g.set_linkage(inkwell::module::Linkage::External);
+                    g.set_thread_local(true);
+                    g
+                }
+            };
+            self.builder
+                .build_store(frame.as_pointer_value(), self.context.i64_type().const_int(u64::MAX, true))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.backedge_stop_fn = Some(main_fn);
+        }
+        let end = self.in_body(main_decl.id, |cx| cx.lower_block(&main_decl.body, &mut scope));
+        self.backedge_stop_fn = None;
+        let end = end?;
 
         // Only emit `ret 0` if the body fell through. If it ended
         // in a terminator (e.g. an unreachable `if` whose branches
@@ -10839,60 +10828,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     g.set_initializer(&i32_t.const_int(on as u64, false));
                 }
             }
-        }
-        // GH #1039: every body has lowered — tell the prelude's drain
-        // install whether anything reads `draining`.
-        // GH #1838: a locus that declares a `drain()` or `dissolve()` hook
-        // can answer a drain as a reader of `draining` can: the drain's
-        // teardown is what runs the hook. Its instances are counted to
-        // their teardown (a hook answers after run() has returned, as a
-        // read outside run() does), so the signal handling is installed
-        // and a SIGTERM drains instead of skipping code the author wrote
-        // for it. The standard library's loci (`__Std…`) are not the
-        // program's word: their hooks free what the process's end frees.
-        // (A target no signal reaches has none of the flags written below:
-        // the cells that omit the signal install and the observer counts
-        // leave these names nothing to set.)
-        let hooked: Vec<String> = self
-            .user_loci
-            .iter()
-            .filter(|(name, info)| {
-                !name.starts_with("__Std")
-                    && ["drain", "dissolve"]
-                        .iter()
-                        .any(|k| info.methods.contains_key(k) && !info.empty_lifecycle.contains(k))
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-        for name in hooked {
-            self.reads_draining = true;
-            self.drain_reads_beyond_run.insert(name.clone());
-            self.drain_observer_loci.insert(name);
-        }
-        // GH #1077: the loci that can answer a drain, now every body
-        // has lowered.
-        for name in self.drain_observer_loci.clone() {
-            if let Some(g) = self.module.get_global(&format!("lotus.observes_drain.{name}")) {
-                g.set_initializer(&self.context.i64_type().const_int(1, false));
-            }
-            if self.drain_reads_beyond_run.contains(&name) {
-                continue;
-            }
-            if let Some(g) = self.module.get_global(&format!("lotus.drain_in_run_only.{name}")) {
-                g.set_initializer(&self.context.i64_type().const_int(1, false));
-            }
-        }
-        if let Some(reads) = self.module.get_global("lotus.reads_draining") {
-            let i64_t = self.context.i64_type();
-            // 0: nothing reads `draining` — keep the default signal
-            // actions. 1: drain, while a counted observer is live
-            // (GH #1077). 2: a read outside any locus — drain always.
-            let mode: u64 = match (self.reads_draining, self.drain_read_outside_locus) {
-                (false, _) => 0,
-                (true, false) => 1,
-                (true, true) => 2,
-            };
-            reads.set_initializer(&i64_t.const_int(mode, false));
         }
         Ok(())
     }
@@ -20328,6 +20263,56 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Open)
     }
 
+    /// Push a loop's frame (`continue_bb` the step or the condition the
+    /// body's end and a `continue` go to, `break_bb` the loop's exit) and
+    /// return where the body's end branches: `continue_bb`, or, in a body
+    /// whose loops take the drain's stop ([`Cx::backedge_stop_fn`]), a
+    /// latch in front of it (GH #1858).
+    ///
+    /// The latch is the loop's back-edge: one monotonic load of the
+    /// runtime's `lotus_process_draining_flag` and a branch, weighted
+    /// cold. When a stop is up (a signal's drain or a failed test's, the
+    /// runtime's `LOTUS_DRAIN_STOPS` bits; a main locus's tree drain is
+    /// not one) the loop ends there, as a `break` at the end of the
+    /// iteration would: between two iterations, never inside one.
+    /// Otherwise it goes on to `continue_bb`. A `continue` goes through
+    /// the latch too, so every way to the next iteration takes the check.
+    pub(crate) fn push_loop_frame(
+        &mut self,
+        continue_bb: BasicBlock<'ctx>,
+        break_bb: BasicBlock<'ctx>,
+    ) -> Result<BasicBlock<'ctx>, CodegenError> {
+        let target = match (self.backedge_stop_fn, self.current_fn) {
+            (Some(stop_fn), Some(cur)) if stop_fn == cur => {
+                let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+                let here = self.builder.get_insert_block().expect("a loop is lowered inside a block");
+                let latch = self.context.append_basic_block(cur, "loop.drain_stop");
+                self.builder.position_at_end(latch);
+                let flag = self.emit_process_draining_load("loop.drain_stop.flag")?;
+                let i64_t = self.context.i64_type();
+                // The runtime's LOTUS_DRAIN_STOPS: SIGNAL (1) | TEST (4).
+                let stops = self.builder.build_and(flag, i64_t.const_int(1 | 4, false), "loop.drain_stop.bits").map_err(e)?;
+                let up = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::NE, stops, i64_t.const_zero(), "loop.drain_stop.up")
+                    .map_err(e)?;
+                let br = self.builder.build_conditional_branch(up, break_bb, continue_bb).map_err(e)?;
+                let weights = self.context.metadata_node(&[
+                    self.context.metadata_string("branch_weights").into(),
+                    self.context.i32_type().const_int(1, false).into(),
+                    self.context.i32_type().const_int(1 << 20, false).into(),
+                ]);
+                let kind = self.context.get_kind_id("prof");
+                br.set_metadata(weights, kind).map_err(|err| CodegenError::LlvmEmit(err.to_string()))?;
+                self.builder.position_at_end(here);
+                latch
+            }
+            _ => continue_bb,
+        };
+        self.loops.push(LoopFrame { continue_bb: target, break_bb });
+        Ok(target)
+    }
+
     fn lower_while(
         &mut self,
         cond: &Expr,
@@ -20360,15 +20345,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // body
         self.builder.position_at_end(body_bb);
-        self.loops.push(LoopFrame {
-            continue_bb: header_bb,
-            break_bb: exit_bb,
-        });
+        let back_bb = self.push_loop_frame(header_bb, exit_bb)?;
         let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
-                .build_unconditional_branch(header_bb)
+                .build_unconditional_branch(back_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
 
@@ -22911,15 +22893,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             var_name.name.clone(),
             (local_slot, CodegenTy::LocusRef(child_locus)),
         );
-        self.loops.push(LoopFrame {
-            continue_bb: inc_bb,
-            break_bb: exit_bb,
-        });
+        let back_bb = self.push_loop_frame(inc_bb, exit_bb)?;
         let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
-                .build_unconditional_branch(inc_bb)
+                .build_unconditional_branch(back_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         // Restore prior binding for `var_name` (if any) so the
@@ -23054,15 +23033,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .locals
             .insert(var_name.name.clone(), (var_slot, elem.clone()));
         self.cow_exempt_slots.insert(var_slot);
-        self.loops.push(LoopFrame {
-            continue_bb: inc_bb,
-            break_bb: exit_bb,
-        });
+        let back_bb = self.push_loop_frame(inc_bb, exit_bb)?;
         let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
-                .build_unconditional_branch(inc_bb)
+                .build_unconditional_branch(back_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         if let Some(prev) = prev {
@@ -23358,15 +23334,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             var_name.name.clone(),
             (var_slot, CodegenTy::TypeRef(cell_name)),
         );
-        self.loops.push(LoopFrame {
-            continue_bb: inc_bb,
-            break_bb: exit_bb,
-        });
+        let back_bb = self.push_loop_frame(inc_bb, exit_bb)?;
         let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
-                .build_unconditional_branch(inc_bb)
+                .build_unconditional_branch(back_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         if let Some(prev) = prev {
@@ -23520,15 +23493,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .locals
             .insert(var_name.name.clone(), (var_slot, elem_ty.clone()));
         self.cow_exempt_slots.insert(var_slot);
-        self.loops.push(LoopFrame {
-            continue_bb: inc_bb,
-            break_bb: exit_bb,
-        });
+        let back_bb = self.push_loop_frame(inc_bb, exit_bb)?;
         let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
-                .build_unconditional_branch(inc_bb)
+                .build_unconditional_branch(back_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         if let Some(prev) = prev {
@@ -23642,10 +23612,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let prev = scope
             .locals
             .insert(var_name.name.clone(), (local_slot, CodegenTy::Int));
-        self.loops.push(LoopFrame {
-            continue_bb: inc_bb,
-            break_bb: exit_bb,
-        });
+        let back_bb = self.push_loop_frame(inc_bb, exit_bb)?;
         // Bounds-check elimination eligibility (ALL must hold):
         //   1. exclusive range (`..`, not `..=`)
         //   2. lower bound is the integer literal `0`
@@ -23683,7 +23650,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let body_end = body_res?;
         if body_end == BlockEnd::Open {
             self.builder
-                .build_unconditional_branch(inc_bb)
+                .build_unconditional_branch(back_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         if let Some(prev) = prev {
@@ -23820,15 +23787,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             var_name.name.clone(),
             (local_slot, elem_ty.clone()),
         );
-        self.loops.push(LoopFrame {
-            continue_bb: inc_bb,
-            break_bb: exit_bb,
-        });
+        let back_bb = self.push_loop_frame(inc_bb, exit_bb)?;
         let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
-                .build_unconditional_branch(inc_bb)
+                .build_unconditional_branch(back_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         if let Some(prev) = prev {
@@ -24005,15 +23969,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .locals
             .insert(var_name.name.clone(), (local_slot, elem_ty.clone()));
         self.cow_exempt_slots.insert(local_slot);
-        self.loops.push(LoopFrame {
-            continue_bb: inc_bb,
-            break_bb: exit_bb,
-        });
+        let back_bb = self.push_loop_frame(inc_bb, exit_bb)?;
         let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
-                .build_unconditional_branch(inc_bb)
+                .build_unconditional_branch(back_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         if let Some(prev) = prev {
@@ -37946,104 +37907,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// and drained.
     pub(crate) fn observes_events(&self) -> bool {
         hale_types::observe_expand::holds_backend(&self.program.items, "events")
-    }
-
-    /// Whether the drain observers' counts are emitted at all (the
-    /// `DrainObserver` obligation): one read for every count site.
-    fn drain_observers_emitted(&self) -> Result<bool, CodegenError> {
-        Ok(self.cells.emits(Obligation::DrainObserver)?)
-    }
-
-    /// GH #1077: count this instance (`self_ptr`) of `locus_name` in to
-    /// the live drain observers (`lotus_drain_observer_enter`), which
-    /// keeps it by `self` until one of its ends counts it out
-    /// ([`Self::emit_drain_observer_out`]) — behind a private flag whose
-    /// initializer the end of `lower_program` writes, since which loci
-    /// read `draining` is known only once every body has lowered. A
-    /// locus that never reads it folds to nothing.
-    pub(crate) fn emit_drain_observer_count(
-        &mut self,
-        locus_name: &str,
-        self_ptr: PointerValue<'ctx>,
-    ) -> Result<(), CodegenError> {
-        self.emit_drain_observer_call(locus_name, self_ptr, "lotus.observes_drain", "lotus_drain_observer_enter")
-    }
-
-    /// GH #1077: count this instance (`self_ptr`) of `locus_name` out of
-    /// the live drain observers, once whichever of its two ends comes
-    /// first, in either order: `finished`, its run() has returned for good
-    /// with nothing left to serve (counted only for a locus that reads
-    /// `draining` in its run() alone), or its teardown's latch, which an
-    /// admitted run can outlive. The runtime keeps each instance by `self`
-    /// from its count-in to its teardown, so whichever end comes second
-    /// counts nothing. Behind private flags whose initializers the end of
-    /// `lower_program` writes, as [`Self::emit_drain_observer_count`].
-    pub(crate) fn emit_drain_observer_out(
-        &mut self,
-        locus_name: &str,
-        self_ptr: PointerValue<'ctx>,
-        finished: bool,
-    ) -> Result<(), CodegenError> {
-        if finished {
-            self.emit_drain_observer_call(locus_name, self_ptr, "lotus.drain_in_run_only", "lotus_drain_observer_finished")
-        } else {
-            self.emit_drain_observer_call(locus_name, self_ptr, "lotus.observes_drain", "lotus_drain_observer_leave")
-        }
-    }
-
-    /// `callee(self_ptr, locus_name)` behind the private flag
-    /// `<flag>.<locus_name>` (0 until the end of `lower_program` writes
-    /// its initializer), the shape every drain observer count shares.
-    fn emit_drain_observer_call(
-        &mut self,
-        locus_name: &str,
-        self_ptr: PointerValue<'ctx>,
-        flag: &str,
-        callee: &str,
-    ) -> Result<(), CodegenError> {
-        if !self.drain_observers_emitted()? {
-            return Ok(());
-        }
-        let i64_t = self.context.i64_type();
-        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
-        let gname = format!("{flag}.{locus_name}");
-        let g = match self.module.get_global(&gname) {
-            Some(g) => g,
-            None => {
-                let g = self.module.add_global(i64_t, None, &gname);
-                g.set_linkage(inkwell::module::Linkage::Private);
-                g.set_initializer(&i64_t.const_zero());
-                g
-            }
-        };
-        let on = self
-            .builder
-            .build_load(i64_t, g.as_pointer_value(), "drain.observer.flag")
-            .map_err(e)?
-            .into_int_value();
-        let yes = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::NE, on, i64_t.const_zero(), "drain.observer")
-            .map_err(e)?;
-        let func = self
-            .builder
-            .get_insert_block()
-            .and_then(|bb| bb.get_parent())
-            .expect("inside a function");
-        let do_bb = self.context.append_basic_block(func, "drain.observer.count");
-        let cont_bb = self.context.append_basic_block(func, "drain.observer.cont");
-        self.builder.build_conditional_branch(yes, do_bb, cont_bb).map_err(e)?;
-        self.builder.position_at_end(do_bb);
-        let f = self.module.get_function(callee).unwrap_or_else(|| panic!("{callee} declared"));
-        let name = self
-            .builder
-            .build_global_string_ptr(locus_name, "lotus.drain.observer.name")
-            .map_err(e)?
-            .as_pointer_value();
-        self.builder.build_call(f, &[self_ptr.into(), name.into()], "drain.observer.call").map_err(e)?;
-        self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
-        self.builder.position_at_end(cont_bb);
-        Ok(())
     }
 
     /// Bus-arena reclaim (2026-05-21): open a per-method-call

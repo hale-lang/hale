@@ -134,6 +134,18 @@ pub struct RunRow {
     /// tree's drain. A read in a handler, a hook or another method does
     /// not count. `false` with no `run()`.
     pub watches_drain: bool,
+    /// GH #1858: the `run()` DEFINITELY reads its locus's `draining`: the
+    /// watches-drain walk with only the receivers it resolves to the locus
+    /// counted (an unresolved one, or the locus handed to a method the
+    /// rows cannot find, is not taken as a read). Such a locus takes the
+    /// drain into its own hands: lowering places no back-edge stops in its
+    /// `run()`'s loops and its wait frame watches the drain, and the
+    /// check's drain-honour law holds its loops to the flag. The may-read
+    /// column above stays the pinned-run await's (where the safe answer to
+    /// an unresolved read is "watches"); here the safe answer is "stopped",
+    /// since a `run()` wrongly taken as manual keeps a loop running through
+    /// the drain. `false` with no `run()`.
+    pub manual_drain: bool,
 }
 
 /// The `flows` family's rows, with what a template clause is resolved
@@ -176,6 +188,16 @@ impl FlowRows {
         self.run_of(decl)
             .or_else(|| self.runs.iter().find(|r| r.span == decl.span))
             .map_or(true, |r| r.watches_drain)
+    }
+
+    /// Whether `decl`'s `run()` is manual (the [`RunRow`]'s
+    /// `manual_drain` column), found as [`Self::run_watches_drain`] finds
+    /// its row. A declaration with no row answers `true`, as there: the
+    /// runtime leaves its loops to it.
+    pub fn run_manual_drain(&self, decl: &LocusDecl) -> bool {
+        self.run_of(decl)
+            .or_else(|| self.runs.iter().find(|r| r.span == decl.span))
+            .map_or(true, |r| r.manual_drain)
     }
 
     /// The loci a specialization of `template` makes flows: each of the
@@ -301,6 +323,7 @@ fn walk<'a>(
                     long_running: run.is_some_and(|b| !b.stmts.is_empty()),
                     never_returns: run.and_then(|b| run_statically_nonreturning(b, l)),
                     watches_drain: run.is_some_and(|b| run_reads_draining(b, l, reads)),
+                    manual_drain: run.is_some_and(|b| run_definitely_reads_draining(b, l, reads)),
                 });
                 let generics: Vec<String> = l.generics.iter().map(|g| g.name.name.clone()).collect();
                 for member in &l.members {
@@ -621,10 +644,12 @@ pub fn followed_callees<'a>(
     env: Env,
     rows: &DrainReads<'a>,
     read: &mut bool,
+    definite: bool,
 ) -> Vec<(Option<String>, &'a str, &'a hale_syntax::ast::FnDecl, Env)> {
     use crate::listener_window::{visit_block, Visited};
     let this_r = Receiver::Locus(this.to_string());
-    let reaches_this = |r: &Receiver| matches!(r, Receiver::Unknown) || *r == this_r;
+    // `definite` (GH #1858): only a receiver resolved to this locus reads.
+    let reaches_this = |r: &Receiver| (!definite && matches!(r, Receiver::Unknown)) || *r == this_r;
     // (the locus whose method, or None for a free fn; name; args; env at the call)
     let mut callees: Vec<(Option<String>, &'a str, &'a [Expr], Env)> = Vec::new();
     let mut scopes: Vec<Env> = vec![env];
@@ -671,7 +696,7 @@ pub fn followed_callees<'a>(
                             if may_hand_this || holders.contains(&l) {
                                 if rows.methods.get(l.as_str()).and_then(|m| m.get(name)).is_some() {
                                     callees.push((Some(l), name, args.as_slice(), env.clone()));
-                                } else if hands_this {
+                                } else if hands_this && !definite {
                                     *read = true;
                                 }
                             }
@@ -694,7 +719,7 @@ pub fn followed_callees<'a>(
                                     any = true;
                                 }
                             }
-                            if !any && hands_this {
+                            if !any && hands_this && !definite {
                                 *read = true;
                             }
                         }
@@ -759,6 +784,16 @@ pub fn block_reads_draining(body: &Block) -> bool {
 /// `run()` never reaches, is not the `run()`'s. Callees are entered once
 /// per name and binding of their parameters.
 pub fn run_reads_draining<'a>(run: &'a Block, decl: &'a LocusDecl, rows: &DrainReads<'a>) -> bool {
+    run_reads_draining_as(run, decl, rows, false)
+}
+
+/// GH #1858: the same walk, counting only reads it resolves to `decl`
+/// (the `manual_drain` column).
+pub fn run_definitely_reads_draining<'a>(run: &'a Block, decl: &'a LocusDecl, rows: &DrainReads<'a>) -> bool {
+    run_reads_draining_as(run, decl, rows, true)
+}
+
+fn run_reads_draining_as<'a>(run: &'a Block, decl: &'a LocusDecl, rows: &DrainReads<'a>, definite: bool) -> bool {
     let this = decl.name.name.as_str();
     let holders = rows.holders_of(this);
     let mut seen: BTreeSet<(Option<String>, &'a str, Vec<Receiver>)> = BTreeSet::new();
@@ -766,7 +801,7 @@ pub fn run_reads_draining<'a>(run: &'a Block, decl: &'a LocusDecl, rows: &DrainR
         vec![(run, Env { this: Some(this.to_string()), names: BTreeMap::new() })];
     while let Some((body, env)) = pending.pop() {
         let mut read = false;
-        let callees = followed_callees(body, this, &holders, env, rows, &mut read);
+        let callees = followed_callees(body, this, &holders, env, rows, &mut read, definite);
         if read {
             return true;
         }
@@ -1020,6 +1055,28 @@ mod tests {
     /// `run()` reading a child's `draining` reads another locus's. A
     /// holder's field typed by an alias (a chain of two) is the locus it
     /// aliases; an alias of another locus is that other locus.
+    /// GH #1858: the manual-drain column counts only the reads the walk
+    /// resolves to the locus. A read through a receiver the declarations
+    /// cannot place (an undeclared type) makes the run watch the drain
+    /// for the pinned-run await, and not manual for the back-edge stops.
+    #[test]
+    fn manual_drain_counts_only_the_resolved_reads() {
+        let src = "locus Direct { run() { while !self.draining { } } }\n\
+                   locus Through { fn stop() -> Bool { return self.draining; } run() { while !self.stop() { } } }\n\
+                   locus Opaque { run() { let x = make(); while !x.draining { } } }\n\
+                   fn make() -> Elsewhere { return Elsewhere { }; }\n\
+                   locus Plain { run() { while true { } } }\n\
+                   fn main() { }\n";
+        let p = hale_syntax::parse_source(src).expect("parse");
+        let rows = survey(&[&p], &[]);
+        let row = |name: &str| rows.runs.iter().find(|r| r.locus == name).expect("a run row").clone();
+        assert!(row("Direct").manual_drain && row("Direct").watches_drain);
+        assert!(row("Through").manual_drain && row("Through").watches_drain);
+        assert!(row("Opaque").watches_drain, "an unresolved read is a read to the await");
+        assert!(!row("Opaque").manual_drain, "and not manual to the stops");
+        assert!(!row("Plain").manual_drain && !row("Plain").watches_drain);
+    }
+
     #[test]
     fn watches_drain_is_reached_through_aliases_arguments_and_declared_fields() {
         let src = "locus Alias { fn stop() -> Bool { return self.draining; } run() { let w = self; while !w.stop() { } } }

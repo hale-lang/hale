@@ -18,11 +18,16 @@
 //               sleep is cut short): the hook now runs, exit 0 — this one
 //               died with 143 and no mark before;
 //   - dissolve: the same with a `dissolve()` hook;
-//   - endless:  the issue's program as written (`while true`, no read):
-//               nothing can rescue it, so the grace (300 ms here) runs
-//               out and the signal ends it with the hook unrun. `hale
-//               check` warns about exactly this shape
-//               (crates/hale-types/tests/drain_hook_behind_endless_run.rs).
+//   - endless:  the issue's program as written (`while true`, no read).
+//               Under GH #1838 nothing could rescue it: the grace ran out
+//               and the signal ended it with the hook unrun (143). Since
+//               GH #1858 the runtime ends the loop at its back-edge, so
+//               its hook runs and it exits 0 as well;
+//   - manual:   a `run()` that reads `draining` and loops for ever
+//               without stopping on it: the runtime leaves its loop to
+//               it, the grace (300 ms here) runs out and the signal ends
+//               it with the hook unrun. `hale check` warns at that loop
+//               (crates/hale-types/tests/drain_not_honoured.rs).
 
 fn app(mark: String, run: String, hook: String) -> String {
     return "main locus App {\n"
@@ -158,11 +163,28 @@ fn main() {
     );
     std::test::assert_eq_int(
         code,
+        0,
+        "the runtime ends a loop that never reads draining at its back-edge: exit 0",
+    );
+    std::test::assert_eq_str(mark_of(endless), "drain", "and its drain() ran");
+
+    let manual = dir + "/manual.mark";
+    let code = run_and_term(
+        hale, dir, "manual",
+        app(
+            manual,
+            "        if self.draining { return; }\n        while true { std::time::sleep(200ms); }\n",
+            "drain",
+        ),
+        "300",
+    );
+    std::test::assert_eq_int(
+        code,
             -1,
-        "a run() that never returns holds the drain past its grace; the signal ends it",
+        "a run() that reads draining and never stops on it holds the drain past its grace; the signal ends it",
     );
     std::test::assert_eq_str(
-        mark_of(endless),
+        mark_of(manual),
         "",
         "and its drain() never ran — the shape `hale check` warns about",
     );

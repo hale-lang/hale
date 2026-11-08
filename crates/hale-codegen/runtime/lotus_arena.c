@@ -2105,9 +2105,27 @@ static inline int lotus_runtime_multithreaded(void) {
 int64_t lotus_process_draining_flag = 0;
 #define LOTUS_DRAIN_SIGNAL ((int64_t)1)
 #define LOTUS_DRAIN_TREE   ((int64_t)2)
+/* A failed test assertion's unwind (`lotus_test_fail_unwind`). */
+#define LOTUS_DRAIN_TEST   ((int64_t)4)
+/* GH #1858: the drains that STOP the program — a signal's and a failed
+ * test's — as against a main locus's tree drain, which only asks the
+ * loci that watch it. A stop ends every `run()` loop that does not read
+ * `draining` at its back-edge (codegen tests these bits there: one load
+ * and a branch per iteration) and wakes every blocking wait. Codegen
+ * spells the mask as a constant; keep the two in step. */
+#define LOTUS_DRAIN_STOPS  (LOTUS_DRAIN_SIGNAL | LOTUS_DRAIN_TEST)
 
 static inline int lotus_process_draining(void) {
     return __atomic_load_n(&lotus_process_draining_flag, __ATOMIC_ACQUIRE) != 0;
+}
+
+static inline int lotus_drain_stopping(void) {
+    return (__atomic_load_n(&lotus_process_draining_flag, __ATOMIC_ACQUIRE) & LOTUS_DRAIN_STOPS) != 0;
+}
+
+/* The same, for the runtime's other translation units (lotus_tls.c). */
+int lotus_drain_stop_up(void) {
+    return lotus_drain_stopping();
 }
 
 /* What a drain does to a timed wait (spec/semantics.md § "Drain
@@ -2133,8 +2151,14 @@ static inline int lotus_process_draining(void) {
  * a hook a watching run() reaches does not inherit its cut. The frame
  * word is thread-local, and a coroutine's own across a park
  * (`lotus_reclaim_ctx_t` carries it):
- *   0     no extra cut: no frame (a handler, `fn main`), a hook, or the
- *         run() of a locus that never reads `draining`;
+ *   0     no extra cut: no frame (a handler), a hook;
+ *   -1    GH #1858: the run() of a locus whose run() never reads
+ *         `draining`, and `fn main`'s own body: the runtime stops these.
+ *         An untimed wait (an accept, a receive) begun during a STOP (a
+ *         signal's drain, a failed test's) returns at once with its
+ *         closed outcome; a timed one runs its length (codegen skips a
+ *         sleep written in the stopped body itself); a tree's drain cuts
+ *         nothing extra;
  *   1     a watching run() that has not seen the drain;
  *   g + 2 a watching run() that saw the drain of generation g.
  * The generation moves at every raise, so a run() that saw a tree's
@@ -2155,14 +2179,28 @@ static inline int64_t lotus_drain_seen_word(void) {
 /* Whether the drain cuts a wait begun in frame state `frame`, beyond
  * the in-progress cut every timed wait takes. */
 static inline int lotus_drain_cuts_frame(int64_t frame) {
+    if (frame <= 0 || !lotus_process_draining()) return 0;
+    return frame != lotus_drain_seen_word();
+}
+
+/* GH #1858: the same question for an untimed wait (an accept, a receive)
+ * begun during a drain: a stop ends it in a stopped frame (-1) too, where
+ * it answers its closed outcome, which ends the loop around it. (A TIMED
+ * wait begun during a stop in a stopped frame runs its length unless it
+ * is written in the stopped run()'s own body, which codegen skips: a
+ * sleep cut short in a loop of a fn the run calls would only spin it.) */
+static inline int lotus_drain_cuts_frame_untimed(int64_t frame) {
     if (frame == 0 || !lotus_process_draining()) return 0;
+    if (frame < 0) return lotus_drain_stopping();
     return frame != lotus_drain_seen_word();
 }
 
 /* A read of `draining` answered true on the process flag: a watching
- * run() it runs in has seen this drain. Elsewhere it marks nothing. */
+ * run() it runs in has seen this drain. Elsewhere it marks nothing (a
+ * stopped frame, -1, stays one: what it calls may read another locus's
+ * flag, which does not make it watch). */
 void lotus_drain_seen(void) {
-    if (t_wait_frame != 0) t_wait_frame = lotus_drain_seen_word();
+    if (t_wait_frame > 0) t_wait_frame = lotus_drain_seen_word();
 }
 
 /* `std::time::sleep`'s check, at its entry and after each slice, while
@@ -11328,6 +11366,11 @@ typedef struct lotus_coro {
      * drain did: the drain expires such a park, a wait already in
      * progress. */
     int               park_pre_drain;
+    /* GH #1858: 1 when this park (timed or not) began before a stop (a
+     * signal's drain, a failed test's): the stop ends it, an untimed one
+     * included (a plain accept, a recv with no timeout), which then
+     * answers its closed outcome. */
+    int               park_pre_stop;
     /* The wait frame the park was made in (`t_wait_frame`): the drain
      * also expires a park begun during it by a watching run() that has
      * not seen it (`lotus_drain_cuts_frame`). */
@@ -14159,6 +14202,7 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->park_deadline_ns = 0;
     c->park_timed_out   = 0;
     c->park_pre_drain   = 0;
+    c->park_pre_stop    = 0;
     c->park_wait_frame  = 0;
     c->park_shutdown_cuts = 0;
     c->handler     = cell->handler;
@@ -14291,6 +14335,7 @@ int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
     c->park_deadline_ns = deadline_ns;
     c->park_timed_out   = 0;
     c->park_pre_drain   = !lotus_process_draining();
+    c->park_pre_stop    = !lotus_drain_stopping();
     c->park_wait_frame  = t_wait_frame;
     /* Link onto parked head — single-threaded access (only the
      * worker touches this list), no lock needed. */
@@ -14352,6 +14397,7 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
     c->park_deadline_ns = lotus_now_mono_ns() + ns;
     c->park_timed_out   = 0;
     c->park_pre_drain   = !lotus_process_draining();
+    c->park_pre_stop    = !lotus_drain_stopping();
     c->park_wait_frame  = t_wait_frame;
     c->next = p->parked_head;
     p->parked_head = c;
@@ -14756,15 +14802,22 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
  *
  * Returns 0 on shutdown-with-empty-queue-and-no-parked; 1 after a
  * cell or wakeup advanced state (caller loops). */
-/* GH #1039: whether the drain ends parked coroutine `c`'s timed park
- * now: a park already in progress when the drain began, or one begun
- * during it by a watching run() that has not seen it
- * (`lotus_drain_cuts_frame`). An untimed park (a plain accept) never. */
+/* GH #1039: whether the drain ends parked coroutine `c`'s park now. A
+ * timed park: one already in progress when the drain began, or one
+ * begun during it in a frame the drain cuts (`lotus_drain_cuts_frame`).
+ * GH #1858: an untimed park (a plain accept, a recv with no timeout) made
+ * in a `run()` (frame not 0) the same way, but only on a stop (a signal's
+ * drain, a failed test's), never a tree's: it then answers its closed
+ * outcome. A handler's or a standard-library coroutine's untimed park (a
+ * server's connection, answering the calls in flight) is left alone. */
 #define LOTUS_SHUTDOWN_DRAIN_CUTS_MAX 64
 static inline int lotus_coro_drain_due(const lotus_coro_t *c, int draining) {
-    return c->park_deadline_ns > 0
-        && ((draining && c->park_pre_drain)
-            || lotus_drain_cuts_frame(c->park_wait_frame));
+    if (c->park_deadline_ns > 0) {
+        return (draining && c->park_pre_drain)
+            || lotus_drain_cuts_frame(c->park_wait_frame);
+    }
+    return c->parked_fd >= 0 && c->park_wait_frame != 0 && lotus_drain_stopping()
+        && (c->park_pre_stop || lotus_drain_cuts_frame_untimed(c->park_wait_frame));
 }
 
 static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
@@ -14964,8 +15017,10 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
              * returns and a deadline-bounded recv reports its timeout,
              * so a `while !self.draining` loop gets to its check. Any
              * other park begun after the drain (a flush's pacing) runs
-             * its full length; an untimed park (a plain accept) stays
-             * parked. */
+             * its full length. GH #1858: a stop ends an untimed park (a
+             * plain accept, a recv with no timeout) by the same rule,
+             * and the park answers 1, which its caller turns into its
+             * closed outcome; a tree's drain leaves it parked. */
             int draining = lotus_process_draining();
             lotus_coro_t *expired = NULL;
             lotus_coro_t **epp = &p->parked_head;
@@ -15068,28 +15123,40 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
  *
  * The handler is async-signal-safe: it only writes one byte to a
  * pipe. A watcher thread, started at install, blocks on the pipe's
- * read end; on the byte it raises lotus_process_draining_flag and
- * wakes every async_io pool (whose parked coros would otherwise wait
- * out their epoll timeout), then waits out the drain's grace period.
- * A program that ends inside it exits the ordinary way, 0. One that
- * does not — a `run()` that never reads `self.draining` — is ended
- * by the watcher through the signal's own default action (restored,
- * then re-raised — the process dies BY the signal, so SIGTERM still
- * stops every program and its parent sees why). A second signal ends
- * the process at once, the same way.
+ * read end; on the byte it raises the stop (`lotus_drain_stop_raise`:
+ * the flag, the stop pipe every blocking wait off an async_io pool
+ * watches, and a wake for every async_io pool, whose parked coros would
+ * otherwise wait out their epoll timeout), stops the listeners, then
+ * waits out the drain's grace period. GH #1858: the runtime ends every
+ * `run()` loop that does not read `draining` at its back-edge, and the
+ * stop wakes every blocking wait, so a program ends inside the grace the
+ * ordinary way, exit 0, its hooks run. One that does not — a loop that
+ * reads `draining` and does not stop on it, a blocking foreign call —
+ * is ended by the watcher through the signal's own default action
+ * (restored, then re-raised: the process dies BY the signal, so SIGTERM
+ * still stops every program and its parent sees why). A second signal
+ * ends the process at once, the same way.
  *
  * Signals are caught, not blocked: a blocked mask is inherited
  * across fork/exec, so every subprocess the program spawned would
  * ignore SIGTERM. SA_RESTART keeps the runtime's other blocking
- * calls from seeing EINTR; a sleep slices at 100 ms and a timed park
- * is swept, so neither needs the interruption. Installed only when
- * the program reads `draining` somewhere (the codegen passes that
- * in): a program that cannot observe a drain keeps the default
- * action and dies at the signal, as before. */
+ * calls from seeing EINTR; a sleep slices at 100 ms, a timed park is
+ * swept and a blocking wait polls the stop pipe, so none needs the
+ * interruption. Installed in every program a signal can reach (GH
+ * #1858: before, only in one that read `draining` or declared a hook,
+ * and only while such a locus was live). */
 void lotus_tcp_stop_all_listeners(void);
 #ifndef __wasm__
 static int g_drain_pipe[2] = {-1, -1};
 static volatile sig_atomic_t g_drain_signal = 0;
+/* GH #1858: the stop pipe. Its read end becomes readable for good when a
+ * stop begins (`lotus_drain_stop_raise`), so a blocking accept or wait
+ * for readiness off an async_io pool polls it beside its own fd and
+ * wakes (`lotus_drain_wait_fd`, `lotus_io_wait_fd`; a receive is woken
+ * by the kernel-wait registry's signal instead, `lotus_kwait_enter`).
+ * Opened by the signal install; -1 before, and then nothing waits on it
+ * and no stop is told apart from a calm run. */
+static int g_stop_pipe[2] = {-1, -1};
 
 /* End the process the way `sig`'s default action would, so a waiting
  * parent sees it killed BY the signal (a shell reports 128 + sig),
@@ -15120,199 +15187,158 @@ static void lotus_drain_on_signal(int sig) {
     errno = saved;
 }
 
-/* GH #1077: the live instances of loci whose code reads `draining` —
- * the ones that can answer a drain. Codegen counts one in at
- * instantiation and out at its arena destroy. A `draining` read in
- * code the program never runs (an imported package's receive loop)
- * turned the drain on for the whole program; with no such instance
- * live, nothing can answer it, and the grace is only a wait. GH #1838:
- * a locus that declares a `drain()` or `dissolve()` hook is counted
- * the same way — the drain's teardown is what runs its hook. */
-static int64_t g_drain_observers = 0;
-static int64_t g_drain_mode = 0;   /* 1: counted observers; 2: always */
+static void lotus_kwait_kick(void);
 
-/* The same live instances by locus name, so the grace's report can say
- * WHICH ones a drain is still waiting on (codegen passes the locus's
- * name, a string literal). A fixed table, filled without a lock: a slot
- * is claimed once by a compare-and-swap on its name and never released,
- * and each count moves atomically. A program with more distinct
- * draining-aware loci than slots still counts them all in
- * g_drain_observers; the report just cannot name the overflow. */
-#define LOTUS_DRAIN_NAMES_MAX 128
+/* GH #1858: begin a stop (`bit`: LOTUS_DRAIN_SIGNAL or LOTUS_DRAIN_TEST).
+ * The flag first, so a back-edge check or a wait that sees the pipe also
+ * sees the stop; then the pipe, which wakes every blocking wait that
+ * polls it; then every async_io pool, whose sweep ends the parks the
+ * stop ends (`lotus_coro_drain_due`). */
+void lotus_drain_stop_raise(int64_t bit) {
+    lotus_drain_gen_bump();
+    __atomic_fetch_or(&lotus_process_draining_flag, bit, __ATOMIC_RELEASE);
+    if (g_stop_pipe[1] >= 0) {
+        int saved = errno;
+        char one = 1;
+        ssize_t w = write(g_stop_pipe[1], &one, 1);
+        (void)w;
+        errno = saved;
+    }
+    lotus_kwait_kick();
+#if LOTUS_HAVE_ASYNC_IO
+    for (size_t i = 0; i < g_coop_pool_count; i++) {
+        lotus_coop_pool_t *p = g_coop_pools[i];
+        if (p && __atomic_load_n(&p->async_io_enabled, __ATOMIC_ACQUIRE) &&
+            p->wake_fd >= 0) {
+            lotus_wake_post(p);
+        }
+    }
+#endif
+}
+
+/* GH #1858: whether a stop ends a blocking untimed wait (an accept, a
+ * receive) that begins now on this thread. Only a wait made in a `run()`
+ * — one the runtime stops (frame -1), `fn main`'s, or a watching one
+ * (frame > 0) — is ever ended: a handler's, a hook's and a standard-
+ * library coroutine's own (frame 0: a server's connections, which answer
+ * the calls in flight before they close) wait as they always did. 0 it
+ * does not (no stop pipe, frame 0, or a stop is up and the frame is not
+ * one it cuts: a watching run() that has seen it); 1 it already has (a
+ * stop is up and the frame is one it cuts); 2 the wait watches for the
+ * stop (none yet: one that begins while the wait is in progress ends
+ * it). */
+int lotus_drain_wait_mode(void) {
+    if (g_stop_pipe[0] < 0 || t_wait_frame == 0) return 0;
+    if (!lotus_drain_stopping()) return 2;
+    return lotus_drain_cuts_frame_untimed(t_wait_frame) ? 1 : 0;
+}
+
+int lotus_drain_stop_fd(void) {
+    return g_stop_pipe[0];
+}
+
+/* GH #1858: the threads blocked in a kernel wait a stop must end — a
+ * blocking `read` / `recvfrom` / `recvmsg` of a socket off an async_io
+ * pool, whose hot path must stay one syscall (`std::diag`'s gate: one
+ * read per recv). Such a wait registers its thread here around the
+ * syscall (`lotus_kwait_enter` / `lotus_kwait_leave`: a thread-local
+ * slot, claimed once per thread, and two atomic stores, no syscall); a
+ * stop sends each registered thread the wake signal, whose handler does
+ * nothing and is installed without SA_RESTART, so the syscall returns
+ * EINTR and the wait answers its closed outcome. A wait that registered
+ * just before the stop but entered its syscall just after the signal is
+ * caught by the watcher, which sends it again every 20 ms through the
+ * grace. A thread past its syscall clears its slot first; the narrow
+ * race where the signal lands after that interrupts only a runtime call
+ * that retries on EINTR. A thread with no free slot (more than
+ * LOTUS_KWAIT_MAX at once) waits for its own end, bounded by the grace. */
+#define LOTUS_KWAIT_MAX 1024
+#ifdef SIGURG
+#define LOTUS_WAKE_SIG SIGURG
+#endif
 static struct {
-    const char *label;   /* accessed with __atomic builtins only */
-    int64_t     live;
-} g_drain_names[LOTUS_DRAIN_NAMES_MAX];
+    pthread_t tid;
+    int       claimed;   /* __atomic: 0 free, 1 a thread's for good */
+    int       active;    /* __atomic: 1 while in a registered wait */
+    int       fd;        /* __atomic: the socket the wait reads */
+} g_kwait[LOTUS_KWAIT_MAX];
+static __thread int t_kwait_slot = -1;
+static int g_kwait_signal_on = 0;
+int64_t lotus_sock_get_recv_timeout_ns(int fd);
 
-static void lotus_drain_name_count(const char *label, int64_t delta) {
-    if (!label) return;
-    for (size_t i = 0; i < LOTUS_DRAIN_NAMES_MAX; i++) {
-        const char *cur = __atomic_load_n(&g_drain_names[i].label, __ATOMIC_ACQUIRE);
-        if (!cur) {
-            const char *none = NULL;
-            if (__atomic_compare_exchange_n(&g_drain_names[i].label, &none, label,
-                                            0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-                cur = label;
-            } else {
-                cur = none;   /* another thread claimed it: whose is it? */
+static void lotus_kwait_on_signal(int sig) {
+    (void)sig;
+}
+
+/* Before a blocking socket syscall on `fd` off an async_io pool: 1 when
+ * a stop has already ended the wait (the caller answers its closed
+ * outcome at once), else 0 (go on; when a stop is not up yet the thread
+ * is registered, and the caller calls `lotus_kwait_leave` after the
+ * syscall and asks `lotus_kwait_ended` on EINTR). A receive on a socket
+ * with a timeout of its own (SO_RCVTIMEO: an HTTP call's read, a
+ * liveness loop's) is not woken: it ends at its timeout, and a call cut
+ * in flight could leave its answer unknown (the stopper reads the
+ * timeout when it kicks, so the receive itself pays no syscall). */
+int lotus_kwait_enter(int fd) {
+    int mode = lotus_drain_wait_mode();
+    /* (Only while a stop is up does the receive read its socket's
+     * timeout: a timed one waits it out.) */
+    if (mode == 1) return lotus_sock_get_recv_timeout_ns(fd) > 0 ? 0 : 1;
+    if (mode != 2 || !g_kwait_signal_on) return 0;
+    int slot = t_kwait_slot;
+    if (slot < 0) {
+        for (int i = 0; i < LOTUS_KWAIT_MAX; i++) {
+            int free_ = 0;
+            if (__atomic_compare_exchange_n(&g_kwait[i].claimed, &free_, 1, 0,
+                                            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                g_kwait[i].tid = pthread_self();
+                slot = i;
+                break;
             }
         }
-        if (cur == label || (cur && strcmp(cur, label) == 0)) {
-            __atomic_add_fetch(&g_drain_names[i].live, delta, __ATOMIC_RELAXED);
-            return;
-        }
+        if (slot < 0) return 0;
+        t_kwait_slot = slot;
     }
-}
-
-void lotus_drain_observer_add(int64_t delta, const char *label) {
-    __atomic_add_fetch(&g_drain_observers, delta, __ATOMIC_RELEASE);
-    lotus_drain_name_count(label, delta);
-}
-
-/* Each live observer instance, by its `self`, from its instantiation
- * (`lotus_drain_observer_enter`) until it is counted out: the one table
- * both of its ends go through, so it leaves the count exactly once in
- * either order. One end is its run() returning for good with nothing
- * left to serve (`lotus_drain_observer_finished`, for a locus that
- * reads `draining` in its run() alone): a finished locus has nothing
- * to drain, and counted until its parent tore it down it held a
- * signal's drain for the whole grace. The other is its teardown's
- * latch (`lotus_drain_observer_leave`), which may come first: an
- * admitted run outlives the latch under its run hold and reaches its
- * end after it. Whichever comes first counts the instance out and
- * marks its entry; teardown removes the entry, so a later `finished`
- * from a run that outlived the latch finds nothing and counts nothing,
- * and the table holds only instances not yet torn down. An instance
- * the table could not hold (out of memory) is counted all the same and
- * counted out at teardown, as before the table.
- *
- * Open addressing with linear probing, deletion by backward shift, so
- * no tombstones accumulate; under one lock, taken only by loci that
- * read `draining`. */
-typedef struct { void *self; int finished; } lotus_drain_entry_t;
-static pthread_mutex_t g_drain_table_lock = PTHREAD_MUTEX_INITIALIZER;
-static lotus_drain_entry_t *g_drain_table = NULL;
-static size_t g_drain_table_cap = 0;   /* a power of two, or 0 */
-static size_t g_drain_table_len = 0;
-
-static size_t lotus_drain_slot_of(void *self, size_t cap) {
-    uintptr_t h = (uintptr_t)self;
-    h ^= h >> 33; h *= (uintptr_t)0xff51afd7ed558ccdULL; h ^= h >> 33;
-    return (size_t)h & (cap - 1);
-}
-
-/* The slot holding `self`, or the empty slot it would go in. Lock held. */
-static size_t lotus_drain_find(void *self) {
-    size_t i = lotus_drain_slot_of(self, g_drain_table_cap);
-    while (g_drain_table[i].self && g_drain_table[i].self != self) {
-        i = (i + 1) & (g_drain_table_cap - 1);
+    __atomic_store_n(&g_kwait[slot].fd, fd, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_kwait[slot].active, 1, __ATOMIC_SEQ_CST);
+    if (lotus_drain_stopping()) {
+        __atomic_store_n(&g_kwait[slot].active, 0, __ATOMIC_RELEASE);
+        return 1;
     }
-    return i;
+    return 0;
 }
 
-static int lotus_drain_grow(void) {
-    size_t cap = g_drain_table_cap ? g_drain_table_cap * 2 : 64;
-    lotus_drain_entry_t *t = calloc(cap, sizeof(*t));
-    if (!t) return 0;
-    lotus_drain_entry_t *old = g_drain_table;
-    size_t old_cap = g_drain_table_cap;
-    g_drain_table = t;
-    g_drain_table_cap = cap;
-    for (size_t i = 0; i < old_cap; i++) {
-        if (old[i].self) g_drain_table[lotus_drain_find(old[i].self)] = old[i];
-    }
-    free(old);
-    return 1;
+void lotus_kwait_leave(void) {
+    int slot = t_kwait_slot;
+    if (slot >= 0) __atomic_store_n(&g_kwait[slot].active, 0, __ATOMIC_RELEASE);
 }
 
-static void lotus_drain_remove_at(size_t i) {
-    size_t mask = g_drain_table_cap - 1;
-    g_drain_table[i].self = NULL;
-    g_drain_table_len--;
-    size_t j = (i + 1) & mask;
-    while (g_drain_table[j].self) {
-        size_t home = lotus_drain_slot_of(g_drain_table[j].self, g_drain_table_cap);
-        /* move j back to i when its home is not cyclically in (i, j] */
-        if (((j - home) & mask) >= ((j - i) & mask)) {
-            g_drain_table[i] = g_drain_table[j];
-            g_drain_table[j].self = NULL;
-            i = j;
-        }
-        j = (j + 1) & mask;
-    }
+/* After an EINTR in a registered wait: whether the stop ended it (it was
+ * in progress when the stop began, so it ends wherever it is). */
+int lotus_kwait_ended(void) {
+    return lotus_drain_stopping();
 }
 
-void lotus_drain_observer_enter(void *self, const char *label) {
-    pthread_mutex_lock(&g_drain_table_lock);
-    if ((g_drain_table_len + 1) * 2 > g_drain_table_cap) (void)lotus_drain_grow();
-    if (g_drain_table_cap && (g_drain_table_len + 1) * 2 <= g_drain_table_cap) {
-        size_t i = lotus_drain_find(self);
-        if (!g_drain_table[i].self) {
-            g_drain_table[i].self = self;
-            g_drain_table[i].finished = 0;
-            g_drain_table_len++;
-        }
+/* Send the wake signal to every thread in a registered wait whose
+ * socket has no timeout of its own. */
+static void lotus_kwait_kick(void) {
+#ifdef LOTUS_WAKE_SIG
+    if (!g_kwait_signal_on) return;
+    for (int i = 0; i < LOTUS_KWAIT_MAX; i++) {
+        if (!__atomic_load_n(&g_kwait[i].claimed, __ATOMIC_ACQUIRE)) continue;
+        if (!__atomic_load_n(&g_kwait[i].active, __ATOMIC_ACQUIRE)) continue;
+        int fd = __atomic_load_n(&g_kwait[i].fd, __ATOMIC_RELAXED);
+        if (fd >= 0 && lotus_sock_get_recv_timeout_ns(fd) > 0) continue;
+        (void)pthread_kill(g_kwait[i].tid, LOTUS_WAKE_SIG);
     }
-    pthread_mutex_unlock(&g_drain_table_lock);
-    lotus_drain_observer_add(1, label);
+#endif
 }
 
-void lotus_drain_observer_finished(void *self, const char *label) {
-    int out = 0;
-    pthread_mutex_lock(&g_drain_table_lock);
-    if (g_drain_table_cap) {
-        size_t i = lotus_drain_find(self);
-        if (g_drain_table[i].self && !g_drain_table[i].finished) {
-            g_drain_table[i].finished = 1;
-            out = 1;
-        }
-    }
-    pthread_mutex_unlock(&g_drain_table_lock);
-    if (out) lotus_drain_observer_add(-1, label);
-}
-
-void lotus_drain_observer_leave(void *self, const char *label) {
-    int out = 1;
-    pthread_mutex_lock(&g_drain_table_lock);
-    if (g_drain_table_cap) {
-        size_t i = lotus_drain_find(self);
-        if (g_drain_table[i].self) {
-            out = !g_drain_table[i].finished;
-            lotus_drain_remove_at(i);
-        }
-    }
-    pthread_mutex_unlock(&g_drain_table_lock);
-    if (out) lotus_drain_observer_add(-1, label);
-}
-
-/* The bookkeeping's test surface, reachable from a program through
- * `@ffi("c")` (whose Ints are the instance and the answer): `op` 0
- * enters `instance`, 1 finishes it, 2 tears it down, 3 does nothing;
- * the answer is the live count, or with `op` 4 how many instances the
- * table holds. */
-int64_t lotus_drain_observer_step(int64_t op, int64_t instance) {
-    void *self = (void *)(uintptr_t)instance;
-    switch (op) {
-    case 0: lotus_drain_observer_enter(self, "probe"); break;
-    case 1: lotus_drain_observer_finished(self, "probe"); break;
-    case 2: lotus_drain_observer_leave(self, "probe"); break;
-    case 4: {
-        pthread_mutex_lock(&g_drain_table_lock);
-        int64_t n = (int64_t)g_drain_table_len;
-        pthread_mutex_unlock(&g_drain_table_lock);
-        return n;
-    }
-    default: break;
-    }
-    return __atomic_load_n(&g_drain_observers, __ATOMIC_ACQUIRE);
-}
-
-/* What the drain is still waiting on, as one line's worth of text: each
+/* What the drain was still waiting on, as one line's worth of text: each
  * cooperative pool with its mode, whether a worker is mid-iteration (and
- * on which locus) and how many cells queue behind it, then the live loci
- * that read `draining` and so can end it. Composed into `buf` with
- * snprintf only; appends stop at `cap`. Called once, by the watcher, when
- * the grace expires and the process is about to end. */
+ * on which locus) and how many cells queue behind it. Composed into
+ * `buf` with snprintf only; appends stop at `cap`. Called once, by the
+ * watcher, when the grace expires and the process is about to end. */
 static size_t lotus_drain_waiting_on(char *buf, size_t cap) {
     size_t n = 0;
 #define LOTUS_APPEND(...) do { \
@@ -15336,17 +15362,6 @@ static size_t lotus_drain_waiting_on(char *buf, size_t cap) {
         any_pool = 1;
     }
     if (!any_pool) LOTUS_APPEND("no cooperative pool");
-    LOTUS_APPEND("; live loci that can answer a drain:");
-    int any_locus = 0;
-    for (size_t i = 0; i < LOTUS_DRAIN_NAMES_MAX; i++) {
-        const char *l = __atomic_load_n(&g_drain_names[i].label, __ATOMIC_ACQUIRE);
-        if (!l) break;
-        int64_t live = __atomic_load_n(&g_drain_names[i].live, __ATOMIC_RELAXED);
-        if (live <= 0) continue;
-        LOTUS_APPEND("%s `%s` x%lld", any_locus ? "," : "", l, (long long)live);
-        any_locus = 1;
-    }
-    if (!any_locus) LOTUS_APPEND(" none named");
 #undef LOTUS_APPEND
     return n;
 }
@@ -15354,27 +15369,17 @@ static size_t lotus_drain_waiting_on(char *buf, size_t cap) {
 static void *lotus_drain_watcher(void *arg) {
     (void)arg;
     char b;
+    /* Wait in poll(2), and read only once the byte is there: the
+     * watcher runs in every program now (GH #1858), and a read(2) it
+     * began whenever its thread was first scheduled would land in the
+     * process-wide `std::diag::syscall_count("read")` gate between a
+     * program's own two looks at it. */
+    struct pollfd wp = { .fd = g_drain_pipe[0], .events = POLLIN, .revents = 0 };
+    while (poll(&wp, 1, -1) < 0 && errno == EINTR) { wp.revents = 0; }
     while (read(g_drain_pipe[0], &b, 1) < 0 && errno == EINTR) {}
-    /* Nothing live reads `draining`: behave as a program that cannot
-     * observe the drain does — the signal's default action, now. */
-    if (g_drain_mode == 1 &&
-        __atomic_load_n(&g_drain_observers, __ATOMIC_ACQUIRE) <= 0) {
-        lotus_drain_die_by((int)g_drain_signal);
-        _exit(128 + (int)g_drain_signal);
-    }
-    lotus_drain_gen_bump();
-    __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_SIGNAL, __ATOMIC_RELEASE);
+    lotus_drain_stop_raise(LOTUS_DRAIN_SIGNAL);
     /* A server stops accepting and drains what it accepted. */
     lotus_tcp_stop_all_listeners();
-#if LOTUS_HAVE_ASYNC_IO
-    for (size_t i = 0; i < g_coop_pool_count; i++) {
-        lotus_coop_pool_t *p = g_coop_pools[i];
-        if (p && __atomic_load_n(&p->async_io_enabled, __ATOMIC_ACQUIRE) &&
-            p->wake_fd >= 0) {
-            lotus_wake_post(p);
-        }
-    }
-#endif
     int64_t grace_ms = 5000;
     const char *env = getenv("LOTUS_DRAIN_GRACE_MS");
     if (env && env[0]) {
@@ -15382,14 +15387,21 @@ static void *lotus_drain_watcher(void *arg) {
         long long v = strtoll(env, &end, 10);
         if (end != env && v >= 0) grace_ms = v;
     }
-    struct timespec ts = {
-        (time_t)(grace_ms / 1000), (long)((grace_ms % 1000) * 1000000)
-    };
-    while (nanosleep(&ts, &ts) < 0 && errno == EINTR) {}
+    /* The grace, in 20 ms naps: each sends the wake signal again to a
+     * kernel wait that registered before the stop but entered its
+     * syscall after the first signal (`lotus_kwait_kick`). */
+    int64_t deadline = lotus_now_mono_ns() + grace_ms * 1000000;
+    for (;;) {
+        int64_t left = deadline - lotus_now_mono_ns();
+        if (left <= 0) break;
+        int64_t nap = left < 20000000 ? left : 20000000;
+        struct timespec ts = { (time_t)(nap / 1000000000), (long)(nap % 1000000000) };
+        while (nanosleep(&ts, &ts) < 0 && errno == EINTR) {}
+        lotus_kwait_kick();
+    }
     /* One line, and it says what the drain was still waiting on: the
-     * pools and whether a worker was mid-iteration, and the loci that
-     * could have ended it. Nothing else changes: the process ends as
-     * it always did. */
+     * pools and whether a worker was mid-iteration. Nothing else
+     * changes: the process ends as it always did. */
     char waiting[768];
     waiting[0] = '\0';
     (void)lotus_drain_waiting_on(waiting, sizeof waiting);
@@ -15401,11 +15413,11 @@ static void *lotus_drain_watcher(void *arg) {
         lotus_diag_field_int(f, sizeof f, "signal", (int64_t)g_drain_signal);
         lotus_diag_field_int(f, sizeof f, "grace_ms", (int64_t)grace_ms);
         lotus_diag_field(f, sizeof f, "waiting_on", waiting);
-        char m[256];
+        char m[320];
         snprintf(m, sizeof m,
-                 "the drain begun by signal %d did not finish within %lld ms (a run() that never reads "
-                 "self.draining?); ending as the signal's default action would (LOTUS_DRAIN_GRACE_MS "
-                 "sets the grace)",
+                 "the drain begun by signal %d did not finish within %lld ms (a loop that reads "
+                 "self.draining but does not stop on it, or a blocking foreign call?); ending as the "
+                 "signal's default action would (LOTUS_DRAIN_GRACE_MS sets the grace)",
                  (int)g_drain_signal, (long long)grace_ms);
         lotus_diag(2, "lotus.drain", m, f);
     }
@@ -15414,15 +15426,19 @@ static void *lotus_drain_watcher(void *arg) {
     return NULL;
 }
 
-void lotus_drain_signals_install(int64_t observes_drain) {
-    if (!observes_drain) return;
+void lotus_drain_signals_install(void) {
     if (g_drain_pipe[0] >= 0) return;
-    g_drain_mode = observes_drain;
     /* pipe + FD_CLOEXEC, not pipe2: macOS has no pipe2. A spawned
-     * subprocess must not inherit the drain pipe. */
+     * subprocess must not inherit the drain pipe or the stop pipe. */
     if (pipe(g_drain_pipe) != 0) return;
     (void)fcntl(g_drain_pipe[0], F_SETFD, FD_CLOEXEC);
     (void)fcntl(g_drain_pipe[1], F_SETFD, FD_CLOEXEC);
+    if (pipe(g_stop_pipe) == 0) {
+        (void)fcntl(g_stop_pipe[0], F_SETFD, FD_CLOEXEC);
+        (void)fcntl(g_stop_pipe[1], F_SETFD, FD_CLOEXEC);
+    } else {
+        g_stop_pipe[0] = g_stop_pipe[1] = -1;
+    }
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
@@ -15437,27 +15453,40 @@ void lotus_drain_signals_install(int64_t observes_drain) {
     sa.sa_flags = SA_RESTART;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
+#ifdef LOTUS_WAKE_SIG
+    /* The kernel waits' wake (`lotus_kwait_kick`): a handler that does
+     * nothing, without SA_RESTART, so the syscall it lands in returns
+     * EINTR. Sent only to a thread registered in such a wait. */
+    struct sigaction wk;
+    memset(&wk, 0, sizeof(wk));
+    wk.sa_handler = lotus_kwait_on_signal;
+    sigemptyset(&wk.sa_mask);
+    wk.sa_flags = 0;
+    if (sigaction(LOTUS_WAKE_SIG, &wk, NULL) == 0) g_kwait_signal_on = 1;
+#endif
 }
 #else
 /* wasm: no signals reach a browser module; the drain is never begun
  * this way (codegen does not emit the install on wasm either). */
-void lotus_drain_signals_install(int64_t observes_drain) {
-    (void)observes_drain;
+void lotus_drain_signals_install(void) {
 }
-void lotus_drain_observer_add(int64_t delta, const char *label) {
-    (void)delta; (void)label;
+void lotus_drain_stop_raise(int64_t bit) {
+    lotus_drain_gen_bump();
+    __atomic_fetch_or(&lotus_process_draining_flag, bit, __ATOMIC_RELEASE);
 }
-void lotus_drain_observer_finished(void *self, const char *label) {
-    (void)self; (void)label;
+int lotus_drain_wait_mode(void) {
+    return 0;
 }
-void lotus_drain_observer_leave(void *self, const char *label) {
-    (void)self; (void)label;
+int lotus_drain_stop_fd(void) {
+    return -1;
 }
-void lotus_drain_observer_enter(void *self, const char *label) {
-    (void)self; (void)label;
+int lotus_kwait_enter(int fd) {
+    (void)fd;
+    return 0;
 }
-int64_t lotus_drain_observer_step(int64_t op, int64_t instance) {
-    (void)op; (void)instance;
+void lotus_kwait_leave(void) {
+}
+int lotus_kwait_ended(void) {
     return 0;
 }
 #endif /* __wasm__ */
@@ -23559,6 +23588,52 @@ static int lotus_accept_err_transient(int err) {
     return 0;
 }
 
+int64_t lotus_sock_get_recv_timeout_ns(int fd);
+
+/* GH #1858: before a blocking accept, or a TLS read, on `fd` off an async_io
+ * pool (an async_io wait parks instead, and the pool's sweep ends the
+ * park by the same rule, `lotus_coro_drain_due`): wait for `fd` to be
+ * readable or for a stop (a signal's drain, a failed test's), whichever
+ * comes first. 0: go on with the syscall (the fd is ready, or the stop
+ * does not end this wait: `lotus_drain_wait_mode`); 1: the stop ended
+ * it, and the caller returns its closed / empty outcome; 2: the
+ * socket's own SO_RCVTIMEO passed first, and the caller returns its
+ * timeout outcome, as the kernel's would have been. */
+int lotus_drain_wait_fd(int fd) {
+#ifdef __wasm__
+    (void)fd;
+    return 0;
+#else
+    int mode = lotus_drain_wait_mode();
+    if (mode != 2 || fd < 0) return mode == 1 ? 1 : 0;
+    if (lotus_io_on_async_io_pool()) return 0;
+    int64_t to = lotus_sock_get_recv_timeout_ns(fd);
+    int64_t deadline = to > 0 ? lotus_now_mono_ns() + to : 0;
+    struct pollfd pfds[2] = {
+        { .fd = fd, .events = POLLIN, .revents = 0 },
+        { .fd = lotus_drain_stop_fd(), .events = POLLIN, .revents = 0 },
+    };
+    for (;;) {
+        int ms = -1;
+        if (deadline > 0) {
+            int64_t left = deadline - lotus_now_mono_ns();
+            if (left <= 0) return 2;
+            int64_t lm = (left + 999999) / 1000000;
+            ms = lm > INT_MAX ? INT_MAX : (int)lm;
+        }
+        pfds[0].revents = 0;
+        pfds[1].revents = 0;
+        int pr = poll(pfds, 2, ms);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            return 0;                     /* let the syscall surface it */
+        }
+        if (pfds[0].revents) return 0;
+        if (pfds[1].revents) return 1;
+    }
+#endif
+}
+
 /* How long a blocking accept's wait is, in ms: for ever where shutting
  * the listening socket down wakes it (Linux), else a tick after which
  * it looks for the shutdown's mark (macOS). */
@@ -23577,6 +23652,14 @@ int lotus_tcp_accept_one(int listen_fd) {
     if (async) {
         lotus_io_set_nonblock(listen_fd);
     }
+    /* GH #1858: a stop (a signal's drain, a failed test's) ends the
+     * accept with its closed outcome, -1: at once when one is already up
+     * and this frame is one it cuts, or when it begins while the accept
+     * waits (`stop_watch`; an async_io accept's park is ended by its
+     * pool's sweep). */
+    int stop_mode = async ? 0 : lotus_drain_wait_mode();
+    if (stop_mode == 1) return -1;
+    int stop_watch = stop_mode == 2;
     for (;;) {
         /* 2026-06-01: shutdown-interruptible classic accept. A
          * blocking accept() on a *classic* (non-async_io) pool worker
@@ -23610,6 +23693,7 @@ int lotus_tcp_accept_one(int listen_fd) {
                 /* a listener shut down on purpose (a signal's drain,
                  * `std::io::tcp::stop`): macOS wakes no accept for it */
                 if (lotus_shut_listen_marked(listen_fd)) return -1;
+                if (stop_watch && lotus_drain_stopping()) return -1;
                 pfd.revents = 0;
                 int pr = poll(&pfd, 1, 100 /* ms tick */);
                 if (pr < 0) {
@@ -23639,17 +23723,21 @@ int lotus_tcp_accept_one(int listen_fd) {
                     int ready = q->head < q->tail;
                     pthread_mutex_unlock(&q->lock);
                     int listen_ready = 0;
+                    int stopped = 0;
                     if (!ready) {
-                        struct pollfd pfds[2] = {
+                        struct pollfd pfds[3] = {
                             { .fd = listen_fd, .events = POLLIN, .revents = 0 },
                             { .fd = q->wake_r, .events = POLLIN, .revents = 0 },
+                            { .fd = stop_watch ? lotus_drain_stop_fd() : -1, .events = POLLIN, .revents = 0 },
                         };
-                        int pr = poll(pfds, 2, LOTUS_ACCEPT_WAIT_MS);
+                        int pr = poll(pfds, 3, LOTUS_ACCEPT_WAIT_MS);
                         listen_ready = (pr > 0 && pfds[0].revents != 0) || lotus_shut_listen_marked(listen_fd);
+                        stopped = stop_watch && lotus_drain_stopping();
                     }
                     atomic_store_explicit(&q->idle, 0, memory_order_seq_cst);
                     uint64_t buf[8];
                     while (read(q->wake_r, buf, sizeof buf) > 0) {}
+                    if (stopped) return -1;
                     if (listen_ready) break;
                 }
             }
@@ -23664,6 +23752,7 @@ int lotus_tcp_accept_one(int listen_fd) {
         if (!async) {
             struct pollfd pfd = { .fd = listen_fd, .events = POLLIN, .revents = 0 };
             while (!lotus_shut_listen_marked(listen_fd)) {
+                if (stop_watch && lotus_drain_stopping()) return -1;
                 pfd.revents = 0;
                 int pr = poll(&pfd, 1, LOTUS_ACCEPT_WAIT_MS);
                 if (pr > 0 || (pr < 0 && errno != EINTR)) break;
@@ -23671,6 +23760,12 @@ int lotus_tcp_accept_one(int listen_fd) {
             if (lotus_shut_listen_marked(listen_fd)) return -1;
         }
 #endif
+        /* The blocking accept below, anywhere else (a pinned thread, main
+         * with no bus queue): it waits on the stop too. */
+        if (!async && stop_watch) {
+            int w = lotus_drain_wait_fd(listen_fd);
+            if (w == 1) return -1;
+        }
         int conn = accept(listen_fd, NULL, NULL);
         if (conn >= 0) {
             lotus_set_cloexec(conn);
@@ -23694,6 +23789,9 @@ int lotus_tcp_accept_one(int listen_fd) {
             if (lotus_coop_park_on_fd(listen_fd, EPOLLIN) == 0) {
                 continue;
             }
+            /* GH #1858: the park a stop ended answers 1: the closed
+             * outcome, said nothing about. */
+            if (lotus_drain_stopping()) return -1;
         }
         /* Silent on a requested wake (GH #1081): the listen fd was shut
          * down on purpose, or this worker's pool is shutting down (a
@@ -23752,11 +23850,19 @@ int lotus_io_wait_fd(int fd, uint32_t events, int64_t deadline_ns) {
         if (deadline_ns > 0 && lotus_now_mono_ns() >= deadline_ns) return 1;
         if (lotus_time_sleep_park_try(1000000) == 1) return 0;
     }
-    struct pollfd pfd;
-    pfd.fd = fd;
-    pfd.events = 0;
-    if (events & EPOLLIN) pfd.events |= POLLIN;
-    if (events & EPOLLOUT) pfd.events |= POLLOUT;
+    /* GH #1858: a stop ends an untimed wait as a deadline would (1): at
+     * once when one is up and this frame is one it cuts, or when it
+     * begins while the wait is in progress. A wait with a deadline of its
+     * own (a connect's, an HTTP call's) keeps it. */
+    int stop_mode = deadline_ns > 0 ? 0 : lotus_drain_wait_mode();
+    if (stop_mode == 1) return 1;
+    struct pollfd pfds[2];
+    pfds[0].fd = fd;
+    pfds[0].events = 0;
+    if (events & EPOLLIN) pfds[0].events |= POLLIN;
+    if (events & EPOLLOUT) pfds[0].events |= POLLOUT;
+    pfds[1].fd = stop_mode == 2 ? lotus_drain_stop_fd() : -1;
+    pfds[1].events = POLLIN;
     for (;;) {
         int ms = -1;
         if (deadline_ns > 0) {
@@ -23766,10 +23872,12 @@ int lotus_io_wait_fd(int fd, uint32_t events, int64_t deadline_ns) {
             int64_t lm = (left + 999999) / 1000000;
             ms = lm > INT_MAX ? INT_MAX : (int)lm;
         }
-        pfd.revents = 0;
-        int pr = poll(&pfd, 1, ms);
-        if (pr > 0) return 0;
-        if (pr == 0) continue;            /* re-check the deadline */
+        pfds[0].revents = 0;
+        pfds[1].revents = 0;
+        int pr = poll(pfds, 2, ms);
+        if (pr > 0 && pfds[0].revents) return 0;
+        if (pr > 0 && pfds[1].revents) return 1;
+        if (pr >= 0) continue;            /* re-check the deadline */
         if (errno == EINTR) continue;
         return -1;
     }
@@ -24898,8 +25006,19 @@ static ssize_t lotus_udp_recvfrom_async(int fd, void *buf, size_t cap,
         deadline = lotus_recv_park_deadline(fd);
     }
     for (;;) {
+        /* GH #1858: a stop ends the wait with the timeout's shape (a
+         * datagram socket has no end to report). */
+        if (!async && lotus_kwait_enter(fd)) {
+            errno = EAGAIN;
+            return -1;
+        }
         socklen_t local_len = slen ? *slen : 0;
         ssize_t n = recvfrom(fd, buf, cap, 0, src, slen ? &local_len : NULL);
+        if (!async) lotus_kwait_leave();
+        if (n < 0 && errno == EINTR && !async && lotus_kwait_ended()) {
+            errno = EAGAIN;
+            return -1;
+        }
         if (n >= 0) {
             if (slen) *slen = local_len;
             return n;
@@ -25344,9 +25463,17 @@ const char *lotus_tcp_recv_str(int fd, int max_bytes) {
     }
     ssize_t n;
     for (;;) {
+        /* GH #1858: a stop ends the wait as the peer's end would: empty,
+         * status 0 (`lotus_kwait_enter`; an async_io park the same,
+         * through its sweep). */
+        if (!async && lotus_kwait_enter(fd)) return empty;
         n = read(fd, buf, cap);
+        if (!async) lotus_kwait_leave();
         if (n >= 0) break;
-        if (errno == EINTR) continue;
+        if (errno == EINTR) {
+            if (!async && lotus_kwait_ended()) return empty;
+            continue;
+        }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             if (async
                 && lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline) == 0) {
@@ -32416,9 +32543,15 @@ void *lotus_tcp_recv_bytes(int fd, int max_bytes) {
     char *body = (char *)lotus_bytes_data(blob);
     ssize_t n;
     for (;;) {
+        /* GH #1858: a stop ends the wait as the peer's end would. */
+        if (!async && lotus_kwait_enter(fd)) return lotus_bytes_empty_global();
         n = read(fd, body, (size_t)max_bytes);
+        if (!async) lotus_kwait_leave();
         if (n >= 0) break;
-        if (errno == EINTR) continue;
+        if (errno == EINTR) {
+            if (!async && lotus_kwait_ended()) return lotus_bytes_empty_global();
+            continue;
+        }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             if (async
                 && lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline) == 0) {
@@ -35600,9 +35733,15 @@ int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {
     if (!tail) return -1;
     ssize_t n;
     for (;;) {
+        /* GH #1858: a stop ends the wait as the peer's end would (0). */
+        if (!async && lotus_kwait_enter(fd)) return 0;
         n = read(fd, tail, (size_t)max_bytes);
+        if (!async) lotus_kwait_leave();
         if (n >= 0) break;
-        if (errno == EINTR) continue;
+        if (errno == EINTR) {
+            if (!async && lotus_kwait_ended()) return 0;
+            continue;
+        }
         /* A SO_RCVTIMEO timeout surfaces as EAGAIN/EWOULDBLOCK — retryable,
          * not fatal. Distinguish it (-2) so a caller that set a recv timeout
          * can run a liveness check instead of treating it as a dead
@@ -35611,6 +35750,8 @@ int64_t lotus_tcp_recv_into(int fd, void *builder, int64_t max_bytes) {
             if (async) {
                 int r = lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline);
                 if (r == 0) continue;       /* readable — retry */
+                /* GH #1858: an untimed park only a stop ends: closed. */
+                if (r == 1 && deadline == 0) return 0;
                 /* r==1 deadline expired; r<0 park unavailable →
                  * fall through to -2 (pre-fix behavior). */
             }
@@ -35677,7 +35818,11 @@ int64_t lotus_tcp_recv_stamped(int fd, void *builder, int64_t max_bytes) {
 
     ssize_t n;
     for (;;) {
+        /* GH #1858: a stop ends the wait as the peer's end would. */
+        if (!async && lotus_kwait_enter(fd)) return 0;
         n = recvmsg(fd, &msg, 0);
+        if (!async) lotus_kwait_leave();
+        if (n < 0 && errno == EINTR && !async && lotus_kwait_ended()) return 0;
         if (n >= 0) break;
         if (errno == EINTR) continue;
         /* SO_RCVTIMEO timeout → EAGAIN/EWOULDBLOCK: retryable (-2),
@@ -35686,6 +35831,8 @@ int64_t lotus_tcp_recv_stamped(int fd, void *builder, int64_t max_bytes) {
             if (async) {
                 int r = lotus_coop_park_on_fd_deadline(fd, EPOLLIN, deadline);
                 if (r == 0) continue;
+                /* GH #1858: an untimed park only a stop ends: closed. */
+                if (r == 1 && deadline == 0) return 0;
             }
             return -2;
         }
@@ -35743,7 +35890,12 @@ int64_t lotus_udp_recv_into(int fd, void *builder, int64_t max_bytes) {
      * at most one datagram. EINTR retried; other errors fatal. */
     ssize_t n;
     for (;;) {
+        /* GH #1858: a stop ends the wait with the timeout's -2 (a
+         * datagram socket has no end to report). */
+        if (!async && lotus_kwait_enter(fd)) return -2;
         n = recvfrom(fd, tail, (size_t)max_bytes, 0, NULL, NULL);
+        if (!async) lotus_kwait_leave();
+        if (n < 0 && errno == EINTR && !async && lotus_kwait_ended()) return -2;
         if (n >= 0) break;
         if (errno == EINTR) continue;
         /* 2026-07-14: EAGAIN/EWOULDBLOCK now returns -2 (retryable —
@@ -36041,7 +36193,6 @@ static int g_unwind_requested = 0;
 static pthread_t g_unwind_main;
 static int g_unwind_main_set = 0;
 #endif
-#define LOTUS_DRAIN_TEST ((int64_t)4)
 
 /* Whether the caller is main. The registry, its length and capacity, the
  * head and `g_unwinding` are main's alone: every entry point asks this
@@ -36139,8 +36290,7 @@ static void lotus_unwind_run(void) {
  * teardown is already running (an assertion in a `dissolve()` it runs is
  * a no-op). */
 void lotus_test_fail_unwind(void) {
-    lotus_drain_gen_bump();
-    __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_TEST, __ATOMIC_RELEASE);
+    lotus_drain_stop_raise(LOTUS_DRAIN_TEST);
     if (!lotus_unwind_on_main()) {
         /* Main's state is main's: ask, and read nothing of it. */
         __atomic_store_n(&g_unwind_requested, 1, __ATOMIC_RELEASE);
