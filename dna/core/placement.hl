@@ -423,16 +423,18 @@ fn placement_export(j: Journal, latest: LatestRows) -> String {
 // file, in the project its placement names, handed the habitat's name and
 // the secrets its programs read.
 fn services_render(body: String) -> Render {
+    let organism = std::json::find_string_field(body, "organism");
     let r = Render {
         project: std::json::find_string_field(body, "project"),
         dir: std::json::find_string_field(body, "render_dir"),
         files: std::json::find_string_field(body, "render_files"),
         mounted: std::json::find_string_field(body, "render_mounted"),
+        // the heart roles its compose provides itself, as its graft chose
+        profiles: if len(organism) >= 12 { grafted_profiles(organism[0..12]) } else { "" },
     };
     // the secrets its programs read ([dna.secrets.<name>] in its manifest),
     // named for the organism it is; a declaration the toolchain refuses
     // hands none
-    let organism = std::json::find_string_field(body, "organism");
     let declared = declared_secrets(r.dir);
     let secrets = if declared.ok && len(organism) >= 12 {
         program_secrets(declared.lines, schema_for(organism))
@@ -459,6 +461,7 @@ fn services_render(body: String) -> Render {
         // its images by it
         revision: revision,
         by_revision: len(revision) > 0 && names_revision(r.dir, r.files),
+        profiles: r.profiles,
     };
 }
 

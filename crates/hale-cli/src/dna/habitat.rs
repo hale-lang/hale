@@ -231,7 +231,10 @@ graft <sapling>      graft a sapling the habitat pins, by name, with no
                      the head's Commands::graft while the head answers.
 --host <name>        (graft) place the new organism's application, its own
                      services (a compose.yaml at its root), on that host,
-                     brought up there by its provider.
+                     brought up there by its provider; with none, on the
+                     habitat's own machine, as `--host local` there. Its
+                     compose runs under COMPOSE_PROFILES, the heart roles
+                     it provides itself (database, broker), or `none`.
 --own <part>[=<host>]
 --reuse <part>       (graft) how each body part is filled. The organism
                      plane (memory, nerves, senses) reuses the habitat's,
@@ -241,6 +244,9 @@ graft <sapling>      graft a sapling the habitat pins, by name, with no
                      manifest says it brings it ([dna] brings), else the
                      habitat provisions it; --reuse has the habitat
                      provide it, --own leaves it to the application.
+                     --reuse of a role it brings is refused when its
+                     compose never reads HALE_DNA_DATABASE_DSN (database)
+                     or HALE_DNA_BROKER_URL (broker).
 --plan               (graft) print the plan, part by part, and graft
                      nothing. At a terminal a graft prints its plan and
                      asks before it acts.
@@ -1447,6 +1453,8 @@ pub(super) fn placed_cache(key: &str, role: &str) -> Option<serde_json::Value> {
 
 /// Phase 4: the host a graft places the new organism on (`graft <sapling>
 /// --host <name>`), taken by its birth as soon as its identity is pinned.
+/// Unset with no `--host`: its services then go on the habitat's own
+/// machine (`sapling::services_host`).
 pub(super) static GRAFT_HOST: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
 
 /// How a graft fills one of the organism's body parts: `Reuse`, what the
@@ -1589,7 +1597,11 @@ fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &
     });
     out.push(plan_row("forge", "reuse", "the habitat's forge, by its policy (--forge to choose)", ""));
     out.push("application plane".to_string());
-    out.push(if has_app { format!("  {:<9} its compose services on {host}", "services") } else { format!("  {:<9} none (no compose file at its root)", "services") });
+    out.push(if has_app {
+        format!("  {:<9} its compose services on {host}, under COMPOSE_PROFILES={}", "services", compose_profiles(&|r: &str| part_choice(r) != Part::Reuse))
+    } else {
+        format!("  {:<9} none (no compose file at its root)", "services")
+    });
     for role in APPLICATION_PARTS {
         if !needs.iter().any(|r| r == role) {
             continue;
@@ -1602,6 +1614,59 @@ fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &
         });
     }
     out
+}
+
+/// The profile no service of an application's compose may use: the
+/// `COMPOSE_PROFILES` it is applied under when it provides neither heart
+/// role itself (compose may read an empty value as unset, and its `.env`
+/// would choose instead).
+pub(super) const NO_PROFILES: &str = "none";
+
+/// The `COMPOSE_PROFILES` the habitat applies an application's compose
+/// project under: each application-plane role it provides itself (`owns`,
+/// as its graft chose: `parts.json` = own), in `APPLICATION_PARTS` order,
+/// comma-joined, or `NO_PROFILES` for neither. A service under the profile
+/// `database` or `broker` runs only when the application brings that role;
+/// one under no profile always runs. The apply reads the same from
+/// `parts.json` (`dna::services_profiles`, dna/core/declared_secrets.hl).
+pub(super) fn compose_profiles(owns: &dyn Fn(&str) -> bool) -> String {
+    let own: Vec<&str> = APPLICATION_PARTS.iter().copied().filter(|r| owns(r)).collect();
+    if own.is_empty() { NO_PROFILES.to_string() } else { own.join(",") }
+}
+
+/// The variable each heart role's handover names the habitat's server in,
+/// which an application's compose reads when the habitat provides the role
+/// (`--reuse <role>`).
+fn handover_variable(role: &str) -> &'static str {
+    if role == "database" { "HALE_DNA_DATABASE_DSN" } else { "HALE_DNA_BROKER_URL" }
+}
+
+/// Whether the compose file `text` reads the variable `var`: names it, as
+/// a whole word, on a line that is not a comment (`${VAR}`, `${VAR:-…}`,
+/// `$VAR`, or `VAR` passed through from the environment in an
+/// `environment:` entry). A textual check, not compose's own reading: a
+/// file that names it only in a comment does not read it.
+pub(super) fn compose_reads(text: &str, var: &str) -> bool {
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+    text.lines().filter(|l| !l.trim_start().starts_with('#')).any(|l| {
+        l.match_indices(var).any(|(at, _)| !word(l[..at].chars().next_back()) && !word(l[at + var.len()..].chars().next()))
+    })
+}
+
+/// Why a graft is refused before it makes anything for having the habitat
+/// provide a heart role (`--reuse <role>`) the application brings (its
+/// compose runs its own) when its compose file (`compose`, its text; `None`
+/// with no compose file) never reads the role's handover: the habitat's
+/// server would go unused beside the application's own. `None` when every
+/// such role is read.
+pub(super) fn reuse_refusal(needs: &[String], brings: &[String], compose: Option<(&str, &str)>, part_choice: &dyn Fn(&str) -> Part) -> Option<String> {
+    let (file, text) = compose?;
+    APPLICATION_PARTS.iter().find(|r| needs.iter().any(|n| n == *r) && brings.iter().any(|b| b == *r) && part_choice(r) == Part::Reuse && !compose_reads(text, handover_variable(r))).map(|r| {
+        format!(
+            "`--reuse {r}`: the application brings its own {r}, and its {file} never reads {}, the {r} the habitat would provision: it would go unused while its compose runs its own. `--own {r}` keeps the application's own; nothing was grafted",
+            handover_variable(r)
+        )
+    })
 }
 
 /// The organism keyed `key` placed as the graft chose, before anything of
@@ -4126,13 +4191,18 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     if let Some(m) = manifest.as_deref() {
         super::uis::declared(m).map_err(|why| format!("{}: the web UIs it declares are refused: {why}", root.join("hale.toml").display()))?;
     }
+    // a heart role the habitat would provide that the application's compose
+    // never reads is refused before anything is made
+    let compose_file = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"].into_iter().find(|f| root.join(f).is_file());
+    let compose_text = compose_file.and_then(|f| std::fs::read_to_string(root.join(f)).ok().map(|t| (f, t)));
+    let refused = reuse_refusal(&needs, GRAFT_BRINGS.get().map(Vec::as_slice).unwrap_or(&[]), compose_text.as_ref().map(|(f, t)| (*f, t.as_str())), &part_choice);
     // the plan, part by part, before anything is made: `--plan` prints it
-    // and stops; at a terminal the person confirms it (a graft the head
-    // started, with no terminal, takes it as planned); a graft that goes on
-    // where it stopped was planned when it began
+    // (and the refusal, when there is one) and stops; at a terminal the
+    // person confirms it (a graft the head started, with no terminal, takes
+    // it as planned); a graft that goes on where it stopped was planned
+    // when it began
     if pinned.is_none() {
-        let has_app = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"].iter().any(|f| root.join(f).is_file());
-        let plan = graft_plan(&needs, has_app);
+        let plan = graft_plan(&needs, compose_file.is_some());
         let what = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let on = GRAFT_HOST.get().and_then(|h| h["host"].as_str()).map(|h| format!(" onto {h}")).unwrap_or_default();
         if GRAFT_PLAN_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
@@ -4140,7 +4210,14 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
             for l in &plan {
                 println!("{l}");
             }
+            if let Some(why) = &refused {
+                eprintln!("\nhale habitat graft: refused: {why}");
+                std::process::exit(1);
+            }
             std::process::exit(0);
+        }
+        if let Some(why) = refused {
+            return Err(why);
         }
         if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             use std::io::{BufRead, Write};
@@ -4617,6 +4694,53 @@ mod tests {
         assert!(text.contains(&plan_row("broker", "own", "the application's own NATS, in its compose", "")), "{text}");
         assert!(!text.contains("senses"), "a part it does not need is not planned: {text}");
         assert!(text.contains(&plan_row("identity", "reuse", "the habitat's sign-in (http://rack-a.lan:8803)", "")), "{text}");
+    }
+
+    /// The profiles an application's compose is applied under: the heart
+    /// roles it provides itself, in order, or the sentinel for none.
+    #[test]
+    fn an_applications_compose_profiles_are_the_roles_it_provides() {
+        assert_eq!(compose_profiles(&|r: &str| r == "database" || r == "broker"), "database,broker");
+        assert_eq!(compose_profiles(&|r: &str| r == "broker"), "broker");
+        assert_eq!(compose_profiles(&|r: &str| r == "database"), "database");
+        assert_eq!(compose_profiles(&|_: &str| false), "none", "neither: never empty, which compose may read as unset");
+        // the organism plane is never a profile
+        assert_eq!(compose_profiles(&|r: &str| r == "memory"), "none");
+        let brings = vec!["database".to_string()];
+        let needs: Vec<String> = ["memory", "nerves", "database", "broker"].iter().map(|s| s.to_string()).collect();
+        let reused = plan_lines(&needs, true, "this machine", "this machine", &brings, None, &|r: &str| if r == "database" { Part::Reuse } else { default_part(r, &brings) }).join("\n");
+        assert!(reused.contains("services  its compose services on this machine, under COMPOSE_PROFILES=none"), "{reused}");
+        let own = plan_lines(&needs, true, "this machine", "this machine", &brings, None, &|r: &str| default_part(r, &brings)).join("\n");
+        assert!(own.contains("under COMPOSE_PROFILES=database"), "{own}");
+    }
+
+    /// `--reuse <role>` for a role the application brings is refused when
+    /// its compose never reads the role's handover, and only then.
+    #[test]
+    fn a_reused_role_its_compose_never_reads_is_refused() {
+        assert!(compose_reads("services:\n  api:\n    environment:\n      DATABASE_URL: ${HALE_DNA_DATABASE_DSN:-postgres://db/app}\n", "HALE_DNA_DATABASE_DSN"));
+        assert!(compose_reads("    environment:\n      - DSN=$HALE_DNA_DATABASE_DSN\n", "HALE_DNA_DATABASE_DSN"));
+        assert!(compose_reads("    environment:\n      - HALE_DNA_DATABASE_DSN\n", "HALE_DNA_DATABASE_DSN"), "passed through from the environment");
+        assert!(compose_reads("      HALE_DNA_BROKER_URL: ${HALE_DNA_BROKER_URL}\n", "HALE_DNA_BROKER_URL"));
+        assert!(!compose_reads("    # set HALE_DNA_DATABASE_DSN to use the habitat's\n    image: postgres:16\n", "HALE_DNA_DATABASE_DSN"), "a comment reads nothing");
+        assert!(!compose_reads("      - HALE_DNA_DATABASE_DSN_FILE=/run/x\n", "HALE_DNA_DATABASE_DSN"), "another variable");
+        assert!(!compose_reads("      - MY_HALE_DNA_BROKER_URL=x\n", "HALE_DNA_BROKER_URL"));
+        let needs: Vec<String> = ["memory", "nerves", "database", "broker"].iter().map(|s| s.to_string()).collect();
+        let brings: Vec<String> = vec!["database".into(), "broker".into()];
+        let reuse_both = |r: &str| if r == "database" || r == "broker" { Part::Reuse } else { default_part(r, &brings) };
+        let ignores = "services:\n  db:\n    image: postgres:16\n  nats:\n    image: nats:2\n";
+        let why = reuse_refusal(&needs, &brings, Some(("compose.yaml", ignores)), &reuse_both).unwrap();
+        assert!(why.starts_with("`--reuse database`") && why.contains("compose.yaml never reads HALE_DNA_DATABASE_DSN") && why.contains("`--own database`"), "{why}");
+        let reads_db = "services:\n  api:\n    environment:\n      DSN: ${HALE_DNA_DATABASE_DSN}\n";
+        let why = reuse_refusal(&needs, &brings, Some(("compose.yaml", reads_db)), &reuse_both).unwrap();
+        assert!(why.starts_with("`--reuse broker`") && why.contains("HALE_DNA_BROKER_URL") && why.contains("`--own broker`"), "{why}");
+        let reads_both = "      DSN: ${HALE_DNA_DATABASE_DSN}\n      NATS: ${HALE_DNA_BROKER_URL}\n";
+        assert_eq!(reuse_refusal(&needs, &brings, Some(("compose.yaml", reads_both)), &reuse_both), None);
+        // the application's own, a role it does not bring (the habitat's by
+        // default, its compose has none to run), or no compose file at all
+        assert_eq!(reuse_refusal(&needs, &brings, Some(("compose.yaml", ignores)), &|r: &str| default_part(r, &brings)), None);
+        assert_eq!(reuse_refusal(&needs, &[], Some(("compose.yaml", ignores)), &|r: &str| default_part(r, &[])), None);
+        assert_eq!(reuse_refusal(&needs, &brings, None, &reuse_both), None);
     }
 
     /// What an application brings is among its application-plane needs.

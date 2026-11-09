@@ -300,6 +300,10 @@ type Render {
     // (`${HALE_DNA_REVISION}`): applied without `--build`, so compose
     // pulls the revision's published image and builds only when none is
     by_revision: Bool = false;
+    // the heart roles an organism's own compose provides itself, handed it
+    // as `COMPOSE_PROFILES` (`services_profiles`: `database`, `broker`,
+    // comma-joined, or `none`); "" hands none
+    profiles: String = "";
 }
 
 // An organism's own compose services labelled as the habitat's
@@ -310,7 +314,10 @@ type Render {
 // (the environment interpolated), else uninterpolated, so a variable only
 // the apply hands (`${X:?}`) does not leave the services unlabelled.
 fn render_labels(render: Render, organism: String) -> String {
-    let base = "docker\ncompose\n" + compose_args(render, "\n") + "\nconfig\n--format\njson";
+    // under the profiles it is applied with, so each service that runs is
+    // labelled
+    let base = profiles_env(render.profiles) + "docker\ncompose\n" + compose_args(render, "\n")
+        + "\nconfig\n--format\njson";
     let mut read = run_tool(base);
     if read.code != 0 { read = run_tool(base + "\n--no-interpolate"); }
     if read.code != 0 { return ""; }
@@ -947,7 +954,7 @@ locus ComposeProvider {
         }
         let staged = stage_reader_vault(render.vault, render.secrets);
         if len(staged) > 0 { return RenderApplied { why: staged }; }
-        let wrap = services_wrap(render.habitat, render.revision, render.secrets, render.vault);
+        let wrap = render_wrap(render);
         let up = run_tool(
             wrap + "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n" + compose_args(render, "\n")
                 + "\n" + compose_up_args(render, "\n"),
@@ -983,8 +990,7 @@ locus ComposeProvider {
             return RenderApplied { why: "nothing to withdraw: the render names no project" };
         }
         let down = run_tool(
-            services_wrap(render.habitat, render.revision, render.secrets, render.vault)
-                + "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n"
+            render_wrap(render) + "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n"
                 + compose_args(render, "\n") + "\n" + compose_down_args(render, "\n"),
         );
         if down.code != 0 {
