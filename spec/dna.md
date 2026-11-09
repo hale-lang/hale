@@ -3601,7 +3601,11 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   the decision it made and writes nothing. The typed `dna.review.verdict`
   command applies the same standing, over the latest `review.routed`
   row, in every Review profile (a practice, a binding, an edge, a
-  prepared source), naming its reviewer by the principal; its refusal is
+  prepared source, and every proposal of the organization's own a Review
+  decides: its purpose, a position's mandate, a hole or a hold as a graph
+  proposal, a batch's family, a design document — the head's pre-check
+  admits a knowledge proposal of any of those kinds, and the Review
+  decides it), naming its reviewer by the principal; its refusal is
   `forbidden` on the wire, and the admission's result carries a `why`
   naming what the Review requires, as the Review's own refusal does; the plain path
   (`hale dna review <id> approve --as <who>`) names its reviewer as the
@@ -6819,8 +6823,12 @@ The head serves surfaces only. The standard face stands in front of it,
 on the port the browser opens (8792; `--port`), the head on the loopback
 behind it (`--head-port`, 8796; it learns the face's as
 `HALE_DNA_PUBLIC_PORT`, its origin for sign-in, host checks and
-commands). The face serves `GET /` and the shell's assets from
-`dna/face/web` and `GET /app/…` from the attached project's `ui/`, and
+commands). The face is three static files (`dna/face/web`: `index.html`,
+`app.js`, `styles.css`), three screens over the head's surface: the org
+chart as the graph states it (**The chart and the board**, above), the
+board of handed Tasks and Reviews, and the knowledge the record holds,
+every write a command the signed-in person could issue from the CLI. The
+face serves `GET /` and those assets and `GET /app/…` from the attached project's `ui/`, and
 passes every other request to the head as the browser sent it: method,
 path and query, headers (cookie, origin, host) and body, the answer
 written back as it came, an event stream held open until either end closes.
@@ -6841,6 +6849,38 @@ head's refusal. The head has no static file and no `/app/`: those paths
 are no route of it. The browser's traffic keeps relaying as the browser
 sent it (the head's browser routes are not rows of a surface); the face's
 own reads go through a client.
+
+**The chart and the board.** Two more reads of `HeadCommands` serve the
+face's screens beside the index; the face calls all three through the
+record's commands relay (`POST …/commands`, the calls `Index`, `Org` and
+`Tasks`), as it sends every command, so one path carries its reads and its
+writes with or without a project head in front: `Commands::org`
+(`dna/api/org_chart.hl`) takes `{limit}` and answers the record's revision,
+its purpose, its **positions** (a JSON array: each `position` node the graph
+states, with `id`, `name`, `text`, `under` (the parent of its `unfold` edge,
+`""` under the purpose), `holders` and `reviews` (the second members of its
+`holds` and `reviews` edges), `roles` (its equipment), `mandate` (`ratified`
+when a mandate idea targeting it was ratified and not retired, `proposed`
+while one awaits the Board, else `none`) and `state: "stated"`; then every
+position the record **proposes** and the Board has not decided (a graph
+or family proposal whose receipt carries a `position` node the graph does
+not state), with `state: "proposed"` and `review` the Review that awaits,
+so the face shows what is pending as pending and never as absent), its
+**parts** (the nodes positions sit under that are not positions: `id`,
+`kind`, `name`, `text`) and its **organisms** as the index lists them. It
+is read from the record's rows alone (`dna::record_graph_bodies`), never
+from memory, so it answers wherever the record does, and the org chart it
+states is the graph's (**The repository's graph**): the face draws the
+tree from `under`, never from a name's spelling. `Commands::tasks`
+(`dna/api/task_rows.hl`) takes `{limit}` and answers the handed Tasks the
+operations' `TaskProjection` projects from the record and its Ledger read as
+one (each as the HTTP tasks read's row: id, outcome, state, assignee,
+obligation, waiting, acceptance and evidence, history, usage), with the
+record's and the Ledger's revisions; where the head cannot reach the Ledger
+it answers `ok: false` with `code: task_source_unavailable` and why. The
+HTTP tasks read answers only a trusted-local session; this row answers as
+the signed-in person wherever the Ledger is reached, which is what a
+hosted face's board needs. Both write nothing.
 
 **The index.** `GET /index` on the face is the record's index: a static
 page, plain HTML in the shell's stylesheet and no script, generated on
@@ -7137,7 +7177,7 @@ otherwise.
 | `HALE_DNA_OWNER_KEYS=<keys>` | one owner | `<owner>=<key> …`, space-separated: the owners `memory migrate` writes for a shared record. The keys stay the record's; memory never holds signature bytes. |
 | `HALE_DNA_RECEIPT_KEY=<key>` | unset | Sixteen characters or more: the key evidence bodies are sealed under. The first key given is written; a different one later is refused, because bodies sealed under the first would no longer open. |
 | `HALE_DNA_NATS_URL_OWNER=<url>` | the nerves allocation | The owner user's URL: it creates the organization's stream (`hale habitat migrate`, `nerves migrate`); `dev` and `nerves urls` derive the roles' URLs on it. |
-| `HALE_DNA_NATS_URL_SPINE=<url>` | unset | The spine user's URL, handed to the process that is the spine. |
+| `HALE_DNA_NATS_URL_SPINE=<url>` | unset | The spine user's URL, handed to the process that is the spine as recorded. `dna::nerves_spine_url()` answers it as that process dials it (`dna::reach_url`), so the organization's program, which connects to what it answers, reaches the habitat's nerves at `HALE_DNA_LOOPBACK_HOST` in a macOS body. |
 | `HALE_DNA_NATS_URL_HEAD=<url>` | unset | The head user's URL: subscribes, publishes nothing. |
 | `HALE_DNA_NATS_URL_APP=<url>` | unset | The application's URL: publishes on its own subjects only. |
 | `HALE_DNA_NATS_URL_REFLEXES=<url>` | unset | The reflexes' URL: publishes on `<org>.app.reflexes.>` alone. |

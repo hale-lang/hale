@@ -393,7 +393,13 @@ fn env_or_empty(name: String) -> String {
 // What a part of the organism running as the spine connects with, from
 // its environment: the server with the spine's user, and the
 // organization's token. Both empty when no nerves were handed to it.
-fn nerves_spine_url() -> String { return env_or_empty(NATS_SPINE_URL_ENV); }
+// The URL is the one this process dials (`reach_url`): it is handed as
+// recorded, `127.0.0.1:<port>` for the habitat's own nerves, and a body on
+// its compose project's network (macOS) reaches that port at
+// `HALE_DNA_LOOPBACK_HOST`, never at the container's own loopback. The
+// organization's program `hale habitat graft` writes dials what this
+// answers as it is.
+fn nerves_spine_url() -> String { return reach_url(env_or_empty(NATS_SPINE_URL_ENV)); }
 fn nerves_org() -> String { return env_or_empty(NATS_ORG_ENV); }
 fn nerves_owner() -> String { return env_or_empty(NERVES_OWNER_ENV); }
 fn nerves_here() -> Bool { return len(nerves_spine_url()) > 0 && len(nerves_org()) > 0; }
