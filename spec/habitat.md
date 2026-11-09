@@ -220,6 +220,15 @@ pointer names another machine.
 `up --host` again finds the habitat there by its record's identity (one
 whose identity differs is refused, nothing changed), runs the same
 idempotent `up`, which changes nothing, and writes the pointer again.
+`up --host` on a machine with no pointer, to a host where a habitat
+already runs, is refused with nothing changed, naming where the pointer
+would be: pointing a second directory at a running habitat (a shell whose
+`XDG_DATA_HOME` names another habitat's, a pointer lost) is a choice,
+`--attach`, which points this machine at it and says so (`attached`);
+`--attach` where none runs is refused too. `up` and `status` name the
+directory they use, and what named it when it is not the default
+(`XDG_DATA_HOME` or `HALE_DNA_HABITAT`): `up --host` ends with a `pointer`
+line.
 `up` without `--host` on a machine that points elsewhere is refused.
 
 `body` and `face` mount the host's docker socket because the habitat is the
@@ -917,7 +926,7 @@ socket), so the habitat's head must be up.
 
 | Verb | Behaviour |
 |---|---|
-| `up --host <name> [--user <user>] [--port <n>] [--image <tag>] [--backends own\|operator] [--name <name>]` | Runs the habitat on another machine over SSH and keeps a pointer to it here (§ A habitat on another machine). Idempotent. `--host local` is this machine, as it is to `graft`, `place` and the host verbs: the same as `up` without `--host`, a habitat here and no SSH (`--user` and `--port`, another machine's login, are refused with it, exit 2). |
+| `up --host <name> [--user <user>] [--port <n>] [--image <tag>] [--backends own\|operator] [--name <name>] [--attach]` | Runs the habitat on another machine over SSH and keeps a pointer to it here (§ A habitat on another machine). Idempotent. A habitat already running there with no pointer here is refused unless `--attach`. `--host local` is this machine, as it is to `graft`, `place` and the host verbs: the same as `up` without `--host`, a habitat here and no SSH (`--user` and `--port`, another machine's login, are refused with it, exit 2). |
 | `up [--no-body] [--image <tag>] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider (one with no server of its own, every part held by the habitat's servers, is reported `held by the habitat's own servers`), migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its compose project (`docker compose up -d`, its image `--image <tag>` or `HALE_HABITAT_IMAGE` when either names one; else, when this machine has no image of this toolchain, the release's published `ghcr.io/hale-lang/hale:<version>` pulled and used when it runs this very toolchain (`hale --version` alike); else built from the embedded `Dockerfile` and `hale.pin`), waiting on their probes: three minutes once the face has what it runs, and while the face's log says it is still building the head's programs (a first start, or one after the toolchain changed) up to twenty minutes; a face or body that does not come up is reported with its last lines of output. `--no-body` births it, brings its backing allocations up and records its placement, and starts no `body` or `face`. Idempotent, and after an `up` that failed as well (§ Long-lived, and only its acts provision). `--profile` takes `local`; any other is refused (exit 2). |
 | `image build [<checkout>]` | Builds the habitat toolchain image from `<checkout>` (`.` by default) using its `Dockerfile`, tagged `hale-habitat:<pin>`, and prints the tag on stdout. |
 | `brief` | Prints the habitat's brief (below): the head's `Commands::brief`, asked over the head's surface as the person this account maps to. |
@@ -1094,7 +1103,14 @@ else a LaunchDaemon run as `nobody` (sudo, at a terminal). A container
 there would read the VM docker runs in, not the Mac. An exporter that
 already answers on `:9100` with node readings is scraped as it is and
 never touched; a removal takes off only the habitat's own (the container
-by its label, the launchd job by its label). An install that cannot run
+by its label, the launchd job by its label). An exporter is the machine's,
+one on its port, read by every habitat there: each habitat that installs
+it, or finds it its own, records itself as an owner (a file named by the
+habitat under `~/.local/share/hale/exporters/<node|containers|gpus>/` of
+the login), and a removal takes it off only when no other habitat owns
+it, else says it `stays`: forgetting one habitat never stops another's
+readings. One installed before owners were recorded has none, and the
+first removal takes it off. An install that cannot run
 (sudo with no terminal, docker the login cannot reach, another OS) says
 why and stops nothing: `up` and `host add` go on. Every download an
 install makes rides out a short network blip: the macOS archive through
@@ -1122,8 +1138,8 @@ their labels only `com.docker.compose.project`,
 `com.docker.compose.service`, `hale.habitat`, `hale.organism` and
 `hale.role`, and collecting CPU, memory, network and OOM
 events every 15 s. It is installed, found, replaced (labelled
-`lang.hale.cadvisor=<image> <the labels it keeps> <habitat>`, so one keeping
-others or made by another habitat is replaced) and removed where and when
+`lang.hale.cadvisor=<image> <the labels it keeps>`, so one keeping others
+is replaced; one another habitat made is shared, as its owners say) and removed where and when
 the node exporter is; `HALE_DNA_NODE_EXPORTER=off` turns both off. The store
 scrapes it as the job `containers` from `senses.d/containers/*.json` (every 15 s, waiting up to 14 s for cAdvisor's answer, which renders every container's series and outlasts the store's default 5 s on a busy machine; `up` gives a job an earlier toolchain wrote the same timeout),
 which `up` adds to the habitat's store configuration when it has none.
@@ -1137,8 +1153,8 @@ index, so docker refuses any other content) as the container
 docker's NVIDIA runtime (`--gpus all`, the `utility` capability, which
 puts the host's `nvidia-smi` into it). It is installed, found (an
 exporter already answering on `:9835` with `nvidia_smi_` readings is
-scraped as it is), replaced (labelled `lang.hale.gpu-exporter=<image>
-<habitat>`) and removed where and when the node exporter is;
+scraped as it is), replaced (labelled `lang.hale.gpu-exporter=<image>`)
+and removed where and when the node exporter is, owners and all;
 `HALE_DNA_NODE_EXPORTER=off` turns it off with the others. A machine
 without such a GPU, and every Mac, runs none, and its install says
 nothing; one whose docker cannot give a container the GPU (no NVIDIA
@@ -1427,7 +1443,9 @@ grafted organism that came from a sapling the habitat pins, and a
   habitat checks from the host's facts: `docker` (docker answers the login), `systemd` (a Linux
   host whose system services run under systemd), `nvidia-gpu`
   (`nvidia-smi` lists a GPU), `apple-silicon` (an arm64 Mac), `gpu` (either
-  of the two). A host that lacks one is refused before anything is
+  of the two, or on Linux an AMD GPU, by ROCm's `/dev/kfd` or a render node
+  whose vendor is AMD's, or an Intel render node, as a ROCm or Vulkan
+  runtime uses them). A host that lacks one is refused before anything is
   installed, naming what it lacks; a requirement outside the vocabulary
   refuses the declaration.
 - **Its inputs**, each named in `inputs` and filled where its argv says

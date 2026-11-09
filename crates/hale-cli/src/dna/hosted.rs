@@ -211,7 +211,12 @@ Darwin)
   [ -f /usr/include/zlib.h ] && echo "have zlib"
   for m in apt-get dnf; do command -v $m >/dev/null 2>&1 && {{ echo "pkg $m $(command -v $m)"; break; }}; done
   [ -d /run/systemd/system ] && echo "fact systemd"
-  command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU ' && echo "fact nvidia-gpu" ;;
+  command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU ' && echo "fact nvidia-gpu"
+  # an AMD GPU (ROCm's /dev/kfd, or a render node AMD's) or an Intel one
+  # (a render node Intel's) is a GPU too, as a Vulkan or ROCm runtime uses it
+  g=; [ -e /dev/kfd ] && g=1
+  for r in /sys/class/drm/renderD*/device/vendor; do [ -r "$r" ] && case "$(cat "$r")" in 0x1002|0x8086) g=1 ;; esac; done
+  [ -n "$g" ] && echo "fact gpu" ;;
 esac
 docker info >/dev/null 2>&1 && echo "fact docker"
 for t in "$HOME"/{TOOLCHAINS}/*/bin/hale; do [ -x "$t" ] && echo "toolchain $(basename "$(dirname "$(dirname "$t")")")"; done
@@ -1341,6 +1346,13 @@ readers = ["api"]
         assert!(unmet(&req(&["gpu"]), &mac).is_empty());
         assert_eq!(unmet(&req(&["gpu", "docker"]), &mac), ["docker"]);
         assert_eq!(unmet(&req(&["nvidia-gpu"]), &mac), ["nvidia-gpu"]);
+        // an AMD or Intel GPU on Linux is a `gpu`, never an `nvidia-gpu`
+        let amd = facts("fact gpu\nfact docker\nfact systemd\n");
+        assert!(unmet(&req(&["gpu", "docker"]), &amd).is_empty());
+        assert_eq!(unmet(&req(&["nvidia-gpu"]), &amd), ["nvidia-gpu"]);
+        let probe = facts_script();
+        assert!(probe.contains("[ -e /dev/kfd ] && g=1") && probe.contains("0x1002|0x8086) g=1") && probe.contains("[ -n \"$g\" ] && echo \"fact gpu\""), "the Linux probe counts ROCm and AMD or Intel render nodes: {probe}");
+        assert!(std::process::Command::new("sh").args(["-n", "-c", &probe]).status().unwrap().success());
         let flat = host_commands(&VOICE.replace("root = true", "root = true\nrequires = [\"gpu\", \"docker\"]")).unwrap();
         assert_eq!((flat["node"].requires["linux"].clone(), flat["node"].requires["macos"].clone()), (req(&["gpu", "docker"]), req(&["gpu", "docker"])));
         // voice's: docker on Linux alone, where its runtimes are containers

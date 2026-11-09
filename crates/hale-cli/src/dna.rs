@@ -351,6 +351,20 @@ fn local_habitat_dir() -> String {
     format!("{base}/hale/habitat/local")
 }
 
+/// What named the local habitat's directory when it is not the default one:
+/// ` (HALE_DNA_HABITAT names it)` or ` (XDG_DATA_HOME names it)`, else "".
+/// Said wherever a habitat is brought up or read, so one in a shell that
+/// still names another habitat's directory is seen at once.
+fn habitat_dir_named_by() -> &'static str {
+    if std::env::var("HALE_DNA_HABITAT").is_ok_and(|v| !v.is_empty()) {
+        " (HALE_DNA_HABITAT names it)"
+    } else if std::env::var("XDG_DATA_HOME").is_ok_and(|v| !v.is_empty()) {
+        " (XDG_DATA_HOME names it)"
+    } else {
+        ""
+    }
+}
+
 /// The local habitat's compose project, as `dna::local_habitat_project`
 /// derives it: its name and a short hash of where it lives.
 fn local_habitat_project() -> String {
