@@ -91,8 +91,11 @@ main locus App {
         // let the worker take them before the exposition is compared
         std::time::sleep(200ms);
         print(self.reg.render());
-        println("READY");
+        // the counter exists, and has moved once, before the test is told to
+        // scrape: made after READY, the first scrape could come before it
         let ticks = std::metrics::counter(self.reg, "ticks", std::metrics::labels_empty());
+        ticks.inc();
+        println("READY");
         let mut t = 0;
         while t < 60 && !self.draining {
             ticks.inc();
