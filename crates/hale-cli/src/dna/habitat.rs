@@ -3816,16 +3816,24 @@ pub(crate) fn compose_projects_listed() -> Result<String, String> {
 /// removed: an organism's roles network holds the habitat's servers
 /// (dna/core/placement.hl, `join_roles_network`), which compose never takes
 /// off it. Nothing for a network that is gone.
-pub(super) fn release_network_with(name: &str, docker: &mut dyn FnMut(&[&str]) -> Docker) {
+pub(super) fn release_network_with(name: &str, habitat: &str, docker: &mut dyn FnMut(&[&str]) -> Docker) {
     if let Docker::Answered(out) = docker(&["network", "inspect", "-f", "{{range .Containers}}{{.Name}} {{end}}", name]) {
         for joined in out.split_whitespace() {
-            let _ = docker(&["network", "disconnect", "-f", name, joined]);
+            // only the habitat's own servers, which it joined there: a
+            // container of anyone else's is never taken off a network
+            let project = match docker(&["inspect", "-f", "{{index .Config.Labels \"com.docker.compose.project\"}}", joined]) {
+                Docker::Answered(p) => p.trim().to_string(),
+                _ => continue,
+            };
+            if project == habitat {
+                let _ = docker(&["network", "disconnect", "-f", name, joined]);
+            }
         }
     }
 }
 
 pub(super) fn release_network(name: &str) {
-    release_network_with(name, &mut |args| docker(args))
+    release_network_with(name, &local_habitat_project(), &mut |args| docker(args))
 }
 
 pub(crate) fn down_under(root: &Path) -> Result<(), String> {
@@ -3857,8 +3865,11 @@ pub(crate) fn down_under_with(root: &Path, docker: &mut dyn FnMut(&[&str]) -> Do
         // a network of the project's compose does not take down: an
         // organism's roles network, the habitat's servers taken off it first
         if let Docker::Answered(out) = docker(&["network", "ls", "--filter", label.as_str(), "--format", "{{.Name}}"]) {
+            // the services project is `<the habitat's project>-<key>`, and
+            // the habitat's servers are its project's containers
+            let habitat = project.rsplit_once('-').map(|(h, _)| h).unwrap_or("");
             for net in out.split_whitespace() {
-                release_network_with(net, docker);
+                release_network_with(net, habitat, docker);
                 let _ = docker(&["network", "rm", net]);
             }
         }
@@ -5062,7 +5073,10 @@ mod tests {
             match args {
                 ["ps", "-a", "--filter", ..] => Docker::Answered(listing.clone()),
                 ["network", "ls", "--filter", _, "--format", _] => Docker::Answered(if gone { String::new() } else { format!("{p}-abc-hale-roles\n") }),
-                ["network", "inspect", ..] => Docker::Answered("memory-x \n".into()),
+                ["network", "inspect", ..] => Docker::Answered("memory-x stranger \n".into()),
+                // memory-x is the habitat's server; stranger is anyone else's
+                ["inspect", "-f", _, "memory-x"] => Docker::Answered(format!("{p}\n")),
+                ["inspect", "-f", _, "stranger"] => Docker::Answered("elsewhere\n".into()),
                 ["network", "rm", ..] => {
                     gone = true;
                     Docker::Answered(String::new())
@@ -5075,6 +5089,7 @@ mod tests {
         let off = calls.iter().position(|c| *c == format!("network disconnect -f {net} memory-x")).expect("the server is taken off it");
         let rm = calls.iter().position(|c| *c == format!("network rm {net}")).expect("and the network removed");
         assert!(off < rm, "{calls:?}");
+        assert!(!calls.iter().any(|c| c.ends_with(" stranger") && c.starts_with("network disconnect")), "a container of anyone else's is never taken off: {calls:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
