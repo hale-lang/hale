@@ -14115,6 +14115,12 @@ shared	dynamic	sites in core/pond/realtime/nats #164fddea
 shared	dynamic	sites in tests #8373b75a
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/services_roles_test.hl
+row	__lib_dna__core___infrastructure__ComposeProvider@main1	__lib_dna__core___infrastructure__ComposeProvider	main	default
+row	__lib_dna__core___infrastructure__ComposeProvider@main2	__lib_dna__core___infrastructure__ComposeProvider	main	default
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
+shared	dynamic	sites in the stdlib #919aadb4
+
 == dna/tests/solo_no_model_test.hl
 row	Org@main2	Org	main	default
 shared	__lib_dna__core___memory_record__MemoryRecord@main1	__lib_dna__core___memory_record__MemoryRecord #c4e304a1
