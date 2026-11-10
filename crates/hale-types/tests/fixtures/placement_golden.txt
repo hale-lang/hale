@@ -4694,7 +4694,7 @@ dynamic	Child	on main
 dynamic	__StdBytesBytesBuilder	on main
 shared	dynamic	sites in the stdlib #1dcc5550
 
-== crates/hale-codegen/tests/observe_metrics.rs#952f6e36
+== crates/hale-codegen/tests/observe_metrics.rs#c348fb29
 root	App	the entry
 domain	pool:jobs
 domain	pinned:App@literal1.metrics
