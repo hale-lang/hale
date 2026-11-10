@@ -1553,7 +1553,11 @@ fn teardown_remove_script(lines: String) -> String {
                     } else if pass == 1 {
                         "docker volume rm -f " + q + " >/dev/null"
                     } else {
-                        "{ e=$(docker network rm " + q
+                        // what is still joined to it (the habitat's servers,
+                        // on an organism's roles network) taken off it first
+                        "{ for j in $(docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' "
+                            + q + " 2>/dev/null); do docker network disconnect -f " + q
+                            + " \"$j\" >/dev/null 2>&1; done; e=$(docker network rm " + q
                             + " 2>&1 >/dev/null) || ! docker network inspect "
                             + q + " >/dev/null 2>&1 || { echo \"network " + name
                             + ": $e\" >&2; false; }; }"

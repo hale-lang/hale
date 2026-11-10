@@ -99,6 +99,11 @@ fn digest_of(dir: String, rev: String) -> String {
 // `database`.
 const SPROUT_COMPOSE: String = "services:\n  probe:\n    image: busybox:1.36\n    command: [\"sleep\", \"3600\"]\n    environment:\n      SEEN_PROFILES: \"${COMPOSE_PROFILES:-unset}\"\n  db:\n    image: busybox:1.36\n    command: [\"sleep\", \"3600\"]\n    profiles: [\"database\"]\n";
 
+// `bud`'s own services: a probe that is handed the database and the broker
+// the habitat provides (the Postgres image, for `psql`), and mounts its
+// reader vault.
+const BUD_COMPOSE: String = "services:\n  probe:\n    image: pgvector/pgvector:pg16\n    command: [\"sleep\", \"3600\"]\n    environment:\n      DSN: \"${HALE_DNA_DATABASE_DSN:-}\"\n      BROKER: \"${HALE_DNA_BROKER_URL:-}\"\n      BROKER_VAULT: \"${HALE_DNA_BROKER_VAULT:-}\"\n      BROKER_NODE_VAULT: \"${HALE_DNA_BROKER_NODE_VAULT:-}\"\n    volumes:\n      - \"${HALE_VAULT_DIR:-./no-vault}:/vault:ro\"\n";
+
 // The nursery's index: one pack, and the sapling `sprout` at `rev`.
 fn index(src: String, rev: String, digest: String) -> String {
     return "[[pack]]\nname = \"crew\"\nversion = \"1\"\npath = \"packs/crew.pack\"\nsummary = \"one dev for a part\"\nparams = { part = \"\" }\n\n[[sapling]]\nname = \"sprout\"\nsummary = \"a small organism to graft\"\nrepo = \""
@@ -390,15 +395,18 @@ fn main() {
 
     // ---- a graft that stops after the child is born, and goes on after a
     // newer revision was ratified, is the revision it checked: `bud` needs
-    // a database whose heart migration fails until `ready` is there
+    // a database whose heart migration fails until `ready` is there, and a
+    // broker; it brings neither, so the habitat provides both, and its own
+    // services (a probe) are handed them
     let bsrc = scratch + "/bud-src";
     std::io::fs::mkdir(bsrc) or discard;
     git(bsrc, "init\n-q\n-b\nmain");
     std::io::fs::write_file(
         bsrc + "/hale.toml",
-        "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n\n[dna.migrations.database]\ncommand = [\"sh\", \"-c\", \"test -e ready\"]\n",
+        "[dna]\nneeds = [\"memory\", \"nerves\", \"database\", \"broker\"]\n\n[dna.migrations.database]\ncommand = [\"sh\", \"-c\", \"test -e ready\"]\n",
     ) or discard;
     std::io::fs::write_file(bsrc + "/README.md", "# bud\n") or discard;
+    std::io::fs::write_file(bsrc + "/compose.yaml", BUD_COMPOSE) or discard;
     git(bsrc, "add\n-A");
     git(bsrc, "commit\n-q\n-m\nbud v1");
     git(bsrc, "tag\nv1");
@@ -431,6 +439,30 @@ fn main() {
     std::test::assert(
         resumed.code == 0 && std::str::contains(resumed.stdout, "bud goes on at v1 (" + bud1 + ")"),
         "the graft goes on at the revision it checked: " + resumed.stdout + resumed.stderr,
+    );
+    // its services are handed the database and the broker the habitat
+    // provides, by the vault entries their reader vault holds, and reach
+    // both on the network the habitat joined its servers to
+    let bkey = dna::allocation_key(bstore);
+    let probe = "sh\n-c\nid=$(docker ps -q --filter label=com.docker.compose.project=$1 --filter label=com.docker.compose.service=probe | head -n 1); docker exec \"$id\" bash -c \"$2\"\nsh\n"
+        + dna::local_habitat_project() + "-" + bkey + "\n";
+    let selected = dna::run_tool(
+        probe
+            + "d=${DSN#postgres://}; user=${d%%@*}; rest=${d#*@}; host=${rest%%:*}; db=${rest#*/}; db=${db%%\\?*}; slot=${DSN##*vault=}; PGPASSWORD=$(cat /vault/$slot) psql -h $host -U $user -d $db -tAc 'select 41 + 1'",
+    );
+    std::test::assert(
+        resumed.code == 0 && dna::trim_nl(selected.stdout) == "42",
+        "bud's services reach the database the habitat provides, by the DSN and the vault entry handed them: "
+            + selected.stdout + selected.stderr + resumed.stdout + resumed.stderr,
+    );
+    let brokered = dna::run_tool(
+        probe
+            + "test -s /vault/$BROKER_VAULT && test -s /vault/$BROKER_NODE_VAULT && h=${BROKER#nats://}; exec 3<>/dev/tcp/${h%%:*}/${h##*:} && head -c 4 <&3",
+    );
+    std::test::assert_eq_str(
+        brokered.stdout,
+        "INFO",
+        "and the broker's server, its users' passwords in its reader vault: " + brokered.stderr,
     );
     let brows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
     // the graft's row (its fields in key order): v1 and v1's digest

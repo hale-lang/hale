@@ -1739,10 +1739,11 @@ started under a wider set; a `down` takes the whole project down. `graft
 --plan` names the value on its `services` line.
 
 **`--reuse <role>` is refused when the application's compose would never
-read the role.** For a role the application brings (its compose runs its
-own), `--reuse` has the habitat provision one and hand it over (The
-handover: `HALE_DNA_DATABASE_DSN`, `HALE_DNA_BROKER_URL`); a compose file that
-never reads it would leave that server unused. So a graft whose compose file
+read the role, or could not reach it.** For a role the application brings
+(its compose runs its own), `--reuse` has the habitat provision one and
+hand it to its services (The handover: `HALE_DNA_DATABASE_DSN`,
+`HALE_DNA_BROKER_URL`); a compose file that never reads it would leave that
+server unused. So a graft whose compose file
 (`compose.yaml`, else `compose.yml`, `docker-compose.yaml`,
 `docker-compose.yml`) never names `HALE_DNA_DATABASE_DSN` (for `--reuse
 database`) or `HALE_DNA_BROKER_URL` (for `--reuse broker`) is refused before
@@ -1750,9 +1751,13 @@ anything is made, naming the variable and `--own <role>`; `--plan` prints
 the plan and the refusal and exits 1. The check is textual: the variable's
 name as a whole word on a line of the file that is not a comment
 (`${VAR}`, `${VAR:-…}`, `$VAR`, or `VAR` passed through in an
-`environment:` entry). A role the application does not bring, an
-application with no compose file, and a graft that goes on where it stopped
-(checked when it began) are not checked.
+`environment:` entry). A graft whose services go on another machine
+(`--host` an `ssh` host) is refused the same way for a role it brings:
+the habitat's servers are reached from the habitat's own machine alone
+(not built yet), so `--own <role>` or a graft onto the habitat's machine.
+A role the application does not bring, an application with no compose
+file, and a graft that goes on where it stopped (checked when it began) are
+not checked.
 
 `graft --plan` prints the plan, part by part (each
 choice, where it runs, and the flag that changes it), and grafts nothing;
@@ -1879,6 +1884,38 @@ same set to the host, which the heart inherits.
 | `HALE_DNA_OIDC_CLIENT_VAULT` | `oidc-service-<client>`, the slot of its secret |
 | `HALE_DNA_DATABASE_DSN` | for an allocated `database`: a DSN naming the role `heart_<id>` and its vault slot, no password |
 | `HALE_DNA_BROKER_URL`, `_USER`, `_VAULT`, `_SUBJECTS`, `_NODE_USER`, `_NODE_VAULT` | for an allocated `broker`: the nerves server (no credential), the heart's user and its slot, its subject space `heart.<id>.>`, and the nodes' user and slot |
+
+**An organism's own services are handed the heart roles the habitat
+provides them.** For each role its graft had the habitat provide (kept
+`reuse` in `parts.json`, and allocated), the habitat's apply of its
+services on the habitat's own machine (at the graft, `apply`, a re-apply
+and an upgrade) hands its compose project that role's lines of the table
+above, in the environment compose runs under, as it hands
+`COMPOSE_PROFILES`. The servers are the habitat's containers, published on
+its machine's loopback alone, which another compose project's containers
+do not reach; so the habitat makes a network of the organism's own,
+`<project>-hale-roles` (labelled as its services' compose project), joins
+the server holding each role to it before the services come up, under the
+alias `hale-database` (its memory server) or `hale-broker` (its nerves
+server), and its override joins each of the services to it beside the
+networks they are on (one with a `network_mode` is left alone). So
+`HALE_DNA_DATABASE_DSN` names `hale-database:5432` and
+`HALE_DNA_BROKER_URL` is `nats://hale-broker:4222`. A node of the
+application is a process of a machine, on no such network, so the broker's
+services are also handed `HALE_DNA_BROKER_NODE_URL`, the server as it is
+published on the habitat's machine (`nats://127.0.0.1:<port>`), for a node
+there to dial. Each role's vault
+entries (`postgres-heart_<id>`, and the broker's two) are copied into the
+organism's reader vault beside its declared secrets, and `HALE_VAULT_DIR`
+names it, so a service that mounts it reads the passwords the DSN and the
+`_VAULT` lines name. A withdrawal takes the network down with the services,
+the servers taken off it first, and so do `organism remove`, `down
+--forget` and `hale habitat sweep`. A server recreated since (a toolchain
+that changed its compose text) is off the network until the next apply of
+the services (`hale habitat apply`) joins it again. Services placed on an
+`ssh` host are handed none of this: the habitat's servers are not reached
+from another machine (a node of the application on another machine
+neither; not built yet).
 
 Every compose project the habitat applies on an `ssh` host (an organism's
 own services placed there, an allocation placed there) is also handed two

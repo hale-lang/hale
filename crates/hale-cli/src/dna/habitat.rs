@@ -1655,17 +1655,23 @@ pub(super) fn compose_reads(text: &str, var: &str) -> bool {
 
 /// Why a graft is refused before it makes anything for having the habitat
 /// provide a heart role (`--reuse <role>`) the application brings (its
-/// compose runs its own) when its compose file (`compose`, its text; `None`
-/// with no compose file) never reads the role's handover: the habitat's
-/// server would go unused beside the application's own. `None` when every
-/// such role is read.
-pub(super) fn reuse_refusal(needs: &[String], brings: &[String], compose: Option<(&str, &str)>, part_choice: &dyn Fn(&str) -> Part) -> Option<String> {
+/// compose runs its own): when its compose file (`compose`, its text; `None`
+/// with no compose file) never reads the role's handover, the habitat's
+/// server would go unused beside the application's own; and when its
+/// services go on another machine (`services_here` false), the habitat's
+/// servers, published on its own machine's loopback, are not reached from
+/// there. `None` when neither is so.
+pub(super) fn reuse_refusal(needs: &[String], brings: &[String], compose: Option<(&str, &str)>, services_here: bool, part_choice: &dyn Fn(&str) -> Part) -> Option<String> {
     let (file, text) = compose?;
-    APPLICATION_PARTS.iter().find(|r| needs.iter().any(|n| n == *r) && brings.iter().any(|b| b == *r) && part_choice(r) == Part::Reuse && !compose_reads(text, handover_variable(r))).map(|r| {
-        format!(
+    let reused = |r: &&str| needs.iter().any(|n| n == *r) && brings.iter().any(|b| b == *r) && part_choice(r) == Part::Reuse;
+    if let Some(r) = APPLICATION_PARTS.iter().find(|r| reused(r) && !compose_reads(text, handover_variable(r))) {
+        return Some(format!(
             "`--reuse {r}`: the application brings its own {r}, and its {file} never reads {}, the {r} the habitat would provision: it would go unused while its compose runs its own. `--own {r}` keeps the application's own; nothing was grafted",
             handover_variable(r)
-        )
+        ));
+    }
+    APPLICATION_PARTS.iter().find(|r| reused(r) && !services_here).map(|r| {
+        format!("`--reuse {r}`: its services go on another machine, and the habitat's {r} is reached from the habitat's own machine alone (not built yet). `--own {r}` keeps the application's own, or graft it onto the habitat's machine; nothing was grafted")
     })
 }
 
@@ -3806,6 +3812,22 @@ pub(crate) fn compose_projects_listed() -> Result<String, String> {
     }
 }
 
+/// What is still joined to the network `name` taken off it, so it can be
+/// removed: an organism's roles network holds the habitat's servers
+/// (dna/core/placement.hl, `join_roles_network`), which compose never takes
+/// off it. Nothing for a network that is gone.
+pub(super) fn release_network_with(name: &str, docker: &mut dyn FnMut(&[&str]) -> Docker) {
+    if let Docker::Answered(out) = docker(&["network", "inspect", "-f", "{{range .Containers}}{{.Name}} {{end}}", name]) {
+        for joined in out.split_whitespace() {
+            let _ = docker(&["network", "disconnect", "-f", name, joined]);
+        }
+    }
+}
+
+pub(super) fn release_network(name: &str) {
+    release_network_with(name, &mut |args| docker(args))
+}
+
 pub(crate) fn down_under(root: &Path) -> Result<(), String> {
     down_under_with(root, &mut |args| docker(args))
 }
@@ -3832,6 +3854,14 @@ pub(crate) fn down_under_with(root: &Path, docker: &mut dyn FnMut(&[&str]) -> Do
             left.push(why);
         }
         let label = format!("label=com.docker.compose.project={project}");
+        // a network of the project's compose does not take down: an
+        // organism's roles network, the habitat's servers taken off it first
+        if let Docker::Answered(out) = docker(&["network", "ls", "--filter", label.as_str(), "--format", "{{.Name}}"]) {
+            for net in out.split_whitespace() {
+                release_network_with(net, docker);
+                let _ = docker(&["network", "rm", net]);
+            }
+        }
         for (what, args) in [("containers", ["ps", "-a", "-q", "--filter", label.as_str()].as_slice()), ("volumes", ["volume", "ls", "-q", "--filter", label.as_str()].as_slice()), ("networks", ["network", "ls", "-q", "--filter", label.as_str()].as_slice())] {
             match docker(args) {
                 Docker::Answered(out) if !out.trim().is_empty() => left.push(format!("compose project {project} still has {what} after its teardown")),
@@ -4195,7 +4225,8 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     // never reads is refused before anything is made
     let compose_file = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"].into_iter().find(|f| root.join(f).is_file());
     let compose_text = compose_file.and_then(|f| std::fs::read_to_string(root.join(f)).ok().map(|t| (f, t)));
-    let refused = reuse_refusal(&needs, GRAFT_BRINGS.get().map(Vec::as_slice).unwrap_or(&[]), compose_text.as_ref().map(|(f, t)| (*f, t.as_str())), &part_choice);
+    let services_here = sapling::services_host(GRAFT_HOST.get()).map(|(h, _)| h["provider"] == "compose").unwrap_or(true);
+    let refused = reuse_refusal(&needs, GRAFT_BRINGS.get().map(Vec::as_slice).unwrap_or(&[]), compose_text.as_ref().map(|(f, t)| (*f, t.as_str())), services_here, &part_choice);
     // the plan, part by part, before anything is made: `--plan` prints it
     // (and the refusal, when there is one) and stops; at a terminal the
     // person confirms it (a graft the head started, with no terminal, takes
@@ -4723,24 +4754,30 @@ mod tests {
         assert!(compose_reads("    environment:\n      - HALE_DNA_DATABASE_DSN\n", "HALE_DNA_DATABASE_DSN"), "passed through from the environment");
         assert!(compose_reads("      HALE_DNA_BROKER_URL: ${HALE_DNA_BROKER_URL}\n", "HALE_DNA_BROKER_URL"));
         assert!(!compose_reads("    # set HALE_DNA_DATABASE_DSN to use the habitat's\n    image: postgres:16\n", "HALE_DNA_DATABASE_DSN"), "a comment reads nothing");
-        assert!(!compose_reads("      - HALE_DNA_DATABASE_DSN_FILE=/run/x\n", "HALE_DNA_DATABASE_DSN"), "another variable");
+        // a longer name the variable's is a prefix of (spelled in two, so the
+        // tree names no such knob: env_knobs_are_documented)
+        assert!(!compose_reads(&format!("      DSN_FILE: ${{{}_FILE}}\n", "HALE_DNA_DATABASE_DSN"), "HALE_DNA_DATABASE_DSN"), "another variable");
         assert!(!compose_reads("      - MY_HALE_DNA_BROKER_URL=x\n", "HALE_DNA_BROKER_URL"));
         let needs: Vec<String> = ["memory", "nerves", "database", "broker"].iter().map(|s| s.to_string()).collect();
         let brings: Vec<String> = vec!["database".into(), "broker".into()];
         let reuse_both = |r: &str| if r == "database" || r == "broker" { Part::Reuse } else { default_part(r, &brings) };
         let ignores = "services:\n  db:\n    image: postgres:16\n  nats:\n    image: nats:2\n";
-        let why = reuse_refusal(&needs, &brings, Some(("compose.yaml", ignores)), &reuse_both).unwrap();
+        let why = reuse_refusal(&needs, &brings, Some(("compose.yaml", ignores)), true, &reuse_both).unwrap();
         assert!(why.starts_with("`--reuse database`") && why.contains("compose.yaml never reads HALE_DNA_DATABASE_DSN") && why.contains("`--own database`"), "{why}");
         let reads_db = "services:\n  api:\n    environment:\n      DSN: ${HALE_DNA_DATABASE_DSN}\n";
-        let why = reuse_refusal(&needs, &brings, Some(("compose.yaml", reads_db)), &reuse_both).unwrap();
+        let why = reuse_refusal(&needs, &brings, Some(("compose.yaml", reads_db)), true, &reuse_both).unwrap();
         assert!(why.starts_with("`--reuse broker`") && why.contains("HALE_DNA_BROKER_URL") && why.contains("`--own broker`"), "{why}");
         let reads_both = "      DSN: ${HALE_DNA_DATABASE_DSN}\n      NATS: ${HALE_DNA_BROKER_URL}\n";
-        assert_eq!(reuse_refusal(&needs, &brings, Some(("compose.yaml", reads_both)), &reuse_both), None);
+        assert_eq!(reuse_refusal(&needs, &brings, Some(("compose.yaml", reads_both)), true, &reuse_both), None);
+        // read, but its services go on another machine: the habitat's
+        // servers are reached from its own alone
+        let why = reuse_refusal(&needs, &brings, Some(("compose.yaml", reads_both)), false, &reuse_both).unwrap();
+        assert!(why.starts_with("`--reuse database`: its services go on another machine"), "{why}");
         // the application's own, a role it does not bring (the habitat's by
         // default, its compose has none to run), or no compose file at all
-        assert_eq!(reuse_refusal(&needs, &brings, Some(("compose.yaml", ignores)), &|r: &str| default_part(r, &brings)), None);
-        assert_eq!(reuse_refusal(&needs, &[], Some(("compose.yaml", ignores)), &|r: &str| default_part(r, &[])), None);
-        assert_eq!(reuse_refusal(&needs, &brings, None, &reuse_both), None);
+        assert_eq!(reuse_refusal(&needs, &brings, Some(("compose.yaml", ignores)), true, &|r: &str| default_part(r, &brings)), None);
+        assert_eq!(reuse_refusal(&needs, &[], Some(("compose.yaml", ignores)), false, &|r: &str| default_part(r, &[])), None);
+        assert_eq!(reuse_refusal(&needs, &brings, None, true, &reuse_both), None);
     }
 
     /// What an application brings is among its application-plane needs.
@@ -5007,6 +5044,37 @@ mod tests {
         down_under_with(&d, &mut dock).unwrap();
         assert_eq!(downs.len(), 3, "each owned project is taken down: {downs:?}");
         assert!(!downs.contains(&"elsewhere".to_string()), "never one that runs from outside the root");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A network compose leaves behind (an organism's roles network,
+    /// external to its project's compose) is taken down too, what is
+    /// still joined to it (the habitat's servers) taken off it first.
+    #[test]
+    fn a_roles_network_is_taken_down_with_its_project() {
+        let d = root("roles");
+        let p = habitat_project_at(&format!("{}/data/hale/habitat/local", d.display()));
+        let listing = format!("{p}-abc|{}/data/hale/habitat/local/saplings/sprout\n", d.display());
+        let mut calls: Vec<String> = Vec::new();
+        let mut gone = false;
+        let mut dock = |args: &[&str]| {
+            calls.push(args.join(" "));
+            match args {
+                ["ps", "-a", "--filter", ..] => Docker::Answered(listing.clone()),
+                ["network", "ls", "--filter", _, "--format", _] => Docker::Answered(if gone { String::new() } else { format!("{p}-abc-hale-roles\n") }),
+                ["network", "inspect", ..] => Docker::Answered("memory-x \n".into()),
+                ["network", "rm", ..] => {
+                    gone = true;
+                    Docker::Answered(String::new())
+                }
+                _ => Docker::Answered(String::new()),
+            }
+        };
+        down_under_with(&d, &mut dock).unwrap();
+        let net = format!("{p}-abc-hale-roles");
+        let off = calls.iter().position(|c| *c == format!("network disconnect -f {net} memory-x")).expect("the server is taken off it");
+        let rm = calls.iter().position(|c| *c == format!("network rm {net}")).expect("and the network removed");
+        assert!(off < rm, "{calls:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

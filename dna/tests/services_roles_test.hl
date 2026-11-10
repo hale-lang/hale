@@ -1,0 +1,130 @@
+// dna/tests/services_roles_test.hl — the heart roles the habitat provides an
+// organism's own services, reached across compose projects.
+//
+// The habitat's servers are containers of its own compose project,
+// published on this machine's loopback alone, which another project's
+// containers do not reach. An organism's services handed a role the
+// habitat provides reach its server on a network of the organism's own:
+// the habitat makes it, joins the server to it under the role's alias
+// before the services come up, and its override joins each service to it
+// beside the networks it is on. The handover is in the environment compose
+// runs under, and the role's vault entry in the reader vault beside the
+// declared secrets. Withdrawn, the services take the network down with
+// them, the server taken off it first and left running. A stand-in plays
+// the habitat's memory server here; without docker compose nothing here is
+// exercised.
+
+import "../core" as dna;
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("services_roles_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "services_roles_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let scratch = dna::scratch_root("services-roles");
+    let pid = to_string(std::process::pid());
+    // a stand-in for the habitat's memory server: a container of the
+    // habitat's compose project, its service named as an allocation's,
+    // published on the loopback alone
+    let service = "memory-5e5e" + pid;
+    let started = dna::run_tool(
+        "docker\nrun\n-d\n--label\ncom.docker.compose.project=" + dna::local_habitat_project()
+            + "\n--label\ncom.docker.compose.service=" + service
+            + "\n-p\n127.0.0.1::8080\nbusybox:1.36\nsh\n-c\nwhile true; do echo served | nc -l -p 8080; done",
+    );
+    let server = dna::trim_nl(started.stdout);
+    std::test::assert(
+        started.code == 0 && len(server) > 0,
+        "the stand-in server runs: " + started.stderr,
+    );
+    // the organism's services: one on the project's default network, one
+    // on a network its file names, each saying what it was handed
+    std::io::fs::write_file(
+        scratch + "/compose.yaml",
+        "services:\n  client:\n    image: busybox:1.36\n    command: [\"sleep\", \"3600\"]\n    environment:\n      SEEN_DSN: \"${HALE_DNA_DATABASE_DSN:-unset}\"\n    volumes:\n      - \"${HALE_VAULT_DIR:-./no-vault}:/vault:ro\"\n  inner:\n    image: busybox:1.36\n    command: [\"sleep\", \"3600\"]\n    networks: [backend]\nnetworks:\n  backend: {}\n",
+    ) or discard;
+    // the role's vault entry, in the vault the habitat copies from
+    let entry = "postgres-heart_5e5e" + pid;
+    std::io::fs::write_file(std::secret::vault_local_dir() + "/" + entry, "the-password")
+    or discard;
+    let project = dna::local_habitat_project() + "-roles" + pid;
+    let dsn = "postgres://heart_x@" + dna::DATABASE_ALIAS + ":5432/heart_x?sslmode=disable&vault="
+        + entry;
+    let roles = dna::ServicesRoles {
+        words: dna::handover_word("HALE_DNA_DATABASE_DSN", dsn),
+        secrets: "\t" + entry + "\n",
+        servers: service + "\t" + dna::DATABASE_ALIAS + "\n",
+    };
+    let r = dna::with_services_roles(
+        dna::Render {
+            project: project,
+            dir: scratch,
+            files: "compose.yaml",
+            vault: scratch + "/reader",
+        },
+        roles,
+    );
+    std::test::assert_eq_str(r.roles, project + "-hale-roles", "the organism's roles network");
+    std::test::assert(
+        std::str::contains(r.labels, "      default: {}\n      hale-roles: {}\n")
+            && std::str::contains(r.labels, "      backend: {}\n      hale-roles: {}\n")
+            && std::str::contains(
+                r.labels,
+                "networks:\n  hale-roles:\n    name: " + r.roles + "\n    external: true\n",
+            ),
+        "each service joins it beside the networks it is on: " + r.labels,
+    );
+    std::test::assert_eq_str(
+        dna::join_roles_network(r.roles, project, roles.servers),
+        "",
+        "the server is joined to it",
+    );
+    std::test::assert_eq_str(
+        dna::join_roles_network(r.roles, project, roles.servers),
+        "",
+        "and joining again does nothing more",
+    );
+    let applied = dna::ComposeProvider { }.apply("local", r);
+    std::test::assert(applied.ok, "the services come up: " + applied.why);
+    let in_service = "sh\n-c\nid=$(docker ps -q --filter label=com.docker.compose.project=$1 --filter label=com.docker.compose.service=$2 | head -n 1); docker exec \"$id\" sh -c \"$3\"\nsh\n"
+        + project + "\n";
+    let reached = dna::run_tool(in_service + "client\necho | nc -w 5 hale-database 8080");
+    std::test::assert_eq_str(
+        dna::trim_nl(reached.stdout),
+        "served",
+        "a service reaches the server by the role's alias: " + reached.stderr,
+    );
+    let inner = dna::run_tool(in_service + "inner\necho | nc -w 5 hale-database 8080");
+    std::test::assert_eq_str(
+        dna::trim_nl(inner.stdout),
+        "served",
+        "and so does one on a network of its file's own: " + inner.stderr,
+    );
+    let handed = dna::run_tool(
+        in_service + "client\nprintf '%s|' \"$SEEN_DSN\"; cat /vault/" + entry,
+    );
+    std::test::assert_eq_str(
+        handed.stdout,
+        dsn + "|the-password",
+        "it is handed the role's DSN, and reads its password in the reader vault: "
+            + handed.stderr,
+    );
+    // withdrawn: the network goes, the server is taken off it and runs on
+    let gone = dna::ComposeProvider { }.withdraw("local", r);
+    std::test::assert(gone.ok, "the services are withdrawn: " + gone.why);
+    std::test::assert(
+        dna::run_tool("docker\nnetwork\ninspect\n" + r.roles).code != 0,
+        "and their roles network with them",
+    );
+    let still = dna::run_tool("docker\ninspect\n-f\n{{.State.Running}}\n" + server);
+    std::test::assert_eq_str(dna::trim_nl(still.stdout), "true", "the server runs on");
+    dna::run_tool("docker\nrm\n-f\n" + server);
+    std::io::fs::unlink(std::secret::vault_local_dir() + "/" + entry) or discard;
+    dna::scratch_done(scratch);
+}

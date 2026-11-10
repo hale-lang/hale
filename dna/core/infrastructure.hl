@@ -304,6 +304,14 @@ type Render {
     // as `COMPOSE_PROFILES` (`services_profiles`: `database`, `broker`,
     // comma-joined, or `none`); "" hands none
     profiles: String = "";
+    // the heart roles the habitat provides an organism's own services
+    // (`--reuse`), handed them as shell assignment words (`services_roles`:
+    // `HALE_DNA_DATABASE_DSN`, `HALE_DNA_BROKER_*`); "" for none
+    handover: String = "";
+    // the network its services reach the habitat's servers for those roles
+    // on (`roles_network`), "" for none: each service joins it, and the
+    // servers are joined to it under the roles' aliases
+    roles: String = "";
 }
 
 // An organism's own compose services labelled as the habitat's
@@ -321,7 +329,7 @@ fn render_labels(render: Render, organism: String) -> String {
     let mut read = run_tool(base);
     if read.code != 0 { read = run_tool(base + "\n--no-interpolate"); }
     if read.code != 0 { return ""; }
-    return services_override(read.stdout, compose_labels(organism, "services"));
+    return services_override(read.stdout, compose_labels(organism, "services"), render.roles);
 }
 
 // The restart policy the habitat gives an organism's long-running service
@@ -339,8 +347,13 @@ const RESTART_POLICY: String = "unless-stopped";
 // `deploy.restart_policy`) given `RESTART_POLICY`. A one-shot (a service
 // another waits on to finish: `condition: service_completed_successfully`,
 // a migration) gets none, since running it again after it finished would
-// be wrong. "" when the text names no service.
-fn services_override(config: String, labels: String) -> String {
+// be wrong. With a roles network (`roles`, "" for none), each service that
+// names no `network_mode` joins it beside the networks it is on already
+// (an override's `networks` replaces a service's implicit `default`, so
+// that one is named too), and the network is declared external, by its
+// name: the habitat's, never one compose takes down. "" when the text names
+// no service.
+fn services_override(config: String, labels: String, roles: String) -> String {
     let services = std::json::find_field_raw(config, "services");
     if !std::str::starts_with(services, "{") { return ""; }
     let one_shots = one_shot_services(services);
@@ -357,9 +370,32 @@ fn services_override(config: String, labels: String) -> String {
         if !stated && !has_word(one_shots, name) {
             out = out + "    restart: " + RESTART_POLICY + "\n";
         }
+        if len(roles) > 0 && len(std::json::find_field_raw(svc, "network_mode")) == 0 {
+            out = out + "    networks:\n";
+            let nets = std::json::find_field_raw(svc, "networks");
+            if std::str::starts_with(nets, "{") {
+                let mut n = std::json::object_first(nets);
+                while !n.done {
+                    out = out + "      " + std::json::obj_key_string(n, nets) + ": {}\n";
+                    n = std::json::object_next(n, nets);
+                }
+            } else {
+                out = out + "      default: {}\n";
+            }
+            out = out + "      " + ROLES_NETWORK + ": {}\n";
+        }
         it = std::json::object_next(it, services);
     }
-    return if len(out) > 0 { "services:\n" + out } else { "" };
+    if len(out) == 0 { return ""; }
+    return "services:\n" + out
+        + (
+            if len(roles) > 0 {
+                "networks:\n  " + ROLES_NETWORK + ":\n    name: " + roles
+                    + "\n    external: true\n"
+            } else {
+                ""
+            }
+        );
 }
 
 // The services of a compose config's `services` object that another waits
@@ -989,6 +1025,11 @@ locus ComposeProvider {
         if len(render.project) == 0 || len(render.dir) == 0 {
             return RenderApplied { why: "nothing to withdraw: the render names no project" };
         }
+        // the habitat's servers taken off the network its services reached
+        // them on first: a compose that takes the network down with the
+        // project (it is labelled as the project's) refuses one still in use
+        let detached = detach_roles_network(render.roles, render.project);
+        if len(detached) > 0 { return RenderApplied { why: detached }; }
         let down = run_tool(
             render_wrap(render) + "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n"
                 + compose_args(render, "\n") + "\n" + compose_down_args(render, "\n"),
@@ -996,6 +1037,10 @@ locus ComposeProvider {
         if down.code != 0 {
             return RenderApplied { why: "docker compose down failed: " + trim_nl(down.stderr) };
         }
+        // the network its services reached the habitat's servers on goes
+        // with them
+        let released = release_roles_network(render.roles);
+        if len(released) > 0 { return RenderApplied { why: released }; }
         return RenderApplied { ok: true };
     }
     fn observe(a: Allocation) -> AllocationState {

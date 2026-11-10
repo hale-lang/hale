@@ -344,7 +344,7 @@ fn main() {
         "a service another waits on to finish is a one-shot",
     );
     std::test::assert_eq_str(
-        dna::services_override(config, labels),
+        dna::services_override(config, labels, ""),
         "services:\n"
             + "  api:\n" + labels + "    restart: unless-stopped\n"
             + "  brain:\n" + labels
@@ -354,12 +354,12 @@ fn main() {
         "the long-running service without a policy is kept running; the one-shot and the stated policies are left alone",
     );
     std::test::assert_eq_str(
-        dna::services_override("{\"services\": {\"web\": {\"image\": \"w\"}}}", labels),
+        dna::services_override("{\"services\": {\"web\": {\"image\": \"w\"}}}", labels, ""),
         "services:\n  web:\n" + labels + "    restart: unless-stopped\n",
         "a service nothing says of is long-running",
     );
     std::test::assert_eq_str(
-        dna::services_override("not json", labels),
+        dna::services_override("not json", labels, ""),
         "",
         "no config, no override",
     );
