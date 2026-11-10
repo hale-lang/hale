@@ -359,12 +359,29 @@ pub(super) fn mounted_entries(tracked: &str) -> Vec<&str> {
     out
 }
 
+/// The host a graft places the organism's own services on: its `--host`,
+/// else the habitat's own machine, the host `--host local` names where the
+/// graft runs (a graft through a pointer runs on the habitat's machine, so
+/// it is that machine there too, never the one the person types on), and
+/// whether it was that default.
+pub(super) fn services_host(given: Option<&serde_json::Value>) -> Result<(serde_json::Value, bool), String> {
+    if let Some(h) = given {
+        return Ok((h.clone(), false));
+    }
+    match graft_host("local")? {
+        Some(h) => Ok((h, true)),
+        None => Err("the graft names no host and the habitat's own machine takes no placement: `--host <name>` names the host its services go on".to_string()),
+    }
+}
+
 /// The organism's own services (a repository's compose file at its root),
-/// an allocation of the host its graft placed it on, and applied there by
-/// the head (`Commands::apply_allocations`). Nothing for an organism with no
-/// compose file or a graft that names no host.
+/// an allocation of the host its graft placed it on (`services_host`: the
+/// habitat's own machine when it names none), and applied there by the
+/// head (`Commands::apply_allocations`). Nothing for an organism with no
+/// compose file.
 fn place_services(root: &Path) -> Result<Vec<String>, String> {
-    let Some(h) = GRAFT_HOST.get() else { return Ok(Vec::new()) };
+    let (h, by_default) = services_host(GRAFT_HOST.get())?;
+    let h = &h;
     if !root.join("compose.yaml").is_file() {
         return Ok(vec![format!("{:<8}no compose.yaml at its root: no services of its own to place", "note")]);
     }
@@ -384,7 +401,7 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     let mounted = mounted_entries(&tracked);
     let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "vault": [] });
     record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
-    let mut out = vec![format!("{:<8}its services ({key}/services) on {shown}", "placed")];
+    let mut out = vec![format!("{:<8}its services ({key}/services) on {shown}{}", "placed", if by_default { " (no `--host`: the habitat's own machine)" } else { "" })];
     // a first pull or build of its images on the host takes minutes: the
     // head applies in a process of its own, and the graft follows it
     out.extend(apply_followed(host, false)?.lines);
@@ -960,6 +977,18 @@ mod tests {
         // allocation there, never nothing (GH: graft --host local ran none)
         let h = super::local_graft_host("hale-habitat-local-7452b2c2");
         assert_eq!((h["host"].as_str(), h["provider"].as_str(), h["project"].as_str()), (Some("local"), Some("compose"), Some("hale-habitat-local-7452b2c2")));
+    }
+
+    #[test]
+    fn a_graft_that_names_no_host_places_its_services_as_local_does() {
+        // no `--host`: the habitat's own machine, the very placement
+        // `--host local` makes, and said to be the default
+        let (h, by_default) = super::services_host(None).unwrap();
+        assert_eq!(Some(h), super::graft_host("local").unwrap());
+        assert!(by_default);
+        // a host the graft names is kept as it is
+        let named = serde_json::json!({ "host": "rack-a", "provider": "ssh", "address": "rack-a", "project": "p-rack-a" });
+        assert_eq!(super::services_host(Some(&named)).unwrap(), (named.clone(), false));
     }
 
     use super::*;

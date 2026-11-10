@@ -377,9 +377,8 @@ fn habitat_graft_log(a: GraftLogAsk) -> GraftLogReply {
 
 // What the head runs for a graft of `name` on `host`, after `hale habitat
 // graft` (newline-separated): the act itself (`--no-head`), on the host the
-// command named, `local` included (a graft that names no host places no
-// services of its own anywhere: `local` is the habitat's own machine, which
-// places them there).
+// command named, `local` included (a graft that names no host places its
+// services on the habitat's own machine, as `local` does).
 fn graft_args(name: String, host: String, library: Bool) -> String {
     let mut args = name + "\n--no-head";
     if len(host) > 0 { args = args + "\n--host\n" + host; }

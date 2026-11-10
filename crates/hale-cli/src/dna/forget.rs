@@ -26,7 +26,8 @@ use serde_json::{json, Value};
 
 use super::{
     body_state, docker, face_running, genome_dir, local_habitat_dir, local_habitat_project,
-    memory_volume_exists, name_file, service_status, stop_processes, Docker, DEFAULT_HABITAT_NAME,
+    memory_volume_exists, name_file, release_network, service_status, stop_processes, Docker,
+    DEFAULT_HABITAT_NAME,
 };
 use crate::dna::{host_run, manifest_pin};
 
@@ -812,6 +813,12 @@ fn execute_local(i: &Value, name: &str) -> Result<(), String> {
                             vec!["network", "inspect", name],
                         ),
                     };
+                    // a network: what is still joined to it (the habitat's
+                    // servers, on an organism's roles network) taken off it
+                    // first
+                    if kind == "n|" {
+                        release_network(name);
+                    }
                     if let Err(why) = gone(&remove) {
                         if matches!(docker(&inspect), Docker::Answered(_)) {
                             return Err(why);

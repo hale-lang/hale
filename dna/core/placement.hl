@@ -423,16 +423,18 @@ fn placement_export(j: Journal, latest: LatestRows) -> String {
 // file, in the project its placement names, handed the habitat's name and
 // the secrets its programs read.
 fn services_render(body: String) -> Render {
+    let organism = std::json::find_string_field(body, "organism");
     let r = Render {
         project: std::json::find_string_field(body, "project"),
         dir: std::json::find_string_field(body, "render_dir"),
         files: std::json::find_string_field(body, "render_files"),
         mounted: std::json::find_string_field(body, "render_mounted"),
+        // the heart roles its compose provides itself, as its graft chose
+        profiles: if len(organism) >= 12 { grafted_profiles(organism[0..12]) } else { "" },
     };
     // the secrets its programs read ([dna.secrets.<name>] in its manifest),
     // named for the organism it is; a declaration the toolchain refuses
     // hands none
-    let organism = std::json::find_string_field(body, "organism");
     let declared = declared_secrets(r.dir);
     let secrets = if declared.ok && len(organism) >= 12 {
         program_secrets(declared.lines, schema_for(organism))
@@ -459,6 +461,203 @@ fn services_render(body: String) -> Render {
         // its images by it
         revision: revision,
         by_revision: len(revision) > 0 && names_revision(r.dir, r.files),
+        profiles: r.profiles,
+        // the network its services reached the habitat's servers on, when
+        // it has one: what a withdrawal takes down with them
+        roles: roles_network(r.project),
+    };
+}
+
+// ---- the heart roles the habitat provides an organism's own services ------
+//
+// A heart role its graft had the habitat provide (`parts.json`: `reuse`,
+// and allocated: `database`, a tenant database of its memory server;
+// `broker`, users of its nerves server) reaches its compose project here as
+// the handover names it (`HALE_DNA_DATABASE_DSN`, `HALE_DNA_BROKER_URL`,
+// `_USER`, `_VAULT`, `_SUBJECTS`, `_NODE_USER`, `_NODE_VAULT`; spec/habitat.md,
+// The handover), each secret by the vault entry its reader vault holds. The
+// servers are the habitat's containers, published on this machine's
+// loopback alone, which another project's containers do not reach: the
+// habitat joins them to a network of the organism's own (`roles_network`)
+// under the roles' aliases, and its services to that network, so the
+// handover names `hale-database:5432` and `nats://hale-broker:4222`. Its
+// services on another host are handed none: the habitat's servers are not
+// reached from another machine.
+
+// The network an organism's services reach the habitat's servers for its
+// heart roles on, named in the override (`services_override`) by this.
+const ROLES_NETWORK: String = "hale-roles";
+// The aliases the servers have on it, which the handover names.
+const DATABASE_ALIAS: String = "hale-database";
+const BROKER_ALIAS: String = "hale-broker";
+
+// The roles network of the services project `project`: the habitat's,
+// labelled as that project's, so taking the project down takes it too.
+fn roles_network(project: String) -> String {
+    return if len(project) > 0 { project + "-" + ROLES_NETWORK } else { "" };
+}
+
+// What an organism's own services are handed of the heart roles the
+// habitat provides them: the handover's assignment words, the reader-vault
+// lines of the roles' entries (`\t<entry>`: staged with its secrets, under
+// no variable of their own), and the habitat's servers to join to its roles
+// network (`<compose service>\t<alias>` a line). Nothing for a role its
+// application provides itself.
+type ServicesRoles {
+    words: String = "";
+    secrets: String = "";
+    servers: String = "";
+}
+
+// The heart roles the habitat provides the organism `organism` (its
+// record's identity) whose checkout is `root`.
+fn services_roles(root: String, organism: String) -> ServicesRoles {
+    if len(organism) < 12 { return ServicesRoles { }; }
+    let key = organism[0..12];
+    let mut out = ServicesRoles { };
+    if part_reused(key, "database") && allocated_role(root, "database") {
+        let role = heart_role(key);
+        let dsn = dsn_text(
+            Dsn {
+                ok: true,
+                user: role,
+                vault: role_vault_name(role),
+                host: DATABASE_ALIAS,
+                port: 5432,
+                database: role,
+                sslmode: "disable",
+            },
+        );
+        out.words = out.words + handover_word("HALE_DNA_DATABASE_DSN", dsn);
+        out.secrets = out.secrets + "\t" + role_vault_name(role) + "\n";
+        out.servers = out.servers + "memory-" + allocation_key(memory_root(root)) + "\t"
+            + DATABASE_ALIAS + "\n";
+    }
+    if part_reused(key, "broker") && allocated_role(root, "broker") {
+        let org = schema_for(organism);
+        out.words = out.words
+            + handover_word("HALE_DNA_BROKER_URL", "nats://" + BROKER_ALIAS + ":4222")
+            + handover_word("HALE_DNA_BROKER_USER", heart_broker_user(key))
+            + handover_word("HALE_DNA_BROKER_VAULT", heart_broker_vault(org))
+            + handover_word("HALE_DNA_BROKER_SUBJECTS", heart_broker_subjects(key))
+            + handover_word("HALE_DNA_BROKER_NODE_USER", heart_broker_node_user(key))
+            + handover_word("HALE_DNA_BROKER_NODE_VAULT", heart_broker_node_vault(org));
+        // where its nodes dial the server, which no node reaches by the
+        // alias: a node is a process of a machine, not of the network; the
+        // server is published on the habitat's machine's loopback alone, so
+        // a node there
+        let nerves = allocation_key(nerves_root(root));
+        let port = allocation_port_of(nerves, "nerves-" + nerves);
+        if len(port) > 0 {
+            out.words = out.words
+                + handover_word("HALE_DNA_BROKER_NODE_URL", "nats://127.0.0.1:" + port);
+        }
+        out.secrets = out.secrets + "\t" + heart_broker_vault(org) + "\n" + "\t"
+            + heart_broker_node_vault(org) + "\n";
+        out.servers = out.servers + "nerves-" + nerves + "\t" + BROKER_ALIAS + "\n";
+    }
+    return out;
+}
+
+// `name='<value>'` and a space, as a shell hands compose a handover's line.
+fn handover_word(name: String, value: String) -> String {
+    return name + "='" + std::str::replace(value, "'", "'\\''") + "' ";
+}
+
+// `render` (an organism's own services, `services_render`) with the heart
+// roles the habitat provides them: handed, their entries staged with its
+// secrets, its roles network named (and its override written for it).
+fn with_services_roles(render: Render, roles: ServicesRoles) -> Render {
+    if len(roles.servers) == 0 { return render; }
+    let mut r = render;
+    r.handover = roles.words;
+    r.secrets = r.secrets + roles.secrets;
+    r.roles = roles_network(render.project);
+    r.labels = render_labels(r, organism_label(r.dir));
+    return r;
+}
+
+// The roles network `net` of the services project `project` made, when it
+// is not, and each of the habitat's servers `servers` (`<compose service>\t<alias>`
+// lines, services of its own compose project) joined to it under its
+// alias, before the services come up. "" once done, else why not.
+fn join_roles_network(net: String, project: String, servers: String) -> String {
+    if len(net) == 0 { return ""; }
+    if run_tool("docker\nnetwork\ninspect\n" + net).code != 0 {
+        let made = run_tool(
+            "docker\nnetwork\ncreate\n--label\ncom.docker.compose.project=" + project + "\n" + net,
+        );
+        if made.code != 0 {
+            return "the network its services reach the habitat's servers on (" + net
+                + ") was not made: " + trim_nl(made.stderr);
+        }
+    }
+    let mut rest = servers;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let tab = std::str::index_of(line, "\t");
+        if tab <= 0 { continue; }
+        let service = line[0..tab];
+        let alias = line[(tab + 1)..len(line)];
+        let id = trim_nl(
+            run_tool(
+                "docker\nps\n-q\n--filter\nlabel=com.docker.compose.project="
+                    + local_habitat_project()
+                    + "\n--filter\nlabel=com.docker.compose.service=" + service,
+            ).stdout,
+        );
+        if len(id) == 0 || std::str::contains(id, "\n") {
+            return "the habitat's " + service
+                + " is not running here, so its services cannot reach it (`hale habitat up` brings it up)";
+        }
+        let on = run_tool(
+            "docker\ninspect\n-f\n{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}\n"
+                + id,
+        );
+        if has_word(trim_nl(on.stdout), net) { continue; }
+        let joined = run_tool(
+            "docker\nnetwork\nconnect\n--alias\n" + alias + "\n" + net + "\n" + id,
+        );
+        if joined.code != 0 {
+            return "the habitat's " + service + " was not joined to " + net + ": "
+                + trim_nl(joined.stderr);
+        }
+    }
+    return "";
+}
+
+// Each container on the roles network `net` that is not of the services
+// project `project` (the habitat's servers) taken off it. "" once done (or
+// it was never made), else why not.
+fn detach_roles_network(net: String, project: String) -> String {
+    if len(net) == 0 || run_tool("docker\nnetwork\ninspect\n" + net).code != 0 { return ""; }
+    let off = run_tool(
+        "sh\n-c\nfor c in $(docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' \"$1\"); do [ \"$(docker inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' \"$c\")\" = \"$2\" ] || docker network disconnect -f \"$1\" \"$c\" || exit 1; done\nsh\n"
+            + net + "\n" + project,
+    );
+    return if off.code == 0 {
+        ""
+    } else {
+        "the habitat's servers were not taken off " + net + ": " + trim_nl(off.stderr)
+    };
+}
+
+// The roles network `net` taken down once its services are: whatever is
+// still joined to it (the habitat's servers) taken off it first. "" once
+// gone (or never made), else why not.
+fn release_roles_network(net: String) -> String {
+    if len(net) == 0 || run_tool("docker\nnetwork\ninspect\n" + net).code != 0 { return ""; }
+    let gone = run_tool(
+        "sh\n-c\nfor c in $(docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' \"$1\"); do docker network disconnect -f \"$1\" \"$c\" || exit 1; done; docker network rm \"$1\" >/dev/null\nsh\n"
+            + net,
+    );
+    return if gone.code == 0 {
+        ""
+    } else {
+        "the network its services reached the habitat's servers on (" + net
+            + ") was not removed: " + trim_nl(gone.stderr)
     };
 }
 
@@ -528,6 +727,7 @@ fn apply_one(
         let gone = if role == "services" {
             let mut r = services_render(body);
             r.project = was.project;
+            r.roles = roles_network(was.project);
             if was.host == "local" {
                 ComposeProvider { }.withdraw("local", r)
             } else {
@@ -558,10 +758,26 @@ fn apply_one(
         RenderApplied { why: why }
     } else if role == "services" {
         let kept = place_cache(key, role, target);
+        let render = services_render(body);
         if target.host == "local" {
-            ComposeProvider { }.apply("local", services_render(body))
+            // the heart roles the habitat provides them, on a network of
+            // their own joined to the habitat's servers before they come up
+            let roles = services_roles(render.dir, std::json::find_string_field(body, "organism"));
+            let r = with_services_roles(render, roles);
+            let joined = join_roles_network(
+                if len(roles.servers) > 0 { r.roles } else { "" },
+                r.project,
+                roles.servers,
+            );
+            if len(joined) > 0 {
+                RenderApplied { why: joined }
+            } else {
+                ComposeProvider { }.apply("local", r)
+            }
         } else {
-            SshProvider { root: root }.apply(target.host, services_render(body))
+            let mut r = render;
+            r.roles = "";
+            SshProvider { root: root }.apply(target.host, r)
         }
     } else {
         let kept = place_cache(key, role, target);
