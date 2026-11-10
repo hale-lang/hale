@@ -155,3 +155,9 @@ form.act textarea { min-height: 72px; }
 
 .pos.proposed { border-style: dashed; }
 .pos.proposed .name { color: var(--amber); }
+
+/* a chart change, checked before it is proposed */
+.preview .diff { display: grid; gap: 2px; margin-top: var(--u); padding: var(--u) calc(var(--u) * 2); border: 1px solid var(--rule); font-size: 12.5px; }
+.preview .add { color: var(--green); }
+.preview .del { color: var(--coral); }
+form.act.danger h3 { color: var(--coral); }

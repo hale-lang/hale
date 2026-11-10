@@ -23,7 +23,10 @@ browser/service boundary it proposed.
   horizon, and its chart is its own record's. Selecting a position shows its
   mandate, its holders and what it signs; filling it (`HoldFill`) and opening a
   position under it (`PositionOpen`) are the record's commands, each a Board
-  Review.
+  Review. A stated position also offers to say what it does, to move under
+  another position, and to retire: each is a one-step batch (`amend`,
+  `move`, `close`), checked first (`BatchPreview`, the chart lines it adds
+  and takes out) and then proposed (`BatchApply`) for the Board.
 - **Board** is the handed Tasks (`Commands::tasks`, from the record and its
   Ledger as one) and the Reviews as columns: `Handed`, `Needs a verdict`,
   `Settled`, `Done`. A card opens the Review or the Task; a verdict

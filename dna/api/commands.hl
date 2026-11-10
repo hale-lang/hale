@@ -603,7 +603,8 @@ type BatchDraft { steps: String = ""; }
 // `Commands::apply_batch` would propose it there, else `why` the plan
 // refuses it; `code` is "" when the Record was read, else why it was not.
 // The org chart before and after, one line each (`position <id>`,
-// `mandate <id>`, `holds <id> <holder>`, `practice <name>`), and the lines
+// `mandate <id>`, `under <id> <parent>`, `keeps <id> <text>` for a text
+// that is not the default, `holds <id> <holder>`, `practice <name>`), and the lines
 // the batch adds, takes out and leaves alone; `steps` normalized, one a
 // line; `pending` the Review the same steps still await, "" for none.
 type BatchPreview {
