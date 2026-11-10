@@ -48,6 +48,7 @@ test.describe('the org chart', () => {
     await expect(inspector.getByRole('heading', { name: /say what this position does|change what this position does/ })).toBeVisible();
     await expect(inspector.getByRole('heading', { name: 'move this position', exact: true })).toBeVisible();
     await expect(inspector.getByRole('heading', { name: 'retire this position', exact: true })).toBeVisible();
+    await expect(inspector.getByRole('combobox', { name: 'under' })).toContainText('board');
     await inspector.getByPlaceholder('one sentence on what this position does').fill('Keeps the api correct and fast.');
     await inspector.getByRole('button', { name: 'Check the change' }).first().click();
     await expect(inspector).toContainText('+ keeps position:api/dev Keeps the api correct and fast.');

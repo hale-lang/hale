@@ -188,6 +188,16 @@ expect holds api/reviewer bo
 expect mandate api/reviewer
 expect reviews position:api/reviewer seed:api
 refused move api/nobody under seed:api
+open api/qa under position:api/dev | Decides: whether the api works. May not: write it. Cites: the tests. Escalates: to the Board.
+ratify by riley
+apply {
+move api/qa under seed:api
+close api/qa
+}
+ratify batch by riley
+expect no-position api/qa
+expect no under position:api/qa seed:api
+expect no under position:api/qa position:api/dev
 ";
 
 const TEAM_AMENDS: String = "# a position's text changes; its mandate, its holders and its place stay

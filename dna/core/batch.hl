@@ -1207,24 +1207,31 @@ fn plan_close(st: PlanState, g: RecordGraph, opened: String, p: String) -> PlanS
         out = plan_unassign(out, p, reviewed[0..nl]);
         reviewed = reviewed[(nl + 1)..len(reviewed)];
     }
+    // the edges it unfolds from: the record's, and one a step before this
+    // added (a move), which the chart's `under` lines carry either way
+    let mut under = chart_with(out.after, "under " + p + " ");
+    while len(under) > 0 {
+        let nl = std::str::index_of(under, "\n");
+        let parent = under[0..nl];
+        under = under[(nl + 1)..len(under)];
+        out.order = out.order + "retire\tunfold:" + parent + "|" + p + "\n";
+        out.after = chart_without(out.after, "under " + p + " " + parent);
+    }
     let mut rest = g.edges;
     while len(rest) > 1 {
         let body = rest[1..len(rest)];
         let nl = std::str::index_of(body, "\n");
         let id = body[0..nl];
         rest = body[nl..len(body)];
-        if std::str::starts_with(id, "unfold:") && std::str::ends_with(id, "|" + p) {
+        if std::str::starts_with(id, "unfold:")
+            && std::str::ends_with(id, "|" + p)
+            && !std::str::contains(out.order, "retire\t" + id + "\n")
+        {
             out.order = out.order + "retire\t" + id + "\n";
         }
     }
     out.order = out.order + "retire\t" + p + "\n";
     out.after = chart_without(chart_without(out.after, "position " + p), "mandate " + p);
-    let mut under = chart_with(out.after, "under " + p + " ");
-    while len(under) > 0 {
-        let nl = std::str::index_of(under, "\n");
-        out.after = chart_without(out.after, "under " + p + " " + under[0..nl]);
-        under = under[(nl + 1)..len(under)];
-    }
     let mut kept = chart_with(out.after, "keeps " + p + " ");
     while len(kept) > 0 {
         let nl = std::str::index_of(kept, "\n");

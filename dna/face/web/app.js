@@ -364,8 +364,11 @@ function amendForm(n) {
   });
 }
 
+// The chart's stated positions, from the organization the inspector was handed.
+function statedPositions(org) { return [...org.byId.values()].filter(p => p.kind === "position" && p.state !== "proposed"); }
+
 function moveForm(n, org) {
-  const choices = (org.positions || []).filter(p => p.id !== n.id && p.state !== "proposed" && !descends(org, p.id, n.id));
+  const choices = statedPositions(org).filter(p => p.id !== n.id && !descends(org, p.id, n.id));
   const sel = el("select", { name: "under" }, ...choices.map(p => el("option", { value: p.id }, p.name)));
   for (const o of sel.options) if (o.value === n.under) o.selected = true;
   return batchForm({
@@ -378,9 +381,8 @@ function moveForm(n, org) {
 
 // Whether the position `id` sits under `root` in the chart.
 function descends(org, id, root) {
-  const by = new Map((org.positions || []).map(p => [p.id, p]));
-  let cur = by.get(id), hops = 0;
-  while (cur && hops++ < 64) { if (cur.id === root) return true; cur = by.get(cur.under); }
+  let cur = org.byId.get(id), hops = 0;
+  while (cur && hops++ < 64) { if (cur.id === root) return true; cur = org.byId.get(cur.under); }
   return false;
 }
 
