@@ -300,13 +300,102 @@ function positionInspector(n, org) {
     n.roles && n.roles.length ? el("dt", {}, "roles") : "", n.roles && n.roles.length ? el("dd", {}, n.roles.join(" ")) : "",
   );
   wrap.append(dl);
-  if (n.text) wrap.append(el("p", { class: "note" }, n.text));
+  if (n.text && !isDefaultText(n)) wrap.append(el("p", { class: "text" }, n.text));
   if (n.mandate.node) wrap.append(el("p", { class: "text" }, n.mandate.node.text), el("p", { class: "note mono" }, n.mandate.node.name, " · ", n.mandate.node.id.slice(0, 19)));
   const reviews = (S.reviews || []).filter(r => r.state === "pending" && (r.question || "").includes("`" + n.name + "`"));
   if (reviews.length) wrap.append(el("h3", {}, "awaiting the Board"), el("ul", {}, reviews.map(r => el("li", {}, el("a", { href: href("board", r.id) }, r.question)))));
   if (S.calls.has("HoldFill")) wrap.append(fillForm(n));
+  if (S.calls.has("BatchApply") && n.state !== "proposed") {
+    wrap.append(amendForm(n));
+    if (n.id !== "position:board") wrap.append(moveForm(n, org), closeForm(n));
+  }
   if (S.calls.has("PositionOpen")) wrap.append(openPositionForm(org, n));
   return wrap;
+}
+
+// The sentence the record gives a position nobody described yet.
+function isDefaultText(n) { return n.text === "The position " + n.name + "."; }
+
+// A change to the chart written as batch steps: checked first, shown as
+// the chart lines it adds and takes out, then proposed for the Board.
+function batchForm(opts) {
+  const out = el("div", {});
+  const preview = el("div", { class: "preview" });
+  let steps = "";
+  const proposeBtn = el("button", { class: "primary", type: "button", onclick: async () => {
+    out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
+    try {
+      const reply = await command(S.app, "BatchApply", { request_id: requestId(), record_head: S.record.record_head, steps, pack: "" });
+      const refusal = await settled(reply, opts.said());
+      if (refusal) out.replaceChildren(refusal);
+    } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
+  } }, opts.propose || "Propose it");
+  proposeBtn.hidden = true;
+  const form = el("form", { class: "act" + (opts.danger ? " danger" : ""), onsubmit: async ev => {
+    ev.preventDefault();
+    steps = opts.steps();
+    preview.replaceChildren(el("div", { class: "receipt" }, "checking…"));
+    proposeBtn.hidden = true;
+    try {
+      const p = await command(S.app, "BatchPreview", { steps });
+      if (!p.ok) { preview.replaceChildren(el("div", { class: "receipt refused" }, p.why || p.code || "refused")); return; }
+      const lines = [...(p.added || "").split("\n").filter(Boolean).map(l => el("div", { class: "mono add" }, "+ " + l)),
+                     ...(p.removed || "").split("\n").filter(Boolean).map(l => el("div", { class: "mono del" }, "- " + l))];
+      preview.replaceChildren(el("div", { class: "diff" }, ...(lines.length ? lines : [el("div", { class: "note" }, "this changes nothing")])));
+      proposeBtn.hidden = !lines.length;
+      if (p.pending) preview.append(el("div", { class: "note" }, "the same change already awaits the Board: ", el("a", { href: href("board", p.pending) }, p.pending)));
+    } catch (e) { preview.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
+  } },
+    el("h3", {}, opts.title),
+    ...opts.fields,
+    el("div", { class: "actions" }, el("button", { type: "submit" }, opts.check || "Check the change"), proposeBtn),
+    preview, out,
+  );
+  return form;
+}
+
+function amendForm(n) {
+  const text = el("input", { name: "text", placeholder: "one sentence on what this position does", value: isDefaultText(n) ? "" : n.text, required: true });
+  return batchForm({
+    title: isDefaultText(n) ? "say what this position does" : "change what this position does",
+    fields: [el("label", {}, "it", text)],
+    steps: () => `amend ${n.id} | ${text.value.trim()}\n`,
+    said: () => `proposed a new sentence for ${n.name}; the Board approves it`,
+  });
+}
+
+// The chart's stated positions, from the organization the inspector was handed.
+function statedPositions(org) { return [...org.byId.values()].filter(p => p.kind === "position" && p.state !== "proposed"); }
+
+function moveForm(n, org) {
+  const choices = statedPositions(org).filter(p => p.id !== n.id && !descends(org, p.id, n.id));
+  const sel = el("select", { name: "under" }, ...choices.map(p => el("option", { value: p.id }, p.name)));
+  for (const o of sel.options) if (o.value === n.under) o.selected = true;
+  return batchForm({
+    title: "move this position",
+    fields: [el("label", {}, "under", sel)],
+    steps: () => `move ${n.id} under ${sel.value}\n`,
+    said: () => `proposed moving ${n.name}; the Board approves it`,
+  });
+}
+
+// Whether the position `id` sits under `root` in the chart.
+function descends(org, id, root) {
+  let cur = org.byId.get(id), hops = 0;
+  while (cur && hops++ < 64) { if (cur.id === root) return true; cur = org.byId.get(cur.under); }
+  return false;
+}
+
+function closeForm(n) {
+  return batchForm({
+    title: "retire this position",
+    danger: true,
+    fields: [el("p", { class: "note" }, "whoever holds it leaves it and it stops signing anything; positions under it stay where they are")],
+    steps: () => `close ${n.id}\n`,
+    check: "Check what retiring it does",
+    propose: "Propose retiring it",
+    said: () => `proposed retiring ${n.name}; the Board approves it`,
+  });
 }
 
 function fillForm(n) {

@@ -167,6 +167,56 @@ expect holds api/backend ada
 expect reviews position:api/backend seed:api
 ";
 
+const TEAM_MOVES: String = "# a position moves under another node; its holders, its mandate and what it reviews stay
+state seed:api
+apply {
+open api/dev | Decides: how the api is built. May not: approve its own changes. Cites: the contract. Escalates: to the Board.
+open api/reviewer under position:api/dev | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
+fill api/reviewer bo
+assign api/reviewer reviews seed:api
+}
+ratify batch by riley
+expect under api/reviewer position:api/dev
+refused move api/dev under position:api/reviewer
+refused move board under seed:api
+refused move api/reviewer under position:api/dev
+move api/reviewer under seed:api
+ratify batch by riley
+expect under api/reviewer seed:api
+expect no under position:api/reviewer position:api/dev
+expect holds api/reviewer bo
+expect mandate api/reviewer
+expect reviews position:api/reviewer seed:api
+refused move api/nobody under seed:api
+open api/qa under position:api/dev | Decides: whether the api works. May not: write it. Cites: the tests. Escalates: to the Board.
+ratify by riley
+apply {
+move api/qa under seed:api
+close api/qa
+}
+ratify batch by riley
+expect no-position api/qa
+expect no under position:api/qa seed:api
+expect no under position:api/qa position:api/dev
+";
+
+const TEAM_AMENDS: String = "# a position's text changes; its mandate, its holders and its place stay
+state seed:api
+apply {
+open api/dev under seed:api | Decides: how the api is built. May not: approve its own changes. Cites: the contract. Escalates: to the Board.
+fill api/dev ada
+}
+ratify batch by riley
+amend api/dev | Keeps the api correct and fast.
+ratify batch by riley
+expect keeps api/dev Keeps the api correct and fast.
+expect holds api/dev ada
+expect mandate api/dev
+expect under api/dev seed:api
+refused amend api/dev | Keeps the api correct and fast.
+refused amend api/nobody | Anything at all.
+";
+
 const ASSIGNED: String = "# a position reviews a contract, and stops
 state contract:spec/todo.md
 open api/reviewer | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
@@ -965,6 +1015,16 @@ main locus App {
             self.scenario("team-splits", TEAM_SPLITS),
             "",
             "one position becomes two",
+        );
+        std::test::assert_eq_str(
+            self.scenario("team-moves", TEAM_MOVES),
+            "",
+            "a position moves under another node, keeping what it has",
+        );
+        std::test::assert_eq_str(
+            self.scenario("team-amends", TEAM_AMENDS),
+            "",
+            "a position's text changes and nothing else does",
         );
         std::test::assert_eq_str(
             self.scenario("assigned", ASSIGNED),

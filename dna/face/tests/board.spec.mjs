@@ -2,8 +2,8 @@ import { test, expect } from './harness.mjs';
 import { isWrite } from './command-wire.mjs';
 
 // The face reads through the commands relay too: a POST whose line is a
-// read call (`Index`, `Org`, `Tasks`) or the describe is no write.
-const READ_LINE = /^\s*\{\s*"(describe|call"\s*:\s*"(Index|Org|Tasks)")/;
+// read call (`Index`, `Org`, `Tasks`, `BatchPreview`) or the describe is no write.
+const READ_LINE = /^\s*\{\s*"(describe|call"\s*:\s*"(Index|Org|Tasks|BatchPreview)")/;
 const isMutation = request => isWrite(request) && !READ_LINE.test(request.postData() || '');
 
 // The board: a pending Review is a card that needs a verdict, a settled one

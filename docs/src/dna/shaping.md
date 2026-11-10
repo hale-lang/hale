@@ -373,9 +373,10 @@ hale dna apply team.batch --dry-run
 + mandate position:api/dev
 + position position:api/reviewer
 + mandate position:api/reviewer
++ under position:api/reviewer position:api/dev
 + holds position:api/dev ada
 + holds position:api/reviewer bo
-6 line(s) added to the organization, 0 unchanged
+7 line(s) added to the organization, 0 unchanged
 nothing proposed (--dry-run)
 ```
 
@@ -397,6 +398,8 @@ nothing proposed (--dry-run)
 | `merge <src-pos> into <dst-pos>` | Transfers all holders and `reviews` edges from `<src-pos>` to `<dst-pos>`, then closes `<src-pos>`. |
 | `split <pos> into <pos-a> <pos-b>` | Replaces `<pos>` with `<pos-a>` and `<pos-b>`, copying the original mandate to both for subsequent amendment. |
 | `close <pos>` | Closes `<pos>` and removes its holders and `reviews` edges (`position:board` can never be closed). |
+| `move <pos> under <node>` | Moves `<pos>` under another node of the chart: the edge it unfolds from is retired and one from `<node>` added; its mandate, holders and `reviews` edges stay. A bare `<node>` names a position. Refused for the Board, for a node under `<pos>` itself, and when it is there already. |
+| `amend <pos> \| <text>` | Restates what `<pos>` keeps, the sentence the chart shows for it, keeping its equipment; nothing else about it moves. |
 | `expose seed:<name> as contract:<path>` | Declares that `seed:<name>` serves `contract:<path>`. |
 | `depend seed:<name> on contract:<path>` | Declares that `seed:<name>` consumes `contract:<path>`. |
 | `externalize seed:<name>` | Removes `seed:<name>` from the organism while retaining the organism's dependency on its contract. |

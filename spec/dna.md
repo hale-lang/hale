@@ -5388,7 +5388,13 @@ The live half is memory's, projected from the record by the spine
   or as advice; GH #1591), `idea <name> [for <position>] | <text>`
   (knowledge, such as an external source), `retire-practice <name>`,
   `nursery <source>`, `assign|unassign <name>
-  reviews <kind>:<node>`, `close <name>`, `merge <name> into <name>`,
+  reviews <kind>:<node>`, `close <name>`, `move <name> under <node>` (the
+  edge it unfolds from retired and one from `<node>` added, its mandate,
+  holders and `reviews` edges kept; a bare `<node>` is a position's name;
+  refused for the Board, for a node under the position itself, and when
+  it is there already), `amend <name> | <text>` (the position's node
+  restated with that text and the equipment it had; refused when it says
+  that already), `merge <name> into <name>`,
   `split <name> into <name> <name>`, `expose <kind>:<node> as
   contract:<name>`, `depend <kind>:<node> on contract:<name>`,
   `externalize seed:<name>` and `internalize contract:<name> as
@@ -5481,7 +5487,8 @@ The live half is memory's, projected from the record by the spine
   seed:<name>`, `serves|consumes|carries <node> <contract>` and
   `outside <contract> <party>`. Planned, the
   batch prints the org chart before and after (`position <id>`,
-  `mandate <id>`, `holds <id> <holder>` lines, `+ ` where the batch adds
+  `mandate <id>`, `under <id> <parent>`, `keeps <id> <text>` for a text
+  that is not the default, `holds <id> <holder>` lines, `+ ` where the batch adds
   one, `- ` where it takes one out), and `--dry-run` stops there. Otherwise the host keeps the
   receipts and appends, in the asker's name: one graph proposal (`kind:
   graph`, name `batch/<request id>`, target `org`) whose rows are the

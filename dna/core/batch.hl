@@ -164,13 +164,15 @@ fn batch_count(lines: String) -> Int {
 fn dna_batch_verb(verb: String) -> Bool {
     return word_in(
         verb,
-        "assign unassign close merge split expose depend externalize internalize retire-practice nursery",
+        "assign unassign close move amend merge split expose depend externalize internalize retire-practice nursery",
     );
 }
 
 fn batch_usage(verb: String) -> String {
     if verb == "assign" || verb == "unassign" { return verb + " <name> reviews <kind>:<node>"; }
     if verb == "close" { return "close <name>"; }
+    if verb == "move" { return "move <name> under <node>"; }
+    if verb == "amend" { return "amend <name> | <text>"; }
     if verb == "merge" { return "merge <name> into <name>"; }
     if verb == "split" { return "split <name> into <name> <name>"; }
     if verb == "expose" { return "expose <kind>:<node> as contract:<name>"; }
@@ -299,6 +301,25 @@ fn batch_steps(text: String) -> BatchPlan {
                 + (if name == "*" { name } else { batch_position(name) }) + "\t" + holder + "\n";
             continue;
         }
+        if std::str::starts_with(line, "amend ") {
+            let bar = std::str::index_of(line, "|");
+            if bar < 0 {
+                out.why = at + "a position's text is amended as `amend <name> | <text>`";
+                return out;
+            }
+            let name = std::str::trim(line[6..bar]);
+            let text = std::str::trim(line[(bar + 1)..len(line)]);
+            if !batch_word(name) {
+                out.why = at + "a position is named by one word, with no space or `|`";
+                return out;
+            }
+            if len(text) == 0 || std::str::contains(text, "\t") {
+                out.why = at + "a position's text is one line, with no tab";
+                return out;
+            }
+            out.steps = out.steps + "amend\t" + batch_position(name) + "\t" + text + "\n";
+            continue;
+        }
         let words = batch_words(line);
         let verb = batch_nth(words, 0);
         let n = batch_count(words);
@@ -317,6 +338,16 @@ fn batch_steps(text: String) -> BatchPlan {
         }
         if verb == "close" && n == 2 {
             out.steps = out.steps + "close\t" + batch_position(a1) + "\n";
+            continue;
+        }
+        if verb == "move" && n == 4 && a2 == "under" {
+            if !batch_word(a1) || !batch_word(a3) {
+                out.why = at + "a position is moved under one node: `move <name> under <node>`";
+                return out;
+            }
+            // a bare name is a position's
+            let under = if std::str::contains(a3, ":") { a3 } else { batch_position(a3) };
+            out.steps = out.steps + "move\t" + batch_position(a1) + "\t" + under + "\n";
             continue;
         }
         if verb == "retire-practice" && n == 2 && batch_word(a1) {
@@ -370,7 +401,7 @@ fn batch_steps(text: String) -> BatchPlan {
             return out;
         }
         out.why = at + "`" + verb
-            + "` is no step a batch takes (open, fill, vacate, practice, law, idea, retire-practice, nursery, assign, unassign, close, merge, split, expose, depend, externalize, internalize)";
+            + "` is no step a batch takes (open, fill, vacate, practice, law, idea, retire-practice, nursery, assign, unassign, close, move, amend, merge, split, expose, depend, externalize, internalize)";
         return out;
     }
     if len(out.steps) == 0 { out.why = "the batch has no steps"; return out; }
@@ -442,6 +473,30 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
         lines = lines + "position " + id + "\n";
         if batch_mandated(mandates, ratified, retired, id) {
             lines = lines + "mandate " + id + "\n";
+        }
+    }
+    rest = g.edges;
+    while len(rest) > 1 {
+        let body = rest[1..len(rest)];
+        let nl = std::str::index_of(body, "\n");
+        let id = body[0..nl];
+        rest = body[nl..len(body)];
+        if !std::str::starts_with(id, "unfold:") { continue; }
+        let bar = std::str::index_of(id, "|");
+        if bar < 0 || !std::str::starts_with(id[(bar + 1)..len(id)], "position:") { continue; }
+        lines = lines + "under " + id[(bar + 1)..len(id)] + " " + id[7..bar] + "\n";
+    }
+    let bodies = record_graph_bodies(j, receipts);
+    rest = g.nodes;
+    while len(rest) > 1 {
+        let body = rest[1..len(rest)];
+        let nl = std::str::index_of(body, "\n");
+        let id = body[0..nl];
+        rest = body[nl..len(body)];
+        if !std::str::starts_with(id, "position:") { continue; }
+        let text = native_json_string(graph_body_of(bodies, id), "text");
+        if len(text) > 0 && text != batch_default_text(id) {
+            lines = lines + "keeps " + id + " " + text + "\n";
         }
     }
     rest = g.edges;
@@ -716,6 +771,39 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
             }
         } else if verb == "close" {
             st = plan_close(st, g, opened, p);
+        } else if verb == "move" {
+            if !chart_has(st.after, "position " + p) {
+                st.why = "`move " + p + " under " + q + "`: no such position";
+            }
+            else if p == "position:board" {
+                st.why = "`move position:board`: the Board is the organization's to keep";
+            }
+            else if p == q {
+                st.why = "`move " + p + " under " + q + "`: a position moves under another node";
+            }
+            else if !record_graph_has(g.nodes, q) && !std::str::contains(opened, "\n" + q + "\n") {
+                st.why = "`move " + p + " under " + q
+                    + "`: names no node the graph states or the batch opens";
+            }
+            else if chart_has(st.after, "under " + p + " " + q) {
+                st.why = "`move " + p + " under " + q + "`: it is there already";
+            }
+            else if chart_descends(st.after, q, p) {
+                st.why = "`move " + p + " under " + q + "`: `" + q + "` is under `" + p + "`";
+            }
+            else { st = plan_move(st, p, q); }
+        } else if verb == "amend" {
+            if !chart_has(st.after, "position " + p) {
+                st.why = "`amend " + p + "`: no such position";
+            }
+            else if chart_has(st.after, "keeps " + p + " " + q)
+                || (
+                    q == batch_default_text(p) && len(chart_with(st.after, "keeps " + p + " ")) == 0
+                )
+            {
+                st.why = "`amend " + p + "`: it says that already";
+            }
+            else { st = plan_amend(st, bodies, p, q); }
         } else if verb == "merge" {
             if p == q {
                 st.why = "`merge " + p + " into " + q + "`: a position merges into another";
@@ -995,6 +1083,67 @@ fn plan_open(st: PlanState, p: String, under: String, mandate: String) -> PlanSt
     }
     out.mandates = out.mandates + p + "\t" + mandate + "\n";
     out.after = out.after + "position " + p + "\nmandate " + p + "\n";
+    if len(under) > 0 { out.after = out.after + "under " + p + " " + under + "\n"; }
+    return out;
+}
+
+// A position's default text, which the chart leaves unsaid.
+fn batch_default_text(p: String) -> String { return "The position " + p[9..len(p)] + "."; }
+
+// Whether `node` is `root` or sits under it, by the chart's `under` lines.
+@bounded_by(chart)
+fn chart_descends(chart: String, node: String, root: String) -> Bool {
+    let mut cur = node;
+    let mut hops = 0;
+    while hops < 64 {
+        if cur == root { return true; }
+        let parents = chart_with(chart, "under " + cur + " ");
+        if len(parents) == 0 { return false; }
+        cur = parents[0..std::str::index_of(parents, "\n")];
+        hops = hops + 1;
+    }
+    return false;
+}
+
+// A position moved: the edge it unfolds from retired, one from `q` added;
+// its holders, its mandate and what it reviews stay where they are.
+fn plan_move(st: PlanState, p: String, q: String) -> PlanState {
+    let mut out = st;
+    let mut parents = chart_with(out.after, "under " + p + " ");
+    while len(parents) > 0 {
+        let nl = std::str::index_of(parents, "\n");
+        let old = parents[0..nl];
+        parents = parents[(nl + 1)..len(parents)];
+        out.order = out.order + "retire\tunfold:" + old + "|" + p + "\n";
+        out.after = chart_without(out.after, "under " + p + " " + old);
+    }
+    out.order = out.order + "edge\tunfold:" + q + "|" + p + "\t"
+        + batch_pair_body("unfold", "parent", q, "child", p) + "\n";
+    out.after = out.after + "under " + p + " " + q + "\n";
+    return out;
+}
+
+// A position's text amended: its node restated with the new text and the
+// equipment it had; nothing else about it moves.
+fn plan_amend(st: PlanState, bodies: String, p: String, text: String) -> PlanState {
+    let mut out = st;
+    let old = graph_body_of(bodies, p);
+    let equipment = std::json::find_field_raw(old, "equipment");
+    let node = std::json::Builder { };
+    node.begin_object();
+    node.string_field("kind", "position");
+    node.string_field("name", p[9..len(p)]);
+    node.string_field("text", text);
+    node.field("equipment", if len(equipment) > 0 { equipment } else { "{\"roles\": []}" });
+    node.end_object();
+    out.order = out.order + "node\t" + p + "\t" + node.result() + "\n";
+    let mut kept = chart_with(out.after, "keeps " + p + " ");
+    while len(kept) > 0 {
+        let nl = std::str::index_of(kept, "\n");
+        out.after = chart_without(out.after, "keeps " + p + " " + kept[0..nl]);
+        kept = kept[(nl + 1)..len(kept)];
+    }
+    if text != batch_default_text(p) { out.after = out.after + "keeps " + p + " " + text + "\n"; }
     return out;
 }
 
@@ -1058,18 +1207,37 @@ fn plan_close(st: PlanState, g: RecordGraph, opened: String, p: String) -> PlanS
         out = plan_unassign(out, p, reviewed[0..nl]);
         reviewed = reviewed[(nl + 1)..len(reviewed)];
     }
+    // the edges it unfolds from: the record's, and one a step before this
+    // added (a move), which the chart's `under` lines carry either way
+    let mut under = chart_with(out.after, "under " + p + " ");
+    while len(under) > 0 {
+        let nl = std::str::index_of(under, "\n");
+        let parent = under[0..nl];
+        under = under[(nl + 1)..len(under)];
+        out.order = out.order + "retire\tunfold:" + parent + "|" + p + "\n";
+        out.after = chart_without(out.after, "under " + p + " " + parent);
+    }
     let mut rest = g.edges;
     while len(rest) > 1 {
         let body = rest[1..len(rest)];
         let nl = std::str::index_of(body, "\n");
         let id = body[0..nl];
         rest = body[nl..len(body)];
-        if std::str::starts_with(id, "unfold:") && std::str::ends_with(id, "|" + p) {
+        if std::str::starts_with(id, "unfold:")
+            && std::str::ends_with(id, "|" + p)
+            && !std::str::contains(out.order, "retire\t" + id + "\n")
+        {
             out.order = out.order + "retire\t" + id + "\n";
         }
     }
     out.order = out.order + "retire\t" + p + "\n";
     out.after = chart_without(chart_without(out.after, "position " + p), "mandate " + p);
+    let mut kept = chart_with(out.after, "keeps " + p + " ");
+    while len(kept) > 0 {
+        let nl = std::str::index_of(kept, "\n");
+        out.after = chart_without(out.after, "keeps " + p + " " + kept[0..nl]);
+        kept = kept[(nl + 1)..len(kept)];
+    }
     return out;
 }
 
@@ -1898,6 +2066,10 @@ fn batch_text(steps: String) -> String {
             || verb == "nursery"
         {
             out = out + verb + " " + batch_field(step, 1) + "\n";
+        } else if verb == "move" {
+            out = out + "move " + batch_field(step, 1) + " under " + batch_field(step, 2) + "\n";
+        } else if verb == "amend" {
+            out = out + "amend " + batch_field(step, 1) + " | " + batch_field(step, 2) + "\n";
         } else if verb == "merge" {
             out = out + "merge " + batch_field(step, 1) + " into " + batch_field(step, 2) + "\n";
         } else if verb == "split" {
