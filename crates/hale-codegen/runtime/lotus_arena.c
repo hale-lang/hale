@@ -1332,6 +1332,29 @@ long lotus_diag_syscall_count(const char *name) { (void)name; return -1; }
  * before allocations land in extra arenas). */
 __attribute__((constructor))
 static void lotus_init_glibc_malloc_tuning(void) {
+#ifdef M_MMAP_THRESHOLD
+    /* glibc maps a block of M_MMAP_THRESHOLD bytes or more and unmaps
+     * it on free, but by default it raises that threshold to the size
+     * of each mapped block freed (up to 32 MiB), after which blocks of
+     * that size come from its heap and stay resident once freed. A
+     * server handed one 12 MiB request body then kept every later
+     * request's copies (its builder buffers, its arena's large chunks)
+     * resident after the connection was gone: an application's api
+     * went from 38 to 147 MiB and stayed there. Setting the threshold
+     * turns the raising off, so a large block's free returns its pages.
+     * LOTUS_GLIBC_MMAP_THRESHOLD names another threshold in bytes, or
+     * `dynamic` keeps glibc's own behaviour. */
+    const char *mt = getenv("LOTUS_GLIBC_MMAP_THRESHOLD");
+    if (!(mt && strcmp(mt, "dynamic") == 0)) {
+        long threshold = 128 * 1024;
+        if (mt && mt[0]) {
+            char *mend = NULL;
+            long v = strtol(mt, &mend, 10);
+            if (mend != mt && v > 0) threshold = v;
+        }
+        mallopt(M_MMAP_THRESHOLD, (int)threshold);
+    }
+#endif
     const char *env = getenv("LOTUS_GLIBC_ARENA_MAX");
     if (!env || !env[0]) return;
     char *end = NULL;
