@@ -8,6 +8,61 @@ behavior.
 
 ## Unreleased
 
+## v0.32.10 — a new face, a graft that places and reuses, memory given back (2026-11-10)
+
+**A new face.** Three screens over the head's surface replace the shell's seven workspaces. **Organization** is the org chart as the record's graph states it, and the face can now ratify every kind of Review: purposes, mandates, holes, holds, batches and designs, not only practices. Two head reads back it, `Commands::org` and `Commands::tasks`.
+
+**A fresh habitat's organization settles its Reviews again on macOS.** The organization program dialled the nerves at the container's own loopback, never connected, never created its consumer, and nothing settled. It now dials the nerves where its body reaches them. **An existing graft needs `hale dna upgrade`** to pick this up; a fresh one has it.
+
+**A graft places what it says.** `hale habitat graft <sapling>` with no `--host` places the organism's services on the habitat's own machine, where it used to place nothing and say nothing. The habitat tells an application's compose which heart roles it runs itself (`COMPOSE_PROFILES`: `database`, `broker` or `none`). `--reuse database` and `--reuse broker` now hand the habitat's servers to the application's own services end to end, and are refused when its compose never reads them. A new habitat's organization seed is committed at birth, and `up` commits it for a habitat born without.
+
+**`up --host` points only when asked.** A habitat already running on a host with no pointer here is refused unless `--attach`, which is also the way back after losing a pointer; `up` and `status` say which data directory they use and why. A Linux host with an AMD or Intel GPU meets `gpu`. Exporters are shared by the habitats on a machine, so forgetting one no longer stops another's readings.
+
+**Memory is given back.** The runtime pins glibc's mmap threshold at startup, so a large block's free returns its pages: a server handed two 12 MiB request bodies kept 62 MiB resident afterwards, and now keeps what its chunk pool holds. `LOTUS_GLIBC_MMAP_THRESHOLD` tunes it.
+
+The item-level notes follow.
+
+### Fixed
+
+- A fresh habitat's genome now has its organization seed committed. Birth used to commit the genome before writing `dna/org`, `hale.toml` and `hale.lock`, so the face's Organization read answered 503 (`the committed project has no organization seed at dna/org`). Birth now commits them right after writing them, including when it resumes after stopping partway, and the next `hale habitat up` commits them on a habitat already born without them. Both commits add their files by name, so nothing `.gitignore` keeps out (`vendor/`, `.hale/`) is ever committed.
+
+### Fixed
+
+- A habitat's organization on macOS now reads its facts from the nerves. Its body runs on the compose project's network, and the organization program that `hale habitat graft` writes dialled the nerves at their recorded `127.0.0.1:<port>`, which is the container's own loopback. The connection was refused, so the organization never created its durable consumer: the body logged `consumer not found (err_code 10014)` and relayed the same facts every tick, and no Review settled. `dna::nerves_spine_url()` now answers the URL the process dials (`HALE_DNA_LOOPBACK_HOST` for a loopback address), as every other connection seam has since v0.30.0. A habitat born on macOS picks it up with `hale dna upgrade <genome>` and a body restart. Linux was not affected.
+
+### Changed
+
+- The face is replaced: three static files (`dna/face/web`: `index.html`, `app.js`, `styles.css`) and three screens over the head's surface, in place of the shell's seven workspaces. **Organization** is the org chart as the graph states it (every position under what it sits under, its holders, whether its mandate is ratified, the positions the record proposes and the Board has not decided with their Review, a grafted organism as a child organization), with fill and open as the record's commands. **Board** is the handed Tasks and the Reviews as columns, with a verdict, taking a Task and reporting it done. **Knowledge** is every node the record holds by kind, with its bindings and edges when memory serves them, and propose, revise and retire. Every read and write of the face is one `POST …/commands` call relayed to the surface as the signed-in person; the reads are the calls `Index`, `Org` and `Tasks`.
+- Two reads of `HeadCommands` behind them: `Commands::org` (the org chart from the record's graph rows, so it answers wherever the record does) and `Commands::tasks` (the handed Tasks from the record and its Ledger as one, wherever the head reaches the Ledger; the HTTP tasks read answers only a trusted-local session).
+
+### Removed
+
+- The shell's Projects, Work, Practices, Reviews, Definitions and Knowledge-draft workspaces, the organization source editor and impact charts, and their browser suite; the API's asset whitelist is the three files. The HTTP reads behind them (`/dna/practices`, `/dna/reviews`, `/dna/organization`, …) are unchanged.
+
+### Fixed
+
+- A verdict through the head's `Commands::verdict` on a purpose, a mandate, a hole, a hold, a batch or a design Review answered `stale_subject`: the pre-check admitted only an idea, concept, practice, task_concept or retirement proposal, so a face could ratify a practice and nothing else. Every proposal a Review decides is admitted now; a graph proposal, a family or a proposal whose document is not a knowledge document is judged on its Review row, and the organization's Review decides it as it decides the CLI's verdict.
+
+### Fixed
+
+- A Linux host with an AMD GPU (ROCm's `/dev/kfd`, or an AMD render node) or an Intel render node meets a `requires` of `gpu`; the host probe counted only NVIDIA's (`nvidia-gpu` is unchanged).
+- `hale habitat up --host <h>` never points this machine at a habitat already running there by itself: with no pointer here it is refused, nothing changed, naming where the pointer would go, and `--attach` points this machine at it (the way back after a lost pointer). A shell that still exported a test habitat's `XDG_DATA_HOME` used to write the pointer into that directory without a word. `up` and `status` now name the directory they use, and what named it when it is not the default; `up --host` ends with a `pointer` line.
+- The node, container and GPU exporters are shared by every habitat on a machine: each records itself as an owner, a removal (`host remove`, `down --forget`) takes one off only when no other habitat owns it ("stays on …: another habitat there reads it"), and two habitats on one machine no longer replace each other's.
+
+### Fixed
+
+- `hale habitat graft <sapling>` with no `--host` places and applies the organism's compose services on the habitat's own machine, as `--host local` does there, and says it took that default. It used to graft the organism and place no services, without a word. Through a pointer the default is the habitat's machine.
+
+### Added
+
+- The habitat hands an application's compose `COMPOSE_PROFILES`: the heart roles it provides itself under its graft's choices (`database`, `broker`, comma-joined), or `none`. A service under the profile `database` or `broker` runs only when the application brings that role, so a compose can skip its own Postgres and NATS when `--reuse` has the habitat provide them. Services with no `profiles:` always run. The value wins over a `COMPOSE_PROFILES` in the application's `.env`, so a `.env` naming both roles is a safe default for an older `hale`. It is set wherever the habitat brings the compose project up: graft, `apply`, a host's re-apply and upgrade, here and on an `ssh` host.
+- `hale habitat graft --reuse database` (or `broker`) for a role the application brings is refused before anything is made when its compose file never reads `HALE_DNA_DATABASE_DSN` (or `HALE_DNA_BROKER_URL`), naming the variable and suggesting `--own database`. `--plan` prints the refusal too.
+- A heart role the habitat provides now reaches the application's own services. With `--reuse database` or `--reuse broker`, the habitat hands the compose project the handover's variables (`HALE_DNA_DATABASE_DSN`, `HALE_DNA_BROKER_URL`, `_USER`, `_VAULT`, `_SUBJECTS`, `_NODE_USER`, `_NODE_VAULT`). It stages the roles' vault entries in the reader vault beside the declared secrets, and joins the habitat's servers to a network of the organism's own under the aliases `hale-database` and `hale-broker`, which the handover names. Before, the variables reached only `hale dna dev` and heart migrations, and the servers sat on the habitat machine's loopback, where another project's containers cannot reach them. `--reuse` with the services on another machine is refused for now: the habitat's servers are reached from its own machine alone.
+
+### Fixed
+
+- A program no longer keeps a large request's freed memory resident. glibc raised its mmap threshold to the size of each large block freed (up to 32 MiB), so after one large request the next one's buffers came from its heap and stayed there: a server handed two 12 MiB request bodies kept 62 MiB resident once they were answered. The runtime now pins the threshold at 128 KiB at startup, so a large block's free returns its pages; `LOTUS_GLIBC_MMAP_THRESHOLD=<bytes>` names another threshold, `dynamic` keeps glibc's behaviour.
+
 ## v0.32.9 — first-run messages say why and what next (2026-11-08)
 
 **A first run says what went wrong and what to do next.** An exporter download that fails names its cause (curl's error, a checksum that differs, an image docker could not pull) and the command that retries it, and every download retries a short blip first. When the habitat's models provider serves a tenant nothing, graft, apply, `hale habitat models` and `hale habitat status` end in one `next` line in the provider's own words: who pays is a person's decision, where to grant it, and where the provider answers. The habitat never grants an account itself.
