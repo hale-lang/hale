@@ -246,3 +246,69 @@ fn a_large_request_costs_memory_linear_in_its_size() {
     // held about 9.5 GB
     assert!(peak.saturating_sub(before) < 64 * 1024, "peak RSS grew {} KB for a 12 MiB request ({before} KB to {peak} KB)", peak.saturating_sub(before));
 }
+
+/// One POST of `body` to the large-request server: its reply.
+fn post(port: u16, body: &[u8]) -> String {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    s.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    s.write_all(format!("POST / HTTP/1.0\r\nHost: x\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes()).unwrap();
+    s.write_all(body).unwrap();
+    let mut reply = Vec::new();
+    let _ = s.read_to_end(&mut reply);
+    String::from_utf8_lossy(&reply).into_owned()
+}
+
+/// A large request's copies left resident after its connection was gone:
+/// glibc raised its mmap threshold to the size of each large block freed
+/// (up to 32 MiB), so the next request's buffers came from its heap and
+/// stayed there once freed, each request starting a body higher than the
+/// last (an application's api went from 38 to 147 MiB and stayed there; a
+/// downstream handoff measured it). The runtime pins the threshold at
+/// startup, so a large block's free returns its pages: what a server keeps
+/// after a large request is bounded (the arena's chunk pool, at most 256
+/// chunks of 64 KiB a thread) and never grows from one request to the
+/// next.
+#[test]
+fn a_large_request_gives_its_memory_back() {
+    let bin = harness::unique_bin("http_large_request_back");
+    build_opts::build_source(LARGE_REQUEST_SERVER, &bin, &build_opts::options()).expect("build");
+    let mut child = Command::new(&bin)
+        .arg("0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the server");
+    let stdout = child.stdout.take().unwrap();
+    let mut child = Stopped(child);
+    let mut ready = String::new();
+    let _ = BufReader::new(stdout).read_line(&mut ready);
+    assert_eq!(ready.trim(), "ready", "the server did not start");
+    let port = child::tcp_port(&mut child.0);
+    let pid = child.0.id();
+    let body = vec![b'x'; 12 * 1024 * 1024];
+    // a small request first, so what the server holds for any request
+    // at all is in the baseline
+    let _ = post(port, b"warm");
+    let before = rss_kb(pid);
+    let mut after = Vec::new();
+    for _ in 0..4 {
+        let reply = post(port, &body);
+        assert!(reply.starts_with("HTTP/1.1 200") && reply.trim_end().ends_with(&body.len().to_string()), "{reply}");
+        // the connection's child locus dissolves just after its reply
+        std::thread::sleep(Duration::from_millis(300));
+        after.push(rss_kb(pid));
+    }
+    drop(child);
+    let _ = std::fs::remove_file(&bin);
+    eprintln!("resident set {before} KB before four 12 MiB requests, {after:?} KB after each");
+    // bounded: the chunk pool's 16 MiB and a few chunks besides, never a
+    // body's copies (one body's are 48 MiB; two were 62 MiB kept)
+    let kept = after[1].saturating_sub(before);
+    assert!(kept <= 24 * 1024, "the server kept {kept} KB resident after two 12 MiB requests ({before} KB to {} KB)", after[1]);
+    // and flat: two more large requests leave it where two did
+    assert!(
+        after[3] <= after[1] + 4 * 1024,
+        "the server's resident set grew {} KB over two more 12 MiB requests ({after:?})",
+        after[3].saturating_sub(after[1])
+    );
+}

@@ -399,12 +399,15 @@ fn ssh_reader_vault(render: Render) -> String {
     return ".hale/habitat/" + render.project + "/.vault";
 }
 
-// What compose on an `ssh` host is handed of the render: the habitat's
-// name (`habitat_name_word`), the revision (`revision_word`), and its secrets (`reader_words`), the reader
+// What compose on an `ssh` host is handed of the render: the profiles it
+// runs under (`profiles_word`, on the command line, so they win over a
+// `.env` shipped with it), the habitat's name (`habitat_name_word`), the
+// revision (`revision_word`), and its secrets (`reader_words`), the reader
 // vault by its full path there and each secret's entry, as shell words
 // ("" for none).
 fn ssh_reader_env(render: Render) -> String {
-    return habitat_name_word(render.habitat) + revision_word(render.revision)
+    return profiles_word(render.profiles) + habitat_name_word(render.habitat)
+        + revision_word(render.revision)
         + reader_words(render.secrets, "\"$HOME/" + ssh_reader_vault(render) + "\"");
 }
 

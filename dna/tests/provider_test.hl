@@ -4,7 +4,8 @@
 // instance, places it on a host that offers what it needs, applies a render
 // on a host and observes an allocation: `up`, `degraded` or `down`. The
 // memory implementation does each in the process, so what is asserted here
-// is the interface's contract, never a tool on PATH. The `local` profile's
+// is the interface's contract, never a tool on PATH (but for what compose
+// reads of the profiles a render hands it, when docker compose is there). The `local` profile's
 // preset gives every role the `compose` provider; on `operator` backends the
 // servers the operator holds are the `operator`'s.
 
@@ -26,6 +27,17 @@ fn place_all(p: dna::Provider, roles: String, instance: String, host: String) ->
             + (if placed.placed { role + "@" + placed.host } else { role + "!" });
     }
     return out;
+}
+
+// The services compose reads in the project at `dir` under `profiles`, as
+// the habitat hands them (`render_wrap`), space-separated, sorted.
+fn services_under(dir: String, profiles: String) -> String {
+    let r = dna::Render { project: "p", dir: dir, files: "compose.yaml", profiles: profiles };
+    let read = dna::run_tool(
+        dna::render_wrap(r) + "sh\n-c\n\"$@\" | sort\nsh\ndocker\ncompose\n"
+            + dna::compose_args(r, "\n") + "\nconfig\n--services",
+    );
+    return std::str::replace(dna::trim_nl(read.stdout), "\n", " ") + read.stderr;
 }
 
 fn main() {
@@ -185,6 +197,79 @@ fn main() {
         "no revision known: built",
     );
 
+    // an organism's own compose is told the heart roles it provides
+    // itself, as its graft chose (`parts.json`): each it owns, in order, or
+    // `none`, never empty; nothing when no choices were kept
+    std::test::assert_eq_str(
+        dna::services_profiles(
+            "{\"database\": \"own\", \"broker\": \"own\", \"memory\": \"reuse\"}",
+        ),
+        "database,broker",
+        "both its own: both profiles, in order",
+    );
+    std::test::assert_eq_str(
+        dna::services_profiles("{\"broker\": \"own\", \"database\": \"reuse\"}"),
+        "broker",
+        "the broker its own, the database the habitat's",
+    );
+    std::test::assert_eq_str(
+        dna::services_profiles("{\"database\": \"own\", \"broker\": \"reuse\"}"),
+        "database",
+        "the database its own",
+    );
+    std::test::assert_eq_str(
+        dna::services_profiles(
+            "{\"database\": \"reuse\", \"broker\": \"reuse\", \"memory\": \"own\"}",
+        ),
+        "none",
+        "neither its own (an organism-plane part is no profile): the sentinel",
+    );
+    std::test::assert_eq_str(dna::services_profiles(""), "", "no choices kept: none handed");
+    std::test::assert_eq_str(
+        dna::ssh_reader_env(dna::Render { project: "p", habitat: "home", profiles: "none" }),
+        "COMPOSE_PROFILES='none' HALE_DNA_HABITAT_NAME='home' ",
+        "on an ssh host, on compose's command line",
+    );
+    let told = dna::run_tool(
+        dna::render_wrap(dna::Render { project: "p", profiles: "database,broker" })
+            + "sh\n-c\nprintf '%s|' \"$COMPOSE_PROFILES\"",
+    );
+    std::test::assert_eq_str(
+        told.stdout,
+        "database,broker|",
+        "here, in compose's environment: " + told.stderr,
+    );
+    std::test::assert_eq_str(
+        dna::render_wrap(dna::Render { project: "p", habitat: "home", revision: "abc" }),
+        dna::services_wrap("home", "abc", "", ""),
+        "a render that names no profiles is handed what it was",
+    );
+    // compose prefers them to a `.env` at the project's root that names
+    // others (an application's default for a toolchain that hands none)
+    if dna::run_tool("docker\ncompose\nversion").code == 0 {
+        let scratch = dna::scratch_root("provider-profiles");
+        std::io::fs::write_file(
+            scratch + "/compose.yaml",
+            "services:\n  app:\n    image: busybox:1.36\n  db:\n    image: busybox:1.36\n    profiles: [\"database\"]\n  nats:\n    image: busybox:1.36\n    profiles: [\"broker\"]\n",
+        ) or discard;
+        std::io::fs::write_file(scratch + "/.env", "COMPOSE_PROFILES=database,broker\n") or discard;
+        std::test::assert_eq_str(
+            services_under(scratch, "none"),
+            "app",
+            "none: the services under no profile",
+        );
+        std::test::assert_eq_str(
+            services_under(scratch, "broker"),
+            "app nats",
+            "broker: and the broker's",
+        );
+        std::test::assert(
+            std::str::contains(services_under(scratch, ""), "db"),
+            "none handed: the `.env` chooses",
+        );
+        dna::scratch_done(scratch);
+    }
+
     // what fills a role, as `docker ps` lines of `<image>|<state> <status>`
     // say: the images once each, the state lines as `container_state` reads
     let seen = dna::seen_containers(
@@ -259,7 +344,7 @@ fn main() {
         "a service another waits on to finish is a one-shot",
     );
     std::test::assert_eq_str(
-        dna::services_override(config, labels),
+        dna::services_override(config, labels, ""),
         "services:\n"
             + "  api:\n" + labels + "    restart: unless-stopped\n"
             + "  brain:\n" + labels
@@ -269,12 +354,12 @@ fn main() {
         "the long-running service without a policy is kept running; the one-shot and the stated policies are left alone",
     );
     std::test::assert_eq_str(
-        dna::services_override("{\"services\": {\"web\": {\"image\": \"w\"}}}", labels),
+        dna::services_override("{\"services\": {\"web\": {\"image\": \"w\"}}}", labels, ""),
         "services:\n  web:\n" + labels + "    restart: unless-stopped\n",
         "a service nothing says of is long-running",
     );
     std::test::assert_eq_str(
-        dna::services_override("not json", labels),
+        dna::services_override("not json", labels, ""),
         "",
         "no config, no override",
     );

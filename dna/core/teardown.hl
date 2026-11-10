@@ -1553,7 +1553,15 @@ fn teardown_remove_script(lines: String) -> String {
                     } else if pass == 1 {
                         "docker volume rm -f " + q + " >/dev/null"
                     } else {
-                        "{ e=$(docker network rm " + q
+                        // the habitat's own servers still joined to it (on
+                        // an organism's roles network) taken off it first;
+                        // a container of anyone else's is never touched
+                        "{ for j in $(docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' "
+                            + q
+                            + " 2>/dev/null); do [ \"$(docker inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' \"$j\" 2>/dev/null)\" = '"
+                            + local_habitat_project()
+                            + "' ] && docker network disconnect -f " + q
+                            + " \"$j\" >/dev/null 2>&1; done; e=$(docker network rm " + q
                             + " 2>&1 >/dev/null) || ! docker network inspect "
                             + q + " >/dev/null 2>&1 || { echo \"network " + name
                             + ": $e\" >&2; false; }; }"

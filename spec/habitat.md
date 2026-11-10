@@ -366,6 +366,15 @@ no record, and the organism is grafted again).
 places the new organism on that host before anything of it is brought up;
 `--host local` places it on the habitat's own machine, through the
 `compose` provider, its services in a compose project of their own there.
+A graft that names no host places its services exactly as `--host local`
+does where the graft runs, and says so (`placed  its services (<key>/services)
+on <machine> (no `--host`: the habitat's own machine)`); its organism-plane
+parts stay where the plan puts them (the habitat's, or `--own <part>` on the
+habitat's machine). Through a pointer the graft runs on the habitat's
+machine, so with no `--host` its services go there, as `--host <the
+habitat's machine>` places them, never on the machine the person types on
+(which `--host local` names there). A graft never leaves an organism's
+services unplaced.
 Its memory, nerves and senses' store are brought up there by its birth,
 which derives their addresses from there, so its record is born in the
 memory there. Its own services (a `compose.yaml` at its root) are an
@@ -429,8 +438,8 @@ its exit status beside it in `<log>.exit`); the end of the graft is its
 `habitat.grafted` row. `hale habitat graft <sapling>` is a client of it while
 the head answers, following the log to the exit, and the act itself
 otherwise or with `--no-head` (what the head runs, given the `--host` the
-command named, `local` included: a graft that names no host places no
-services of its own).
+command named, `local` included: a graft that names no host places its
+services on the habitat's own machine, as `local` does).
 
 The habitat's own infrastructure as a fleet seed, rendered by `hale deploy
 render --placement`, is not built. That renderer renders a fleet's Hale
@@ -944,7 +953,7 @@ socket), so the habitat's head must be up.
 | `organism remove <name> [--plan]` | Removes an organism the habitat grafted, planned first and confirmed by its name typed back at a terminal (above). |
 | `organism upgrade <name> [--plan]` | Moves an organism grafted from a sapling to the revision the habitat pins now, keeping its record, data and allocations: the revision fetched and its digest checked, its tree moved with its graft's changes carried, its migrations run, its services re-applied, a `habitat.organism.upgraded` row recorded and its placed host commands re-run (§ Nurseries and saplings). |
 | `host remove <name> [--plan]` | Removes the host, a `habitat.host` row in state `removed`, planned first: with allocations on it, the plan (each allocation and what stops or is deleted on that host) is executed only once the host's name is typed back at a terminal; `--plan` prints the plan and exits (above). `local` is not removed. |
-| `graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, its application placed on the host `--host` names and each body part filled as planned (below). |
+| `graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, its application placed on the host `--host` names (the habitat's own machine without one, as `--host local` there) and each body part filled as planned (below). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; a git nursery's source may name a revision (`<url>#<tag-or-commit>`), and adding a repository the Board trusts at another revision re-pins it: the earlier source is retired (`state: removed`, `repinned` naming the new one), so the nursery is read at the revision named last; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
 | `forge <organism> forgejo\|github\|file\|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
 | `models <organism>\|--all [--plan]` | Points a grafted organism's model map (every one's and the habitat's own genome's with `--all`; the genome's alone as `models habitat`) at the habitat's models, as a graft does (`spec/dna.md`, The habitat's models): its key drawn in the provider's family and copied into its slot, the provider's reader vault restaged, the provider asked what it serves, and each category no person wrote mapped there in the name `hale habitat`; a tenant served nothing ends in the provider's `grant` as a `next` line. For an organism grafted before the provider, or a model placed since. `--plan` says what it would draw, copy and map, and does nothing. Refused when the habitat holds no models provider. Through a pointer it runs on the habitat's machine. |
@@ -1699,13 +1708,58 @@ users with it, and its stream's data off the server's volume
 them with its nerves. Neither a reused memory nor a reused nerves is ever
 brought up as a server of the organism's own (`placed_apply`). A reused
 `senses` is a server of its own on the habitat's machine. The application plane is the organism's own
-software: its compose services, placed on the `--host` machine, and the
+software: its compose services, placed on the `--host` machine (the
+habitat's own without one), and the
 heart roles it needs (`database`, `broker`), which are the application's
 own when its manifest says it brings them (`[dna] brings = ["database",
 "broker"]`, a subset of its needs: its compose provides them) and are
 otherwise provisioned by the habitat. `--reuse <part>` has the habitat
 provide a heart role an application brings; `--own <part>` leaves it to
-the application. `graft --plan` prints the plan, part by part (each
+the application.
+
+**An application's compose is told which heart roles it provides
+itself.** Wherever the habitat brings up an organism's own compose project
+(its services allocation, applied at its graft, at `hale habitat apply`,
+at a host's re-apply and at an upgrade, through the `compose` provider here
+and the `ssh` provider on a host), compose runs with `COMPOSE_PROFILES` set
+to the application-plane roles the application provides itself under the
+choices its graft kept (`parts.json`, `own`): `database`, `broker`,
+comma-joined in that order, or `none` when it provides neither (an application
+that brings nothing, or has no `brings`, among them). So a service under
+the profile `database` or `broker` runs only when the application provides
+that role itself; a service under no profile always runs; and `none` is a
+sentinel, a profile no service may use (an empty `COMPOSE_PROFILES` may be
+read as unset). The variable is in the environment compose runs under here
+and on its command line on an `ssh` host, where it wins over a `.env` at the
+application's root that sets `COMPOSE_PROFILES` (an application may ship
+one naming both roles, its default for a toolchain that hands none). An
+organism grafted before its choices were kept has no `parts.json` and is
+handed none. Narrowing the profiles does not stop what an earlier apply
+started under a wider set; a `down` takes the whole project down. `graft
+--plan` names the value on its `services` line.
+
+**`--reuse <role>` is refused when the application's compose would never
+read the role, or could not reach it.** For a role the application brings
+(its compose runs its own), `--reuse` has the habitat provision one and
+hand it to its services (The handover: `HALE_DNA_DATABASE_DSN`,
+`HALE_DNA_BROKER_URL`); a compose file that never reads it would leave that
+server unused. So a graft whose compose file
+(`compose.yaml`, else `compose.yml`, `docker-compose.yaml`,
+`docker-compose.yml`) never names `HALE_DNA_DATABASE_DSN` (for `--reuse
+database`) or `HALE_DNA_BROKER_URL` (for `--reuse broker`) is refused before
+anything is made, naming the variable and `--own <role>`; `--plan` prints
+the plan and the refusal and exits 1. The check is textual: the variable's
+name as a whole word on a line of the file that is not a comment
+(`${VAR}`, `${VAR:-…}`, `$VAR`, or `VAR` passed through in an
+`environment:` entry). A graft whose services go on another machine
+(`--host` an `ssh` host) is refused the same way for a role it brings:
+the habitat's servers are reached from the habitat's own machine alone
+(not built yet), so `--own <role>` or a graft onto the habitat's machine.
+A role the application does not bring, an application with no compose
+file, and a graft that goes on where it stopped (checked when it began) are
+not checked.
+
+`graft --plan` prints the plan, part by part (each
 choice, where it runs, and the flag that changes it), and grafts nothing;
 a graft at a terminal prints it and acts only once the person confirms.
 A graft the head starts (the operator face's) asks no one and takes the
@@ -1831,6 +1885,38 @@ same set to the host, which the heart inherits.
 | `HALE_DNA_DATABASE_DSN` | for an allocated `database`: a DSN naming the role `heart_<id>` and its vault slot, no password |
 | `HALE_DNA_BROKER_URL`, `_USER`, `_VAULT`, `_SUBJECTS`, `_NODE_USER`, `_NODE_VAULT` | for an allocated `broker`: the nerves server (no credential), the heart's user and its slot, its subject space `heart.<id>.>`, and the nodes' user and slot |
 
+**An organism's own services are handed the heart roles the habitat
+provides them.** For each role its graft had the habitat provide (kept
+`reuse` in `parts.json`, and allocated), the habitat's apply of its
+services on the habitat's own machine (at the graft, `apply`, a re-apply
+and an upgrade) hands its compose project that role's lines of the table
+above, in the environment compose runs under, as it hands
+`COMPOSE_PROFILES`. The servers are the habitat's containers, published on
+its machine's loopback alone, which another compose project's containers
+do not reach; so the habitat makes a network of the organism's own,
+`<project>-hale-roles` (labelled as its services' compose project), joins
+the server holding each role to it before the services come up, under the
+alias `hale-database` (its memory server) or `hale-broker` (its nerves
+server), and its override joins each of the services to it beside the
+networks they are on (one with a `network_mode` is left alone). So
+`HALE_DNA_DATABASE_DSN` names `hale-database:5432` and
+`HALE_DNA_BROKER_URL` is `nats://hale-broker:4222`. A node of the
+application is a process of a machine, on no such network, so the broker's
+services are also handed `HALE_DNA_BROKER_NODE_URL`, the server as it is
+published on the habitat's machine (`nats://127.0.0.1:<port>`), for a node
+there to dial. Each role's vault
+entries (`postgres-heart_<id>`, and the broker's two) are copied into the
+organism's reader vault beside its declared secrets, and `HALE_VAULT_DIR`
+names it, so a service that mounts it reads the passwords the DSN and the
+`_VAULT` lines name. A withdrawal takes the network down with the services,
+the servers taken off it first, and so do `organism remove`, `down
+--forget` and `hale habitat sweep`. A server recreated since (a toolchain
+that changed its compose text) is off the network until the next apply of
+the services (`hale habitat apply`) joins it again. Services placed on an
+`ssh` host are handed none of this: the habitat's servers are not reached
+from another machine (a node of the application on another machine
+neither; not built yet).
+
 Every compose project the habitat applies on an `ssh` host (an organism's
 own services placed there, an allocation placed there) is also handed two
 facts of the host in its environment, whatever it runs; the habitat knows
@@ -1866,6 +1952,9 @@ reaches a service only as the compose file passes it
 provider names what it keeps for the habitat it serves by it, as voice
 names a tenant's project `<habitat>-<label>` (`spec/dna.md`, The
 habitat's models).
+
+They are also handed `COMPOSE_PROFILES`, the heart roles the application
+provides itself (Graft and `[dna] needs`), the same way.
 
 They are also handed `HALE_DNA_REVISION`, the full commit the
 organism's checkout is at (its sapling's pinned revision), the same way.
