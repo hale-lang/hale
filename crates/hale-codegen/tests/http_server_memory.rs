@@ -261,11 +261,13 @@ fn post(port: u16, body: &[u8]) -> String {
 /// A large request's copies left resident after its connection was gone:
 /// glibc raised its mmap threshold to the size of each large block freed
 /// (up to 32 MiB), so the next request's buffers came from its heap and
-/// stayed there once freed (an application's api went from 38 to 147 MiB
-/// and stayed there; a downstream handoff measured it). The runtime pins
-/// the threshold at startup, so a large block's free returns its pages:
-/// after two 12 MiB requests the server's resident set is back near where
-/// it started.
+/// stayed there once freed, each request starting a body higher than the
+/// last (an application's api went from 38 to 147 MiB and stayed there; a
+/// downstream handoff measured it). The runtime pins the threshold at
+/// startup, so a large block's free returns its pages: what a server keeps
+/// after a large request is bounded (the arena's chunk pool, at most 256
+/// chunks of 64 KiB a thread) and never grows from one request to the
+/// next.
 #[test]
 fn a_large_request_gives_its_memory_back() {
     let bin = harness::unique_bin("http_large_request_back");
@@ -288,21 +290,25 @@ fn a_large_request_gives_its_memory_back() {
     // at all is in the baseline
     let _ = post(port, b"warm");
     let before = rss_kb(pid);
-    for _ in 0..2 {
+    let mut after = Vec::new();
+    for _ in 0..4 {
         let reply = post(port, &body);
         assert!(reply.starts_with("HTTP/1.1 200") && reply.trim_end().ends_with(&body.len().to_string()), "{reply}");
+        // the connection's child locus dissolves just after its reply
+        std::thread::sleep(Duration::from_millis(300));
+        after.push(rss_kb(pid));
     }
-    // the connection's child locus dissolves just after its reply
-    std::thread::sleep(Duration::from_millis(300));
-    let after = rss_kb(pid);
     drop(child);
     let _ = std::fs::remove_file(&bin);
-    eprintln!("resident set {before} KB before two 12 MiB requests, {after} KB after");
-    // the copies of one 12 MiB body are 48 MiB and more; what stays is
-    // at most a few chunks and the pool
+    eprintln!("resident set {before} KB before four 12 MiB requests, {after:?} KB after each");
+    // bounded: the chunk pool's 16 MiB and a few chunks besides, never a
+    // body's copies (one body's are 48 MiB; two were 62 MiB kept)
+    let kept = after[1].saturating_sub(before);
+    assert!(kept <= 24 * 1024, "the server kept {kept} KB resident after two 12 MiB requests ({before} KB to {} KB)", after[1]);
+    // and flat: two more large requests leave it where two did
     assert!(
-        after <= before + 8 * 1024,
-        "the server kept {} KB resident after two 12 MiB requests ({before} KB to {after} KB)",
-        after.saturating_sub(before)
+        after[3] <= after[1] + 4 * 1024,
+        "the server's resident set grew {} KB over two more 12 MiB requests ({after:?})",
+        after[3].saturating_sub(after[1])
     );
 }
