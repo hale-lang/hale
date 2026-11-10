@@ -139,6 +139,22 @@ const GRAFANA_UNUSED_PLUGINS: &str = "cloudwatch,elasticsearch,grafana-postgresq
 /// dashboard groups and filters by.
 const CONTAINER_LABELS: &str = "com.docker.compose.project,com.docker.compose.service,hale.habitat,hale.organism,hale.role";
 
+/// An exporter is the machine's, one on its port, read by every habitat on
+/// the machine: a habitat that installs it, or finds it already its own,
+/// records itself as one of its owners (`own`), and a removal takes it off
+/// only once no other habitat owns it (`disown` answers whether this one
+/// was the last). Owners are files under the login's home, named by the
+/// habitat, so a forget of one habitat never takes the readings of another
+/// (one recorded before owners were never stops a removal).
+fn owners(what: &str) -> String {
+    format!(
+        r#"o="$HOME/.local/share/hale/exporters/{what}"; h={}
+own() {{ mkdir -p "$o" 2>/dev/null && : > "$o/$h" 2>/dev/null || true; }}
+disown() {{ rm -f "$o/$h" 2>/dev/null || true; [ -z "$(ls -A "$o" 2>/dev/null)" ]; }}"#,
+        format!("'{}'", super::habitat_label().replace('\'', "'\\''"))
+    )
+}
+
 /// `docker run`'s labels for a container of the habitat's own, a part
 /// `role` of the habitat (as `dna::compose_labels` writes a service's).
 fn docker_labels(role: &str) -> String {
@@ -188,17 +204,18 @@ pub(super) fn install_script(sudo: &str) -> String {
     let n = NODE_EXPORTER_NAME;
     let l = NODE_EXPORTER_LABEL;
     let flags = NODE_EXPORTER_LINUX_FLAGS;
-    // the container's label: its version, its flags when it has any, and
-    // the habitat whose it is (so one labelled for another is replaced)
-    let hab = super::habitat_label();
-    let want = if flags.is_empty() { format!("{v} {hab}") } else { format!("{v} {flags} {hab}") };
+    // the container's label: its version and its flags when it has any (one
+    // made otherwise is replaced); which habitats read it is its owners'
+    let want = if flags.is_empty() { v.to_string() } else { format!("{v} {flags}") };
+    let owned = owners("node");
     let labels = docker_labels("exporter");
     let arm = NODE_EXPORTER_DARWIN_ARM64_SHA256;
     let amd = NODE_EXPORTER_DARWIN_AMD64_SHA256;
     format!(
         r#"set -e
 S="{sudo}"; v={v}; p={p}; n={n}; l={l}
-said() {{ printf '{OUTCOME} %s\n' "$*"; }}
+{owned}
+said() {{ case "$1" in ours*) own ;; esac; printf '{OUTCOME} %s\n' "$*"; }}
 {FETCH}
 readings() {{ if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 3 "http://127.0.0.1:$p/metrics"; elif command -v wget >/dev/null 2>&1; then wget -qO- -T 3 "http://127.0.0.1:$p/metrics"; fi; }}
 node_readings() {{ readings 2>/dev/null | grep -q '^node_'; }}
@@ -247,26 +264,36 @@ esac
 }
 
 /// The habitat's exporter removed from the machine the script runs on (an
-/// exporter it did not install is never touched); its last line says
-/// `removed` or `none`.
+/// exporter it did not install is never touched, nor one another habitat
+/// still owns); its last line says `removed`, `kept` (another habitat
+/// reads it) or `none`.
 pub(super) fn remove_script(sudo: &str) -> String {
     let n = NODE_EXPORTER_NAME;
     let l = NODE_EXPORTER_LABEL;
+    let owned = owners("node");
     format!(
         r#"set -e
 S="{sudo}"; n={n}; l={l}; gone=none
+{owned}
+last=; if disown; then last=1; fi
 case "$(uname -s)" in
 Linux)
   if docker info >/dev/null 2>&1; then d=docker; else d="$S docker"; fi
-  if [ -n "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; then $d rm -f "$n" >/dev/null; gone=removed; fi ;;
+  if [ -n "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; then
+    if [ -n "$last" ]; then $d rm -f "$n" >/dev/null; gone=removed; else gone=kept; fi
+  fi ;;
 Darwin)
   if [ -f "$HOME/Library/LaunchAgents/$l.plist" ]; then
-    launchctl bootout "gui/$(id -u)/$l" >/dev/null 2>&1 || true
-    rm -f "$HOME/Library/LaunchAgents/$l.plist"; rm -rf "$HOME/.local/share/hale/node-exporter"; gone=removed
+    if [ -n "$last" ]; then
+      launchctl bootout "gui/$(id -u)/$l" >/dev/null 2>&1 || true
+      rm -f "$HOME/Library/LaunchAgents/$l.plist"; rm -rf "$HOME/.local/share/hale/node-exporter"; gone=removed
+    else gone=kept; fi
   fi
   if [ -f "/Library/LaunchDaemons/$l.plist" ]; then
-    $S launchctl bootout "system/$l" >/dev/null 2>&1 || true
-    $S rm -f "/Library/LaunchDaemons/$l.plist"; $S rm -rf /usr/local/libexec/hale/node-exporter; gone=removed
+    if [ -n "$last" ]; then
+      $S launchctl bootout "system/$l" >/dev/null 2>&1 || true
+      $S rm -f "/Library/LaunchDaemons/$l.plist"; $S rm -rf /usr/local/libexec/hale/node-exporter; gone=removed
+    else gone=kept; fi
   fi ;;
 esac
 printf '{OUTCOME} %s\n' "$gone"
@@ -289,14 +316,16 @@ pub(super) fn containers_script(sudo: &str) -> String {
     let l = CADVISOR_LABEL;
     let img = CADVISOR_IMAGE;
     let p = CADVISOR_PORT;
-    // its label: the image, the labels it carries onto every reading, and the
-    // habitat whose it is; one that differs in any is replaced
-    let want = format!("{img} {CONTAINER_LABELS} {}", super::habitat_label());
+    // its label: the image and the labels it carries onto every reading; one
+    // that differs in either is replaced (which habitats read it: its owners)
+    let want = format!("{img} {CONTAINER_LABELS}");
+    let owned = owners("containers");
     let labels = docker_labels("exporter");
     format!(
         r#"set -e
 S="{sudo}"; n={n}; l={l}; img={img}; p={p}; want="{want}"
-said() {{ printf '{CONTAINERS_OUTCOME} %s\n' "$*"; }}
+{owned}
+said() {{ case "$1" in ours*) own ;; esac; printf '{CONTAINERS_OUTCOME} %s\n' "$*"; }}
 {FETCH}
 readings() {{ if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 5 "http://127.0.0.1:$p/metrics"; elif command -v wget >/dev/null 2>&1; then wget -qO- -T 5 "http://127.0.0.1:$p/metrics"; fi; }}
 if docker info >/dev/null 2>&1; then d=docker; elif $S docker info >/dev/null 2>&1; then d="$S docker"; else said "skip docker does not answer this login"; exit 0; fi
@@ -315,14 +344,20 @@ said ours
 }
 
 /// The habitat's container exporter removed where the script runs (one it
-/// did not start is never touched): `removed` or `none`.
+/// did not start is never touched, nor one another habitat still owns):
+/// `removed`, `kept` or `none`.
 pub(super) fn containers_remove_script(sudo: &str) -> String {
     let n = CADVISOR_NAME;
     let l = CADVISOR_LABEL;
+    let owned = owners("containers");
     format!(
         r#"S="{sudo}"; n={n}; l={l}
+{owned}
+last=; if disown; then last=1; fi
 if docker info >/dev/null 2>&1; then d=docker; else d="$S docker"; fi
-if [ -n "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; then $d rm -f "$n" >/dev/null && printf '{CONTAINERS_OUTCOME} removed\n'; else printf '{CONTAINERS_OUTCOME} none\n'; fi
+if [ -z "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; then printf '{CONTAINERS_OUTCOME} none\n'
+elif [ -z "$last" ]; then printf '{CONTAINERS_OUTCOME} kept\n'
+else $d rm -f "$n" >/dev/null && printf '{CONTAINERS_OUTCOME} removed\n'; fi
 "#
     )
 }
@@ -332,19 +367,21 @@ if [ -n "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; 
 /// reaches: its last line says `ours`, `theirs` (something else already
 /// answers on its port with GPU readings), `skip <why>` (a GPU docker gives
 /// no container: no NVIDIA Container Toolkit) or `none <why>` (no such GPU,
-/// or not Linux). The container is labelled with its image and the habitat,
-/// so an install replaces one made otherwise.
+/// or not Linux). The container is labelled with its image, so an install
+/// replaces one made otherwise.
 pub(super) fn gpus_script(sudo: &str) -> String {
     let n = GPU_EXPORTER_NAME;
     let l = GPU_EXPORTER_LABEL;
     let img = GPU_EXPORTER_IMAGE;
     let p = GPU_EXPORTER_PORT;
-    let want = format!("{img} {}", super::habitat_label());
+    let want = img.to_string();
+    let owned = owners("gpus");
     let labels = docker_labels("exporter");
     format!(
         r#"set -e
 S="{sudo}"; n={n}; l={l}; img={img}; p={p}; want="{want}"
-said() {{ printf '{GPUS_OUTCOME} %s\n' "$*"; }}
+{owned}
+said() {{ case "$1" in ours*) own ;; esac; printf '{GPUS_OUTCOME} %s\n' "$*"; }}
 {FETCH}
 readings() {{ if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 5 "http://127.0.0.1:$p/metrics"; elif command -v wget >/dev/null 2>&1; then wget -qO- -T 5 "http://127.0.0.1:$p/metrics"; fi; }}
 [ "$(uname -s)" = Linux ] || {{ said "none $(uname -s)"; exit 0; }}
@@ -365,15 +402,21 @@ said ours
 }
 
 /// The habitat's GPU exporter removed where the script runs (one it did not
-/// start is never touched): `removed` or `none`.
+/// start is never touched, nor one another habitat still owns): `removed`,
+/// `kept` or `none`.
 pub(super) fn gpus_remove_script(sudo: &str) -> String {
     let n = GPU_EXPORTER_NAME;
     let l = GPU_EXPORTER_LABEL;
+    let owned = owners("gpus");
     format!(
         r#"S="{sudo}"; n={n}; l={l}
+{owned}
+last=; if disown; then last=1; fi
 [ "$(uname -s)" = Linux ] || {{ printf '{GPUS_OUTCOME} none\n'; exit 0; }}
 if docker info >/dev/null 2>&1; then d=docker; else d="$S docker"; fi
-if [ -n "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; then $d rm -f "$n" >/dev/null && printf '{GPUS_OUTCOME} removed\n'; else printf '{GPUS_OUTCOME} none\n'; fi
+if [ -z "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; then printf '{GPUS_OUTCOME} none\n'
+elif [ -z "$last" ]; then printf '{GPUS_OUTCOME} kept\n'
+else $d rm -f "$n" >/dev/null && printf '{GPUS_OUTCOME} removed\n'; fi
 "#
     )
 }
@@ -539,6 +582,7 @@ pub(super) fn remove_over(host: &str, user: Option<&str>, port: Option<u16>) -> 
     for (what, script) in [("node exporter", remove_script as fn(&str) -> String), ("container exporter", containers_remove_script), ("GPU exporter", gpus_remove_script)] {
         match super::remote::login_script(host, user, port, script) {
             Ok(o) if o == "removed" => out.push(format!("the habitat's {what} is removed from {host}")),
+            Ok(o) if o == "kept" => out.push(format!("the {what} stays on {host}: another habitat there reads it")),
             Ok(_) => {}
             Err(why) => out.push(format!("the habitat's {what} is left on {host} ({why})")),
         }
@@ -557,6 +601,7 @@ pub(super) fn remove_here() -> Vec<String> {
     for (what, script) in [("node exporter", remove_script(sudo_word(tty))), ("container exporter", containers_remove_script(sudo_word(tty))), ("GPU exporter", gpus_remove_script(sudo_word(tty)))] {
         match run_here(&script) {
             Ok(o) if o == "removed" => out.push(format!("the habitat's {what} is removed from this machine")),
+            Ok(o) if o == "kept" => out.push(format!("the {what} stays on this machine: another habitat here reads it")),
             Ok(_) => {}
             Err(why) => out.push(format!("the habitat's {what} is left on this machine ({why})")),
         }
@@ -862,7 +907,7 @@ mod tests {
         assert!(s.contains("'{{.State.Running}} {{index .Config.Labels \"'$l'\"}}'"), "docker's template survives the format");
         // the container's version and the habitat whose it is are its label:
         // one made by another habitat, or another version, is replaced
-        assert!(s.contains(&format!("want=\"{NODE_EXPORTER_VERSION} {}\"", super::super::habitat_label())), "the label is the version and the habitat while there are no flags");
+        assert!(s.contains(&format!("want=\"{NODE_EXPORTER_VERSION}\"")), "the label is the version while there are no flags, never the habitat (its owners say whose)");
         assert!(s.contains("--label 'hale.habitat=") && s.contains("--label hale.organism=habitat --label 'hale.role=exporter'"), "{s}");
     }
 
@@ -1074,7 +1119,7 @@ mod tests {
     fn the_container_exporter_keeps_only_compose_labels_and_is_shell() {
         let s = containers_script("sudo -n");
         assert!(s.contains("-whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service,hale.habitat,hale.organism,hale.role") && s.contains("-store_container_labels=false"), "{s}");
-        assert!(s.contains(&format!("want=\"{CADVISOR_IMAGE} {CONTAINER_LABELS} ")), "a cAdvisor carrying other labels is replaced: {s}");
+        assert!(s.contains(&format!("want=\"{CADVISOR_IMAGE} {CONTAINER_LABELS}\"")), "a cAdvisor carrying other labels is replaced, one another habitat made is shared: {s}");
         assert!(s.contains("'{{.State.Running}} {{index .Config.Labels \"'$l'\"}}'"), "{s}");
         for script in [s, containers_remove_script("sudo")] {
             assert!(std::process::Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
@@ -1088,7 +1133,7 @@ mod tests {
         assert!(GPU_EXPORTER_IMAGE.starts_with(&format!("utkuozdemir/nvidia_gpu_exporter:{GPU_EXPORTER_VERSION}@sha256:")) && GPU_EXPORTER_IMAGE.len() == "utkuozdemir/nvidia_gpu_exporter:@sha256:".len() + GPU_EXPORTER_VERSION.len() + 64);
         assert!(s.contains(&format!("img={GPU_EXPORTER_IMAGE};")) && s.contains(&format!("p={GPU_EXPORTER_PORT};")), "{s}");
         assert!(s.contains("--gpus all -e NVIDIA_DRIVER_CAPABILITIES=utility \"$img\" --web.listen-address=\":$p\""), "{s}");
-        assert!(s.contains(&format!("want=\"{GPU_EXPORTER_IMAGE} {}\"", super::super::habitat_label())), "one made by another habitat, or from another image, is replaced: {s}");
+        assert!(s.contains(&format!("want=\"{GPU_EXPORTER_IMAGE}\"")), "one from another image is replaced, one another habitat made is shared: {s}");
         assert!(s.contains("--label hale.organism=habitat --label 'hale.role=exporter'"), "{s}");
         assert!(s.contains("'{{.State.Running}} {{index .Config.Labels \"'$l'\"}}'"), "{s}");
         let r = gpus_remove_script("sudo");
@@ -1150,10 +1195,21 @@ mod tests {
     /// `PATH`, with `HOME` the stand-ins' directory: its exit, outcome,
     /// error output and what the stand-ins logged (`$LOG`).
     fn stubbed(case: &str, script: &str, stubs: &[(&str, &str)]) -> (bool, String, String, String) {
+        stubbed_owned(case, script, stubs, &[])
+    }
+
+    /// `stubbed`, with `owners` already recorded under the stand-ins' home
+    /// (`<what>/<habitat>`, as `owners` keeps them).
+    fn stubbed_owned(case: &str, script: &str, stubs: &[(&str, &str)], owners: &[&str]) -> (bool, String, String, String) {
         use std::os::unix::fs::PermissionsExt;
         let d = std::env::temp_dir().join(format!("hale-install-{}-{case}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
+        for o in owners {
+            let f = d.join(".local/share/hale/exporters").join(o);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "").unwrap();
+        }
         let log = d.join("stubs.log");
         for (name, body) in stubs {
             let f = d.join(name);
@@ -1230,6 +1286,37 @@ mod tests {
         // the Linux node exporter's image the same way
         assert!(install_script("sudo -n").contains("  pull \"prom/node-exporter:v$v\"\n"));
         assert!(gpus_script("sudo -n").contains("\npull \"$img\"\n"));
+    }
+
+    #[test]
+    fn an_exporter_another_habitat_owns_is_kept() {
+        // docker has the container exporter, ours by its label
+        let docker = "echo \"docker $*\" >> \"$LOG\"\ncase \"$1\" in ps) echo abc123 ;; esac; exit 0";
+        let other = "containers/zz-another-habitat";
+        let (ok, said, err, log) = stubbed_owned("kept", &containers_remove_script("sudo -n"), &[("docker", docker)], &[other]);
+        assert!(ok && err.is_empty(), "{err}");
+        assert_eq!(said, "kept", "another habitat still reads it: {log}");
+        assert!(!log.contains("docker rm"), "{log}");
+        // the last owner's removal takes it off, and so does one recorded
+        // before owners were (no owners at all)
+        let (_, said, _, log) = stubbed_owned("last", &containers_remove_script("sudo -n"), &[("docker", docker)], &[]);
+        assert_eq!(said, "removed");
+        assert!(log.contains("docker rm -f hale-cadvisor") || log.contains(&format!("docker rm -f {CADVISOR_NAME}")), "{log}");
+        // the node exporter on Linux and the GPU exporter the same way
+        let linux = ("uname", "echo Linux");
+        let (_, said, _, log) = stubbed_owned("node-kept", &remove_script("sudo -n"), &[("docker", docker), linux], &["node/zz-another-habitat"]);
+        assert_eq!(said, "kept", "{log}");
+        assert!(!log.contains("docker rm"), "{log}");
+        let (_, said, _, log) = stubbed_owned("gpus-kept", &gpus_remove_script("sudo -n"), &[("docker", docker), linux], &["gpus/zz-another-habitat"]);
+        assert_eq!(said, "kept", "{log}");
+        assert!(!log.contains("docker rm"), "{log}");
+        // an install that finds it ours records this habitat as an owner
+        let found = format!("echo \"docker $*\" >> \"$LOG\"\ncase \"$1\" in inspect) echo \"true {CADVISOR_IMAGE} {CONTAINER_LABELS}\" ;; esac; exit 0");
+        let s = containers_script("sudo -n");
+        assert!(s.contains("said() { case \"$1\" in ours*) own ;; esac;"), "{s}");
+        let (_, said, err, _) = stubbed_owned("own", &format!("( {s} )\nls \"$HOME/.local/share/hale/exporters/containers\" >&2"), &[("docker", &found), ("curl", "exit 7")], &[]);
+        assert_eq!(said, "ours");
+        assert_eq!(err.trim(), super::super::habitat_label(), "its owner is this habitat");
     }
 
     #[test]
