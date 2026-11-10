@@ -476,11 +476,22 @@ function receiptWhy(reply) {
 function renderBoard(main) {
   const reviews = S.reviews || [];
   const tasks = S.tasks || [];
+  // The lanes a person expects of a board. The record's words map onto
+  // them: a Task handed to nobody is backlog, handed to someone is to do,
+  // one in a transfer or waiting on something is in progress, a Review
+  // the Board has not decided is in review, and a decided Task or a settled
+  // Review is done.
+  const open = t => !["done", "delivered", "decided", "refused", "retired"].includes(t.state);
+  const inProgress = t => open(t) && (t.state.startsWith("transfer") || !!t.waiting);
   const columns = [
-    { key: "handed", title: "Handed", items: tasks.filter(t => !["done", "delivered", "refused", "retired"].includes(t.state)).map(taskCard), unavailable: S.errors.tasks },
-    { key: "verdict", title: "Needs a verdict", items: reviews.filter(r => r.state === "pending").map(reviewCard) },
-    { key: "settled", title: "Settled", items: reviews.filter(r => r.state === "settled").slice().reverse().slice(0, 40).map(reviewCard) },
-    { key: "done", title: "Done", items: tasks.filter(t => ["done", "delivered"].includes(t.state)).map(taskCard), unavailable: S.errors.tasks },
+    { key: "backlog", title: "Backlog", items: tasks.filter(t => open(t) && !inProgress(t) && !t.assignee).map(taskCard), unavailable: S.errors.tasks },
+    { key: "todo", title: "To do", items: tasks.filter(t => open(t) && !inProgress(t) && t.assignee).map(taskCard), unavailable: S.errors.tasks },
+    { key: "doing", title: "In progress", items: tasks.filter(inProgress).map(taskCard), unavailable: S.errors.tasks },
+    { key: "review", title: "In review", items: reviews.filter(r => r.state === "pending").map(reviewCard) },
+    { key: "done", title: "Done", items: [
+      ...tasks.filter(t => !open(t)).map(taskCard),
+      ...reviews.filter(r => r.state === "settled").slice().reverse().slice(0, 40).map(reviewCard),
+    ], unavailable: S.errors.tasks && !reviews.some(r => r.state === "settled") ? S.errors.tasks : null },
   ];
   const board = el("div", { class: "board", role: "list" }, columns.map(c => el("section", { class: "column", role: "listitem", "aria-label": c.title },
     el("header", {}, el("h2", {}, c.title), el("span", { class: "n" }, c.unavailable ? "" : String(c.items.length))),
@@ -493,7 +504,7 @@ function renderBoard(main) {
   const task = tasks.find(t => t.id === current);
   if (review) insp.append(reviewInspector(review));
   else if (task) insp.append(taskInspector(task));
-  else insp.append(el("h2", {}, "Select a card"), el("p", { class: "note" }, "A card is a Review the Board decides or a Task a person holds. Nothing here is a leg's attempt; that is work in flight, read elsewhere."));
+  else insp.append(el("h2", {}, "Select a card"), el("p", { class: "note" }, "A card is a Task a person holds, or a Review the Board decides. Nothing here is a leg's attempt; that is work in flight, read elsewhere."));
   main.append(el("div", { class: "split" }, board, insp));
 }
 
