@@ -156,17 +156,40 @@ fn a_container_outside_the_allocation_is_no_evidence_of_the_organisms_memory() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    // the head builds its seeds before it says anything (minutes on CI):
+    // its lines are read on a thread, so a head that never says either
+    // line fails here, with what it did say, inside nextest's limit for
+    // this test (.config/nextest.toml) instead of as a bare timeout
+    let stderr = head.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(14 * 60);
     let mut said = String::new();
-    for line in BufReader::new(head.stderr.take().unwrap()).lines() {
-        let Ok(line) = line else { break };
+    let mut answered = false;
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        let Ok(line) = rx.recv_timeout(left) else { break };
         said.push_str(&line);
         said.push('\n');
         if line.contains("hale habitat migrate") || line.contains("reads Knowledge from memory") {
+            answered = true;
             break;
         }
     }
     let _ = head.kill();
     let _ = head.wait();
+    if !answered {
+        for name in &decoys {
+            let _ = Command::new("docker").args(["rm", "-f", name]).output();
+        }
+        panic!("head said neither whether memory is up nor how it reads Knowledge within 14 minutes (or exited):\n{said}");
+    }
     for name in &decoys {
         let _ = Command::new("docker").args(["rm", "-f", name]).output();
     }
