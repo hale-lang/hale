@@ -698,9 +698,9 @@ mod tests {
 
     #[test]
     fn a_person_is_named_by_the_member_name() {
-        assert_eq!(person_user("riley"), "riley");
-        assert_eq!(person_persona("riley").slot, "forgejo-person-riley");
-        assert_eq!(person_persona("riley").email, "riley@person.habitat.invalid");
+        assert_eq!(person_user("grace"), "grace");
+        assert_eq!(person_persona("grace").slot, "forgejo-person-grace");
+        assert_eq!(person_persona("grace").email, "grace@person.habitat.invalid");
         // the habitat's administrator, a name Forgejo keeps, a name not
         // plain: reshaped, with a hash
         for m in ["hale-admin", "admin", "Ada Lovelace", "x--y", &"m".repeat(50)] {
@@ -713,20 +713,20 @@ mod tests {
 
     #[test]
     fn the_chart_is_read_from_its_lines() {
-        let c = parse_chart("position position:board\nmandate position:board\nposition position:api/dev\nunder position:api/dev seed:api\nholds position:board riley\nholds position:api/dev organization:shop\nholds position:api/dev ada\nperson riley\npractice standard/x\n");
+        let c = parse_chart("position position:board\nmandate position:board\nposition position:api/dev\nunder position:api/dev seed:api\nholds position:board grace\nholds position:api/dev organization:shop\nholds position:api/dev ada\nperson grace\npractice standard/x\n");
         assert_eq!(c.positions, vec!["position:board", "position:api/dev"]);
-        assert_eq!(c.persons, vec!["riley", "ada"]);
+        assert_eq!(c.persons, vec!["grace", "ada"]);
     }
 
     #[test]
     fn a_first_reconcile_makes_every_persona_and_grants_it_the_repository() {
-        let o = org(K, "todo", Some(chart(&["position:board", "position:dev"], &["riley"])));
+        let o = org(K, "todo", Some(chart(&["position:board", "position:dev"], &["grace"])));
         let p = plan(&[o], &Held::default(), true);
         let made: Vec<&str> = p.steps.iter().filter_map(|s| if let Step::Ensure { persona, mint: true } = s { Some(persona.user.as_str()) } else { None }).collect();
-        assert_eq!(made, vec![format!("todo-{K}-board"), format!("todo-{K}-dev"), "riley".to_string()]);
+        assert_eq!(made, vec![format!("todo-{K}-board"), format!("todo-{K}-dev"), "grace".to_string()]);
         let granted = p.steps.iter().filter(|s| matches!(s, Step::Grant { repo, .. } if repo == &format!("todo-{K}/todo"))).count();
         assert_eq!(granted, 3, "the people too");
-        assert_eq!(p.personas[K].iter().map(|x| x.slot.as_str()).collect::<Vec<_>>(), vec![format!("forgejo-{K}-board"), format!("forgejo-{K}-dev"), "forgejo-person-riley".to_string()]);
+        assert_eq!(p.personas[K].iter().map(|x| x.slot.as_str()).collect::<Vec<_>>(), vec![format!("forgejo-{K}-board"), format!("forgejo-{K}-dev"), "forgejo-person-grace".to_string()]);
     }
 
     #[test]
@@ -738,7 +738,7 @@ mod tests {
 
     #[test]
     fn a_second_reconcile_makes_and_removes_nothing() {
-        let orgs = [org(K, "todo", Some(chart(&["position:dev"], &["riley"]))), org(K2, "shop", Some(chart(&[], &["riley"])))];
+        let orgs = [org(K, "todo", Some(chart(&["position:dev"], &["grace"]))), org(K2, "shop", Some(chart(&[], &["grace"])))];
         let first = plan(&orgs, &Held::default(), true);
         let second = plan(&orgs, &held_after(&first), true);
         assert!(second.steps.iter().all(|s| matches!(s, Step::Grant { .. })), "only the grants, each a read when it holds: {:?}", second.steps);
@@ -768,21 +768,21 @@ mod tests {
 
     #[test]
     fn a_person_goes_only_when_no_chart_has_them() {
-        let both = [org(K, "todo", Some(chart(&[], &["riley", "ada"]))), org(K2, "shop", Some(chart(&[], &["riley"])))];
+        let both = [org(K, "todo", Some(chart(&[], &["grace", "ada"]))), org(K2, "shop", Some(chart(&[], &["grace"])))];
         let held = held_after(&plan(&both, &Held::default(), true));
-        // ada leaves todo; riley is still shop's
-        let after = [org(K, "todo", Some(chart(&[], &[]))), org(K2, "shop", Some(chart(&[], &["riley"])))];
+        // ada leaves todo; grace is still shop's
+        let after = [org(K, "todo", Some(chart(&[], &[]))), org(K2, "shop", Some(chart(&[], &["grace"])))];
         let p = plan(&after, &held, true);
         let removed: Vec<&str> = p.steps.iter().filter_map(|s| if let Step::Remove { user, .. } = s { Some(user.as_str()) } else { None }).collect();
         assert_eq!(removed, vec!["ada"]);
         assert!(p.steps.contains(&Step::Forget { slot: "forgejo-person-ada".into() }));
         // a graft reconciles its own organism and removes no person
         let g = plan(&after[..1], &held, false);
-        assert!(!g.steps.iter().any(|s| matches!(s, Step::Remove { user, .. } if user == "ada" || user == "riley")));
+        assert!(!g.steps.iter().any(|s| matches!(s, Step::Remove { user, .. } if user == "ada" || user == "grace")));
         // nor does an apply that could not read every chart
         let unread = [org(K, "todo", Some(chart(&[], &[]))), org(K2, "shop", None)];
         let u = plan(&unread, &held, true);
-        assert!(!u.steps.iter().any(|s| matches!(s, Step::Remove { user, .. } if user == "ada" || user == "riley")));
+        assert!(!u.steps.iter().any(|s| matches!(s, Step::Remove { user, .. } if user == "ada" || user == "grace")));
     }
 
     #[test]
@@ -805,21 +805,21 @@ mod tests {
     #[test]
     fn a_user_the_habitat_did_not_make_is_never_taken_or_removed() {
         let mut held = Held::default();
-        held.users.insert("riley".into(), "riley@example.invalid".into());
+        held.users.insert("grace".into(), "grace@example.invalid".into());
         held.users.insert("someone".into(), "someone@example.invalid".into());
         held.users.insert("hale-admin".into(), "hale-admin@habitat.invalid".into());
         held.users.insert(format!("todo-{K}"), format!("todo-{K}@habitat.invalid"));
-        let p = plan(&[org(K, "todo", Some(chart(&[], &["riley"])))], &held, true);
-        assert!(p.conflicts.iter().any(|c| c.contains("riley")), "{:?}", p.conflicts);
-        assert!(!p.steps.iter().any(|s| matches!(s, Step::Remove { user, .. } | Step::Grant { user, .. } if user == "riley")), "{:?}", p.steps);
+        let p = plan(&[org(K, "todo", Some(chart(&[], &["grace"])))], &held, true);
+        assert!(p.conflicts.iter().any(|c| c.contains("grace")), "{:?}", p.conflicts);
+        assert!(!p.steps.iter().any(|s| matches!(s, Step::Remove { user, .. } | Step::Grant { user, .. } if user == "grace")), "{:?}", p.steps);
         assert!(!p.steps.iter().any(|s| matches!(s, Step::Remove { .. })));
     }
 
     #[test]
     fn the_ledger_says_each_persona_once() {
-        let o = org(K, "todo", Some(chart(&["position:api/dev"], &["riley"])));
+        let o = org(K, "todo", Some(chart(&["position:api/dev"], &["grace"])));
         let p = plan(std::slice::from_ref(&o), &Held::default(), true);
-        assert_eq!(ledger_text(&p.personas[K]), format!("position\tposition:board\ttodo-{K}-board\tforgejo-{K}-board\nposition\tposition:api/dev\ttodo-{K}-api_dev\tforgejo-{K}-api--dev\nperson\triley\triley\tforgejo-person-riley\n"));
+        assert_eq!(ledger_text(&p.personas[K]), format!("position\tposition:board\ttodo-{K}-board\tforgejo-{K}-board\nposition\tposition:api/dev\ttodo-{K}-api_dev\tforgejo-{K}-api--dev\nperson\tgrace\tgrace\tforgejo-person-grace\n"));
     }
 
     #[test]
@@ -827,7 +827,7 @@ mod tests {
         let a = identicon("todo-abcdef012345-board");
         assert_eq!(&a[..8], b"\x89PNG\r\n\x1a\n");
         assert_eq!(a, identicon("todo-abcdef012345-board"));
-        assert_ne!(a, identicon("riley"));
+        assert_ne!(a, identicon("grace"));
         // every chunk's CRC holds
         let mut at = 8;
         while at < a.len() {

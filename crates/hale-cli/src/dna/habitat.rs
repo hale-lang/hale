@@ -4714,7 +4714,7 @@ mod tests {
             "oidc-client-dna-local",
             "forge-token",
             "forgejo-b7db12d6d180-board",
-            "forgejo-person-riley",
+            "forgejo-person-grace",
         ]
         .iter()
         .map(|s| s.to_string())
