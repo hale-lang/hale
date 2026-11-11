@@ -309,8 +309,8 @@ fn host() {
     // client, as `nerves_migrate` does, so the correction changes them.
     pinned(
         "host",
-        592,
-        601,
+        597,
+        606,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -464,6 +464,8 @@ fn host() {
         owners_here  does={syscall,env,alloc}
         ownership_graph_here  does={syscall,env,alloc}
         ownership_note  does={syscall,env,alloc}
+        persona_grant  does={syscall,env,alloc}
+        persona_remove  does={syscall,block,env,alloc}
         postgres_secrets_path  does={syscall,block,env,alloc}
         profile_name  does={syscall,block,time,env,alloc}
         project_dir_name  does={syscall,block,alloc}

@@ -11970,14 +11970,16 @@ root	App	the entry
 row	App@literal1	App	main	default
 
 == dna/tests/forge_forgejo_test.hl
-template	__lib_dna__core__legs___hands__Hands@main4	unbounded (built in a loop)
+template	__lib_dna__core__legs___hands__Hands@main6	unbounded (built in a loop)
 row	__StdSecretCredential@main1	__StdSecretCredential	main	default
 row	__StdSecretCredential@main2	__StdSecretCredential	main	default
+row	__StdSecretCredential@main4	__StdSecretCredential	main	default
+row	__lib_dna__core___forgejo__ForgejoApi@main5	__lib_dna__core___forgejo__ForgejoApi	main	default
 row	__lib_dna__core___forgejo__ForgejoForge@main3	__lib_dna__core___forgejo__ForgejoForge	main	default
 dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main	in tests
-shared	__lib_dna__core___memory_record__MemoryReceipts@main6	__lib_dna__core___memory_record__MemoryReceipts #deee0984
-shared	__lib_dna__core___routing__RoutedJournal@main5	__lib_dna__core___routing__RoutedJournal #8fc95e4d
--- __lib_dna__core__legs___hands__Hands@main4	__lib_dna__core__legs___hands__Hands
+shared	__lib_dna__core___memory_record__MemoryReceipts@main8	__lib_dna__core___memory_record__MemoryReceipts #deee0984
+shared	__lib_dna__core___routing__RoutedJournal@main7	__lib_dna__core___routing__RoutedJournal #8fc95e4d
+-- __lib_dna__core__legs___hands__Hands@main6	__lib_dna__core__legs___hands__Hands
 row	~	__lib_dna__core__legs___hands__Hands	main	default
 row	~.deploy	__lib_dna__core__legs___hands__NoDeploy	main	inherited
 row	~.forge	__lib_dna__core__legs___hands__AllocatedForge	main	inherited
