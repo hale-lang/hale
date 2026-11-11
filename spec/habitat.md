@@ -547,6 +547,66 @@ own user, its token handed to git through a credential helper reading a
 private file. The guard refuses a `Hands` whose forge
 names a kind.
 
+**Publishing to GitHub.** Where the forge is the habitat's Forgejo, GitHub
+is a sink the owner feeds in batches: `hale habitat forge publish
+<organism> [--branch <name>] [--dry-run]` carries the main of the
+organism's repository at the Forgejo to GitHub as **one pull request per
+publish**. Where it goes is a `habitat.publish <id>` row (`{organism,
+provider, repo, key_vault}`), recorded by `hale habitat forge <organism>
+github --repo <owner/name> [--key-vault <slot>] --publish` as the act
+itself, never through the head, and beside the forge allocation, which it
+leaves as it is (an organism has one forge; a GitHub forge would take the
+Forgejo's place in the gate); `none --publish` stops it. Its token is the
+vault slot the row names, `forge-token` by default as a GitHub forge's;
+the Forgejo's is the organism's own, `forgejo-<id>`. A publish fetches the
+internal main, pushes it to GitHub as the branch `sync/<YYYY-MM-DD>` (the
+UTC date; `--branch` names another, never `main`), and opens one pull
+request from it against GitHub's `main`, titled `Publish <date>`, whose
+body lists the internal pull requests merged since the last publish by
+title and internal number (`internal PR <n>`: no `#<n>`, which GitHub links
+to its own, and no link into the private forge). A title is made inert on
+its way: put on one line, with a zero-width joiner (U+200D) after every `#`
+and `@`, so a `#12` in it links no issue of GitHub's and an `@name`
+mentions no one, while it reads as written. "Since the last publish"
+is read from git, not kept: a merged internal pull request is listed when
+its merge commit is on the internal main and not on GitHub's, so the first
+publish lists everything since GitHub's main. Run again the same day, the
+branch moves forward and its open pull request is updated, its title and
+body rewritten; no second one is opened. `--dry-run` prints what it would
+push (and any merge it would make), whether it would open or update, and
+the pull request's title and body, and pushes and opens nothing (it reads
+both forges). **Nothing is forced, and the internal main is never
+touched.** When GitHub's `main` holds the internal main already (a merge
+made there of a publish's pull request, and nothing new since), there is
+nothing to publish. When it has commits the internal main lacks (GitHub's
+merge queue merges with a merge commit), the branch pushed is a merge of
+the internal main (first parent) and GitHub's `main`, made in the
+publish's scratch repository; so is a merge with the branch an earlier
+publish the same day left at GitHub, which the new one then
+fast-forwards. A merge is authored and committed as the owner the GitHub
+token belongs to (GitHub's `/user`: its name, and its public email or its
+`<id>+<login>@users.noreply.github.com` address), and the pull request's
+body says the branch merges the two. A merge that conflicts stops the
+publish, naming the files, and nothing is pushed: the conflict is resolved
+in the internal forge. It also refuses, before anything is fetched, an
+organism with no Forgejo allocation, one with no `habitat.publish` row
+naming GitHub (saying how to record one), a vault holding no GitHub token
+in the row's slot or no token in the organism's Forgejo slot, and a vault
+served over HTTP (`HALE_VAULT_ADDR`). GitHub's `main` must exist. **A
+habitat on another machine publishes there**: with a pointer (`up
+--host`), both `forge publish` and `forge … --publish` run on the
+habitat's machine in its toolchain image (`remote::run_there`, as `nursery
+refresh` and `models` do), where its record, its vault and its Forgejo
+are; the output streams back. On a habitat machine that is a Mac, docker
+runs in a VM and `--network host` is the VM's network, not the Mac's, so
+the publish's run is given `HALE_DNA_LOOPBACK_HOST=host.docker.internal`
+(and that name mapped to the host's gateway), and it dials the Forgejo's
+recorded `127.0.0.1:<port>` there, as the habitat's `body` and `face`
+reach its loopback (`dna::reach_url`). The tokens go to git
+through a credential helper reading git's own environment and to curl,
+which speaks both forges' APIs, in a config read from its stdin: never on a
+command line.
+
 ## Nurseries and saplings
 
 A **sapling** is an organism's seed in a nursery, an entry beside its

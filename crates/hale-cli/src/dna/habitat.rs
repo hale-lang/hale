@@ -106,6 +106,8 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat [--head <url>] apply [<host>] [--fresh]
        hale habitat [--head <url>] nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat [--head <url>] forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
+       hale habitat forge <organism> github|none --publish [--repo <owner/name>] [--key-vault <slot>]
+       hale habitat forge publish <organism> [--branch <name>] [--dry-run]
        hale habitat handover [organism]
        hale habitat [--head <url>] host add <name> [--user <user>] [--port <n>]
        hale habitat [--head <url>] host join <name>
@@ -309,6 +311,26 @@ forge <organism> <provider>
                      act itself with --no-head. `hale dna forge sync`
                      syncs with what is allocated. A graft takes
                      --forge <provider> over the habitat's policy.
+                     With --publish, github --repo owner/name names where
+                     `forge publish` sends the organism's main instead (its
+                     token the vault slot --key-vault names, `forge-token`
+                     by default), and none stops it; the forge stays as
+                     allocated.
+forge publish <organism>
+                     the organism's main at the habitat's Forgejo pushed to
+                     its GitHub repository (--publish) as the branch
+                     sync/<YYYY-MM-DD> (--branch to name another), and one
+                     pull request against GitHub's main opened, its body the
+                     internal pull requests merged since the last publish
+                     (titles and internal numbers, no links); again the
+                     same day, that branch and pull request are updated.
+                     Never forced, and the internal main never touched: when
+                     GitHub's main has commits the internal main lacks (a
+                     merge made there), the branch is a merge of the two,
+                     by the GitHub token's owner; a conflict stops it,
+                     naming the files. --dry-run prints what it would push
+                     and the pull request's body, and pushes nothing. A
+                     habitat on another machine publishes there.
 handover [organism]  what the habitat hands the organism's heart, one
                      NAME=value a line, a secret only by its vault slot's
                      name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,
