@@ -313,12 +313,16 @@ fn structure_roles(root: String) -> String {
 // is a file of the artifact's rows, which land first; `app` names the
 // application's root seed; `description_path` is a file holding what
 // `hale check --api` exports.
+// `chart_declared`: the sapling ships its chart as a pack, so of the holes
+// the edges imply only the Board's seat is proposed; the pack's positions
+// are the chart.
 fn graph_ingest_verb(
     root: String,
     first: String,
     rows_path: String,
     app: String,
     description_path: String,
+    chart_declared: Bool,
     memory: dna::Memory
 ) -> Answer {
     let described = if len(description_path) > 0 {
@@ -339,8 +343,15 @@ fn graph_ingest_verb(
     let mut rest = holes.proposals;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
-        proposals = proposals + hole_rows(keeps, rest[0..nl], "hale habitat graft");
+        let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
+        if chart_declared
+            && std::json::find_string_field(line, "name") != "board"
+            && std::json::find_string_field(line, "target") != "position:board"
+        {
+            continue;
+        }
+        proposals = proposals + hole_rows(keeps, line, "hale habitat graft");
     }
     // GH #995: the declared purpose, proposed in the same checked seed, so
     // a repository with nothing to ingest still has its record

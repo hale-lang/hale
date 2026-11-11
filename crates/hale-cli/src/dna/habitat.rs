@@ -2549,7 +2549,11 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
     // ratified): memory decides, never the local marker, which a stopped
     // birth may have lost
     let recorded_rows = rows_of(genome);
-    for (pack, args) in [("habitat", vec!["apply", "habitat", "--on-holes"]), ("standard", vec!["apply", "standard"])] {
+    // the person who births the habitat holds its Board and its seats
+    // (habitat.pack's `? fill … {holder}` lines), so it settles its Reviews
+    // with nobody else asked
+    let holder = format!("holder={}", std::env::var("USER").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "hale".to_string()));
+    for (pack, args) in [("habitat", vec!["apply", "habitat", "--on-holes", "--set", holder.as_str()]), ("standard", vec!["apply", "standard"])] {
         let recorded = recorded_rows.iter().any(|r| r["kind"] == "batch.proposed" && r.to_string().contains(&format!("{pack}@")));
         if have.contains(&pack) || recorded {
             continue;
@@ -4278,7 +4282,11 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
         }
     }
     let mut out = vec![format!("{:<8}{} as the habitat's child (parent {}…; needs {}){}", "graft", root.display(), &parent[..12], needs.join(", "), if pinned.is_some() { "; the graft goes on where it stopped" } else { "" })];
-    out.extend(if attach { super::init_under(dir, library, super::Lineage::Child(&parent))? } else { super::new_project_under(dir, shape.profile, shape.remote, shape.body, library, &parent)? });
+    // a sapling that declares packs declares its chart (sapling.rs): the
+    // graft proposes the Board's seat and no other hole beside them
+    let chart_declared = sapling.is_some_and(|s| s["chart_declared"].as_bool().unwrap_or(false));
+    let lineage = if chart_declared { super::Lineage::ChildWithChart(&parent) } else { super::Lineage::Child(&parent) };
+    out.extend(if attach { super::init_under(dir, library, lineage)? } else { super::new_project_under(dir, shape.profile, shape.remote, shape.body, library, &parent)? });
     let root = if attach { root } else { project(dir)?.0 };
     let child = manifest_pin(&root.join("hale.toml")).ok().flatten().ok_or("the child pins no record after its birth")?;
     // birth allocated memory and the nerves; the rest of what it needs here
