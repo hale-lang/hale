@@ -342,8 +342,11 @@ jobs:
       - name: Install LLVM 18 + clang
         run: |
           set -eux
-          # the runner image's Azure mirror list stopped resolving (2026-11-11):
-          # fetch from archive.ubuntu.com, retrying a failed download
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -430,8 +433,11 @@ jobs:
         name: Install LLVM 18 + clang
         run: |
           set -eux
-          # the runner image's Azure mirror list stopped resolving (2026-11-11):
-          # fetch from archive.ubuntu.com, retrying a failed download
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -609,8 +615,11 @@ jobs:
         # (`hale build --target wasm32`).
         run: |
           set -eux
-          # the runner image's Azure mirror list stopped resolving (2026-11-11):
-          # fetch from archive.ubuntu.com, retrying a failed download
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1040,8 +1049,11 @@ jobs:
       - name: Install LLVM 18 + clang
         run: |
           set -eux
-          # the runner image's Azure mirror list stopped resolving (2026-11-11):
-          # fetch from archive.ubuntu.com, retrying a failed download
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1214,8 +1226,11 @@ jobs:
       - name: Install LLVM 18 + clang
         run: |
           set -eux
-          # the runner image's Azure mirror list stopped resolving (2026-11-11):
-          # fetch from archive.ubuntu.com, retrying a failed download
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1486,8 +1501,11 @@ jobs:
         # /usr/aarch64-linux-gnu, and `-L` points qemu there.
         run: |
           set -eux
-          # the runner image's Azure mirror list stopped resolving (2026-11-11):
-          # fetch from archive.ubuntu.com, retrying a failed download
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1617,8 +1635,11 @@ jobs:
       - name: Install LLVM 18 + clang
         run: |
           set -eux
-          # the runner image's Azure mirror list stopped resolving (2026-11-11):
-          # fetch from archive.ubuntu.com, retrying a failed download
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1724,8 +1745,11 @@ jobs:
       - name: Install LLVM 18 + clang
         run: |
           set -eux
-          # the runner image's Azure mirror list stopped resolving (2026-11-11):
-          # fetch from archive.ubuntu.com, retrying a failed download
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1805,8 +1829,11 @@ jobs:
       - name: Install LLVM 18 + clang
         run: |
           set -eux
-          # the runner image's Azure mirror list stopped resolving (2026-11-11):
-          # fetch from archive.ubuntu.com, retrying a failed download
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1901,8 +1928,11 @@ jobs:
       - name: Install LLVM 18 + clang + cmake
         run: |
           set -eux
-          # the runner image's Azure mirror list stopped resolving (2026-11-11):
-          # fetch from archive.ubuntu.com, retrying a failed download
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
