@@ -309,8 +309,8 @@ fn host() {
     // client, as `nerves_migrate` does, so the correction changes them.
     pinned(
         "host",
-        591,
-        600,
+        592,
+        601,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -374,6 +374,7 @@ fn host() {
         build_cache_touch  does={syscall,block,alloc}
         build_fingerprint  does={syscall,block,env,alloc}
         build_seed_at  does={syscall,block,env,alloc}
+        chart_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         codebase_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         compose_key  does={alloc}
         compose_sweep  does={syscall,block,alloc}

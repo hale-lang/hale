@@ -14,6 +14,7 @@
 //!   hale dna history [<entity>] walk the Journal by causal links
 //!   hale dna record-rows [project]  the record's rows, one JSON object per line
 //!   hale dna show org|processes [--json] [project]  the graph's two perspectives, from memory
+//!   hale dna chart [project]      the org chart's lines as the record states it, and its people
 //!   hale dna review <id> <verdict> a verdict, a row a node relays (the Review decides)
 //!   hale dna --embedded-digest  the DNA source this binary embeds, by name (GH #726)
 //!
@@ -952,6 +953,25 @@ pub fn run(raw_args: &[String]) -> ExitCode {
         Some("retire") => host_exec("retire", Path::new("."), &args[1..]),
         // GH #604 rule 3: `hale dna effect resolve <key> --outcome ok|failed`
         Some("effect") => host_exec("effect", Path::new("."), &args[1..]),
+        // `hale dna chart [project]`: the org chart as the record states it,
+        // one line each (`position <id>`, `holds <id> <holder>`, …) and
+        // `person <name>` for every holder; what the habitat reconciles
+        // an organism's personas against
+        Some("chart") => {
+            let mut dir = PathBuf::from(".");
+            for a in &args[1..] {
+                if a.starts_with('-') {
+                    eprintln!("hale dna chart: `{a}` is not a flag of chart\nusage: hale dna chart [project]");
+                    return ExitCode::from(2);
+                } else if !Path::new(a).is_dir() {
+                    eprintln!("hale dna chart: `{a}` is not a directory (the project)");
+                    return ExitCode::from(2);
+                } else {
+                    dir = PathBuf::from(a);
+                }
+            }
+            host_exec("chart", &dir, &[])
+        }
         // GH #1086: `hale dna show org | processes [--json] [project]`, the
         // two perspectives over the graph, read from memory
         Some("show") => match args.get(1).map(String::as_str) {
