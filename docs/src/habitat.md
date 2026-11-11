@@ -224,6 +224,24 @@ HALE_API_TOKEN=<the person's ID token> hale mcp --app mcp://127.0.0.1:<port>
 
 The agent's tools are the head's rows that person may call (`Commands__hosts`, `Commands__add_host`, …). A row they may not call is refused `unauthorized`, exactly as the face is refused, and every act is a row in their name. `hale habitat brief` (the row `Commands__brief`) is where such an agent starts: the Board's charter, the rules it works by, and the live state. [`agents/operator.md`](https://github.com/hale-lang/hale/blob/main/agents/operator.md) is the agent's own brief: the words, the rules, and which rows read, act or propose.
 
+### Publishing to GitHub (`hale habitat forge publish`)
+
+Work on an organism lands and is reviewed at the habitat's own Forgejo. GitHub, when you want the code there too, is a sink you feed explicitly and in batches: each publish is one pull request on GitHub, from your own token.
+
+```sh
+# once: where the organism's main goes, and the vault slot of the token
+hale habitat forge shop github --repo acme/shop --publish   # --key-vault <slot>; forge-token by default
+hale dna secret set FORGE_TOKEN                             # in the organism's directory: fills forge-token
+
+# then, whenever you want GitHub to catch up
+hale habitat forge publish shop --dry-run   # what it would push, and the pull request's body
+hale habitat forge publish shop             # push sync/<today> and open (or update) the pull request
+```
+
+`--publish` leaves the organism's forge alone: the Forgejo stays where reviews happen, and the setting only says where a publish goes (`none --publish` stops publishing). A publish pushes the internal `main` to GitHub as the branch `sync/<YYYY-MM-DD>` (UTC; `--branch <name>` for another) and opens one pull request against GitHub's `main`. Its body lists the internal pull requests merged since the last publish, by title and internal number, with no links into the private forge; the first publish lists everything since GitHub's `main`. Publishing again the same day moves the branch forward and updates that pull request instead of opening a second one.
+
+A publish never force-pushes. If GitHub's `main` has a commit the internal `main` lacks (say the last publish's pull request was merged with a merge commit), it stops and says so: merge GitHub's `main` into the internal forge, then publish again. It also stops, saying what to do, when the organism has no Forgejo allocation, names no GitHub repository, or the vault holds no GitHub token. Run it on the habitat's machine: the Forgejo answers on its loopback.
+
 ## Walkthrough: Deploying and Querying `voice` in a Habitat
 
 This walkthrough covers taking a machine with `hale`, `docker compose`, `git`, and a browser from a cold start to streaming an LLM completion response through `voice`, grafted from its own repository as a nursery.

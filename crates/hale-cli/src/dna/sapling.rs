@@ -27,6 +27,8 @@ use std::process::Command;
 
 use super::*;
 
+#[path = "forge_publish.rs"]
+mod publish;
 
 /// The repository a sapling the toolchain carries names: `toolchain:<path>`,
 /// a tree under the toolchain's embedded nursery (`dna/nursery/<path>`),
@@ -1331,10 +1333,12 @@ struct ForgeArgs {
     repo: String,
     key_vault: String,
     no_head: bool,
+    /// `--publish`: where `forge publish` goes, not the organism's forge
+    publish: bool,
 }
 
 fn forge_args(args: &[String]) -> Option<ForgeArgs> {
-    let (mut repo, mut key_vault, mut no_head) = (String::new(), String::new(), false);
+    let (mut repo, mut key_vault, mut no_head, mut publish) = (String::new(), String::new(), false, false);
     let mut words = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1342,12 +1346,13 @@ fn forge_args(args: &[String]) -> Option<ForgeArgs> {
             "--repo" => repo = it.next()?.clone(),
             "--key-vault" => key_vault = it.next()?.clone(),
             "--no-head" => no_head = true,
+            "--publish" => publish = true,
             w if w.starts_with("--") => return None,
             w => words.push(w.to_string()),
         }
     }
     let [organism, provider] = <[String; 2]>::try_from(words).ok()?;
-    Some(ForgeArgs { organism, provider, repo, key_vault, no_head })
+    Some(ForgeArgs { organism, provider, repo, key_vault, no_head, publish })
 }
 
 /// `hale habitat forge <organism> <provider> [--repo r] [--key-vault s]
@@ -1356,11 +1361,28 @@ fn forge_args(args: &[String]) -> Option<ForgeArgs> {
 /// as the act itself.
 pub(super) fn forge_cmd(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
-    let usage = "usage: hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]";
-    let Some(ForgeArgs { organism, provider, repo, key_vault, no_head }) = forge_args(args) else {
+    if args.first().map(String::as_str) == Some("publish") {
+        return publish::cmd(&args[1..]);
+    }
+    let usage = "usage: hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]\n       hale habitat forge <organism> github|none --publish [--repo <owner/name>] [--key-vault <slot>]\n       hale habitat forge publish <organism> [--branch <name>] [--dry-run]";
+    let Some(ForgeArgs { organism, provider, repo, key_vault, no_head, publish }) = forge_args(args) else {
         eprintln!("{usage}");
         return ExitCode::from(2);
     };
+    // where the organism's main is published: the owner's setting, written
+    // as the act itself (the head's allocate_forge allocates forges alone)
+    if publish {
+        return match record_publish_target(&organism, &provider, &repo, &key_vault) {
+            Ok(line) => {
+                println!("{line}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("hale habitat forge: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
     if !no_head && super::head_is_up() {
         return match head_call("Commands::allocate_forge", serde_json::json!({ "organism": organism, "provider": provider, "repo": repo, "key_vault": key_vault })) {
             Ok(v) if v["ok"] == serde_json::json!(true) => {
@@ -1389,6 +1411,45 @@ pub(super) fn forge_cmd(args: &[String]) -> std::process::ExitCode {
     }
 }
 
+/// The record identity of the organism the habitat grafted as `organism`
+/// (`habitat`: the habitat's own), from the habitat's record `rows`.
+fn organism_child(rows: &[serde_json::Value], organism: &str) -> Result<String, String> {
+    if organism == "habitat" {
+        return manifest_pin(&genome_dir().join("hale.toml")).ok().flatten().filter(|c| c.len() >= 12).ok_or_else(|| "the habitat is not born".to_string());
+    }
+    let grafted = latest(rows, "habitat.grafted");
+    grafted.iter().find(|(_, b)| b["name"] == organism && b["state"] != "removed").map(|(_, b)| b["child"].as_str().unwrap_or("").to_string()).filter(|c| c.len() >= 12).ok_or_else(|| format!("the habitat grafted no organism `{organism}`"))
+}
+
+/// Where `hale habitat forge publish` sends the organism `organism`'s main:
+/// a `habitat.publish <id>` row naming GitHub's `repo` and the vault slot
+/// of its token, or `none` to name nowhere. The organism's forge is left as
+/// it is allocated: publishing is the owner's act, never the forge's.
+fn record_publish_target(organism: &str, provider: &str, repo: &str, key_vault: &str) -> Result<String, String> {
+    if !["github", "none"].contains(&provider) {
+        return Err(format!("`{provider}`: a publish goes to github (or none, to stop publishing)"));
+    }
+    let slot = if key_vault.is_empty() && provider == "github" { "forge-token" } else { key_vault };
+    if provider == "github" && !repo.split_once('/').is_some_and(|(o, n)| !o.is_empty() && !n.is_empty() && !n.contains('/')) {
+        return Err("a publish names its GitHub repository, --repo <owner/name>".to_string());
+    }
+    if !slot.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+        return Err(format!("`--key-vault {slot}` names no vault slot"));
+    }
+    if super::remote::pointer().is_some() {
+        return Err("the habitat runs on another machine: name where it publishes there, where `forge publish` runs".to_string());
+    }
+    let child = organism_child(&rows_of(&genome_dir()), organism)?;
+    let (repo, slot) = if provider == "none" { ("", "") } else { (repo, slot) };
+    let body = serde_json::json!({ "organism": child, "provider": provider, "repo": repo, "key_vault": slot });
+    record(&[serde_json::json!({ "kind": "habitat.publish", "entity": &child[..12], "body": body.to_string() })])?;
+    Ok(if provider == "none" {
+        format!("{:<8}{organism} publishes nowhere", "publish")
+    } else {
+        format!("{:<8}{organism} publishes to github {repo} (its token in the vault slot {slot}); its forge stays as allocated", "publish")
+    })
+}
+
 /// The forge `provider` allocated to the organism the habitat grafted as
 /// `organism` (`habitat`: the habitat's own): its row, and its cache.
 fn allocate_forge(organism: &str, provider: &str, repo: &str, key_vault: &str) -> Result<String, String> {
@@ -1405,14 +1466,8 @@ fn allocate_forge(organism: &str, provider: &str, repo: &str, key_vault: &str) -
     if !slot.is_empty() && !slot.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
         return Err(format!("`--key-vault {slot}` names no vault slot"));
     }
-    let genome = genome_dir();
-    let rows = rows_of(&genome);
-    let child = if organism == "habitat" {
-        manifest_pin(&genome.join("hale.toml")).ok().flatten().ok_or("the habitat is not born")?
-    } else {
-        let grafted = latest(&rows, "habitat.grafted");
-        grafted.iter().find(|(_, b)| b["name"] == organism && b["state"] != "removed").map(|(_, b)| b["child"].as_str().unwrap_or("").to_string()).filter(|c| c.len() >= 12).ok_or_else(|| format!("the habitat grafted no organism `{organism}`"))?
-    };
+    let rows = rows_of(&genome_dir());
+    let child = organism_child(&rows, organism)?;
     let key = &child[..12];
     // the habitat's Forgejo: the organism's user, token and repository
     // there (its code pushed when the habitat knows where it lives)
@@ -1453,6 +1508,8 @@ mod role_tests {
         assert!(forge_args(&args("alpha github --repo")).is_none(), "an option without its value");
         assert!(forge_args(&args("alpha")).is_none() && forge_args(&args("alpha github extra")).is_none());
         assert!(forge_args(&args("alpha github --other x")).is_none());
+        let p = forge_args(&args("alpha github --publish --repo o/r")).unwrap();
+        assert!(p.publish && !a.publish, "--publish names where a publish goes");
     }
 
     /// A graft that stopped part way finishes on its retry: absent rows are

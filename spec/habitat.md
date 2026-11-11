@@ -542,6 +542,45 @@ own user, its token handed to git through a credential helper reading a
 private file. The guard refuses a `Hands` whose forge
 names a kind.
 
+**Publishing to GitHub.** Where the forge is the habitat's Forgejo, GitHub
+is a sink the owner feeds in batches: `hale habitat forge publish
+<organism> [--branch <name>] [--dry-run]` carries the main of the
+organism's repository at the Forgejo to GitHub as **one pull request per
+publish**. Where it goes is a `habitat.publish <id>` row (`{organism,
+provider, repo, key_vault}`), recorded by `hale habitat forge <organism>
+github --repo <owner/name> [--key-vault <slot>] --publish` as the act
+itself, never through the head, and beside the forge allocation, which it
+leaves as it is (an organism has one forge; a GitHub forge would take the
+Forgejo's place in the gate); `none --publish` stops it. Its token is the
+vault slot the row names, `forge-token` by default as a GitHub forge's;
+the Forgejo's is the organism's own, `forgejo-<id>`. A publish fetches the
+internal main, pushes it to GitHub as the branch `sync/<YYYY-MM-DD>` (the
+UTC date; `--branch` names another, never `main`), and opens one pull
+request from it against GitHub's `main`, titled `Publish <date>`, whose
+body lists the internal pull requests merged since the last publish by
+title and internal number (`internal PR <n>`: no `#<n>`, which GitHub links
+to its own, and no link into the private forge). "Since the last publish"
+is read from git, not kept: a merged internal pull request is listed when
+its merge commit is on the internal main and not on GitHub's, so the first
+publish lists everything since GitHub's main. Run again the same day, the
+branch moves forward and its open pull request is updated, its title and
+body rewritten; no second one is opened. `--dry-run` prints what it would
+push, whether it would open or update, and the pull request's title and
+body, and pushes and opens nothing (it reads both forges). **Nothing is
+forced**: GitHub's `main` must be an ancestor of the internal main (a
+merge or a commit made at GitHub is taken into the internal forge first),
+and a branch of that name already at GitHub must be one the internal main
+contains, or the publish says so and stops. It also refuses, before
+anything is fetched, an organism with no Forgejo allocation, one with no
+`habitat.publish` row naming GitHub (saying how to record one), a vault
+holding no GitHub token in the row's slot or no token in the organism's
+Forgejo slot, a vault served over HTTP (`HALE_VAULT_ADDR`), and a habitat
+on another machine (its Forgejo answers on that machine's loopback: the
+publish runs there). GitHub's `main` must exist. The tokens go to git
+through a credential helper reading git's own environment and to curl,
+which speaks both forges' APIs, in a config read from its stdin: never on a
+command line.
+
 ## Nurseries and saplings
 
 A **sapling** is an organism's seed in a nursery, an entry beside its
