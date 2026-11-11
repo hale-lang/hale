@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn an_organism_s_face_runs_beside_its_body_on_its_recorded_block() {
         let mut s = shape();
-        s.face_environment = "      HALE_DNA_FACE_HOME: \"/app/\"\n".to_string();
+        s.face_environment = "      HALE_DNA_LISTEN_HOST: \"0.0.0.0\"\n".to_string();
         s.face_publish = "127.0.0.1".to_string();
         let text = render_with_face(&s, "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/h/allocations/0a1b2c3d4e5f/face-state");
         assert!(text.contains("\n  body-0a1b2c3d4e5f:\n") && text.contains("\n  face-0a1b2c3d4e5f:\n"), "{text}");
