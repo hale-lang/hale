@@ -2729,7 +2729,10 @@ memory is named to it.
   in process. A performer is handed the brief and
   the hands as interfaces — git in scratch, the forge (it decides, a
   leg never merges; the organism's forge allocation answers "open a
-  review", `AllocatedForge`, and no hand names a forge by kind), the
+  review", `AllocatedForge`, and no hand names a forge by kind; at the
+  habitat's Forgejo a leg pushes, opens its review and authors its own
+  commits as the persona of the Work's position, which the leg puts on
+  its hands with `wear` — `spec/habitat.md`, the forge), the
   toolchain; deploy and the heart's API refuse,
   naming #987 — and answers a performance (a result struct until #732).
   The verb is the project's own program, built beside the vendored

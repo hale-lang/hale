@@ -584,10 +584,29 @@ leg's hands are the same: their forge is `AllocatedForge`
 call, as forge sync does, and opens the leg's review at the allocated
 Forgejo (the codebase's repository there, by its url), through `gh` for
 GitHub, or refuses with `none`; the git hand (`ScratchGit`) pushes a
-leg's branch to a repository at the allocated Forgejo as the organism's
-own user, its token handed to git through a credential helper reading a
-private file. The guard refuses a `Hands` whose forge
-names a kind.
+leg's branch to a repository at the allocated Forgejo, its token handed to
+git through a credential helper reading a private file. The guard refuses
+a `Hands` whose forge names a kind.
+
+**A leg acts as the persona of the position its work is for.** Forge auth
+is the legs runner's, never a harness's or voice's: a leg handed work (a
+branch of commits in a worktree, a person's or a harness's alike) puts the
+position the Work is for on its hands (`wear`: the hat's `position.id`,
+else the leg's `--as`), and at the allocated Forgejo the git hand pushes
+the branch as that position's persona (its user the credential helper's
+username, its token the persona's slot), the forge hand opens the review
+with the persona's token, so the pull request's author is the persona's
+user, and the leg's own commits there (the commit it makes of the work, a
+fixup) are authored as the persona's user and email. Commits a person or
+a harness made are left as they are. The persona is the one the
+organism's ledger (`allocations/<key>/personas`) names for the position
+— the reconcile's names, never derived again by the leg. A position the
+ledger does not name yet (personas not reconciled, an older habitat, a
+position the chart does not state), or a persona whose slot holds no
+token, falls back to the organism's own user and slot, as before, and the
+leg says so once on its output (`hale dna work: note: …`), never as an
+error. With no position, a GitHub allocation or none, nothing changes:
+verdicts are read with the organism's own token in every case.
 
 ## Nurseries and saplings
 
