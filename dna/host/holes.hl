@@ -395,6 +395,10 @@ fn nursery_sources_verb(root: String, memory: dna::Memory) -> Answer {
 // position, the Board and each person), so it reads one answer instead of
 // the chart twice.
 fn chart_verb(root: String, memory: dna::Memory) -> Answer {
+    // a record that cannot be read is said, never shown as an empty chart:
+    // the reconcile that reads this must tell "nothing stated" from "nothing read"
+    let no_record = record_refusal(root);
+    if len(no_record) > 0 { return fail("hale dna chart: " + no_record); }
     let journal = dna::RoutedJournal {
         record: dna::RecordJournal { repo: root },
         ledger: memory.ledger,
