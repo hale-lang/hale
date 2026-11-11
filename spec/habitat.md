@@ -187,7 +187,12 @@ record's identity), `head.url`, and the head's launch token
 pointer, end with a `sign in` line while the face answers: the face's URL
 with that token (`/?token=…`), the link that opens the face once and sets
 its session, which is otherwise printed only in the face's own log. A machine points at one habitat, and one
-that runs a habitat of its own points at none.
+that runs a habitat of its own points at none. A second `up --host` with the
+pointer's name upgrades that habitat in place; its host may be named another
+way (a bare `rack-a` for a recorded `rack-a.example.net`, or any name resolving
+to an address the recorded one has), and the pointer keeps the spelling it
+recorded. Another name or another machine is refused, with the `up` that
+reaches the habitat this machine points at.
 
 Every verb on the admin machine reaches the habitat's head through the
 pointer (`--head`, `HALE_DNA_HEAD_URL` and `head.url` resolve as they do

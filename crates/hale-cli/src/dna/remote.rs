@@ -680,6 +680,26 @@ fn remove_pointer() {
     }
 }
 
+/// Whether `given` names the machine the pointer records as `kept`: the same
+/// name in any case, a bare name that is the other's first label (`rack-a` for
+/// `rack-a.example.net`), or two names that resolve to an address in common.
+fn same_machine(kept: &str, given: &str) -> bool {
+    let norm = |h: &str| h.trim().trim_end_matches('.').to_ascii_lowercase();
+    let (k, g) = (norm(kept), norm(given));
+    if k.is_empty() || g.is_empty() {
+        return false;
+    }
+    if k == g || (!g.contains('.') && k.split('.').next() == Some(g.as_str())) || (!k.contains('.') && g.split('.').next() == Some(k.as_str())) {
+        return true;
+    }
+    let addrs = |h: &str| -> Vec<std::net::IpAddr> {
+        use std::net::ToSocketAddrs;
+        (h, 22).to_socket_addrs().map(|a| a.map(|s| s.ip()).collect()).unwrap_or_default()
+    };
+    let ka = addrs(&k);
+    !ka.is_empty() && addrs(&g).iter().any(|a| ka.contains(a))
+}
+
 /// Whether something accepts a connection at `url`'s host and port.
 fn answers(url: &str) -> bool {
     use std::net::ToSocketAddrs;
@@ -719,12 +739,16 @@ pub(super) fn up(host: &str, user: Option<&str>, port: Option<u16>, name: &str, 
 
 fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image: Option<&str>, attach: bool, rest: &[String]) -> Result<Vec<String>, String> {
     let kept = pointer();
+    // the host as the pointer records it, when `host` names that machine
+    // another way (`rack-a` for `rack-a.example.net`): the pointer keeps one
+    // spelling, and a second `up` is the same upgrade in place
+    let recorded = kept.as_ref().and_then(|k| k["host"].as_str()).filter(|k| same_machine(k, host)).map(str::to_string);
+    let host = recorded.as_deref().unwrap_or(host);
     if let Some(k) = &kept {
-        if k["host"].as_str() != Some(host) || k["name"].as_str() != Some(name) {
+        let (kname, khost) = (k["name"].as_str().unwrap_or(""), k["host"].as_str().unwrap_or(""));
+        if khost != host || kname != name {
             return Err(format!(
-                "this machine points at the habitat `{}` on {} already: `hale habitat down --forget` forgets it first",
-                k["name"].as_str().unwrap_or(""),
-                k["host"].as_str().unwrap_or("")
+                "this machine points at the habitat `{kname}` on {khost} already: `hale habitat up --name {kname} --host {khost}` upgrades it in place; to point at another habitat instead, `hale habitat down --forget` removes this one first, and everything it holds"
             ));
         }
     } else if PathBuf::from(local_habitat_dir()).join("genome").exists() {
@@ -1534,6 +1558,16 @@ pub(super) fn refuse_local_up(p: &serde_json::Value) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_host_named_another_way_is_the_machine_the_pointer_records() {
+        assert!(same_machine("rack-a.example.net", "rack-a"));
+        assert!(same_machine("rack-a", "rack-a.example.net"));
+        assert!(same_machine("Rack-A.Example.Net.", "rack-a.example.net"));
+        assert!(!same_machine("rack-a.example.net", "rack-b"));
+        assert!(!same_machine("rack-a.example.net", "rack-a.other.invalid"));
+        assert!(!same_machine("", "rack-a"));
+    }
+
     use super::*;
 
     // a habitat already running on the host and no pointer here is refused
