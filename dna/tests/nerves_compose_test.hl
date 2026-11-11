@@ -217,6 +217,7 @@ main locus App {
             std::str::contains(conf, "user: " + dna::nerves_user(org_of, "spine") + ",")
                 && std::str::contains(conf, "jetstream: enabled")
                 && std::str::contains(server_conf, "include ./nerves.d/" + key + ".account.conf")
+                && std::str::contains(server_conf, "max_payload: 16MB\n")
                 && !std::io::fs::file_exists(self.app + "/dna/nats.conf"),
             "init writes the nerves' server configuration beside the allocation: " + conf,
         );
