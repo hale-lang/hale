@@ -493,8 +493,10 @@ function renderBoard(main) {
       ...reviews.filter(r => r.state === "settled").slice().reverse().slice(0, 40).map(reviewCard),
     ], unavailable: S.errors.tasks && !reviews.some(r => r.state === "settled") ? S.errors.tasks : null },
   ];
+  const pending = reviews.filter(r => r.state === "pending");
   const board = el("div", { class: "board", role: "list" }, columns.map(c => el("section", { class: "column", role: "listitem", "aria-label": c.title },
-    el("header", {}, el("h2", {}, c.title), el("span", { class: "n" }, c.unavailable ? "" : String(c.items.length))),
+    el("header", {}, el("h2", {}, c.title), el("span", { class: "n" }, c.unavailable ? "" : String(c.items.length)),
+      c.key === "review" && pending.length > 1 && S.calls.has("ReviewVerdict") ? approveAll(pending) : ""),
     c.unavailable ? el("div", { class: "empty", title: errorText(c.unavailable) }, "tasks are not readable from this head yet (", c.unavailable.code, ")")
       : c.items.length ? el("ul", { class: "cards" }, c.items) : el("div", { class: "empty" }, "nothing here"),
   )));
@@ -510,6 +512,40 @@ function renderBoard(main) {
 
 // What a Review is about, when its row carries no question: the
 // proposal it decides, by name.
+// A fresh organization opens its whole starting chart as pending Reviews:
+// the Board's seat, each position, each mandate, the seeded practices. One
+// action approves them all, each its own verdict in the person's name,
+// after they have seen the count and said so.
+function approveAll(pending) {
+  const wrap = el("span", { class: "approve-all" });
+  const ask = el("button", { type: "button", onclick: () => {
+    wrap.replaceChildren(
+      el("span", { class: "note" }, `approve all ${pending.length}? `),
+      el("button", { type: "button", class: "primary", onclick: () => run() }, "Yes, approve all"),
+      el("button", { type: "button", onclick: () => wrap.replaceChildren(ask) }, "No"),
+    );
+  } }, `Approve all ${pending.length}`);
+  wrap.append(ask);
+  async function run() {
+    let done = 0, refused = [];
+    const status = el("span", { class: "note", role: "status" }, "approving…");
+    wrap.replaceChildren(status);
+    for (const r of pending) {
+      try {
+        const reply = await command(S.app, "ReviewVerdict", { request_id: requestId(), review_id: r.id, subject_digest: r.subject_digest, verdict: "approve", comment: "" });
+        if (reply.ok) done += 1; else refused.push(r.id + ": " + (reply.why || reply.code || "refused"));
+      } catch (e) { refused.push(r.id + ": " + errorText(e)); }
+      status.textContent = `approving… ${done + refused.length}/${pending.length}`;
+    }
+    S.receipt = { tab: "board", id: S.route.id, card: el("div", { class: "receipt" + (refused.length ? " refused" : "") },
+      `${done} approved${refused.length ? `, ${refused.length} refused` : ""}; the organization settles each in turn`,
+      ...refused.map(x => el("div", { class: "note mono" }, x))) };
+    try { await loadAll(); } catch (e) { /* the next render says what could not be read */ }
+    render();
+  }
+  return wrap;
+}
+
 function reviewTitle(r) {
   if (r.question) return r.question;
   const p = (S.practices || []).find(x => x.review_id === r.id || x.digest === r.knowledge_digest);

@@ -121,7 +121,7 @@ form.act textarea { min-height: 72px; }
 /* board */
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(240px, 1fr); gap: calc(var(--u) * 3); overflow-x: auto; padding-bottom: calc(var(--u) * 2); }
 .column { background: var(--panel); border: 1px solid var(--line); border-radius: 3px; min-height: 200px; }
-.column > header { padding: calc(var(--u) * 2) calc(var(--u) * 3); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+.column > header { padding: calc(var(--u) * 2) calc(var(--u) * 3); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: calc(var(--u) * 2); }
 .column > header .n { color: var(--faint); font-family: var(--mono); }
 .cards { list-style: none; margin: 0; padding: calc(var(--u) * 2); display: grid; gap: calc(var(--u) * 2); }
 .card { display: block; color: inherit; padding: calc(var(--u) * 2) calc(var(--u) * 3); border: 1px solid var(--line); border-radius: 3px; background: var(--raised); width: 100%; text-align: left; }
@@ -161,3 +161,7 @@ form.act textarea { min-height: 72px; }
 .preview .add { color: var(--green); }
 .preview .del { color: var(--coral); }
 form.act.danger h3 { color: var(--coral); }
+
+/* one action over a fresh chart's pending Reviews */
+.column header .approve-all { margin-left: auto; display: inline-flex; gap: var(--u); align-items: center; }
+.column header .approve-all button { font-size: 12px; padding: 2px calc(var(--u) * 2); }
