@@ -31,7 +31,10 @@ browser/service boundary it proposed.
   Ledger as one) and the Reviews in the lanes a board is read by: `Backlog`
   (a Task handed to nobody), `To do` (handed to someone), `In progress` (in
   a transfer, or waiting on something), `In review` (a Review the Board has
-  not decided) and `Done` (a decided Task, a settled Review). A card opens the Review or the Task; a verdict
+  not decided) and `Done` (a decided Task, a settled Review). A fresh
+  organization opens its whole starting chart as pending Reviews, so the
+  `In review` lane offers to approve them all in one action, each its own
+  verdict in the person's name, after the count is shown and confirmed. A card opens the Review or the Task; a verdict
   (`ReviewVerdict`), taking a Task (`TaskTake`) and reporting it done
   (`TaskDone`) are the record's commands.
 - **Knowledge** is every node the record holds, by kind, with search: a node's
