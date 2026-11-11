@@ -240,19 +240,19 @@ fn map_rows(root: &Path) -> BTreeMap<(String, String), serde_json::Value> {
     out
 }
 
-/// Whether `url` answers at all (any status), asked again until it does or
-/// `secs` seconds passed: a provider's api just applied is often still
-/// starting (a first start compiles it), and what it serves is asked once
-/// it answers.
-fn wait_answers(url: &str, secs: u64) -> bool {
+/// How long `url` took to answer at all (any status), asked again until it
+/// does or `secs` seconds passed: a provider's api just applied is often
+/// still starting (a first start compiles it), and what it serves is asked
+/// once it answers. None when it never did.
+fn wait_answers(url: &str, secs: u64) -> Option<u64> {
     let begun = std::time::Instant::now();
     loop {
         let code = Command::new("curl").args(["-s", "-o", "/dev/null", "-m", "3", "-w", "%{http_code}", url]).stdin(Stdio::null()).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
         if !code.is_empty() && code != "000" {
-            return true;
+            return Some(begun.elapsed().as_secs());
         }
         if begun.elapsed() >= std::time::Duration::from_secs(secs) {
-            return false;
+            return None;
         }
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
@@ -381,14 +381,17 @@ fn wire_all(targets: &[&Organism], p: &Provider, then: &str) -> Vec<String> {
 }
 
 /// Every tenant wired from the provider `p` once its services were applied
-/// (by its graft, or by an apply): its api asked until it answers (a minute
-/// and a half at most: a first start compiles it), then every tenant, and
-/// what a person does next.
+/// (by its graft, or by an apply): its api asked until it answers (five
+/// minutes at most: a first start migrates and pulls images), then every
+/// tenant, and what a person does next.
 fn wire_every_tenant(p: &Provider) -> Vec<String> {
     if let Ok(url) = provider_url(p) {
         let models_url = format!("{url}{}", p.decl.models_path);
         super::progress(&format!("waiting for {}'s `{}` to answer on {url}", p.org.name, p.decl.service));
-        let _ = wait_answers(&models_url, 90);
+        match wait_answers(&models_url, 300) {
+            Some(s) => super::progress(&format!("{}'s `{}` answered after {s}s", p.org.name, p.decl.service)),
+            None => super::progress(&format!("{}'s `{}` did not answer within 300s", p.org.name, p.decl.service)),
+        }
     }
     let all = tenants();
     wire_all(&all.iter().collect::<Vec<_>>(), p, "hale habitat models --all")
