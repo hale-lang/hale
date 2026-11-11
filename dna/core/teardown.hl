@@ -1190,6 +1190,11 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
                     + "on " + host + ", removed with that host's items below",
                 "-", "no", "covered", "", "", 85,
             );
+        } else if role == "body" {
+            // its body, a service of the habitat's project holding no data:
+            // stopped and removed with its other services there, before its
+            // memory goes
+            services = services + "\n" + service;
         } else if role == "services" {
             // its project's resources here, by name: what is removed, and
             // nothing that appears after

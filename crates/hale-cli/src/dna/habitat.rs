@@ -46,6 +46,8 @@ mod placements;
 mod models;
 #[path = "upgrade.rs"]
 mod upgrade;
+#[path = "bodies.rs"]
+mod bodies;
 
 static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -2328,6 +2330,12 @@ fn up(args: &[String]) -> ExitCode {
         eprintln!("hale habitat up: {e}");
         return ExitCode::from(1);
     }
+    // the bodies of the organisms it grafted from saplings, beside its own:
+    // made again on this toolchain's image, and recorded when an organism
+    // grafted before bodies were kept has none
+    for o in bodies::keep_all() {
+        println!("{}", o.line());
+    }
     ExitCode::SUCCESS
 }
 
@@ -3014,13 +3022,13 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let user = std::env::var("USER").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "hale".to_string());
     let sock = docker_socket_path();
 
-    let mut mounts = vec![format!("      - \"{hab_dir}:{hab_dir}\"")];
+    let mut mounted = vec![(hab_dir.clone(), hab_dir.clone())];
     let vault_str = vault.display().to_string();
     if vault_str != hab_dir && !vault_str.starts_with(&format!("{hab_dir}/")) {
-        mounts.push(format!("      - \"{vault_str}:{vault_str}\""));
+        mounted.push((vault_str.clone(), vault_str.clone()));
     }
-    mounts.push(format!("      - \"{sock}:/var/run/docker.sock\""));
-    let mounts_yaml = mounts.join("\n");
+    mounted.push((sock.clone(), "/var/run/docker.sock".to_string()));
+    let mounts_yaml = mounted.iter().map(|(s, t)| format!("      - \"{s}:{t}\"")).collect::<Vec<_>>().join("\n");
 
     let mut env_file_spec = String::new();
     if backends == "operator" {
@@ -3149,9 +3157,9 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&net_or_hosts);
     services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
     services_block.push_str(&env_file_spec);
-    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
-    services_block.push_str(loopback);
-    services_block.push_str(&forwarded_env);
+    let body_env = format!("      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n{loopback}{forwarded_env}");
+    services_block.push_str("    environment:\n");
+    services_block.push_str(&body_env);
     // The body drains onto the habitat's own memory and nerves (its lease
     // goes back in memory) when it stops: it depends on them, so compose
     // stops it, within its grace, before them whatever stops the project
@@ -3194,6 +3202,10 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         format!("{}\n{services_block}", base_compose.trim_end())
     };
     std::fs::write(&compose_path, new_compose).map_err(|e| format!("write {}: {e}", compose_path.display()))?;
+    // what the organisms' bodies take of this one (bodies.rs): kept for a
+    // graft and an apply, which do not know this `up`'s image or machine
+    let hostname = if is_macos { Command::new("hostname").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default() } else { String::new() };
+    bodies::keep_shape(&bodies::BodyShape { image: image.clone(), user: user_spec.clone(), network: net_or_hosts.clone(), hostname, env_file: env_file_spec.clone(), environment: body_env.clone(), mounts: mounted.clone(), stop_grace_secs: drain_secs })?;
 
     let ports_path = dir.join("ports.yaml");
     let existing_ports = std::fs::read_to_string(&ports_path).unwrap_or_else(|_| "services:\n".to_string());
@@ -3533,6 +3545,14 @@ fn status() -> ExitCode {
         if row["roles"]["services"].is_object() {
             println!("  {}", services_status(&format!("{key}/services"), &observed));
         }
+        // its body, which the habitat keeps on this machine
+        if row["roles"]["body"].is_object() {
+            let service = bodies::service_of(&key);
+            match bodies::running(&key) {
+                Some(s) => println!("  {:<7} {service} up ({s})", "body"),
+                None => println!("  {:<7} {service} down: `hale habitat apply` (or `up`) starts it", "body"),
+            }
+        }
     }
     ExitCode::SUCCESS
 }
@@ -3640,15 +3660,30 @@ fn down(args: &[String]) -> ExitCode {
 }
 
 /// The habitat's face and body services stopped first: its face, then its
-/// body (drained onto its backends while they are still running). What was
-/// stopped is said in `said`.
+/// organisms' bodies and its own (drained onto their backends while they
+/// are still running). What was stopped is said in `said`.
 fn stop_processes(said: &mut Vec<String>) -> Result<(), String> {
     let project = local_habitat_project();
     for (service, timeout, msg) in [
         ("grafana", None, "stopped the habitat's Grafana (compose service grafana)"),
         ("face", None, "stopped the habitat's face (compose service face)"),
+        ("", Some(drain_window().as_secs().to_string()), ""),
         ("body", Some(drain_window().as_secs().to_string()), "stopped the habitat's body (compose service body), drained"),
     ] {
+        // its organisms' bodies, together, each within its drain
+        if service.is_empty() {
+            let bodies = bodies::running_ids();
+            if bodies.is_empty() {
+                continue;
+            }
+            let mut args = vec!["stop", "-t", timeout.as_deref().unwrap_or("0")];
+            args.extend(bodies.iter().map(|(id, _)| id.as_str()));
+            if let Docker::Failed(why) = docker(&args) {
+                return Err(why);
+            }
+            said.push(format!("stopped its organisms' bodies ({}), drained", bodies.iter().map(|(_, s)| format!("compose service {s}")).collect::<Vec<_>>().join(", ")));
+            continue;
+        }
         let Docker::Answered(out) = docker(&[
             "ps",
             "-q",

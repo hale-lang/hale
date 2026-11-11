@@ -308,6 +308,9 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
     // its model map pointed at the habitat's models, once its services are
     // applied (every organism's, when it provides them)
     out.extend(super::models::after_graft(&crate::dna::organism_root(&store)?));
+    // its body, which the habitat keeps: the graft's ratifications are
+    // executed once it runs
+    out.extend(super::bodies::after_graft(&crate::dna::organism_root(&store)?)?);
     Ok(out)
 }
 
@@ -603,17 +606,48 @@ fn apply_here(host: &str, fresh: bool, reply: Option<&str>, root: Option<&str>) 
     }
     let out = cmd.stderr(std::process::Stdio::inherit()).output().map_err(|e| format!("hale dna habitat-allocations-apply: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let v: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|_| {
+    let mut v: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|_| {
         if out.status.success() {
             format!("the apply answered no outcome: {}", stdout.trim())
         } else {
             "the apply failed (its lines above say why)".to_string()
         }
     })?;
+    // the organisms' bodies, on the habitat's own machine, once their
+    // memory and nerves are applied: written from the habitat body's shape
+    // (which only the toolchain knows) and brought up
+    if host.is_empty() || host == super::hosted::LOCAL || super::hosted::names_own_machine(host, super::remote::pointer().as_ref()) {
+        for l in with_bodies(&mut v, &super::bodies::keep_all()) {
+            eprintln!("{l}");
+        }
+    }
     if let Some(path) = reply {
         std::fs::write(path, format!("{v}\n")).map_err(|e| format!("write {path}: {e}"))?;
     }
     Ok(Applied::of(&v))
+}
+
+/// An apply's reply `v` with the bodies `bodies` listed among what it
+/// applied (and not ok when one did not come up); the progress lines that
+/// say each.
+pub(super) fn with_bodies(v: &mut serde_json::Value, bodies: &[super::bodies::Outcome]) -> Vec<String> {
+    if bodies.is_empty() {
+        return Vec::new();
+    }
+    let mut list: Vec<serde_json::Value> = v["applied"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+    let mut said = Vec::new();
+    for b in bodies {
+        said.push(format!("applying {}/body on {}", b.key, super::shown_host("local")));
+        list.push(b.applied());
+        if !b.ok {
+            v["ok"] = serde_json::json!(false);
+            if v["code"].as_str().unwrap_or("").is_empty() {
+                v["code"] = serde_json::json!("not_applied");
+            }
+        }
+    }
+    v["applied"] = serde_json::json!(serde_json::Value::Array(list).to_string());
+    said
 }
 
 /// The head's `Commands::graft` for `name` on `host`, when the head answers,
@@ -1011,6 +1045,29 @@ mod tests {
         assert!(!a.ok && a.restart);
         assert_eq!(a.lines, vec!["refused k/memory on local: memory_holds_rows: apply with --fresh".to_string(), "applied k/services on local (compose): up".to_string()]);
         assert!(Applied::of(&serde_json::json!({ "ok": true, "applied": "[]" })).ok);
+    }
+
+    // the organisms' bodies an apply brings up are listed in its reply, and
+    // one that did not come up is the apply's failure
+    #[test]
+    fn an_applys_reply_lists_the_bodies_it_brought_up() {
+        let body = |key: &str, ok: bool| super::super::bodies::Outcome { key: key.to_string(), name: "voice".to_string(), ok, why: if ok { String::new() } else { "no image".to_string() }, state: if ok { "up" } else { "down" }.to_string(), detail: String::new() };
+        let mut v = serde_json::json!({ "ok": true, "code": "", "applied": "[{\"allocation\":\"k/services\",\"host\":\"local\",\"provider\":\"compose\",\"ok\":true,\"why\":\"\",\"state\":\"up\"}]" });
+        let said = with_bodies(&mut v, &[body("k", true)]);
+        assert_eq!(said.len(), 1);
+        assert!(said[0].starts_with("applying k/body on "), "{said:?}");
+        let a = Applied::of(&v);
+        assert!(a.ok);
+        assert_eq!(a.lines.len(), 2);
+        assert!(a.lines[1].starts_with("applied k/body on ") && a.lines[1].ends_with("(compose): up"), "{:?}", a.lines);
+        let mut failed = serde_json::json!({ "ok": true, "code": "", "applied": "[]" });
+        with_bodies(&mut failed, &[body("j", false)]);
+        let f = Applied::of(&failed);
+        assert!(!f.ok && failed["code"] == "not_applied");
+        assert!(f.lines[0].starts_with("refused j/body on ") && f.lines[0].ends_with(": no image"), "{:?}", f.lines);
+        let mut none = serde_json::json!({ "ok": true, "applied": "[]" });
+        assert!(with_bodies(&mut none, &[]).is_empty());
+        assert_eq!(none["applied"], "[]");
     }
 
     // through an older head that applied inside its request, the follower

@@ -125,6 +125,8 @@ fn habitat_place(root: String, a: AllocationPlace) -> PlaceReply {
             "`" + role + "` is placed with what holds it: "
                 + (if role == "database" || role == "broker" {
                     "its server's allocation"
+                } else if role == "body" {
+                    "the habitat's own body, on the habitat's machine (moving an organism's body is not built)"
                 } else {
                     "the habitat's body, on this machine"
                 }),

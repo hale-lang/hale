@@ -505,6 +505,9 @@ fn habitat_side(s: &Standing, m: &Move, plan: bool) -> Result<String, String> {
             Some(b) => println!("{:<8}{key}/services re-applied on {} through its provider, its images built from {}", "apply", b["host"].as_str().unwrap_or(""), m.to.revision),
             None => println!("{:<8}no services allocation (its graft placed none on a host)", "apply"),
         }
+        if super::bodies::shape().is_some() {
+            println!("{:<8}{key}/body restarted on {} (compose service {})", "body", m.to.revision, super::bodies::service_of(&key));
+        }
         println!("{:<8}habitat.organism.upgraded {key}: {} -> {}", "record", m.from.revision, m.to.revision);
         return Ok(manifest);
     }
@@ -550,6 +553,12 @@ fn habitat_side(s: &Standing, m: &Move, plan: bool) -> Result<String, String> {
             }
         }
         None => println!("{:<8}no services allocation (its graft placed none on a host)", "apply"),
+    }
+    // its body, which the habitat keeps, on the tree as it is now
+    match super::bodies::restart(&key) {
+        Some(Ok(line)) => println!("{line}"),
+        Some(Err(e)) => return Err(finish(format!("{key}/body did not restart: {e}"))),
+        None => {}
     }
     let body = json!({ "organism": s.organism, "child": s.child, "sapling": s.sapling, "from": m.from.revision, "from_digest": m.from.digest, "to": m.to.revision, "digest": m.to.digest, "commit": commit });
     sapling::record(&[json!({ "kind": "habitat.organism.upgraded", "entity": key, "body": body.to_string() })]).map_err(finish)?;

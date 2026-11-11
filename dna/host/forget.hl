@@ -200,7 +200,16 @@ fn forget_allocation_items(
         let body = line[(tab + 1)..len(line)];
         let role = std::json::find_string_field(body, "role");
         let provider = std::json::find_string_field(body, "provider");
-        if role == "head" || role == "face" || role == "forge" || role == "identity" { continue; }
+        // an organism's body holds no data: it goes with the habitat's
+        // project, stopped first with the habitat's own
+        if role == "head"
+            || role == "face"
+            || role == "forge"
+            || role == "identity"
+            || role == "body"
+        {
+            continue;
+        }
         // where it is applied, as recorded (this machine when nothing says
         // otherwise), is where its resources are; a placement elsewhere not
         // applied yet is audited with that host's items
