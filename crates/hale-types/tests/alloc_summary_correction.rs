@@ -378,6 +378,12 @@ fn verdict_changes() {
         &[
         ],
     );
+    // The chart's personas (#1900): removing an organism plans its personas
+    // at the habitat's Forgejo (`personas_gone`, and the
+    // `forgejo_persona_domain` it calls) from `organism_teardown_items`,
+    // which the head's plan already invokes unboundedly, so both are now;
+    // nine more site verdicts move from once per invocation to reclaimed per
+    // iteration, and no advisory site is added.
     pinned(
         "dna/api",
         4179,
@@ -669,6 +675,14 @@ fn verdict_changes() {
             "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @2634364..2634432 InvokedUnboundedly",
         ],
     );
+    // The chart's personas (#1900): `habitat-forge-personas` carries out a
+    // plan a step a line, its answer and failures accumulating across the
+    // steps (bounded by the plan, which the verb's one process reads once),
+    // and `forgejo_users` builds Forgejo's listing a line at a time; 31 more
+    // call lines name what they call, 52 more site verdicts move to
+    // accumulation and the advisory adds 36 sites, every one in
+    // `forgejo_users`, `habitat_forge_personas_verb` or the `persona_*`
+    // steps it calls. The rest of the sites moved only by offset.
     pinned(
         "dna/host/verb",
         5006,
@@ -2148,6 +2162,9 @@ fn verdict_changes() {
             "__lib_dna__operations___usage__usage_counts_text StringConcat @4072447..4072579 InvokedUnboundedly",
         ],
     );
+    // The chart's personas (#1900): the host's verb adds 28 call lines that
+    // name what they call; no verdict moves, and the sites moved only by
+    // offset.
     pinned(
         "dna/host",
         4682,

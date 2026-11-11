@@ -307,6 +307,10 @@ fn host() {
     // the nerves' server can reserve adds three rows on each side; two of
     // them, `stream_put` and `exchange_stream_place`, reach pond's NATS
     // client, as `nerves_migrate` does, so the correction changes them.
+    // The chart's personas (#1900), the host verb that carries out a plan
+    // at the habitat's Forgejo, add five rows on each side; two of them,
+    // `persona_grant` and `persona_remove`, reach imported code (the core's
+    // `ForgejoApi` and `run_tool`), so the correction changes them.
     pinned(
         "host",
         597,
