@@ -521,7 +521,7 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 
 ## Where the language stands
 
-Hale is at **v0.32.10** (2026-11-10) and pre-1.0, and it uses that
+Hale is at **v0.32.11** (2026-11-11) and pre-1.0, and it uses that
 freedom: there are no compatibility windows before 1.0. A rule that
 turns out to be wrong changes in the release that finds it, the change
 is listed under *Breaking changes* on that release's page with its

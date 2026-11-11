@@ -68,11 +68,23 @@ jobs:
           images: ghcr.io/${{ github.repository }}
 
       # pushed by digest alone: the merge job below names it
+      # the runners' resolver stopped answering for Ubuntu's archive
+      # (2026-11-11): the image's apt reaches it at an address a public
+      # resolver gives (a known one if it gives none)
+      - name: Pin Ubuntu's archive
+        id: archive
+        run: |
+          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "ip=${ip:-185.125.190.81}" >> "$GITHUB_OUTPUT"
+
       - name: Build + push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
+          add-hosts: |
+            archive.ubuntu.com:${{ steps.archive.outputs.ip }}
+            security.ubuntu.com:${{ steps.archive.outputs.ip }}
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
