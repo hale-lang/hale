@@ -873,8 +873,9 @@ mod tests {
         // the graft says it as a note
         let lines = lines_of(unread());
         assert!(lines[0].starts_with(&format!("personas {K}: ")));
-        assert!(lines[1].starts_with("note    the personas of ") && lines[1].contains("skipped (chart not read: "), "{lines:?}");
-        assert!(lines_of(Err("x".into()))[0].starts_with("note    "));
+        let note = format!("{:<8}", "note");
+        assert!(lines[1].starts_with(&format!("{note}the personas of ")) && lines[1].contains("skipped (chart not read: "), "{lines:?}");
+        assert!(lines_of(Err("x".into()))[0].starts_with(&note));
     }
 
     #[test]
