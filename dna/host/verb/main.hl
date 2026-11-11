@@ -259,6 +259,10 @@ fn main() {
             host::word(a, 1),
             host::word(a, 2),
         );
+    } else if verb == "habitat-forge-personas" {
+        // the chart's personas at the habitat's Forgejo: its users listed,
+        // or a plan's steps carried out (`hale habitat apply`)
+        ans = host::habitat_forge_personas_verb(host::word(a, 0), host::has_flag(a, "--list"));
     } else if verb == "habitat-apply" {
         // phase 4: a tenant's allocations brought back by the compose provider
         ans = host::habitat_apply_verb(host::word(a, 0));

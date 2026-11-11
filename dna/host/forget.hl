@@ -279,6 +279,7 @@ fn habitat_forget_unrecorded_verb(root: String) -> Answer {
         mine = forget_slot(mine, dna::FORGEJO_ADMIN_VAULT, "\n");
         mine = forget_slot(mine, dna::habitat_key_slot(root), "\n");
         mine = forget_slot(mine, dna::forgejo_vault(key), "\n");
+        mine = forget_slots(mine, dna::vault_slots_prefixed(dna::FORGEJO_PERSON_VAULT), "\n");
         mine = forget_slots(mine, dna::vault_slots_prefixed(dna::nerves_vault_prefix(id)), "\n");
         items = dna::teardown_more(
             items,
@@ -516,6 +517,8 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
                 }
             }
             mine = forget_slot(mine, dna::forgejo_vault(child), taken);
+            // its chart's personas' tokens (`forgejo-<key>-<position>`)
+            mine = forget_slots(mine, dna::vault_slots_prefixed("forgejo-" + child + "-"), taken);
             mine = forget_slots(
                 mine,
                 dna::vault_slots_prefixed(
@@ -549,6 +552,8 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
         }
         mine = forget_slot(mine, dna::FORGEJO_ADMIN_VAULT, taken);
         mine = forget_slot(mine, dna::habitat_key_slot(root), taken);
+        // each person's token at the habitat's Forgejo (`forgejo-person-<user>`)
+        mine = forget_slots(mine, dna::vault_slots_prefixed(dna::FORGEJO_PERSON_VAULT), taken);
         // the nerves' accounts of the habitat's own organization, and of
         // every organism it ever grafted (one removed before kept its
         // applications' accounts: `organism remove` did not know them)
@@ -604,6 +609,7 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
                 "forge", "",
                 "the habitat's Forgejo at " + std::json::find_string_field(own_forge, "address")
                     + " (service forge), its volume deleted: its accounts " + users
+                    + " and every chart's personas"
                     + (
                         if len(forgejo_repos) > 0 {
                             "; its repositories " + forgejo_repos

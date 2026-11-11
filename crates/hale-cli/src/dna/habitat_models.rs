@@ -35,13 +35,13 @@ use crate::dna::secrets;
 
 /// An organism the habitat grafted, live, or the habitat's own genome.
 #[derive(Debug, Clone)]
-struct Organism {
+pub(super) struct Organism {
     /// its allocations' key: the record's first 12 characters
-    key: String,
-    name: String,
+    pub(super) key: String,
+    pub(super) name: String,
     /// its record's identity
     record: String,
-    root: PathBuf,
+    pub(super) root: PathBuf,
     /// the habitat's own genome, a tenant like any grafted organism
     genome: bool,
 }
@@ -96,7 +96,7 @@ struct Provider {
 /// The organisms the habitat holds grafted, in the order it grafted them:
 /// each entity's latest `habitat.grafted` row, one removed left out, its
 /// directory from its allocation's cache.
-fn grafted() -> Vec<Organism> {
+pub(super) fn grafted() -> Vec<Organism> {
     let mut order: Vec<String> = Vec::new();
     let mut latest: BTreeMap<String, serde_json::Value> = BTreeMap::new();
     for r in rows_of(&genome_dir()).iter().filter(|r| r["kind"] == "habitat.grafted") {

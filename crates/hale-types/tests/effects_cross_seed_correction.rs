@@ -307,10 +307,14 @@ fn host() {
     // the nerves' server can reserve adds three rows on each side; two of
     // them, `stream_put` and `exchange_stream_place`, reach pond's NATS
     // client, as `nerves_migrate` does, so the correction changes them.
+    // The chart's personas (#1900), the host verb that carries out a plan
+    // at the habitat's Forgejo, add five rows on each side; two of them,
+    // `persona_grant` and `persona_remove`, reach imported code (the core's
+    // `ForgejoApi` and `run_tool`), so the correction changes them.
     pinned(
         "host",
-        592,
-        601,
+        597,
+        606,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -464,6 +468,8 @@ fn host() {
         owners_here  does={syscall,env,alloc}
         ownership_graph_here  does={syscall,env,alloc}
         ownership_note  does={syscall,env,alloc}
+        persona_grant  does={syscall,env,alloc}
+        persona_remove  does={syscall,block,env,alloc}
         postgres_secrets_path  does={syscall,block,env,alloc}
         profile_name  does={syscall,block,time,env,alloc}
         project_dir_name  does={syscall,block,alloc}
