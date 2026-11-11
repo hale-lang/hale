@@ -17,10 +17,17 @@
 //! not on GitHub's, so the first publish lists everything since GitHub's
 //! main, and nothing is recorded that could drift from what GitHub holds.
 //!
-//! Nothing is ever force-pushed. GitHub's main must be an ancestor of the
-//! internal main (a merge made at GitHub, a commit pushed there, is taken
-//! back into the internal forge first), and a branch already at GitHub must
-//! be one the internal main contains.
+//! Nothing is ever force-pushed, and the internal main is never touched.
+//! When GitHub's main has commits the internal main lacks (its merge queue
+//! merges a publish's pull request with a merge commit), the branch pushed
+//! is a merge of the two, made in the publish's scratch repository and
+//! authored as the owner the GitHub token belongs to (`/user`); so is a
+//! merge with the branch an earlier publish the same day left at GitHub.
+//! A merge that conflicts stops the publish, naming the files.
+//!
+//! A habitat on another machine publishes there: the verb runs in its
+//! toolchain image (`remote::run_there`), where its vault and its Forgejo
+//! are.
 //!
 //! Where it goes is the `habitat.publish <id>` row `hale habitat forge
 //! <organism> github --repo <owner/name> --publish` records (beside the
@@ -73,13 +80,17 @@ pub(super) fn cmd(args: &[String]) -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
+    // a habitat on another machine: the publish runs there, in its
+    // toolchain image, where its vault and its Forgejo are
+    if let Some(p) = super::super::remote::pointer() {
+        let mut there: Vec<&str> = vec!["forge", "publish"];
+        there.extend(args.iter().map(String::as_str));
+        return super::super::remote::run_there(&p, "forge", &there);
+    }
     let run = || -> Result<Vec<String>, String> {
-        if super::super::remote::pointer().is_some() {
-            return Err("the habitat runs on another machine, and its Forgejo answers on that machine's loopback: run `hale habitat forge publish` there".to_string());
-        }
         let rows = rows_of(&genome_dir());
         let child = organism_child(&rows, &organism)?;
-        let vault = crate::dna::vault_local_dir().ok_or("the vault is served over HTTP (HALE_VAULT_ADDR): a publish reads its tokens from a local vault alone")?;
+        let vault = crate::dna::vault_local_dir().ok_or("the vault is served over HTTP (HALE_VAULT_ADDR): a publish reads its tokens from the habitat's own vault alone")?;
         let read = |slot: &str| std::fs::read_to_string(vault.join(slot)).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
         let (internal, github) = ends_from(&rows, &organism, &child[..12], &read)?;
         let date = today();
@@ -177,25 +188,45 @@ fn publish(internal: &Internal, github: &GitHub, branch: &str, date: &str, dry_r
         return Err(format!("GitHub's {} has no `main` for a pull request to go against: push its first commit there yourself", github.repo));
     };
     git(dir, github_auth, &["fetch", "-q", "--no-tags", &github.git_url, "+refs/heads/main:refs/github/main"]).map_err(|e| format!("GitHub's main could not be fetched from {}: {e}", github.repo))?;
-    if theirs == ours {
-        return Ok(vec![format!("{:<8}nothing to publish: GitHub's main is the internal main ({})", "publish", short(&ours))]);
-    }
-    if !is_ancestor(dir, &theirs, &ours)? {
-        return Err(format!(
-            "GitHub's main ({}) is not an ancestor of the internal main ({}): a publish never force-pushes, so it stops here. Take GitHub's main into the internal forge first (a merge made at GitHub is a commit the internal main lacks), then publish again",
-            short(&theirs),
-            short(&ours)
-        ));
+    // GitHub's main holds the internal main already (equal, or a merge
+    // made there of a publish's pull request): nothing is new
+    if is_ancestor(dir, &ours, &theirs)? {
+        return Ok(vec![format!("{:<8}nothing to publish: GitHub's main ({}) holds the internal main ({})", "publish", short(&theirs), short(&ours))]);
     }
     let range = git(dir, None, &["rev-list", "--reverse", "--topo-order", &format!("{theirs}..{ours}")])?;
     let range: Vec<&str> = range.lines().collect();
-    // the branch at GitHub moves forward only
+    // the branch at GitHub, when it is there already (an earlier publish
+    // the same day): what is pushed contains it, so it moves forward only
     let branch_at = at(&format!("refs/heads/{branch}"));
-    if let Some(sha) = branch_at.as_deref().filter(|s| *s != ours) {
+    if branch_at.as_deref().is_some_and(|s| s != ours) {
         git(dir, github_auth, &["fetch", "-q", "--no-tags", &github.git_url, &format!("+refs/heads/{branch}:refs/github/branch")]).map_err(|e| format!("GitHub's {branch} could not be fetched: {e}"))?;
-        if !is_ancestor(dir, sha, &ours)? {
-            return Err(format!("GitHub's {branch} is at {}, which the internal main does not contain: a publish never force-pushes; name another branch with --branch", short(sha)));
+    }
+    // What is pushed: the internal main, merged with the branch already at
+    // GitHub and with GitHub's main where it does not contain them (a merge
+    // GitHub's merge queue made is a commit the internal main lacks). The
+    // merges are made here, in the scratch repository, as the owner: the
+    // internal main is never touched, and nothing is forced.
+    let mut target = ours.clone();
+    let mut merges: Vec<String> = Vec::new();
+    let mut owner: Option<(String, String)> = None;
+    for (other, what) in [(branch_at.clone(), format!("GitHub's {branch}")), (Some(theirs.clone()), "GitHub's main".to_string())] {
+        let Some(other) = other else { continue };
+        if is_ancestor(dir, &other, &target)? {
+            continue;
         }
+        if is_ancestor(dir, &target, &other)? {
+            target = other;
+            continue;
+        }
+        if owner.is_none() {
+            owner = Some(github_identity(github)?);
+        }
+        let (name, email) = owner.clone().unwrap_or_default();
+        let message = format!("Merge {what} ({}) into the internal main ({}) for publish {date}", short(&other), short(&ours));
+        target = merge(dir, &target, &other, &name, &email, &message).map_err(|files| {
+            format!("{what} ({}) and the internal main ({}) conflict in {}: a publish never force-pushes and never resolves a conflict, so it stops here; take {what} into the internal forge and resolve it there, then publish again", short(&other), short(&ours), files.join(", "))
+        })?;
+        merges.push(format!("{:<8}{what} {} into the internal main as {} (by {name} <{email}>)", "merged", short(&other), short(&target)));
     }
     let merged: Vec<Merged> = {
         let mut m = merged_pulls(internal)?;
@@ -205,13 +236,14 @@ fn publish(internal: &Internal, github: &GitHub, branch: &str, date: &str, dry_r
         m
     };
     let title = format!("Publish {date}");
-    let body = pr_body(&ours, &theirs, range.len(), &merged);
+    let body = pr_body(&ours, &theirs, range.len(), &merged, target != ours);
     let open = open_pull(github, branch)?;
-    let mut out = vec![format!("{:<8}the internal main {}, {} past GitHub's main {}", "publish", short(&ours), commits(range.len()), short(&theirs))];
+    let mut out = vec![format!("{:<8}the internal main {}, {} GitHub's main {} lacks", "publish", short(&ours), commits(range.len()), short(&theirs))];
     if dry_run {
+        out.extend(merges.iter().map(|m| format!("{:<8}would have {}", "dry-run", m.trim_start_matches("merged").trim_start())));
         out.push(match branch_at.as_deref() {
-            Some(sha) if sha == ours => format!("{:<8}GitHub's {branch} is at {} already: nothing to push", "dry-run", short(&ours)),
-            _ => format!("{:<8}would push {} to github {} as {branch}", "dry-run", short(&ours), github.repo),
+            Some(sha) if sha == target => format!("{:<8}GitHub's {branch} is at {} already: nothing to push", "dry-run", short(&target)),
+            _ => format!("{:<8}would push {} to github {} as {branch}", "dry-run", short(&target), github.repo),
         });
         out.push(match &open {
             Some((_, url)) => format!("{:<8}would update {url}", "dry-run"),
@@ -225,11 +257,12 @@ fn publish(internal: &Internal, github: &GitHub, branch: &str, date: &str, dry_r
         out.push(format!("{:<8}nothing was pushed", "dry-run"));
         return Ok(out);
     }
-    if branch_at.as_deref() == Some(ours.as_str()) {
-        out.push(format!("{:<8}GitHub's {branch} is at {} already", "pushed", short(&ours)));
+    out.extend(merges);
+    if branch_at.as_deref() == Some(target.as_str()) {
+        out.push(format!("{:<8}GitHub's {branch} is at {} already", "pushed", short(&target)));
     } else {
-        git(dir, github_auth, &["push", "-q", &github.git_url, &format!("{ours}:refs/heads/{branch}")]).map_err(|e| format!("the push to GitHub's {} failed (nothing was forced): {e}", github.repo))?;
-        out.push(format!("{:<8}{} to github {} {branch}", "pushed", short(&ours), github.repo));
+        git(dir, github_auth, &["push", "-q", &github.git_url, &format!("{target}:refs/heads/{branch}")]).map_err(|e| format!("the push to GitHub's {} failed (nothing was forced): {e}", github.repo))?;
+        out.push(format!("{:<8}{} to github {} {branch}", "pushed", short(&target), github.repo));
     }
     match open {
         Some((number, url)) => {
@@ -253,19 +286,79 @@ fn publish(internal: &Internal, github: &GitHub, branch: &str, date: &str, dry_r
 
 /// The pull request's body: what it carries and the internal pull requests
 /// merged since the last publish, by title and internal number. No link into
-/// the private forge, and no `#<n>`, which GitHub would link to its own.
-fn pr_body(ours: &str, theirs: &str, count: usize, merged: &[Merged]) -> String {
-    let mut b = format!("The internal forge's main at `{}`: {} past this repository's main (`{}`).\n\n", short(ours), commits(count), short(theirs));
+/// the private forge, no `#<n>` GitHub would link to its own, and no
+/// `@name` it would notify (`inert`). `carried`: the branch is a merge of
+/// the internal main and this repository's main, which it lacked.
+fn pr_body(ours: &str, theirs: &str, count: usize, merged: &[Merged], carried: bool) -> String {
+    let mut b = format!("The internal forge's main at `{}`: {} this repository's main (`{}`) lacks.\n\n", short(ours), commits(count), short(theirs));
+    if carried {
+        b.push_str("This repository's main has commits the internal main lacks (a merge made here), so the branch merges the two; the internal main is unchanged.\n\n");
+    }
     if merged.is_empty() {
         b.push_str("No internal pull request was merged in this range: its commits reached the internal main directly.\n");
         return b;
     }
     b.push_str("Merged internally since the last publish:\n\n");
     for m in merged {
-        let title = m.title.split_whitespace().collect::<Vec<_>>().join(" ");
-        b.push_str(&format!("- {title} (internal PR {})\n", m.number));
+        b.push_str(&format!("- {} (internal PR {})\n", inert(&m.title), m.number));
     }
     b
+}
+
+/// An internal title made inert for GitHub: on one line, with a zero-width
+/// joiner after every `#` and `@`, so `#12` links no issue of GitHub's and
+/// `@name` mentions no one, while it reads as written.
+fn inert(title: &str) -> String {
+    let line = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    line.replace('#', "#\u{200D}").replace('@', "@\u{200D}")
+}
+
+/// Who a merge made for a publish is by: the owner of the GitHub token
+/// (`/user`), its public email or GitHub's no-reply address for it.
+fn github_identity(github: &GitHub) -> Result<(String, String), String> {
+    let (status, body) = api("GET", &format!("{}/user", github.api), &bearer(github), None)?;
+    if status != 200 {
+        return Err(format!("GitHub answered {status} asking whose the token is, for the merge's author: {}", message(&body)));
+    }
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    let login = v["login"].as_str().unwrap_or("").to_string();
+    if login.is_empty() {
+        return Err("GitHub named no login for the token, so the merge has no author".to_string());
+    }
+    let name = v["name"].as_str().filter(|n| !n.trim().is_empty()).unwrap_or(&login).to_string();
+    let email = match (v["email"].as_str().filter(|e| e.contains('@')), v["id"].as_u64()) {
+        (Some(e), _) => e.to_string(),
+        (None, Some(id)) => format!("{id}+{login}@users.noreply.github.com"),
+        (None, None) => format!("{login}@users.noreply.github.com"),
+    };
+    Ok((name, email))
+}
+
+/// A merge commit of `a` (first parent) and `b`, by `name <email>`, made in
+/// the bare repository `dir` without a work tree: its sha, or the files the
+/// two conflict in.
+fn merge(dir: &Path, a: &str, b: &str, name: &str, email: &str, message: &str) -> Result<String, Vec<String>> {
+    let o = git_command(dir, None, &["merge-tree", "--write-tree", "--name-only", "--no-messages", a, b]).output().map_err(|e| vec![format!("(git merge-tree: {e})")])?;
+    let said = String::from_utf8_lossy(&o.stdout).to_string();
+    let mut lines = said.lines();
+    let tree = lines.next().unwrap_or("").trim().to_string();
+    if o.status.code() != Some(0) || tree.is_empty() {
+        let mut files: Vec<String> = lines.map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
+        files.dedup();
+        if files.is_empty() {
+            files.push(format!("(git merge-tree: {})", String::from_utf8_lossy(&o.stderr).trim()));
+        }
+        return Err(files);
+    }
+    let mut c = git_command(dir, None, &["commit-tree", &tree, "-p", a, "-p", b, "-m", message]);
+    for k in ["GIT_AUTHOR", "GIT_COMMITTER"] {
+        c.env(format!("{k}_NAME"), name).env(format!("{k}_EMAIL"), email);
+    }
+    let o = c.output().map_err(|e| vec![format!("(git commit-tree: {e})")])?;
+    if !o.status.success() {
+        return Err(vec![format!("(git commit-tree: {})", String::from_utf8_lossy(&o.stderr).trim())]);
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
 fn commits(n: usize) -> String {
@@ -475,11 +568,26 @@ mod tests {
     #[test]
     fn the_body_names_titles_and_internal_numbers_and_links_nowhere() {
         let merged = [Merged { number: 12, title: "Add the\nledger".into(), merge: "c".repeat(40) }, Merged { number: 15, title: "Fix it".into(), merge: "d".repeat(40) }];
-        let b = pr_body(&"a".repeat(40), &"b".repeat(40), 3, &merged);
+        let b = pr_body(&"a".repeat(40), &"b".repeat(40), 3, &merged, false);
         assert!(b.contains("- Add the ledger (internal PR 12)\n- Fix it (internal PR 15)\n"), "{b}");
-        assert!(b.contains("`aaaaaaaaaaaa`: 3 commits past this repository's main (`bbbbbbbbbbbb`)"), "{b}");
-        assert!(!b.contains('#') && !b.contains("http"), "no link, and no #<n> GitHub would link to its own: {b}");
-        assert!(pr_body("a", "b", 1, &[]).contains("1 commit past") && pr_body("a", "b", 1, &[]).contains("No internal pull request"));
+        assert!(b.contains("`aaaaaaaaaaaa`: 3 commits this repository's main (`bbbbbbbbbbbb`) lacks"), "{b}");
+        assert!(!b.contains('#') && !b.contains("http") && !b.contains("merges the two"), "no link, and no #<n> GitHub would link to its own: {b}");
+        assert!(pr_body("a", "b", 1, &[], false).contains("1 commit this") && pr_body("a", "b", 1, &[], false).contains("No internal pull request"));
+        assert!(pr_body("a", "b", 1, &[], true).contains("the branch merges the two; the internal main is unchanged"));
+    }
+
+    /// An internal title reaches GitHub inert: a zero-width joiner after each
+    /// `#` and `@`, so no issue of GitHub's is linked and no one is mentioned,
+    /// and the title reads as it was written.
+    #[test]
+    fn a_title_links_no_issue_and_mentions_no_one() {
+        let t = inert("Fix #12 and owner/repo#3 for @alice,\n cc @org/team");
+        assert_eq!(t, "Fix #\u{200D}12 and owner/repo#\u{200D}3 for @\u{200D}alice, cc @\u{200D}org/team");
+        let reference = |s: &str| s.char_indices().any(|(i, c)| (c == '#' || c == '@') && s[i + 1..].starts_with(|n: char| n.is_ascii_alphanumeric()));
+        assert!(!reference(&t), "{t}");
+        assert_eq!(t.replace('\u{200D}', ""), "Fix #12 and owner/repo#3 for @alice, cc @org/team", "it reads as written");
+        let b = pr_body("a", "b", 1, &[Merged { number: 4, title: "Close #9, thanks @bob".into(), merge: "e".into() }], false);
+        assert!(!reference(&b) && b.contains("- Close #\u{200D}9, thanks @\u{200D}bob (internal PR 4)"), "{b}");
     }
 
     fn row(kind: &str, entity: &str, body: serde_json::Value) -> serde_json::Value {
@@ -524,8 +632,8 @@ mod tests {
     struct Fake {
         /// the internal forge's closed pull requests
         closed: Vec<serde_json::Value>,
-        /// GitHub's open pull requests
-        open: Vec<serde_json::Value>,
+        /// GitHub's open pull requests, each with its branch
+        open: Vec<(String, serde_json::Value)>,
         /// every request: method, path, authorization, body
         seen: Vec<(String, String, String, String)>,
     }
@@ -576,13 +684,20 @@ mod tests {
                 let list: Vec<_> = f.closed.iter().skip((page - 1) * PAGE).take(PAGE).cloned().collect();
                 (200, serde_json::json!(list))
             }
-            ("GET", "/gh/repos/acme/r/pulls") => (200, serde_json::json!(f.open)),
+            ("GET", "/gh/user") => (200, serde_json::json!({ "login": "owner", "name": "The Owner", "email": null, "id": 42 })),
+            ("GET", "/gh/repos/acme/r/pulls") => {
+                let head = query.split('&').find_map(|q| q.strip_prefix("head=")).map(crate::api_client::percent_decode).unwrap_or_default();
+                let list: Vec<_> = f.open.iter().filter(|(b, _)| format!("acme:{b}") == head).map(|(_, p)| p.clone()).collect();
+                (200, serde_json::json!(list))
+            }
             ("POST", "/gh/repos/acme/r/pulls") => {
-                let made = serde_json::json!({ "number": 7, "html_url": "https://github.invalid/acme/r/pull/7" });
-                f.open.push(made.clone());
+                let sent: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                let n = 7 + f.open.len();
+                let made = serde_json::json!({ "number": n, "html_url": format!("https://github.invalid/acme/r/pull/{n}") });
+                f.open.push((sent["head"].as_str().unwrap_or("").to_string(), made.clone()));
                 (201, made)
             }
-            ("PATCH", "/gh/repos/acme/r/pulls/7") => (200, serde_json::json!({ "number": 7 })),
+            ("PATCH", p) if p.starts_with("/gh/repos/acme/r/pulls/") => (200, serde_json::json!({})),
             _ => (404, serde_json::json!({ "message": "not here" })),
         };
         let reply = reply.to_string();
@@ -609,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn a_publish_pushes_the_internal_main_and_opens_one_pull_request_then_updates_it() {
+    fn a_publish_pushes_the_internal_main_and_opens_one_pull_request_then_updates_it_carrying_github_merges() {
         let root = Scratch::new().unwrap();
         let (work, internal, github) = (root.0.join("work"), root.0.join("internal.git"), root.0.join("github.git"));
         std::fs::create_dir_all(&work).unwrap();
@@ -680,23 +795,59 @@ mod tests {
             assert!(patched[0].3.contains("Add d (internal PR 4)"), "{}", patched[0].3);
         }
 
-        // GitHub's main merged forward: nothing left to publish
-        sh_git(&work, &["push", "-q", &github.display().to_string(), "main"]);
+        // GitHub's merge queue merges the pull request with a merge commit:
+        // GitHub's main now holds the internal main, and nothing is new
+        let other = root.0.join("other");
+        sh_git(&root.0, &["clone", "-q", &github.display().to_string(), &other.display().to_string()]);
+        sh_git(&other, &["fetch", "-q", "origin", "sync/2026-11-11"]);
+        sh_git(&other, &["merge", "-q", "--no-ff", "-m", "Merge pull request #7", "FETCH_HEAD"]);
+        sh_git(&other, &["push", "-q", "origin", "main"]);
+        let queued = sh_git(&other, &["rev-parse", "HEAD"]);
         let said = publish(&i, &g, "sync/2026-11-12", "2026-11-12", false).unwrap().join("\n");
         assert!(said.contains("nothing to publish"), "{said}");
 
-        // a commit made at GitHub alone: the internal main does not contain
-        // GitHub's, and nothing is forced
-        let other = root.0.join("other");
-        sh_git(&root.0, &["clone", "-q", &github.display().to_string(), &other.display().to_string()]);
-        std::fs::write(other.join("theirs"), "theirs").unwrap();
+        // a GitHub-only merge commit is carried: the branch pushed is a merge
+        // of the internal main and GitHub's main, by the token's owner, and
+        // the internal main is untouched
+        let e = land(&work, &internal, "e");
+        fake.lock().unwrap().closed.insert(0, pull(5, "Add e", true, &e));
+        let said = publish(&i, &g, "sync/2026-11-12", "2026-11-12", true).unwrap().join("\n");
+        assert!(said.contains(&format!("would have GitHub's main {} into the internal main", short(&queued))) && said.contains("merges the two"), "{said}");
+        assert!(at_github("refs/heads/sync/2026-11-12").is_empty(), "a dry run pushes nothing");
+        let said = publish(&i, &g, "sync/2026-11-12", "2026-11-12", false).unwrap().join("\n");
+        assert!(said.contains(&format!("merged  GitHub's main {} into the internal main", short(&queued))) && said.contains("by The Owner <42+owner@users.noreply.github.com>"), "{said}");
+        assert!(said.contains("opened  https://github.invalid/acme/r/pull/8"), "a new day, a new pull request: {said}");
+        let carried = String::from_utf8_lossy(&at_github("refs/heads/sync/2026-11-12")).trim().to_string();
+        let gh = |args: &[&str]| sh_git(&root.0, &[&["--git-dir", &github.display().to_string()], args].concat());
+        assert_eq!(gh(&["rev-parse", &format!("{carried}^1"), &format!("{carried}^2")]), format!("{e}\n{queued}"), "the internal main first, GitHub's second");
+        assert_eq!(gh(&["log", "-1", "--format=%an <%ae>|%cn <%ce>", &carried]), "The Owner <42+owner@users.noreply.github.com>|The Owner <42+owner@users.noreply.github.com>");
+        assert_eq!(sh_git(&root.0, &["--git-dir", &internal.display().to_string(), "rev-parse", "main"]), e, "the internal main is untouched");
+        {
+            let f = fake.lock().unwrap();
+            let body = f.seen.iter().rev().find(|(m, ..)| m == "POST").map(|r| r.3.clone()).unwrap();
+            assert!(body.contains("Add e (internal PR 5)") && body.contains("merges the two") && !body.contains("Add d"), "{body}");
+        }
+
+        // the same day again: the branch moves forward over the merge it
+        // holds (merged in, never forced) and its one pull request is updated
+        let f2 = land(&work, &internal, "f");
+        let said = publish(&i, &g, "sync/2026-11-12", "2026-11-12", false).unwrap().join("\n");
+        assert!(said.contains("updated https://github.invalid/acme/r/pull/8"), "{said}");
+        let moved = String::from_utf8_lossy(&at_github("refs/heads/sync/2026-11-12")).trim().to_string();
+        assert!(Command::new("git").args(["--git-dir", &github.display().to_string(), "merge-base", "--is-ancestor", &carried, &moved]).status().unwrap().success(), "a fast-forward");
+        assert!(Command::new("git").args(["--git-dir", &github.display().to_string(), "merge-base", "--is-ancestor", &f2, &moved]).status().unwrap().success());
+        assert_eq!(fake.lock().unwrap().seen.iter().filter(|(m, ..)| m == "POST").count(), 2, "one pull request per publish");
+
+        // a GitHub-only change that conflicts with the internal main stops
+        // the publish, naming the file, and pushes nothing
+        std::fs::write(other.join("g"), "made at GitHub").unwrap();
         sh_git(&other, &["add", "-A"]);
         sh_git(&other, &["commit", "-q", "-m", "made at GitHub"]);
         sh_git(&other, &["push", "-q", "origin", "main"]);
-        land(&work, &internal, "e");
-        let e = publish(&i, &g, "sync/2026-11-12", "2026-11-12", false).unwrap_err();
-        assert!(e.contains("is not an ancestor of the internal main") && e.contains("never force-pushes"), "{e}");
-        assert!(at_github("refs/heads/sync/2026-11-12").is_empty());
-        assert!(publish(&i, &g, "main", "2026-11-12", true).unwrap_err().contains("never `main`"));
+        land(&work, &internal, "g");
+        let e = publish(&i, &g, "sync/2026-11-13", "2026-11-13", false).unwrap_err();
+        assert!(e.contains("conflict in g:") && e.contains("never force-pushes"), "{e}");
+        assert!(at_github("refs/heads/sync/2026-11-13").is_empty());
+        assert!(publish(&i, &g, "main", "2026-11-13", true).unwrap_err().contains("never `main`"));
     }
 }

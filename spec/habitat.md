@@ -559,24 +559,40 @@ UTC date; `--branch` names another, never `main`), and opens one pull
 request from it against GitHub's `main`, titled `Publish <date>`, whose
 body lists the internal pull requests merged since the last publish by
 title and internal number (`internal PR <n>`: no `#<n>`, which GitHub links
-to its own, and no link into the private forge). "Since the last publish"
+to its own, and no link into the private forge). A title is made inert on
+its way: put on one line, with a zero-width joiner (U+200D) after every `#`
+and `@`, so a `#12` in it links no issue of GitHub's and an `@name`
+mentions no one, while it reads as written. "Since the last publish"
 is read from git, not kept: a merged internal pull request is listed when
 its merge commit is on the internal main and not on GitHub's, so the first
 publish lists everything since GitHub's main. Run again the same day, the
 branch moves forward and its open pull request is updated, its title and
 body rewritten; no second one is opened. `--dry-run` prints what it would
-push, whether it would open or update, and the pull request's title and
-body, and pushes and opens nothing (it reads both forges). **Nothing is
-forced**: GitHub's `main` must be an ancestor of the internal main (a
-merge or a commit made at GitHub is taken into the internal forge first),
-and a branch of that name already at GitHub must be one the internal main
-contains, or the publish says so and stops. It also refuses, before
-anything is fetched, an organism with no Forgejo allocation, one with no
-`habitat.publish` row naming GitHub (saying how to record one), a vault
-holding no GitHub token in the row's slot or no token in the organism's
-Forgejo slot, a vault served over HTTP (`HALE_VAULT_ADDR`), and a habitat
-on another machine (its Forgejo answers on that machine's loopback: the
-publish runs there). GitHub's `main` must exist. The tokens go to git
+push (and any merge it would make), whether it would open or update, and
+the pull request's title and body, and pushes and opens nothing (it reads
+both forges). **Nothing is forced, and the internal main is never
+touched.** When GitHub's `main` holds the internal main already (a merge
+made there of a publish's pull request, and nothing new since), there is
+nothing to publish. When it has commits the internal main lacks (GitHub's
+merge queue merges with a merge commit), the branch pushed is a merge of
+the internal main (first parent) and GitHub's `main`, made in the
+publish's scratch repository; so is a merge with the branch an earlier
+publish the same day left at GitHub, which the new one then
+fast-forwards. A merge is authored and committed as the owner the GitHub
+token belongs to (GitHub's `/user`: its name, and its public email or its
+`<id>+<login>@users.noreply.github.com` address), and the pull request's
+body says the branch merges the two. A merge that conflicts stops the
+publish, naming the files, and nothing is pushed: the conflict is resolved
+in the internal forge. It also refuses, before anything is fetched, an
+organism with no Forgejo allocation, one with no `habitat.publish` row
+naming GitHub (saying how to record one), a vault holding no GitHub token
+in the row's slot or no token in the organism's Forgejo slot, and a vault
+served over HTTP (`HALE_VAULT_ADDR`). GitHub's `main` must exist. **A
+habitat on another machine publishes there**: with a pointer (`up
+--host`), both `forge publish` and `forge … --publish` run on the
+habitat's machine in its toolchain image (`remote::run_there`, as `nursery
+refresh` and `models` do), where its record, its vault and its Forgejo
+are; the output streams back. The tokens go to git
 through a credential helper reading git's own environment and to curl,
 which speaks both forges' APIs, in a config read from its stdin: never on a
 command line.

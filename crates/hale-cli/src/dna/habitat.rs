@@ -324,9 +324,13 @@ forge publish <organism>
                      internal pull requests merged since the last publish
                      (titles and internal numbers, no links); again the
                      same day, that branch and pull request are updated.
-                     Never forced: GitHub's main must be an ancestor of the
-                     internal main. --dry-run prints what it would push and
-                     the pull request's body, and pushes nothing.
+                     Never forced, and the internal main never touched: when
+                     GitHub's main has commits the internal main lacks (a
+                     merge made there), the branch is a merge of the two,
+                     by the GitHub token's owner; a conflict stops it,
+                     naming the files. --dry-run prints what it would push
+                     and the pull request's body, and pushes nothing. A
+                     habitat on another machine publishes there.
 handover [organism]  what the habitat hands the organism's heart, one
                      NAME=value a line, a secret only by its vault slot's
                      name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,

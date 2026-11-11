@@ -240,7 +240,9 @@ hale habitat forge publish shop             # push sync/<today> and open (or upd
 
 `--publish` leaves the organism's forge alone: the Forgejo stays where reviews happen, and the setting only says where a publish goes (`none --publish` stops publishing). A publish pushes the internal `main` to GitHub as the branch `sync/<YYYY-MM-DD>` (UTC; `--branch <name>` for another) and opens one pull request against GitHub's `main`. Its body lists the internal pull requests merged since the last publish, by title and internal number, with no links into the private forge; the first publish lists everything since GitHub's `main`. Publishing again the same day moves the branch forward and updates that pull request instead of opening a second one.
 
-A publish never force-pushes. If GitHub's `main` has a commit the internal `main` lacks (say the last publish's pull request was merged with a merge commit), it stops and says so: merge GitHub's `main` into the internal forge, then publish again. It also stops, saying what to do, when the organism has no Forgejo allocation, names no GitHub repository, or the vault holds no GitHub token. Run it on the habitat's machine: the Forgejo answers on its loopback.
+Internal titles are made inert on the way: a zero-width joiner follows every `#` and `@`, so `#12` links none of GitHub's issues and `@alice` notifies no one, though both read as written.
+
+A publish never force-pushes and never touches the internal `main`. When GitHub's `main` has commits the internal one lacks (its merge queue merges the last publish's pull request with a merge commit), the branch it pushes is a merge of the internal `main` and GitHub's, authored as the owner of the GitHub token; if the two conflict, it stops and names the files, to be resolved in the internal forge. It also stops, saying what to do, when the organism has no Forgejo allocation, names no GitHub repository, or the vault holds no GitHub token. With a habitat on another machine (`up --host`), the publish runs there, in the habitat's toolchain image, where its vault and Forgejo are; you see its output here.
 
 ## Walkthrough: Deploying and Querying `voice` in a Habitat
 

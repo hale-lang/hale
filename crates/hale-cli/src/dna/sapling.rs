@@ -1372,6 +1372,12 @@ pub(super) fn forge_cmd(args: &[String]) -> std::process::ExitCode {
     // where the organism's main is published: the owner's setting, written
     // as the act itself (the head's allocate_forge allocates forges alone)
     if publish {
+        // a habitat on another machine records it there, where its record is
+        if let Some(p) = super::remote::pointer() {
+            let mut there: Vec<&str> = vec!["forge"];
+            there.extend(args.iter().map(String::as_str));
+            return super::remote::run_there(&p, "forge", &there);
+        }
         return match record_publish_target(&organism, &provider, &repo, &key_vault) {
             Ok(line) => {
                 println!("{line}");
@@ -1435,9 +1441,6 @@ fn record_publish_target(organism: &str, provider: &str, repo: &str, key_vault: 
     }
     if !slot.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
         return Err(format!("`--key-vault {slot}` names no vault slot"));
-    }
-    if super::remote::pointer().is_some() {
-        return Err("the habitat runs on another machine: name where it publishes there, where `forge publish` runs".to_string());
     }
     let child = organism_child(&rows_of(&genome_dir()), organism)?;
     let (repo, slot) = if provider == "none" { ("", "") } else { (repo, slot) };
