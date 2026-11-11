@@ -193,14 +193,18 @@ locus Subj {
 ";
 
 /// A `@form(vec)` child whose elements carry a nested record (with a
-/// String and Bytes of its own): birth replaces one element and pops
-/// another, so the vec frees nested blocks — the record's own and what
-/// it owns — while the subject's teardown and every position around it
-/// run. The values are built at run time: a literal's String is static
-/// and would hide a use-after-free from the sanitizer.
+/// String and Bytes of its own) and a `bounded` list of Strings: birth
+/// replaces one element and pops another, so the vec frees nested
+/// blocks — the record's own and what it owns — and the list's live
+/// elements, while the subject's teardown and every position around it
+/// run. The subject's own field holds a `bounded` list too, which birth
+/// replaces whole, `set`s and `clear`s, so the locus retires elements
+/// as well. The values are built at run time: a literal's String is
+/// static and would hide a use-after-free from the sanitizer.
 const SHAPE_VEC_NESTED: &str = "
 type Leaf { s: String = \"\"; b: Bytes = b\"\"; }
-type Item { v: Int = 0; tag: String = \"\"; leaf: Leaf = Leaf { }; }
+type Item { v: Int = 0; tag: String = \"\"; leaf: Leaf = Leaf { }; names: bounded[String; 2]; }
+type Names { names: bounded[String; 2]; }
 
 @form(vec)
 locus Items {
@@ -208,17 +212,26 @@ locus Items {
 }
 
 locus Subj {
-    params { n: Int = 0; items: Items = Items { }; }
+    params { n: Int = 0; items: Items = Items { }; held: Names = Names { }; }
     fn item(v: Int) -> Item {
         let t = \"t\" + to_string(v + self.n);
-        return Item { v: v, tag: t, leaf: Leaf { s: t + \".s\", b: std::bytes::from_string(t) } };
+        let mut it = Item { v: v, tag: t, leaf: Leaf { s: t + \".s\", b: std::bytes::from_string(t) } };
+        push(it.names, t + \".n0\") or discard;
+        push(it.names, t + \".n1\") or discard;
+        return it;
     }
     birth() {
         self.items.push(self.item(1));
         self.items.push(self.item(2));
         self.items.set(0, self.item(3)) or discard;
         let gone = self.items.pop() or Item { };
-        self.n = self.n + gone.v - 2;
+        let mut h = Names { };
+        push(h.names, gone.tag + \".h\") or discard;
+        self.held = h;
+        set(self.held.names, 0, gone.tag + \".s\") or discard;
+        clear(self.held.names);
+        push(self.held.names, gone.tag) or discard;
+        self.n = self.n + gone.v - 2 + count(self.held.names) - count(gone.names) + 1;
     }
     dissolve() { println(\"D:subj\"); }
     fn probe() -> Int { return self.n + self.items.len(); }
@@ -226,7 +239,7 @@ locus Subj {
 ";
 
 /// A `@form(hashmap)` child whose cells carry a nested record (with a
-/// String and Bytes of its own): birth replaces a cell, stores one
+/// String and Bytes of its own) and a `bounded` list of Strings: birth replaces a cell, stores one
 /// cell's nested record under a second key (a copy the second cell
 /// owns), carries a nested record over by get-modify-set, and removes a
 /// cell, so the map retires nested blocks while the subject's teardown
@@ -234,7 +247,7 @@ locus Subj {
 /// `vec_nested` is, so no String is a static literal.
 const SHAPE_HASHMAP_NESTED: &str = "
 type HLeaf { s: String = \"\"; b: Bytes = b\"\"; }
-type HCell { k: Int = 0; tag: String = \"\"; leaf: HLeaf = HLeaf { }; }
+type HCell { k: Int = 0; tag: String = \"\"; leaf: HLeaf = HLeaf { }; names: bounded[String; 2]; }
 
 @form(hashmap)
 locus HCells {
@@ -245,7 +258,9 @@ locus Subj {
     params { n: Int = 0; cells: HCells = HCells { }; }
     fn cell(k: Int, v: Int) -> HCell {
         let t = \"t\" + to_string(v + self.n);
-        return HCell { k: k, tag: t, leaf: HLeaf { s: t + \".s\", b: std::bytes::from_string(t) } };
+        let mut c = HCell { k: k, tag: t, leaf: HLeaf { s: t + \".s\", b: std::bytes::from_string(t) } };
+        push(c.names, t + \".n\") or discard;
+        return c;
     }
     birth() {
         self.cells.set(self.cell(1, 1));
