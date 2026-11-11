@@ -307,15 +307,10 @@ fn host() {
     // the nerves' server can reserve adds three rows on each side; two of
     // them, `stream_put` and `exchange_stream_place`, reach pond's NATS
     // client, as `nerves_migrate` does, so the correction changes them.
-    // The chart's personas (forgejo_habitat.hl), the host verbs that read
-    // a chart and carry out a plan at the habitat's Forgejo, add six rows
-    // on each side; three of them, `habitat_persona_chart_verb`,
-    // `persona_grant` and `persona_remove`, reach imported code (the core's
-    // `org_chart`, `ForgejoApi` and `run_tool`), so the correction changes them.
     pinned(
         "host",
-        597,
-        606,
+        592,
+        601,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -379,6 +374,7 @@ fn host() {
         build_cache_touch  does={syscall,block,alloc}
         build_fingerprint  does={syscall,block,env,alloc}
         build_seed_at  does={syscall,block,env,alloc}
+        chart_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         codebase_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         compose_key  does={alloc}
         compose_sweep  does={syscall,block,alloc}
@@ -431,7 +427,6 @@ fn host() {
         habitat_address  does={syscall,block,alloc}
         habitat_apply_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_forget_unrecorded_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        habitat_persona_chart_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_teardown_run_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_handover_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_key  does={syscall,env,alloc}
@@ -469,8 +464,6 @@ fn host() {
         owners_here  does={syscall,env,alloc}
         ownership_graph_here  does={syscall,env,alloc}
         ownership_note  does={syscall,env,alloc}
-        persona_grant  does={syscall,env,alloc}
-        persona_remove  does={syscall,block,env,alloc}
         postgres_secrets_path  does={syscall,block,env,alloc}
         profile_name  does={syscall,block,time,env,alloc}
         project_dir_name  does={syscall,block,alloc}
