@@ -1426,7 +1426,10 @@ sync.
     the vault's entries, the one file that holds a password, mode 600),
     which the account `include`s: NATS parses an included file in its
     own scope, so an account reads only the variables it brings.
-    `nats.conf` is the server's: JetStream, and inside `accounts` an
+    `nats.conf` is the server's: JetStream, a `max_payload` of 16 MB (a
+    message as large as a tenant's request: NATS's own default is 1 MB, and
+    an application whose broker the habitat provides, `--reuse broker`,
+    carries each request over it), and inside `accounts` an
     `include` of every account, rewritten whenever one comes or goes; it and `nerves.d/` are mounted
     into the `nerves-<id>` service, and a server that is up restarts to
     read an account that came or changed.
