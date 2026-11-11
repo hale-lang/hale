@@ -346,10 +346,14 @@ fn nerves_server_text(keys: String) -> String {
         if len(k) == 0 { continue; }
         accounts = accounts + "  include ./nerves.d/" + k + ".account.conf\n";
     }
+    // max_payload: a message as large as a tenant's request. NATS's default
+    // is 1 MB, and a provider whose broker the habitat provides (`--reuse
+    // broker`) carries each request over it, voice's of up to 12 MiB
     return "# nats.conf — a nerves server in the local habitat (GH #986, #1653): one\n"
         + "# account per organization it holds, each in nerves.d/, rewritten whenever\n"
         + "# one comes or goes. No password is here (GH #989).\n"
         + "port: 4222\n"
+        + "max_payload: 16MB\n"
         + "jetstream { store_dir: \"/data\" }\n"
         + "accounts {\n"
         + accounts
