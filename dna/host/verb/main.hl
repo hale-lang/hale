@@ -426,6 +426,7 @@ fn main() {
             host::flag(a, "--rows"),
             host::flag(a, "--app"),
             host::flag(a, "--description"),
+            host::has_flag(a, "--chart-declared"),
             memory,
         );
     } else if verb == "design-upgrade" {
