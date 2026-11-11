@@ -37,6 +37,23 @@ fn source() -> String {
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
+// A build's stderr, readable in an assertion: the compiler's warnings fill
+// the message the suite keeps (about 5 KB) before any error can, so only
+// the lines that say `error` and the last lines are kept.
+fn build_report(stderr: String) -> String {
+    let mut errors = "";
+    let mut rest = stderr;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::contains(line, "error") { errors = errors + line + "\n"; }
+    }
+    let tail = if len(stderr) > 800 { stderr[(len(stderr) - 800)..len(stderr)] } else { stderr };
+    return (if len(errors) > 0 { "errors:\n" + errors } else { "no `error` line; " }) + "tail:\n"
+        + tail;
+}
+
 locus Proc {
     params {
         child: std::process::Child = std::process::Child { };
@@ -203,11 +220,16 @@ locus App {
                 + scratch + "\n" + source(),
         );
         std::test::assert_eq_int(copied.code, 0, "the tree is copied: " + copied.stderr);
-        let built = dna::run_tool_timeout(600, hale + "\nbuild\n" + scratch + "/dna/api");
+        // twenty minutes: the head is the largest seed, a shared macOS runner
+        // builds it in well over the ten this took before, and `timeout`
+        // answers 124 when it runs out
+        let built = dna::run_tool_timeout(1200, hale + "\nbuild\n" + scratch + "/dna/api");
         std::test::assert_eq_int(
             built.code,
             0,
-            "the head builds with its surface: " + built.stderr,
+            "the head builds with its surface (exit " + to_string(built.code)
+                + "; 124 is `timeout`): "
+                + build_report(built.stderr),
         );
         let emitted = dna::run_tool_timeout(300, hale + "\ncheck\n--api\n" + scratch + "/dna/api");
         std::test::assert_eq_int(emitted.code, 0, "the head describes itself: " + emitted.stderr);
