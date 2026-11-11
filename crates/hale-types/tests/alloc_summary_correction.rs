@@ -380,7 +380,7 @@ fn verdict_changes() {
     );
     pinned(
         "dna/api",
-        4176,
+        4179,
         &[
             "__lib_dna__core___batch__batch_diff",
             "__lib_dna__core___batch__batch_filing",
@@ -2247,7 +2247,7 @@ fn verdict_changes() {
     );
     pinned(
         "dna/ui",
-        1879,
+        1882,
         &[
             "__lib_dna__core___knowledge__url_encode",
             "__lib_dna__core___principal__audience_names",
