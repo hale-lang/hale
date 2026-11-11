@@ -87,10 +87,25 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -eux
-          sudo apt-get update
-          sudo apt-get install -y \
-            llvm-18-dev libpolly-18-dev libzstd-dev \
-            clang-18 libclang-18-dev zlib1g-dev
+          # the runners' resolver stopped answering for Ubuntu's archive
+          # (2026-11-11): fetch from archive.ubuntu.com at an address a public
+          # resolver gives (a known one if it gives none), retrying a failed download
+          for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+            if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
+          done
+          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # some of the archive's addresses answered with indexes that lack
+          # the LLVM packages: each try pins the next address
+          ips=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -E '^[0-9.]+$' || true)
+          ok=
+          for ip in $ips 185.125.190.81 91.189.91.82 185.125.190.83; do
+            sudo sed -i '/ archive\.ubuntu\.com security\.ubuntu\.com$/d' /etc/hosts
+            echo "$ip archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+            if sudo apt-get update && sudo apt-get install -y \
+              llvm-18-dev libpolly-18-dev libzstd-dev \
+              clang-18 libclang-18-dev zlib1g-dev; then ok=1; break; fi
+          done
+          [ -n "$ok" ]
 
       - name: Install LLVM (macOS)
         if: runner.os == 'macOS'

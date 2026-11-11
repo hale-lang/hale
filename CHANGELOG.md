@@ -8,6 +8,45 @@ behavior.
 
 ## Unreleased
 
+## v0.32.11 — a working org chart, out of the box (2026-11-11)
+
+**A fresh habitat and a grafted organism each come with a working org chart.** `hale habitat up` seats the person running it on the habitat's Board and on its four positions; `hale habitat graft <sapling>` seats the person grafting as the sapling's founder. Each chart starts complete, and its Reviews settle with nobody else asked: on a fresh habitat, `up` and then `graft voice` give two charts in the face, each with its Board held and nothing left pending.
+
+**The habitat runs the organisms it grafts.** A sapling grafted into the habitat used to keep a chart that nothing ran: its verdicts stayed pending and its Reviews never settled. Its organization now runs as a service of the habitat's own compose project (`body-<key>`), with its face and head beside it (`face-<key>`), signing in through the habitat's identity. `up`, `apply`, `organism upgrade`, `down`, `organism remove` and `down --forget` carry them, and `hale habitat status` shows them.
+
+**The face can approve everything at once and redraw the chart.** The board has the lanes a board is read by (`Backlog` through `Done`), its `In review` lane approves every pending Review in one confirmed action, and a stated position can be described, moved under another, or retired from the chart, each proposed for the Board.
+
+**Bigger requests through the habitat's broker.** The habitat's NATS takes messages up to 16 MB, so an application using `--reuse broker` carries requests over 1 MB. A graft waits up to five minutes for a models provider's api to come up.
+
+The item-level notes follow.
+
+### Changed
+- The face's org chart can be drawn by hand: a stated position offers to say what it does, to move under another position, and to retire, each checked first as the chart lines it adds and takes out and then proposed for the Board (`BatchPreview`, `BatchApply`).
+- Two batch steps: `move <pos> under <node>` (the edge it unfolds from retired, one from the node added; mandate, holders and `reviews` edges kept) and `amend <pos> | <text>` (the position's text restated, its equipment kept). The planned chart lists `under <position> <parent>` and, for a text that is not the default, `keeps <position> <text>`.
+
+### Fixed
+
+- The habitat's nerves server (its NATS) takes messages up to 16 MB (`max_payload: 16MB` in its `nats.conf`); it ran with NATS's default of 1 MB, so an application whose broker the habitat provides (`--reuse broker`) could not carry a request over 1 MB, though voice accepts bodies of up to 12 MiB. A habitat's next `up` or `apply` rewrites the configuration and restarts the server.
+
+### Changed
+- The face's board has the lanes a board is read by: `Backlog`, `To do`, `In progress`, `In review`, `Done`. A settled Review is done, with its outcome on the card.
+
+### Fixed
+
+- `hale habitat graft` waits up to five minutes (it was a minute and a half) for a models provider's api to answer before asking what it serves each tenant, since a first start migrates its database and pulls images, and says how long the api took or that it did not answer within 300 s.
+
+### Changed
+- `hale habitat up` seats the person running it on the habitat's Board and on its four positions, which sit under the Board; `hale habitat graft <sapling>` sets `founder` to the person grafting for the sapling's packs unless the pin or `--set` names another. A fresh organization settles its Reviews with nobody else asked.
+- A sapling that declares packs declares its chart: its graft proposes the Board's seat and no other hole beside the pack's positions.
+
+### Fixed
+
+- The habitat runs the organisms it grafts from saplings. Such an organism lives in the habitat's own store, where nobody ran `hale dna dev` for it, so its organization never ran: the verdicts its graft recorded stayed pending and its Reviews never settled. Its body is now an allocation (`<key>/body`): a compose service `body-<key>` of the habitat's project, beside the habitat's own `body`, from the same image, network, mounts and environment, running `hale dna dev` on the organism's directory. Its face and head run beside it as `face-<key>` (`hale dna head`, on the ports its graft recorded, signing in through the habitat's identity), so the face and head the habitat lists for it answer. The graft starts them; `up` and `apply` bring them back (and record them for an organism grafted before); `organism upgrade` restarts them on the new revision; `down` stops them, drained; `organism remove` and `down --forget` remove them; `hale habitat status` shows them.
+- A face that signs in through the habitat's identity on macOS reached the provider at `127.0.0.1`, its container's own loopback; it now dials it through the host, as the habitat's other services reach a port published on the machine.
+
+### Changed
+- The face's `In review` lane offers to approve every pending Review in one action when more than one is pending: the count is shown and confirmed, then one verdict per Review lands in the person's name. A fresh organization's starting chart settles without a verdict per card.
+
 ## v0.32.10 — a new face, a graft that places and reuses, memory given back (2026-11-10)
 
 **A new face.** Three screens over the head's surface replace the shell's seven workspaces. **Organization** is the org chart as the record's graph states it, and the face can now ratify every kind of Review: purposes, mandates, holes, holds, batches and designs, not only practices. Two head reads back it, `Commands::org` and `Commands::tasks`.
