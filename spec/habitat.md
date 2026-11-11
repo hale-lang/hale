@@ -536,10 +536,14 @@ chart has the person; an organism no longer grafted loses its personas.
 A persona whose user exists is left alone, its token minted again only
 when its slot is missing, so a second apply changes nothing. An
 organism whose chart cannot be read keeps everything it has, and no
-person is removed while any chart is unread. The chart is read with the
-core's `org_chart` (stated positions, holds neither refused nor of a
-retired person) through the host verb `habitat-persona-chart`, which adds
-a `person <name>` line per holder that is a person; the plan is made by
+person is removed while any chart is unread. A chart that cannot be read
+(its memory just moved, recreated or not answering) never makes the apply
+or the graft refuse: its organism's personas are `skipped (chart not
+read: …)` and left as they are, and the next apply reconciles them; nor
+does a Forgejo that does not answer. The chart is read with `hale dna
+chart` (the core's `org_chart`: stated positions, holds neither refused
+nor of a retired person, and a `person <name>` line per person holding a
+position); the plan is made by
 the toolchain (`crates/hale-cli/src/dna/personas.rs`) and carried out by
 `habitat-forge-personas`. Each organism's personas as the last reconcile
 left them are kept beside its allocations (`allocations/<key>/personas`),

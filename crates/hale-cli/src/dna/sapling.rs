@@ -664,29 +664,17 @@ pub(super) fn with_bodies(v: &mut serde_json::Value, bodies: &[super::bodies::Ou
 
 /// An apply's reply `v` with what reconciling the charts' personas came
 /// to listed among what it applied, an allocation `<key>/personas` of each
-/// organism with a repository at the habitat's Forgejo (and not ok when
-/// one was not reconciled, or the Forgejo did not answer).
+/// organism with a repository at the habitat's Forgejo: never a refusal
+/// (`personas::applied_entries`), so `v`'s outcome is its allocations'.
 fn with_personas(v: &mut serde_json::Value, r: Result<Vec<super::personas::Reconciled>, String>) {
-    let entries: Vec<(String, Result<String, String>)> = match r {
-        Ok(rs) => rs.into_iter().map(|x| (format!("{}/personas", x.key), x.outcome)).collect(),
-        Err(e) => vec![("personas".to_string(), Err(e))],
-    };
+    let entries = super::personas::applied_entries(r);
     if entries.is_empty() {
         return;
     }
     let mut list: Vec<serde_json::Value> = v["applied"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
-    for (allocation, outcome) in entries {
-        eprintln!("applying {allocation} on {}", super::shown_host("local"));
-        list.push(match outcome {
-            Ok(state) => serde_json::json!({ "ok": true, "allocation": allocation, "host": "local", "provider": "forgejo", "state": state }),
-            Err(why) => {
-                v["ok"] = serde_json::json!(false);
-                if v["code"].as_str().unwrap_or("").is_empty() {
-                    v["code"] = serde_json::json!("not_applied");
-                }
-                serde_json::json!({ "ok": false, "allocation": allocation, "host": "local", "why": why })
-            }
-        });
+    for e in entries {
+        eprintln!("applying {} on {}", e["allocation"].as_str().unwrap_or(""), super::shown_host("local"));
+        list.push(e);
     }
     v["applied"] = serde_json::json!(serde_json::Value::Array(list).to_string());
 }
@@ -1075,6 +1063,21 @@ mod tests {
         assert!(busy_head("the habitat's head refused Commands::allocations: the project's API did not answer within the head's deadline"));
         assert!(busy_head("the habitat's head did not answer: connection reset"));
         assert!(!busy_head("the habitat's head refused Commands::allocations: unauthenticated"));
+    }
+
+    // a chart not read, or a Forgejo not answering, is said and skipped:
+    // the apply's outcome is its allocations'
+    #[test]
+    fn personas_never_make_an_apply_refuse() {
+        use super::super::personas::{Outcome, Reconciled};
+        let mut v = serde_json::json!({ "ok": true, "applied": "[]" });
+        let r = Ok(vec![Reconciled { key: "819c00000000".into(), outcome: Outcome::Skipped("chart not read: password authentication failed".into()) }]);
+        super::with_personas(&mut v, r);
+        let a = super::Applied::of(&v);
+        assert!(a.ok, "{v}");
+        assert_eq!(a.lines, vec![format!("{:<8}819c00000000/personas on local (forgejo): skipped (chart not read: password authentication failed)", "applied")]);
+        super::with_personas(&mut v, Err("the habitat's Forgejo did not answer".into()));
+        assert!(super::Applied::of(&v).ok, "{v}");
     }
 
     // what an apply came to is read the same from an older head's answer and

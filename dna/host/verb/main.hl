@@ -259,10 +259,6 @@ fn main() {
             host::word(a, 1),
             host::word(a, 2),
         );
-    } else if verb == "habitat-persona-chart" {
-        // the chart's personas: the org chart a grafted organism's record
-        // states, and its people (`hale habitat apply`, personas.rs)
-        ans = host::habitat_persona_chart_verb(root, memory);
     } else if verb == "habitat-forge-personas" {
         // the chart's personas at the habitat's Forgejo: its users listed,
         // or a plan's steps carried out (`hale habitat apply`)
