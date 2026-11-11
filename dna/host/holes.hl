@@ -386,6 +386,45 @@ fn nursery_sources_verb(root: String, memory: dna::Memory) -> Answer {
     return answer(out);
 }
 
+// `hale dna chart [dir]`: the org chart as the record states it, one line
+// each, the lines a batch is planned against (`position <id>`, `mandate
+// <id>`, `under <id> <parent>`, `keeps <id> <text>`, `holds <id> <holder>`,
+// `reviews <id> <node>`, `practice <name>`, …), then `person <name>` for
+// every holder who is a person and not retired. What the habitat
+// reconciles an organism's personas against (one forge user per stated
+// position, the Board and each person), so it reads one answer instead of
+// the chart twice.
+fn chart_verb(root: String, memory: dna::Memory) -> Answer {
+    let journal = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: root },
+        ledger: memory.ledger,
+    };
+    let chart = dna::org_chart(journal, dna::MemoryReceipts { repo: root });
+    let mut people = "\n";
+    let mut rest = chart;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if !std::str::starts_with(line, "holds ") { continue; }
+        let tail = line[6..len(line)];
+        let sp = std::str::index_of(tail, " ");
+        if sp < 0 { continue; }
+        let holder = tail[(sp + 1)..len(tail)];
+        // an organization holding a seat is no person; its members are, by their own holds
+        if std::str::contains(holder, ":") { continue; }
+        if !std::str::contains(people, "\n" + holder + "\n") { people = people + holder + "\n"; }
+    }
+    let mut out = chart;
+    rest = people[1..len(people)];
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        out = out + "person " + rest[0..nl] + "\n";
+        rest = rest[(nl + 1)..len(rest)];
+    }
+    return answer(out);
+}
+
 // `hale dna fill <position> <holder>`: a holder proposed, through the
 // organization, which proposes it to the Board (dna/core/assembly.hl,
 // `on_hold_requested`). The request is a row in the proposer's name; the

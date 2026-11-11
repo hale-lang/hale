@@ -5864,6 +5864,16 @@ The live half is memory's, projected from the record by the spine
   (`node`, `because`), `fallback` (`path`, `because`), `fallback_to`. A
   Review takes its signers and gates from the same computation when it
   opens (**Signers from the route**, above).
+- **The chart's lines: `hale dna chart [project]`.** The host verb `chart`
+  prints the org chart as the record states it, one line each, the lines
+  a batch is planned against (**A batch of changes**): `position <id>`,
+  `mandate <id>`, `under <id> <parent>`, `keeps <id> <text>`, `holds <id>
+  <holder>`, `reviews <id> <node>`, `practice <name>`, and after them
+  `person <name>` for every holder who is a person (an organization
+  holding a seat is not one) and not retired. It reads the record alone,
+  takes at most one project directory and no flag, and is what the
+  habitat reconciles an organism's forge personas against: one user per
+  stated position, the Board among them, and each person.
 - **Perspectives: `hale dna show` (GH #1086).**
   `hale dna show org | processes [--json] [project]` is the host verb
   `show`. It takes `--json` and at most one project directory, and
