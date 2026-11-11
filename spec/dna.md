@@ -4769,7 +4769,9 @@ The live half is memory's, projected from the record by the spine
   organism whose heart slot is empty, its document's marked `law` items
   its law with the nursery's `standard` pack, and its fixed positions
   the nursery's `habitat` pack (`habitat/placement`, `habitat/backends`,
-  `habitat/identity`, `habitat/admission`). It is the one organism born
+  `habitat/identity`, `habitat/admission`, each under the Board; the
+  person who runs `up` holds the Board and every one of them, so the
+  habitat settles its Reviews with nobody else asked). It is the one organism born
   without a parent. `hale habitat up [--foreground] [--profile local]`
   births it the first time into `<habitat>/genome` (written from the
   toolchain's files, a repository, then the birth's seed on it, its record in its

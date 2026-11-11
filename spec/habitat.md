@@ -9,7 +9,8 @@ is `docs/src/habitat.md`.
 
 The habitat is a DNA organism the compiler ships, as it ships the
 foundational law and the nursery packs. Its genome is fixed: its positions
-are the nursery's `habitat` pack, its law the `standard` pack and its
+are the nursery's `habitat` pack (four seats under the Board, every one
+held by the person who ran `up`), its law the `standard` pack and its
 genome document's `law` items. It is the one organism born without a
 parent. **Every other organism is grafted from it**: its record's genesis
 names the habitat's record as its parent.
@@ -583,7 +584,12 @@ allocates it (the habitat's Forgejo on its own backends, `spec/dna.md`):
 nothing of an organism's own is on GitHub unless its Board allocates
 GitHub later. Its packs are proposed to the child's Board on
 the holes its birth proposed, with the sapling's `set` and the graft's
-`--set` values, each to the packs that take it. **A sapling's packaging is
+`--set` values, each to the packs that take it; `founder` is the person
+grafting unless either names another, so a pack's `? fill … {founder}`
+lines seat them, the Board's seat first, and the child settles its Reviews
+with nobody else asked. A sapling that declares packs declares its chart:
+its birth proposes the Board's seat and no other hole, since the pack's
+positions are the chart (`graph-ingest --chart-declared`). **A sapling's packaging is
 ratified by its graft**: the person who grafts it chose it, so the graft
 then decides every pending group in their name (`hale dna review all
 approve --no-wait`, its verdicts executed when the child's body runs, which

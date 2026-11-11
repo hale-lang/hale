@@ -1750,12 +1750,16 @@ pub(super) fn organism_root(app_dir: &Path) -> Result<PathBuf, String> {
 pub(crate) enum Lineage<'a> {
     Habitat,
     Child(&'a str),
+    /// A child whose sapling declares its chart as a pack: the graft
+    /// proposes the Board's seat and no other hole beside the pack's positions.
+    ChildWithChart(&'a str),
 }
 
 /// The organism at `app_dir` born, or its birth finished where it
 /// stopped (each step keeps what is done): an application, or a
 /// repository with none at its root.
 fn init_under(app_dir: &Path, library: bool, lineage: Lineage) -> Result<Vec<String>, String> {
+    let chart_declared = matches!(lineage, Lineage::ChildWithChart(_));
     // an application, or (GH #1090) a repository with none at its root
     let app = match repository_root(app_dir)? {
         Some(_) => None,
@@ -1990,7 +1994,7 @@ fn init_under(app_dir: &Path, library: bool, lineage: Lineage) -> Result<Vec<Str
     } else {
         match (&app, &cut) {
             (Some(app), Some((art, _))) => {
-                let (n, graph) = seed_journal(&app.root, app, art, &purpose_text)?;
+                let (n, graph) = seed_journal(&app.root, app, art, &purpose_text, chart_declared)?;
                 out.push(format!("seeded  the record ({n} observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)"));
                 push_graph_lines(&mut out, &graph);
             }
@@ -1998,7 +2002,7 @@ fn init_under(app_dir: &Path, library: bool, lineage: Lineage) -> Result<Vec<Str
                 // the declared purpose's proposal and the graph in one
                 // checked seed: a repository the ingest refuses leaves no
                 // record behind, and one with nothing to ingest still has one
-                let graph = seed_repository(&root, &project, &purpose_text)?;
+                let graph = seed_repository(&root, &project, &purpose_text, chart_declared)?;
                 out.push(format!(
                     "seeded  the record (application.attached `{}`: the repository's compose services are its expression; the purpose, proposed; then the graph)",
                     app_account_name(&project)
@@ -3511,7 +3515,7 @@ fn app_seed_name(app: &App) -> String {
 /// holds and the holes that graph implies (as for a repository, with the
 /// application as the root seed and its API surfaces as contracts). Returns
 /// the artifact's row count and what the ingest read.
-fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<(usize, String), String> {
+fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str, chart_declared: bool) -> Result<(usize, String), String> {
     let mut c = Chain::new();
     let s = |v: &Value| v.as_str().unwrap_or("").to_string();
     let names = |v: &Value| -> Vec<String> { v.as_array().map(|a| a.iter().map(|x| s(x)).collect()).unwrap_or_default() };
@@ -3619,6 +3623,9 @@ fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<(u
         args.push("--description".to_string());
         args.push(description_path.to_string_lossy().to_string());
     }
+    if chart_declared {
+        args.push("--chart-declared".to_string());
+    }
     let out = host_run("graph-ingest", root, &args);
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&purpose_path);
@@ -3639,7 +3646,7 @@ fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<(u
 /// the repository's processes publish under `<org>.app.<name>.` reaches
 /// the heart. The row names no `main` and no artifact (no topology was
 /// cut) and says `repository: true`.
-fn seed_repository(root: &Path, project: &str, purpose: &str) -> Result<String, String> {
+fn seed_repository(root: &Path, project: &str, purpose: &str, chart_declared: bool) -> Result<String, String> {
     let dna_dir = root.join(".hale/dna");
     fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
     let path = dna_dir.join(format!("purpose.{}.txt", std::process::id()));
@@ -3654,11 +3661,11 @@ fn seed_repository(root: &Path, project: &str, purpose: &str) -> Result<String, 
         .to_string()
     });
     fs::write(&rows, format!("{attached}\n")).map_err(|e| e.to_string())?;
-    let out = host_run(
-        "graph-ingest",
-        root,
-        &[path.to_string_lossy().to_string(), "--rows".to_string(), rows.to_string_lossy().to_string()],
-    );
+    let mut args = vec![path.to_string_lossy().to_string(), "--rows".to_string(), rows.to_string_lossy().to_string()];
+    if chart_declared {
+        args.push("--chart-declared".to_string());
+    }
+    let out = host_run("graph-ingest", root, &args);
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&rows);
     out
@@ -3741,7 +3748,7 @@ fn genesis_row(root: &Path, lineage: Lineage) -> Result<(String, String), String
     let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
     // a grafted organism's first row names its parent, the habitat's record
     let body = match lineage {
-        Lineage::Child(p) => serde_json::json!({ "genome": genome, "nonce": nonce, "parent": p }).to_string(),
+        Lineage::Child(p) | Lineage::ChildWithChart(p) => serde_json::json!({ "genome": genome, "nonce": nonce, "parent": p }).to_string(),
         Lineage::Habitat => serde_json::json!({ "genome": genome, "nonce": nonce }).to_string(),
     };
     let digest = openssl::sha::sha256(format!("genesis|record.genesis|record|{body}").as_bytes());

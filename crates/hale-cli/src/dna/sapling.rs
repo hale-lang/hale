@@ -279,7 +279,10 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
             out.push(format!("{:<8}{name} goes on at {revision} ({digest}), the revision its graft checked", "kept"));
         }
     }
-    let lineage = serde_json::json!({ "sapling": name, "revision": revision, "digest": digest, "nursery": nursery });
+    // a sapling that declares packs declares its chart: the graft proposes
+    // the Board's seat and no other hole beside them
+    let declared_packs = pin["packs"].as_array().is_some_and(|a| !a.is_empty());
+    let lineage = serde_json::json!({ "sapling": name, "revision": revision, "digest": digest, "nursery": nursery, "chart_declared": declared_packs });
     super::progress(&format!("grafting `{name}` as the habitat's child: its record, memory and nerves"));
     out.extend(graft_lines(&store, true, library, pack, &Shape { profile: None, remote: None, body: None }, Some(&lineage))?);
     // its packs, proposed to the child's Board, from its own nursery (or the
@@ -293,6 +296,11 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
                 set.insert(k.trim().to_string(), v.trim().to_string());
             }
         }
+        // the person grafting is the child's founder unless the pin or a
+        // `--set` names another: a pack's `? fill … {founder}` lines seat
+        // them, the Board's seat first, so the child settles its Reviews
+        // with nobody else asked
+        set.entry("founder".to_string()).or_insert_with(|| std::env::var("USER").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "hale".to_string()));
         let root = crate::dna::organism_root(&store)?;
         for p in packs {
             crate::dna::pack::propose_pack(&n, &p, &set, &root).map_err(|e| format!("the sapling's pack `{p}` was not proposed: {e}"))?;
