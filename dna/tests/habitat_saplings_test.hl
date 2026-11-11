@@ -269,6 +269,49 @@ fn main() {
         "SEEN_PROFILES=none",
         "its compose is told the roles it provides itself: " + told.stderr,
     );
+    // ---- its body, which the habitat keeps: a service of the habitat's
+    // project beside its own, running its organization, so the verdicts its
+    // graft recorded are executed and its Reviews settle with no hand step
+    std::test::assert(
+        std::str::contains(grafted.stdout, "body    its body (" + skey + "/body) on "),
+        "the graft starts its body: " + grafted.stdout + grafted.stderr,
+    );
+    let bodied = dna::run_tool(
+        "docker\nps\n--filter\nlabel=com.docker.compose.project=" + dna::local_habitat_project()
+            + "\n--filter\nlabel=com.docker.compose.service=body-" + skey
+            + "\n--format\n{{.Label \"hale.role\"}} {{.Label \"hale.organism\"}}",
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(bodied.stdout),
+        "body sprout",
+        "its body is a service of the habitat's project, labelled as sprout's: " + bodied.stderr,
+    );
+    let mut said = in_dir(store, toolchain() + "\ndna\nstatus").stdout;
+    let settle = std::time::now() + dna::wait_secs(600);
+    while std::time::now() <= settle
+        && !(
+            std::str::contains(said, "organism:   running (this clone's body holds the lease)")
+                && std::str::contains(said, "reviews:    0 pending")
+        )
+    {
+        std::time::sleep(2000ms);
+        said = in_dir(store, toolchain() + "\ndna\nstatus").stdout;
+    }
+    std::test::assert(
+        std::str::contains(said, "organism:   running (this clone's body holds the lease)")
+            && std::str::contains(said, "reviews:    0 pending"),
+        "its body holds its lease and its graft's verdicts are executed: " + said
+            + "\n-- its body's last lines:\n"
+            + dna::run_tool(
+                "sh\n-c\nid=$(docker ps -aq --filter label=com.docker.compose.project=$1 --filter label=com.docker.compose.service=body-$2 | head -n 1); [ -n \"$id\" ] && docker logs --tail 40 \"$id\" 2>&1\nsh\n"
+                    + dna::local_habitat_project() + "\n" + skey,
+            ).stdout,
+    );
+    let hstatus = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    std::test::assert(
+        std::str::contains(hstatus, "  body    body-" + skey + " up ("),
+        "the habitat's status shows the organism's body: " + hstatus,
+    );
     let rows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
     std::test::assert(
         std::str::contains(rows, "\\\"sapling\\\":\\\"sprout\\\"")
@@ -531,6 +574,16 @@ fn main() {
                 "/" + skey + ".account.conf",
             ),
         "and its account leaves the habitat's nerves: " + removed.stdout,
+    );
+    let body_left = dna::run_tool(
+        "docker\nps\n-aq\n--filter\nlabel=com.docker.compose.project="
+            + dna::local_habitat_project()
+            + "\n--filter\nlabel=com.docker.compose.service=body-" + skey,
+    );
+    std::test::assert(
+        std::str::contains(tplan.stdout, "body-" + skey)
+            && len(dna::trim_nl(body_left.stdout)) == 0,
+        "its body is planned and goes with it: " + tplan.stdout + body_left.stdout,
     );
     let left = dna::run_tool(in_memory);
     // what is on the habitat's memory after it: the record's roles, and who

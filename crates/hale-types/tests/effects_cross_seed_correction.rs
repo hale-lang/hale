@@ -568,7 +568,9 @@ fn organization_source() {
 /// ui: the identity checks it reaches through the core
 /// (`dna::issuer_loopback`, `dna::endpoint_allowed`) admit the habitat's
 /// declared address, read from `HALE_DNA_HABITAT_ADDRESS`, so the rows
-/// that call them gain `env`, which only the renames-aware walk sees.
+/// that call them gain `env`, which only the renames-aware walk sees; the
+/// issuer's documents are fetched through `dna::reach_url`
+/// (`HALE_DNA_LOOPBACK_HOST`), so `read_keys` and `verify` gain it too.
 #[test]
 fn ui() {
     pinned(
@@ -579,7 +581,9 @@ fn ui() {
         Ui::bearer_subject  does={syscall,block,time,env,alloc}
         Ui::begin_sign_in  does={syscall,block,time,entropy,env,alloc}
         Ui::discovered  does={syscall,block,time,env,alloc}
+        Ui::read_keys  does={syscall,block,time,env,alloc}
         Ui::token_subject  does={syscall,block,time,env,alloc}
+        Ui::verify  does={syscall,block,time,env,alloc}
         ",
     );
 }

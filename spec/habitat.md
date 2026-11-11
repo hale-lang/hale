@@ -61,7 +61,9 @@ The **`compose` provider** is local only. It produces this machine as the
 host `local`, offering `compose` when docker compose answers. Memory, the
 nerves, the senses' store, a heart's database and its broker, and the
 habitat's own `body` (`hale dna dev <genome> --no-iris`) and `face`
-(`hale dna head <genome>`) run as services of the habitat's compose project,
+(`hale dna head <genome>`), and the body of each organism grafted from a
+sapling (`body-<key>`, § A sapling's body), run as services of the
+habitat's compose project,
 so a host runs nothing outside docker. For `body` and `face`, `up` writes
 the toolchain's embedded `Dockerfile` and `hale.pin` (defaulting to the
 commit the running toolchain was built from) beside `compose.yaml` in the
@@ -117,8 +119,8 @@ policy, since running it again after it finished would be wrong; a one-shot
 nothing waits on is read as long-running, so its compose file says
 `restart: "no"`. Docker backs off between restarts, and the observation
 above names a crash loop, so a policy never hides a failing service. The
-habitat's `body` and `face` keep their `on-failure`: their clean exit is a
-drain the habitat asked for.
+habitat's `body` and `face`, and its organisms' bodies, keep their
+`on-failure`: their clean exit is a drain the habitat asked for.
 
 An allocation on this machine is recorded where it is published,
 `127.0.0.1:<port>`, and each process derives the address it dials from that
@@ -304,7 +306,8 @@ compose project on it (the habitat's own on `local`,
 placement moves are memory, the nerves, the senses' store and an
 organism's own services; a heart's database and broker move with the
 server that holds them, the habitat's head and face run with its body,
-and an allocation on the `operator`'s server is never placed.
+an organism's body runs on the habitat's machine (§ A sapling's body), and
+an allocation on the `operator`'s server is never placed.
 
 **Apply** is the Board's command `Commands::apply_allocations` (`{host,
 fresh}`, `hale habitat apply [<host>] [--fresh]`), over every allocation
@@ -589,7 +592,8 @@ its birth proposes the Board's seat and no other hole, since the pack's
 positions are the chart (`graph-ingest --chart-declared`). **A sapling's packaging is
 ratified by its graft**: the person who grafts it chose it, so the graft
 then decides every pending group in their name (`hale dna review all
-approve --no-wait`, its verdicts executed when the child's body runs) and
+approve --no-wait`, its verdicts executed when the child's body runs, which
+the habitat keeps: § A sapling's body) and
 says `ratified its purpose, practices and positions`. So does the
 habitat's birth for the toolchain's foundational positions and law (the
 `habitat` and `standard` packs). Anything proposed after is the Board's to
@@ -640,6 +644,9 @@ one its Board ratified, keeping its record, its data and its allocations
   through its provider (`Commands::apply_allocations`), which builds its
   images from the new tree. A step that fails leaves the tree moved and the
   upgrade unrecorded, and the upgrade run again finishes it.
+- **Its body**, which the habitat keeps (below), made again on the tree as
+  it is now (`docker compose up -d --force-recreate`): it drains, and starts
+  on the new revision.
 - **The row**: `habitat.organism.upgraded <key>`, `{organism, child,
   sapling, from, from_digest, to, digest, commit}`, written into the
   habitat's record as the graft's row is.
@@ -690,6 +697,85 @@ the organism's record does not hold is attached by the host's `codebase
 attach` (as `hale dna codebase attach` does, as the habitat), a
 `codebase.attached` row; nothing is cloned until a leg works one. A graft
 that goes on attaches none twice.
+
+### A sapling's body
+
+**The habitat keeps the body of every organism it grafted from a sapling**:
+the organism's `hale dna dev <root> --no-iris`, which runs its
+organization (its positions, its legs, the Board's verdicts executed), as
+the habitat's own body runs the habitat's. A sapling lives in the habitat's
+store, where no person runs it; a directory grafted from a checkout is the
+person's, and its body is theirs (`hale dna dev` there). The body is an
+allocation, `habitat.allocated <key>/body` (`{organism, role: "body",
+service: "body-<key>", project, provider: "compose", host: "local"}`),
+recorded by the graft, and by the next `up` or apply on the habitat's
+machine for an organism grafted before bodies were kept.
+
+It is a service of the habitat's compose project, `body-<key>`, beside the
+habitat's `body`: the same image, user, network, mounts (the habitat
+directory, the vault, the docker socket, and the organism's directory when
+it is not under them), the same environment (`HALE_DNA_COMPOSE=off`: its
+application's compose services are its `services` allocation, applied
+apart) and the same restart policy (`on-failure`, its clean exit a drain)
+and drain window, its working directory the organism's, labelled
+`hale.role: body` with the organism's name. Its readings are not served
+(`HALE_DNA_SENSES_PORT=0`): on the host's network their fixed ports are the
+habitat body's. On a project network (macOS) it is given this machine's
+hostname, so the lease it takes names the machine `hale dna status` asks
+from. `dev` rather than `run`: `dev` derives the organism's memory, nerves
+and handover from its allocations at each start, so a body that restarts
+after a migration or a move reaches them where they are now; `run` takes
+them from its environment, which the compose file would have to carry.
+
+What the service takes of this machine is what `up` gave the habitat's own
+body, which only `up` knows: `up` keeps it beside the habitat
+(`body-shape.json`), and the organism's compose file
+(`allocations/<key>/body.yaml`) is written from it. It is brought up
+(`docker compose up -d --no-deps body-<key>`, not waited on: a body comes up
+while it builds its genome):
+
+- at the end of the graft, which says `body    its body (<key>/body) on
+  <machine>`;
+- at every `up`, after the habitat's own body and face, made again on this
+  toolchain's image when that changed (`body    <key>/body of <name> up …`);
+- at every apply on the habitat's machine (`hale habitat apply`, `apply
+  local` or no host), after the allocations, listed in the apply's reply as
+  `<key>/body`;
+- made again at `organism upgrade`.
+
+A habitat that runs no body of its own (`up --no-body`) keeps no shape: its
+organisms' bodies are neither recorded nor started, and a graft says so.
+`down` stops the organisms' bodies, drained, after the face and with the
+habitat's own body, before their backends; `up` brings them back.
+`organism remove` stops and removes it with the organism's other services
+on this machine, before its memory is dropped, and `down --forget` stops it
+first and removes it with the habitat's project. `status` shows it under
+the organism's allocation (`body    body-<key> up (…)`, or `down`), and the
+head observes it as it observes any compose service.
+
+**Its face and head run beside it.** The graft records the organism's head
+block (`face` and `head` of its `habitat.grafted` row, the block's first two
+ports), and the same compose file holds a second service, `face-<key>`,
+allocated as `habitat.allocated <key>/face` (`role: "body"`, `service:
+"face-<key>"`): the habitat face's image, user, network and mounts, the
+habitat face's environment less its own state and its published identity (it
+signs in through the habitat's), its state in `allocations/<key>/face-state`
+(`HALE_DNA_HEAD_STATE`), running `hale dna head <its directory>`, restarted
+on failure. On a project network (macOS) its head block is published on the
+habitat's listen address as the habitat face's is, Grafana's port left out;
+on the host's network it binds its ports itself. It comes up, stops and is
+removed with the body (`docker compose up -d --no-deps body-<key>
+face-<key>`; a removal takes every `role: "body"` service of the organism),
+so the `face` and `head` the habitat's index lists for the organism answer.
+A shape kept by an `up` from before faces were kept carries no face
+environment, and its organisms get a face at the next `up`.
+
+**The body stays on the habitat's machine**, wherever the organism's
+services are placed: it runs the habitat's image with the habitat's
+directory and vault mounted, which another host does not hold, and it
+reaches the organism's memory and nerves where their placement records
+them. `place <key>/body <host>` is refused (`not_placeable`); moving a body
+is not built.
 
 ## Acceptance: the homelab case
 
@@ -945,8 +1031,8 @@ socket), so the habitat's head must be up.
 | `up [--no-body] [--image <tag>] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider (one with no server of its own, every part held by the habitat's servers, is reported `held by the habitat's own servers`), migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its compose project (`docker compose up -d`, its image `--image <tag>` or `HALE_HABITAT_IMAGE` when either names one; else, when this machine has no image of this toolchain, the release's published `ghcr.io/hale-lang/hale:<version>` pulled and used when it runs this very toolchain (`hale --version` alike); else built from the embedded `Dockerfile` and `hale.pin`), waiting on their probes: three minutes once the face has what it runs, and while the face's log says it is still building the head's programs (a first start, or one after the toolchain changed) up to twenty minutes; a face or body that does not come up is reported with its last lines of output. `--no-body` births it, brings its backing allocations up and records its placement, and starts no `body` or `face`. Idempotent, and after an `up` that failed as well (§ Long-lived, and only its acts provision). `--profile` takes `local`; any other is refused (exit 2). |
 | `image build [<checkout>]` | Builds the habitat toolchain image from `<checkout>` (`.` by default) using its `Dockerfile`, tagged `hale-habitat:<pin>`, and prints the tag on stdout. |
 | `brief` | Prints the habitat's brief (below): the head's `Commands::brief`, asked over the head's surface as the person this account maps to. |
-| `status` | The habitat, its name, its genome, body and face (its address), its head's MCP endpoint while the face runs, the services placed on its hosts under their hosts (each with its readings endpoint), and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
-| `down [--forget [--plan]]` | Takes the habitat's compose project down (`docker compose down`), stopping its `face`, its `body` and every service of its project and leaving only its volumes; `up` brings them back. `--forget` removes the habitat whole, planned and confirmed by its name typed back at a terminal; `--plan` prints the plan and exits (above). |
+| `status` | The habitat, its name, its genome, body and face (its address), its head's MCP endpoint while the face runs, the services placed on its hosts under their hosts (each with its readings endpoint), and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, how a heart's declared migration last ran, and whether its body runs (§ A sapling's body). |
+| `down [--forget [--plan]]` | Takes the habitat's compose project down (`docker compose down`), stopping its `face`, its organisms' bodies and its own `body` (drained) and every service of its project and leaving only its volumes; `up` brings them back. `--forget` removes the habitat whole, planned and confirmed by its name typed back at a terminal; `--plan` prints the plan and exits (above). |
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
 | `sweep <root> \| --test-vaults [<root>]` | Takes down every compose project run from under `<root>`, a test's habitat, and confirms it gone by the project's label. Never the developer's habitat nor one outside `<root>`. Exit 1 names what survived. `--test-vaults` sweeps the vaults of processes that are gone. Nothing is done without docker. |
 | `organism <name> dna <verb> [args…]` | `hale dna <verb>` in the grafted organism's own directory; through a pointer, on the habitat's machine over SSH (§ A habitat on another machine). |
@@ -1834,7 +1920,7 @@ organism and the role (`<id>/<role>`), never by a checkout.
 
 | Row | When | Body |
 |---|---|---|
-| `habitat.allocated <id>/<role>` | the first time a role is provisioned for an organism; for the habitat's own `head` and `face`, at `up` whenever their placement changes | `organism`, `role`, `service`, `project`, `provider`, `host`, `vault` (slots held by name, never a value), and for the head and the face their `address` (`""` while none is assigned) |
+| `habitat.allocated <id>/<role>` | the first time a role is provisioned for an organism; for the habitat's own `head` and `face`, at `up` whenever their placement changes; an organism's `body` at its graft, or at the first `up` or apply that keeps it (§ A sapling's body) | `organism`, `role`, `service`, `project`, `provider`, `host`, `vault` (slots held by name, never a value), and for the head and the face their `address` (`""` while none is assigned) |
 | `habitat.host <name>` | at `up` for `local`, at `host add`, `host probe` and `host remove` for an `ssh` host, and at `host join` and `host remove` for a `joined` one, whenever what it says changes | `name`, `provider`, `offers` (space-separated), `state` (`ready`, `pending-key` or `removed`), `address`, `port`, `user`, `host_key` (the public host key first seen, `<type> <base64>`), `fingerprint`, `os`, `arch` |
 | `habitat.policy <role>` | at `up`, whenever the role's provider changes | `role`, `provider`, `profile`, `backends` |
 | `habitat.migrated <id>/<role>` | each time an organism role's schema version moves | `organism`, `role`, `from`, `schema_version` (memory's `MEMORY_SCHEMA_VERSION`, the nerves' `NERVES_STREAM_VERSION`) |

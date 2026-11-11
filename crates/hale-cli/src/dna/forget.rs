@@ -588,10 +588,12 @@ fn audit() -> Result<Plan, String> {
     // the body and the face, stopped first
     let body = body_state();
     let face = face_running();
-    if body.is_some() || face.is_some() {
+    let organisms = super::bodies::running_ids();
+    if body.is_some() || face.is_some() || !organisms.is_empty() {
         let what = [
             body.map(|b| format!("its body, {b}")),
             face.map(|f| format!("its face, {f}")),
+            (!organisms.is_empty()).then(|| format!("its organisms' bodies ({})", organisms.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join(", "))),
         ]
         .into_iter()
         .flatten()

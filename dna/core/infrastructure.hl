@@ -819,9 +819,13 @@ fn profile_provider(profile: String, backends: String, role: String) -> String {
 // its host must make, or "" for a role the compose provider does not run
 // as a service: the heart's database is a tenant of the memory server, its
 // broker users the nerves server's; the head and the face are one process
-// of the habitat's (`hale dna head`), not a service of the project.
+// of the habitat's (`hale dna head`), not a service of the project. An
+// organism's body is `body-<k>` beside the habitat's own (the toolchain
+// writes and applies it, `bodies.rs`: it holds no data).
 fn compose_service(role: String, k: String) -> String {
-    if role == "memory" || role == "nerves" || role == "senses" { return role + "-" + k; }
+    if role == "memory" || role == "nerves" || role == "senses" || role == "body" {
+        return role + "-" + k;
+    }
     if role == "database" { return "memory-" + k; }
     if role == "broker" { return "nerves-" + k; }
     return "";

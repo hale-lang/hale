@@ -280,6 +280,14 @@ if ((shared_identity)); then
   . "$identity_env"
   set +a
   [[ -n "${HALE_DNA_OIDC_ISSUER:-}" && -n "${HALE_DNA_OIDC_KEY:-}" && -n "${HALE_DNA_OIDC_DIAL:-}" ]] || fail "$identity_env does not name the habitat's provider"
+  # an organism's face the habitat runs on a project network (macOS) dials
+  # the provider where this machine's loopback is from there, as every
+  # service of the habitat's reaches a port published on it
+  if [[ -n "${HALE_DNA_LOOPBACK_HOST:-}" ]]; then
+    HALE_DNA_OIDC_DIAL=${HALE_DNA_OIDC_DIAL/\/\/127.0.0.1:/\/\/$HALE_DNA_LOOPBACK_HOST:}
+    HALE_DNA_OIDC_DIAL=${HALE_DNA_OIDC_DIAL/\/\/localhost:/\/\/$HALE_DNA_LOOPBACK_HOST:}
+    export HALE_DNA_OIDC_DIAL
+  fi
   curl -sf "$HALE_DNA_OIDC_DIAL/.well-known/openid-configuration" >/dev/null 2>&1 || fail "the habitat's identity does not answer at $HALE_DNA_OIDC_ISSUER: its face serves it (\`hale habitat up\`)"
   export HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
   printf 'face: signing in through the habitat'\''s identity, %s, as local-sub (%s)\n' "$HALE_DNA_OIDC_ISSUER" "$USER"
