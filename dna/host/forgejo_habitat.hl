@@ -79,3 +79,269 @@ fn habitat_forge_provision_verb(
             + "\nuser=" + user + "\n",
     );
 }
+
+// ---- the chart's personas (crates/hale-cli/src/dna/personas.rs) ------------
+
+// `habitat-persona-chart` on a grafted organism's root: the org chart its
+// record states, as the core reads it (`dna::org_chart`: `position <id>`,
+// `mandate <id>`, `holds <id> <holder>`, `under <id> <parent>`, … a line
+// each, stated positions only, a retired holder or a refused hold left
+// out), and `person <name>` for each holder that is a person, each once.
+// What `hale habitat apply` makes the chart's personas at the habitat's
+// Forgejo from. Refused when the record cannot be read, so an unread chart
+// is never taken for an empty one.
+@bounded_by(root)
+fn habitat_persona_chart_verb(root: String, memory: dna::Memory) -> Answer {
+    let no_record = record_refusal(root);
+    if len(no_record) > 0 { return fail("habitat-persona-chart: " + no_record); }
+    let journal = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: root },
+        ledger: memory.ledger,
+    };
+    if journal.revision() == 0 {
+        return fail("habitat-persona-chart: the record of " + root + " holds no rows");
+    }
+    let chart = dna::org_chart(journal, dna::MemoryReceipts { repo: root });
+    let mut persons = "\n";
+    let mut rest = chart;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if !std::str::starts_with(line, "holds ") { continue; }
+        let tail = line[6..len(line)];
+        let sp = std::str::index_of(tail, " ");
+        if sp < 0 { continue; }
+        let holder = tail[(sp + 1)..len(tail)];
+        if len(holder) == 0 || std::str::starts_with(holder, "organization:")
+            || std::str::contains(persons, "\n" + holder + "\n")
+        {
+            continue;
+        }
+        persons = persons + holder + "\n";
+    }
+    let mut out = chart;
+    let mut prest = persons[1..len(persons)];
+    while len(prest) > 0 {
+        let nl = std::str::index_of(prest, "\n");
+        out = out + "person " + prest[0..nl] + "\n";
+        prest = prest[(nl + 1)..len(prest)];
+    }
+    return answer(out);
+}
+
+// Whether `s` is a persona's user's name as the habitat makes one:
+// lowercase letters, digits, `-` and `_` (safe on the admin's shell line).
+fn persona_word(s: String) -> Bool {
+    if len(s) == 0 || len(s) > 64 { return false; }
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "0" && c <= "9") || c == "-" || c == "_";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Whether `email` is the email that marks `user` a persona's
+// (`dna::forgejo_persona_email`), its domain letters, digits, dashes and
+// dots alone (safe on the admin's shell line).
+fn persona_email_of(user: String, email: String) -> Bool {
+    if !std::str::starts_with(email, user + "@") || !dna::forgejo_persona_email(email) {
+        return false;
+    }
+    return persona_word(std::str::replace(email[(len(user) + 1)..len(email)], ".", ""));
+}
+
+// Whether `slot` is a persona's token's vault slot: a person's
+// (`forgejo-person-<user>`) or an organism's position's
+// (`forgejo-<key>-<slug>`), never the organism's own (`forgejo-<key>`) or
+// the administrator's.
+fn persona_slot(slot: String) -> Bool {
+    if !std::secret::vault_name_is_safe(slot) || !persona_word(slot) { return false; }
+    if std::str::starts_with(slot, dna::FORGEJO_PERSON_VAULT) {
+        return len(slot) > len(dna::FORGEJO_PERSON_VAULT);
+    }
+    return std::str::starts_with(slot, "forgejo-") && len(slot) > 21 && slot[20..21] == "-";
+}
+
+// The persona `user` (marked by `email`) made at the habitat's Forgejo when
+// it lists none (`listed`, `<name>\t<email>` a line), and its token minted
+// into `slot` when it was made, `mint` says so, or the vault holds none;
+// a token minted, the persona's name (`full`) and avatar (`avatar`, a
+// base64 PNG) set as the persona itself. What it did (`made`, `minted`,
+// `kept`), or `!` and why not.
+fn persona_ensure(
+    listed: String,
+    user: String,
+    email: String,
+    slot: String,
+    mint: Bool,
+    full: String,
+    avatar: String
+) -> String {
+    let present = std::str::contains("\n" + listed, "\n" + user + "\t");
+    if present && !std::str::contains("\n" + listed, "\n" + user + "\t" + email + "\n") {
+        return "!the Forgejo user " + user + " is not this habitat's persona: left as it is";
+    }
+    let mut did = "kept";
+    if !present {
+        let made = forgejo_exec(
+            "su-exec git forgejo admin user create --username " + user + " --email " + email
+                + " --random-password --must-change-password=false >/dev/null",
+        );
+        if made.code != 0 {
+            return "!the persona " + user + " was not made: " + dna::trim_nl(made.stderr);
+        }
+        did = "made";
+    }
+    if present && !mint && secret_present(slot) { return did; }
+    let t = forgejo_exec(
+        "su-exec git forgejo admin user generate-access-token --username " + user
+            + " --token-name hale-" + slot + "-" + to_string(std::time::now())
+            + " --scopes all --raw",
+    );
+    let token = dna::trim_nl(t.stdout);
+    if t.code != 0 || len(token) < 20 || std::str::contains(token, " ") {
+        return "!the persona " + user + " was given no token: " + dna::trim_nl(t.stderr);
+    }
+    let put = vault_put(slot, token);
+    if len(put) > 0 { return "!the persona " + user + "'s token: " + put; }
+    if did == "kept" { did = "minted"; }
+    // its name and its avatar, set as itself; when either fails the slot
+    // goes, so the next reconcile mints again and sets them
+    let api = dna::ForgejoApi { address: dna::forgejo_address(), token_slot: slot };
+    let named = std::json::Builder { };
+    named.begin_object();
+    named.string_field("full_name", full);
+    named.end_object();
+    let s = api.call("PATCH", "/user/settings", named.result());
+    let pic = std::json::Builder { };
+    pic.begin_object();
+    pic.string_field("image", avatar);
+    pic.end_object();
+    let a = if s.ok { api.call("POST", "/user/avatar", pic.result()) } else { s };
+    if !a.ok {
+        std::io::fs::unlink(std::secret::vault_local_dir() + "/" + slot) or discard;
+        return "!the persona " + user + "'s name and avatar: " + a.why;
+    }
+    return did;
+}
+
+// Write access to the repository `repo` for `user`, by the token of its
+// owner in `owner_slot`, when it has none: `granted`, `kept`, or `!` and
+// why not.
+fn persona_grant(user: String, repo: String, owner_slot: String) -> String {
+    let api = dna::ForgejoApi { address: dna::forgejo_address(), token_slot: owner_slot };
+    let path = "/repos/" + repo + "/collaborators/" + user;
+    let got = api.call("GET", path, "");
+    if got.status == 204 { return "kept"; }
+    if got.status != 404 { return "!" + user + " on " + repo + ": " + got.why; }
+    let put = api.call("PUT", path, "{\"permission\": \"write\"}");
+    if !put.ok { return "!" + user + " was not given " + repo + ": " + put.why; }
+    return "granted";
+}
+
+// The persona `user` removed from the habitat's Forgejo, when it still
+// lists it with `email`, a persona's: `removed`, `absent`, or `!` and why
+// not.
+fn persona_remove(listed: String, user: String, email: String) -> String {
+    if !std::str::contains("\n" + listed, "\n" + user + "\t") { return "absent"; }
+    if !dna::forgejo_persona_email(email)
+        || !std::str::contains("\n" + listed, "\n" + user + "\t" + email + "\n")
+    {
+        return "!the Forgejo user " + user + " is not a persona of this habitat now: left as it is";
+    }
+    let r = forgejo_exec("su-exec git forgejo admin user delete --username " + user);
+    if r.code != 0 && !std::str::contains(r.stderr + r.stdout, "does not exist") {
+        return "!the persona " + user + " was not removed: " + dna::trim_nl(r.stderr);
+    }
+    return "removed";
+}
+
+// `habitat-forge-personas --list | <plan file>` on the habitat's genome:
+// the habitat's Forgejo brought up when it is not, then its users listed
+// (`<name>\t<email>` a line), or the plan's steps carried out, a line each
+// (personas.rs makes the plan):
+//
+//   ensure <user> <email> <slot> <0|1> <full name> <avatar>
+//   grant  <user> <owner/name> <owner's slot>
+//   remove <user> <email>
+//   forget <slot>
+//
+// tab-separated. What each did, `<did>\t<what>` a line (`made`, `minted`,
+// `granted`, `removed`, `forgot`, `kept`, `absent`); a step that could not
+// be taken is said and the rest go on, and the verb fails naming every one.
+// A token goes from the server into the vault and nowhere else.
+fn habitat_forge_personas_verb(file: String, list: Bool) -> Answer {
+    if !list && len(file) == 0 {
+        return fail("usage: habitat-forge-personas --list | <plan file>");
+    }
+    let up = forgejo_up();
+    if len(up) > 0 { return fail("habitat-forge-personas: " + up); }
+    let users = dna::forgejo_users();
+    if !users.ok { return fail("habitat-forge-personas: " + users.why); }
+    if list { return answer(users.lines); }
+    let plan = std::io::fs::read_file(file) or "";
+    let mut out = "";
+    let mut failed = "";
+    let mut rest = plan;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) == 0 { continue; }
+        let step = dna::batch_field(line, 0);
+        let user = dna::batch_field(line, 1);
+        let what = dna::batch_field(line, 2);
+        let mut did = "";
+        if step == "forget" {
+            if !persona_slot(user) {
+                did = "!`" + user + "` is no persona's slot";
+            } else if len(std::env::var("HALE_VAULT_ADDR")) > 0 {
+                did = "!the vault is at HALE_VAULT_ADDR, provisioned out of band";
+            } else {
+                std::io::fs::unlink(std::secret::vault_local_dir() + "/" + user) or discard;
+                did = "forgot";
+            }
+        } else if !persona_word(user) {
+            did = "!`" + user + "` is no persona's name";
+        } else if step == "ensure" {
+            let slot = dna::batch_field(line, 3);
+            did = if !persona_email_of(user, what) || !persona_slot(slot) {
+                "!the persona " + user + "'s email or slot is not a persona's"
+            } else {
+                persona_ensure(
+                    users.lines,
+                    user,
+                    what,
+                    slot,
+                    dna::batch_field(line, 4) == "1",
+                    dna::batch_field(line, 5),
+                    dna::batch_field(line, 6),
+                )
+            };
+        } else if step == "grant" {
+            let owner_slot = dna::batch_field(line, 3);
+            did = if std::str::contains(what, "..") || std::str::index_of(what, "/") <= 0
+                || !std::secret::vault_name_is_safe(owner_slot)
+            {
+                "!`" + what + "` is no repository of the habitat's Forgejo"
+            } else {
+                persona_grant(user, what, owner_slot)
+            };
+        } else if step == "remove" {
+            did = persona_remove(users.lines, user, what);
+        } else {
+            did = "!`" + step + "` is no step of a persona's";
+        }
+        if std::str::starts_with(did, "!") {
+            failed = failed + (if len(failed) > 0 { "; " } else { "" }) + did[1..len(did)];
+        } else {
+            out = out + did + "\t" + user + "\n";
+        }
+    }
+    if len(failed) > 0 { return fail("habitat-forge-personas: " + failed); }
+    return answer(out);
+}

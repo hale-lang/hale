@@ -498,6 +498,53 @@ past, by a merge there, is left as the forge has it), pushing as the
 organism's user with its token handed to git through a credential helper
 reading a private file.
 
+**The chart's personas** are Forgejo users of their own, so the habitat's
+forge shows the parts of each organism discussing and cooperating rather
+than one account talking to itself. Every organism with a repository at
+the habitat's Forgejo has one persona per position its chart states (a
+proposed position has none until the Board states it), one for its Board
+(`position:board`, stated or not), and one per person who holds a position
+there. A position's and the Board's user is the organism's:
+`<organism user>-<name>`, a `/` of the position's name as `_` (Forgejo
+takes no doubled dash), and its token is the vault slot
+`forgejo-<key>-<slug>`, the slug the name with each `/` as `--`
+(`forgejo-<key>-api--dev`, `forgejo-<key>-board`). A name longer than
+Forgejo's 39 characters, or one that is not lowercase letters, digits and
+single dashes, is cut and tidied and carries 8 hex digits of a hash of
+the organism's user and the position's id, so it is the same at every
+apply and never another position's. A person's user is the habitat's,
+one however many organisms the person is a member of: the member name
+(`holds:position:<p>|<who>`'s holder), or, for a name that is not plain,
+too long, or one Forgejo or the habitat keeps (`hale-admin`, `admin`, …),
+the name tidied with a hash; its token is `forgejo-person-<user>`. Each
+persona's user writes to its organism's repository (a person's to every
+repository of an organism that has them), has an avatar drawn from its
+name (a 96×96 identicon, uploaded as the persona, kept as data of the
+persona's so a later avatar can be chosen per hat) and the name Forgejo
+shows (`dev of shop`, `the Board of shop`, the member's name). A
+persona's user is marked by its email, `<user>@<key>.persona.habitat.invalid`
+or `<user>@person.habitat.invalid`; only a user so marked is ever removed,
+and a user of the name that is not so marked is said as a conflict and
+left alone. No token is printed: it goes from Forgejo into the vault.
+
+`hale habitat graft` reconciles the organism it grafts once its own user
+is made, and every `hale habitat apply` reconciles every organism (an
+allocation `<key>/personas` among what it applied): a persona missing is
+made and granted the repository; one whose position retired or closed is
+removed with its slot; a person's user and slot go once no organism's
+chart has the person; an organism no longer grafted loses its personas.
+A persona whose user exists is left alone, its token minted again only
+when its slot is missing, so a second apply changes nothing. An
+organism whose chart cannot be read keeps everything it has, and no
+person is removed while any chart is unread. The chart is read with the
+core's `org_chart` (stated positions, holds neither refused nor of a
+retired person) through the host verb `habitat-persona-chart`, which adds
+a `person <name>` line per holder that is a person; the plan is made by
+the toolchain (`crates/hale-cli/src/dna/personas.rs`) and carried out by
+`habitat-forge-personas`. Each organism's personas as the last reconcile
+left them are kept beside its allocations (`allocations/<key>/personas`),
+and `hale habitat status` shows their count under the organism.
+
 The forge's implementations sit behind the core's `Forge` interface:
 `ForgejoForge` (Forgejo's API, which maps onto GitHub's nearly one to one:
 a pull request per review, its approving or change-requesting reviews as
@@ -908,8 +955,9 @@ grouped by what each item is:
   volume of theirs no other item names;
 - the vault: the slots the habitat and its organisms hold, by name, never a
   value: the ones the habitat minted (memory's and the nerves' accounts,
-  the OIDC clients, the record's key, Forgejo's administrator and each
-  organism's token, the habitat's SSH key) are removed, every account the
+  the OIDC clients, the record's key, Forgejo's administrator, each
+  organism's token and its chart's personas' tokens, each person's token
+  there, the habitat's SSH key) are removed, every account the
   habitat's and each organism's organization holds on the nerves among
   them (`nats-<org>-<role>`, and `nats-<org>-app-<name>` for every name an
   application was attached by, of every organism the record says it ever
@@ -990,7 +1038,10 @@ the habitat grafted (by its name, or its key when two share a name), the
 same way: the plan (`Commands::plan_remove_organism`, a read of the
 Board's) is its record and memory, its genome repository (the habitat's
 clone of a sapling is removed; a checkout of the person's is kept), its
-Forgejo repository and account, its allocations by host (this machine's
+Forgejo repository and account (and its chart's personas there, each by
+the email that marks it, with each person's user and slot that no other
+organism's chart has, by the personas each organism's last reconcile
+left), its allocations by host (this machine's
 volumes, another host's over SSH, an unanswering host's named and left),
 its compose services and projects, its vault slots and its files here, and
 its rows in the habitat's record: its `habitat.grafted` row and each

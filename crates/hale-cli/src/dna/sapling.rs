@@ -628,6 +628,10 @@ fn apply_here(host: &str, fresh: bool, reply: Option<&str>, root: Option<&str>) 
         for l in with_bodies(&mut v, &super::bodies::keep_all()) {
             eprintln!("{l}");
         }
+        // the charts' personas at the habitat's Forgejo, every organism's
+        // (personas.rs): an allocation of each organism's, listed with the
+        // rest
+        with_personas(&mut v, super::personas::reconcile(None));
     }
     if let Some(path) = reply {
         std::fs::write(path, format!("{v}\n")).map_err(|e| format!("write {path}: {e}"))?;
@@ -656,6 +660,35 @@ pub(super) fn with_bodies(v: &mut serde_json::Value, bodies: &[super::bodies::Ou
     }
     v["applied"] = serde_json::json!(serde_json::Value::Array(list).to_string());
     said
+}
+
+/// An apply's reply `v` with what reconciling the charts' personas came
+/// to listed among what it applied, an allocation `<key>/personas` of each
+/// organism with a repository at the habitat's Forgejo (and not ok when
+/// one was not reconciled, or the Forgejo did not answer).
+fn with_personas(v: &mut serde_json::Value, r: Result<Vec<super::personas::Reconciled>, String>) {
+    let entries: Vec<(String, Result<String, String>)> = match r {
+        Ok(rs) => rs.into_iter().map(|x| (format!("{}/personas", x.key), x.outcome)).collect(),
+        Err(e) => vec![("personas".to_string(), Err(e))],
+    };
+    if entries.is_empty() {
+        return;
+    }
+    let mut list: Vec<serde_json::Value> = v["applied"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+    for (allocation, outcome) in entries {
+        eprintln!("applying {allocation} on {}", super::shown_host("local"));
+        list.push(match outcome {
+            Ok(state) => serde_json::json!({ "ok": true, "allocation": allocation, "host": "local", "provider": "forgejo", "state": state }),
+            Err(why) => {
+                v["ok"] = serde_json::json!(false);
+                if v["code"].as_str().unwrap_or("").is_empty() {
+                    v["code"] = serde_json::json!("not_applied");
+                }
+                serde_json::json!({ "ok": false, "allocation": allocation, "host": "local", "why": why })
+            }
+        });
+    }
+    v["applied"] = serde_json::json!(serde_json::Value::Array(list).to_string());
 }
 
 /// The head's `Commands::graft` for `name` on `host`, when the head answers,

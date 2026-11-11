@@ -276,7 +276,7 @@ When a Review opens, it records this routing calculation as a `review.routed` ro
 
 The forge is a gate, not a store. Code goes out through it as branches and verdicts come back through it; the organism reads nothing from it that it did not already decide. A Review lives in the record, its candidate is a branch in git, and the pull request is a mirror of it. The record wins.
 
-Which forge stands in the gate is an allocation, a role the habitat allocates as it allocates memory. On your machine it is the habitat's own Forgejo: `hale habitat up` brings it up with memory and the nerves, and a graft gives the organism a Forgejo user and a repository there, its token in the vault (`forgejo-<id>`). Nothing to set up:
+Which forge stands in the gate is an allocation, a role the habitat allocates as it allocates memory. On your machine it is the habitat's own Forgejo: `hale habitat up` brings it up with memory and the nerves, and a graft gives the organism a Forgejo user and a repository there, its token in the vault (`forgejo-<id>`), and a user for each position of its chart, its Board and each person who holds a position, each writing to that repository (the chart's personas, kept in step by `hale habitat apply`). Nothing to set up:
 
 ```sh
 hale habitat graft chat
