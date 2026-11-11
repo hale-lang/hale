@@ -35,8 +35,9 @@
 //!   tuple, array or record literal view what they carry out (a
 //!   literal's binding copies the parts that view a place where the
 //!   literal is built, not the literal whole);
-//! - an enum constructor views its arguments and a form's read
-//!   (`self.v.get(i)`) its cell; any other call's result is copied out
+//! - an enum constructor views its arguments, a form's read
+//!   (`self.v.get(i)`) its cell, and a bounded list's `at(xs, i)` the
+//!   list, as an element read does; any other call's result is copied out
 //!   of the callee's frame (a method's into the caller's arena, a
 //!   stdlib leaf's built fresh) and views nothing a write may replace —
 //!   though, for the local-place rule below, it may be a place's value
@@ -3355,6 +3356,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         // A callee the pass cannot identify: it may do anything.
         let mut unknown = false;
         let mut bounded = false;
+        let mut bounded_at = false;
         // A target the pass cannot positively identify may write
         // anything: missed precision costs a copy, never a use after a
         // retire.
@@ -3406,6 +3408,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                     Target::Bounded => {
                         // `count` and `at` read the list; the rest write it.
                         bounded = !matches!(callee, Expr::Ident(id) if matches!(id.name.as_str(), "count" | "at"));
+                        bounded_at = matches!(callee, Expr::Ident(id) if id.name == "at");
                         // The bounded field it is handed.
                         if let Some(Expr::Field { name: f, .. }) = args.first() {
                             writes.add(&Writes::field(self.p.field_id(&f.name)));
@@ -3443,6 +3446,15 @@ impl<'p, 'a> Walk<'p, 'a> {
         let result_ty: Option<Ty> = call.map(|c| self.views.expr(c).clone());
         let recv_keys = if receiver.is_some() { real(&keys.remove(0)) } else { None };
         let mut result: Keys = None;
+        // `at(list, i)` hands back the list's element itself, the
+        // pointer its slot holds, not a copy: it views the list as an
+        // element read `a[i]` views its array. A place a locus holds
+        // retires a replaced element (a store over the record holding
+        // it, a `set`, a `clear`), so a binding held across such a write
+        // takes its own copy.
+        if bounded_at {
+            result = union(result, in_cell(keys.first().cloned().flatten()));
+        }
         // A form's read may hand back its cell; any other method's
         // result is copied into the caller's arena.
         if let Some(r @ Expr::Field { .. }) = receiver {

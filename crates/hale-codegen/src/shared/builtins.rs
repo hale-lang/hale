@@ -794,6 +794,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // `clear` / `truncate` on a bounded place a locus holds: retire
+        // the dropped elements' blocks.
+        // declare void @lotus_bounded_retire_tail(ptr arena, ptr storage,
+        //     i64 old_len, ptr desc, i64 n)
+        self.module.add_function(
+            "lotus_bounded_retire_tail",
+            void_t.fn_type(
+                &[ptr_t.into(), ptr_t.into(), retire_i64.into(), ptr_t.into(), retire_i64.into()],
+                false,
+            ),
+            None,
+        );
         // ... and a payload-enum field's: the same arguments, `desc`
         // the enum's variant table.
         self.module.add_function(

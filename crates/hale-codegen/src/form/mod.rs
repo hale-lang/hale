@@ -101,6 +101,15 @@ fn lower_form_value_arg<'ctx>(
     cx.lower_expr(arg, scope)
 }
 
+/// The retire descriptor's entry tags (`lotus_arena.c`, beside
+/// `lotus_form_retire_replaced`): an entry's word is a slot's offset in
+/// its block, or'd with these. The runtime's `LOTUS_RETIRE_OFF_MASK`
+/// strips all four.
+const LOTUS_RETIRE_OFF_BYTES: u32 = 1 << 30;
+const LOTUS_RETIRE_OFF_NESTED: u32 = 1 << 29;
+const LOTUS_RETIRE_OFF_ENUM: u32 = 1 << 28;
+const LOTUS_RETIRE_OFF_BOUNDED: u32 = 1 << 27;
+
 use crate::codegen::{
     BceVecKey, CapacitySlotLayout, CodegenError, CodegenTy, Cx,
     FallibleCallResult, LocusInfo, Scope, SlotForm, TypeInfo,
@@ -251,7 +260,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// its top-level String and Bytes fields, which the per-field
     /// fixups retire; for a tuple or an out-of-line array, every slot;
     /// for a payload enum, its variant table
-    /// (`lotus_self_field_retire_replaced_enum`).
+    /// (`lotus_self_field_retire_replaced_enum`). A record's
+    /// `bounded[T; N]` field of Strings, Bytes or records is inline
+    /// storage, not a block, but its live elements are the record's to
+    /// retire: it has an entry too (`retire_slots_desc`), so a replaced
+    /// value's elements no longer stay in the locus's arena.
     /// `None` when the store retires nothing beyond those fixups: a
     /// record of scalars, Strings and Bytes, or a type that is not such
     /// a block. A tuple or array of scalars answers `Some(vec![])`: it
@@ -264,7 +277,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let mut slots = Vec::new();
                 for fname in &ti.field_order {
                     let Some((idx, fty)) = ti.fields.get(fname) else { continue };
-                    if !self.record_field_owns_block(fty) {
+                    if !self.record_field_owns_block(fty) && !Self::bounded_field_owns_elems(fty) {
                         continue;
                     }
                     if let Some(o) = self.target_data.offset_of_element(&ti.struct_ty, *idx) {
@@ -335,12 +348,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// Can a store into a locus field of type `ty` retire a block into
     /// the locus's arena — a String or Bytes field, a record carrying
-    /// one or a nested block, a tuple or an out-of-line array? Such a
+    /// one or a nested block, a tuple or an out-of-line array, a
+    /// `bounded` of pointer elements (or a record holding one)? Such a
     /// locus flushes its arena's pending retires at each method's
     /// activation boundary.
     pub(crate) fn self_field_type_retires(&self, ty: &CodegenTy) -> bool {
         match ty {
             CodegenTy::String | CodegenTy::Bytes => true,
+            // `set` on the field's elements retires the one it replaces
+            // (`emit_bounded_set_retire`).
+            CodegenTy::Bounded(_, _) => Self::bounded_field_owns_elems(ty),
             CodegenTy::TypeRef(tn) => {
                 self.user_types.get(tn).is_some_and(|t| {
                     t.fields.values().any(|(_, f)| matches!(f, CodegenTy::String | CodegenTy::Bytes))
@@ -352,19 +369,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// The descriptor words over a block's `(offset, type, inline)`
     /// slots (`retire_desc_for`).
-    fn retire_slots_desc(&self, slots: Vec<(u64, CodegenTy, bool)>, depth: u32) -> Vec<u32> {
-        const LOTUS_RETIRE_OFF_BYTES: u32 = 1 << 30;
-        const LOTUS_RETIRE_OFF_NESTED: u32 = 1 << 29;
-        const LOTUS_RETIRE_OFF_ENUM: u32 = 1 << 28;
+    pub(crate) fn retire_slots_desc(&self, slots: Vec<(u64, CodegenTy, bool)>, depth: u32) -> Vec<u32> {
         let mut desc = Vec::new();
+        if depth > 16 {
+            return desc;
+        }
         for (off, fty, inline) in slots {
             let off = off as u32;
             match &fty {
                 CodegenTy::String => desc.push(off),
                 CodegenTy::Bytes => desc.push(off | LOTUS_RETIRE_OFF_BYTES),
                 // An inline fixed array (a record field's) is the slot's
-                // own bytes; a bounded field is never a pointer slot.
+                // own bytes.
                 CodegenTy::Array(_, _) if inline => {}
+                // A bounded field is inline storage too, `{ i64 len,
+                // [N x T] }` (`llvm_bounded_storage_type`), but its live
+                // slots of a pointer element (a String, a Bytes, a
+                // record) point at blocks the field owns: an entry
+                // tagged `LOTUS_RETIRE_OFF_BOUNDED` at the storage,
+                // followed by slot 0's offset within it, the capacity,
+                // the slot stride, and one slot's descriptor (its length,
+                // then the words), relative to the slot. The runtime
+                // walks it over [0, len) only: slots past `len` may hold
+                // stale pointers (`clear` leaves them).
+                CodegenTy::Bounded(elem, cap) if Self::bounded_elem_is_ptr(elem) => {
+                    let st = self.llvm_bounded_storage_type(elem, *cap);
+                    let Some(data_off) = self.target_data.offset_of_element(&st, 1) else { continue };
+                    let stride = self.target_data.get_abi_size(&self.llvm_basic_type(elem));
+                    let sub = self.retire_slots_desc(vec![(0, (**elem).clone(), false)], depth + 1);
+                    if sub.is_empty() {
+                        continue;
+                    }
+                    desc.push(off | LOTUS_RETIRE_OFF_BOUNDED);
+                    desc.push(data_off as u32);
+                    desc.push(*cap as u32);
+                    desc.push(stride as u32);
+                    desc.push(sub.len() as u32);
+                    desc.extend(sub);
+                }
                 // A slot holding a pointer to a block of its own.
                 CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Array(_, _) => {
                     if let Some((sub_size, sub)) = self.retire_desc_for(&fty, depth + 1) {
@@ -392,9 +434,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Does a `@form(hashmap)` cell with these fields own anything its
-    /// retire descriptor reaches — a String or Bytes field, or a field
+    /// retire descriptor reaches — a String or Bytes field, a field
     /// pointing at a block of its own (a nested record, a tuple, an
-    /// out-of-line fixed array)? Such a cell retires what it owned when
+    /// out-of-line fixed array), or a `bounded` field whose elements are
+    /// Strings, Bytes or records? Such a cell retires what it owned when
     /// it is replaced or removed, so a synced map's reads must copy it
     /// out (`lotus_hashmap_*_cloned`).
     pub(crate) fn hashmap_cell_owns_blocks(
@@ -402,7 +445,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         fields: &std::collections::BTreeMap<String, (u32, CodegenTy)>,
     ) -> bool {
         fields.values().any(|(_, t)| {
-            matches!(t, CodegenTy::String | CodegenTy::Bytes) || self.record_field_owns_block(t)
+            matches!(t, CodegenTy::String | CodegenTy::Bytes)
+                || self.record_field_owns_block(t)
+                || Self::bounded_field_owns_elems(t)
         })
     }
 
@@ -428,6 +473,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// out of line)? A scalar fixed array is the field's own inline
     /// bytes, not a block (`array_inline_spec`), as `retire_desc_for`
     /// reads a record's slots.
+    /// Is a record field of type `fty` a `bounded[T; N]` whose live
+    /// elements point at blocks the record owns (a String, a Bytes, a
+    /// record element)? Not a block itself — the storage is the field's
+    /// own inline bytes, so `record_field_owns_block` answers false and
+    /// nothing loads it as a pointer — but the retire descriptor walks
+    /// its live slots (`retire_slots_desc`).
+    pub(crate) fn bounded_field_owns_elems(fty: &CodegenTy) -> bool {
+        matches!(fty, CodegenTy::Bounded(elem, _) if Self::bounded_elem_is_ptr(elem))
+    }
+
     pub(crate) fn record_field_owns_block(&self, fty: &CodegenTy) -> bool {
         matches!(
             fty,
@@ -450,14 +505,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// `vec_retire_args`, plus whether the descriptor has a nested entry
-    /// (`LOTUS_RETIRE_OFF_NESTED`): without one the element is retired
+    /// (`LOTUS_RETIRE_OFF_NESTED`) or a bounded one
+    /// (`LOTUS_RETIRE_OFF_BOUNDED`): without either the element is retired
     /// by `lotus_form_retire_replaced_flat`, which skips the nested
     /// walk's block lists.
     fn vec_retire_args_nested(
         &mut self,
         elem_ty: &CodegenTy,
     ) -> Option<(i64, PointerValue<'ctx>, i64, bool)> {
-        const LOTUS_RETIRE_OFF_NESTED: u32 = 1 << 29;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i32_t = self.context.i32_type();
         let (size_sentinel, offs): (i64, Vec<u32>) = match elem_ty {
@@ -473,7 +528,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if offs.is_empty() {
             return Some((size_sentinel, ptr_t.const_null(), 0, false));
         }
-        let nested = offs.iter().any(|w| w & LOTUS_RETIRE_OFF_NESTED != 0);
+        // A bounded field's entry is not a field offset the flat path
+        // could read: it takes the nested walk too.
+        let nested = offs.iter().any(|w| w & (LOTUS_RETIRE_OFF_NESTED | LOTUS_RETIRE_OFF_BOUNDED) != 0);
         let gname = match elem_ty {
             CodegenTy::TypeRef(tn) => format!("__vec_retire_desc.{}", tn),
             _ => unreachable!("only a struct element has field offsets"),
