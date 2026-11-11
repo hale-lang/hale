@@ -73,7 +73,11 @@ proposals alone.
 
 The habitat is served the same way: `hale habitat up` starts the face over the
 habitat's own head, lands a signed-in visitor on the operator face at `/app/`
-and serves this face at `/organization`.
+and serves this face at `/organization`. A grafted organism's face, which
+`hale habitat apply` starts beside its body and head, has no operator face:
+it lands on its own organization at `/`, and the habitat's chart links to it
+under the organism. Both sign in through the habitat's identity; a face on a
+project network reaches it through the host (`HALE_DNA_LOOPBACK_HOST`).
 
 ## Development and verification
 
