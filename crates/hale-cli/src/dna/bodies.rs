@@ -499,6 +499,7 @@ mod tests {
         assert!(face.contains("\"127.0.0.1:9024:9024\"") && face.contains("\"127.0.0.1:9025:9025\""), "its face and head ports: {face}");
         assert!(!face.contains(&format!(":{}:", 9024 + readings::GRAFANA_OFFSET)), "no Grafana port of its own: {face}");
         assert!(!face.contains("HALE_DNA_IDENTITY"), "it publishes no identity of its own: {face}");
+        assert!(!face.contains("HALE_DNA_FACE_HOME"), "it lands on its own organization, not the operator face: {face}");
         // a shape an earlier `up` kept carries no face environment: no face
         let old = render_with_face(&shape(), "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/x");
         assert!(!old.contains("face-0a1b2c3d4e5f"), "{old}");

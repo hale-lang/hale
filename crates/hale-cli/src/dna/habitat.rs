@@ -3205,9 +3205,11 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     // what the organisms' bodies take of this one (bodies.rs): kept for a
     // graft and an apply, which do not know this `up`'s image or machine
     let hostname = if is_macos { Command::new("hostname").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default() } else { String::new() };
-    // an organism's face: the habitat face's environment less its own state
-    // and its published identity (it signs in through the habitat's)
-    let face_environment = format!("      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_FACE_HOME: \"/app/\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n{loopback}{forwarded_env}");
+    // an organism's face: the habitat face's environment less its own state,
+    // its published identity (it signs in through the habitat's) and its
+    // landing page (the operator face is the habitat's alone: an organism's
+    // lands on its own organization)
+    let face_environment = format!("      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n{loopback}{forwarded_env}");
     let face_publish = if is_macos { declared.clone() } else { String::new() };
     bodies::keep_shape(&bodies::BodyShape { image: image.clone(), user: user_spec.clone(), network: net_or_hosts.clone(), hostname, env_file: env_file_spec.clone(), environment: body_env.clone(), mounts: mounted.clone(), stop_grace_secs: drain_secs, face_environment, face_publish })?;
 
