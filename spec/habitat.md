@@ -747,6 +747,23 @@ first and removes it with the habitat's project. `status` shows it under
 the organism's allocation (`body    body-<key> up (…)`, or `down`), and the
 head observes it as it observes any compose service.
 
+**Its face and head run beside it.** The graft records the organism's head
+block (`face` and `head` of its `habitat.grafted` row, the block's first two
+ports), and the same compose file holds a second service, `face-<key>`,
+allocated as `habitat.allocated <key>/face` (`role: "body"`, `service:
+"face-<key>"`): the habitat face's image, user, network and mounts, the
+habitat face's environment less its own state and its published identity (it
+signs in through the habitat's), its state in `allocations/<key>/face-state`
+(`HALE_DNA_HEAD_STATE`), running `hale dna head <its directory>`, restarted
+on failure. On a project network (macOS) its head block is published on the
+habitat's listen address as the habitat face's is, Grafana's port left out;
+on the host's network it binds its ports itself. It comes up, stops and is
+removed with the body (`docker compose up -d --no-deps body-<key>
+face-<key>`; a removal takes every `role: "body"` service of the organism),
+so the `face` and `head` the habitat's index lists for the organism answer.
+A shape kept by an `up` from before faces were kept carries no face
+environment, and its organisms get a face at the next `up`.
+
 **The body stays on the habitat's machine**, wherever the organism's
 services are placed: it runs the habitat's image with the habitat's
 directory and vault mounted, which another host does not hold, and it

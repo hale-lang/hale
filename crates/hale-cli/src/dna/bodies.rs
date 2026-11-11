@@ -47,6 +47,15 @@ pub(super) struct BodyShape {
     /// the volumes, `(source, target)`
     pub mounts: Vec<(String, String)>,
     pub stop_grace_secs: u64,
+    /// the habitat face's `environment:` entries less its own state and its
+    /// published identity: what an organism's face takes ("" kept by an
+    /// earlier `up`, whose organisms then get no face until the next)
+    #[serde(default)]
+    pub face_environment: String,
+    /// the address its head block is published on (macOS, a project
+    /// network); "" on the host's network, where it binds its ports itself
+    #[serde(default)]
+    pub face_publish: String,
 }
 
 impl BodyShape {
@@ -59,6 +68,18 @@ impl BodyShape {
 /// The compose service of the body of the organism keyed `key`.
 pub(super) fn service_of(key: &str) -> String {
     format!("body-{key}")
+}
+
+/// The compose service of the face (and head) of the organism keyed `key`.
+pub(super) fn face_service_of(key: &str) -> String {
+    format!("face-{key}")
+}
+
+/// The port its graft recorded for an organism's face (`face` of its
+/// `habitat.grafted` row, `http://<address>:<port>`): the first of its head
+/// block, the head the next.
+pub(super) fn face_port_of(face: &str) -> Option<u16> {
+    face.trim_end_matches('/').rsplit_once(':').and_then(|(_, p)| p.parse().ok())
 }
 
 fn shape_path() -> PathBuf {
@@ -84,6 +105,15 @@ fn q(s: &str) -> String {
 /// The compose file of the body of the organism keyed `key` at `root`, its
 /// service labelled with `labels` (`compose_labels(<organism>, "body")`).
 pub(super) fn render(shape: &BodyShape, key: &str, labels: &str, root: &str) -> String {
+    render_with_face(shape, key, labels, "", root, None, "")
+}
+
+/// `render`, and when `face_port` names its graft's head block (and the
+/// shape carries the face's environment), its face beside it: a service
+/// `face-<key>` running `hale dna head <root>` as the habitat's face runs
+/// its own, its state in `face_state`, signing in through the habitat's
+/// identity (it publishes none of its own).
+pub(super) fn render_with_face(shape: &BodyShape, key: &str, labels: &str, face_labels: &str, root: &str, face_port: Option<u16>, face_state: &str) -> String {
     let mut s = format!("# The body of the organism {key}, kept by the habitat: written by `hale habitat up`,\n# a graft and an apply from the habitat body's shape (body-shape.json).\nservices:\n  {}:\n", service_of(key));
     s.push_str(&format!("    image: {}\n", q(&shape.image)));
     s.push_str(labels);
@@ -111,6 +141,42 @@ pub(super) fn render(shape: &BodyShape, key: &str, labels: &str, root: &str) -> 
     // as the habitat's body: its clean exit is a drain the habitat asked for
     s.push_str("    restart: on-failure\n");
     s.push_str(&format!("    stop_grace_period: {}s\n", shape.stop_grace_secs));
+    if let Some(base) = face_port.filter(|_| !shape.face_environment.is_empty()) {
+        s.push_str(&format!("  {}:\n", face_service_of(key)));
+        s.push_str(&format!("    image: {}\n", q(&shape.image)));
+        s.push_str(face_labels);
+        s.push_str("    init: true\n");
+        s.push_str(&shape.user);
+        s.push_str(&shape.network);
+        if !shape.hostname.is_empty() {
+            s.push_str(&format!("    hostname: {}\n", q(&shape.hostname)));
+        }
+        s.push_str(&format!("    working_dir: {}\n", q(root)));
+        s.push_str(&shape.env_file);
+        s.push_str("    environment:\n");
+        s.push_str(&shape.face_environment);
+        s.push_str(&format!("      HALE_DNA_HEAD_STATE: {}\n", q(face_state)));
+        if !shape.face_publish.is_empty() {
+            // its head block, as the habitat's face publishes its own
+            s.push_str("    ports:\n");
+            for offset in (0..HEAD_BLOCK).filter(|o| *o != readings::GRAFANA_OFFSET) {
+                let port = base + offset;
+                s.push_str(&format!("      - {}\n", q(&format!("{}:{port}:{port}", shape.face_publish))));
+            }
+        }
+        s.push_str("    volumes:\n");
+        for (src, dst) in &shape.mounts {
+            s.push_str(&format!("      - {}\n", q(&format!("{src}:{dst}"))));
+        }
+        if !shape.covers(root) {
+            s.push_str(&format!("      - {}\n", q(&format!("{root}:{root}"))));
+        }
+        if !shape.covers(face_state) {
+            s.push_str(&format!("      - {}\n", q(&format!("{face_state}:{face_state}"))));
+        }
+        s.push_str(&format!("    command: [\"dna\", \"head\", {}]\n", q(root)));
+        s.push_str("    restart: on-failure\n");
+    }
     s
 }
 
@@ -121,6 +187,8 @@ pub(super) struct Kept {
     pub id: String,
     pub name: String,
     pub root: PathBuf,
+    /// the first port of its head block, as its graft recorded it
+    pub face_port: Option<u16>,
 }
 
 /// The organisms the habitat keeps bodies for, of the habitat's record
@@ -142,7 +210,8 @@ pub(super) fn kept_in(rows: &[serde_json::Value], root_of: &dyn Fn(&str, &str) -
             let id = b["child"].as_str().filter(|c| c.starts_with(&key))?.to_string();
             let root = root_of(&key, sapling)?;
             let name = b["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(sapling).to_string();
-            Some(Kept { key, id, name, root })
+            let face_port = b["face"].as_str().and_then(face_port_of);
+            Some(Kept { key, id, name, root, face_port })
         })
         .collect()
 }
@@ -161,12 +230,23 @@ fn root_here(key: &str, sapling: &str) -> Option<PathBuf> {
 
 /// The `habitat.allocated <key>/body` row's body.
 pub(super) fn allocation_body(id: &str, key: &str, project: &str) -> serde_json::Value {
-    serde_json::json!({ "organism": id, "role": "body", "service": service_of(key), "project": project, "provider": "compose", "host": "local", "vault": [] })
+    allocation_of(id, project, &service_of(key))
+}
+
+/// The `habitat.allocated <key>/<part>` row's body for a service of the
+/// habitat's project that holds no data (a body, a face): role `body`, so a
+/// removal stops and removes it with the rest of the project's.
+fn allocation_of(id: &str, project: &str, service: &str) -> serde_json::Value {
+    serde_json::json!({ "organism": id, "role": "body", "service": service, "project": project, "provider": "compose", "host": "local", "vault": [] })
 }
 
 /// Whether the record `rows` hold a live `<key>/body` allocation.
 pub(super) fn recorded(rows: &[serde_json::Value], key: &str) -> bool {
-    let entity = format!("{key}/body");
+    recorded_part(rows, key, "body")
+}
+
+fn recorded_part(rows: &[serde_json::Value], key: &str, part: &str) -> bool {
+    let entity = format!("{key}/{part}");
     rows.iter()
         .filter(|r| r["kind"] == "habitat.allocated" && r["entity"] == entity.as_str())
         .last()
@@ -182,7 +262,16 @@ fn ensure(k: &Kept, rows: &[serde_json::Value], shape: &BodyShape) -> Result<(),
     }
     let dir = allocation_dir_of(&k.key);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let text = render(shape, &k.key, &compose_labels(&k.name, "body"), &k.root.display().to_string());
+    // its face and head, on the block its graft recorded, beside its body
+    let face_port = k.face_port.filter(|_| !shape.face_environment.is_empty());
+    let face_state = dir.join("face-state");
+    if face_port.is_some() {
+        std::fs::create_dir_all(&face_state).map_err(|e| format!("create {}: {e}", face_state.display()))?;
+        if !recorded_part(rows, &k.key, "face") {
+            sapling::record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{}/face", k.key), "body": allocation_of(&k.id, &local_habitat_project(), &face_service_of(&k.key)).to_string() })])?;
+        }
+    }
+    let text = render_with_face(shape, &k.key, &compose_labels(&k.name, "body"), &compose_labels(&k.name, "face"), &k.root.display().to_string(), face_port, &face_state.display().to_string());
     let path = dir.join(BODY_FILE);
     if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
         std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
@@ -205,7 +294,13 @@ pub(super) fn start(key: &str, recreate: bool) -> Result<(), String> {
     if recreate {
         cmd.arg("--force-recreate");
     }
-    let ran = cmd.arg(&service).output().map_err(|e| format!("docker compose: {e}"))?;
+    cmd.arg(&service);
+    // its face, when its compose file holds one
+    let face = face_service_of(key);
+    if std::fs::read_to_string(&file).unwrap_or_default().contains(&format!("\n  {face}:\n")) {
+        cmd.arg(&face);
+    }
+    let ran = cmd.output().map_err(|e| format!("docker compose: {e}"))?;
     if !ran.status.success() {
         return Err(format!("docker compose up -d {service}: {}", String::from_utf8_lossy(&ran.stderr).trim()));
     }
@@ -340,6 +435,8 @@ mod tests {
             environment: "      HOME: \"/h\"\n      HALE_DNA_HABITAT: \"/h\"\n      HALE_DNA_COMPOSE: \"off\"\n".to_string(),
             mounts: vec![("/h".to_string(), "/h".to_string()), ("/run/docker.sock".to_string(), "/var/run/docker.sock".to_string())],
             stop_grace_secs: 45,
+            face_environment: String::new(),
+            face_publish: String::new(),
         }
     }
 
@@ -376,7 +473,7 @@ mod tests {
     fn bodies_are_kept_for_live_sapling_grafts_alone() {
         let row = |e: &str, body: serde_json::Value| serde_json::json!({ "kind": "habitat.grafted", "entity": e, "body": body.to_string() });
         let rows = vec![
-            row("aaaaaaaaaaaa", serde_json::json!({ "child": "aaaaaaaaaaaa11", "name": "voice", "sapling": "voice" })),
+            row("aaaaaaaaaaaa", serde_json::json!({ "child": "aaaaaaaaaaaa11", "name": "voice", "sapling": "voice", "face": "http://127.0.0.1:9024" })),
             // a directory grafted from a checkout: the person runs its body
             row("bbbbbbbbbbbb", serde_json::json!({ "child": "bbbbbbbbbbbb22", "name": "app" })),
             row("cccccccccccc", serde_json::json!({ "child": "cccccccccccc33", "name": "gone", "sapling": "gone" })),
@@ -386,7 +483,29 @@ mod tests {
         ];
         let root_of = |_: &str, s: &str| (s != "far").then(|| PathBuf::from(format!("/h/saplings/{s}")));
         let kept = kept_in(&rows, &root_of);
-        assert_eq!(kept, vec![Kept { key: "aaaaaaaaaaaa".to_string(), id: "aaaaaaaaaaaa11".to_string(), name: "voice".to_string(), root: PathBuf::from("/h/saplings/voice") }]);
+        assert_eq!(kept, vec![Kept { key: "aaaaaaaaaaaa".to_string(), id: "aaaaaaaaaaaa11".to_string(), name: "voice".to_string(), root: PathBuf::from("/h/saplings/voice"), face_port: Some(9024) }]);
+    }
+
+    #[test]
+    fn an_organism_s_face_runs_beside_its_body_on_its_recorded_block() {
+        let mut s = shape();
+        s.face_environment = "      HALE_DNA_FACE_HOME: \"/app/\"\n".to_string();
+        s.face_publish = "127.0.0.1".to_string();
+        let text = render_with_face(&s, "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/h/allocations/0a1b2c3d4e5f/face-state");
+        assert!(text.contains("\n  body-0a1b2c3d4e5f:\n") && text.contains("\n  face-0a1b2c3d4e5f:\n"), "{text}");
+        let face = text.split("\n  face-0a1b2c3d4e5f:\n").nth(1).unwrap();
+        assert!(face.contains("command: [\"dna\", \"head\", \"/h/saplings/voice\"]"), "{face}");
+        assert!(face.contains("HALE_DNA_HEAD_STATE: \"/h/allocations/0a1b2c3d4e5f/face-state\""), "{face}");
+        assert!(face.contains("\"127.0.0.1:9024:9024\"") && face.contains("\"127.0.0.1:9025:9025\""), "its face and head ports: {face}");
+        assert!(!face.contains(&format!(":{}:", 9024 + readings::GRAFANA_OFFSET)), "no Grafana port of its own: {face}");
+        assert!(!face.contains("HALE_DNA_IDENTITY"), "it publishes no identity of its own: {face}");
+        // a shape an earlier `up` kept carries no face environment: no face
+        let old = render_with_face(&shape(), "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/x");
+        assert!(!old.contains("face-0a1b2c3d4e5f"), "{old}");
+        // on the host's network it binds its ports itself
+        s.face_publish = String::new();
+        assert!(!render_with_face(&s, "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/x").contains("ports:"));
+        assert_eq!(face_port_of("http://127.0.0.1:9024/"), Some(9024));
     }
 
     #[test]
@@ -418,6 +537,6 @@ mod tests {
         assert_eq!(v["state"], "up");
         assert!(o.line().contains("0a1b2c3d4e5f/body of voice up (compose service body-0a1b2c3d4e5f, Up 2 seconds)"), "{}", o.line());
         let failed = Outcome { ok: false, why: "no image".to_string(), state: "down".to_string(), ..o };
-        assert!(failed.line().starts_with("note    0a1b2c3d4e5f/body of voice did not come up: no image"), "{}", failed.line());
+        assert!(failed.line().starts_with(&format!("{:<8}0a1b2c3d4e5f/body of voice did not come up: no image", "note")), "{}", failed.line());
     }
 }
