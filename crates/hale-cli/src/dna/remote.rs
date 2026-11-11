@@ -579,6 +579,23 @@ enum ImageIo {
 }
 
 fn in_image_io(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo) -> String {
+    in_image_with(m, p, args, io, false)
+}
+
+/// The host a run in the toolchain image dials a port published on the
+/// habitat machine's loopback at, when that is not its own `127.0.0.1`:
+/// on a Mac, docker runs in a VM, and `--network host` is the VM's network,
+/// so the Mac's loopback (where the habitat publishes its Forgejo, its
+/// memory and its nerves) is `host.docker.internal`, as the habitat's own
+/// `body` and `face` reach it there.
+fn image_loopback_host(m: &Machine) -> Option<&'static str> {
+    (m.os == "Darwin").then_some("host.docker.internal")
+}
+
+/// `in_image_io`; with `loopback`, the run is told where the machine's
+/// loopback is (`HALE_DNA_LOOPBACK_HOST`, and the name mapped to the
+/// host's gateway) when that is not its own.
+fn in_image_with(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo, loopback: bool) -> String {
     let data = data_dir(m);
     let image = p["image"].as_str().unwrap_or("");
     let mut env = vec![
@@ -598,6 +615,10 @@ fn in_image_io(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo) -
         // SSH (a Mac's is launchd's, outside the image), never the image's
         ("HALE_DNA_NODE_EXPORTER", "off".to_string()),
     ];
+    let reach = if loopback { image_loopback_host(m) } else { None };
+    if let Some(host) = reach {
+        env.push(("HALE_DNA_LOOPBACK_HOST", host.to_string()));
+    }
     for k in FORWARDED {
         if let Ok(v) = std::env::var(k) {
             if !v.is_empty() {
@@ -621,6 +642,9 @@ fn in_image_io(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo) -
         g = sq(&m.gid),
         h = sq(&m.home),
     );
+    if let Some(host) = reach {
+        line.push_str(&format!(" --add-host {}", sq(&format!("{host}:host-gateway"))));
+    }
     for (k, v) in env {
         line.push_str(&format!(" -e {}", sq(&format!("{k}={v}"))));
     }
@@ -1416,12 +1440,23 @@ pub(super) fn organism_dna(p: &serde_json::Value, args: &[String]) -> ExitCode {
 /// `organism … dna` is: for the verbs that act on the genome there
 /// (`nursery refresh`).
 pub(super) fn run_there(p: &serde_json::Value, verb: &str, args: &[&str]) -> ExitCode {
+    run_there_with(p, verb, args, false)
+}
+
+/// `run_there` for a verb that dials what the habitat publishes on its
+/// machine's loopback (`forge publish`, its Forgejo): on a Mac, the run is
+/// told that loopback is `host.docker.internal`.
+pub(super) fn run_there_reaching_loopback(p: &serde_json::Value, verb: &str, args: &[&str]) -> ExitCode {
+    run_there_with(p, verb, args, true)
+}
+
+fn run_there_with(p: &serde_json::Value, verb: &str, args: &[&str], loopback: bool) -> ExitCode {
     let (t, m) = match checked_machine(p, verb) {
         Ok(tm) => tm,
         Err(code) => return code,
     };
     let mut cmd = t.ssh(false);
-    cmd.arg(posix(&in_image(&m, p, args, false))).stdin(Stdio::null());
+    cmd.arg(posix(&in_image_with(&m, p, args, ImageIo::None, loopback))).stdin(Stdio::null());
     match cmd.status() {
         Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
         Err(e) => {
@@ -1730,5 +1765,22 @@ mod tests {
         assert!(line.contains("-e 'HALE_VAULT_DIR=/home/h/.local/share/hale/vault'"), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_EXPECT='"), "{line}");
         assert!(line.ends_with("'hale-habitat:abc' habitat 'up' '--name' 'x'"), "{line}");
+    }
+
+    /// A run that dials the habitat machine's loopback is told where it is
+    /// on a Mac (docker's VM is not the Mac), and nothing on Linux, where
+    /// `--network host` is the machine's own network; a run that does not
+    /// ask is told nothing either way.
+    #[test]
+    fn a_run_reaching_the_loopback_is_told_where_it_is_on_a_mac() {
+        let p = serde_json::json!({ "image": "hale-habitat:abc" });
+        let mac = Machine { home: "/Users/h".into(), uid: "501".into(), gid: "20".into(), user: "h".into(), os: "Darwin".into() };
+        let line = in_image_with(&mac, &p, &["forge", "publish", "shop"], ImageIo::None, true);
+        assert!(line.contains("--network host") && line.contains(" --add-host 'host.docker.internal:host-gateway'"), "{line}");
+        assert!(line.contains("-e 'HALE_DNA_LOOPBACK_HOST=host.docker.internal'"), "{line}");
+        assert!(!in_image_with(&mac, &p, &["forge", "publish", "shop"], ImageIo::None, false).contains("LOOPBACK"));
+        let linux = Machine { os: "Linux".into(), ..mac };
+        let line = in_image_with(&linux, &p, &["forge", "publish", "shop"], ImageIo::None, true);
+        assert!(!line.contains("LOOPBACK") && !line.contains("--add-host"), "{line}");
     }
 }

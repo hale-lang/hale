@@ -47,7 +47,7 @@ const USAGE: &str = "usage: hale habitat forge publish <organism> [--branch <nam
 
 /// The variable git's credential helper reads the token from: set on the
 /// one `git` that needs it, never in this process.
-const TOKEN_ENV: &str = "HALE_FORGE_PUBLISH_TOKEN";
+const TOKEN_ENV: &str = "PUBLISH_GIT_TOKEN";
 
 /// How many pull requests one page of Forgejo's listing asks for.
 const PAGE: usize = 50;
@@ -85,14 +85,15 @@ pub(super) fn cmd(args: &[String]) -> ExitCode {
     if let Some(p) = super::super::remote::pointer() {
         let mut there: Vec<&str> = vec!["forge", "publish"];
         there.extend(args.iter().map(String::as_str));
-        return super::super::remote::run_there(&p, "forge", &there);
+        return super::super::remote::run_there_reaching_loopback(&p, "forge", &there);
     }
     let run = || -> Result<Vec<String>, String> {
         let rows = rows_of(&genome_dir());
         let child = organism_child(&rows, &organism)?;
         let vault = crate::dna::vault_local_dir().ok_or("the vault is served over HTTP (HALE_VAULT_ADDR): a publish reads its tokens from the habitat's own vault alone")?;
         let read = |slot: &str| std::fs::read_to_string(vault.join(slot)).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-        let (internal, github) = ends_from(&rows, &organism, &child[..12], &read)?;
+        let loopback = std::env::var("HALE_DNA_LOOPBACK_HOST").ok();
+        let (internal, github) = ends_from(&rows, &organism, &child[..12], &read, loopback.as_deref())?;
         let date = today();
         let branch = branch.unwrap_or_else(|| format!("sync/{date}"));
         publish(&internal, &github, &branch, &date, dry_run)
@@ -129,8 +130,11 @@ struct GitHub {
 }
 
 /// Both ends of a publish, from the habitat's record `rows` for the organism
-/// keyed `key`, with `token` reading a vault slot: or why it cannot go.
-fn ends_from(rows: &[serde_json::Value], organism: &str, key: &str, token: &dyn Fn(&str) -> Option<String>) -> Result<(Internal, GitHub), String> {
+/// keyed `key`, with `token` reading a vault slot: or why it cannot go. The
+/// Forgejo's recorded address is dialled as `dna::reach_url` dials it: its
+/// loopback host at `loopback` when one is named (`HALE_DNA_LOOPBACK_HOST`,
+/// set on a run in the toolchain image on a Mac).
+fn ends_from(rows: &[serde_json::Value], organism: &str, key: &str, token: &dyn Fn(&str) -> Option<String>, loopback: Option<&str>) -> Result<(Internal, GitHub), String> {
     let forge = latest(rows, "habitat.allocated").remove(&format!("{key}/forge")).unwrap_or_default();
     let field = |b: &serde_json::Value, k: &str| b[k].as_str().unwrap_or("").to_string();
     let (provider, address, repo, slot) = (field(&forge, "provider"), field(&forge, "address"), field(&forge, "repo"), field(&forge, "key_vault"));
@@ -151,11 +155,25 @@ fn ends_from(rows: &[serde_json::Value], organism: &str, key: &str, token: &dyn 
         return Err(format!("the vault holds no token in the slot `{slot}`, {organism}'s own at the habitat's Forgejo: nothing was pushed"));
     };
     let user = repo.split('/').next().unwrap_or("").to_string();
-    let address = address.trim_end_matches('/');
+    let address = reach_url(address.trim_end_matches('/'), loopback);
+    let address = address.as_str();
     Ok((
         Internal { git_url: format!("{address}/{repo}.git"), api: format!("{address}/api/v1"), repo, user, token: internal_token },
         GitHub { git_url: format!("https://github.com/{to}.git"), api: "https://api.github.com".to_string(), repo: to, token: github_token },
     ))
+}
+
+/// A recorded `scheme://[user@]host[:port][/path]` as this process reaches
+/// it (the Rust twin of `dna::reach_url`): a loopback host (`127.0.0.1`,
+/// `localhost`) becomes `loopback` when one is named; anything else stays.
+fn reach_url(url: &str, loopback: Option<&str>) -> String {
+    let Some(named) = loopback.map(str::trim).filter(|h| !h.is_empty()) else { return url.to_string() };
+    let Some((lead, rest)) = url.split_once("://") else { return url.to_string() };
+    let (authority, tail) = rest.find('/').map(|i| rest.split_at(i)).unwrap_or((rest, ""));
+    let (user, hostport) = authority.rsplit_once('@').map(|(u, h)| (format!("{u}@"), h)).unwrap_or((String::new(), authority));
+    let (host, port) = hostport.find(':').map(|i| hostport.split_at(i)).unwrap_or((hostport, ""));
+    let host = if host == "127.0.0.1" || host == "localhost" { named } else { host };
+    format!("{lead}://{user}{host}{port}{tail}")
 }
 
 /// An internal pull request merged into the internal main.
@@ -604,7 +622,7 @@ mod tests {
         let all = |slot: &str| Some(format!("token-of-{slot}"));
         let none = |_: &str| None;
         let only_forgejo = |slot: &str| (slot != "forge-token").then(|| "t".to_string());
-        let refused = |rows: &[serde_json::Value], token: &dyn Fn(&str) -> Option<String>| ends_from(rows, "shop", key, token).err().unwrap_or_default();
+        let refused = |rows: &[serde_json::Value], token: &dyn Fn(&str) -> Option<String>| ends_from(rows, "shop", key, token, None).err().unwrap_or_default();
 
         let github_forge = row("habitat.allocated", &format!("{key}/forge"), serde_json::json!({ "provider": "github", "repo": "acme/shop" }));
         assert!(refused(&[github_forge, target.clone()], &all).contains("`shop` has no Forgejo allocation (its forge is github)"));
@@ -617,9 +635,25 @@ mod tests {
         assert!(e.contains("no GitHub token in the slot `forge-token`") && e.contains("hale dna secret set FORGE_TOKEN"), "{e}");
         assert!(refused(&[forgejo.clone(), target.clone()], &none).contains("GitHub token"), "GitHub's token is asked first");
 
-        let (i, g) = ends_from(&[forgejo, target], "shop", key, &all).unwrap();
+        let (i, g) = ends_from(&[forgejo.clone(), target.clone()], "shop", key, &all, None).unwrap();
         assert_eq!((i.git_url.as_str(), i.api.as_str(), i.user.as_str(), i.token.as_str()), ("http://127.0.0.1:16001/shop-0123456789ab/shop.git", "http://127.0.0.1:16001/api/v1", "shop-0123456789ab", "token-of-forgejo-0123456789ab"));
         assert_eq!((g.git_url.as_str(), g.api.as_str(), g.repo.as_str(), g.token.as_str()), ("https://github.com/acme/shop.git", "https://api.github.com", "acme/shop", "token-of-forge-token"));
+        // in the toolchain image on a Mac, the Forgejo on the machine's
+        // loopback is dialled where that loopback is
+        let (i, g) = ends_from(&[forgejo, target], "shop", key, &all, Some("host.docker.internal")).unwrap();
+        assert_eq!((i.git_url.as_str(), i.api.as_str()), ("http://host.docker.internal:16001/shop-0123456789ab/shop.git", "http://host.docker.internal:16001/api/v1"));
+        assert_eq!(g.git_url, "https://github.com/acme/shop.git", "GitHub is no loopback");
+    }
+
+    #[test]
+    fn a_loopback_address_is_dialled_where_the_loopback_is() {
+        let at = Some("host.docker.internal");
+        assert_eq!(reach_url("http://127.0.0.1:16001", at), "http://host.docker.internal:16001");
+        assert_eq!(reach_url("http://localhost:3000/x/y", at), "http://host.docker.internal:3000/x/y");
+        assert_eq!(reach_url("http://u@127.0.0.1:1/p", at), "http://u@host.docker.internal:1/p");
+        assert_eq!(reach_url("http://rack-a.lan:16001", at), "http://rack-a.lan:16001");
+        assert_eq!(reach_url("http://127.0.0.1:16001", None), "http://127.0.0.1:16001");
+        assert_eq!(reach_url("http://127.0.0.1:16001", Some(" ")), "http://127.0.0.1:16001");
     }
 
     // ---- a publish end to end, against stand-ins -------------------------

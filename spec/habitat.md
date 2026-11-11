@@ -592,7 +592,12 @@ habitat on another machine publishes there**: with a pointer (`up
 --host`), both `forge publish` and `forge … --publish` run on the
 habitat's machine in its toolchain image (`remote::run_there`, as `nursery
 refresh` and `models` do), where its record, its vault and its Forgejo
-are; the output streams back. The tokens go to git
+are; the output streams back. On a habitat machine that is a Mac, docker
+runs in a VM and `--network host` is the VM's network, not the Mac's, so
+the publish's run is given `HALE_DNA_LOOPBACK_HOST=host.docker.internal`
+(and that name mapped to the host's gateway), and it dials the Forgejo's
+recorded `127.0.0.1:<port>` there, as the habitat's `body` and `face`
+reach its loopback (`dna::reach_url`). The tokens go to git
 through a credential helper reading git's own environment and to curl,
 which speaks both forges' APIs, in a config read from its stdin: never on a
 command line.
