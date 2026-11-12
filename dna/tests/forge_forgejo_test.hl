@@ -8,7 +8,9 @@
 // repository for its codebase holding its code. The SDLC flow then runs
 // against that Forgejo through `hale dna forge sync`, as it does against
 // the memory forge and GitHub: a leg's hands open its review at the forge
-// the organism's allocation names, and that review merged comes back as
+// the organism's allocation names, as the persona of the position its work
+// is for (the organism's own user when no persona is made yet), and that
+// review merged comes back as
 // `task.delivered`, one closed unmerged as `task.refused`, and the words
 // people left on a review as receipts on the verdict row. The habitat is
 // this test file's own; without docker compose nothing here is exercised.
@@ -303,15 +305,39 @@ fn main() {
             "the leg's change\n",
         ) or discard;
         let c = leg_git(work, "add\n-A");
+        // the harness's commit: the work a leg is handed
         let m = leg_git(work, "commit\n-q\n-m\nthe leg's change");
-        let sha = dna::trim_nl(leg_git(work, "rev-parse\nHEAD").stdout);
         // a leg's hands, as `hale dna work` hands them: the git hand pushes
-        // the branch as the organism's own Forgejo user, and "open a
-        // review" is the verb the organism's forge allocation answers
+        // the branch as the persona of the position the work is for, and
+        // "open a review" is the verb the organism's forge allocation
+        // answers, as that persona too. The first is the Board's work; the
+        // second is for a position no reconcile has made a persona of, so
+        // the organism's own user stands in and says so
         let hands = legs::Hands {
             git: legs::ScratchGit { root: app },
             forge: legs::AllocatedForge { root: app },
         };
+        let position = if i == 1 { "position:board" } else { "position:unstated" };
+        hands.git.wear(position);
+        hands.forge.wear(position);
+        if i == 1 {
+            // the leg's own commit on top is the persona's; the harness's
+            // under it is left as it was made
+            std::io::fs::write_file(work + "/LEG1-FIXUP.md", "the leg's fixup\n") or discard;
+            let fix = hands.git.commit(work, "the leg's fixup");
+            std::test::assert(fix.ok, "the leg commits its fixup: " + fix.error);
+            std::test::assert_eq_str(
+                dna::trim_nl(leg_git(work, "log\n-1\n--format=%an <%ae>").stdout),
+                board + " <" + board + "@" + dna::forgejo_persona_domain(key) + ">",
+                "the leg's own commit is the Board's persona's",
+            );
+            std::test::assert_eq_str(
+                dna::trim_nl(leg_git(work, "log\n-1\n--format=%an <%ae>\nHEAD~1").stdout),
+                "leg <leg@hale-dna>",
+                "the harness's commit is never rewritten",
+            );
+        }
+        let sha = dna::trim_nl(leg_git(work, "rev-parse\nHEAD").stdout);
         let p = hands.git.push(work, branch);
         std::test::assert(p.ok, "the git hand pushes the leg's branch: " + p.error);
         let opened = hands.forge.open_review(
@@ -327,6 +353,30 @@ fn main() {
                 ),
             "the leg's review opens at the allocated Forgejo: " + opened.output + opened.error,
         );
+        let pull = forge.call(
+            "GET",
+            "/repos/" + slug + "/pulls/" + dna::forgejo_number(opened.output),
+            "",
+        );
+        let author = std::json::find_string_field(
+            std::json::find_field_raw(pull.body, "user"),
+            "login",
+        );
+        if i == 1 {
+            std::test::assert(
+                author == board && len(p.note) == 0 && len(opened.note) == 0,
+                "the Board's work's review is the Board's persona's: " + author + pull.why
+                    + p.note + opened.note,
+            );
+        } else {
+            std::test::assert(
+                author == user
+                    && std::str::contains(p.note, "no persona of position:unstated")
+                    && std::str::contains(opened.note, "no persona of position:unstated"),
+                "a position with no persona yet falls back to the organism's own user, with a note: "
+                    + author + pull.why + " / " + p.note,
+            );
+        }
         std::test::assert_eq_str(
             hands.forge.verdict(opened.output).output,
             "pending",

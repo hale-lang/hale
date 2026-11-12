@@ -114,6 +114,8 @@ locus CodebaseWork {
     }
     // The change committed, its branch pushed to the codebase's repository,
     // and a review opened there: the review's reference. The forge decides.
+    // At the habitat's Forgejo all three are the persona's of the position
+    // the hands wear (the leg puts it on them from the Work's hat).
     fn propose(worktree: String, title: String, body: String) -> HandResult {
         let go = self.verify_toolchain(worktree);
         if !go.ok { return HandResult { error: "not pushed: " + go.error }; }
@@ -123,10 +125,12 @@ locus CodebaseWork {
         if !pushed.ok { return pushed; }
         // the review names the commit the leg left the branch at, so what the
         // team changes before it merges is a diff from there
-        return self.hands.forge.open_review(
+        let opened = self.hands.forge.open_review(
             worktree,
             title,
             dna::with_leg_commit(body, done.output),
         );
+        say_note(pushed, opened);
+        return opened;
     }
 }
