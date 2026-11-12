@@ -8,7 +8,8 @@
 // are part of the hat's body, so they move its digest, and the agent's
 // rendering names each one and says which to run before handing back.
 // At the habitat's Forgejo the hands push and open reviews as the persona
-// of the Work's position (`persona`).
+// of the Work's position (`persona`), and a worktree handed to a leg goes
+// out with its commits kept as they were made (`handed`).
 
 import "../core" as dna;
 import "../core/legs" as legs;
@@ -241,5 +242,105 @@ fn persona() {
         "else the position the leg works as",
     );
 }
-main locus App { run() { check(); persona(); } }
+fn git_in(dir: String, args: String) -> dna::RunResult {
+    return dna::run_tool("git\n-C\n" + dir + "\n" + args);
+}
+
+// A harness's commit in `dir`, under a name of its own: its sha.
+fn harness_commit(dir: String, file: String, message: String) -> String {
+    std::io::fs::write_file(dir + "/" + file, message + "\n") or discard;
+    git_in(dir, "add\n-A");
+    git_in(
+        dir,
+        "-c\nuser.name=a harness\n-c\nuser.email=harness@example.invalid\ncommit\n-q\n-m\n"
+            + message,
+    );
+    return dna::trim_nl(git_in(dir, "rev-parse\nHEAD").stdout);
+}
+
+// A worktree a harness hands a leg goes out as it was made: its commits
+// keep their shas and authors, never squashed; what is left uncommitted
+// becomes one commit of the leg's own on top (the git hand's wearer: the
+// persona at the habitat's Forgejo, `forge_forgejo_test`, the leg's own
+// name here, where no forge is allocated); a worktree that changes nothing
+// against its base is refused.
+fn handed() {
+    std::test::assert(
+        legs::handed_of(2, false, true).changed && legs::handed_of(0, true, false).changed
+            && legs::handed_of(1, true, false).changed,
+        "commits that change the tree, or anything uncommitted, are something to submit",
+    );
+    std::test::assert(
+        !legs::handed_of(0, false, false).changed && !legs::handed_of(3, false, false).changed,
+        "nothing over the base, or commits that change nothing against it, are nothing to submit",
+    );
+
+    let root = dna::scratch_root("hands-handed");
+    let dir = root + "/work";
+    dna::run_tool("git\ninit\n-q\n" + dir);
+    let base = harness_commit(dir, "README.md", "the base");
+    // an organism with no forge allocated: the leg's commits are its own
+    let git = legs::ScratchGit { root: root };
+    git.wear("position:api/dev");
+
+    let none = legs::keep_handed(git, dir, base, "the leg's change");
+    std::test::assert(
+        !none.ok && none.error == "the worktree changes no file",
+        "nothing handed is refused: " + none.error,
+    );
+
+    let first = harness_commit(dir, "ONE.md", "a harness's first change");
+    let second = harness_commit(dir, "TWO.md", "a harness's second change");
+    let only = legs::keep_handed(git, dir, base, "the leg's change");
+    std::test::assert(
+        only.ok && only.sha == second,
+        "handed commits alone go out as they are, the leg adding none: " + only.sha + " "
+            + second + only.error,
+    );
+    std::test::assert(
+        std::str::contains(only.patch, "From " + first + " ")
+            && std::str::contains(only.patch, "From " + second + " "),
+        "the receipt is every handed commit's own patch: " + only.patch,
+    );
+
+    std::io::fs::write_file(dir + "/ONE.md", "the leg's edit\n") or discard;
+    std::io::fs::write_file(dir + "/NEW.md", "a new file\n") or discard;
+    let topped = legs::keep_handed(git, dir, base, "the leg's change");
+    let log = git_in(dir, "log\n--format=%H %an <%ae> %s\n" + base + "..HEAD");
+    std::test::assert(
+        topped.ok
+            && log.stdout
+            == topped.sha + " legs <legs@hale-dna> the leg's change\n" + second
+            + " a harness <harness@example.invalid> a harness's second change\n" + first
+            + " a harness <harness@example.invalid> a harness's first change\n",
+        "the handed commits keep their shas and authors, and what was left uncommitted is one commit of the leg's on top: "
+            + log.stdout + topped.error,
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(git_in(dir, "status\n--porcelain").stdout),
+        "",
+        "nothing is left behind uncommitted",
+    );
+    std::test::assert(
+        std::str::contains(topped.patch, "From " + topped.sha + " ")
+            && std::str::contains(topped.patch, "From " + first + " "),
+        "and the receipt carries the handed commits and the leg's: " + topped.patch,
+    );
+
+    // commits that put the base back change nothing, and are refused too
+    git_in(dir, "reset\n-q\n--hard\n" + second);
+    let undone = dna::run_tool(
+        "git\n-C\n" + dir
+            + "\n-c\nuser.name=a harness\n-c\nuser.email=harness@example.invalid\nrevert\n--no-edit\n"
+            + base + ".." + second,
+    );
+    std::test::assert_eq_int(undone.code, 0, "the harness reverts its changes: " + undone.stderr);
+    let reverted = legs::keep_handed(git, dir, base, "the leg's change");
+    std::test::assert(
+        !reverted.ok && reverted.error == "the worktree changes no file",
+        "commits that change nothing against the base are nothing to submit: " + reverted.error,
+    );
+    dna::scratch_done(root);
+}
+main locus App { run() { check(); persona(); handed(); } }
 fn main() { App { }; }

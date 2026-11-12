@@ -369,7 +369,7 @@ hale dna work hand --attempt <attempt> --name edit --args '{"path": "api/todo.hl
 hale dna work submit --as position:api/dev --attempt <attempt> --token <n> --from-worktree --result "…"
 ```
 
-File hands (`read`, `edit`, `check`, `test`, `fmt`, `patch`) operate inside a persistent per-attempt worktree cloned at `.hale/dna/work/<attempt>`. When ready, `submit --from-worktree` runs the hat's validators across all touched Hale directories, commits the change on the base, submits the commit and patch receipt for spine verification and Review, and cleans up the worktree.
+File hands (`read`, `edit`, `check`, `test`, `fmt`, `patch`) operate inside a persistent per-attempt worktree cloned at `.hale/dna/work/<attempt>`. When ready, `submit --from-worktree` runs the hat's validators across all touched Hale directories, commits the change on the base, submits the commit and patch receipt for spine verification and Review, and cleans up the worktree. For a Work on an attached codebase the branch goes out as you made it: your commits keep their shas and authors and are never squashed, anything left uncommitted becomes one commit of the leg's on top, and squashing is decided when the review is merged.
 
 ---
 

@@ -12255,7 +12255,11 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/hands_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-dynamic	__lib_dna__core___journal__MemJournal	on main	in tests
+dynamic	__StdSecretCredential	on main|unknown (no instance)	in core/legs
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___journal__MemJournal	on main
+dynamic	__lib_dna__core__legs___hands__ScratchGit	on main
 
 == dna/tests/harness_test.hl
 root	App	the entry

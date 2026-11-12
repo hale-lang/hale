@@ -1928,6 +1928,17 @@ locus App {
             "ok",
             "and the edit is made: " + wrote,
         );
+        // a harness's commit in the session's worktree, under the edit left
+        // uncommitted: the branch keeps it as it was made (its sha, its
+        // author), and the leg's own commit of the edit goes on top
+        let session = std::json::find_string_field(wrote, "worktree");
+        std::io::fs::write_file(session + "/NOTE.md", "a harness's note\n") or discard;
+        let noted = in_dir(
+            session,
+            "sh\n-c\ngit add NOTE.md && git -c 'user.name=a harness' -c user.email=harness@example.invalid commit -q -m 'a harness note' && git rev-parse HEAD",
+        );
+        std::test::assert_eq_int(noted.code, 0, "the harness commits: " + noted.stderr);
+        let harness_sha = dna::trim_nl(noted.stdout);
         let handed = self.work(
             "submit\n--as\nposition:api/codebase\n--attempt\n" + attempt + "\n--token\n"
                 + self.token_of(claimed) + "\n--from-worktree\n--result\ngreet the leg",
@@ -1947,6 +1958,20 @@ locus App {
             there.code == 0 && there.stdout == "hello, leg\nhello\n",
             "the branch is in the codebase's repository, its default branch untouched: "
                 + there.stdout + there.stderr,
+        );
+        let kept = in_dir(
+            root,
+            "git\n--git-dir\nforeign.git\nlog\n--format=%H %an <%ae> %s\ntrunk.." + branch,
+        );
+        let top = std::str::index_of(kept.stdout, "\n");
+        let leg_line = if top > 0 { kept.stdout[0..(top + 1)] } else { "" };
+        std::test::assert(
+            kept.code == 0
+                && std::str::ends_with(leg_line, " legs <legs@hale-dna> greet the leg\n")
+                && kept.stdout
+                == leg_line + harness_sha + " a harness <harness@example.invalid> a harness note\n",
+            "the harness's commit is on the branch unchanged, never squashed, and the leg's own commit of the edit is on top: "
+                + kept.stdout + kept.stderr,
         );
         let review = std::io::fs::read_file(self.app + "/.hale/forge-review.txt") or "";
         std::test::assert(

@@ -139,6 +139,81 @@ fn work_position(hat: String, as_position: String) -> String {
     return if len(id) > 0 { id } else { as_position };
 }
 
+// ---- the commits a leg is handed -------------------------------------------
+//
+// A worktree a person or a harness hands a leg (`submit --from-worktree`)
+// goes out on a codebase's branch as it was made: the commits on it keep
+// their shas and authors, never squashed or rewritten (whether to squash is
+// the forge's, at merge). What is left uncommitted becomes one commit of
+// the leg's own on top, authored as the git hand's wearer (the persona of
+// the Work's position at the habitat's Forgejo), never folded into the
+// handed ones.
+
+// What a worktree handed to a leg holds over its base: commits made on it,
+// changes not committed yet, and whether the two change anything.
+type HandedWork {
+    commits: Int = 0;
+    uncommitted: Bool = false;
+    changed: Bool = false; // else there is nothing to submit
+}
+
+// `commits` made over the base, `uncommitted` changes beside them, and
+// whether the commits' tree `differs` from the base's: commits that change
+// nothing against the base change nothing. Touches nothing.
+fn handed_of(commits: Int, uncommitted: Bool, differs: Bool) -> HandedWork {
+    return HandedWork {
+        commits: commits,
+        uncommitted: uncommitted,
+        changed: uncommitted || (commits > 0 && differs),
+    };
+}
+
+fn handed_work(worktree: String, base: String) -> HandedWork {
+    let ahead = dna::run_tool("git\n-C\n" + worktree + "\nrev-list\n--count\n" + base + "..HEAD");
+    let status = dna::run_tool("git\n-C\n" + worktree + "\nstatus\n--porcelain");
+    let differs = dna::run_tool("git\n-C\n" + worktree + "\ndiff\n--quiet\n" + base + "\nHEAD");
+    return handed_of(
+        std::str::parse_int(dna::trim_nl(ahead.stdout)) or 0,
+        len(std::str::trim(status.stdout)) > 0,
+        differs.code == 1,
+    );
+}
+
+// The branch a worktree handed to a leg goes out as: its head and every
+// commit over the base, each its own patch (`git format-patch
+// <base>..HEAD`), or why not.
+type HandedBranch {
+    ok: Bool = false;
+    sha: String = "";
+    patch: String = "";
+    error: String = "";
+}
+
+// The worktree's commits over `base` kept as they are, and what it holds
+// uncommitted made one commit of the leg's on top (`git.commit`, titled
+// `title`). A worktree that changes nothing against its base is refused.
+fn keep_handed(git: GitHand, worktree: String, base: String, title: String) -> HandedBranch {
+    let handed = handed_work(worktree, base);
+    if !handed.changed { return HandedBranch { error: "the worktree changes no file" }; }
+    if handed.uncommitted {
+        let made = git.commit(worktree, title);
+        if !made.ok {
+            return HandedBranch { error: "the change could not be committed: " + made.error };
+        }
+    }
+    let head = dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\nHEAD");
+    if head.code != 0 { return HandedBranch { error: "the worktree's head could not be read" }; }
+    let patch = dna::run_tool(
+        "git\n-C\n" + worktree + "\nformat-patch\n--stdout\n" + base + "..HEAD",
+    );
+    if patch.code != 0 || len(patch.stdout) == 0 {
+        return HandedBranch {
+            error: "the branch's patches could not be read: " + dna::trim_nl(patch.stderr),
+        };
+    }
+    return HandedBranch { ok: true, sha: dna::trim_nl(head.stdout), patch: patch.stdout };
+}
+
 // A push's and its review's notes said once on the leg's output: the two
 // name one actor, so the first that says anything is enough.
 fn say_note(first: HandResult, second: HandResult) {

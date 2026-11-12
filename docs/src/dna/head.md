@@ -303,7 +303,7 @@ Against whichever forge is allocated, `hale dna forge sync` (or the host, on eac
 
 A leg's review at an attached codebase comes back as `task.delivered` when merged and `task.refused` when closed, the comments on it as receipts. Each forge acts as its allocation's token alone, the vault slot it names. A practice never names a forge: "open a review" is the verb, and the allocation answers it.
 
-At the habitat's Forgejo a leg's work goes out as the persona of the position it is for: whether a person or a harness made the branch, the leg pushes it with that persona's token (`forgejo-<id>-<position>`), opens the pull request as that persona's user, and authors any commit of its own as the persona; the commits it was handed stay as they were made. A position with no persona yet (before `hale habitat apply` has made it) falls back to the organism's own user, and the leg says so once:
+At the habitat's Forgejo a leg's work goes out as the persona of the position it is for: whether a person or a harness made the branch, the leg pushes it with that persona's token (`forgejo-<id>-<position>`), opens the pull request as that persona's user, and authors any commit of its own as the persona (what was left uncommitted becomes one such commit on top). The commits it was handed stay on the branch as they were made, the same shas and authors, never squashed; whether to squash is decided when the pull request is merged. A position with no persona yet (before `hale habitat apply` has made it) falls back to the organism's own user, and the leg says so once:
 
 ```text
 hale dna work: note: no persona of position:api/dev is in the habitat's ledger yet (`hale habitat apply` makes it), so the organism's own Forgejo user shop-<id> acts for it

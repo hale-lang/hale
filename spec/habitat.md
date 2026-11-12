@@ -605,9 +605,11 @@ else the leg's `--as`), and at the allocated Forgejo the git hand pushes
 the branch as that position's persona (its user the credential helper's
 username, its token the persona's slot), the forge hand opens the review
 with the persona's token, so the pull request's author is the persona's
-user, and the leg's own commits there (the commit it makes of the work, a
-fixup) are authored as the persona's user and email. Commits a person or
-a harness made are left as they are. The persona is the one the
+user, and the commits the leg itself adds there (one of what the work
+left uncommitted, a fixup) are authored as the persona's user and email.
+The commits a person or a harness made stay on the branch as they were
+made, their shas and authors: never squashed or rewritten (whether to
+squash is decided at merge, on the forge). The persona is the one the
 organism's ledger (`allocations/<key>/personas`) names for the position
 — the reconcile's names, never derived again by the leg. A position the
 ledger does not name yet (personas not reconciled, an older habitat, a

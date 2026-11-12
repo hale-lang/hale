@@ -307,6 +307,7 @@ fn main() {
         let c = leg_git(work, "add\n-A");
         // the harness's commit: the work a leg is handed
         let m = leg_git(work, "commit\n-q\n-m\nthe leg's change");
+        let handed_sha = dna::trim_nl(leg_git(work, "rev-parse\nHEAD").stdout);
         // a leg's hands, as `hale dna work` hands them: the git hand pushes
         // the branch as the persona of the position the work is for, and
         // "open a review" is the verb the organism's forge allocation
@@ -320,24 +321,35 @@ fn main() {
         let position = if i == 1 { "position:board" } else { "position:unstated" };
         hands.git.wear(position);
         hands.forge.wear(position);
+        // the branch as `submit --from-worktree` sends it (`keep_handed`):
+        // the harness's commit kept as it was made, and for the Board's
+        // work an edit left uncommitted, which becomes one commit of the
+        // persona's on top
         if i == 1 {
-            // the leg's own commit on top is the persona's; the harness's
-            // under it is left as it was made
             std::io::fs::write_file(work + "/LEG1-FIXUP.md", "the leg's fixup\n") or discard;
-            let fix = hands.git.commit(work, "the leg's fixup");
-            std::test::assert(fix.ok, "the leg commits its fixup: " + fix.error);
+        }
+        let kept = legs::keep_handed(hands.git, work, "main", "the leg's fixup");
+        std::test::assert(kept.ok, "the leg keeps the branch it was handed: " + kept.error);
+        if i == 1 {
             std::test::assert_eq_str(
                 dna::trim_nl(leg_git(work, "log\n-1\n--format=%an <%ae>").stdout),
                 board + " <" + board + "@" + dna::forgejo_persona_domain(key) + ">",
                 "the leg's own commit is the Board's persona's",
             );
+            std::test::assert(
+                dna::trim_nl(leg_git(work, "rev-parse\nHEAD~1").stdout) == handed_sha
+                    && dna::trim_nl(leg_git(work, "log\n-1\n--format=%an <%ae>\nHEAD~1").stdout)
+                    == "leg <leg@hale-dna>",
+                "the harness's commit under it is never rewritten",
+            );
+        } else {
             std::test::assert_eq_str(
-                dna::trim_nl(leg_git(work, "log\n-1\n--format=%an <%ae>\nHEAD~1").stdout),
-                "leg <leg@hale-dna>",
-                "the harness's commit is never rewritten",
+                kept.sha,
+                handed_sha,
+                "a branch with nothing uncommitted goes out as it was handed, the leg adding no commit",
             );
         }
-        let sha = dna::trim_nl(leg_git(work, "rev-parse\nHEAD").stdout);
+        let sha = kept.sha;
         let p = hands.git.push(work, branch);
         std::test::assert(p.ok, "the git hand pushes the leg's branch: " + p.error);
         let opened = hands.forge.open_review(
@@ -362,11 +374,42 @@ fn main() {
             std::json::find_field_raw(pull.body, "user"),
             "login",
         );
+        // the pull request carries the handed commit as it was made: its sha,
+        // its author; never squashed or rewritten (squashing is the forge's,
+        // at merge)
+        let commits = forge.call(
+            "GET",
+            "/repos/" + slug + "/pulls/" + dna::forgejo_number(opened.output) + "/commits",
+            "",
+        );
+        let mut listed = "";
+        let mut it = std::json::array_first(commits.body);
+        while !it.done {
+            let who = std::json::find_field_raw(
+                std::json::find_field_raw(it.element, "commit"),
+                "author",
+            );
+            listed = listed + std::json::find_string_field(it.element, "sha") + " "
+                + std::json::find_string_field(who, "email") + "\n";
+            it = std::json::array_next(it);
+        }
+        std::test::assert(
+            commits.ok && std::str::contains(listed, handed_sha + " leg@hale-dna\n"),
+            "the handed commit is under the pull request with its sha and author: " + listed
+                + commits.why,
+        );
         if i == 1 {
             std::test::assert(
                 author == board && len(p.note) == 0 && len(opened.note) == 0,
                 "the Board's work's review is the Board's persona's: " + author + pull.why
                     + p.note + opened.note,
+            );
+            std::test::assert(
+                std::str::contains(
+                    listed,
+                    sha + " " + board + "@" + dna::forgejo_persona_domain(key) + "\n",
+                ),
+                "and the leg's own fixup on top is the persona's: " + listed,
             );
         } else {
             std::test::assert(
