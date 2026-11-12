@@ -354,6 +354,15 @@ fn main() {
         // `hale habitat graft` seeds the record through the host: its rows, one
         // JSON object per line in a file, and the declared purpose (GH #995)
         ans = host::record_seed_verb(root, host::word(a, 0), host::word(a, 1), memory);
+    } else if verb == "draft" {
+        // `hale dna draft [dir] [--dry-run] [--as <who>]`: a starting chart from the process model, one Board batch
+        ans = host::draft_verb(
+            root,
+            seed,
+            host::has_flag(a, "--dry-run"),
+            host::flag(a, "--as"),
+            memory,
+        );
     } else if verb == "chart" {
         // `hale dna chart [dir]`: the org chart's lines and its people, from the record
         ans = host::chart_verb(root, memory);

@@ -396,6 +396,22 @@ locus App {
                 && !std::str::contains(lines.stdout, "person organization:"),
             "the chart's lines and its one person: " + lines.stdout + lines.stderr,
         );
+        // `hale dna draft --dry-run`: a starting chart from the process model,
+        // planned and printed, nothing proposed; a position the chart states
+        // (init's dev and reviewer, the operator) is left alone
+        let draft = self.dna("draft\n--dry-run");
+        std::test::assert(
+            draft.code == 0
+                && std::str::contains(draft.stdout, "+ position position:api/architect\n")
+                && std::str::contains(draft.stdout, "+ position position:api/qa\n")
+                && std::str::contains(draft.stdout, "+ position position:ui/dev\n")
+                && std::str::contains(draft.stdout, "+ under position:api/qa process:api\n")
+                && !std::str::contains(draft.stdout, "+ position position:api/dev\n")
+                && !std::str::contains(draft.stdout, "+ position position:compose/operator\n")
+                && std::str::contains(draft.stdout, "nothing proposed (--dry-run)"),
+            "the draft adds the triads the chart lacks and leaves what it states: " + draft.stdout
+                + draft.stderr,
+        );
         let first = std::str::index_of(lines.stdout, "person riley\n");
         std::test::assert(
             first >= 0

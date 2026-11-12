@@ -429,6 +429,95 @@ fn chart_verb(root: String, memory: dna::Memory) -> Answer {
     return answer(out);
 }
 
+// `hale dna draft [dir] [--dry-run] [--as <who>]`: a starting chart drafted
+// from the code, as one batch the Board decides. The first version follows
+// the process model and nothing else: for every process the graph states
+// (a compose service, a placed program) an architect, a dev and a qa under
+// it, and for every deployment an operator under it; a position the chart
+// already states is left alone, so the draft is safe to ask for again. The
+// Board approves, amends or rejects it as any batch; nothing is ratified
+// here. Libraries, seams, budgets and the tasks a reading files are later
+// versions.
+fn draft_verb(
+    root: String,
+    seed: String,
+    dry_run: Bool,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
+    let no_record = record_refusal(root);
+    if len(no_record) > 0 { return fail("hale dna draft: " + no_record); }
+    let journal = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: root },
+        ledger: memory.ledger,
+    };
+    let receipts = dna::MemoryReceipts { repo: root };
+    let g = dna::record_graph(journal, receipts);
+    let chart = dna::org_chart(journal, receipts);
+    let mut text = "# drafted from the process model: a triad per process, an operator per deployment\n";
+    let mut opened = 0;
+    let mut rest = g.nodes;
+    while len(rest) > 1 {
+        let body = rest[1..len(rest)];
+        let nl = std::str::index_of(body, "\n");
+        let id = body[0..nl];
+        rest = body[nl..len(body)];
+        let colon = std::str::index_of(id, ":");
+        if colon < 0 { continue; }
+        let kind = id[0..colon];
+        let name = id[(colon + 1)..len(id)];
+        if !draft_word(name) { continue; }
+        let mut roles = "";
+        if kind == "process" { roles = "architect dev qa"; }
+        if kind == "deployment" { roles = "operator"; }
+        let mut i = 0;
+        while len(dna::nth_word(roles, i)) > 0 {
+            let role = dna::nth_word(roles, i);
+            i = i + 1;
+            let position = "position:" + name + "/" + role;
+            if dna::chart_has(chart, "position " + position) { continue; }
+            text = text + "open " + name + "/" + role + " under " + id + " | "
+                + draft_mandate(role, kind, name) + "\n";
+            opened = opened + 1;
+        }
+    }
+    if opened == 0 {
+        return answer(
+            "nothing to draft: every process and deployment the graph states has its positions, or the graph states none\n",
+        );
+    }
+    return apply_text(root, seed, text, dry_run, who_flag, "", false, memory);
+}
+
+// A node's name a batch can carry as a position's: one word, no `|`, no
+// tab, no space; a name that is not one is left out of the draft.
+fn draft_word(name: String) -> Bool {
+    return len(name) > 0
+        && !std::str::contains(name, " ")
+        && !std::str::contains(name, "|")
+        && !std::str::contains(name, "\t")
+        && !std::str::contains(name, "\n");
+}
+
+// The mandate the draft proposes for a role on a part; the Board amends it.
+fn draft_mandate(role: String, kind: String, name: String) -> String {
+    let part = kind + " `" + name + "`";
+    if role == "architect" {
+        return "Decides: how " + part
+            + " is shaped, and what the dev builds next. May not: write its code, or approve its own changes. Cites: the contract, the practices in force. Escalates: a change that touches another part, to the Board.";
+    }
+    if role == "dev" {
+        return "Decides: how a change to " + part
+            + " is written. May not: approve its own changes, or change what the architect decided. Cites: the contract, the tests. Escalates: a change it cannot make within the contract, to the architect.";
+    }
+    if role == "qa" {
+        return "Decides: whether a change to " + part
+            + " works, and signs it. May not: write it. Cites: the tests, the contract. Escalates: a failure the dev cannot fix, to the architect.";
+    }
+    return "Decides: how " + part
+        + " runs and when it is moved. May not: change its code. Cites: the deployment's file, the hosts' capacity. Escalates: capacity it does not have, to the Board.";
+}
+
 // `hale dna fill <position> <holder>`: a holder proposed, through the
 // organization, which proposes it to the Board (dna/core/assembly.hl,
 // `on_hold_requested`). The request is a row in the proposer's name; the
