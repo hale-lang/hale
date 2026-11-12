@@ -192,7 +192,7 @@ locus Landing {
                     self.inner.revision(),
                     "effect.result",
                     self.key,
-                    "ok (resolved by riley: it is in the ledger)",
+                    "ok (resolved by grace: it is in the ledger)",
                 );
             }
         }
@@ -527,7 +527,7 @@ main locus App {
             self.boot.rt.journal.revision(),
             "effect.result",
             key,
-            "ok (resolved by riley: the entry is in the ledger)",
+            "ok (resolved by grace: the entry is in the ledger)",
         );
         std::test::assert(resolved.ok, "resolved");
         dna::RecordResumed <- dna::RecordResume { scope: "main", why: "resolved" };
@@ -541,7 +541,7 @@ main locus App {
         std::test::assert(
             std::str::contains(
                 self.body_of(self.boot.rt.journal, "attempt.outcome", wp + "/a0"),
-                "resolved: ok (resolved by riley",
+                "resolved: ok (resolved by grace",
             ),
             "and says who resolved it",
         );
@@ -737,7 +737,7 @@ main locus App {
         std::test::assert(
             std::str::starts_with(
                 self.body_of(self.boot.rt.journal, "effect.result", key),
-                "ok (resolved by riley",
+                "ok (resolved by grace",
             ),
             "not an unknown",
         );

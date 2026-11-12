@@ -24,7 +24,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn git(args: &[&str], cwd: &Path) -> String {
-    let out = Command::new("git").args(["-c", "user.name=riley", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
+    let out = Command::new("git").args(["-c", "user.name=grace", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
@@ -84,7 +84,7 @@ fn the_surface_serves_the_record_and_takes_no_command() {
     let app: PathBuf = d.join("uiapp");
     let bare = d.join("origin.git");
     git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
-    git(&["config", "user.name", "riley"], &app);
+    git(&["config", "user.name", "grace"], &app);
     git(&["config", "user.email", "r@l"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app"], &app);
@@ -150,7 +150,7 @@ fn the_surface_serves_the_record_and_takes_no_command() {
     // the forms are gone: the record's commands are the api head's gated
     // topics, and this head is parked until OIDC (GH #989) — every POST
     // is refused, and the record is untouched
-    let refused = http(port, "POST", "/api/verdict", r#"{"id":"m1","verdict":"reject","as":"riley","comment":"not like this"}"#).unwrap_or_default();
+    let refused = http(port, "POST", "/api/verdict", r#"{"id":"m1","verdict":"reject","as":"grace","comment":"not like this"}"#).unwrap_or_default();
     assert!(refused.starts_with("HTTP/1.1 405") && refused.contains("parked"), "{refused}");
     let rows = record::text(&app);
     assert!(!rows.contains("review.verdict"), "a parked head writes nothing: {rows}");

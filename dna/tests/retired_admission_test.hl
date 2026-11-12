@@ -84,13 +84,13 @@ main locus App {
             self.one.journal.revision(),
             "person.retired",
             "noor",
-            "{\"by\": \"riley\", \"to\": \"dev\", \"transferred\": 0}",
+            "{\"by\": \"grace\", \"to\": \"dev\", \"transferred\": 0}",
         );
         let r2 = self.one.journal.append(
             self.one.journal.revision(),
             "person.retired",
             "lee",
-            "{\"by\": \"riley\", \"to\": \"\", \"transferred\": 0}",
+            "{\"by\": \"grace\", \"to\": \"\", \"transferred\": 0}",
         );
         std::test::assert(
             dna::retirement(self.one.journal, "noor").retired
@@ -114,13 +114,13 @@ main locus App {
             self.one.journal.revision(),
             "person.retired",
             "ana",
-            "{\"by\": \"riley\", \"to\": \"bo\", \"transferred\": 0}",
+            "{\"by\": \"grace\", \"to\": \"bo\", \"transferred\": 0}",
         );
         let r4 = self.one.journal.append(
             self.one.journal.revision(),
             "person.retired",
             "bo",
-            "{\"by\": \"riley\", \"to\": \"ana\", \"transferred\": 0}",
+            "{\"by\": \"grace\", \"to\": \"ana\", \"transferred\": 0}",
         );
         std::test::assert_eq_str(
             self.one.admissible("ana"),
@@ -130,7 +130,7 @@ main locus App {
 
         // a fresh job planned for noor goes to dev
         let a1 = self.one.ask(
-            dna::Intent { id: "i1", outcome: "call the supplier about the pallets", from: "riley" },
+            dna::Intent { id: "i1", outcome: "call the supplier about the pallets", from: "grace" },
         );
         let t = self.admitted("i1") + ".s0.p";
         self.until_handed(t);
@@ -145,10 +145,10 @@ main locus App {
             self.one.journal.revision(),
             "person.retired",
             "dev",
-            "{\"by\": \"riley\", \"to\": \"mara\", \"transferred\": 0}",
+            "{\"by\": \"grace\", \"to\": \"mara\", \"transferred\": 0}",
         );
         let a2 = self.one.ask(
-            dna::Intent { id: "i2", outcome: "call the supplier about the crates", from: "riley" },
+            dna::Intent { id: "i2", outcome: "call the supplier about the crates", from: "grace" },
         );
         let t2 = self.admitted("i2") + ".s0.p";
         self.until_handed(t2);
@@ -186,11 +186,11 @@ main locus App {
             self.j.revision(),
             "person.retired",
             "noor",
-            "{\"by\": \"riley\", \"to\": \"dev\", \"transferred\": 0}",
+            "{\"by\": \"grace\", \"to\": \"dev\", \"transferred\": 0}",
         );
         let refused = in_dir(
             app,
-            toolchain() + "\ndna\ntask\nreassign\nt9\n--to\nnoor\n--as\nriley",
+            toolchain() + "\ndna\ntask\nreassign\nt9\n--to\nnoor\n--as\ngrace",
         );
         std::test::assert(
             refused.code != 0
@@ -199,17 +199,17 @@ main locus App {
         );
         let bad_successor = in_dir(
             app,
-            toolchain() + "\ndna\nretire\nkai\n--to\nnoor\n--as\nriley",
+            toolchain() + "\ndna\nretire\nkai\n--to\nnoor\n--as\ngrace",
         );
         std::test::assert(
             bad_successor.code != 0
                 && std::str::contains(bad_successor.stdout + bad_successor.stderr, "noor retired"),
             "no retired successor: " + bad_successor.stdout + bad_successor.stderr,
         );
-        let moved = in_dir(app, toolchain() + "\ndna\ntask\nreassign\nt9\n--to\ndev\n--as\nriley");
+        let moved = in_dir(app, toolchain() + "\ndna\ntask\nreassign\nt9\n--to\ndev\n--as\ngrace");
         std::test::assert(
             moved.code == 0
-                && std::str::contains(moved.stdout, "task t9 reassigned from mara to dev by riley"),
+                && std::str::contains(moved.stdout, "task t9 reassigned from mara to dev by grace"),
             "to someone who works here: " + moved.stdout + moved.stderr,
         );
         dna::scratch_done(scratch);

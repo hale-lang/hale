@@ -55,7 +55,7 @@ fn brief_of(hat: String) -> legs::Brief {
         position: "position:editor",
         hat: hat,
         rendered: legs::render(hat, "agent"),
-        holder: "riley",
+        holder: "grace",
     };
 }
 

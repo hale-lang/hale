@@ -568,7 +568,7 @@ the application ID and exact local names with your own:
   "owner": "operations",
   "members": ["mara", "dev"],
   "grants": [
-    {"mode": "local", "name": "riley", "reassign": true, "recover": true}
+    {"mode": "local", "name": "grace", "reassign": true, "recover": true}
   ]
 }
 ```

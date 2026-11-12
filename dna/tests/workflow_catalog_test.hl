@@ -349,7 +349,7 @@ main locus App {
                 request_id: "p1",
                 name: "acceptance/receipts",
                 text: "An expense closes with its receipt.",
-                by: "riley",
+                by: "grace",
             },
         );
         std::test::assert(self.wait_rows("practice.proposed", "p1", 1), "the practice is proposed");
@@ -470,7 +470,7 @@ main locus App {
                 request_id: "p2",
                 name: "acceptance/invoices",
                 text: "An invoice closes with its order.",
-                by: "riley",
+                by: "grace",
             },
         );
         std::test::assert(

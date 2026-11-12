@@ -260,7 +260,7 @@ fn check() {
         position: "position:editor",
         hat: hat,
         rendered: "make a Wave",
-        holder: "riley",
+        holder: "grace",
     };
     let req = dna::ModelRequest {
         attempt_id: brief.attempt_id,

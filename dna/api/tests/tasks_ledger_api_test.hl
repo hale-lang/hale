@@ -10,7 +10,7 @@ locus LedgerTaskReads {
     params { repo: String = ""; }
     fn request(query: String) -> std::http::Response {
         let record = dna::MemoryRecord { repo: self.repo };
-        let head = api::Api { root: self.repo, local_name: "riley" };
+        let head = api::Api { root: self.repo, local_name: "grace" };
         return head.handle(
             std::http::Request {
                 method: "GET",

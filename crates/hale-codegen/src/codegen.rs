@@ -11487,7 +11487,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.instantiating_program_lifetime = true;
         // GH #921 A2: codegen builds this literal; there is no source
         // expression the snapshot could have minted. F.39 calls the
-        // bindings transport `Placement(entry)` (Riley's answer to
+        // bindings transport `Placement(entry)` (the answer given to
         // its third open question), which A3 has to arrange here
         // rather than by reading a table row.
         self.owner_site = Some(crate::ownership::Site::Synthesized(
@@ -21438,7 +21438,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///
     /// The only difference from [`Self::value_to_string`] is that a
     /// String is quoted. At the top level `to_string(s)` must stay
-    /// identity — `println(name)` printing `"riley"` with the quotes
+    /// identity — `println(name)` printing `"grace"` with the quotes
     /// would be absurd — but inside a record the quotes are what
     /// make the rendering readable: `User { name: a, b }` is
     /// genuinely ambiguous about whether there are two fields or one

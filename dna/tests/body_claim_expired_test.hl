@@ -97,7 +97,7 @@ main locus App {
         std::test::assert_eq_int(rows(a, "body.claimed"), 0, "claiming nothing");
 
         // with --force: taken, like the lease of a body that died a second ago
-        let forced = in_dir(a, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\nriley");
+        let forced = in_dir(a, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\ngrace");
         std::test::assert_eq_int(
             forced.code,
             0,

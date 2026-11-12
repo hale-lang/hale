@@ -100,7 +100,7 @@ fn bench_file_with_main_is_rejected() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A bench's fixture is made by its setup, outside the timing (Riley's
+/// A bench's fixture is made by its setup, outside the timing (the
 /// ruling on a downstream handoff: a `bench_*` fn was timed whole, so
 /// building its fixture counted toward ns/op). `setup_lookup` sleeps
 /// 150 ms, longer than a whole calibration batch: timed, it would end the

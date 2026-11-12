@@ -33,7 +33,7 @@ The step is read-only on code and was measured at `main` b0cf6103. Line numbers 
 
 Row ids `C*` are codegen sites and `R*` are runtime operations. A runtime operation may group several exported symbols. § Counts lists the rows against the registry and the symbols behind them.
 
-**Three kinds of statement.** A row's code columns, from owner through complete when, say what the code at b0cf6103 does: they are measured. A requirement that is decided but not built is marked **Adopted** in its row and stated in § Adopted requirements. A question still open is a line in § Decisions for Riley, and a row that depends on one points to it.
+**Three kinds of statement.** A row's code columns, from owner through complete when, say what the code at b0cf6103 does: they are measured. A requirement that is decided but not built is marked **Adopted** in its row and stated in § Adopted requirements. A question still open is a line in § Open decisions, and a row that depends on one points to it.
 
 ## The inventory
 
@@ -308,7 +308,7 @@ Rust names are `<area binary> <file>::<fn>`. Every `tests/hale/*.hl` file runs u
 
 **Rows: 54 + 52 = 106 numbered rows, plus two subrows (R19a, R20a): 108 lines in the table.**
 
-## Decisions for Riley
+## Open decisions
 
 Decision L0-1 (handlers run only on the queue owner's thread) is written in spec/runtime.md § Failure handling. Each line below is a further disagreement the inventory found. Each gives the spec's sentence, what the runtime does, and two options.
 

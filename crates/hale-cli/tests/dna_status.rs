@@ -114,7 +114,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     // a model is mapped: this organism routes Work to its legs and its
     // editor (with none, the solo path hands every ask to a person,
     // dna/tests/solo_no_model_test.hl)
-    let (ok, out) = run(&["dna", "models", "category", "do.deep", "mapped-deep", "--tools", "--as", "riley"]);
+    let (ok, out) = run(&["dna", "models", "category", "do.deep", "mapped-deep", "--tools", "--as", "grace"]);
     assert!(ok, "the model mapped: {out}");
     // ask: a Task is born, and the answer comes from the Journal
     let (ok, out) = run(&["dna", "task", "create", "write", "the", "changelog"]);
@@ -123,8 +123,8 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     // review: the wrong authority is refused BY THE REVIEW, the right one settles it
     let (ok1, out1) = run(&["dna", "review", "purpose", "approve", "--authority", "agent", "--as", "bot"]);
     let refused = ok1 && out1.contains("refused the verdict") && out1.contains("authority agent does not satisfy board");
-    let (ok2, out2) = run(&["dna", "review", "purpose", "approve", "--as", "riley", "--comment", "ratified"]);
-    let settled = ok2 && out2.contains("settled: approve by riley");
+    let (ok2, out2) = run(&["dna", "review", "purpose", "approve", "--as", "grace", "--comment", "ratified"]);
+    let settled = ok2 && out2.contains("settled: approve by grace");
     let (ok3, out3) = run(&["dna", "status"]);
     let (ok4, out4) = run(&["dna", "status", "--json"]);
     let (ok5, out5) = run(&["dna", "history", "t1"]);
@@ -150,7 +150,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     assert!(asked, "ask: {ask_out}");
     assert!(refused, "review (wrong authority): {out1}");
     assert!(settled, "review (maintainer): {out2}");
-    assert!(ok3 && out3.contains("running (this clone's body holds the lease)") && out3.contains("31 pending of 32") && out3.contains("settled approve by riley") && out3.contains("(1 verdict(s) refused)"), "status:\n{out3}");
+    assert!(ok3 && out3.contains("running (this clone's body holds the lease)") && out3.contains("31 pending of 32") && out3.contains("settled approve by grace") && out3.contains("(1 verdict(s) refused)"), "status:\n{out3}");
     assert!(ok4, "{out4}");
     let st: serde_json::Value = serde_json::from_str(&out4).expect("status --json is JSON");
     assert_eq!(st["journal"]["chain"], "verified");

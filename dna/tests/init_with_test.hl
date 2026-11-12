@@ -228,7 +228,7 @@ locus App {
         self.repo = make(scratch, "todo");
         let init = dna::grafted(
             self.repo,
-            ".\n--attach\n--no-library\n--with\nfounder\n--set\nfounder=riley\n--as\nriley",
+            ".\n--attach\n--no-library\n--with\nfounder\n--set\nfounder=grace\n--as\ngrace",
         );
         std::test::assert_eq_int(
             init.code,
@@ -236,8 +236,8 @@ locus App {
             "graft --with founder: " + init.stdout + init.stderr,
         );
         std::test::assert(
-            std::str::contains(init.stdout, "+ holds position:board riley\n")
-                && std::str::contains(init.stdout, "+ holds position:compose/operator riley\n")
+            std::str::contains(init.stdout, "+ holds position:board grace\n")
+                && std::str::contains(init.stdout, "+ holds position:compose/operator grace\n")
                 && std::str::contains(init.stdout, "5 line(s) added to the organization"),
             "every seat init opens, filled by the founder: " + init.stdout,
         );
@@ -254,7 +254,7 @@ locus App {
         std::test::assert(
             std::str::contains(
                 dna::native_json_string(adopted, "steps"),
-                "fill\tposition:board\triley\n",
+                "fill\tposition:board\tgrace\n",
             )
                 && !std::str::contains(dna::native_json_string(adopted, "steps"), "*"),
             "`fill *` is proposed as the fills it stands for: " + adopted,
@@ -354,7 +354,7 @@ locus App {
                 + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""),
         );
 
-        let all = self.dna("review\nall\napprove\n--as\nriley");
+        let all = self.dna("review\nall\napprove\n--as\ngrace");
         std::test::assert_eq_int(
             all.code,
             0,
@@ -368,7 +368,7 @@ locus App {
                 ) > std::str::index_of(all.stdout, "holes:\n"),
             "the holes, then the pack planned on them: " + all.stdout,
         );
-        let chart = self.seated(SEATS, "riley", 240);
+        let chart = self.seated(SEATS, "grace", 240);
         std::test::assert(
             !std::str::starts_with(chart, "not seated"),
             "the founder holds every seat after one verdict: " + chart,
@@ -390,9 +390,9 @@ locus App {
             lines.code == 0
                 && std::str::contains(lines.stdout, "position position:board\n")
                 && std::str::contains(lines.stdout, "mandate position:board\n")
-                && std::str::contains(lines.stdout, "holds position:board riley\n")
+                && std::str::contains(lines.stdout, "holds position:board grace\n")
                 && std::str::contains(lines.stdout, "position position:compose/operator\n")
-                && std::str::contains(lines.stdout, "person riley\n")
+                && std::str::contains(lines.stdout, "person grace\n")
                 && !std::str::contains(lines.stdout, "person organization:"),
             "the chart's lines and its one person: " + lines.stdout + lines.stderr,
         );
@@ -412,12 +412,12 @@ locus App {
             "the draft adds the triads the chart lacks and leaves what it states: " + draft.stdout
                 + draft.stderr,
         );
-        let first = std::str::index_of(lines.stdout, "person riley\n");
+        let first = std::str::index_of(lines.stdout, "person grace\n");
         std::test::assert(
             first >= 0
                 && std::str::index_of(
                     lines.stdout[(first + 1)..len(lines.stdout)],
-                    "person riley\n",
+                    "person grace\n",
                 ) < 0,
             "a person is listed once: " + lines.stdout,
         );

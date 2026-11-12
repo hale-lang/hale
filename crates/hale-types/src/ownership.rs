@@ -4810,8 +4810,8 @@ impl Resolver<'_> {
     }
 
     /// `bindings { }` transports and codecs are program-lifetime
-    /// instances the runtime dissolves at main exit — `Placement`, per
-    /// Riley's answer to F.39's third open question.
+    /// instances the runtime dissolves at main exit — `Placement`, as
+    /// decided in answer to F.39's third open question.
     fn walk_bindings(
         &mut self,
         bb: &hale_syntax::ast::BindingsBlock,

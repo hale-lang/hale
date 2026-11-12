@@ -158,21 +158,21 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     assert!(!catalog.contains("HostedCredential { key: \""), "a keyless graft names no credential:\n{catalog}");
     catalog.push_str(HOSTED_BY_HAND);
     std::fs::write(&models, catalog).unwrap();
-    git(&["config", "user.name", "riley"], &app);
-    git(&["config", "user.email", "riley@l"], &app);
+    git(&["config", "user.name", "grace"], &app);
+    git(&["config", "user.email", "grace@l"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app"], &app);
     // no remote: the body has nothing to clone
-    let (ok, out) = hale_env(&["dna", "body", "provision", "riley@srv"], &app, &home, None);
+    let (ok, out) = hale_env(&["dna", "body", "provision", "grace@srv"], &app, &home, None);
     assert!(!ok && out.contains("has no remote") && out.contains("nothing was written"), "{out}");
     // a remote local to this machine: the body could not reach it
     let bare = d.join("origin.git");
     git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
     git(&["remote", "add", "origin", &bare.to_string_lossy()], &app);
-    let (ok, out) = hale_env(&["dna", "body", "provision", "riley@srv"], &app, &home, None);
+    let (ok, out) = hale_env(&["dna", "body", "provision", "grace@srv"], &app, &home, None);
     assert!(!ok && out.contains("local to this machine") && out.contains("Nothing was written"), "{out}");
     // an unreachable host: stop before writing anything
-    git(&["remote", "set-url", "origin", "git@example.invalid:riley/prov.git"], &app);
+    git(&["remote", "set-url", "origin", "git@example.invalid:grace/prov.git"], &app);
     let (ok, out) = hale_env(&["dna", "body", "provision", "nobody@localhost.invalid", "--dsn", "postgres://dna:pw@db:5432/dna"], &app, &home, None);
     assert!(!ok && out.contains("ssh nobody@localhost.invalid is not reachable") && out.contains("nothing was written"), "{out}");
     let cfg = Command::new("git").args(["config", "dna.body"]).current_dir(&app).output().unwrap();
@@ -182,7 +182,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let lock = std::fs::read_to_string(app.join("hale.lock")).unwrap();
     let pin = lock.split("toolchain = \"").nth(1).unwrap().split('"').next().unwrap().to_string();
     assert!(!pin.is_empty());
-    let (ok, plan) = hale_env(&["dna", "body", "provision", "riley@srv", "--dsn", "postgres://dna:pw@db:5432/dna", "--dry-run"], &app, &home, None);
+    let (ok, plan) = hale_env(&["dna", "body", "provision", "grace@srv", "--dsn", "postgres://dna:pw@db:5432/dna", "--dry-run"], &app, &home, None);
     assert!(ok, "{plan}");
     // a body's name on a machine carries its record's identity (#635)
     let genesis = record::identity(&app);
@@ -190,7 +190,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     for needle in [
         "nothing was written",
         &format!("PIN='{pin}'"),
-        "REMOTE='git@example.invalid:riley/prov.git'",
+        "REMOTE='git@example.invalid:grace/prov.git'",
         "DSN='postgres://dna:pw@db:5432/dna'",
         "HALE_VERSION=\"v$PIN\" sh -c \"$(curl -fsSL https://hale-lang.org/install.sh)\"",
         "git clone -q \"$REMOTE\" \"$DIR\"",
@@ -203,14 +203,14 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
         "ExecStart=%h/.hale/bin/hale dna dev . --no-iris",
         "Restart=always",
         "systemctl --user enable --now",
-        "then here: git config dna.body riley@srv",
+        "then here: git config dna.body grace@srv",
     ] {
         assert!(plan.contains(needle), "the plan names {needle}:\n{plan}");
     }
     let cfg = Command::new("git").args(["config", "dna.body"]).current_dir(&app).output().unwrap();
     assert!(!cfg.status.success(), "a dry run writes nothing");
     // without the DSN the plan brings Postgres up in the body's habitat
-    let (ok, plan) = hale_env(&["dna", "body", "provision", "riley@srv", "--dry-run"], &app, &home, None);
+    let (ok, plan) = hale_env(&["dna", "body", "provision", "grace@srv", "--dry-run"], &app, &home, None);
     assert!(ok && plan.contains("DSN=''") && plan.contains("docker compose version"), "{plan}");
     // body start/stop/logs need a body
     let (ok, out) = hale_env(&["dna", "body", "logs"], &app, &home, None);

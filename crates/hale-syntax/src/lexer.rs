@@ -87,7 +87,7 @@ pub enum TokenKind {
     Export,
     Module,
 
-    // GH friction sweep 2026-10-12 (Riley: "can't the compiler be smart
+    // GH friction sweep 2026-10-12 ("can't the compiler be smart
     // about context?"): the locus-member, lifecycle, mode, projection,
     // closure, recovery, contract, bus, perspective and placement-tier
     // words are CONTEXTUAL. They lex as `Ident` and the parser recognizes

@@ -29,7 +29,7 @@ main locus App {
         let a = r.append(
             "journal",
             if h.absent { "" } else { h.id },
-            dna::Row { kind: kind, entity: entity, body: body, author: "riley" },
+            dna::Row { kind: kind, entity: entity, body: body, author: "grace" },
             sign,
             "",
         );
@@ -48,19 +48,19 @@ main locus App {
         }
         let scratch = dna::scratch_root("admission");
         self.repo = scratch + "/repo";
-        // two keys: riley's, which the record's trust names, and one it does not
+        // two keys: grace's, which the record's trust names, and one it does not
         let keys = sh(
-            "sh\n-c\nset -e; cd \"$1\"; ssh-keygen -q -t ed25519 -N '' -C riley -f known; ssh-keygen -q -t ed25519 -N '' -C stranger -f unknown; printf 'riley %s\\n' \"$(cat known.pub)\" > allowed_signers\nsh\n"
+            "sh\n-c\nset -e; cd \"$1\"; ssh-keygen -q -t ed25519 -N '' -C grace -f known; ssh-keygen -q -t ed25519 -N '' -C stranger -f unknown; printf 'grace %s\\n' \"$(cat known.pub)\" > allowed_signers\nsh\n"
                 + scratch,
         );
         std::test::assert_eq_int(keys.code, 0, "two keys and the allowed signers: " + keys.stderr);
         let mk = sh(
-            "sh\n-c\nset -e; mkdir -p \"$1/.hale/dna\"; cd \"$1\"; git init -q -b main; git config user.name riley; git config user.email riley@dna; git config gpg.format ssh; git config gpg.ssh.allowedSignersFile \"$2/allowed_signers\"; git config user.signingkey \"$2/known\"; git config dna.trust signed\nsh\n"
+            "sh\n-c\nset -e; mkdir -p \"$1/.hale/dna\"; cd \"$1\"; git init -q -b main; git config user.name grace; git config user.email grace@dna; git config gpg.format ssh; git config gpg.ssh.allowedSignersFile \"$2/allowed_signers\"; git config user.signingkey \"$2/known\"; git config dna.trust signed\nsh\n"
                 + self.repo + "\n" + scratch,
         );
         std::test::assert_eq_int(mk.code, 0, "a record under signed trust: " + mk.stderr);
         // the record is born in memory (GH #1590), and its trust is its own
-        // rows: riley's key enrolled by the organism, as the first signer
+        // rows: grace's key enrolled by the organism, as the first signer
         std::test::assert_eq_str(
             dna::memory_fixture(self.repo),
             "",
@@ -69,17 +69,17 @@ main locus App {
         let enrol = dna::RecordJournal { repo: self.repo, author: "dna" };
         let eb = std::json::Builder { };
         eb.begin_object();
-        eb.string_field("who", "riley");
+        eb.string_field("who", "grace");
         eb.string_field("key", dna::trim_nl(std::io::fs::read_file(scratch + "/known.pub") or ""));
         eb.string_field("by", "dna");
         eb.end_object();
         std::test::assert(
-            enrol.append(enrol.revision(), "signer.enrolled", "riley", eb.result()).ok,
-            "riley's key enrolled: " + enrol.last_error(),
+            enrol.append(enrol.revision(), "signer.enrolled", "grace", eb.result()).ok,
+            "grace's key enrolled: " + enrol.last_error(),
         );
         let base = enrol.revision();
 
-        // ---- the record: signed by riley, then by a stranger, then unsigned, then riley again
+        // ---- the record: signed by grace, then by a stranger, then unsigned, then grace again
         let first = self.row("application.observed", "org", "{}", true);
         let known = self.row(
             "structure.observed",
@@ -101,9 +101,9 @@ main locus App {
         std::test::assert_eq_int(
             git(self.repo, "config\nuser.signingkey\n" + scratch + "/known").code,
             0,
-            "riley's key again",
+            "grace's key again",
         );
-        // a row riley writes with no signing key named is not signed
+        // a row grace writes with no signing key named is not signed
         std::test::assert_eq_int(
             git(self.repo, "config\n--unset\nuser.signingkey").code,
             0,
@@ -118,7 +118,7 @@ main locus App {
         std::test::assert_eq_int(
             git(self.repo, "config\nuser.signingkey\n" + scratch + "/known").code,
             0,
-            "riley's key once more",
+            "grace's key once more",
         );
         let later = self.row(
             "structure.observed",

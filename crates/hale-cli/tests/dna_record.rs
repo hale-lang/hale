@@ -22,7 +22,7 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
 }
 
 fn git(args: &[&str], cwd: &Path) -> String {
-    let out = Command::new("git").args(["-c", "user.name=riley", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
+    let out = Command::new("git").args(["-c", "user.name=grace", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }

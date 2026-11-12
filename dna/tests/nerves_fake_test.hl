@@ -42,7 +42,7 @@ main locus App {
         dna::IntentOffered <- dna::IntentOffer {
             intent_id: "i-nerves-1",
             outcome: "say hello",
-            from: "riley",
+            from: "grace",
             to: "",
         };
         std::test::assert(
@@ -69,7 +69,7 @@ main locus App {
         dna::IntentOffered <- dna::IntentOffer {
             intent_id: "i-nerves-2",
             outcome: "say goodbye",
-            from: "riley",
+            from: "grace",
             to: "",
         };
         std::test::assert(

@@ -40,7 +40,7 @@ main locus App {
             review_id: dna::knowledge_review_id(digest),
             subject_digest: digest,
             verdict: "approve",
-            reviewer: "riley",
+            reviewer: "grace",
             authority: "board",
         };
         std::time::sleep(150ms);

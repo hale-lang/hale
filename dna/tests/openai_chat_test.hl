@@ -149,7 +149,7 @@ main locus App {
         std::test::assert_eq_str(self.local.last.credential, "", "no credential on the local wire");
         // 5. a gateway call: the model the mapping resolved, the call's
         // metadata (a gateway keeps it) and its idempotency key cross the wire
-        let meta = "{\"attempt\": \"w3/a0\", \"position\": \"position:api/dev\", \"holder\": \"riley\"}";
+        let meta = "{\"attempt\": \"w3/a0\", \"position\": \"position:api/dev\", \"holder\": \"grace\"}";
         let g = self.gateway.complete(
             dna::ModelRequest {
                 attempt_id: "w3/a0",

@@ -9,7 +9,7 @@ locus TaskApiCases {
     params { }
     fn request(root: String, query: String) -> std::http::Response {
         let record = dna::MemoryRecord { repo: root };
-        let head = api::Api { root: root, local_name: "riley" };
+        let head = api::Api { root: root, local_name: "grace" };
         return head.handle(
             std::http::Request {
                 method: "GET",
@@ -180,7 +180,7 @@ locus TaskApiCases {
         let policy_codec = ops::TaskAuthorityPolicyCodec { };
         let policy = policy_codec.decode(
             "{\"format\":\"dna.task-authority/1\",\"application_id\":\"" + record.identity()
-                + "\",\"owner\":\"operations\",\"members\":[\"alex\",\"blair\"],\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"reassign\":true,\"recover\":true}]}",
+                + "\",\"owner\":\"operations\",\"members\":[\"alex\",\"blair\"],\"grants\":[{\"mode\":\"local\",\"name\":\"grace\",\"reassign\":true,\"recover\":true}]}",
             record.identity(),
             "local",
         );
@@ -194,7 +194,7 @@ locus TaskApiCases {
         let context = ops::GovernanceContext {
             application_id: record.identity(),
             principal_mode: "local",
-            principal_name: "riley",
+            principal_name: "grace",
         };
         let change = commands.submit(
             context,
@@ -257,7 +257,7 @@ locus TaskApiCases {
         );
         std::test::assert_eq_str(
             w.text(last_assignment.element, "by"),
-            "riley",
+            "grace",
             "history preserves actual principal",
         );
         std::test::assert(std::json::array_next(last_assignment).done, "one native reassignment");
@@ -281,8 +281,8 @@ locus TaskApiCases {
                 dna::Row {
                     kind: "task.reassigned",
                     entity: first_id,
-                    body: "{\"from\": \"blair\", \"to\": \"riley\", \"by\": \"riley\"}",
-                    author: "riley",
+                    body: "{\"from\": \"blair\", \"to\": \"grace\", \"by\": \"grace\"}",
+                    author: "grace",
                 },
                 false,
                 "",
@@ -290,7 +290,7 @@ locus TaskApiCases {
             "a native self-take",
         );
         let taken = self.first(self.request(root, "?id=" + dna::url_encode(first_id)));
-        std::test::assert_eq_str(w.text(taken, "assignee"), "riley", "the taker holds it");
+        std::test::assert_eq_str(w.text(taken, "assignee"), "grace", "the taker holds it");
         std::test::assert_eq_str(w.text(taken, "state"), "handed", "a take keeps the Task open");
         std::test::assert_eq_str(w.raw(taken, "taken"), "true", "taken by its assignee");
         // Visibility inputs over actual supporting identities; no fabricated

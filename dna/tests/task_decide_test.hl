@@ -86,7 +86,7 @@ main locus App {
             "knowledge.ratified",
             digest,
             "{\"review_id\": \"" + dna::knowledge_review_id(digest)
-                + "\", \"decided_by\": \"riley\"}",
+                + "\", \"decided_by\": \"grace\"}",
         );
         return digest;
     }
@@ -136,8 +136,8 @@ main locus App {
         let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nbooks"));
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/books";
-        let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
-        let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+        let u1 = in_dir(app, "git\nconfig\nuser.name\ngrace");
+        let u2 = in_dir(app, "git\nconfig\nuser.email\ngrace@local");
         std::test::assert_eq_str(
             dna::memory_fixture(app),
             "",

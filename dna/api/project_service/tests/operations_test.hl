@@ -546,17 +546,17 @@ locus OperationCases {
             ctx,
             "command-f1",
             "dna.forge.configure",
-            "{\"board\":[\"riley\"]}",
+            "{\"board\":[\"grace\"]}",
         );
         std::test::assert(
             forge.ok
                 && forge.kind == "inline"
-                && std::str::contains(forge.outcome, "\"board\": [\"riley\"]")
+                && std::str::contains(forge.outcome, "\"board\": [\"grace\"]")
                 && !std::str::contains(forge.outcome, "github"),
             "forge configure: " + forge.outcome,
         );
         std::test::assert(
-            git(self.project, "config\ndna.github.board") == "riley"
+            git(self.project, "config\ndna.github.board") == "grace"
                 && dna::run_tool("git\n-C\n" + self.project + "\nconfig\ndna.github").code != 0,
             "the board landed, the retired setting untouched",
         );

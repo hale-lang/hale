@@ -58,7 +58,7 @@ main locus App {
             cache,
             dna::in_habitat(
                 toolchain() + "\nhabitat\ngraft\nbodied\n--profile\nremote-body\n--remote\n" + bare
-                    + "\n--body\nriley@srv",
+                    + "\n--body\ngrace@srv",
             ),
         );
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
@@ -74,8 +74,8 @@ main locus App {
         // in the clone, GH #1590)
         let head = scratch + "/head";
         let c1 = dna::clone_repo_with("-b\nmain\n", bare, head);
-        let c2 = in_dir(head, cache, "git\nconfig\nuser.name\nriley");
-        let c3 = in_dir(head, cache, "git\nconfig\nuser.email\nriley@l");
+        let c2 = in_dir(head, cache, "git\nconfig\nuser.name\ngrace");
+        let c3 = in_dir(head, cache, "git\nconfig\nuser.email\ngrace@l");
         let c4 = in_dir(head, cache, toolchain() + "\ndna\nmemory\nmigrate");
         let c5 = in_dir(head, cache, toolchain() + "\ndna\nstatus");
         std::test::assert(
@@ -131,9 +131,9 @@ main locus App {
         );
 
         // while A builds, the head takes the lease over
-        let claimed = in_dir(head, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\nriley");
+        let claimed = in_dir(head, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\ngrace");
         std::test::assert(
-            std::str::contains(claimed.stdout, "was taken by riley"),
+            std::str::contains(claimed.stdout, "was taken by grace"),
             "the head took the lease: " + claimed.stdout + claimed.stderr,
         );
 
@@ -232,9 +232,9 @@ main locus App {
             "the organization started and its tool ran: "
                 + (std::io::fs::read_file(a + "/b.log") or ""),
         );
-        let retaken = in_dir(head, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\nriley");
+        let retaken = in_dir(head, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\ngrace");
         std::test::assert(
-            std::str::contains(retaken.stdout, "was taken by riley"),
+            std::str::contains(retaken.stdout, "was taken by grace"),
             "the head takes the lease while the host waits: " + retaken.stdout + retaken.stderr,
         );
         let mut dev_ended = false;

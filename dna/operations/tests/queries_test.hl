@@ -21,7 +21,7 @@ fn propose(
             name: name,
             text: text,
             author: "org",
-            provenance: "proposed by riley",
+            provenance: "proposed by grace",
             supersedes: supersedes,
         },
         "org",
@@ -53,7 +53,7 @@ fn propose(
     let by = std::json::Builder { };
     by.begin_object();
     by.string_field("digest", digest);
-    by.string_field("by", "riley");
+    by.string_field("by", "grace");
     by.string_field("because", "because " + text);
     by.end_object();
     append(j, "practice.proposed", "request:" + id, by.result());
@@ -85,7 +85,7 @@ fn test_queries(repo: String) {
     let text = "Collect the receipt.\nEvidence: required — café \\ paths --as nobody";
     let digest = propose(j, receipts, "org/finance/receipt — é", text, "");
     let review = dna::knowledge_review_id(digest);
-    append(j, "review.settled", review, "approve by riley");
+    append(j, "review.settled", review, "approve by grace");
     append(j, "review.reasoned", review, "approved " + text);
     append(j, "review.refused", review, "old verdict mentioned " + text);
     let q = ops::Queries {
@@ -98,9 +98,9 @@ fn test_queries(repo: String) {
     let before = q.practice_of(digest);
     std::test::assert_eq_str(before.text, text, "exact multiline Unicode body");
     std::test::assert_eq_str(before.author, "org", "author is a locus");
-    std::test::assert_eq_str(before.requester, "riley", "requester is separate");
+    std::test::assert_eq_str(before.requester, "grace", "requester is separate");
     std::test::assert_eq_str(before.target, "org", "whole organization target");
-    std::test::assert_eq_str(before.provenance, "proposed by riley", "canonical provenance");
+    std::test::assert_eq_str(before.provenance, "proposed by grace", "canonical provenance");
     std::test::assert_eq_str(before.state, "pending", "approval is not activation");
     std::test::assert_eq_str(before.review_state, "settled", "review settled independently");
     std::test::assert_eq_str(before.review_outcome, "approve", "typed decision");
@@ -136,7 +136,7 @@ fn test_queries(repo: String) {
     );
     append(j, "knowledge.retired", digest, "{}");
     let replacement = propose(j, receipts, "org/finance/receipt — é", "new policy", digest);
-    append(j, "review.settled", dna::knowledge_review_id(replacement), "approve by riley");
+    append(j, "review.settled", dna::knowledge_review_id(replacement), "approve by grace");
     append(j, "knowledge.refused", replacement, "the predecessor was already retired");
     let pending_seq = j.revision();
     append(j, "practice.requested", "p-unheard", "{\"name\":\"still a request\",\"by\":\"mara\"}");

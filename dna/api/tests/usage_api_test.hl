@@ -201,7 +201,7 @@ locus UsageCases {
             "{\"assignee\": \"alex\", \"obligation\": \"review\", \"by\": \"planner\"}",
         );
 
-        let service = api::Api { root: self.f.root, local_name: "riley" };
+        let service = api::Api { root: self.f.root, local_name: "grace" };
         // the execution: the plan of its ask and every attempt of its Work
         let detail = self.response(service, "/dna/workflows?id=" + ROOT, "WorkflowsResponse");
         let execution = self.json.first(detail);

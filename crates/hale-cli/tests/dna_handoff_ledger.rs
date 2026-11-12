@@ -1,4 +1,4 @@
-//! GH #646, Riley's condition for stage 5: the handoff keeps working over
+//! GH #646, the condition set for stage 5: the handoff keeps working over
 //! the ledger. The firm's `handoff.*` and `task.*` rows are its Ledger's,
 //! as every record's are from its birth (GH #1590). A task crosses from the firm into the
 //! accountant's inbox on its nerves (GH #1590: a signed envelope, kept in
@@ -147,7 +147,7 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
     let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (firm, _firm_bare) = project(&d, "firm", "riley");
+    let (firm, _firm_bare) = project(&d, "firm", "grace");
     let (acct, _acct_bare) = project(&d, "acct", "noor");
     // the firm's job, handed to a person, in its Ledger
     plumb(&firm, "task.born", "t7", "i-t7: prepare the year-end ledger", "dna");
@@ -167,7 +167,7 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
     assert!(st.contains("t7 [handed]"), "the handed task is read from the ledger:\n{st}");
 
     // a connection to the accountant, in force
-    let (ok, proposed) = hale(&["dna", "connect", &nerves, "--record", &acct_genesis, "--name", "acct", "--as", "accountant", "--purpose", "year-end books", "--classes", "internal", "--by", "riley"], &firm, env);
+    let (ok, proposed) = hale(&["dna", "connect", &nerves, "--record", &acct_genesis, "--name", "acct", "--as", "accountant", "--purpose", "year-end books", "--classes", "internal", "--by", "grace"], &firm, env);
     assert!(ok && proposed.contains("connection acct proposed"), "{proposed}");
     let rid = word_after(&proposed, "hale dna review ");
     let (ok, out) = hale(&["dna", "review", &rid, "approve", "--as", "ana", "--authority", "board", "--no-wait"], &firm, env);
@@ -176,7 +176,7 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
     assert!(ok && listed.contains("in force (approved by ana)"), "{listed}");
 
     // the task crosses: the envelope into the accountant's inbox (the nerves), the row into the ledger
-    let (ok, handed) = hale(&["dna", "handoff", "acct", "task", "t7", "--as", "riley", "--note", "close by March"], &firm, env);
+    let (ok, handed) = hale(&["dna", "handoff", "acct", "task", "t7", "--as", "grace", "--note", "close by March"], &firm, env);
     assert!(ok && handed.contains("task t7 [internal] delivered to record"), "{handed}");
     let hid = word_after(&handed, "handoff ").trim_end_matches(':').to_string();
     let published = format!("\"kind\": \"handoff.published\", \"entity\": \"handoff:{hid}\"");

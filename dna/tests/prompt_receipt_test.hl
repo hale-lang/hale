@@ -90,8 +90,8 @@ main locus App {
         let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nreceipts"));
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/receipts";
-        let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
-        let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+        let u1 = in_dir(app, "git\nconfig\nuser.name\ngrace");
+        let u2 = in_dir(app, "git\nconfig\nuser.email\ngrace@local");
         std::test::assert_eq_str(
             dna::memory_fixture(app),
             "",
@@ -122,7 +122,7 @@ main locus App {
 
         // ---- a planned ask: the plan's prompt and context are receipts
         let asked = self.core.ask(
-            dna::Intent { id: "i1", outcome: "get the supplier's invoice approved", from: "riley" },
+            dna::Intent { id: "i1", outcome: "get the supplier's invoice approved", from: "grace" },
         );
         std::time::sleep(400ms);
         std::test::assert_eq_str(asked, "planning", "the leader's word comes first (card 18)");

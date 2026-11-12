@@ -115,7 +115,7 @@ main locus App {
             review_id: dna::knowledge_review_id(digest),
             subject_digest: "sha256:0000",
             verdict: "approve",
-            reviewer: "riley",
+            reviewer: "grace",
             authority: "board",
         };
         std::time::sleep(100ms);
@@ -162,7 +162,7 @@ main locus App {
             review_id: dna::knowledge_review_id(digest),
             subject_digest: digest,
             verdict: "approve",
-            reviewer: "riley",
+            reviewer: "grace",
             authority: "board",
         };
         std::time::sleep(200ms);
@@ -172,7 +172,7 @@ main locus App {
         let rat = self.last(self.again.journal, "knowledge.ratified");
         std::test::assert_eq_str(rat.entity, digest, "the ratification names the digest");
         std::test::assert(
-            std::str::contains(rat.body, "\"decided_by\": \"riley\"")
+            std::str::contains(rat.body, "\"decided_by\": \"grace\"")
                 && std::str::contains(rat.body, "\"target\": \"org/worker-supervisor/worker\""),
             rat.body,
         );
@@ -198,7 +198,7 @@ main locus App {
             review_id: dna::knowledge_review_id(d2),
             subject_digest: d2,
             verdict: "reject",
-            reviewer: "riley",
+            reviewer: "grace",
             authority: "board",
         };
         std::time::sleep(200ms);

@@ -12,7 +12,7 @@
 //! must not, so the fix is a refusal at the declaration rather than a
 //! promotion of it.
 //!
-//! The ruling (Riley, 2026-09-20, GH #911): the entry point is
+//! The ruling (2026-09-20, GH #911): the entry point is
 //! top-level only, and `check` refuses the nested one with a located
 //! message.
 //!

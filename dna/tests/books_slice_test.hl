@@ -328,8 +328,8 @@ main locus App {
         let copied = dna::run_tool("cp\n-r\n" + acceptance + "/books\n" + app);
         std::test::assert_eq_int(copied.code, 0, "copied the intake: " + copied.stderr);
         let g1 = in_dir(app, "git\ninit\n-q\n-b\nmain");
-        let g2 = in_dir(app, "git\nconfig\nuser.name\nriley");
-        let g3 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+        let g2 = in_dir(app, "git\nconfig\nuser.name\ngrace");
+        let g3 = in_dir(app, "git\nconfig\nuser.email\ngrace@local");
         let g4 = in_dir(app, "git\nadd\n-A");
         let g5 = in_dir(app, "git\ncommit\n-q\n-m\nthe books intake");
         let init = in_dir(app, dna::in_habitat(toolchain() + "\nhabitat\ngraft\n.\n--attach"));
@@ -496,14 +496,14 @@ main locus App {
         // ---- the books practice this organization starts with, ratified by the Board
         let v1_out = dna_cli(
             app,
-            "practice\npropose\nacceptance/expense-receipt\n--text\nA bill closes with its receipt, or with an exception someone other than the payer authorizes. evidence: required\n--because\nthe books practice this organization starts with\n--as\nriley",
+            "practice\npropose\nacceptance/expense-receipt\n--text\nA bill closes with its receipt, or with an exception someone other than the payer authorizes. evidence: required\n--because\nthe books practice this organization starts with\n--as\ngrace",
         );
         let v1 = digest_in(v1_out);
         std::test::assert(
             len(v1) == 71
                 && std::str::contains(
                     v1_out,
-                    "practice acceptance/expense-receipt proposed by riley",
+                    "practice acceptance/expense-receipt proposed by grace",
                 ),
             "proposed: " + v1_out,
         );
@@ -608,7 +608,7 @@ main locus App {
             ),
             "completed while the organism is stopped: " + offline,
         );
-        let claimed = dna_cli(app, "body\nclaim\n--force\n--as\nriley");
+        let claimed = dna_cli(app, "body\nclaim\n--force\n--as\ngrace");
         let reviewed_before = count(app, "org.reviewed", "", "");
         dev = start_dev(app);
         std::test::assert(
@@ -624,7 +624,7 @@ main locus App {
         // guessed at it (GH #795)
         let cadence = dna_cli(
             app,
-            "schedule\ndeclare\noptimize\n--every\n3s\n--definition\noptimize-walk\n--convener\nleader\n--as\nriley",
+            "schedule\ndeclare\noptimize\n--every\n3s\n--definition\noptimize-walk\n--convener\nleader\n--as\ngrace",
         );
         std::test::assert(
             std::str::contains(
@@ -714,10 +714,10 @@ main locus App {
         // others waits on the record, not on the CLI
         let approved = dna_cli(
             app,
-            "review\nm1\napprove\n--as\nriley\n--comment\nask the supplier at capture\n--no-wait",
+            "review\nm1\napprove\n--as\ngrace\n--comment\nask the supplier at capture\n--no-wait",
         );
         std::test::assert(
-            std::str::contains(approved, "verdict approve on m1 by riley written into the record"),
+            std::str::contains(approved, "verdict approve on m1 by grace written into the record"),
             "approved: " + approved,
         );
         std::test::assert(
@@ -739,7 +739,7 @@ main locus App {
             app,
             "practice\npropose\nacceptance/expense-receipt\n--text\nA bill closes with its receipt; the copy a supplier sends when asked at capture is the receipt. evidence: required\n--supersedes\n"
                 + v1
-                + "\n--because\nthree bills arrived without receipts (concern.raised org/books/intake)\n--as\nriley",
+                + "\n--because\nthree bills arrived without receipts (concern.raised org/books/intake)\n--as\ngrace",
         );
         let v2 = digest_in(v2_out);
         std::test::assert(len(v2) == 71 && v2 != v1, "a new version proposed: " + v2_out);

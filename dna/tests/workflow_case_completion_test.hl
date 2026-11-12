@@ -216,7 +216,7 @@ main locus App {
         b.string_field("name", name);
         b.end_object();
         let x = j.append(j.revision(), "knowledge.proposed", digest, b.result());
-        let y = j.append(j.revision(), "knowledge.ratified", digest, "{\"decided_by\": \"riley\"}");
+        let y = j.append(j.revision(), "knowledge.ratified", digest, "{\"decided_by\": \"grace\"}");
         std::test::assert(x.ok && y.ok, "the practice " + name + " is ratified");
         return digest;
     }
@@ -679,7 +679,7 @@ main locus App {
             j.revision(),
             "knowledge.retired",
             strict,
-            "{\"digest\": \"" + strict + "\", \"by\": \"riley\"}",
+            "{\"digest\": \"" + strict + "\", \"by\": \"grace\"}",
         );
         let relaxed = self.practice(
             "acceptance/expense-approval",

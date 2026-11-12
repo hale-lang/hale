@@ -77,7 +77,7 @@ fn request(
     let mut r = dna::KnowledgeNodeRequest {
         request_id: id, operation: "dna.knowledge.node." + operation,
         kind: kind, name: "knowledge/example", text: text,
-        author: "org", target: "org", supersedes: old, by: "riley",
+        author: "org", target: "org", supersedes: old, by: "grace",
         because: if operation == "retire" { text } else { "Keep the exact native knowledge." }
     };
     r.candidate_digest = dna::digest_of(codec.document(r));
@@ -424,7 +424,7 @@ main locus App {
             0,
             "unsupported kind cannot start",
         );
-        invalid.kind = "idea"; invalid.by = "riley\nother";
+        invalid.kind = "idea"; invalid.by = "grace\nother";
         std::test::assert(
             !codec.valid(invalid),
             "principal control bytes are refused by the typed codec",

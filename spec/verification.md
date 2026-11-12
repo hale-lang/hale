@@ -1205,7 +1205,7 @@ entrypoints it requires an environment for.
 
 **Roles (GH #1109).** `[environments.<name>.roles]` is the deployment's
 record of who holds which role: `role = ["uid:1000", "gid:20",
-"user:riley", "group:ops", "*"]`, one key per role the entrypoint
+"user:grace", "group:ops", "*"]`, one key per role the entrypoint
 declares (`spec/types.md` § "Roles"). A key that is not an
 identifier, a member spelling outside those five, or an account name
 outside letters, digits, `.`, `_`, `-` and `@` (the table travels as

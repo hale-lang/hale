@@ -84,7 +84,7 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
     // nothing to report before anything was asked
-    let (ok, out) = hale(&["dna", "task", "done", "t1", "--as", "riley"], &app);
+    let (ok, out) = hale(&["dna", "task", "done", "t1", "--as", "grace"], &app);
     assert!(!ok && out.contains("no Task `t1`"), "{out}");
     let (ok, out) = hale(&["dna", "task"], &app);
     assert!(!ok && out.contains("hale dna task done <id>"), "{out}");
@@ -140,8 +140,8 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
     // GH #604 rule 4: the row names the assignee, and only they may close it
     let handed_row = rows.iter().find(|(k, e, _, _)| k == "task.handed" && e == "t1.s0.p").expect("task.handed");
     assert!(handed_row.2.contains("\"assignee\": \"noor\""), "the handed row names noor: {}", handed_row.2);
-    let (ok, out) = hale(&["dna", "task", "done", "t1.s0.p", "--as", "riley", "--note", "called them"], &app);
-    assert!(!ok && out.contains("handed to noor, not to riley"), "riley cannot close noor's task: {out}");
+    let (ok, out) = hale(&["dna", "task", "done", "t1.s0.p", "--as", "grace", "--note", "called them"], &app);
+    assert!(!ok && out.contains("handed to noor, not to grace"), "grace cannot close noor's task: {out}");
     // GH #604 rule 5: reassignment is a row naming both; the Task stays handed
     let (ok, out) = hale(&["dna", "task", "reassign", "t1.s0.p", "--to", "dev", "--as", "noor"], &app);
     assert!(ok && out.contains("task t1.s0.p reassigned from noor to dev by noor"), "{out}");
@@ -166,10 +166,10 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
         std::thread::sleep(Duration::from_millis(250));
     }
     assert!(handed2, "the second ask was handed on");
-    let (ok, out) = hale(&["dna", "retire", "noor", "--as", "riley"], &app);
+    let (ok, out) = hale(&["dna", "retire", "noor", "--as", "grace"], &app);
     assert!(!ok && out.contains("noor holds 1 handed task(s): t2.s0.p"), "retirement refused while work is held and no successor named: {out}");
-    let (ok, out) = hale(&["dna", "retire", "noor", "--to", "dev", "--as", "riley"], &app);
-    assert!(ok && out.contains("noor retired by riley; 1 task(s) transferred to dev"), "{out}");
+    let (ok, out) = hale(&["dna", "retire", "noor", "--to", "dev", "--as", "grace"], &app);
+    assert!(ok && out.contains("noor retired by grace; 1 task(s) transferred to dev"), "{out}");
     let rows = journal(&app);
     assert!(rows.iter().any(|(k, e, b, _)| k == "task.reassigned" && e == "t2.s0.p" && b.contains("\"to\": \"dev\"")), "the transfer is a row");
     assert!(rows.iter().any(|(k, e, _, _)| k == "person.retired" && e == "noor"), "the retirement is a row");

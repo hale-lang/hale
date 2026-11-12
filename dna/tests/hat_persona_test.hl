@@ -7,7 +7,7 @@ import "../core" as dna;
 fn check() {
     let ledger = "position\tposition:board\tvoice-board\tforgejo-573d3c8f642f-board\n"
         + "position\tposition:api/dev\tvoice-api_dev\tforgejo-573d3c8f642f-api--dev\n"
-        + "person\triley\triley\tforgejo-person-riley\n";
+        + "person\tgrace\tgrace\tforgejo-person-grace\n";
     let dev = dna::hat_persona_of(ledger, "573d3c8f642f", "position:api/dev");
     std::test::assert_eq_str(
         std::json::find_string_field(dev, "user"),

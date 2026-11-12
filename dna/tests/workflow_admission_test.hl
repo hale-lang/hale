@@ -256,7 +256,7 @@ main locus App {
                 revision: 1,
                 inputs: "{\"month\": \"2026-08\"}",
                 inputs_ref: "sha256:beef",
-                from: "riley",
+                from: "grace",
             },
         );
         std::test::assert_eq_str(id, "t2", "the next id, after the refused one: " + id);

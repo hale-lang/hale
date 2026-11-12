@@ -369,7 +369,7 @@ locus S3Cases {
         std::test::assert_eq_int(made.code, 0, "sources dir: " + made.stderr);
         // the active project under $HOME/dna, where the local transport's
         // `body logs` looks; the peer record elsewhere
-        self.alpha = project(self.home + "/dna", "alpha", "riley");
+        self.alpha = project(self.home + "/dna", "alpha", "grace");
         let a = dna::MemoryRecord { repo: self.alpha };
         self.alpha_id = a.identity();
         std::test::assert_eq_int(len(self.alpha_id), 64, "alpha's identity: " + self.alpha_id);

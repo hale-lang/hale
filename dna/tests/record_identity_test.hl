@@ -35,7 +35,7 @@ fn toolchain() -> String {
 // author at one pinned moment.
 fn new_app(dir: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\nmkdir -p \"$1\" && cd \"$1\" && export GIT_AUTHOR_DATE=2026-09-25T12:00:00Z GIT_COMMITTER_DATE=2026-09-25T12:00:00Z GIT_AUTHOR_NAME=riley GIT_AUTHOR_EMAIL=riley@dna GIT_COMMITTER_NAME=riley GIT_COMMITTER_EMAIL=riley@dna HALE_DNA_DISCOVER=off HALE_DNA_HABITAT=\"$3\" && exec \"$2\" habitat graft app\nsh\n"
+        "sh\n-c\nmkdir -p \"$1\" && cd \"$1\" && export GIT_AUTHOR_DATE=2026-09-25T12:00:00Z GIT_COMMITTER_DATE=2026-09-25T12:00:00Z GIT_AUTHOR_NAME=grace GIT_AUTHOR_EMAIL=grace@dna GIT_COMMITTER_NAME=grace GIT_COMMITTER_EMAIL=grace@dna HALE_DNA_DISCOVER=off HALE_DNA_HABITAT=\"$3\" && exec \"$2\" habitat graft app\nsh\n"
             + dir + "\n" + toolchain() + "\n" + dna::test_habitat(),
     );
 }

@@ -67,10 +67,10 @@ locus LedgerTaskCases {
             task_authority: ops::FixedTaskAuthority { policy: policy },
             retirement_enabled: true,
         };
-        let riley = self.context(app, "riley"); let operator = self.context(app, "operator");
+        let grace = self.context(app, "grace"); let operator = self.context(app, "operator");
 
         // ---- create: the ask is the Ledger's row, under the head's role
-        let cap = provider.capability(riley, "dna.task.create", "1");
+        let cap = provider.capability(grace, "dna.task.create", "1");
         std::test::assert(
             cap.available && cap.authorized,
             "any authenticated principal may raise work on an adopted record: " + cap.reason,
@@ -87,7 +87,7 @@ locus LedgerTaskCases {
             outcome: OUTCOME,
             to: "org",
         };
-        let created = provider.submit(riley, ask);
+        let created = provider.submit(grace, ask);
         let t = created.receipt.task_create;
         std::test::assert(
             created.ok
@@ -102,7 +102,7 @@ locus LedgerTaskCases {
             "one intent.requested row, in the Ledger",
         );
         std::test::assert_eq_str(record.head("journal").id, head, "and nothing in the record");
-        let again = provider.submit(riley, ask);
+        let again = provider.submit(grace, ask);
         std::test::assert(
             again.ok
                 && again.receipt.task_create.intent_id == t.intent_id
@@ -114,18 +114,18 @@ locus LedgerTaskCases {
             1,
             "still one row",
         );
-        let looked = provider.lookup(riley, "ask-1");
+        let looked = provider.lookup(grace, "ask-1");
         std::test::assert(
             looked.ok && looked.receipt.task_create.intent_id == t.intent_id,
             "the ask is recovered by its request: " + looked.code,
         );
         let l = dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
         std::test::assert(
-            l.append(l.revision(), "intent.offered", t.intent_id, OUTCOME + " (from riley)").ok,
+            l.append(l.revision(), "intent.offered", t.intent_id, OUTCOME + " (from grace)").ok,
             "offered",
         );
         std::test::assert_eq_str(
-            provider.lookup(riley, "ask-1").receipt.task_create.intent_state,
+            provider.lookup(grace, "ask-1").receipt.task_create.intent_state,
             "offered",
             "the organism's answer, read in the Ledger",
         );
@@ -141,7 +141,7 @@ locus LedgerTaskCases {
             to: "org",
         };
         std::test::assert_eq_str(
-            provider.submit(riley, changed).code,
+            provider.submit(grace, changed).code,
             "request_conflict",
             "one request identity, one content",
         );
@@ -157,7 +157,7 @@ locus LedgerTaskCases {
             to: "org",
         };
         std::test::assert_eq_str(
-            provider.submit(riley, moved_head).code,
+            provider.submit(grace, moved_head).code,
             "stale_subject",
             "an ask prepared at a head the record left is a stale subject",
         );

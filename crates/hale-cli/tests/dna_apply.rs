@@ -157,8 +157,8 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     trace::wait_until("org.pid written", Duration::from_secs(30), Duration::from_millis(200), || {
         !std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default().trim().is_empty()
     });
-    let (ok, verdict) = hale(&["dna", "review", "m1", "approve", "--as", "riley"], &app);
-    if !(ok && verdict.contains("settled: approve by riley")) {
+    let (ok, verdict) = hale(&["dna", "review", "m1", "approve", "--as", "grace"], &app);
+    if !(ok && verdict.contains("settled: approve by grace")) {
         finish(&mut host);
         panic!("verdict:\n{verdict}");
     }

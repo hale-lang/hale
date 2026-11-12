@@ -92,18 +92,18 @@ main locus App {
 
         // the mark is one body's: another body's does not match it, and no
         // mark is a prefix of another
-        let mine = dna::body_mark("riley@srv:/srv/books", 7, 4242);
+        let mine = dna::body_mark("grace@srv:/srv/books", 7, 4242);
         std::test::assert_eq_str(
             mine,
-            "riley@srv:/srv/books#7#4242#",
+            "grace@srv:/srv/books#7#4242#",
             "holder, token and host pid",
         );
         std::test::assert(
-            mine != dna::body_mark("riley@srv:/srv/books", 7, 42),
+            mine != dna::body_mark("grace@srv:/srv/books", 7, 42),
             "a host pid that starts the same is another body",
         );
         std::test::assert(
-            mine != dna::body_mark("riley@srv:/srv/books", 71, 4242),
+            mine != dna::body_mark("grace@srv:/srv/books", 71, 4242),
             "so is a token that starts the same",
         );
 

@@ -1022,7 +1022,7 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
     // Errors are NEVER filtered, wherever they originate.
 
     // GH #18 item 1 → M3 stage 5 (2026-07-02): unbounded-allocation
-    // warnings are DEFAULT-ON (Riley's flip call after the 402-warning
+    // warnings are DEFAULT-ON (the flip call after the 402-warning
     // audit: every audited true positive preserved, every residual FP
     // in a documented accepted class — see
     // notes/unbounded-alloc-audit-2026-07-02.md). The analysis itself

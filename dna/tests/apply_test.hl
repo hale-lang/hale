@@ -56,7 +56,7 @@ main locus App {
             review_id: id,
             subject_digest: digest,
             verdict: "approve",
-            reviewer: "riley",
+            reviewer: "grace",
             authority: "maintainer",
         };
         std::time::sleep(150ms);
@@ -66,7 +66,7 @@ main locus App {
             review_id: id,
             subject_digest: digest,
             verdict: what,
-            reviewer: "riley",
+            reviewer: "grace",
             authority: authority,
         };
         std::time::sleep(150ms);
@@ -240,7 +240,7 @@ main locus App {
         self.approve("m2", cand2);
         std::test::assert_eq_str(
             self.last("review.settled", "m2"),
-            "approve by riley",
+            "approve by grace",
             "the Review itself settled",
         );
         std::test::assert(
@@ -257,7 +257,7 @@ main locus App {
             review_id: "m3",
             subject_digest: cand3,
             verdict: "reject",
-            reviewer: "riley",
+            reviewer: "grace",
             authority: "maintainer",
             comment: "no",
         };
@@ -474,7 +474,7 @@ main locus App {
         std::test::assert(
             std::str::contains(
                 self.last("mutation.apply_retried", "m7"),
-                "approved again by riley",
+                "approved again by grace",
             ),
             "the gate ran again: " + self.last("mutation.apply_retried", "m7"),
         );
@@ -489,7 +489,7 @@ main locus App {
         );
         std::test::assert_eq_str(
             self.last("review.settled", "m7"),
-            "approve by riley",
+            "approve by grace",
             "in the words a first settlement uses",
         );
 

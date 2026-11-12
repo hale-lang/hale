@@ -56,7 +56,7 @@ main locus App {
     }
     run() {
         let asked = self.one.ask(
-            dna::Intent { id: "i1", outcome: "get the invoice paid", from: "riley" },
+            dna::Intent { id: "i1", outcome: "get the invoice paid", from: "grace" },
         );
         std::test::assert_eq_str(asked, "planning", "the leader's word comes first");
         let t = self.admitted("i1");

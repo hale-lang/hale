@@ -11356,7 +11356,7 @@ Eight substrate findings from a downstream service built on hale
   notes/build-latency-and-lsp.md.
 
 - **Unbounded-allocation warnings are DEFAULT-ON.** (M3 stage 5
-  complete — Riley's flip call after the full-corpus audit.) Every
+  complete — the flip call after the full-corpus audit.) Every
   `hale check`/`build` now surveys the whole program; run-to-exit
   programs (a `main` with no `run` loop and no bus handler) warn
   nothing, `@unbounded fn` stays the carve-out, and

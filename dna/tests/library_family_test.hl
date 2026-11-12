@@ -99,7 +99,7 @@ fn setup(kr: dna::KnowledgeRecord, j: dna::Journal, replaced: Bool, outcome: Str
     r.string_field("ideas", ideas);
     r.end_object();
     let e = j.append(j.revision(), "review.requested", "review:" + rid, r.result());
-    let s = j.append(j.revision(), "review.settled", rid, outcome + " by riley");
+    let s = j.append(j.revision(), "review.settled", rid, outcome + " by grace");
     return fd;
 }
 
@@ -114,7 +114,7 @@ main locus App {
         };
         let fd = setup(kr, j, true, "approve");
         let rid = dna::knowledge_review_id(fd);
-        std::test::assert(kr.resume_result(rid, "approve", "riley"), "the verdict was carried out");
+        std::test::assert(kr.resume_result(rid, "approve", "grace"), "the verdict was carried out");
         std::test::assert_eq_int(rows(j, "knowledge.refused"), 1, "the first member was refused");
         std::test::assert_eq_int(
             rows(j, "library.family.ratified"),
@@ -153,7 +153,7 @@ main locus App {
         std::test::assert(std::str::contains(fam.body, n1), "the family row carries its digest");
         std::test::assert(kr.ratified(n2), "the clean member is ratified");
         // asking again writes nothing more
-        std::test::assert(kr.resume_result(rid, "approve", "riley"), "resumed");
+        std::test::assert(kr.resume_result(rid, "approve", "grace"), "resumed");
         std::test::assert_eq_int(rows(j, "library.family.refused"), 1, "once");
 
         // every member clean: ratified
@@ -164,7 +164,7 @@ main locus App {
         };
         let fd2 = setup(kr2, j2, false, "approve");
         std::test::assert(
-            kr2.resume_result(dna::knowledge_review_id(fd2), "approve", "riley"),
+            kr2.resume_result(dna::knowledge_review_id(fd2), "approve", "grace"),
             "carried out",
         );
         std::test::assert_eq_int(
@@ -183,7 +183,7 @@ main locus App {
         };
         let fd3 = setup(kr3, j3, true, "reject");
         std::test::assert(
-            kr3.resume_result(dna::knowledge_review_id(fd3), "reject", "riley"),
+            kr3.resume_result(dna::knowledge_review_id(fd3), "reject", "grace"),
             "carried out",
         );
         std::test::assert_eq_int(rows(j3, "knowledge.declined"), 2, "both members declined");

@@ -29,7 +29,7 @@ fn row(k: Int) -> dna::Row {
         kind: "idea.proposed",
         entity: "e" + to_string(k),
         body: "{\"n\":" + to_string(k) + ",\"text\":\"é \\\"quoted\\\" ü\"}",
-        author: if k % 2 == 0 { "riley" } else { "" },
+        author: if k % 2 == 0 { "grace" } else { "" },
     };
 }
 

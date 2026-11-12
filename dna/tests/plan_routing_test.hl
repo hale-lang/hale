@@ -149,7 +149,7 @@ main locus App {
             dna::Intent {
                 id: "i1",
                 outcome: "document the organism's main.hl; leave the application unchanged",
-                from: "riley",
+                from: "grace",
             },
         );
         std::test::assert_eq_str(asked, "planning", "the leader's word comes first (card 18)");
@@ -201,7 +201,7 @@ main locus App {
                 }
             }
         };
-        let asked2 = self.one.ask(dna::Intent { id: "i2", outcome: "reorganize", from: "riley" });
+        let asked2 = self.one.ask(dna::Intent { id: "i2", outcome: "reorganize", from: "grace" });
         std::time::sleep(1000ms);
         let refused = self.last(self.one.journal, "intent.refused", "i2");
         std::test::assert(

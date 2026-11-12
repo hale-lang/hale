@@ -71,12 +71,12 @@ fn a_signed_row_is_relayed_and_an_unverified_one_is_refused() {
     git(&["commit", "-q", "-m", "the app"], &a);
     git(&["remote", "add", "origin", &bare.to_string_lossy()], &a);
     git(&["push", "-q", "origin", "main"], &a);
-    // two people, two keys; only riley's is enrolled (the record's first
+    // two people, two keys; only grace's is enrolled (the record's first
     // enrolment, the bootstrap)
-    let (riley_key, riley_pub) = keygen(&d, "riley_key");
+    let (grace_key, grace_pub) = keygen(&d, "grace_key");
     let (mallory_key, _) = keygen(&d, "mallory_key");
-    let (ok, out) = hale_in(&["dna", "signers", "enroll", "riley", "--key", &riley_pub.to_string_lossy()], &a);
-    assert!(ok && out.contains("enrolled riley"), "{out}");
+    let (ok, out) = hale_in(&["dna", "signers", "enroll", "grace", "--key", &grace_pub.to_string_lossy()], &a);
+    assert!(ok && out.contains("enrolled grace"), "{out}");
     git(&["config", "dna.trust", "signed"], &a);
     let clone = |name: &str, key: &Path| -> PathBuf {
         let c = d.join(name);
@@ -91,7 +91,7 @@ fn a_signed_row_is_relayed_and_an_unverified_one_is_refused() {
         assert!(ok, "{out}");
         c
     };
-    let b = clone("riley", &riley_key);
+    let b = clone("grace", &grace_key);
     let m = clone("mallory", &mallory_key);
 
     let (ok, migrated) = hale_in(&["dna", "nerves", "migrate"], &a);
@@ -136,22 +136,22 @@ fn a_signed_row_is_relayed_and_an_unverified_one_is_refused() {
     // refused in the record, never relayed
     let (ok, out) = hale_in(&["dna", "review", "purpose", "reject", "--as", "mallory", "--no-wait"], &m);
     assert!(ok, "the row itself lands ({out}); admission is the host's");
-    // riley's is signed with the key the record enrolled for her: relayed,
+    // grace's is signed with the key the record enrolled for her: relayed,
     // and the Review settles
-    let (ok, out) = hale_in(&["dna", "review", "purpose", "approve", "--as", "riley", "--no-wait"], &b);
+    let (ok, out) = hale_in(&["dna", "review", "purpose", "approve", "--as", "grace", "--no-wait"], &b);
     assert!(ok, "{out}");
     let dl = Instant::now() + Duration::from_secs(60);
     let mut seen = (false, false);
     while Instant::now() < dl && !(seen.0 && seen.1) {
         let rows = record(&b);
-        seen.0 = rows.iter().any(|r| r["kind"] == "review.settled" && r["body"].as_str().unwrap_or("").contains("riley"));
+        seen.0 = rows.iter().any(|r| r["kind"] == "review.settled" && r["body"].as_str().unwrap_or("").contains("grace"));
         seen.1 = rows.iter().any(|r| r["kind"] == "review.refused" && r["body"].as_str().unwrap_or("").contains("unverified writer"));
         std::thread::sleep(Duration::from_millis(500));
     }
     finish(&mut host);
     let rows = record(&b);
     let dump: Vec<String> = rows.iter().filter(|r| r["kind"].as_str().unwrap_or("").starts_with("review.")).map(|r| format!("{} {} {} by {}", r["kind"], r["entity"], r["body"].as_str().unwrap_or("").chars().take(90).collect::<String>(), r["author"])).collect();
-    assert!(seen.0, "riley's signed verdict was relayed and the Review settled:\n{}", dump.join("\n"));
+    assert!(seen.0, "grace's signed verdict was relayed and the Review settled:\n{}", dump.join("\n"));
     assert!(seen.1, "mallory's unverified verdict was refused in the record:\n{}", dump.join("\n"));
     assert!(!rows.iter().any(|r| r["kind"] == "review.settled" && r["body"].as_str().unwrap_or("").contains("reject")), "and never reached the organism:\n{}", dump.join("\n"));
     let refused = rows.iter().find(|r| r["kind"] == "review.refused" && r["body"].as_str().unwrap_or("").contains("unverified writer")).unwrap();

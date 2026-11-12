@@ -94,8 +94,8 @@ main locus App {
         let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nsched"));
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/sched";
-        let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
-        let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+        let u1 = in_dir(app, "git\nconfig\nuser.name\ngrace");
+        let u2 = in_dir(app, "git\nconfig\nuser.email\ngrace@local");
 
         // nothing declared yet
         let none = dna_cli(app, "schedule");
