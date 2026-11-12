@@ -2405,7 +2405,12 @@ memory is named to it.
   the attempt admitted last names, or the kind the request selects
   before one is, or, for a Work whose requirement names
   `position:<name>` (`ask-position`), that position — and its charter (the record's `graph.node` text for
-  that id, `""` until the graph names it); read under OIDC, it is the
+  that id, `""` until the graph names it), and its **persona** when the
+  habitat made one (`position.persona`: the Forgejo user the position
+  commits and reviews as, the email that marks it, and the vault slot of
+  its token, never the token; read from the ledger the habitat keeps beside
+  the organism's allocations, `hat_persona_json`, and left out when there is
+  none; the digest covers it); read under OIDC, it is the
   lease holder's — the person the record maps the bearer to, whose
   `attempt.claimed` row is the Work's current, unexpired, unreleased
   lease; any other caller is refused `403 lease_required`; the practices
@@ -5867,6 +5872,18 @@ The live half is memory's, projected from the record by the spine
   (`node`, `because`), `fallback` (`path`, `because`), `fallback_to`. A
   Review takes its signers and gates from the same computation when it
   opens (**Signers from the route**, above).
+- **A chart drafted from the code: `hale dna draft [project] [--dry-run]
+  [--as <who>]`.** The host verb `draft` proposes a starting chart as one
+  batch the Board decides, planned and proposed exactly as `hale dna apply`
+  plans and proposes a file. Its first version follows the process model
+  and nothing else: for every `process:<p>` node the graph states, an
+  `architect`, a `dev` and a `qa` opened under it (`<p>/architect`, …) with
+  a mandate the Board amends; for every `deployment:<d>`, an `operator`
+  under it. A position the chart already states is left alone, so the
+  draft is safe to ask for again, and a graph with every triad in place
+  answers that there is nothing to draft. `--dry-run` prints the chart it
+  would propose. Libraries, seams, a budget and the tasks a reading files
+  are later versions of the same verb, never of the hole rule.
 - **The chart's lines: `hale dna chart [project]`.** The host verb `chart`
   prints the org chart as the record states it, one line each, the lines
   a batch is planned against (**A batch of changes**): `position <id>`,

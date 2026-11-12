@@ -33,6 +33,10 @@ type Hat {
     performer_kind: String = "";
     position_id: String = ""; // the graph's id for the position, `position:<name>`
     charter: String = ""; // the position node's text; "" when the record holds no node for it
+    // the position's persona at the habitat's forge (`hat_persona_json`): the
+    // user it commits and reviews as, the email that marks it, and the vault
+    // slot of its token, never the token; "" when the habitat made none
+    persona: String = "";
     objective: String = "";
     target: String = "";
     // the targets the package was drawn for, space-separated (`hat_knowledge_targets`):
@@ -250,6 +254,59 @@ type HatInputs {
     knowledge_bindings: String = "";
     history: String = "[]";
     head: String = "";
+    // the organism's root, for what the habitat keeps beside it (its
+    // personas); "" when the composer has none (the owner's own edits)
+    root: String = "";
+}
+
+// ---- the persona ----------------------------------------------------------
+//
+// The habitat gives every stated position a user at its Forgejo and keeps
+// them in a ledger beside the organism's allocations (crates/hale-cli/src/
+// dna/personas.rs): `position\t<id>\t<user>\t<slot>` a line, a person's as
+// `person\t<member>\t<user>\t<slot>`. A Work routed to a position wears
+// that position's persona: a leg commits, pushes and opens its review as it,
+// with the token the slot holds, which the hat never carries.
+const PERSONA_DOMAIN_SUFFIX: String = ".persona.habitat.invalid";
+
+// The persona of `position` in a ledger's text, as the hat carries it: a
+// JSON object {id, user, email, token_vault}, or "" when the ledger names
+// none. Pure, so the shape is checked without a habitat.
+fn hat_persona_of(ledger: String, key: String, position: String) -> String {
+    let mut rest = ledger;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if !std::str::starts_with(line, "position\t" + position + "\t") { continue; }
+        let tail = line[(10 + len(position))..len(line)];
+        let tab = std::str::index_of(tail, "\t");
+        if tab < 0 { continue; }
+        let user = tail[0..tab];
+        let slot = tail[(tab + 1)..len(tail)];
+        if len(user) == 0 || len(slot) == 0 { continue; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("id", position);
+        b.string_field("user", user);
+        b.string_field("email", user + "@" + key + PERSONA_DOMAIN_SUFFIX);
+        b.string_field("token_vault", slot);
+        b.end_object();
+        return b.result();
+    }
+    return "";
+}
+
+// The persona the habitat keeps for `position` of the organism at `root`,
+// "" when the root names no organism, the habitat keeps no ledger for it,
+// or the ledger names no such position.
+fn hat_persona_json(root: String, position: String) -> String {
+    if len(root) == 0 || len(position) == 0 { return ""; }
+    let key = allocation_key(root);
+    if len(key) == 0 { return ""; }
+    let ledger = std::io::fs::read_file(local_habitat_dir() + "/allocations/" + key + "/personas")
+    or "";
+    return hat_persona_of(ledger, key, position);
 }
 
 // The attached codebase a Task names: the `codebase` of its recorded
@@ -324,6 +381,7 @@ fn hat_compose(j: Journal, w: HatInputs, pkg: ContextPackage, ready: Bool) -> Ha
         attempt_id: w.attempt_id,
         performer_kind: w.performer_kind,
         position_id: position, charter: hat_node_text(j, position),
+        persona: hat_persona_json(w.root, position),
         objective: w.objective,
         target: w.target,
         targets: w.targets,
@@ -366,6 +424,7 @@ fn hat_body(h: Hat) -> String {
     b.begin_object_field("position");
     b.string_field("id", h.position_id);
     b.string_field("charter", h.charter);
+    if len(h.persona) > 0 { b.field("persona", h.persona); }
     b.end_object();
     b.string_field("objective", h.objective);
     b.string_field("target", h.target);

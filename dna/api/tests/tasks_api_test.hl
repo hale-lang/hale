@@ -106,6 +106,7 @@ locus TaskApiCases {
             "true",
             "factual shape supports reassignment, not a caller grant",
         );
+        std::test::assert_eq_str(w.raw(row, "taken"), "false", "a hand is not a take");
         std::test::assert(
             len(w.text(row, "assignment_digest")) == 71,
             "native lifecycle fingerprint",
@@ -260,12 +261,38 @@ locus TaskApiCases {
             "history preserves actual principal",
         );
         std::test::assert(std::json::array_next(last_assignment).done, "one native reassignment");
+        std::test::assert_eq_str(
+            w.raw(current, "taken"),
+            "false",
+            "reassigned to another is still a hand",
+        );
         if evidence != "" {
             std::io::fs::write_file(
                 evidence + "/task-reassigned-response.json",
                 updated.body,
             ) or raise;
         }
+        // A take is a reassignment by the one it names: the row reads
+        // `taken`, which the board shows as work in progress.
+        std::test::assert(
+            record.append(
+                "journal",
+                record.head("journal").id,
+                dna::Row {
+                    kind: "task.reassigned",
+                    entity: first_id,
+                    body: "{\"from\": \"blair\", \"to\": \"riley\", \"by\": \"riley\"}",
+                    author: "riley",
+                },
+                false,
+                "",
+            ).ok,
+            "a native self-take",
+        );
+        let taken = self.first(self.request(root, "?id=" + dna::url_encode(first_id)));
+        std::test::assert_eq_str(w.text(taken, "assignee"), "riley", "the taker holds it");
+        std::test::assert_eq_str(w.text(taken, "state"), "handed", "a take keeps the Task open");
+        std::test::assert_eq_str(w.raw(taken, "taken"), "true", "taken by its assignee");
         // Visibility inputs over actual supporting identities; no fabricated
         // Task outcome is introduced to exercise hidden collection behavior.
         std::test::assert(

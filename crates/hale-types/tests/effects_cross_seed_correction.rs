@@ -313,8 +313,8 @@ fn host() {
     // `ForgejoApi` and `run_tool`), so the correction changes them.
     pinned(
         "host",
-        597,
-        606,
+        599,
+        608,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}

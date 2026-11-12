@@ -1252,6 +1252,7 @@ fn dna_fixture_set_is_complete() {
             "handoff_test.hl",
             "hands_test.hl",
             "harness_test.hl",
+            "hat_persona_test.hl",
             "head_roles_test.hl",
             "head_structure_test.hl",
             "head_surface_durable_test.hl",

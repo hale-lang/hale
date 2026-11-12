@@ -478,11 +478,11 @@ function renderBoard(main) {
   const tasks = S.tasks || [];
   // The lanes a person expects of a board. The record's words map onto
   // them: a Task handed to nobody is backlog, handed to someone is to do,
-  // one in a transfer or waiting on something is in progress, a Review
+  // one its assignee took, in a transfer or waiting on something is in progress, a Review
   // the Board has not decided is in review, and a decided Task or a settled
   // Review is done.
   const open = t => !["done", "delivered", "decided", "refused", "retired"].includes(t.state);
-  const inProgress = t => open(t) && (t.state.startsWith("transfer") || !!t.waiting);
+  const inProgress = t => open(t) && (t.taken || t.state.startsWith("transfer") || !!t.waiting);
   const columns = [
     { key: "backlog", title: "Backlog", items: tasks.filter(t => open(t) && !inProgress(t) && !t.assignee).map(taskCard), unavailable: S.errors.tasks },
     { key: "todo", title: "To do", items: tasks.filter(t => open(t) && !inProgress(t) && t.assignee).map(taskCard), unavailable: S.errors.tasks },
@@ -564,7 +564,7 @@ function reviewCard(r) {
 function taskCard(t) {
   return el("li", {}, el("a", { class: "card", href: href("board", t.id), "aria-current": t.id === S.route.id ? "true" : null },
     el("span", { class: "title" }, t.outcome || t.id),
-    el("span", { class: "meta" }, t.assignee ? "held by " + t.assignee : "unassigned", " · ", t.state, t.waiting ? " · waiting: " + t.waiting : ""),
+    el("span", { class: "meta" }, t.assignee ? (t.taken ? "taken by " : "held by ") + t.assignee : "unassigned", " · ", t.state, t.waiting ? " · waiting: " + t.waiting : ""),
   ));
 }
 
