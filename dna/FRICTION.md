@@ -407,7 +407,7 @@ and the generated organization's main took `models: editor_models()`
 as a param default. Under `hale dna run`, in the editor's second model
 call of a Mutation (from the assembly's `on_work_requested` handler),
 `self.dir` of the `deep` RecordedModel read as
-`/home/riley/code/hale-la��?��d`: the first bytes intact, the tail
+`/home/grace/code/hale-la��?��d`: the first bytes intact, the tail
 overwritten. The `quick` model, built the same way, still read its
 `dir` whole at that point. The computed String lived in the frame of
 `frontier()` (or of `tape_dir()`), was stored by the constructor as a

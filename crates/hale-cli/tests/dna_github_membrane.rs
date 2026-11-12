@@ -24,7 +24,7 @@ use std::time::Duration;
 
 fn git(args: &[&str], cwd: &Path) -> String {
     let _s = trace::Span::new("git", args[0].to_string());
-    let out = Command::new("git").args(["-c", "user.name=riley", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
+    let out = Command::new("git").args(["-c", "user.name=grace", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
@@ -131,13 +131,13 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     let app: PathBuf = d.join("orggh");
     let bare = d.join("origin.git");
     git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
-    git(&["config", "user.name", "riley"], &app);
+    git(&["config", "user.name", "grace"], &app);
     git(&["config", "user.email", "r@l"], &app);
     // the organism's forge: GitHub, allocated by the habitat, its token the
     // vault slot the allocation names
     let (ok, out) = hale(&["habitat", "forge", "orggh", "github", "--repo", "o/r", "--key-vault", "forge-token"], &d);
     assert!(ok && out.contains("orggh's forge: github o/r"), "{out}");
-    git(&["config", "dna.github.board", "octocat,riley"], &app);
+    git(&["config", "dna.github.board", "octocat,grace"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app"], &app);
     git(&["remote", "add", "origin", &bare.to_string_lossy()], &app);
@@ -254,9 +254,9 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
     let app: PathBuf = d.join("orgfile");
     let bare = d.join("origin.git");
     git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
-    git(&["config", "user.name", "riley"], &app);
+    git(&["config", "user.name", "grace"], &app);
     git(&["config", "user.email", "r@l"], &app);
-    git(&["config", "dna.github.board", "octocat,riley"], &app);
+    git(&["config", "dna.github.board", "octocat,grace"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app"], &app);
     git(&["remote", "add", "origin", &bare.to_string_lossy()], &app);

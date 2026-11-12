@@ -192,13 +192,13 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     let (ok2, view) = run(&["dna", "review", "m1"]);
     let (ok3, st) = run(&["dna", "status", "--json"]);
     // 10. approval applies the exact reviewed candidate
-    let (ok4, verdict) = run(&["dna", "review", "m1", "approve", "--as", "riley", "--comment", "the rooms stay the only way"]);
+    let (ok4, verdict) = run(&["dna", "review", "m1", "approve", "--as", "grace", "--comment", "the rooms stay the only way"]);
     // 11 + 12. expressed, observed, the pressure re-measured, retained
     let retained = wait_for(&app, 120, "mutation.retained", "m1");
     // rejection leaves genome and expression intact
     let (ok5, ask2) = run(&["dna", "task", "create", "document", "the", "chat", "server", "in", "main.hl"]);
     let requested2 = wait_for(&app, 120, "review.requested", "review:m2");
-    let (ok6, verdict2) = run(&["dna", "review", "m2", "reject", "--as", "riley", "--comment", "once is enough"]);
+    let (ok6, verdict2) = run(&["dna", "review", "m2", "reject", "--as", "grace", "--comment", "once is enough"]);
     std::thread::sleep(Duration::from_millis(800));
     let (ok7, status) = run(&["dna", "status"]);
     let (ok8, hist_t1) = run(&["dna", "history", "t1"]);
@@ -235,7 +235,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     assert!(ok2 && view.contains("source diff (git") && view.contains("+// documented by the organism") && view.contains("semantic diff (hale model diff") && view.contains("evidence (") && view.contains("check      yes"), "9 cli render: {view}");
     let st: serde_json::Value = serde_json::from_str(&st).expect("status --json");
     assert!(ok3 && st["reviews"].as_array().unwrap().iter().any(|r| r["mutation_id"] == "m1" && r["state"] == "pending" && r["evidence"].as_str().unwrap_or("").contains("check=0")), "9 the projection iris reads: {st}");
-    assert!(ok4 && verdict.contains("review m1 settled: approve by riley"), "10: {verdict}");
+    assert!(ok4 && verdict.contains("review m1 settled: approve by grace"), "10: {verdict}");
     assert!(rows.iter().any(|(k, e, b)| k == "mutation.applied" && e == "m1" && *b == cand), "10: {dump}");
     assert!(retained, "11–12: not retained within 120s:\n{dump}");
     assert!(has(&rows, "expression.restart_requested", "m1") && has(&rows, "expression.restarted", "m1"), "11: {dump}");
@@ -249,7 +249,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     // rejection: intact
     assert!(ok5 && ask2.contains("task t2 born"), "{ask2}");
     assert!(requested2, "m2 requested:\n{dump}");
-    assert!(ok6 && verdict2.contains("review m2 settled: reject by riley"), "{verdict2}");
+    assert!(ok6 && verdict2.contains("review m2 settled: reject by grace"), "{verdict2}");
     assert!(has(&rows, "mutation.rejected", "m2"), "10 rejection journaled:\n{dump}");
     assert_eq!(head, cand, "HEAD is m1's candidate; m2 changed nothing");
     assert_ne!(head, base);

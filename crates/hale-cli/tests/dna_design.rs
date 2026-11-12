@@ -239,10 +239,10 @@ main locus App {
     bus { publish dna::ReviewVerdict; }
     run() {
         let a = self.core.propose_knowledge(dna::Idea { id: "old-a", kind: "practice", text: "An earlier statement of the principles.", author: "org", name: "design/principles" }, "org");
-        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(a), subject_digest: a, verdict: "approve", reviewer: "riley", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(a), subject_digest: a, verdict: "approve", reviewer: "grace", authority: "board" };
         std::time::sleep(400ms);
         let b = self.core.propose_knowledge(dna::Idea { id: "old-b", kind: "practice", text: "An earlier statement of evolution.", author: "org", name: "design/evolution" }, "org");
-        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(b), subject_digest: b, verdict: "approve", reviewer: "riley", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(b), subject_digest: b, verdict: "approve", reviewer: "grace", authority: "board" };
         std::time::sleep(400ms);
         println(a);
         println(b);
@@ -311,13 +311,13 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
         first.iter().cloned().chain(ids.into_iter().filter(|i| !first.contains(i))).collect()
     };
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", &ids[0], "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
-    let (ok, b) = hale(&["dna", "review", &ids[1], "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && b.contains("settled: approve by riley"), "{b}");
-    let (ok, rest) = hale(&["dna", "review", "design", "reject", "--as", "riley", "--authority", "board"], &app);
+    let (ok, a) = hale(&["dna", "review", &ids[0], "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
+    let (ok, b) = hale(&["dna", "review", &ids[1], "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && b.contains("settled: approve by grace"), "{b}");
+    let (ok, rest) = hale(&["dna", "review", "design", "reject", "--as", "grace", "--authority", "board"], &app);
     assert!(ok, "{rest}");
-    assert_eq!(rest.matches("settled: reject by riley").count(), 9, "the nine still pending, each its own verdict:\n{rest}");
+    assert_eq!(rest.matches("settled: reject by grace").count(), 9, "the nine still pending, each its own verdict:\n{rest}");
     finish(&app, &mut host, "two ratifications and nine declines", |rows| count_of(rows, "knowledge.ratified") >= 2 && count_of(rows, "knowledge.declined") >= 9);
     let rows = journal(&app);
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.ratified").count(), 2, "two ratified");
@@ -362,10 +362,10 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let new_evolution = superseding.iter().find(|(_, n)| n == "design/evolution").map(|(i, _)| i.clone()).unwrap();
     // the Board takes the new principles and keeps the old evolution
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", &new_principles, "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
-    let (ok, b) = hale(&["dna", "review", &new_evolution, "reject", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && b.contains("settled: reject by riley"), "{b}");
+    let (ok, a) = hale(&["dna", "review", &new_principles, "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
+    let (ok, b) = hale(&["dna", "review", &new_evolution, "reject", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && b.contains("settled: reject by grace"), "{b}");
     let (new_principles_digest, new_evolution_digest) = (digest_of(&new_principles), digest_of(&new_evolution));
     finish(&app, &mut host, "the new principles ratified, the old retired, the new evolution declined", |rows| {
         has_row(rows, "knowledge.ratified", &new_principles_digest) && has_row(rows, "knowledge.retired", &old_principles) && has_row(rows, "knowledge.declined", &new_evolution_digest)
@@ -414,8 +414,8 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     assert_eq!(supersedes_of(&app, &later_evolution_digest), old_evolution, "the replacement of evolution supersedes the ACTIVE old version, not the rejected replacement");
     assert_eq!(supersedes_of(&app, &later_principles_digest), new_p, "and the replacement of principles supersedes the ratified replacement, which is what is active there");
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", &later_evolution, "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    let (ok, a) = hale(&["dna", "review", &later_evolution, "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
     finish(&app, &mut host, "the later evolution ratified and the old one retired", |rows| {
         has_row(rows, "knowledge.ratified", &later_evolution_digest) && has_row(rows, "knowledge.retired", &old_evolution)
     });
@@ -447,8 +447,8 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     // the Board decides the pending principles; the next upgrade
     // proposes the yet later principles against what is active NOW
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", &later_principles, "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    let (ok, a) = hale(&["dna", "review", &later_principles, "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
     finish(&app, &mut host, "the later principles ratified and the ratified principles retired", |rows| {
         has_row(rows, "knowledge.ratified", &later_principles_digest) && has_row(rows, "knowledge.retired", &new_p)
     });
@@ -515,10 +515,10 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
     let row_first = review_of("operating/row-first");
     let old = digest_of(&row_first);
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", &row_first, "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
-    let (ok, rest) = hale(&["dna", "review", "operating", "reject", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && rest.matches("settled: reject by riley").count() == 6, "the six still pending, each its own verdict:\n{rest}");
+    let (ok, a) = hale(&["dna", "review", &row_first, "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
+    let (ok, rest) = hale(&["dna", "review", "operating", "reject", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && rest.matches("settled: reject by grace").count() == 6, "the six still pending, each its own verdict:\n{rest}");
     finish(&app, &mut host, "one operating practice ratified and six declined", |rows| has_row(rows, "knowledge.ratified", &old) && count_of(rows, "knowledge.declined") >= 6);
     let (included, ctx) = package(&app);
     assert_eq!(included, vec![old.clone()], "the ratified operating practice is the package, the design being undecided: {ctx}");
@@ -534,8 +534,8 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
     let new = digest_of(&later);
     assert_eq!(supersedes_of(&app, &new), old, "the replacement names the active version");
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", &later, "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    let (ok, a) = hale(&["dna", "review", &later, "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
     finish(&app, &mut host, "the replacement ratified and the old version retired", |rows| has_row(rows, "knowledge.ratified", &new) && has_row(rows, "knowledge.retired", &old));
     let (included, ctx) = package(&app);
     assert_eq!(included, vec![new], "the replacement, and not the retired version: {ctx}");
@@ -714,8 +714,8 @@ fn approving_the_library_ratifies_and_binds_every_idea() {
     assert!(language.len() > 100 && design.len() > 20, "{} + {}", language.len(), design.len());
     let api = proposed.iter().find(|(_, b)| b["name"] == "library/services/api").map(|(d, _)| d.clone()).unwrap();
     let mut host = start_org(&app);
-    let (ok, rest) = hale(&["dna", "review", "library", "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && rest.matches("settled: approve by riley").count() == 2, "one verdict per family, two families:\n{rest}");
+    let (ok, rest) = hale(&["dna", "review", "library", "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && rest.matches("settled: approve by grace").count() == 2, "one verdict per family, two families:\n{rest}");
     let all = proposed.len();
     finish(&app, &mut host, "every library idea ratified and both families", |rows| {
         count_of(rows, "library.family.ratified") == 2 && rows.iter().filter(|r| r.0 == "knowledge.ratified" && proposed.iter().any(|(d, _)| *d == r.1)).count() == all
@@ -779,8 +779,8 @@ fn rejecting_the_library_declines_every_idea() {
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
     let proposed = library_proposals(&journal(&app));
     let mut host = start_org(&app);
-    let (ok, rest) = hale(&["dna", "review", "library", "reject", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && rest.matches("settled: reject by riley").count() == 2, "one verdict per family:\n{rest}");
+    let (ok, rest) = hale(&["dna", "review", "library", "reject", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && rest.matches("settled: reject by grace").count() == 2, "one verdict per family:\n{rest}");
     let all = proposed.len();
     finish(&app, &mut host, "every library idea declined and both families", |rows| {
         count_of(rows, "library.family.declined") == 2 && rows.iter().filter(|r| r.0 == "knowledge.declined" && proposed.iter().any(|(d, _)| *d == r.1)).count() == all
@@ -846,10 +846,10 @@ fn the_using_practices_are_seeded_listed_and_decided_like_the_design() {
     let read = review_of("using/read-the-record");
     let digest = journal(&app).iter().find(|r| r.0 == "review.requested" && r.1 == format!("review:{read}")).map(|r| serde_json::from_str::<serde_json::Value>(&r.2).unwrap()["knowledge_digest"].as_str().unwrap().to_string()).unwrap();
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", &read, "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
-    let (ok, rest) = hale(&["dna", "review", "using", "reject", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && rest.matches("settled: reject by riley").count() == 6, "the six still pending, each its own verdict:\n{rest}");
+    let (ok, a) = hale(&["dna", "review", &read, "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
+    let (ok, rest) = hale(&["dna", "review", "using", "reject", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && rest.matches("settled: reject by grace").count() == 6, "the six still pending, each its own verdict:\n{rest}");
     finish(&app, &mut host, "one using practice ratified and six declined", |rows| has_row(rows, "knowledge.ratified", &digest) && count_of(rows, "knowledge.declined") >= 6);
     let (included, ctx) = package(&app);
     assert_eq!(included, vec![digest], "the ratified using practice is the package, the rest being undecided or declined: {ctx}");
@@ -892,8 +892,8 @@ fn an_upgrade_proposes_the_new_versions_library_and_supersedes_the_old_on_approv
 
     // the Board takes version a of the design
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", &a_design.0, "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    let (ok, a) = hale(&["dna", "review", &a_design.0, "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
     finish(&app, &mut host, "version a of the design family ratified", |rows| {
         count_of(rows, "library.family.ratified") == 1 && a_ideas.iter().all(|(_, d)| has_row(rows, "knowledge.ratified", d))
     });
@@ -924,8 +924,8 @@ fn an_upgrade_proposes_the_new_versions_library_and_supersedes_the_old_on_approv
 
     // the Board takes version b: every old idea is retired, every new one served
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", &b_design.0, "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    let (ok, a) = hale(&["dna", "review", &b_design.0, "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
     finish(&app, &mut host, "version b ratified and version a retired", |rows| {
         count_of(rows, "library.family.ratified") == 2 && b_ideas.iter().all(|(_, d)| has_row(rows, "knowledge.ratified", d)) && a_ideas.iter().all(|(_, d)| has_row(rows, "knowledge.retired", d))
     });
@@ -976,8 +976,8 @@ fn an_upgrade_finds_a_moved_chapter_under_its_earlier_name() {
     assert!(old.iter().all(|d| !d.is_empty()) && moved.iter().all(|(_, n)| idea_digest(&rows, "@1.0.0-a", n).is_empty()), "seeded under the earlier names: {old:?}");
 
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", "library", "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    let (ok, a) = hale(&["dna", "review", "library", "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
     finish(&app, &mut host, "the earlier-named library ratified, both families", |rows| old.iter().all(|d| has_row(rows, "knowledge.ratified", d)) && count_of(rows, "library.family.ratified") == 2);
 
     // the current toolchain's names: the two chapters supersede what the record holds
@@ -992,8 +992,8 @@ fn an_upgrade_finds_a_moved_chapter_under_its_earlier_name() {
     assert_eq!(count_of(&rows, "knowledge.retired"), 0, "nothing retired before the Board decides");
 
     let mut host = start_org(&app);
-    let (ok, a) = hale(&["dna", "review", "library", "approve", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    let (ok, a) = hale(&["dna", "review", "library", "approve", "--as", "grace", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by grace"), "{a}");
     finish(&app, &mut host, "the moved chapters ratified and their earlier digests retired", |rows| old.iter().all(|d| has_row(rows, "knowledge.retired", d)));
     unmigrate(&app, &owner);
     let _ = std::fs::remove_dir_all(&d);

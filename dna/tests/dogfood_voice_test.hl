@@ -4,10 +4,10 @@
 //
 // The vendored voice repository (dna/tests/onboarding/voice-heart) is read into
 // its graph (`hale habitat graft`), its holes ratified, and the suite's user
-// mapped to riley (`dna.unix.member`). The record declares no trust, so
-// the graph's `holds` edges say who holds what: until riley holds a
+// mapped to grace (`dna.unix.member`). The record declares no trust, so
+// the graph's `holds` edges say who holds what: until grace holds a
 // position the head's socket lists no claim to the peer, and the leg
-// says so at attach; once riley holds api/dev the socket lists it, and
+// says so at attach; once grace holds api/dev the socket lists it, and
 // the leg claims as that peer, working as api/dev. The owner runs in
 // this process and relays software work to legs; the head is the
 // practice_review head, its commands on its socket. The performer (the
@@ -274,7 +274,7 @@ locus App {
     fn start_head() {
         let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\""
             + self.identity
-            + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
+            + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"grace\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
         let dir = dna::run_tool("mkdir\n-p\n" + self.repo + "/.hale/dna");
         std::io::fs::write_file(self.repo + "/.hale/dna/authority.json", policy) or discard;
         let port = dna::free_port(71);
@@ -407,7 +407,7 @@ locus App {
         self.repo = scratch + "/voice";
 
         // ---- voice, a repository of its own, read into its graph, holes ratified
-        let made = dna::voice_repo(source(), self.repo, "riley", true);
+        let made = dna::voice_repo(source(), self.repo, "grace", true);
         std::test::assert_eq_int(
             made.code,
             0,
@@ -418,7 +418,7 @@ locus App {
         // what init wrote is committed, as a person commits it: the ignores
         // (vendor/, .hale/) are the genome's, so a candidate carries none of it
         let kept = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && git add -A && git -c user.name=riley -c user.email=riley@dna commit -q -m 'hale habitat graft'\nsh\n"
+            "sh\n-c\ncd \"$1\" && git add -A && git -c user.name=grace -c user.email=grace@dna commit -q -m 'hale habitat graft'\nsh\n"
                 + self.repo,
         );
         std::test::assert_eq_int(kept.code, 0, "init's output committed: " + kept.stderr);
@@ -437,16 +437,16 @@ locus App {
             self.head_dsn = m.head_dsn;
         }
 
-        // ---- riley is a person the record knows (a row in her name), the peer
-        // is mapped to riley, and the record declares no trust
-        let as_riley = dna::RecordJournal { repo: self.repo, author: "riley" };
+        // ---- grace is a person the record knows (a row in her name), the peer
+        // is mapped to grace, and the record declares no trust
+        let as_grace = dna::RecordJournal { repo: self.repo, author: "grace" };
         std::test::assert(
-            as_riley.append(as_riley.revision(), "note.kept", "riley", "riley was here").ok,
-            "a row in riley's name: " + as_riley.last_error(),
+            as_grace.append(as_grace.revision(), "note.kept", "grace", "grace was here").ok,
+            "a row in grace's name: " + as_grace.last_error(),
         );
         // `hale habitat graft` seats its maker (the uid mapped to $USER, and local
         // trust declared): this run is about the graph deciding, so the seat
-        // is taken back and the peer mapped to riley alone
+        // is taken back and the peer mapped to grace alone
         let unmapped = dna::run_tool(
             "git\n-C\n" + self.repo + "\nconfig\n--local\n--unset-all\ndna.unix.member",
         );
@@ -456,9 +456,9 @@ locus App {
         let me = std::str::trim(dna::run_tool("id\n-u").stdout);
         let mapped = dna::run_tool(
             "git\n-C\n" + self.repo + "\nconfig\n--local\n--add\ndna.unix.member\nuid:" + me
-                + "=riley",
+                + "=grace",
         );
-        std::test::assert_eq_int(mapped.code, 0, "the peer is mapped to riley: " + mapped.stderr);
+        std::test::assert_eq_int(mapped.code, 0, "the peer is mapped to grace: " + mapped.stderr);
         std::test::assert_eq_str(
             dna::trim_nl(
                 dna::run_tool("git\n-C\n" + self.repo + "\nconfig\n--get\ndna.trust").stdout,
@@ -470,7 +470,7 @@ locus App {
         self.start_head();
         self.start_owner();
 
-        // ---- (1) riley holds nothing yet: the socket lists no claim to the peer
+        // ---- (1) grace holds nothing yet: the socket lists no claim to the peer
         std::test::assert(len(self.socket()) > 0, "the head names its socket");
         std::test::assert(
             !self.claim_listed(),
@@ -481,14 +481,14 @@ locus App {
             std::str::contains(unseated, "this peer holds no position"),
             "and the leg says so at attach: " + unseated,
         );
-        // riley takes api/dev (the ratified hole), and the socket lists the claim
+        // grace takes api/dev (the ratified hole), and the socket lists the claim
         let hold = ops::GraphEdge { kind: "holds" };
         hold.member("position", "position:api/dev");
-        hold.member("holder", "riley");
+        hold.member("holder", "grace");
         let j = dna::RecordJournal { repo: self.repo };
         std::test::assert(
             j.append(j.revision(), "graph.edge", hold.id(), hold.body()).ok,
-            "riley holds api/dev",
+            "grace holds api/dev",
         );
         let mut listed = self.claim_listed();
         let mut tries = 0;
@@ -499,7 +499,7 @@ locus App {
         }
         std::test::assert(
             listed,
-            "once riley holds a position the socket lists the claim to the peer",
+            "once grace holds a position the socket lists the claim to the peer",
         );
 
         // ---- (2) the brief: the hat the head renders for the attempt
@@ -528,8 +528,8 @@ locus App {
         let claim = self.row_body("attempt.claimed", a1);
         std::test::assert_eq_str(
             std::json::find_string_field(claim, "principal_name"),
-            "riley",
-            "the lease is riley's, the peer's person: " + claim,
+            "grace",
+            "the lease is grace's, the peer's person: " + claim,
         );
         // over the socket, not the forwarder: the head's HTTP commands take the
         // launch token the head printed, which a leg never holds, so a command

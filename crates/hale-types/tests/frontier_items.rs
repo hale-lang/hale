@@ -179,7 +179,7 @@ fn secret_must_not_reach_a_log_sink() {
             println("authenticating ", user);
             println("token=", token);
         }
-        fn main() { auth("s3cr3t", "riley"); }
+        fn main() { auth("s3cr3t", "grace"); }
     "#;
     let ds = diags_for(src);
     assert!(

@@ -35,22 +35,22 @@ import "../core" as dna;
 // is. Steps are proposed by `grace`, who may not ratify them.
 const DEV_TEAM: String = "# a small dev team for a CRUD application
 open api/dev | Decides: how the api is built, within its contract. May not: sign its own changes. Cites: the contract and the practices in force. Escalates: contract changes to the Board.
-ratify by riley
+ratify by grace
 expect position api/dev
 expect mandate api/dev
 open api/reviewer | Decides: whether a change to the api is ready. May not: write the change it reviews. Cites: the change, its evidence and the practices in force. Escalates: disagreements to the Board.
-ratify by riley
+ratify by grace
 fill api/dev ada
-ratify by riley
+ratify by grace
 expect holds api/dev ada
 fill api/reviewer bo
-ratify by riley
+ratify by grace
 expect holds api/reviewer bo
 ";
 
 const OPENED_ONCE: String = "# a position is opened once
 open ops/operator | Decides: when the deployment runs. May not: change code. Cites: the readings. Escalates: incidents to the Board.
-ratify by riley
+ratify by grace
 expect position ops/operator
 refused open ops/operator | Decides: it again.
 refused open no-mandate |
@@ -59,7 +59,7 @@ refused open no-mandate |
 const UNRATIFIED: String = "# nothing is in force until the Board says so
 open web/dev | Decides: how the web client is built. May not: sign its own changes. Cites: the practices in force. Escalates: to the Board.
 expect no-position web/dev
-ratify by riley
+ratify by grace
 expect position web/dev
 ";
 
@@ -71,7 +71,7 @@ fill api/dev ada
 fill api/reviewer bo
 }
 expect no-position api/dev
-ratify batch by riley
+ratify batch by grace
 expect position api/dev
 expect mandate api/reviewer
 expect holds api/dev ada
@@ -80,7 +80,7 @@ expect holds api/reviewer bo
 
 const BATCH_REFUSED: String = "# a batch is refused whole before anything is proposed
 open ops/operator | Decides: when the deployment runs. May not: change code. Cites: the readings. Escalates: incidents to the Board.
-ratify by riley
+ratify by grace
 refused apply {
 open ops/operator | Decides: it again.
 }
@@ -107,20 +107,20 @@ open ops/dev | Decides: how operations are automated. May not: run them. Cites: 
 fill ops/dev ada
 }
 open ops/dev | Decides: the same, opened alone. May not: run them. Cites: the runbooks. Escalates: to the Board.
-ratify by riley
-ratify batch by riley
+ratify by grace
+ratify batch by grace
 expect stale
 expect position ops/dev
 ";
 
 const VACATED: String = "# a holder leaves: the position stays, the hold goes, once the Board says so
 open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
-ratify by riley
+ratify by grace
 fill api/dev ada
-ratify by riley
+ratify by grace
 vacate api/dev ada
 expect holds api/dev ada
-ratify batch by riley
+ratify batch by grace
 expect no-holds api/dev ada
 expect position api/dev
 refused vacate api/dev zed
@@ -138,9 +138,9 @@ open api/reviewer | Decides: whether a change is ready. May not: write it. Cites
 fill api/reviewer bo
 assign api/reviewer reviews contract:spec/todo.md
 }
-ratify batch by riley
+ratify batch by grace
 merge api/reviewer into api/dev
-ratify batch by riley
+ratify batch by grace
 expect no-position api/reviewer
 expect holds api/dev bo
 expect reviews position:api/dev contract:spec/todo.md
@@ -156,9 +156,9 @@ open api/dev | Decides: how the api is built. May not: approve its own changes. 
 fill api/dev ada
 assign api/dev reviews seed:api
 }
-ratify batch by riley
+ratify batch by grace
 split api/dev into api/frontend api/backend
-ratify batch by riley
+ratify batch by grace
 expect no-position api/dev
 expect mandate api/frontend
 expect mandate api/backend
@@ -175,13 +175,13 @@ open api/reviewer under position:api/dev | Decides: whether a change is ready. M
 fill api/reviewer bo
 assign api/reviewer reviews seed:api
 }
-ratify batch by riley
+ratify batch by grace
 expect under api/reviewer position:api/dev
 refused move api/dev under position:api/reviewer
 refused move board under seed:api
 refused move api/reviewer under position:api/dev
 move api/reviewer under seed:api
-ratify batch by riley
+ratify batch by grace
 expect under api/reviewer seed:api
 expect no under position:api/reviewer position:api/dev
 expect holds api/reviewer bo
@@ -189,12 +189,12 @@ expect mandate api/reviewer
 expect reviews position:api/reviewer seed:api
 refused move api/nobody under seed:api
 open api/qa under position:api/dev | Decides: whether the api works. May not: write it. Cites: the tests. Escalates: to the Board.
-ratify by riley
+ratify by grace
 apply {
 move api/qa under seed:api
 close api/qa
 }
-ratify batch by riley
+ratify batch by grace
 expect no-position api/qa
 expect no under position:api/qa seed:api
 expect no under position:api/qa position:api/dev
@@ -206,9 +206,9 @@ apply {
 open api/dev under seed:api | Decides: how the api is built. May not: approve its own changes. Cites: the contract. Escalates: to the Board.
 fill api/dev ada
 }
-ratify batch by riley
+ratify batch by grace
 amend api/dev | Keeps the api correct and fast.
-ratify batch by riley
+ratify batch by grace
 expect keeps api/dev Keeps the api correct and fast.
 expect holds api/dev ada
 expect mandate api/dev
@@ -220,13 +220,13 @@ refused amend api/nobody | Anything at all.
 const ASSIGNED: String = "# a position reviews a contract, and stops
 state contract:spec/todo.md
 open api/reviewer | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
-ratify by riley
+ratify by grace
 assign api/reviewer reviews contract:spec/todo.md
-ratify batch by riley
+ratify batch by grace
 expect reviews position:api/reviewer contract:spec/todo.md
 refused assign api/reviewer reviews contract:spec/nowhere.md
 unassign api/reviewer reviews contract:spec/todo.md
-ratify batch by riley
+ratify batch by grace
 expect no reviews position:api/reviewer contract:spec/todo.md
 ";
 
@@ -236,7 +236,7 @@ open api/dev | Decides: how the api is built. May not: approve its own changes. 
 practice api/reviewed-before-merge | Every change to the api is approved by its reviewer before it merges.
 practice ship-small | Work ships in the smallest change that is useful on its own.
 }
-ratify batch by riley
+ratify batch by grace
 expect practice ship-small
 expect practice api/reviewed-before-merge
 expect mandate api/dev
@@ -249,7 +249,7 @@ const NURSERY_TRUSTED: String = "# a nursery the Board trusts: its packs may be 
 apply {
 nursery https://github.com/hale-lang/nursery
 }
-ratify batch by riley
+ratify batch by grace
 expect nursery https://github.com/hale-lang/nursery
 refused apply {
 nursery https://github.com/hale-lang/nursery
@@ -259,14 +259,14 @@ nursery https://github.com/hale-lang/nursery
 const REASSIGNED: String = "# an assignment taken back and given again in one batch stands
 state seed:api
 open api/reviewer | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
-ratify by riley
+ratify by grace
 assign api/reviewer reviews seed:api
-ratify batch by riley
+ratify batch by grace
 apply {
 unassign api/reviewer reviews seed:api
 assign api/reviewer reviews seed:api
 }
-ratify batch by riley
+ratify batch by grace
 expect reviews position:api/reviewer seed:api
 ";
 
@@ -275,11 +275,11 @@ state seed:api
 state seed:web
 state seed:mobile
 expose seed:api as contract:spec/api.md
-ratify batch by riley
+ratify batch by grace
 depend seed:web on contract:spec/api.md
 depend seed:mobile on contract:spec/api.md
-ratify batch by riley
-ratify earlier batch by riley
+ratify batch by grace
+ratify earlier batch by grace
 expect stale
 expect consumes seed:mobile contract:spec/api.md
 expect no consumes seed:web contract:spec/api.md
@@ -287,17 +287,17 @@ expect no consumes seed:web contract:spec/api.md
 
 const PACK_RETIRED: String = "# a pack retired: what it opened closes, its practices retire, and the rest stays
 open ops/lead | Decides: what operations does next. May not: change code. Cites: the readings. Escalates: to the Board.
-ratify by riley
+ratify by grace
 apply {
 open api/dev | Decides: how the api is built. May not: approve its own changes. Cites: the contract. Escalates: to the Board.
 fill api/dev ada
 fill ops/lead ada
 practice api/reviewed-before-merge | Every change to the api is approved by its reviewer before it merges.
 }
-ratify batch by riley
+ratify batch by grace
 expect practice api/reviewed-before-merge
 retire-pack
-ratify batch by riley
+ratify batch by grace
 expect no-position api/dev
 expect no practice api/reviewed-before-merge
 expect no-holds ops/lead ada
@@ -311,7 +311,7 @@ apply {
 expose seed:api as contract:spec/api.md
 depend seed:web on contract:spec/api.md
 }
-ratify batch by riley
+ratify batch by grace
 expect serves seed:api contract:spec/api.md
 expect consumes seed:web contract:spec/api.md
 refused expose seed:web as contract:spec/api.md
@@ -327,17 +327,17 @@ depend seed:web on contract:spec/billing.md
 open billing/dev under seed:billing | Decides: how billing is built. May not: approve its own changes. Cites: the contract. Escalates: to the Board.
 fill billing/dev ada
 }
-ratify batch by riley
+ratify batch by grace
 expect holds billing/dev ada
 externalize seed:billing
-ratify batch by riley
+ratify batch by grace
 expect no-position billing/dev
 expect no part seed:billing
 expect outside contract:spec/billing.md billing
 expect consumes seed:web contract:spec/billing.md
 refused externalize seed:web
 internalize contract:spec/billing.md as seed:billing
-ratify batch by riley
+ratify batch by grace
 expect part seed:billing
 expect serves seed:billing contract:spec/billing.md
 expect no outside contract:spec/billing.md billing
@@ -349,8 +349,8 @@ apply on pending {
 fill ops/lead ada
 }
 expect no-position ops/lead
-ratify ground by riley
-ratify batch by riley
+ratify ground by grace
+ratify batch by grace
 expect holds ops/lead ada
 refused apply {
 fill * bo
@@ -362,9 +362,9 @@ open ops/lead | Decides: what operations does next. May not: change code. Cites:
 apply on pending {
 fill * ada
 }
-decide batch by riley
+decide batch by grace
 expect undecided
-ratify ground by riley
+ratify ground by grace
 await batch
 expect holds ops/lead ada
 ";
@@ -375,8 +375,8 @@ apply on pending {
 fill ops/lead ada
 practice ops/write-it-down | A decision that will be asked about again is written into the record.
 }
-reject ground by riley
-ratify batch by riley
+reject ground by grace
+ratify batch by grace
 expect stale
 expect no-position ops/lead
 expect no practice ops/write-it-down

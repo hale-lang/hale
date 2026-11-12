@@ -46,7 +46,7 @@ main locus Node {
         let ask = dna::Intent {
             id: self.intent,
             outcome: "file the quarter's expense report",
-            from: "riley",
+            from: "grace",
         };
         while !taken && !answered && std::time::now() < until {
             let answer = self.core.ask(ask);
@@ -84,7 +84,7 @@ fn main() {
         "",
         "the record is born in memory (GH #1590)",
     );
-    let plan = "kind: person\nclass: process-policy\ntarget: (none)\ncount: 1\nassignee: riley\nobligation: expense-approval\nA person's job.";
+    let plan = "kind: person\nclass: process-policy\ntarget: (none)\ncount: 1\nassignee: grace\nobligation: expense-approval\nA person's job.";
     Node {
         repo: repo,
         intent: intent,

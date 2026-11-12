@@ -72,7 +72,7 @@ main locus App {
             text: text,
             author: "org",
             target: "org",
-            by: "riley",
+            by: "grace",
             because: "Preserve exact native knowledge."
         };
         request.candidate_digest = dna::digest_of(codec.document(request));

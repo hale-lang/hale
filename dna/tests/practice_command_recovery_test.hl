@@ -78,7 +78,7 @@ fn request(j: dna::Journal, id: String, text: String, old: String) -> dna::Pract
     b.string_field("request_id", id);
     b.string_field("name", "practice/receipts");
     b.string_field("text", text);
-    b.string_field("by", "riley");
+    b.string_field("by", "grace");
     b.string_field("because", exact_text());
     b.string_field("supersedes", old);
     b.end_object();
@@ -88,7 +88,7 @@ fn request(j: dna::Journal, id: String, text: String, old: String) -> dna::Pract
         request_id: id,
         name: "practice/receipts",
         text: text,
-        by: "riley",
+        by: "grace",
         because: exact_text(),
         supersedes: old,
     };

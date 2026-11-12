@@ -386,7 +386,7 @@ fn main() {
     );
     let y = Proc { };
     std::test::assert(
-        y.start("env\nLOTUS_API_ROLES=support=riley\n" + bad_bin),
+        y.start("env\nLOTUS_API_ROLES=support=grace\n" + bad_bin),
         "started under a bad member spelling",
     );
     std::test::assert_eq_int(
@@ -394,7 +394,7 @@ fn main() {
         2,
         "a member outside the five spellings refuses to start: " + y.out,
     );
-    std::test::assert(has(y.out, "`riley` is not a role member"), "and says which: " + y.out);
+    std::test::assert(has(y.out, "`grace` is not a role member"), "and says which: " + y.out);
     std::io::fs::unlink(bad_bin) or discard;
     std::io::fs::unlink(bad_src) or discard;
 }

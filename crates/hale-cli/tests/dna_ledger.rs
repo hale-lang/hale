@@ -170,7 +170,7 @@ fn an_organism_s_operations_go_to_its_ledger_and_leave_the_record() {
     let rows = ledger_until(&app, head, |r| r.contains("second.txt"));
     assert!(!rows.contains("third.txt"), "and nothing landed for it:\n{rows}");
     // an evolutionary row goes to the record
-    let (ok, out) = hale(&["dna", "practice", "propose", "billing/late", "--text", "Chase an invoice at seven days.", "--as", "riley"], &app, head);
+    let (ok, out) = hale(&["dna", "practice", "propose", "billing/late", "--text", "Chase an invoice at seven days.", "--as", "grace"], &app, head);
     assert!(ok, "{out}");
     assert!(record(&app).iter().any(|r| r["kind"] == "practice.requested" || r["kind"] == "practice.proposed"), "the practice is in the record");
     // history reads one history across both memories
@@ -193,7 +193,7 @@ fn an_organism_s_operations_go_to_its_ledger_and_leave_the_record() {
     assert!(!ok && norun.contains("a body without its memory admits nothing"), "{norun}");
     stop_host(&app, &mut host);
     // the body is gone; its lease stands until forced, in memory
-    let (ok, forced) = hale(&["dna", "body", "claim", "--force", "--as", "riley"], &app, head);
+    let (ok, forced) = hale(&["dna", "body", "claim", "--force", "--as", "grace"], &app, head);
     assert!(ok && (forced.contains("body.claimed") || forced.contains("released")), "{forced}");
     let (ok, gone) = hale(&["dna", "body"], &app, head);
     assert!(ok && gone.contains("released"), "the forced claim released the lease in memory: {gone}");

@@ -201,10 +201,10 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     // solo path hands it to a person and nothing consults memory for it);
     // mapped before the ratification is waited for, so the projection the
     // ask reads has the row too
-    let (ok, out) = hale(&["dna", "models", "category", "do.deep", "mapped-deep", "--tools", "--as", "riley"], &app, &[]);
+    let (ok, out) = hale(&["dna", "models", "category", "do.deep", "mapped-deep", "--tools", "--as", "grace"], &app, &[]);
     assert!(ok, "the model mapped: {out}");
     // the Board ratifies the exact digest
-    let (ok, out) = hale(&["dna", "review", &format!("k:{}", &digest[7..19]), "approve", "--as", "riley", "--authority", "board", "--comment", "a good practice"], &app, &[]);
+    let (ok, out) = hale(&["dna", "review", &format!("k:{}", &digest[7..19]), "approve", "--as", "grace", "--authority", "board", "--comment", "a good practice"], &app, &[]);
     assert!(ok, "verdict: {out}");
     let mut read = String::new();
     trace::wait_until("the ratified practice reached the package", Duration::from_secs(60), Duration::from_millis(300), || {

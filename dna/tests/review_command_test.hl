@@ -101,7 +101,7 @@ main locus App {
             required_authority: "board",
             author: "org",
         };
-        let abstain = verdict("command/abstain", "review/one", "abstain", "riley");
+        let abstain = verdict("command/abstain", "review/one", "abstain", "grace");
         review.on_verdict(abstain);
         std::time::sleep(100ms);
         let abstained = dna::review_command_decision(record, abstain.command_id);
@@ -117,7 +117,7 @@ main locus App {
             "an accepted abstention notifies with command correlation",
         );
 
-        let approve = verdict("command/équipe/approve", "review/one", "approve", "riley");
+        let approve = verdict("command/équipe/approve", "review/one", "approve", "grace");
         let approved = review.command_decide(approve);
         std::test::assert(
             std::json::find_bool_field(approved, "accepted")
@@ -140,7 +140,7 @@ main locus App {
             1,
             "one decision for an identical replay",
         );
-        let changed = verdict(approve.command_id, "review/one", "reject", "riley");
+        let changed = verdict(approve.command_id, "review/one", "reject", "grace");
         std::test::assert_eq_str(
             review.command_decide(changed),
             "",
@@ -206,7 +206,7 @@ main locus App {
             required_authority: "board",
             author: "org",
         };
-        let retry = verdict("command/retry", "review/retry", "approve", "riley");
+        let retry = verdict("command/retry", "review/retry", "approve", "grace");
         std::test::assert_eq_str(
             retryable.command_decide(retry),
             "",
@@ -243,7 +243,7 @@ main locus App {
             required_authority: "board",
             author: "org",
         };
-        let ambiguous = verdict("command/ambiguous", "review/ambiguous", "approve", "riley");
+        let ambiguous = verdict("command/ambiguous", "review/ambiguous", "approve", "grace");
         std::test::assert(
             std::json::find_bool_field(uncertain.command_decide(ambiguous), "accepted")
                 && uncertain.settled,
@@ -299,7 +299,7 @@ main locus App {
             author: "org",
         };
         std::test::assert(
-            legacy.consider(verdict("", "legacy", "approve", "riley")) && legacy.settled,
+            legacy.consider(verdict("", "legacy", "approve", "grace")) && legacy.settled,
             "legacy admission remains unchanged",
         );
         std::test::assert(

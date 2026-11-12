@@ -48,7 +48,7 @@ main locus App {
         dna: dna::Dna = dna::Dna {
             journal: CountingJournal { },
             work: dna::WorkSystem {
-                human: dna::HumanWorkGateway { operator: "riley", answer: "done" },
+                human: dna::HumanWorkGateway { operator: "grace", answer: "done" },
                 selection: dna::HumanFirstSelection { }
             },
             review_policy: dna::PostReviewRefactors { },

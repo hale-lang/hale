@@ -117,7 +117,7 @@ fn setup(kr: dna::KnowledgeRecord, j: dna::Journal) -> String {
     r.string_field("ideas", ideas);
     r.end_object();
     let e = j.append(j.revision(), "review.requested", "review:" + rid, r.result());
-    let s = j.append(j.revision(), "review.settled", rid, "approve by riley");
+    let s = j.append(j.revision(), "review.settled", rid, "approve by grace");
     return fd;
 }
 
@@ -155,7 +155,7 @@ main locus App {
         let appends_before = j.appends;
         let from = j.revision();
         std::test::assert(
-            kr.resume_result(dna::knowledge_review_id(fd), "approve", "riley"),
+            kr.resume_result(dna::knowledge_review_id(fd), "approve", "grace"),
             "carried out",
         );
         let want = "knowledge.ratified " + n1 + "\nknowledge.retired "
@@ -176,7 +176,7 @@ main locus App {
         );
         // asking again writes nothing more
         std::test::assert(
-            kr.resume_result(dna::knowledge_review_id(fd), "approve", "riley"),
+            kr.resume_result(dna::knowledge_review_id(fd), "approve", "grace"),
             "resumed",
         );
         std::test::assert_eq_int(j.batches, 1, "a settled family writes no batch");
@@ -193,7 +193,7 @@ main locus App {
         let k_appends = k.appends;
         k.intrude = m2;
         std::test::assert(
-            krk.resume_result(dna::knowledge_review_id(fdk), "approve", "riley"),
+            krk.resume_result(dna::knowledge_review_id(fdk), "approve", "grace"),
             "carried out after the race",
         );
         std::test::assert_eq_int(k.batches, 2, "the stale batch was decided again");

@@ -80,7 +80,7 @@ main locus App {
             review_id: id,
             subject_digest: digest,
             verdict: v,
-            reviewer: "riley",
+            reviewer: "grace",
             authority: "board",
         };
         std::time::sleep(150ms);

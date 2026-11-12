@@ -70,25 +70,25 @@ fn check() {
         j,
         "model.category",
         "do.standard",
-        "{\"model\": \"coder-m\", \"tool_calls\": true, \"input_micros_per_1k\": 300, \"output_micros_per_1k\": 1200, \"by\": \"riley\"}",
+        "{\"model\": \"coder-m\", \"tool_calls\": true, \"input_micros_per_1k\": 300, \"output_micros_per_1k\": 1200, \"by\": \"grace\"}",
     );
     row(
         j,
         "model.category",
         "do.deep",
-        "{\"model\": \"coder-l\", \"tool_calls\": true, \"by\": \"riley\"}",
+        "{\"model\": \"coder-l\", \"tool_calls\": true, \"by\": \"grace\"}",
     );
     row(
         j,
         "model.category",
         "think.quick",
-        "{\"model\": \"thinker-s\", \"tool_calls\": false, \"by\": \"riley\"}",
+        "{\"model\": \"thinker-s\", \"tool_calls\": false, \"by\": \"grace\"}",
     );
     row(
         j,
         "model.category",
         "tools.standard",
-        "{\"model\": \"plain-m\", \"tool_calls\": false, \"by\": \"riley\"}",
+        "{\"model\": \"plain-m\", \"tool_calls\": false, \"by\": \"grace\"}",
     );
     let filled = hat_for(j, "edit", "Patch", "edit", "t1");
     std::test::assert_eq_str(model_of(filled, "model"), "coder-m", "the category names the model");
@@ -129,7 +129,7 @@ fn check() {
     );
 
     // the organism's rules: default < contract < position
-    row(j, "model.rule", "default", "{\"size\": \"quick\", \"permit\": \"\", \"by\": \"riley\"}");
+    row(j, "model.rule", "default", "{\"size\": \"quick\", \"permit\": \"\", \"by\": \"grace\"}");
     std::test::assert_eq_str(
         model_of(hat_for(j, "agent", "MonthlyReport", "judgment", "t1"), "model"),
         "thinker-s",
@@ -139,7 +139,7 @@ fn check() {
         j,
         "model.rule",
         "contract:Patch",
-        "{\"size\": \"standard\", \"permit\": \"\", \"by\": \"riley\"}",
+        "{\"size\": \"standard\", \"permit\": \"\", \"by\": \"grace\"}",
     );
     let by_contract = hat_for(j, "edit", "Patch", "edit", "t1");
     std::test::assert(
@@ -151,7 +151,7 @@ fn check() {
         j,
         "model.rule",
         "position:editor",
-        "{\"size\": \"deep\", \"permit\": \"standard\", \"by\": \"riley\"}",
+        "{\"size\": \"deep\", \"permit\": \"standard\", \"by\": \"grace\"}",
     );
     let by_position = hat_for(j, "edit", "Patch", "edit", "t1");
     std::test::assert(
@@ -161,13 +161,13 @@ fn check() {
     );
 
     // a task's override: inside the permitted sizes, by the Task or by its ask
-    row(j, "model.rule", "task:t2", "{\"size\": \"standard\", \"by\": \"riley\"}");
+    row(j, "model.rule", "task:t2", "{\"size\": \"standard\", \"by\": \"grace\"}");
     let moved = hat_for(j, "edit", "Patch", "edit", "t2");
     std::test::assert(
         model_of(moved, "size") == "standard" && model_of(moved, "rule") == "task:t2",
         "an override the position permits moves the size: " + moved.model,
     );
-    row(j, "model.rule", "task:t3", "{\"size\": \"quick\", \"by\": \"riley\"}");
+    row(j, "model.rule", "task:t3", "{\"size\": \"quick\", \"by\": \"grace\"}");
     let refused = hat_for(j, "edit", "Patch", "edit", "t3");
     std::test::assert(
         model_of(refused, "size") == "deep" && model_of(refused, "rule") == "position:editor",
@@ -179,7 +179,7 @@ fn check() {
         "t4",
         "{\"version\": 1, \"engine\": \"wf1\", \"task_id\": \"t4\", \"definition\": \"ask-edit\", \"request\": \"i42\"}",
     );
-    row(j, "model.rule", "task:i42", "{\"size\": \"standard\", \"by\": \"riley\"}");
+    row(j, "model.rule", "task:i42", "{\"size\": \"standard\", \"by\": \"grace\"}");
     let asked = hat_for(j, "edit", "Patch", "edit", "t4");
     std::test::assert(
         model_of(asked, "size") == "standard" && model_of(asked, "rule") == "task:i42",
@@ -206,7 +206,7 @@ fn check() {
         "position:api/dev",
         "a routed Work's hat is its position's",
     );
-    row(j, "model.rule", "position:api/dev", "{\"size\": \"deep\", \"by\": \"riley\"}");
+    row(j, "model.rule", "position:api/dev", "{\"size\": \"deep\", \"by\": \"grace\"}");
     let routed2 = dna::hat_compose(
         j,
         dna::HatInputs {
@@ -238,7 +238,7 @@ fn check() {
         j,
         "model.category",
         "do.deep",
-        "{\"model\": \"coder-xl\", \"tool_calls\": true, \"by\": \"riley\"}",
+        "{\"model\": \"coder-xl\", \"tool_calls\": true, \"by\": \"grace\"}",
     );
     std::test::assert_eq_str(
         model_of(hat_for(j, "edit", "Patch", "edit", "t1"), "model"),
@@ -265,9 +265,9 @@ fn check() {
         j,
         "model.category",
         "think.deep",
-        "{\"model\": \"big\", \"endpoint\": \"http://g:1/v1/chat/completions\", \"key_vault\": \"model-GATEWAY\", \"by\": \"riley\"}",
+        "{\"model\": \"big\", \"endpoint\": \"http://g:1/v1/chat/completions\", \"key_vault\": \"model-GATEWAY\", \"by\": \"grace\"}",
     );
-    row(j, "model.category", "think.deep", "{\"model\": \"big\", \"by\": \"riley\"}");
+    row(j, "model.category", "think.deep", "{\"model\": \"big\", \"by\": \"grace\"}");
     std::test::assert_eq_str(
         dna::model_key_slots(j),
         "model-HABITAT_0A1B2C3D4E5F\tthink.quick think.standard\n",

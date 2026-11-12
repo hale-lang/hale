@@ -59,7 +59,7 @@ main locus App {
             cache,
             dna::in_habitat(
                 toolchain() + "\nhabitat\ngraft\nbodied\n--profile\nremote-body\n--remote\n" + bare
-                    + "\n--body\nriley@srv",
+                    + "\n--body\ngrace@srv",
             ),
         );
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);

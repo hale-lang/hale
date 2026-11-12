@@ -71,7 +71,7 @@ locus CreateApiCases {
         let codec = ops::AuthorityPolicyCodec { };
         let policy = codec.decode(
             "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + self.identity
-                + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}",
+                + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"grace\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}",
             self.identity,
             "local",
         );
@@ -88,7 +88,7 @@ locus CreateApiCases {
         };
         let commands = api::CommandAdmission {
             root: self.root,
-            roles: dna::RecordRoles { memory: true, mapping: "uid:1000=riley\n" },
+            roles: dna::RecordRoles { memory: true, mapping: "uid:1000=grace\n" },
             provider: provider,
         };
         let before = record.head("journal").id;
@@ -133,7 +133,7 @@ locus CreateApiCases {
             row.entity == intent && row.digest == create.event_id,
             "one intent.requested row, entity = intent id, in the Ledger",
         );
-        let cli = self.cli_row(outcome, "riley", "org");
+        let cli = self.cli_row(outcome, "grace", "org");
         std::test::assert(
             std::str::starts_with(
                 row.body,
@@ -151,7 +151,7 @@ locus CreateApiCases {
         while at >= 0 && ledger.read(at).digest != row.digest { at = at - 1; }
         std::test::assert_eq_str(
             ledger.author_of(at),
-            "riley",
+            "grace",
             "the mapped person is the row's author",
         );
         std::test::assert_eq_str(
@@ -201,7 +201,7 @@ locus CreateApiCases {
                 journal.revision(),
                 "intent.offered",
                 intent,
-                outcome + " (from riley)",
+                outcome + " (from grace)",
             ).ok,
             "offered",
         );
@@ -279,7 +279,7 @@ locus CreateApiCases {
             "a judgment is asked: " + assessed.code,
         );
         let judged_row = self.last(journal, "intent.requested");
-        let cli_judged = self.cli_row("Is the queue bounded?", "riley", "org");
+        let cli_judged = self.cli_row("Is the queue bounded?", "grace", "org");
         std::test::assert(
             std::str::starts_with(
                 judged_row.body,
@@ -311,7 +311,7 @@ locus CreateApiCases {
         let foreign = switched.lookup(api::Lookup { request_id: "create-1" }, self.caller());
         std::test::assert(
             foreign.code == "forbidden" && foreign.receipt.command_id == "",
-            "another principal cannot recover riley's ask: " + foreign.code,
+            "another principal cannot recover grace's ask: " + foreign.code,
         );
         let moved = api::CommandContext {
             root: self.root,
@@ -327,7 +327,7 @@ locus CreateApiCases {
                     request_id: "create-4",
                     operation: "dna.task.create",
                     expected_principal_mode: "local",
-                    expected_principal_name: "riley",
+                    expected_principal_name: "grace",
                 },
             ).code,
             "command_context_changed",

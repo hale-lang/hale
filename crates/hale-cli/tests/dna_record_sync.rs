@@ -69,10 +69,10 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let n_born = record(&a).len();
     // clone B: a person, elsewhere, with the genome and, once migrated, the
     // record's memory
-    let b = d.join("riley");
+    let b = d.join("grace");
     git(&["clone", "-q", &bare.to_string_lossy(), &b.to_string_lossy()], &d);
-    git(&["config", "user.name", "riley"], &b);
-    git(&["config", "user.email", "riley@l"], &b);
+    git(&["config", "user.name", "grace"], &b);
+    git(&["config", "user.email", "grace@l"], &b);
     let (ok, out) = hale_in(&["dna", "memory", "migrate"], &b);
     assert!(ok, "B's memory: {out}");
     let (ok, st) = hale_in(&["dna", "status"], &b);
@@ -133,12 +133,12 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     // B asks, with no organism and no sockets of its own
     let (ok1, asked) = hale_in(&["dna", "task", "create", "write", "the", "changelog"], &b);
     // B decides the purpose review the same way
-    let (ok2, decided) = hale_in(&["dna", "review", "purpose", "approve", "--as", "riley", "--comment", "ratified from afar"], &b);
+    let (ok2, decided) = hale_in(&["dna", "review", "purpose", "approve", "--as", "grace", "--comment", "ratified from afar"], &b);
     let (ok4, st_b) = hale_in(&["dna", "status"], &b);
     finish(&mut host);
     assert!(ok1 && asked.contains("task t1 born"), "ask from the other clone: {asked}");
-    assert!(ok2 && decided.contains(" settled: approve by riley"), "verdict from the other clone: {decided}");
-    assert!(ok4 && st_b.contains("t1 [") && st_b.contains("settled approve by riley") && st_b.contains("chain verified"), "status in B:\n{st_b}");
+    assert!(ok2 && decided.contains(" settled: approve by grace"), "verdict from the other clone: {decided}");
+    assert!(ok4 && st_b.contains("t1 [") && st_b.contains("settled approve by grace") && st_b.contains("chain verified"), "status in B:\n{st_b}");
     let rows_a = record(&a);
     let rows_b = record(&b);
     assert_eq!(rows_a, rows_b, "one record, read the same from both clones");
@@ -151,7 +151,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let asker = serde_json::from_str::<serde_json::Value>(req["body"].as_str().unwrap_or("{}")).ok().and_then(|v| v["from"].as_str().map(str::to_string)).unwrap_or_default();
     assert!(!asker.is_empty() && req["author"] == asker.as_str(), "the ask carries the asker's identity: {req}");
     let verdict = rows_b.iter().find(|r| r["kind"] == "review.verdict").unwrap();
-    assert_eq!(verdict["author"], "riley");
+    assert_eq!(verdict["author"], "grace");
     let settled = rows_b.iter().find(|r| r["kind"] == "review.settled").unwrap();
     assert_eq!(settled["author"], "dna", "the organism's answer is its own");
 

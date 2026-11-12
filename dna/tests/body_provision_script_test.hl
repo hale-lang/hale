@@ -73,15 +73,15 @@ main locus App {
         let made = in_dir(scratch, fake, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nprov"));
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/prov";
-        let g1 = in_dir(app, fake, "git\nconfig\nuser.name\nriley");
-        let g2 = in_dir(app, fake, "git\nconfig\nuser.email\nriley@local");
+        let g1 = in_dir(app, fake, "git\nconfig\nuser.name\ngrace");
+        let g2 = in_dir(app, fake, "git\nconfig\nuser.email\ngrace@local");
         let g3 = in_dir(app, fake, "git\nremote\nadd\norigin\nhttps://example.invalid/prov.git");
 
         let provisioned = in_dir(
             app,
             fake,
             toolchain()
-                + "\ndna\nbody\nprovision\nriley@srv\n--dsn\npostgres://books:s3cret@db.invalid/books",
+                + "\ndna\nbody\nprovision\ngrace@srv\n--dsn\npostgres://books:s3cret@db.invalid/books",
         );
         std::test::assert_eq_int(
             provisioned.code,
@@ -144,7 +144,7 @@ main locus App {
         let plan = in_dir(
             other,
             fake,
-            toolchain() + "\ndna\nbody\nprovision\nriley@srv\n--dry-run",
+            toolchain() + "\ndna\nbody\nprovision\ngrace@srv\n--dry-run",
         );
         let at = std::str::index_of(plan.stdout, "NAME='");
         let rest = if at < 0 { "" } else { plan.stdout[(at + 6)..len(plan.stdout)] };

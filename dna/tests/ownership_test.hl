@@ -381,7 +381,7 @@ main locus App {
         // card 18: a person's job enters as an ask the leader called one; the
         // case the engine's human leaf becomes is handed — or offered
         let t7 = self.acme.admit_ask(
-            dna::Intent { id: "i7", outcome: "chase the agency", from: "riley" },
+            dna::Intent { id: "i7", outcome: "chase the agency", from: "grace" },
             dna::Plan {
                 kind: "person",
                 assignee: "bob",
@@ -406,7 +406,7 @@ main locus App {
             "…and not handed by acme",
         );
         let t8 = self.acme.admit_ask(
-            dna::Intent { id: "i8", outcome: "close the books", from: "riley" },
+            dna::Intent { id: "i8", outcome: "close the books", from: "grace" },
             dna::Plan {
                 kind: "person",
                 assignee: "alice",

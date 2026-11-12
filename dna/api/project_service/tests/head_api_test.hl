@@ -575,14 +575,14 @@ locus HeadCases {
                 "head-forge-1",
                 "dna.forge.configure",
                 self.f.identity,
-                "{\"board\":[\"riley\",\"mara\"]}",
+                "{\"board\":[\"grace\",\"mara\"]}",
             ),
             200,
         );
         self.f.json.eq(receipt, "state", "succeeded");
         std::test::assert_eq_str(
             self.f.git("config\ndna.github.board"),
-            "riley,mara",
+            "grace,mara",
             "dna.github.board read back",
         );
         let unset = dna::run_tool("git\n-C\n" + self.f.project + "\nconfig\ndna.github");

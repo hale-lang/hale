@@ -166,9 +166,9 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     }
     std::thread::sleep(Duration::from_millis(500));
     // a verdict naming another digest is refused BY THE REVIEW
-    let (ok1, out1) = hale(&["dna", "review", "m1", "approve", "--as", "riley", "--digest", "0000000000000000000000000000000000000000"], &app);
+    let (ok1, out1) = hale(&["dna", "review", "m1", "approve", "--as", "grace", "--digest", "0000000000000000000000000000000000000000"], &app);
     // the maintainer's verdict on the exact candidate settles it
-    let (ok2, out2) = hale(&["dna", "review", "m1", "approve", "--as", "riley", "--comment", "fine"], &app);
+    let (ok2, out2) = hale(&["dna", "review", "m1", "approve", "--as", "grace", "--comment", "fine"], &app);
     // the settle answers first; the apply follows in the organization's
     // own handler, a moment later on a loaded shard
     let mut ok3 = false;
@@ -193,14 +193,14 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     assert!(ok5 && out5.contains("m1") && out5.contains("review m1 settled"), "candidates:\n{out5}");
     let (ok6, out6) = hale(&["dna", "candidates", "m1"], &app);
     assert!(ok6 && out6.contains("candidate m1 at") && out6.contains("diff ("), "one candidate as a diff:\n{out6}");
-    let (ok7, out7) = hale(&["dna", "candidates", "drop", "m1", "--why", "reviewed and applied; the diff is in the genome", "--as", "riley"], &app);
-    assert!(ok7 && out7.contains("candidate m1 dropped by riley"), "drop:\n{out7}");
+    let (ok7, out7) = hale(&["dna", "candidates", "drop", "m1", "--why", "reviewed and applied; the diff is in the genome", "--as", "grace"], &app);
+    assert!(ok7 && out7.contains("candidate m1 dropped by grace"), "drop:\n{out7}");
     let gone = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/heads/dna/candidate/m1"]).current_dir(&app).output().unwrap();
     assert!(!gone.status.success(), "dropped: no longer pointed at");
     let (ok8, out8) = hale(&["dna", "history", "m1"], &app);
     assert!(ok8 && out8.contains("candidate.dropped"), "the drop is a row:\n{out8}");
     assert!(ok1 && out1.contains("refused the verdict: digest mismatch"), "wrong digest:\n{out1}");
-    assert!(ok2 && out2.contains("review m1 settled: approve by riley"), "settle:\n{out2}");
+    assert!(ok2 && out2.contains("review m1 settled: approve by grace"), "settle:\n{out2}");
     // approval applies (D5): the mutation is past `reviewed` by the time the status is read
     assert!(ok3 && out3.contains("32 pending of 33") && (out3.contains("m1 [applied]") || out3.contains("m1 [retained]")), "status:\n{out3}");
     assert!(ok4 && out4.contains("evidence.check") && out4.contains("review.requested") && out4.contains("review.settled") && out4.contains("mutation.candidate") && out4.contains("mutation.applied"), "history:\n{out4}");

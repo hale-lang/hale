@@ -264,7 +264,7 @@ pub struct EnvSpec {
     #[serde(default)]
     pub entrypoints: Vec<String>,
     /// GH #1109: `[environments.<name>.roles]` — who holds which
-    /// role here, `role = ["uid:1000", "group:ops", "user:riley",
+    /// role here, `role = ["uid:1000", "group:ops", "user:grace",
     /// "bearer:front-desk"]`.
     /// The requirement is form (`requires` on the operation's row);
     /// this is the params half. A role mapped to `[]` is explicitly

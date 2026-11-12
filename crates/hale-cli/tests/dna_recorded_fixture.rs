@@ -34,7 +34,7 @@ type Row = (u64, String, String, String);
 
 fn git(args: &[&str], cwd: &Path) -> String {
     let _s = trace::Span::new("git", args[0].to_string());
-    let out = Command::new("git").args(["-c", "user.name=riley", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
+    let out = Command::new("git").args(["-c", "user.name=grace", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
@@ -93,7 +93,7 @@ fn dump(app: &Path) -> String {
 // replay must write the same. It is what a refactor of the organization
 // proves it kept: the same rows, of the same kinds, for the same
 // entities, saying the same things. The fixture's children run as one
-// person (`USER=riley`) on every machine. Two things vary from run to run
+// person (`USER=grace`) on every machine. Two things vary from run to run
 // and are normalized away: values a run draws (commit and build hashes,
 // digests over them, the record's nonce and the identity drawn from it, times, pids, the scratch root and the machine's
 // name, the toolchain's version, ids minted from the clock, row numbers
@@ -325,8 +325,8 @@ fn the_row_normalization_keeps_what_a_row_says_and_drops_what_a_run_draws() {
     // and a word that merely looks like one is not an id the run minted
     assert_eq!(normalize_row_text("ice, iface, reface, i2", root, &minted), "ice, iface, reface, i2");
     // the machine: its name in a body's holder, the toolchain's version
-    let holder = format!("{{\"holder\": \"riley@{}:/tmp/hale_dna_trio_42/trio\", \"toolchain\":\"0.21.0\"}}", this_host());
-    assert_eq!(normalize_row_text(&holder, root, &none), "{\"holder\": \"riley@<host>:<root>/trio\", \"toolchain\":\"<v>\"}");
+    let holder = format!("{{\"holder\": \"grace@{}:/tmp/hale_dna_trio_42/trio\", \"toolchain\":\"0.21.0\"}}", this_host());
+    assert_eq!(normalize_row_text(&holder, root, &none), "{\"holder\": \"grace@<host>:<root>/trio\", \"toolchain\":\"<v>\"}");
     // a hash under a number's key is a hash, whatever it starts with
     assert_eq!(normalize_row_text("{\"revision\": \"8a45cfb3ca423ffd138a1c2c031d921b17794437\", \"head\": \"55d4703af8442f0aefd734426a6a506bb1234567\"}", root, &none), "{\"revision\": \"<sha>\", \"head\": \"<sha>\"}");
     // what a row says stays: a mutation id, a count, a word, a small number
@@ -338,7 +338,7 @@ fn the_ids_a_run_minted_are_read_from_its_rows() {
     let row = |k: &str, e: &str, b: &str| (0u64, k.to_string(), e.to_string(), b.to_string());
     let rows = vec![
         row("intent.requested", "iabcde", "{\"outcome\": \"x\"}"),
-        row("intent.offered", "i4f2", "document the Gateway (from riley)"),
+        row("intent.offered", "i4f2", "document the Gateway (from grace)"),
         row("pressure.requested", "worker", "{\"request\": \"r43c9e4e\"}"),
         row("concern.raised", "org/trio/worker", "{\"request\": \"trio/concern.raised/backlog-1-2\"}"),
         row("task.born", "t5", "iabcde: ask-edit@1 (workflow)"),
@@ -389,8 +389,8 @@ impl Fixture {
             .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
             // who asks, and whose body holds the organization, is part of
             // what the record says: the same person on every machine
-            .env("USER", "riley")
-            .env("LOGNAME", "riley")
+            .env("USER", "grace")
+            .env("LOGNAME", "grace")
             .env("HALE_DNA_TAPE", &self.mode)
             .env("HALE_DNA_TAPE_DIR", &self.tape)
             .env("HALE_DNA_MEMORY_DSN_SPINE", &self.spine)
@@ -606,7 +606,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     let (ok, reviews) = f.hale(&["dna", "review"], &app);
     let kreview = format!("k:{}", &kdigest[7..19]);
     assert!(ok && reviews.contains(&kreview) && reviews.contains("mail backlog behind fulfilment") && reviews.contains("needs board"), "the Board's queue has the concern:\n{reviews}");
-    let (ok, out) = f.hale(&["dna", "review", &kreview, "approve", "--as", "riley", "--authority", "board", "--comment", "true, and worth knowing"], &app);
+    let (ok, out) = f.hale(&["dna", "review", &kreview, "approve", "--as", "grace", "--authority", "board", "--comment", "true, and worth knowing"], &app);
     if !ok {
         f.fail(&format!("ratify: {out}"));
     }
@@ -625,7 +625,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     if !wait_row(&app, "review.requested review:m1", 240, |(_, k, e, _)| k == "review.requested" && e == "review:m1") {
         f.fail("m1 did not reach its Review");
     }
-    let (ok, out) = f.hale(&["dna", "review", "m1", "approve", "--as", "riley", "--comment", "documented"], &app);
+    let (ok, out) = f.hale(&["dna", "review", "m1", "approve", "--as", "grace", "--comment", "documented"], &app);
     if !ok {
         f.fail(&format!("approve m1: {out}"));
     }
@@ -671,7 +671,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     }
     let (ok, board) = f.hale(&["dna", "board"], &app);
     assert!(ok && board.contains("m2"), "the Board's queue lists the growth: {board}");
-    let (ok, out) = f.hale(&["dna", "review", "m2", "approve", "--as", "riley", "--comment", "grow it"], &app);
+    let (ok, out) = f.hale(&["dna", "review", "m2", "approve", "--as", "grace", "--comment", "grow it"], &app);
     if !ok {
         f.fail(&format!("approve m2: {out}"));
     }

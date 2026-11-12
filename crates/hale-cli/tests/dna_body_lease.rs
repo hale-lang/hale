@@ -127,11 +127,11 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
     git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
     // clone A, made with the remote-body profile: the pieces are set, nothing is labelled
     habitat::habitat();
-    let (ok, _, out) = hale_in(&["habitat", "graft", "bodied", "--profile", "remote-body", "--remote", &bare.to_string_lossy(), "--body", "riley@srv", "--no-pack"], &d);
-    assert!(ok && out.contains("remote origin = ") && out.contains("dna.body = riley@srv"), "{out}");
+    let (ok, _, out) = hale_in(&["habitat", "graft", "bodied", "--profile", "remote-body", "--remote", &bare.to_string_lossy(), "--body", "grace@srv", "--no-pack"], &d);
+    assert!(ok && out.contains("remote origin = ") && out.contains("dna.body = grace@srv"), "{out}");
     let a: PathBuf = d.join("bodied");
     assert_eq!(git(&["remote", "get-url", "origin"], &a), bare.to_string_lossy());
-    assert_eq!(git(&["config", "dna.body"], &a), "riley@srv");
+    assert_eq!(git(&["config", "dna.body"], &a), "grace@srv");
     habitat::habitat();
     let (_, code, out) = hale_in(&["habitat", "graft", "labelled", "--profile", "cloud", "--no-pack"], &d);
     assert!(code != 0 && out.contains("unknown profile `cloud`"), "a profile is not a label: {out}");
@@ -143,8 +143,8 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
     // clone B: a head, elsewhere, with its own copy of the toolchain-owned vendor
     let b = d.join("head");
     git(&["clone", "-q", "-b", "main", &bare.to_string_lossy(), &b.to_string_lossy()], &d);
-    git(&["config", "user.name", "riley"], &b);
-    git(&["config", "user.email", "riley@l"], &b);
+    git(&["config", "user.name", "grace"], &b);
+    git(&["config", "user.email", "grace@l"], &b);
     // B reaches the record through memory: `upgrade` migrates it with the
     // owner's DSN and keeps the head's in the clone
     let (ok, _, out) = hale_in(&["dna", "upgrade", "."], &b);
@@ -196,8 +196,8 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
     let (_, code, out) = hale_in(&["dna", "body", "claim"], &b);
     assert!(code != 0 && out.contains("a record admits one body") && out.contains("--force"), "{out}");
     // forced: the lease is released as a row in the forcer's name, and A stops at its next assertion
-    let (ok, _, out) = hale_in(&["dna", "body", "claim", "--force", "--as", "riley"], &b);
-    assert!(ok && out.contains("was taken by riley (body.claimed, forced)"), "{out}");
+    let (ok, _, out) = hale_in(&["dna", "body", "claim", "--force", "--as", "grace"], &b);
+    assert!(ok && out.contains("was taken by grace (body.claimed, forced)"), "{out}");
     assert!(wait_log(&log_a, "the body lease is no longer mine: released", 45, &mut host_a), "host A did not stop:\n{}", std::fs::read_to_string(&log_a).unwrap_or_default());
     let st = host_a.wait().unwrap();
     assert_eq!(st.code(), Some(3), "a body whose lease is gone exits 3");
@@ -206,7 +206,7 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
     let claimed: Vec<&serde_json::Value> = rows.iter().filter(|r| r["kind"] == "body.claimed").collect();
     assert!(claimed.iter().any(|r| r["author"] == "host" && r["body"].as_str().unwrap().contains("\"forced\": false")), "A's own claim is a row: {claimed:?}");
     let forced = claimed.iter().find(|r| r["body"].as_str().unwrap().contains("\"forced\": true")).expect("the forced claim");
-    assert!(forced["author"] == "riley" && forced["body"].as_str().unwrap().contains("\"by\": \"riley\"") && forced["entity"].as_str().unwrap().ends_with("/bodied"), "{forced}");
+    assert!(forced["author"] == "grace" && forced["body"].as_str().unwrap().contains("\"by\": \"grace\"") && forced["entity"].as_str().unwrap().ends_with("/bodied"), "{forced}");
     // A again: the same clone is the same holder and takes the lease straight back
     let mut host_a = run_host(&a, &log_a, &spine);
     assert!(wait_org_up(&a, 180, &mut host_a), "{}", std::fs::read_to_string(&log_a).unwrap_or_default());

@@ -26,11 +26,11 @@ export XDG_STATE_HOME=$RUN/state XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache} 
 units_env=(--setenv=PATH="$PATH" --setenv=HOME="$HOME" --setenv=HALE_BIN="$HALE_BIN" --setenv=HALE_SKIP_STALE_CHECK=1 --setenv=HALE_DNA_DISCOVER=off --setenv=GIT_CONFIG_NOSYSTEM=1 --setenv=XDG_STATE_HOME="$XDG_STATE_HOME" --setenv=XDG_DATA_HOME="$XDG_DATA_HOME" --setenv=HALE_DNA_HABITAT="$HALE_DNA_HABITAT")
 echo "# dna cycle UP $N (hale $(hale --version 2>/dev/null | head -1), $(git -C "$HW" rev-parse --short HEAD))" > "$R"
 
-step "copy the repository" bash -c "cp -r '$HW/dna/tests/onboarding/todo' '$RUN/todo' && cd '$RUN/todo' && git init -q -b main && git config user.name riley && git config user.email riley@dna.cycle && git add -A && git commit -q -m 'todo: the repository' && rm -rf bin"
+step "copy the repository" bash -c "cp -r '$HW/dna/tests/onboarding/todo' '$RUN/todo' && cd '$RUN/todo' && git init -q -b main && git config user.name grace && git config user.email grace@dna.cycle && git add -A && git commit -q -m 'todo: the repository' && rm -rf bin"
 cd "$RUN/todo" || exit 1
 # the founder holds every seat the repository's holes open: the `founder` pack, planned on those holes
 step "the run's habitat" bash -c "hale habitat up --no-body"
-step "hale habitat graft . --attach --with founder" bash -c "hale habitat graft . --attach --with founder --set founder=riley --as riley > '$RUN/init.out' 2>&1; rc=\$?; cat '$RUN/init.out'; exit \$rc"
+step "hale habitat graft . --attach --with founder" bash -c "hale habitat graft . --attach --with founder --set founder=grace --as grace > '$RUN/init.out' 2>&1; rc=\$?; cat '$RUN/init.out'; exit \$rc"
 step "commit what the graft wrote" bash -c "git add -A && git commit -q -m 'the organism'"
 case "$MODELS" in canned) mm="canned $HERE/canned";; live) mm=live;; *) mm=record;; esac
 step "models: $MODELS" bash -c "python3 '$HERE/model-mode.py' $mm dna/org/models.hl && git add -A dna/org/models.hl && (git commit -q -m 'models: $MODELS' || true)"
@@ -54,7 +54,7 @@ if [ $ready = 1 ]; then check "hale dna dev ready ($(( $(date +%s) - t0 ))s)" ok
 step "hale dna review (list)" bash -c "hale dna review > '$RUN/review.out' 2>&1; cat '$RUN/review.out'"; note "review: $(head -1 "$RUN/review.out" | cut -c1-120)"
 # the starting organization ratified in one command, its seats included: every group, in order
 # (the holes, then the founder pack planned on them)
-DECIDE_TIMEOUT=900 decide "hale dna review all approve --as riley" all approve --as riley
+DECIDE_TIMEOUT=900 decide "hale dna review all approve --as grace" all approve --as grace
 step "hale dna review (after)" bash -c "hale dna review > '$RUN/review2.out' 2>&1; cat '$RUN/review2.out'"; note "after: $(head -1 "$RUN/review2.out" | cut -c1-120)"
 note "onboarding: init --with founder, review all approve, then dev and head (4 commands)"
 step "hale dna show org" bash -c "hale dna show org > '$RUN/org.out' 2>&1; cat '$RUN/org.out'"; note "org: $(grep -c '' "$RUN/org.out") lines"
@@ -74,7 +74,7 @@ while [ $(( $(date +%s) - t0 )) -lt 600 ]; do
 done
 if [ $up = 1 ]; then check "the head serves ($(( $(date +%s) - t0 ))s)" ok; else check "the head serves" no "$(tail -4 "$RUN/head.log" | tr '\n' ' ' | cut -c1-400)"; fi
 # a local-mode ID token for the legs (`hale dna work login`, the client secret from the vault, never printed)
-step "hale dna work login --as riley" bash -c "hale dna work login --as riley --api '$HEAD_API' > '$RUN/login.out' 2>&1 && grep -o 'HALE_DNA_ID_TOKEN=.*' '$RUN/login.out' | head -1 | cut -d= -f2- | tr -d '\"' > '$RUN/id_token' && [ -s '$RUN/id_token' ]"
+step "hale dna work login --as grace" bash -c "hale dna work login --as grace --api '$HEAD_API' > '$RUN/login.out' 2>&1 && grep -o 'HALE_DNA_ID_TOKEN=.*' '$RUN/login.out' | head -1 | cut -d= -f2- | tr -d '\"' > '$RUN/id_token' && [ -s '$RUN/id_token' ]"
 step "the head reads with the token" bash -c "curl -sf -m 5 -H \"Authorization: Bearer \$(cat '$RUN/id_token')\" '$HEAD_API/dna/tasks' | head -c 300"
 step "the gateway answers" bash -c "curl -sf -m 5 -X POST -H 'Content-Type: application/json' -d '{\"model\":\"probe\",\"messages\":[{\"role\":\"user\",\"content\":\"probe\"}]}' '$GATEWAY/v1/chat/completions' | head -c 200"
 echo "UP DONE $RUN"; cat "$R"

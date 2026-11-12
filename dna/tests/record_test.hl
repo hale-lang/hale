@@ -23,7 +23,7 @@ fn record_contract(r: dna::Record, label: String) {
             kind: "task.born",
             entity: "t1",
             body: "reduce checkout failures",
-            author: "riley",
+            author: "grace",
         },
         false,
         "",
@@ -38,7 +38,7 @@ fn record_contract(r: dna::Record, label: String) {
     let b = r.append(
         "journal",
         a.id,
-        dna::Row { kind: "task.done", entity: "t1", author: "riley" },
+        dna::Row { kind: "task.done", entity: "t1", author: "grace" },
         false,
         "",
     );
@@ -56,7 +56,7 @@ fn record_contract(r: dna::Record, label: String) {
     );
     let row = r.row_of(b.id);
     std::test::assert_eq_str(row.kind, "task.done", label + ": a row is read back by its id");
-    std::test::assert_eq_str(row.author, "riley", label + ": with its author");
+    std::test::assert_eq_str(row.author, "grace", label + ": with its author");
     std::test::assert_eq_int(row.seq, 1, label + ": and its position");
     std::test::assert_eq_int(
         dna::count_lines(r.text_at(b.id)),

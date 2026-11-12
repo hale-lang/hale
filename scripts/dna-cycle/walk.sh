@@ -63,7 +63,7 @@ land() {
     if [ -n "$sha" ] && git -C "$APP" show "$sha:$file" 2>/dev/null | grep -q -F "$needle"; then check "$label: the candidate carries the change" ok; else check "$label: the candidate carries the change" no "commit '$sha', $file without '$needle'"; fi
     for _ in $(seq 1 24); do v=$(timeout 60 hale dna review 2>&1); echo "$v" | grep -q -E '^  m[0-9]+ needs' && break; sleep 5; done
     id=$(echo "$v" | grep -o -E '^  m[0-9]+' | head -1 | tr -d ' ')
-    if [ -n "$id" ]; then out=$(timeout 180 hale dna review "$id" approve --as riley 2>&1 | tail -1); note "$label: approve $id: $(echo "$out" | cut -c1-160)"; check "$label: the Review is routed and signed" ok
+    if [ -n "$id" ]; then out=$(timeout 180 hale dna review "$id" approve --as grace 2>&1 | tail -1); note "$label: approve $id: $(echo "$out" | cut -c1-160)"; check "$label: the Review is routed and signed" ok
     else check "$label: the Review is routed and signed" no "no pending mutation Review: $(echo "$v" | head -3 | tr '\n' '|')"; return 1; fi
     for _ in 1 2 3 4 5 6; do ci=$(python3 "$HERE/local-ci.py" "$APP" 2>&1); [ "$ci" != "local-ci: nothing to run" ] && { note "$label: local CI: $(echo "$ci" | tr '\n' '|' | cut -c1-240)"; break; }; sleep 10; done
     wait_for mutation.applied "$after" 300 > /dev/null && check "$label: applied to the genome" ok || { check "$label: applied to the genome" no "no mutation.applied in 300 s; last rows: $(last_rows)"; return 1; }
@@ -73,33 +73,33 @@ land() {
 echo "# dna cycle walk $(date +%H:%M)" > "$R"
 
 # ---- 1. a position, opened through the operation layer, with its model default. A solo organization:
-# riley asks and, holding the Board since up.sh's fills, decides (a Board Review admits its asker)
+# grace asks and, holding the Board since up.sh's fills, decides (a Board Review admits its asker)
 base=$(mark)
-out=$(timeout 120 hale dna position open api/steward --under api --text "keeps the list's api" --mandate "decides how the list's api reads; may not change the browser; cites the README's axioms; escalates a new surface to the Board" --as riley 2>&1); note "position open: $(echo "$out" | tail -1 | cut -c1-200)"
+out=$(timeout 120 hale dna position open api/steward --under api --text "keeps the list's api" --mandate "decides how the list's api reads; may not change the browser; cites the README's axioms; escalates a new surface to the Board" --as grace 2>&1); note "position open: $(echo "$out" | tail -1 | cut -c1-200)"
 echo "$out" | grep -q "proposed opening $POSITION" && check "1: the opening is proposed" ok || check "1: the opening is proposed" no "$(echo "$out" | tail -2 | tr '\n' ' ')"
 for _ in $(seq 1 24); do hale dna review 2>&1 | grep -q '^  positions —' && break; sleep 5; done
-decide "1: the Board ratifies the opening" positions approve --as riley
-out=$(timeout 120 hale dna fill api/steward riley --as riley 2>&1); note "fill: $(echo "$out" | tail -1 | cut -c1-200)"
+decide "1: the Board ratifies the opening" positions approve --as grace
+out=$(timeout 120 hale dna fill api/steward grace --as grace 2>&1); note "fill: $(echo "$out" | tail -1 | cut -c1-200)"
 for _ in $(seq 1 24); do hale dna review 2>&1 | grep -q 'holding the position `api/steward`' && break; sleep 5; done
-decide "1: the Board ratifies riley holding it" holds approve --as riley
+decide "1: the Board ratifies grace holding it" holds approve --as grace
 # memory projects the record a few rows behind it: the chart is read until it shows the position
 for _ in $(seq 1 30); do hale dna show org > "$RUN/org2.out" 2>&1; grep -q 'steward' "$RUN/org2.out" && break; sleep 2; done
 grep -q 'steward' "$RUN/org2.out" && check "1: the org chart shows the position" ok || check "1: the org chart shows the position" no "$(head -5 "$RUN/org2.out" | tr '\n' '|')"
-step "1: models rule $POSITION deep" hale dna models rule "$POSITION" deep --as riley
-step "1: models category do.deep" hale dna models category do.deep canned-deep --tools --as riley
-step "1: models category tools.standard" hale dna models category tools.standard canned-standard --tools --as riley
+step "1: models rule $POSITION deep" hale dna models rule "$POSITION" deep --as grace
+step "1: models category do.deep" hale dna models category do.deep canned-deep --tools --as grace
+step "1: models category tools.standard" hale dna models category tools.standard canned-standard --tools --as grace
 hale dna models map > "$RUN/models-map.out" 2>&1; grep -q "$POSITION" "$RUN/models-map.out" && grep -q 'canned-deep' "$RUN/models-map.out" && check "1: the mapping lists the default" ok || check "1: the mapping lists the default" no "$(head -6 "$RUN/models-map.out" | tr '\n' '|')"
 
 # ---- 2. path A: the organization's own editor
 base=$(mark)
-out=$(timeout 120 hale dna task create --as riley slow the overdue sweep to every two seconds 2>&1 | tail -2); note "A: ask: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"
+out=$(timeout 120 hale dna task create --as grace slow the overdue sweep to every two seconds 2>&1 | tail -2); note "A: ask: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"
 wait_for task.born "$base" 120 > /dev/null && check "A: the ask bears a Task" ok || check "A: the ask bears a Task" no "no task.born in 120 s"
 p=$(wait_for model.called "$base" 60); echo "$p" | grep -q 'fake' && check "A: the Leader's plan came from the canned model" ok || check "A: the Leader's plan came from the canned model" no "$(echo "$p" | cut -c1-120)"
 land A "$base" api/todo.hl 'sleep(2s)'
 
 # ---- 3. path B: a leg's own tool loop, through the gateway
 base=$(mark); calls0=$(wc -l < "$RUN/gateway.jsonl")
-out=$(timeout 120 hale dna task create --as riley --to "$POSITION" "leave the steward's note on the list's api" 2>&1 | tail -2); note "B: ask: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"
+out=$(timeout 120 hale dna task create --as grace --to "$POSITION" "leave the steward's note on the list's api" 2>&1 | tail -2); note "B: ask: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"
 wait_for attempt.admitted "$base" 120 "$POSITION" > /dev/null && check "B: admitted as the position's Work" ok || check "B: admitted as the position's Work" no "no attempt.admitted naming $POSITION; last rows: $(last_rows)"
 out=$(timeout 600 hale dna work run --as "$POSITION" --performer model 2>&1); echo "$out" >> "$LOG"; note "B: run: $(echo "$out" | tail -1 | cut -c1-240)"
 echo "$out" | grep -q '"state": "\(requested\|submitted\|settled\)"' && check "B: the leg's loop hands the change back" ok || check "B: the leg's loop hands the change back" no "$(echo "$out" | tail -2 | tr '\n' ' ' | cut -c1-300)"
@@ -123,7 +123,7 @@ land B "$base" api/todo.hl "The steward's note"
 
 # ---- 4. path C: a person's session over MCP
 base=$(mark)
-out=$(timeout 120 hale dna task create --as riley --to "$POSITION" "leave the person's note on the list's api" 2>&1 | tail -2); note "C: ask: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"
+out=$(timeout 120 hale dna task create --as grace --to "$POSITION" "leave the person's note on the list's api" 2>&1 | tail -2); note "C: ask: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"
 wait_for attempt.admitted "$base" 120 "$POSITION" > /dev/null && check "C: admitted as the position's Work" ok || check "C: admitted as the position's Work" no "no attempt.admitted naming $POSITION"
 out=$(timeout 600 python3 "$HERE/mcp-session.py" "$APP" "$POSITION" "person's note" 2>>"$LOG"); echo "$out" >> "$LOG"; note "C: session: $(echo "$out" | cut -c1-300)"
 echo "$out" | grep -q '"submitted": true' && check "C: the session works the hands and hands the change back" ok || check "C: the session works the hands and hands the change back" no "$(echo "$out" | json_field error)"
@@ -131,7 +131,7 @@ land C "$base" api/todo.hl "The person's note"
 
 # ---- 5. an Assessment, by a leg
 base=$(mark); calls0=$(wc -l < "$RUN/gateway.jsonl")
-out=$(timeout 120 hale dna task create --as riley --judgment "assess whether a Todos::count rpc is worth adding" 2>&1 | tail -1); note "Assessment: ask: $(echo "$out" | cut -c1-160)"
+out=$(timeout 120 hale dna task create --as grace --judgment "assess whether a Todos::count rpc is worth adding" 2>&1 | tail -1); note "Assessment: ask: $(echo "$out" | cut -c1-160)"
 wait_for attempt.admitted "$base" 120 > /dev/null || true
 out=$(timeout 300 hale dna work run --as position:agent --performer model 2>&1); echo "$out" >> "$LOG"; note "Assessment: run: $(echo "$out" | tail -1 | cut -c1-240)"
 a=$(wait_for attempt.outcome "$base" 120) && check "Assessment: settled" ok || check "Assessment: settled" no "no attempt.outcome in 120 s; last rows: $(last_rows)"
@@ -144,7 +144,7 @@ out=$(timeout 300 hale dna ingest 2>&1); note "ingest: $(echo "$out" | tail -1 |
 rid=$(echo "$out" | grep -o 'k:[0-9a-f]\{12\}' | head -1)
 echo "$out" | grep -q -E 'ingested [0-9a-f]{12}: [1-9][0-9]* added' && check "6: ingest proposes the difference" ok || check "6: ingest proposes the difference" no "$(echo "$out" | tail -2 | tr '\n' ' ')"
 wait_for graph.ingested "$base" 30 > /dev/null && check "6: the commit is named" ok || check "6: the commit is named" no "no graph.ingested"
-decide "6: the Board ratifies it" ingest approve --as riley
+decide "6: the Board ratifies it" ingest approve --as grace
 # the settlement is the Board's; the graph changes when the ratify workflow writes knowledge.ratified
 wait_for knowledge.ratified "$base" 120 "$rid" > /dev/null && check "6: the ratified graph proposal is recorded" ok || check "6: the ratified graph proposal is recorded" no "no knowledge.ratified for $rid in 120 s"
 out=$(timeout 300 hale dna ingest 2>&1); echo "$out" | grep -q 'nothing to review' && check "6: the record's graph is the repository's, the tools among it" ok || check "6: the record's graph is the repository's, the tools among it" no "$(echo "$out" | tail -1)"

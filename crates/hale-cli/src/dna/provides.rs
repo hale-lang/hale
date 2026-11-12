@@ -438,8 +438,8 @@ readers = ["api"]
         assert_eq!(moved.len(), 3, "the three think rows, not the rule: {moved:?}");
         // a person's rule and category, and init's, are kept
         let person = latest(&[
-            ("model.rule", "default", serde_json::json!({"size": "deep", "permit": "", "by": "riley"})),
-            ("model.category", "think.standard", serde_json::json!({"model": "theirs", "by": "riley"})),
+            ("model.rule", "default", serde_json::json!({"size": "deep", "permit": "", "by": "grace"})),
+            ("model.category", "think.standard", serde_json::json!({"model": "theirs", "by": "grace"})),
             ("model.category", "think.deep", serde_json::json!({"model": "claude-opus-5", "by": "hale habitat graft"})),
         ]);
         let rows = seed_rows(&served_, &person, EP, "k");

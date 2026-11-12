@@ -318,7 +318,7 @@ main locus App {
         );
         let c0 = in_dir(
             self.app,
-            "sh\n-c\ngit config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the organization'",
+            "sh\n-c\ngit config user.name grace && git config user.email grace@dna && git add -A && git commit -q -m 'the organization'",
         );
         std::test::assert_eq_int(c0.code, 0, "the scaffold committed: " + c0.stderr);
 
@@ -343,7 +343,7 @@ main locus App {
             in_dir(
                 self.app,
                 toolchain()
-                    + "\ndna\nschedule\ndeclare\nnightly\n--every\n1h\n--definition\nask-person\n--convener\nleader\n--args\n{\"objective\": \"close the day\"}\n--as\nriley",
+                    + "\ndna\nschedule\ndeclare\nnightly\n--every\n1h\n--definition\nask-person\n--convener\nleader\n--args\n{\"objective\": \"close the day\"}\n--as\ngrace",
             )
         } else {
             dna::RunResult { code: -1 }
@@ -376,7 +376,7 @@ main locus App {
         let own = if lent { self.app_publish(org, app_name, hp, app_name) } else { -3 };
         let other = if lent { self.app_publish(org, app_name, hp, "someone") } else { -3 };
         let removed = if lent {
-            in_dir(self.app, toolchain() + "\ndna\napplication\nremove\n.\n--as\nriley")
+            in_dir(self.app, toolchain() + "\ndna\napplication\nremove\n.\n--as\ngrace")
         } else {
             dna::RunResult { code: -1 }
         };
@@ -393,7 +393,7 @@ main locus App {
             let body = std::json::find_string_field(line, "body");
             if std::json::find_string_field(line, "kind") == "application.detached"
                 && std::json::find_string_field(body, "name") == app_name
-                && std::json::find_string_field(body, "by") == "riley"
+                && std::json::find_string_field(body, "by") == "grace"
             {
                 detached = detached + 1;
             }

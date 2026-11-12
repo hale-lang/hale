@@ -163,7 +163,7 @@ main locus App {
             self.one.journal.revision(),
             "effect.result",
             "apply:0000000000000000000000000000000000000000",
-            "failed (resolved by riley: never landed)",
+            "failed (resolved by grace: never landed)",
         );
         let st = dna::effect_status(
             self.one.journal,

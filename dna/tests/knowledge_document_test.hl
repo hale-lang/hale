@@ -53,7 +53,7 @@ fn check() {
         text: text,
         author: "org/support",
         name: "concept/équipe 🧭",
-        provenance: "proposed by \"riley\"",
+        provenance: "proposed by \"grace\"",
     };
     std::test::assert_eq_str(
         dna::knowledge_document(named, "org"),
@@ -75,7 +75,7 @@ fn check() {
         kind: "concept",
         text: "First\r\n\t\"quoted\" \\ slash / 🧭",
         author: "org/support",
-        provenance: "proposed by riley",
+        provenance: "proposed by grace",
         name: "concept/équipe",
         supersedes: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     };

@@ -165,9 +165,9 @@ locus App {
         let me = std::str::trim(dna::run_tool("id\n-u").stdout);
         let mapped = in_dir(
             self.app,
-            "git\nconfig\n--local\n--add\ndna.unix.member\nuid:" + me + "=riley",
+            "git\nconfig\n--local\n--add\ndna.unix.member\nuid:" + me + "=grace",
         );
-        std::test::assert_eq_int(mapped.code, 0, "the peer is mapped to riley: " + mapped.stderr);
+        std::test::assert_eq_int(mapped.code, 0, "the peer is mapped to grace: " + mapped.stderr);
         let local = in_dir(self.app, "git\nconfig\n--local\ndna.trust\nlocal");
         std::test::assert_eq_int(local.code, 0, "the record declares local trust: " + local.stderr);
     }
@@ -182,11 +182,11 @@ locus App {
         let record = dna::MemoryRecord { repo: self.app };
         let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\""
             + record.identity()
-            + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
+            + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"grace\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
         std::io::fs::write_file(self.app + "/.hale/dna/authority.json", policy) or discard;
         let port = dna::free_port(46);
         self.api = "http://127.0.0.1:" + to_string(port);
-        let argv = "sh\n-c\ncd \"$1\" && export USER=riley HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n"
+        let argv = "sh\n-c\ncd \"$1\" && export USER=grace HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n"
             + self.app + "\n" + head_binary() + "\n" + to_string(port);
         let child = std::process::spawn(argv) or std::process::Child { };
         self.head = std::process::Child {
@@ -907,7 +907,7 @@ locus App {
             dna::IntentOffer {
                 intent_id: "i-routed",
                 outcome: "make it say three",
-                from: "riley",
+                from: "grace",
                 position: "position:api/dev",
             },
         );
@@ -1790,7 +1790,7 @@ locus App {
         let attached = in_dir(
             self.app,
             hale + "\ndna\ncodebase\nattach\nsvc\n--repo\n" + bare
-                + "\n--build\nsh build.sh\n--test\nsh test.sh\n--branch\ntrunk\n--as\nriley",
+                + "\n--build\nsh build.sh\n--test\nsh test.sh\n--branch\ntrunk\n--as\ngrace",
         );
         std::test::assert_eq_int(
             attached.code,
@@ -1864,7 +1864,7 @@ locus App {
             dna::IntentOffer {
                 intent_id: intent.entity,
                 outcome: std::json::find_string_field(intent.body, "outcome"),
-                from: "riley",
+                from: "grace",
                 position: std::json::find_string_field(intent.body, "position"),
                 codebase: std::json::find_string_field(intent.body, "codebase"),
             },
@@ -2000,7 +2000,7 @@ locus App {
             "settled done, with no Mutation of the organism's own genome: "
                 + self.row_body("attempt.outcome", attempt),
         );
-        let gone = in_dir(self.app, hale + "\ndna\ncodebase\ndetach\nsvc\n--as\nriley");
+        let gone = in_dir(self.app, hale + "\ndna\ncodebase\ndetach\nsvc\n--as\ngrace");
         std::test::assert_eq_int(gone.code, 0, "codebase detach: " + gone.stdout + gone.stderr);
         let after = in_dir(self.app, hale + "\ndna\ncodebase\nlist");
         std::test::assert(
@@ -2033,7 +2033,7 @@ locus App {
         let staged = dna::run_tool("git\n-C\n" + self.app + "\nadd\n-A");
         let based = dna::run_tool(
             "git\n-C\n" + self.app
-                + "\n-c\nuser.name=riley\n-c\nuser.email=riley@local\ncommit\n-q\n--allow-empty\n-m\nthe project",
+                + "\n-c\nuser.name=grace\n-c\nuser.email=grace@local\ncommit\n-q\n--allow-empty\n-m\nthe project",
         );
         std::test::assert_eq_int(based.code, 0, "the project is committed: " + based.stderr);
         self.start_owner();
@@ -2075,8 +2075,8 @@ fn main() {
     let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\napp\n--no-pack"));
     std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
     let app = scratch + "/app";
-    let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
-    let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+    let u1 = in_dir(app, "git\nconfig\nuser.name\ngrace");
+    let u2 = in_dir(app, "git\nconfig\nuser.email\ngrace@local");
     let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
         std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
     } else {

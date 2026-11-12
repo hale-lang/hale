@@ -37,8 +37,8 @@ main locus App {
         );
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/mm";
-        let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
-        let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+        let u1 = in_dir(app, "git\nconfig\nuser.name\ngrace");
+        let u2 = in_dir(app, "git\nconfig\nuser.email\ngrace@local");
 
         let empty = models(app, "map");
         std::test::assert(
@@ -46,26 +46,26 @@ main locus App {
             "an empty map says so: " + empty.stdout + empty.stderr,
         );
 
-        let r1 = models(app, "rule\ndefault\nquick\n--as\nriley");
+        let r1 = models(app, "rule\ndefault\nquick\n--as\ngrace");
         std::test::assert(
             r1.code == 0 && std::str::contains(r1.stdout, "model.rule default: quick"),
             "a rule is written: " + r1.stdout + r1.stderr,
         );
-        let r2 = models(app, "rule\nposition:editor\ndeep\n--permit\nstandard\n--as\nriley");
+        let r2 = models(app, "rule\nposition:editor\ndeep\n--permit\nstandard\n--as\ngrace");
         std::test::assert(
             r2.code == 0 && std::str::contains(r2.stdout, "(may move to standard)"),
             "with the sizes it may move to: " + r2.stdout + r2.stderr,
         );
         let c1 = models(
             app,
-            "category\ndo.deep\ncoder-l\n--tools\n--price-in\n300\n--price-out\n1200\n--as\nriley",
+            "category\ndo.deep\ncoder-l\n--tools\n--price-in\n300\n--price-out\n1200\n--as\ngrace",
         );
         std::test::assert(
             c1.code == 0
                 && std::str::contains(c1.stdout, "model.category do.deep: coder-l (tool calls)"),
             "a category is written: " + c1.stdout + c1.stderr,
         );
-        let c2 = models(app, "category\nthink.quick\nthinker-s\n--as\nriley");
+        let c2 = models(app, "category\nthink.quick\nthinker-s\n--as\ngrace");
         std::test::assert_eq_int(
             c2.code,
             0,
@@ -84,13 +84,13 @@ main locus App {
             "and so are the categories",
         );
 
-        let c3 = models(app, "category\ndo.deep\ncoder-xl\n--tools\n--as\nriley");
+        let c3 = models(app, "category\ndo.deep\ncoder-xl\n--tools\n--as\ngrace");
         std::test::assert_eq_int(c3.code, 0, "a category moves with one row");
         let shown = models(app, "map");
         std::test::assert(
             std::str::contains(
                 shown.stdout,
-                "position:editor -> deep (may move to standard)  by riley",
+                "position:editor -> deep (may move to standard)  by grace",
             ),
             "the map lists each rule: " + shown.stdout,
         );

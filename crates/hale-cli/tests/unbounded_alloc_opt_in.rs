@@ -1,5 +1,5 @@
 //! M3 stage 5 (2026-07-02) — the memory-bound-proof warning is
-//! DEFAULT-ON (Riley's flip after the 402-warning audit; see
+//! DEFAULT-ON (the flip after the 402-warning audit; see
 //! notes/unbounded-alloc-audit-2026-07-02.md). Run-to-exit programs
 //! (a `main`, no run loop, no bus handler) still warn nothing —
 //! the analysis itself spares them, so scripts pay nothing.

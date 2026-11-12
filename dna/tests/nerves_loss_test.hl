@@ -250,7 +250,7 @@ main locus App {
         let before = relays(a);
         let asked = in_dir(
             a,
-            toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--as\nriley\nreconcile the day",
+            toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--as\ngrace\nreconcile the day",
         );
         let intent = word_after(asked.stdout, "intent ");
         std::test::assert(

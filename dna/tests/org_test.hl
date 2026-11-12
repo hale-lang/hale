@@ -130,7 +130,7 @@ main locus Org {
                 tools: dna::WorktreeTools { hale_bin: toolchain() }
             },
             review_policy: dna::OrgPolicy { },
-            board: dna::Board { who: "riley" },
+            board: dna::Board { who: "grace" },
             // the Leader's grant: application changes up to magnitude 2 —
             // a first change (novelty 3) is outside it, a second (novelty 1) inside
             boundary: dna::AutonomyBoundary {
@@ -196,13 +196,13 @@ main locus Org {
             review_id: "m1",
             subject_digest: cand1,
             verdict: "approve",
-            reviewer: "riley",
+            reviewer: "grace",
             authority: "board",
         };
         std::time::sleep(150ms);
         std::test::assert_eq_str(
             self.last("review.settled", "m1"),
-            "approve by riley",
+            "approve by grace",
             "the Board settled it",
         );
         std::test::assert_eq_str(self.head(), cand1, "applied");

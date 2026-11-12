@@ -54,7 +54,7 @@ fn keyed_subscribers_receive_only_their_key_over_a_unix_binding() {
             params {{
                 a: Lane = Lane {{ lane: 1 }};
                 b: Lane = Lane {{ lane: 2 }};
-                riley: Inbox = Inbox {{ who: "riley" }};
+                grace: Inbox = Inbox {{ who: "grace" }};
                 sam: Inbox = Inbox {{ who: "sam" }};
             }}
             bindings {{
@@ -63,13 +63,13 @@ fn keyed_subscribers_receive_only_their_key_over_a_unix_binding() {
             }}
             run() {{
                 let mut waited = 0;
-                while self.a.seen + self.b.seen < 3 || self.riley.seen + self.sam.seen < 2 {{
+                while self.a.seen + self.b.seen < 3 || self.grace.seen + self.sam.seen < 2 {{
                     std::time::sleep(100ms);
                     waited = waited + 1;
                     if waited > 150 {{ std::process::exit(3); }}
                 }}
                 std::time::sleep(300ms);
-                println("a=", self.a.seen, " b=", self.b.seen, " riley=", self.riley.seen, " sam=", self.sam.seen);
+                println("a=", self.a.seen, " b=", self.b.seen, " grace=", self.grace.seen, " sam=", self.sam.seen);
             }}
         }}
         fn main() {{ App {{ }}; }}
@@ -93,7 +93,7 @@ fn keyed_subscribers_receive_only_their_key_over_a_unix_binding() {
                 Ticks <- Tick {{ lane: 2, n: 20 }};
                 Ticks <- Tick {{ lane: 1, n: 11 }};
                 Ticks <- Tick {{ lane: 9, n: 99 }};
-                Notes <- Note {{ who: "riley", n: 1 }};
+                Notes <- Note {{ who: "grace", n: 1 }};
                 Notes <- Note {{ who: "sam", n: 2 }};
                 Notes <- Note {{ who: "nobody", n: 3 }};
                 std::time::sleep(300ms);
@@ -123,6 +123,6 @@ fn keyed_subscribers_receive_only_their_key_over_a_unix_binding() {
     assert!(!stdout.contains("n=99"), "an unmatched key reaches no filtered subscriber:\n{stdout}");
     assert!(stdout.contains("lane1 got lane=1 n=10") && stdout.contains("lane1 got lane=1 n=11") && stdout.contains("lane2 got lane=2 n=20"), "{stdout}");
     // String keys: hash-gated, then compared by value on the receiver.
-    assert!(stdout.contains("riley=1 sam=1"), "string-keyed delivery over the wire:\n{stdout}\n{stderr}");
+    assert!(stdout.contains("grace=1 sam=1"), "string-keyed delivery over the wire:\n{stdout}\n{stderr}");
     assert!(!stdout.contains("who=nobody"), "{stdout}");
 }

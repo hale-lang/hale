@@ -74,11 +74,11 @@ fn main() {
     // miss by method; their misses must not leave stale captures
     // (rename reads :id AFTER two method-misses on the same path).
     let r3 = api.handle(std::http::Request {
-        method: "POST", path: "/users/7", body: "riley"
+        method: "POST", path: "/users/7", body: "grace"
     });
     std::test::assert_eq_str(
         r3.body,
-        "rename:7:riley",
+        "rename:7:grace",
         "method routing + capture after method-misses",
     );
 

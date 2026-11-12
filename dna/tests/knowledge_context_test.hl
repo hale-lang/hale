@@ -750,7 +750,7 @@ main locus App {
         //      the plan, and the Mutation carries the planned class
         self.dna.planned = true;
         let asked2 = self.dna.ask(
-            dna::Intent { id: "i2", outcome: "document the pings in main.hl", from: "riley" },
+            dna::Intent { id: "i2", outcome: "document the pings in main.hl", from: "grace" },
         );
         std::test::assert_eq_str(asked2, "planning", "the leader's word comes first (card 18)");
         let mut t2 = "";

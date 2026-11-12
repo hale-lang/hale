@@ -703,7 +703,7 @@ main locus App {
             review_id: mutation_id,
             subject_digest: cand,
             verdict: what,
-            reviewer: "riley",
+            reviewer: "grace",
             authority: "maintainer",
         };
     }

@@ -22,7 +22,7 @@ use std::time::Duration;
 
 fn git(args: &[&str], cwd: &Path) -> String {
     let _s = trace::Span::new("git", args[0].to_string());
-    let out = Command::new("git").args(["-c", "user.name=riley", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
+    let out = Command::new("git").args(["-c", "user.name=grace", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
@@ -246,7 +246,7 @@ fn bring_up(tag: &str) -> Fleet {
     manifest.push_str("\n[fleets]\nproduction = \"fleet\"\n");
     std::fs::write(app.join("hale.toml"), manifest).unwrap();
     git(&["init", "-q", "--bare", "-b", "main", &f.bare.to_string_lossy()], &d);
-    git(&["config", "user.name", "riley"], &app);
+    git(&["config", "user.name", "grace"], &app);
     git(&["config", "user.email", "r@l"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app and its fleet"], &app);
@@ -304,7 +304,7 @@ fn an_approval_redeploys_both_instances_and_the_window_retains() {
     let mut f = bring_up("ok");
     let app = f.app.clone();
     let cand = f.cand.clone();
-    let (ok, out) = f.hale(&["dna", "review", "m1", "approve", "--as", "riley"], &app);
+    let (ok, out) = f.hale(&["dna", "review", "m1", "approve", "--as", "grace"], &app);
     if !ok {
         f.stop();
         panic!("approve: {out}");
@@ -347,7 +347,7 @@ fn an_instance_killed_inside_the_window_rolls_the_fleet_back_by_name() {
     // the base's ups so far (one per instance): the rollback's come after
     let base_ups = |rows: &[(u64, String, String, String)], who: &str| rows.iter().filter(|(_, k, e, b)| k == "instance.up" && (who.is_empty() || e == who) && b.contains(&base)).count();
     let before = base_ups(&journal(&app), "");
-    let (ok, out) = f.hale(&["dna", "review", "m1", "approve", "--as", "riley"], &app);
+    let (ok, out) = f.hale(&["dna", "review", "m1", "approve", "--as", "grace"], &app);
     if !ok {
         f.stop();
         panic!("approve: {out}");

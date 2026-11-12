@@ -29,7 +29,7 @@ workaround costs parsing on every access, forbids tabs in
 payloads, and reads like a wire format where a value shape was
 meant.
 
-Riley's direction (2026-07-01): "a type needs a fixed size, so we
+The direction given (2026-07-01): "a type needs a fixed size, so we
 could probably be okay with a fixed-size collection."
 
 ## The design axiom to respect
@@ -130,7 +130,7 @@ that fall out: router::RouteParams, agent/llm messages,
 agent/conversation history, agent/embeddings vectors (stage 0
 already suffices for embeddings).
 
-Surface decisions — LOCKED by Riley 2026-07-02:
+Surface decisions — LOCKED 2026-07-02:
 1. Keyword: **`bounded[T; N]`**.
 2. push-at-cap: **`fallible(CapacityError)`** (consistent with the
    fallible surface; callers that want H7 displacement write the

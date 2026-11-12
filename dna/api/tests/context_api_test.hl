@@ -221,7 +221,7 @@ locus HatCases {
     }
     fn run_cases() {
         self.seed();
-        let service = api::Api { root: self.f.root, local_name: "riley" };
+        let service = api::Api { root: self.f.root, local_name: "grace" };
         let capabilities = self.get(service, "/capabilities", 200, "CapabilitiesResponse");
         self.json.is_bool(self.json.raw(self.json.data(capabilities), "reads"), "context", true);
         // the hat, twice at one head: one digest

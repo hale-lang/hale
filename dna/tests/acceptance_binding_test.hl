@@ -103,7 +103,7 @@ main locus App {
         );
 
         let a1 = self.one.ask(
-            dna::Intent { id: "i1", outcome: "file the March taxi receipt", from: "riley" },
+            dna::Intent { id: "i1", outcome: "file the March taxi receipt", from: "grace" },
         );
         let t = self.admitted("i1") + ".s0.p";
         self.until_handed(t);
@@ -128,7 +128,7 @@ main locus App {
             "retired is not in force",
         );
         let a2 = self.one.ask(
-            dna::Intent { id: "i2", outcome: "file the April taxi receipt", from: "riley" },
+            dna::Intent { id: "i2", outcome: "file the April taxi receipt", from: "grace" },
         );
         let t2 = self.admitted("i2") + ".s0.p";
         self.until_handed(t2);

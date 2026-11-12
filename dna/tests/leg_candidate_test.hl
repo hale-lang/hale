@@ -146,7 +146,7 @@ locus App {
         );
         let claim = "{\"holder\": \"" + LEG + "\", \"token\": 1, \"until\": "
             + to_string(std::time::now() + 600)
-            + ", \"effect_class\": \"idempotent\", \"principal_mode\": \"local\", \"principal_name\": \"riley\"}";
+            + ", \"effect_class\": \"idempotent\", \"principal_mode\": \"local\", \"principal_name\": \"grace\"}";
         std::test::assert(
             self.journal.append(self.journal.revision(), "attempt.claimed", attempt, claim).ok,
             "the lease, as a row",

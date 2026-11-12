@@ -78,7 +78,7 @@ locus Retiring {
                 self.inner.revision(),
                 "person.retired",
                 "mara",
-                "{\"by\": \"riley\", \"to\": \"dev\", \"transferred\": 0}",
+                "{\"by\": \"grace\", \"to\": \"dev\", \"transferred\": 0}",
             );
         }
         return self.inner.append_exact(expected, kind, entity, body);

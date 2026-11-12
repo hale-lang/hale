@@ -112,7 +112,7 @@ fn request(id: String, text: String) -> dna::KnowledgeNodeRequest {
         text: text,
         author: "org",
         target: "org",
-        by: "riley",
+        by: "grace",
         because: "An exact proposal."
     };
     r.candidate_digest = dna::digest_of(codec.document(r));

@@ -223,12 +223,12 @@ main locus App {
             kind: "received",
             entity: "handoff:h1",
             body: "{}",
-            author: "riley",
+            author: "grace",
         };
         let line = one.seal(e);
         std::test::assert(dna::signed_line_holds(line), "an envelope's signature holds");
         std::test::assert(
-            !dna::signed_line_holds(std::str::replace(line, "riley", "mallory")),
+            !dna::signed_line_holds(std::str::replace(line, "grace", "mallory")),
             "a changed envelope's does not",
         );
         // one key, several kinds of message: each signed under its own tag
@@ -284,7 +284,7 @@ main locus App {
         }
         self.nerves = dna::nerves_server_url(nats_owner);
         let scratch = dna::scratch_root("handoff");
-        self.firm = project(scratch, "firm", "riley");
+        self.firm = project(scratch, "firm", "grace");
         self.acct = project(scratch, "acct", "noor");
         let firm = self.firm;
         let acct = self.acct;
@@ -430,7 +430,7 @@ main locus App {
         let proposed = self.cli(
             firm,
             "connect\n" + self.nerves + "\n--record\n" + acct_genesis
-                + "\n--name\nacct\n--as\naccountant\n--purpose\nyear-end books\n--classes\ninternal,customer\n--by\nriley",
+                + "\n--name\nacct\n--as\naccountant\n--purpose\nyear-end books\n--classes\ninternal,customer\n--by\ngrace",
         );
         std::test::assert(
             std::str::contains(proposed, "connection acct proposed: record ")
@@ -452,19 +452,19 @@ main locus App {
         std::test::assert(std::str::starts_with(rid, "c-acct-"), "its Review: " + proposed);
         std::test::assert(
             std::str::contains(
-                self.cli(firm, "handoff\nacct\ntask\nt7\n--as\nriley"),
+                self.cli(firm, "handoff\nacct\ntask\nt7\n--as\ngrace"),
                 "is proposed: Review " + rid,
             ),
             "not in force before the Board decides",
         );
         let own = self.cli(
             firm,
-            "review\n" + rid + "\napprove\n--as\nriley\n--authority\nboard\n--no-wait",
+            "review\n" + rid + "\napprove\n--as\ngrace\n--authority\nboard\n--no-wait",
         );
         std::test::assert(
             std::str::contains(
-                self.cli(firm, "handoff\nacct\ntask\nt7\n--as\nriley"),
-                "needs an approval by a board member other than riley",
+                self.cli(firm, "handoff\nacct\ntask\nt7\n--as\ngrace"),
+                "needs an approval by a board member other than grace",
             ),
             "its proposer's approval does not put it in force",
         );
@@ -525,7 +525,7 @@ main locus App {
         );
 
         // ---- a Task handed across, into the accountant's inbox
-        let handed = self.cli(firm, "handoff\nacct\ntask\nt7\n--as\nriley\n--note\nclose by March");
+        let handed = self.cli(firm, "handoff\nacct\ntask\nt7\n--as\ngrace\n--note\nclose by March");
         std::test::assert(
             std::str::contains(handed, ": task t7 [internal] delivered to record ")
                 && std::str::contains(handed, "_EXCHANGE#"),
@@ -544,7 +544,7 @@ main locus App {
         );
         std::test::assert(
             std::str::contains(
-                self.cli(firm, "handoff\nacct\ntask\nt7\n--as\nriley"),
+                self.cli(firm, "handoff\nacct\ntask\nt7\n--as\ngrace"),
                 "is transfer_requested",
             ),
             "a Task crosses once",
@@ -563,7 +563,7 @@ main locus App {
             "",
             "memory refuses appends for a while",
         );
-        let interrupted = self.cli(firm, "handoff\nacct\ntask\nt9\n--as\nriley");
+        let interrupted = self.cli(firm, "handoff\nacct\ntask\nt9\n--as\ngrace");
         std::test::assert_eq_str(
             dna::fixture_record_refuses(firm, false),
             "",
@@ -573,7 +573,7 @@ main locus App {
             std::str::contains(interrupted, "but this record refused the append"),
             "the envelope landed, the firm's row did not: " + interrupted,
         );
-        let resumed = self.cli(firm, "handoff\nacct\ntask\nt9\n--as\nriley");
+        let resumed = self.cli(firm, "handoff\nacct\ntask\nt9\n--as\ngrace");
         std::test::assert(
             std::str::contains(
                 resumed,
@@ -591,14 +591,14 @@ main locus App {
         );
 
         // ---- a customer receipt: the digest crosses, the body never
-        let receipt = self.cli(firm, "handoff\nacct\nreceipt\n" + customer + "\n--as\nriley");
+        let receipt = self.cli(firm, "handoff\nacct\nreceipt\n" + customer + "\n--as\ngrace");
         std::test::assert(
             std::str::contains(receipt, "receipt " + customer + " [customer] delivered to record "),
             "the reference crosses: " + receipt,
         );
         let rhid = word_after(receipt, "handoff ");
         let rhid7 = rhid[0..(len(rhid) - 1)];
-        let notes_handed = self.cli(firm, "handoff\nacct\nreceipt\n" + internal + "\n--as\nriley");
+        let notes_handed = self.cli(firm, "handoff\nacct\nreceipt\n" + internal + "\n--as\ngrace");
         std::test::assert(
             std::str::contains(notes_handed, "[internal] delivered to record"),
             "an internal reference: " + notes_handed,
@@ -617,14 +617,14 @@ main locus App {
         let narrow = self.cli(
             firm,
             "connect\n" + self.nerves + "\n--record\n" + acct_genesis
-                + "\n--name\nnarrow\n--as\nauditor\n--purpose\naudit\n--classes\ninternal\n--by\nriley",
+                + "\n--name\nnarrow\n--as\nauditor\n--purpose\naudit\n--classes\ninternal\n--by\ngrace",
         );
         let narrow_ok = self.cli(
             firm,
             "review\n" + word_after(narrow, "hale dna review ")
                 + "\napprove\n--as\nana\n--authority\nboard\n--no-wait",
         );
-        let refused = self.cli(firm, "handoff\nnarrow\nreceipt\n" + customer + "\n--as\nriley");
+        let refused = self.cli(firm, "handoff\nnarrow\nreceipt\n" + customer + "\n--as\ngrace");
         std::test::assert(
             std::str::contains(
                 refused,
@@ -669,7 +669,7 @@ main locus App {
             std::str::contains(unadmitted, hid7 + " ← task t7 from record ")
                 && std::str::contains(
                     unadmitted,
-                    "(riley as `accountant`, for `year-end books`) [internal] i-t7: job 7 for the accountant",
+                    "(grace as `accountant`, for `year-end books`) [internal] i-t7: job 7 for the accountant",
                 )
                 && std::str::contains(unadmitted, "not admitted: no connection in force"),
             "listed, not admitted: " + unadmitted,
@@ -841,10 +841,10 @@ main locus App {
         // ---- what the accountant drained left its inbox: it has taken eight
         // of the firm's envelopes by now (the squatter's, t7, t9, two
         // receipts, the forged ones) and takes more past its bound of seven
-        let t8 = self.cli(firm, "handoff\nacct\ntask\nt8\n--as\nriley");
+        let t8 = self.cli(firm, "handoff\nacct\ntask\nt8\n--as\ngrace");
         let hid8 = word_after(t8, "handoff ");
-        let t10 = self.cli(firm, "handoff\nacct\ntask\nt10\n--as\nriley");
-        let t11 = self.cli(firm, "handoff\nacct\ntask\nt11\n--as\nriley");
+        let t10 = self.cli(firm, "handoff\nacct\ntask\nt10\n--as\ngrace");
+        let t11 = self.cli(firm, "handoff\nacct\ntask\nt11\n--as\ngrace");
         std::test::assert(
             std::str::contains(t8, "delivered to record")
                 && std::str::contains(t10, "delivered to record")
@@ -854,14 +854,14 @@ main locus App {
         // ---- an undrained backlog refuses: seven wait (t8, t10, t11, t12 to t15)
         let mut w = 12;
         while w <= 15 {
-            let more = self.cli(firm, "handoff\nacct\ntask\nt" + to_string(w) + "\n--as\nriley");
+            let more = self.cli(firm, "handoff\nacct\ntask\nt" + to_string(w) + "\n--as\ngrace");
             std::test::assert(
                 std::str::contains(more, "delivered to record"),
                 "t" + to_string(w) + " waits in the inbox: " + more,
             );
             w = w + 1;
         }
-        let t16 = self.cli(firm, "handoff\nacct\ntask\nt16\n--as\nriley");
+        let t16 = self.cli(firm, "handoff\nacct\ntask\nt16\n--as\ngrace");
         std::test::assert(
             std::str::contains(t16, "inbox is full")
                 && std::str::contains(t16, "nothing was recorded here"),
@@ -877,7 +877,7 @@ main locus App {
             std::str::contains(drained, " ← task t15"),
             "the backlog drained: " + drained,
         );
-        let t16_again = self.cli(firm, "handoff\nacct\ntask\nt16\n--as\nriley");
+        let t16_again = self.cli(firm, "handoff\nacct\ntask\nt16\n--as\ngrace");
         std::test::assert(
             std::str::contains(t16_again, "delivered to record"),
             "taken once drained: " + t16_again,
@@ -891,7 +891,7 @@ main locus App {
         );
         std::test::assert(
             std::str::contains(
-                self.cli(firm, "handoff\nacct\ntask\nt17\n--as\nriley"),
+                self.cli(firm, "handoff\nacct\ntask\nt17\n--as\ngrace"),
                 "is closed (the engagement ended)",
             ),
             "nothing further crosses",

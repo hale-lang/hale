@@ -224,7 +224,7 @@ main locus App {
         let edge = scratch + "/edge-1";
         let c0 = in_dir(
             self.app,
-            "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main\n"
+            "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name grace && git config user.email grace@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main\n"
                 + bare,
         );
         std::test::assert_eq_int(c0.code, 0, "the application and its origin: " + c0.stderr);

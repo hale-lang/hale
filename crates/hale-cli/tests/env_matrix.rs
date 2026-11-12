@@ -1247,7 +1247,7 @@ fn the_matrix_wants_every_declared_role_mapped_or_explicitly_nobody() {
     assert!(out.contains("`suport`") && out.contains("does not declare"), "{}", out);
 
     // A member spelling the binding cannot act on is a manifest error.
-    let r = gated_workspace("roles_spelling", "support = [\"riley\"]\nauditor = []\nowner = []\n");
+    let r = gated_workspace("roles_spelling", "support = [\"grace\"]\nauditor = []\nowner = []\n");
     let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
     let _ = std::fs::remove_dir_all(&r);
     assert_ne!(code, 0, "{}", out);

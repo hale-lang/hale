@@ -114,7 +114,7 @@ locus App {
             self.j.revision(),
             "knowledge.ratified",
             d1,
-            "{\"class\": \"goal\", \"target\": \"org/sup/worker\", \"decided_by\": \"riley\"}",
+            "{\"class\": \"goal\", \"target\": \"org/sup/worker\", \"decided_by\": \"grace\"}",
         );
         let a5 = self.j.append(
             self.j.revision(),
@@ -132,7 +132,7 @@ locus App {
             self.j.revision(),
             "knowledge.ratified",
             d3,
-            "{\"class\": \"goal\", \"target\": \"org/sup/worker\", \"decided_by\": \"riley\"}",
+            "{\"class\": \"goal\", \"target\": \"org/sup/worker\", \"decided_by\": \"grace\"}",
         );
         std::test::assert(store.open(), label + ": open: " + store.last_error());
         let r = ops::apply_record(store, self.j, self.receipts);

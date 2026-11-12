@@ -14,7 +14,7 @@ locus CreateCases {
         return ops::GovernanceContext {
             application_id: app,
             principal_mode: "local",
-            principal_name: "riley",
+            principal_name: "grace",
         };
     }
     fn command(
@@ -300,7 +300,7 @@ locus CreateCases {
         let grant = codec.grant(context);
         std::test::assert(
             grant.allowed
-                && grant.authority == "riley"
+                && grant.authority == "grace"
                 && std::str::starts_with(
                     grant.basis,
                     "dna.task.create/1:authenticated-principal:local",
@@ -309,7 +309,7 @@ locus CreateCases {
         );
         std::test::assert(!codec.grant(ops::GovernanceContext { }).allowed, "no context, no grant");
         let sound = self.sample(context); let fact = codec.fact(context, sound, grant, HEAD);
-        let cli = self.cli_row(OUTCOME, "riley", "org/support");
+        let cli = self.cli_row(OUTCOME, "grace", "org/support");
         std::test::assert(
             std::str::starts_with(fact, cli[0..(len(cli) - 1)] + ", \"command_format\""),
             "fact begins with the CLI bytes",
@@ -349,7 +349,7 @@ locus CreateCases {
                 self.event(
                     "intent.requested",
                     "i1f4",
-                    self.cli_row(OUTCOME, "riley", "org/support"),
+                    self.cli_row(OUTCOME, "grace", "org/support"),
                     HEAD,
                 ),
             ).valid,
