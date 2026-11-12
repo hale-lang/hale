@@ -882,7 +882,7 @@ dynamic	<hole>	on main|unresolved declaration `dna::AutonomyBoundary`|unresolved
 == crates/hale-cli/tests/dna_design.rs#a33a80ac
 dynamic	<hole>	on main|unresolved declaration `dna::MemoryKnowledge`|unresolved declaration `dna::RecordJournal`	in the seed
 
-== crates/hale-cli/tests/dna_design.rs#7b4044b0
+== crates/hale-cli/tests/dna_design.rs#a4aae845
 root	App	the entry
 row	App@literal1	App	main	default
 dynamic	<hole>	on main|unresolved declaration `dna::Idea`|unresolved declaration `dna::Verdict`	in the seed
