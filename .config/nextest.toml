@@ -59,7 +59,11 @@ test-group = 'dna-fixtures'
 # 8-minute limit above, and a loaded runner ran it past (2026-11-11, a
 # timeout rather than a failure). It gets 15 minutes; the test's own
 # deadline, a minute inside them, fails with what the head said.
-filter = 'binary(dna_projects) and test(=dna_head::a_container_outside_the_allocation_is_no_evidence_of_the_organisms_memory)'
+# `binary_id`, not `binary(...)`: the parity job runs under libtest's
+# threads every binary this file names with `binary(...)` (its grouped
+# binaries), and dna_projects is not one: its tests share one habitat when
+# they share a process.
+filter = 'binary_id(hale-cli::dna_projects) and test(=dna_head::a_container_outside_the_allocation_is_no_evidence_of_the_organisms_memory)'
 slow-timeout = { period = "60s", terminate-after = 15 }
 
 [[profile.default.overrides]]
