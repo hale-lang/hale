@@ -28,6 +28,7 @@ locus TaskWire {
         b.field("waiting", dna::record_json_quote(t.waiting));
         b.field("assignment_digest", dna::record_json_quote(t.assignment_digest));
         b.bool_field("reassignment_supported", t.reassignment_supported);
+        b.bool_field("taken", t.taken);
         b.begin_array_field("history"); let mut i = 0;
         while i < p.history_count(t.id) {
             b.value(self.assignment(p.history_at(t.id, i)));

@@ -533,7 +533,10 @@ obligation, explicit acceptance binding, evidence requirements/reference,
 waiting reason and ordered handoff/reassignment history. Acceptance and evidence
 references are opaque strings. `assignment_digest` binds the relevant native
 lifecycle, including intervening and terminal events; `reassignment_supported`
-states factual support, not the caller's authority. Each row also carries
+states factual support, not the caller's authority; `taken` is true once the
+assignee reassigned the Task to themselves (`task.reassigned` with `to` the
+one `by`), which the face reads as work in progress, where a hand to someone
+is work to do. Each row also carries
 `usage`: the model calls attributed to the Task — its plan, its Mutations'
 attempts and their verdicts — as the same object the executions carry.
 

@@ -13,6 +13,9 @@ type TaskRow {
     waiting: String = "";
     assignment_digest: String = "";
     reassignment_supported: Bool = false;
+    // the assignee took it themselves (`task.reassigned` by the one it names):
+    // work in progress, where a hand to someone is work to do
+    taken: Bool = false;
 }
 type TaskAssignmentRow {
     event_id: String = "";
@@ -190,6 +193,7 @@ locus TaskProjection {
                 entry.history = entry.history + 1;
                 entry.handed = true;
                 row.state = "handed";
+                row.taken = false;
                 row.assignee = self.text(e.body, "assignee");
                 row.obligation = self.text(e.body, "obligation");
                 row.acceptance_digest = self.text(e.body, "acceptance");
@@ -255,6 +259,7 @@ locus TaskProjection {
                 },
             );
             entry.history = entry.history + 1; row.assignee = self.text(e.body, "to");
+            row.taken = self.text(e.body, "to") == self.text(e.body, "by");
         } else if e.kind == "decision.reported" {
             if row.state != "handed"
                 || !self.object(e.body)
