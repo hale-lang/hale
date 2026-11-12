@@ -90,6 +90,22 @@ fn main() {
     let last = at(ln.list, 3) or Item { };
     std::test::assert_eq_int(last.k, 30, "a moved local keeps its value");
 
+    // An element handed to another list, then written and set back.
+    let mut src = Items { };
+    push(src.list, Item { k: 8 }) or raise;
+    let mut dst = Items { };
+    push(dst.list, at(src.list, 0) or Item { }) or raise;
+    let mut el = at(src.list, 0) or Item { };
+    push(dst.list, el) or raise;
+    el.k = 80;
+    set(src.list, 0, el) or raise;
+    let s0 = at(src.list, 0) or Item { };
+    let d0 = at(dst.list, 0) or Item { };
+    let d1 = at(dst.list, 1) or Item { };
+    std::test::assert_eq_int(s0.k, 80, "the set back keeps the write");
+    std::test::assert_eq_int(d0.k, 8, "an element handed to another list is that list's own");
+    std::test::assert_eq_int(d1.k, 8, "and so is the element pushed through a local");
+
     // Strings.
     let mut ls = Names { };
     let mut s = "hello";

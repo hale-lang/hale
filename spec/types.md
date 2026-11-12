@@ -433,7 +433,7 @@ struct literal holding a place's value copies only the field written
 below (`let mut l = R { a: self.a }; l.a[0] = x;` copies `a`). A local
 handed to a call that may write through its parameter is bound as a
 copy, and so is a binding live across a write into the local's or
-parameter's value it was read from. Three shapes are not copies:
+parameter's value it was read from. Four shapes are not copies:
 
 - the get-modify-store of a self field, `let mut v = self.f; v.x[i] =
   y; self.f = v;` — every binding of `v` reads that field, the store of
@@ -443,6 +443,26 @@ parameter's value it was read from. Three shapes are not copies:
   used after. The store keeps the block the field already holds
   (`spec/memory.md` rule 6), so the write lands where the store would
   have put it;
+- the same idiom on a `bounded` list's slot, `let mut x = at(xs, i) or
+  …; x.f = y; set(xs, i, x) or …;`, with `xs` a self field's list or a
+  local's (`l.xs`) — every binding of `x` is a `let` of that slot, the
+  `set` names the same list and the same index (one local or parameter
+  not rebound between, or one integer literal; any other index is not
+  told the same), it follows the write on every path, nothing that may
+  read the list (for a local's, any read of the local) or a call of the
+  program's comes between, no other binding views the list, and `x` is
+  not used after. `at` hands back the element itself and the `set`
+  stores it again, uncopied (§ `bounded[T; N]`: a slot set back is the
+  list's own). A local's list qualifies only while it holds every
+  element alone: the local is bound fresh (a record copied whole from
+  another may share its lists' elements with it), read only as a
+  bounded intrinsic's list or for a primitive field, and every `at` of
+  it reads a primitive, is handed straight to a `push` or `set`, or
+  binds a local read only for primitive fields, as the value of a
+  `push` or `set`, or set back to its slot. What is pushed or set into
+  it needs nothing more: every `push` and `set` stores a value of the
+  list's own (until 2026-11-12, a value pushed that viewed anything, or
+  an element handed to another list, disqualified it);
 - a parameter: an argument is passed by reference, and a callee that
   writes through its parameter (`fn bump(r: R) { r.a[0] = 1; }`) writes
   the caller's value;
@@ -1359,9 +1379,14 @@ Semantics:
   is not read or written after it (nor in a later iteration of a loop
   it was declared before) and that no binding live after it views,
   holding a value only it names (a fresh one, or a copy made at its
-  binding or at its first write, as an `at` binding written and `set`
-  back is), or a part of such locals (an element of a list a `for`
-  walks that nothing reads again, a literal of a dead local's fields).
+  binding or at its first write), or a part of such locals, all the way
+  down (an element of a list a `for` walks that nothing reads again, a
+  literal of a dead local's fields; not one of a record copied whole
+  from another still read, which shares its lists' elements). A slot
+  set back, `let mut x = at(l.xs, i) or …; x.f = y; set(l.xs, i, x)`
+  with `x` used no more, is stored as it is too: `x` holds the slot's
+  own element, written in place where § "A local bound from a place is
+  yours" keeps the write there, or the write's copy of it.
   Anything else — a local used after the store, a parameter, a field
   or element of a value still read, a literal holding a local still
   used — is stored as the list's own copy (a record element a fresh

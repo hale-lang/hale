@@ -262,7 +262,8 @@ fn a_value_nothing_else_names_is_not_copied() {
     // what the loop allocates. A fresh literal pushed or set costs the
     // literal alone, and so does a local not used after the push; a local
     // used after costs a copy more. The element read, written and set
-    // back costs the write's copy alone, as the same write with no set.
+    // back costs nothing (#1917 keeps the write in the element), and the
+    // same write with no set back copies the element.
     let src = r#"
         type In { k: Int = 0; s: String = ""; }
         type L { list: bounded[In; 4]; }
@@ -322,5 +323,122 @@ fn a_value_nothing_else_names_is_not_copied() {
     assert!(same(fresh_set, fresh_push), "a fresh literal set is not copied: {grew:?}");
     assert!(same(moved, fresh_push), "a local not used after the push is not copied: {grew:?}");
     assert!(copied >= fresh_push + 16000, "a local used after the push is copied: {grew:?}");
-    assert!(same(set_back, no_set), "the set back of a written element adds no copy: {grew:?}");
+    // The set back is #1917's slot store back (the list holds every
+    // element alone): the write lands in the element and nothing is
+    // copied; the same write with no set copies the element.
+    assert!(set_back < 1000, "the set back of a written element copies nothing: {grew:?}");
+    assert!(no_set >= 16000, "a written element with no set back is copied: {grew:?}");
+}
+
+/// Main's arena growth over `loop` run 1000 times on a local's list of
+/// four `In`s filled with literals, after `setup`, then `after`.
+fn set_back_cost(name: &str, setup: &str, body: &str, after: &str) -> (u64, String) {
+    let src = format!(
+        r#"
+        type In {{ k: Int = 0; s: String = ""; }}
+        type L {{ n: Int = 0; list: bounded[In; 4]; }}
+        fn main() {{
+            let mut l = L {{ }};
+            for j in 0..4 {{ push(l.list, In {{ k: j, s: "s" }}) or discard; }}
+            {setup}
+            let mut i = 0;
+            let _0 = std::process::dump_arena_residency();
+            while i < 1000 {{ {body} i = i + 1; }}
+            let _1 = std::process::dump_arena_residency();
+            {after}
+        }}
+        "#
+    );
+    let (out, stderr) = run(name, &src, &[("LOTUS_ARENA_RESIDENCY", "1")]);
+    let used = global_used(&stderr);
+    assert!(used.len() >= 2, "{name}: expected two residency dumps; stderr: {stderr}");
+    (used[1] - used[0], out)
+}
+
+#[test]
+fn a_slot_set_back_on_a_local_list_costs_at_most_the_writes_copy() {
+    // The shape #1917 keeps in the element: the set adds no copy of its
+    // own (`BoundedStore::Moved`), and the write none either.
+    let read = r#"for j in 0..4 { let e = at(l.list, j) or In { }; print(f"{e.k} "); } println("");"#;
+    let body = "let q = i % 4; let mut x = at(l.list, q) or In { }; x.k = x.k + 1; set(l.list, q, x) or discard;";
+    let (kept, out) = set_back_cost("setback_kept", "", body, read);
+    assert_eq!(out, "250 251 252 253 \n", "kept");
+    assert!(kept < 1000, "the set back #1917 keeps copies nothing: {kept}");
+    // The same loop on a list whose local is read whole (#1917 refuses):
+    // the write copies the element, the set stores that copy as it is.
+    let whole = "let c = l; println(count(c.list));";
+    let (copied, out) = set_back_cost("setback_whole", whole, body, read);
+    assert_eq!(out, "4\n250 251 252 253 \n", "whole");
+    let no_set = "let q = i % 4; let mut x = at(l.list, q) or In { }; x.k = x.k + 1; l.n = x.k;";
+    let (write_only, _) = set_back_cost("setback_write_only", whole, no_set, read);
+    assert!(copied >= 16000, "the refused shape copies at the write: {copied}");
+    assert!(copied.abs_diff(write_only) < 1000, "the set adds nothing to the write's copy: {copied} vs {write_only}");
+}
+
+#[test]
+fn shapes_a_local_list_now_shares_with_no_one_keep_their_values() {
+    // #1917 refused these before every `push` and `set` stored a value of
+    // the list's own; now the set back keeps the write in the element,
+    // and every other name keeps what it had.
+    let src = r#"
+        type In { k: Int = 0; s: String = ""; }
+        type L { list: bounded[In; 4]; }
+        type R { inner: In = In { }; }
+        fn main() {
+            // a local's value pushed in, and read after
+            let mut l = L { };
+            let mut y = In { k: 1 };
+            push(l.list, y) or discard;
+            let mut x = at(l.list, 0) or In { };
+            x.k = 10;
+            set(l.list, 0, x) or discard;
+            let a = at(l.list, 0) or In { };
+            println(f"pushed local: {a.k} {y.k}");
+            // a record's field pushed in
+            let mut l2 = L { };
+            let r = R { inner: In { k: 2 } };
+            push(l2.list, r.inner) or discard;
+            let mut x2 = at(l2.list, 0) or In { };
+            x2.k = 20;
+            set(l2.list, 0, x2) or discard;
+            let b = at(l2.list, 0) or In { };
+            println(f"pushed field: {b.k} {r.inner.k}");
+            // the element pushed into another list, directly
+            let mut l3 = L { };
+            push(l3.list, In { k: 3 }) or discard;
+            let mut o = L { };
+            push(o.list, at(l3.list, 0) or In { }) or discard;
+            let mut x3 = at(l3.list, 0) or In { };
+            x3.k = 30;
+            set(l3.list, 0, x3) or discard;
+            let c = at(l3.list, 0) or In { };
+            let oc = at(o.list, 0) or In { };
+            println(f"element into another: {c.k} {oc.k}");
+            // through `x`, before and after the write
+            let mut l4 = L { };
+            push(l4.list, In { k: 4 }) or discard;
+            let mut p = L { };
+            let mut x4 = at(l4.list, 0) or In { };
+            push(p.list, x4) or discard;
+            x4.k = 40;
+            push(p.list, x4) or discard;
+            set(l4.list, 0, x4) or discard;
+            let d = at(l4.list, 0) or In { };
+            let p0 = at(p.list, 0) or In { };
+            let p1 = at(p.list, 1) or In { };
+            println(f"through x: {d.k} {p0.k} {p1.k}");
+            // the other list's element written and set back afterwards
+            let mut x5 = at(p.list, 1) or In { };
+            x5.k = 50;
+            set(p.list, 1, x5) or discard;
+            let d2 = at(l4.list, 0) or In { };
+            println(f"other list written: {d2.k}");
+        }
+    "#;
+    let (out, _) = run("relaxed", src, &[]);
+    assert_lines(
+        "relaxed",
+        &out,
+        &["pushed local: 10 1", "pushed field: 20 2", "element into another: 30 3", "through x: 40 4 40", "other list written: 40"],
+    );
 }
