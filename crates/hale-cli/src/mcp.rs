@@ -255,7 +255,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "hale_dna_hand",
-            "description": "Run one of a claimed Work's hands on this machine (hale dna work hand): the Work's brief (hale_dna_work brief) lists its hands, what each does and its arguments' schema. A file hand (read, edit, check, test, fmt, patch) works in the attempt's own worktree, kept between calls; an infrastructure hand reads the record through the head. A hand the hat does not give is refused. When the change is ready, hale_dna_work submit with --from-worktree runs the hat's validators and hands the worktree back as one commit with its patch.",
+            "description": "Run one of a claimed Work's hands on this machine (hale dna work hand): the Work's brief (hale_dna_work brief) lists its hands, what each does and its arguments' schema. A file hand (read, edit, check, test, fmt, patch) works in the attempt's own worktree, kept between calls; an infrastructure hand reads the record through the head. A hand the hat does not give is refused. When the change is ready, hale_dna_work submit with --from-worktree runs the hat's validators and hands the worktree back: one commit with its patch, or for a Work on an attached codebase its branch, the commits made there kept as they are (never squashed) and anything left uncommitted one commit of the leg's on top.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

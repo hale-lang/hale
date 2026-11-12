@@ -1734,7 +1734,16 @@ repository on `leg/<codebase>/<task>`, not the project's checkout: the
 `check` and `test` hands run the codebase's `build` and `test`, the
 validators are the two commands, and `submit` pushes the branch there,
 opens the review through the leg's forge hand and files the outcome as
-`result_ref: review:<ref>`. The owner settles such an outcome done on that
+`result_ref: review:<ref>`. The branch carries the commits the session
+made (a person's or a harness's) as they were made, their shas and
+authors: nothing is squashed or rewritten, and whether to squash is
+decided at merge, on the forge. What the worktree holds uncommitted
+becomes one new commit of the leg's on top (the persona's at the
+habitat's Forgejo), never folded into the handed ones; a worktree that
+changes nothing against its base, nothing over it or commits that undo
+each other, is refused (`keep_handed`, `dna/core/legs/hands.hl`). The
+outcome's receipt is the branch's patches, one per commit (`git
+format-patch <base>..HEAD`). The owner settles such an outcome done on that
 reference and makes no Mutation of its own genome. The language hands (Go)
 that make the commands typed are a later item.
 
@@ -2484,7 +2493,10 @@ memory is named to it.
   validators over the touched directories, refuses on a failure, and
   otherwise submits one commit on that base as `result_ref:
   commit:<sha>` with its patch as the first receipt, then removes the
-  kept clone.
+  kept clone. That one commit is the genome's, whose owner makes a
+  Mutation of a single patch; a hat that names an attached codebase
+  instead pushes its branch with the commits it was handed kept as they
+  were made (§ "A codebase attached with no application").
 - **The claim** is taken at the head. The filter names the performer
   kind and identity, the capabilities the leg has, the data classes it
   may see, the owners it works for and a TTL. The identity is a

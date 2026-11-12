@@ -294,8 +294,10 @@ locus ToolBench {
 // A person's session works a Work's change across separate calls (`hale
 // dna work hand`, each its own process): its worktree is kept under the
 // project's `.hale/dna/work/`, one clone of the repository at its HEAD
-// per attempt, its base recorded beside it; `submit --from-worktree` makes
-// the one commit and removes it.
+// per attempt, its base recorded beside it; `submit --from-worktree` hands
+// it back (the genome's change as one commit; a codebase's branch with the
+// commits made there kept and one of the leg's for what is left
+// uncommitted, `keep_handed`) and removes it.
 type SessionTree {
     ok: Bool = false;
     path: String = "";
