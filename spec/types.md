@@ -1327,6 +1327,26 @@ Semantics:
   elements (String/Bytes/struct) work in-process — push/set
   arena-anchor the element into the receiver's owning arena — but
   are rejected in cross-process bus payloads (post-v1 polish).
+- A bounded place a locus holds (a field of its, or a field of a
+  record it holds) **owns** its pointer-shaped elements, as the record
+  owns its String fields: `push`, `set` and a whole assignment store
+  the place's own copy of each (a String already in the locus's arena
+  is copied too, a record element is always a fresh block), and an
+  element the place stops holding is retired into the locus's arena —
+  the one a `set` replaces, the ones a `clear` or `truncate` drops, the
+  ones a whole assignment of the place replaces, and every live one of
+  a record the locus replaces whole (`self.r = v`, with `r` holding the
+  `bounded`), or of a `@form` cell holding one that is replaced or
+  removed (`spec/memory.md` #6). Only the live slots, `[0,
+  count(x))`, are elements: a slot past the count is never read and
+  never retired. `at(x, i)` hands back the element itself, so a binding
+  of it held across a write that may replace it (a call that stores
+  the field, a `set`) is an owned copy, as any binding of a place is
+  (§ "Any binding of a place keeps its value"); a `for` over such a
+  place walks its own copy when its body may replace the place. Until
+  2026-11-11 none of these retired: a locus storing a record of one
+  8 KB String in a `bounded[String; 4]` back over itself grew by that
+  String per store, for its lifetime.
 - A pointer-shaped element `push`ed or `set` into a bounded place under
   a **parameter** is kept in the frame that runs the call: a free fn
   allocates in its caller's arena (a fn that takes a record is never

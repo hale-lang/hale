@@ -343,7 +343,7 @@ To assign a task targeting an attached codebase, pass `--codebase <name>` and `-
 hale dna task create --to position:api/dev --codebase ledger-svc "make the greeting mention the leg"
 ```
 
-When a leg claims the task (`hale dna work hand`, `hale dna work submit --from-worktree`), it clones the external repository on branch `leg/<codebase>/<task>`, runs the codebase's build and test commands, pushes the branch to the external forge, opens a pull request there, and submits `review:<ref>` as the attempt outcome without modifying the organism's own repository.
+When a leg claims the task (`hale dna work hand`, `hale dna work submit --from-worktree`), it clones the external repository on branch `leg/<codebase>/<task>`, runs the codebase's build and test commands, pushes the branch to the external forge, opens a pull request there (at the habitat's Forgejo, as the persona of the Work's position), and submits `review:<ref>` as the attempt outcome without modifying the organism's own repository.
 
 ## Troubleshooting Common Errors
 

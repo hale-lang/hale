@@ -132,6 +132,34 @@ fn forgejo_personas_path(key: String) -> String {
     return local_habitat_dir() + "/allocations/" + key + "/personas";
 }
 
+// A position's persona as an organism's ledger names it: its Forgejo user
+// and its token's vault slot, both as the reconcile named them
+// (personas.rs) and never derived here. Empty when the ledger has none.
+type ForgejoPersona {
+    user: String = "";
+    slot: String = "";
+}
+
+// The persona of the position `id` in the ledger text `ledger`
+// (`forgejo_personas_path`): its `position\t<id>\t<user>\t<slot>` line.
+@bounded_by(ledger)
+fn forgejo_ledger_persona(ledger: String, id: String) -> ForgejoPersona {
+    if len(id) == 0 { return ForgejoPersona { }; }
+    let start = "position\t" + id + "\t";
+    let mut rest = ledger;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if !std::str::starts_with(line, start) { continue; }
+        let tail = line[len(start)..len(line)];
+        let tab = std::str::index_of(tail, "\t");
+        if tab <= 0 || tab == len(tail) - 1 { continue; }
+        return ForgejoPersona { user: tail[0..tab], slot: tail[(tab + 1)..len(tail)] };
+    }
+    return ForgejoPersona { };
+}
+
 // The habitat's Forgejo's users as its administrator lists them, a line
 // each: `<name>\t<email>`.
 type ForgejoUsers {

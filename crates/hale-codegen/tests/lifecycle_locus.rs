@@ -1,4 +1,4 @@
-//! The `lifecycle_locus` integration-test binary: 26 test files of this area, kept
+//! The `lifecycle_locus` integration-test binary: 27 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -7,6 +7,8 @@
 
 #[path = "array_of_loci_teardown.rs"]
 mod array_of_loci_teardown;
+#[path = "bounded_field_retire.rs"]
+mod bounded_field_retire;
 #[path = "di_entry_reset_is_universal.rs"]
 mod di_entry_reset_is_universal;
 #[path = "held_field_view.rs"]

@@ -1686,6 +1686,28 @@ reclaim on a real-world long-running workload:
      locus's lifetime: ~6 MiB over 200 000 replaces of a record
      holding a record of one String.
 
+     A record's `bounded[T; N]` field of Strings, Bytes or records
+     (2026-11-11) is inline storage, `{ i64 len, [N x T] }`, not a
+     block, but its live elements are the record's: the descriptor
+     carries an entry for it (`LOTUS_RETIRE_OFF_BOUNDED`: the
+     storage's offset, slot 0's offset in it, the capacity, the
+     slot stride and one slot's descriptor), and the walk reads the
+     field's `len` and visits slots `[0, len)` only — `clear` and
+     `truncate` leave stale pointers past `len`, which a walk over
+     every slot would retire a second time. Such an entry always
+     takes the nested walk, never the flat one. The same entry
+     serves every holder of the field: a `@form(vec)` element, a
+     `@form(hashmap)` or `@form(lru_cache)` cell (a synced map's
+     reads copy the elements out, as they copy a cell's other
+     blocks), a nested record. A `set` on a bounded place a locus
+     holds retires the element it replaces, `clear` and `truncate`
+     the ones they drop (`lotus_bounded_retire_tail`), and a whole
+     assignment of the place the ones it held; every element such a
+     place stores is its own copy (`types.md` § bounded). Before,
+     every one of these stayed in `self.__arena` for the locus's
+     lifetime: 167 MB of peak RSS over 20 000 stores of a record
+     holding one 8 KB String.
+
      A payload-enum field itself (`self.e = E::A(s)`) is replaced
      the same way: the field points at the enum's storage block,
      the value is deep-copied into a fresh block (owned Strings and

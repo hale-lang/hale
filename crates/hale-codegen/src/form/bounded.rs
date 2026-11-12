@@ -236,7 +236,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// clear(f) — len = 0. Returns Int 0 (statement-idiom value,
-    /// same convention as the Unit-ish stdlib calls).
+    /// same convention as the Unit-ish stdlib calls). On a place a locus
+    /// holds, the dropped elements' Strings, Bytes and records retire.
     pub(crate) fn lower_bounded_clear(
         &mut self,
         args: &[Expr],
@@ -244,17 +245,102 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         cap: u64,
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        let (_, len_ptr, _) =
-            self.bounded_storage_ptrs(&args[0], elem, cap, scope)?;
+        let (storage, len_ptr, retire) = self.bounded_shrink_place(&args[0], elem, cap, scope)?;
+        let old_len = self.bounded_len_if(retire.is_some(), len_ptr)?;
         let zero = self.context.i64_type().const_int(0, false);
         self.builder
             .build_store(len_ptr, zero)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if let (Some(arena), Some(old_len)) = (retire, old_len) {
+            self.emit_bounded_retire_tail(arena, storage, old_len, elem, cap)?;
+        }
         Ok((zero.into(), CodegenTy::Int))
     }
 
+    /// A `clear` / `truncate` receiver: its storage, its `len` slot, and
+    /// the arena to retire the dropped elements into — `Some` for a
+    /// place a locus holds whose elements are Strings, Bytes or records
+    /// (it owns them, `bounded_place_owns_elems`), `None` otherwise.
+    fn bounded_shrink_place(
+        &mut self,
+        recv: &Expr,
+        elem: &CodegenTy,
+        cap: u64,
+        scope: &Scope<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, PointerValue<'ctx>, Option<PointerValue<'ctx>>), CodegenError> {
+        if !Self::bounded_elem_is_ptr(elem) {
+            let (storage, len_ptr, _) = self.bounded_storage_ptrs(recv, elem, cap, scope)?;
+            return Ok((storage, len_ptr, None));
+        }
+        let (storage, owner) = self.bounded_place(recv, scope)?;
+        let st = self.llvm_bounded_storage_type(elem, cap);
+        let len_ptr = self
+            .builder
+            .build_struct_gep(st, storage, 0, "bounded.len.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let retire = if matches!(owner, Some(Some(_))) {
+            Some(self.bounded_owner_arena(recv, owner, scope)?)
+        } else {
+            None
+        };
+        Ok((storage, len_ptr, retire))
+    }
+
+    fn bounded_len_if(
+        &mut self,
+        want: bool,
+        len_ptr: PointerValue<'ctx>,
+    ) -> Result<Option<inkwell::values::IntValue<'ctx>>, CodegenError> {
+        if !want {
+            return Ok(None);
+        }
+        let v = self
+            .builder
+            .build_load(self.context.i64_type(), len_ptr, "bounded.shrink.old_len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(Some(v.into_int_value()))
+    }
+
+    /// Retire the elements a `clear` / `truncate` dropped from a bounded
+    /// place a locus holds (`lotus_bounded_retire_tail`): its storage's
+    /// `len` holds the new count, `old_len` the one before.
+    fn emit_bounded_retire_tail(
+        &mut self,
+        arena: PointerValue<'ctx>,
+        storage: PointerValue<'ctx>,
+        old_len: inkwell::values::IntValue<'ctx>,
+        elem: &CodegenTy,
+        cap: u64,
+    ) -> Result<(), CodegenError> {
+        let desc = self.retire_slots_desc(vec![(0, CodegenTy::Bounded(Box::new(elem.clone()), cap), false)], 0);
+        if desc.is_empty() {
+            return Ok(());
+        }
+        let g = self.self_field_retire_desc_global(&desc);
+        let i64_t = self.context.i64_type();
+        let f = self
+            .module
+            .get_function("lotus_bounded_retire_tail")
+            .expect("lotus_bounded_retire_tail declared");
+        self.builder
+            .build_call(
+                f,
+                &[
+                    arena.into(),
+                    storage.into(),
+                    old_len.into(),
+                    g.as_pointer_value().into(),
+                    i64_t.const_int(desc.len() as u64, false).into(),
+                ],
+                "bounded.retire_tail",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
     /// truncate(f, n) — len = clamp(n, 0, len). Never grows (slots
-    /// past len were never written). Returns the new count.
+    /// past len were never written). Returns the new count. On a place
+    /// a locus holds, the dropped elements retire, as `clear`'s do.
     pub(crate) fn lower_bounded_truncate(
         &mut self,
         args: &[Expr],
@@ -262,8 +348,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         cap: u64,
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        let (_, len_ptr, _) =
-            self.bounded_storage_ptrs(&args[0], elem, cap, scope)?;
+        let (storage, len_ptr, retire) = self.bounded_shrink_place(&args[0], elem, cap, scope)?;
         let i64_t = self.context.i64_type();
         let (nv, nty) = self.lower_expr(&args[1], scope)?;
         if nty != CodegenTy::Int {
@@ -310,6 +395,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(len_ptr, new_len)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if let Some(arena) = retire {
+            self.emit_bounded_retire_tail(arena, storage, len, elem, cap)?;
+        }
         Ok((new_len.into(), CodegenTy::Int))
     }
 
@@ -532,13 +620,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // an already-anchored value is identity.
                 self.refuse_element_through_member_param("push", &args[0], &elem, scope)?;
                 let xv = if Self::bounded_elem_is_ptr(&elem) {
+                    let owned = Self::bounded_place_owns_elems(&args[0], &place_owner, scope);
                     let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
-                    self.emit_cross_arena_store_deep_copy_ptr(
-                        xv,
-                        &elem,
-                        target,
-                        "bounded.push",
-                    )?
+                    self.emit_bounded_elem_store_copy(xv, &elem, target, owned, "bounded.push")?
                 } else {
                     xv
                 };
@@ -766,14 +850,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // Pointer-shaped elements anchor into the
                 // receiver's owning arena, same as push.
                 self.refuse_element_through_member_param("set", &args[0], &elem, scope)?;
+                let mut retire_into = None;
                 let xv = if Self::bounded_elem_is_ptr(&elem) {
+                    let owned = Self::bounded_place_owns_elems(&args[0], &place_owner, scope);
                     let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
-                    self.emit_cross_arena_store_deep_copy_ptr(
-                        xv,
-                        &elem,
-                        target,
-                        "bounded.set",
-                    )?
+                    // A place a locus holds owns its elements: the one
+                    // `set` replaces is retired below.
+                    if matches!(place_owner, Some(Some(_))) {
+                        retire_into = Some(target);
+                    }
+                    self.emit_bounded_elem_store_copy(xv, &elem, target, owned, "bounded.set")?
                 } else {
                     xv
                 };
@@ -787,9 +873,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 };
+                let old_snap = match retire_into {
+                    Some(_) => {
+                        let snap = self.alloca_in_entry(elem_llvm, "bounded.set.old")?;
+                        let old = self
+                            .builder
+                            .build_load(elem_llvm, slot_ptr, "bounded.set.old.val")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder
+                            .build_store(snap, old)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        Some(snap)
+                    }
+                    None => None,
+                };
                 self.builder
                     .build_store(slot_ptr, xv)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                if let (Some(arena), Some(snap)) = (retire_into, old_snap) {
+                    self.emit_bounded_set_retire(arena, snap, slot_ptr, &elem)?;
+                }
                 self.builder
                     .build_unconditional_branch(join_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -894,6 +997,94 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Does the bounded place `recv` (its owner from `bounded_place`)
+    /// own its elements under the single-owner rule — a place a locus
+    /// holds (`self.r.names`, `h.names`), or a bounded local viewing a
+    /// place (`let mut dest = self.xs`)? Those places' elements are
+    /// retired (a whole-value store over the record holding them, a
+    /// `set` replacing one), so what is stored there must be the
+    /// place's own copy, never a block another owner holds. A record
+    /// local's field (`b.items`) is the frame's, and keeps the plain
+    /// anchor: the store that moves it into a locus copies it then.
+    fn bounded_place_owns_elems(
+        recv: &Expr,
+        owner: &Option<Option<crate::codegen::LvalueOwner<'ctx>>>,
+        scope: &Scope<'ctx>,
+    ) -> bool {
+        match owner {
+            Some(Some(_)) => true,
+            Some(None) => false,
+            None => matches!(recv, Expr::Ident(i) if scope.locals.contains_key(&Self::bounded_view_key(&i.name))),
+        }
+    }
+
+    /// The copy a `push` or `set` stores into a bounded slot of a
+    /// pointer element. `owned` (`bounded_place_owns_elems`): the
+    /// place's own — a String or Bytes already in `dest` copied too
+    /// (`cell_owned_clone`), a record always fresh — as a `@form(vec)`
+    /// element's is (`emit_vec_cell_copy_ptr`). Otherwise the plain
+    /// anchor, which passes a value already in `dest` through.
+    fn emit_bounded_elem_store_copy(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        elem: &CodegenTy,
+        dest: PointerValue<'ctx>,
+        owned: bool,
+        site: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if !owned {
+            return self.emit_cross_arena_store_deep_copy_ptr(value, elem, dest, site);
+        }
+        let prev = std::mem::replace(&mut self.cell_owned_clone, true);
+        let res = self.emit_return_value_deep_copy(value, elem, dest);
+        self.cell_owned_clone = prev;
+        res
+    }
+
+    /// `set(place, i, x)` on a bounded place a locus holds: retire what
+    /// the replaced element owned (a String, a Bytes, a record's block
+    /// and everything under it) and the new one does not reach, into the
+    /// locus's arena, pending until its activation boundary as a
+    /// replaced field's are (`lotus_self_field_retire_replaced`, over a
+    /// one-slot descriptor). `old_snap` holds the slot's value from
+    /// before the store; `slot` holds the new one. The slot's old value
+    /// stayed in the arena for the locus's lifetime.
+    fn emit_bounded_set_retire(
+        &mut self,
+        arena: PointerValue<'ctx>,
+        old_snap: PointerValue<'ctx>,
+        slot: PointerValue<'ctx>,
+        elem: &CodegenTy,
+    ) -> Result<(), CodegenError> {
+        let desc = self.retire_slots_desc(vec![(0, elem.clone(), false)], 0);
+        if desc.is_empty() {
+            return Ok(());
+        }
+        let g = self.self_field_retire_desc_global(&desc);
+        let ptr_t = self.context.ptr_type(inkwell::AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let retire_fn = self
+            .module
+            .get_function("lotus_self_field_retire_replaced")
+            .expect("self-field retire declared");
+        self.builder
+            .build_call(
+                retire_fn,
+                &[
+                    arena.into(),
+                    old_snap.into(),
+                    slot.into(),
+                    ptr_t.const_null().into(),
+                    i64_t.const_zero().into(),
+                    g.as_pointer_value().into(),
+                    i64_t.const_int(desc.len() as u64, false).into(),
+                ],
+                "bounded.set.retire",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
     /// Pointer-shaped bounded element? (String/Bytes/TypeRef slots
     /// hold heap pointers that need arena anchoring; scalars are
     /// inline bytes.)
@@ -991,12 +1182,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .builder
             .build_load(elem_llvm, slot_ptr, "bounded.anchor.elem")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let anchored = self.emit_cross_arena_store_deep_copy_ptr(
-            ev,
-            elem,
-            dest_arena,
-            site,
-        )?;
+        // Under the single-owner rule (`cell_owned_clone`: a compound
+        // self-field store, a form cell's store, a locus's params as
+        // built) the elements are the place's own, as its other fields'
+        // blocks are: the retire descriptor walks them
+        // (`retire_slots_desc`), so a record element already in
+        // `dest_arena` — another field's, a cell's — is copied rather
+        // than shared, which the plain anchor's same-arena gate would
+        // do. A String or Bytes element honours the flag on either path.
+        let anchored = if self.cell_owned_clone {
+            self.emit_return_value_deep_copy(ev, elem, dest_arena)?
+        } else {
+            self.emit_cross_arena_store_deep_copy_ptr(ev, elem, dest_arena, site)?
+        };
         self.builder
             .build_store(slot_ptr, anchored)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

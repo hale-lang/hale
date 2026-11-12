@@ -13,6 +13,7 @@ type HandResult {
     ok: Bool = false;
     output: String = ""; // a path, a sha, a url, a verdict, a tool's stdout
     error: String = "";
+    note: String = ""; // a word for the leg's output that is not an error (`say_note`)
 }
 
 fn hand_result(r: dna::RunResult, output: String) -> HandResult {
@@ -44,12 +45,105 @@ interface GitHand {
     // pushed to the repository it was cloned from (`origin`).
     fn branch(worktree: String, name: String) -> HandResult;
     fn push(worktree: String, name: String) -> HandResult;
+    // The position the work in hand is for (`position:<name>`, "" for
+    // none): at the organism's allocated Forgejo, the leg's pushes and its
+    // own commits go as that position's persona (`wearing`).
+    fn wear(position: String);
 }
 interface ForgeHand {
     // A review opened from the worktree's branch: its url.
     fn open_review(worktree: String, title: String, body: String) -> HandResult;
     // A review's verdict: `approve`, `revise` or `pending`.
     fn verdict(review: String) -> HandResult;
+    // The position the work in hand is for: at the organism's allocated
+    // Forgejo, its reviews open as that position's persona (`wearing`).
+    fn wear(position: String);
+}
+
+// ---- the persona a leg acts as ----------------------------------------------
+//
+// Forge auth is the legs runner's, never a harness's: a leg handed work (a
+// branch of commits in a worktree, a person's or a harness's alike) pushes
+// it and opens its review as the persona of the position the work is for,
+// when the organism's forge is the habitat's Forgejo. The persona's user
+// and slot are what the habitat's reconcile recorded in the organism's
+// ledger (`dna::forgejo_ledger_persona`); a position the ledger does not
+// name yet, or whose token is not in the vault, falls back to the
+// organism's own user, said once as a note. GitHub, no forge, or no
+// position: the organism's own, as before.
+
+// Who a leg acts as at the organism's allocated Forgejo.
+type ForgeActor {
+    persona: Bool = false; // the position's persona; else the organism's own user
+    user: String = ""; // the Forgejo user a push names
+    slot: String = ""; // the vault slot of its token
+    email: String = ""; // the author of the leg's own commits, "" for the leg's own name
+    note: String = ""; // why the organism's own user stands in for the persona
+}
+
+// The actor for work for `position` at the forge `f` of the organism keyed
+// `key`, given the persona its ledger names (`p`) and whether that
+// persona's slot holds a token. Touches nothing.
+fn forge_actor(
+    f: dna::ForgeAllocation,
+    key: String,
+    position: String,
+    p: dna::ForgejoPersona,
+    ready: Bool
+) -> ForgeActor {
+    let slash = std::str::index_of(f.repo, "/");
+    let mut own = ForgeActor {
+        user: if slash > 0 { f.repo[0..slash] } else { "" },
+        slot: f.key_vault,
+    };
+    if f.provider != "forgejo" || len(position) == 0 { return own; }
+    if len(p.user) == 0 || len(p.slot) == 0 {
+        own.note = "no persona of " + position
+            + " is in the habitat's ledger yet (`hale habitat apply` makes it), so the organism's own Forgejo user "
+            + own.user + " acts for it";
+        return own;
+    }
+    if !ready {
+        own.note = "the persona " + p.user + " of " + position + " has no token in the vault slot "
+            + p.slot + " (`hale habitat apply` mints it), so the organism's own Forgejo user "
+            + own.user + " acts for it";
+        return own;
+    }
+    return ForgeActor {
+        persona: true,
+        user: p.user,
+        slot: p.slot,
+        email: p.user + "@" + dna::forgejo_persona_domain(key),
+    };
+}
+
+// The actor for work for `position` at the organism at `root`, whose forge
+// allocation is `f`: its ledger read and the persona's slot looked at.
+fn wearing(root: String, f: dna::ForgeAllocation, position: String) -> ForgeActor {
+    let key = dna::allocation_key(root);
+    if f.provider != "forgejo" || len(position) == 0 || len(key) == 0 {
+        return forge_actor(f, key, position, dna::ForgejoPersona { }, false);
+    }
+    let p = dna::forgejo_ledger_persona(
+        std::io::fs::read_file(dna::forgejo_personas_path(key)) or "",
+        position,
+    );
+    let ready = len(p.slot) > 0 && std::secret::Credential { vault: p.slot }.ready();
+    return forge_actor(f, key, position, p, ready);
+}
+
+// The position a Work is for: the hat's (`position.id`), else the one the
+// leg works as (`--as`).
+fn work_position(hat: String, as_position: String) -> String {
+    let id = std::json::find_string_field(std::json::find_field_raw(hat, "position"), "id");
+    return if len(id) > 0 { id } else { as_position };
+}
+
+// A push's and its review's notes said once on the leg's output: the two
+// name one actor, so the first that says anything is enough.
+fn say_note(first: HandResult, second: HandResult) {
+    let n = if len(first.note) > 0 { first.note } else { second.note };
+    if len(n) > 0 { eprintln("hale dna work: note: ", n); }
 }
 interface ToolchainHand {
     fn check(path: String) -> HandResult;
@@ -162,10 +256,25 @@ locus HeadLease {
 // suite), so nothing a performer does reaches the primary checkout;
 // patches through a file, commits under the leg's own name.
 // `root` is the organism's ("": HALE_DNA_GENOME, else the leg's own
-// directory): a push to a repository at its allocated Forgejo goes as its
-// own Forgejo user (`push`).
+// directory): a push to a repository at its allocated Forgejo goes as the
+// persona of the position worn (`wear`), else as the organism's own
+// Forgejo user (`push`), and the leg's own commits there are the persona's.
 locus ScratchGit {
-    params { made: Int = 0; roots: String = ""; root: String = ""; }
+    params { made: Int = 0; roots: String = ""; root: String = ""; position: String = ""; }
+    fn wear(position: String) { self.position = position; }
+    // The actor the worktree's pushes go as, when its origin is a
+    // repository at the organism's allocated Forgejo; `at` false else.
+    fn actor(worktree: String) -> ScratchActor {
+        let root = allocated_root(self.root);
+        let f = dna::forge_allocated(root);
+        let origin = dna::trim_nl(
+            dna::run_tool("git\n-C\n" + worktree + "\nremote\nget-url\norigin").stdout,
+        );
+        if f.provider != "forgejo" || len(allocated_slug(f.address, origin)) == 0 {
+            return ScratchActor { };
+        }
+        return ScratchActor { at: true, actor: wearing(root, f, self.position) };
+    }
     fn worktree(repo: String, base: String) -> HandResult {
         self.made = self.made + 1;
         let dir = dna::scratch_root("legs-git-" + to_string(self.made));
@@ -203,9 +312,16 @@ locus ScratchGit {
     fn commit(worktree: String, message: String) -> HandResult {
         let staged = dna::run_tool("git\n-C\n" + worktree + "\nadd\n-A");
         if staged.code != 0 { return hand_result(staged, ""); }
+        // the leg's own commit: the persona's at the allocated Forgejo, else
+        // the leg's; commits a person or a harness made are never rewritten
+        let a = if len(self.position) > 0 { self.actor(worktree) } else { ScratchActor { } };
+        let who = if a.at && a.actor.persona {
+            "user.name=" + a.actor.user + "\n-c\nuser.email=" + a.actor.email
+        } else {
+            "user.name=legs\n-c\nuser.email=legs@hale-dna"
+        };
         let out = dna::run_tool(
-            "git\n-C\n" + worktree
-                + "\n-c\nuser.name=legs\n-c\nuser.email=legs@hale-dna\ncommit\n--quiet\n--allow-empty\n-m\n"
+            "git\n-C\n" + worktree + "\n-c\n" + who + "\ncommit\n--quiet\n--allow-empty\n-m\n"
                 + message,
         );
         if out.code != 0 { return hand_result(out, ""); }
@@ -224,24 +340,21 @@ locus ScratchGit {
         return hand_result(out, name);
     }
     // The branch pushed to the worktree's origin. A repository at the
-    // organism's allocated Forgejo takes it as the organism's own user, its
-    // token the vault slot the allocation names: the token reaches git
-    // through a credential helper reading a file only this user can read,
-    // never an argv or this process's environment.
+    // organism's allocated Forgejo takes it as the persona of the position
+    // worn, else as the organism's own user (`wearing`), its token the vault
+    // slot the persona's ledger line or the allocation names: the token
+    // reaches git through a credential helper reading a file only this user
+    // can read, never an argv or this process's environment.
     fn push(worktree: String, name: String) -> HandResult {
-        let f = dna::forge_allocated(allocated_root(self.root));
-        let origin = dna::trim_nl(
-            dna::run_tool("git\n-C\n" + worktree + "\nremote\nget-url\norigin").stdout,
-        );
-        let slash = std::str::index_of(f.repo, "/");
-        if f.provider != "forgejo" || len(allocated_slug(f.address, origin)) == 0 || slash <= 0 {
+        let a = self.actor(worktree);
+        if !a.at || len(a.actor.user) == 0 {
             let out = dna::run_tool("git\n-C\n" + worktree + "\npush\n--quiet\norigin\n" + name);
             return hand_result(out, name);
         }
-        let token = std::secret::Credential { vault: f.key_vault };
+        let token = std::secret::Credential { vault: a.actor.slot };
         if !token.ready() {
             return HandResult {
-                error: "no token in the vault slot " + f.key_vault
+                error: "no token in the vault slot " + a.actor.slot
                     + " the organism's forge allocation names",
             };
         }
@@ -257,12 +370,21 @@ locus ScratchGit {
         let out = dna::run_tool(
             "git\n-C\n" + worktree
                 + "\n-c\ncredential.helper=\n-c\ncredential.helper=!f() { echo username="
-                + f.repo[0..slash] + "; echo \"password=$(cat '" + dir
+                + a.actor.user + "; echo \"password=$(cat '" + dir
                 + "/token')\"; }; f\npush\n--quiet\norigin\n" + name,
         );
         dna::run_tool("rm\n-rf\n" + dir);
-        return hand_result(out, name);
+        let mut done = hand_result(out, name);
+        done.note = a.actor.note;
+        return done;
     }
+}
+
+// The actor a scratch worktree's pushes go as: `at` when its origin is a
+// repository at the organism's allocated Forgejo.
+type ScratchActor {
+    at: Bool = false;
+    actor: ForgeActor = ForgeActor { };
 }
 
 // The forge through `gh`: a pull request from the worktree's branch, and
@@ -271,6 +393,8 @@ locus GhForge {
     // `repo` (owner/name) and `base` name a codebase's own repository and
     // default branch; empty, `gh` reads them from the worktree's remote.
     params { opened: Int = 0; repo: String = ""; base: String = ""; }
+    // GitHub's reviews open as the `gh` login's, whatever position is worn.
+    fn wear(position: String) { }
     fn open_review(worktree: String, title: String, body: String) -> HandResult {
         self.opened = self.opened + 1;
         if len(self.repo) > 0 {
@@ -311,9 +435,12 @@ locus GhForge {
 // `root` is the organism's root ("": HALE_DNA_GENOME, else the leg's own
 // directory, where `hale dna work` runs it); the allocation is read at each
 // call, as the host's forge sync reads it.
+// At the habitat's Forgejo the review opens as the persona of the position
+// worn (`wear`, `wearing`), else as the organism's own user.
 locus AllocatedForge {
-    params { root: String = ""; }
+    params { root: String = ""; position: String = ""; }
     fn organism() -> String { return allocated_root(self.root); }
+    fn wear(position: String) { self.position = position; }
     fn open_review(worktree: String, title: String, body: String) -> HandResult {
         let f = dna::forge_allocated(self.organism());
         if f.provider == "github" {
@@ -338,6 +465,7 @@ locus AllocatedForge {
             "git\n-C\n" + worktree + "\nsymbolic-ref\n--short\nrefs/remotes/origin/HEAD",
         );
         let named = dna::trim_nl(head.stdout);
+        let actor = wearing(self.organism(), f, self.position);
         let fj = dna::ForgejoForge {
             address: f.address,
             repo: slug,
@@ -346,10 +474,12 @@ locus AllocatedForge {
             } else {
                 "main"
             },
-            token_slot: f.key_vault,
+            token_slot: actor.slot,
         };
         let bridge = ForgeBridge { forge: fj };
-        return bridge.open_review(worktree, title, body);
+        let mut opened = bridge.open_review(worktree, title, body);
+        opened.note = actor.note;
+        return opened;
     }
     fn verdict(review: String) -> HandResult {
         let f = dna::forge_allocated(self.organism());
@@ -401,6 +531,8 @@ fn allocated_slug(address: String, repo: String) -> String {
 // where its code is; the memory forge stands in for it in fixtures.
 locus ForgeBridge {
     params { forge: dna::Forge = dna::NoForge { }; }
+    // The core's forge acts as its own credentials say, whatever is worn.
+    fn wear(position: String) { }
     fn open_review(worktree: String, title: String, body: String) -> HandResult {
         let br = dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\n--abbrev-ref\nHEAD");
         if br.code != 0 { return hand_result(br, ""); }
