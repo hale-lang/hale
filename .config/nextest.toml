@@ -54,6 +54,19 @@ slow-timeout = { period = "60s", terminate-after = 25 }
 test-group = 'dna-fixtures'
 
 [[profile.default.overrides]]
+# The head's decoy case starts `hale dna head`, which builds the head's
+# seeds before it says anything: on CI it takes 357-466s, against the
+# 8-minute limit above, and a loaded runner ran it past (2026-11-11, a
+# timeout rather than a failure). It gets 15 minutes; the test's own
+# deadline, a minute inside them, fails with what the head said.
+# `binary_id`, not `binary(...)`: the parity job runs under libtest's
+# threads every binary this file names with `binary(...)` (its grouped
+# binaries), and dna_projects is not one: its tests share one habitat when
+# they share a process.
+filter = 'binary_id(hale-cli::dna_projects) and test(=dna_head::a_container_outside_the_allocation_is_no_evidence_of_the_organisms_memory)'
+slow-timeout = { period = "60s", terminate-after = 15 }
+
+[[profile.default.overrides]]
 # UDP tests hardcode multicast groups (239.255.x) + ports; two running
 # concurrently cross-talk / collide on the group:port pair (the #178
 # loopback flake class). Serialize them against each other.
