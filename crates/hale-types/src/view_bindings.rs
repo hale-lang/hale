@@ -227,6 +227,39 @@ pub struct OwnedViews {
     /// Lowering publishes one arena per call, so the check refuses these
     /// (`MixedOwners`).
     mixed_owners: Vec<MixedOwners>,
+    /// The values a bounded `push` or `set` stores into a list the frame
+    /// holds (a local's, `l.list`), by the call's id and the value's own
+    /// span start: whether the slot may keep the value itself or takes
+    /// its own copy ([`BoundedStore`]).
+    bounded_stores: HashMap<(u32, u32), BoundedStore>,
+}
+
+/// What a bounded `push(list, v)` or `set(list, i, v)` into a list the
+/// frame holds stores (`OwnedViews::bounded_store`). Every bounded
+/// place owns its pointer-shaped elements (spec/types.md § `bounded[T;
+/// N]`): no other name may reach the block a slot holds, or a write
+/// through that name would change the element, and a write through the
+/// element (an `at` bound and written, set back) the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BoundedStore {
+    /// A value nothing else names: a literal, a constructor, a call's
+    /// fresh result, a String or Bytes local holding one (no write
+    /// lands in a String under a local in place). Stored as it is.
+    Fresh,
+    /// A value no one reaches after the store: a local of the frame not
+    /// used after it, that no binding live after it views, holding a
+    /// value only it names (fresh, or a copy made at its binding); or a
+    /// part of locals no one reaches after it (an element of a list a
+    /// `for` walks and nothing reads again, a literal of a dead local's
+    /// fields). The slot takes its block.
+    Moved,
+    /// Such a local whose value may still be a place's (bound from one
+    /// without a copy) but whose writes copy it first (the local-place
+    /// rule's flag): moved when its flag says the frame owns the value by
+    /// the store (`at` bound, written, set back), copied when it does not.
+    MoveIfOwned,
+    /// Anything else: stored as the list's own copy.
+    Copy,
 }
 
 /// A call that hands a callee which may write through its arguments
@@ -314,10 +347,16 @@ pub mod reasons {
     /// copy is store-latest: it never accumulates.
     pub const LOCUS_STORED: &str = "copy: a value stored into a locus's field from outside its methods";
 
+    /// A value another name may reach stored into a bounded list the
+    /// frame holds (`push(l.list, y)` with `y` used after, an element of
+    /// another list, a place's value): the slot takes its own copy, as a
+    /// list a locus holds does (spec/types.md § `bounded[T; N]`).
+    pub const BOUNDED_STORED: &str = "copy: a value another name reaches stored into a bounded list";
+
     /// Is the reason a store's own copy of its value (into a part of a
-    /// parameter, or into a locus's field)?
+    /// parameter, into a locus's field, or into a bounded list)?
     pub fn is_store(reason: &str) -> bool {
-        reason == PLACE_PARAM_STORED || reason == LOCUS_STORED
+        reason == PLACE_PARAM_STORED || reason == LOCUS_STORED || reason == BOUNDED_STORED
     }
 
     /// Is the reason the local-place rule's (`PLACE_*`), not the
@@ -526,12 +565,30 @@ impl OwnedViews {
         }
         self.param_writes.extend(other.param_writes.into_iter().filter_map(&id));
         self.mixed_owners.extend(other.mixed_owners);
+        // A store both hold answers by the one that copies more.
+        for ((c, at), kind) in other.bounded_stores {
+            if let Some(c) = id(c) {
+                let held = self.bounded_stores.entry((c, at)).or_insert(kind);
+                *held = (*held).max(kind);
+            }
+        }
     }
 
     /// The calls handing a writer storage of two owners at once
     /// ([`MixedOwners`]), in the order the pass met them.
     pub fn mixed_owners(&self) -> &[MixedOwners] {
         &self.mixed_owners
+    }
+
+    /// What the bounded `push` or `set` with this id stores of its value
+    /// (the argument starting at `arg_start`) into a list the frame holds
+    /// ([`BoundedStore`]). A call the column has no row for stores a
+    /// copy.
+    pub fn bounded_store(&self, call: NodeId, arg_start: u32) -> BoundedStore {
+        if call.is_none() {
+            return BoundedStore::Copy;
+        }
+        self.bounded_stores.get(&(call.0, arg_start)).copied().unwrap_or(BoundedStore::Copy)
     }
 
     /// What the argument starting at `arg_start` of the call with this id
@@ -1234,6 +1291,7 @@ impl From<Found> for OwnedViews {
             handoffs: found.handoffs,
             param_writes: found.param_writes,
             mixed_owners: found.mixed_owners,
+            bounded_stores: found.bounded_stores,
         }
     }
 }
@@ -1250,6 +1308,7 @@ struct Found {
     handoffs: HashMap<(u32, u32), u8>,
     param_writes: HashSet<u32>,
     mixed_owners: Vec<MixedOwners>,
+    bounded_stores: HashMap<(u32, u32), BoundedStore>,
 }
 
 /// Per body, what its calls reach, transitively: the fields it may
@@ -1798,6 +1857,20 @@ struct SelfStore {
     block: Option<u32>,
 }
 
+/// A bounded `push` or `set` into a list the frame holds: the call's id,
+/// the value's span, the position after its operands, the local the
+/// value names (a bare local), whether it views nothing, and whether
+/// the list is a record local's (`l.list`), whose copy is this pass's
+/// to report.
+struct BoundedStoreAt {
+    call: u32,
+    span: Span,
+    at: u32,
+    var: Option<usize>,
+    keys: BTreeSet<String>,
+    frame_list: bool,
+}
+
 /// A write event: the writes, and the positions it spans (a call's
 /// arguments are inside it: a callee reads its parameters after it
 /// writes).
@@ -1919,6 +1992,12 @@ struct Walk<'p, 'a> {
     field_reads: Vec<(u32, String)>,
     opaque_calls: Vec<u32>,
     self_stores: Vec<SelfStore>,
+    /// The bounded stores of a value into a list, decided once the
+    /// body's uses and loops are in (`Walk::finish`).
+    bounded_stores: Vec<BoundedStoreAt>,
+    /// Each `for`'s element variable and its loop's start: the loop
+    /// binds it afresh at each iteration.
+    for_vars: BTreeMap<usize, u32>,
     /// Writes into a local's or a parameter's value in place: the block
     /// written, spelled as the markers spell it, where, and whether
     /// anything below it may be written too (a call that may write
@@ -2045,6 +2124,8 @@ impl<'p, 'a> Walk<'p, 'a> {
             field_reads: Vec::new(),
             opaque_calls: Vec::new(),
             self_stores: Vec::new(),
+            bounded_stores: Vec::new(),
+            for_vars: BTreeMap::new(),
             root_writes: Vec::new(),
             param_mask: 0,
             param_passes: Vec::new(),
@@ -3028,6 +3109,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                     keys = real(&keys);
                 }
                 self.bind(v, Site::Node(id.0), &name.name, keys, *span);
+                self.for_vars.insert(v, self.pos + 1);
                 self.in_loop(|w| {
                     let at = w.tick();
                     w.uses[v].push(at);
@@ -3432,6 +3514,28 @@ impl<'p, 'a> Walk<'p, 'a> {
         ops.extend(receiver);
         ops.extend(args.iter().copied());
         let mut keys = self.operands(&ops);
+        // A bounded `push` or `set`: what its value is, for the store's
+        // own copy (`BoundedStore`), decided at the body's end.
+        if let (true, true, Some(Expr::Call { id, .. })) = (bounded, self.summary.is_some(), call) {
+            let value_at = match callee {
+                Expr::Ident(c) if c.name == "push" => Some(1),
+                Expr::Ident(c) if c.name == "set" => Some(2),
+                _ => None,
+            };
+            if let (Some(j), Some(list), false) = (value_at, args.first(), id.is_none()) {
+                if let Some(value) = args.get(j) {
+                    let var = match value {
+                        Expr::Ident(v) => self.lookup(&v.name).flatten(),
+                        _ => None,
+                    };
+                    // A record local's list (`l.list`): no locus holds it.
+                    let frame_list = self.root_local(list).is_some_and(|(v, d)| d >= 1 && !self.handle_only[v]);
+                    let at = self.pos;
+                    let keys = keys.get(j).cloned().flatten().unwrap_or_default();
+                    self.bounded_stores.push(BoundedStoreAt { call: id.0, span: value.span(), at, var, keys, frame_list });
+                }
+            }
+        }
         // The callee runs once its operands are in: it may read any of
         // the program's fields.
         if unknown || summarized.is_some() {
@@ -4450,6 +4554,16 @@ impl<'p, 'a> Walk<'p, 'a> {
                 *entry = *entry && !shared_here;
             }
         }
+        // A bounded `push` or `set`: the list owns what it stores, so the
+        // slot keeps the value itself only when nothing else names it.
+        for st in &self.bounded_stores {
+            let kind = self.bounded_store_kind(st, o.owned, &record, &cow_binds);
+            if kind == BoundedStore::Copy && st.frame_list {
+                found.cell_copies.push(CellCopy { span: st.span, operand: true, reason: reasons::BOUNDED_STORED });
+            }
+            let held = found.bounded_stores.entry((st.call, st.span.start.0)).or_insert(kind);
+            *held = (*held).max(kind);
+        }
         for (key, fields) in cow_binds {
             found.cow_binds.insert(key, fields.into_iter().collect());
         }
@@ -4459,6 +4573,112 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
         found.param_writes.extend(self.param_writes.iter().copied());
         found.mixed_owners.extend(self.mixed_owners.iter().cloned());
+    }
+
+    /// Is the local `x` read or written after `at`, or, in a loop holding
+    /// `at` that began after `x` was declared, anywhere in that loop (a
+    /// later iteration would reach it)? A `for`'s own element is bound
+    /// afresh by its loop, which carries nothing round.
+    fn live_after(&self, x: usize, at: u32) -> bool {
+        let touched = || self.uses[x].iter().copied().chain(self.assigns.iter().filter(|w| w.var == x).map(|w| w.at));
+        let own_loop = self.for_vars.get(&x).copied();
+        touched().any(|u| u > at)
+            || self.loops.iter().any(|&(ls, le)| {
+                ls < at && at <= le && ls > self.declared[x] && Some(ls) != own_loop && touched().any(|u| ls < u && u <= le)
+            })
+    }
+
+    /// Does a binding other than one of `except`'s, live after `at`, view
+    /// the local `x`'s block (a literal holding it, an element of it, an
+    /// enum built of it)?
+    fn viewed_after(&self, x: usize, except: &[usize], at: u32) -> bool {
+        let place = format!("@{x}");
+        self.insts.iter().any(|o| {
+            !except.contains(&o.var)
+                && Handoff::places(&o.keys).any(|q| places_overlap(q, &place))
+                && self.live_after(o.var, at)
+        })
+    }
+
+    /// Do the keys of a value say it is only (a part of) the blocks of
+    /// frame locals that no one reaches after `at` (`except` aside): each
+    /// key a place marker naming a local, each such local not live after
+    /// the store and viewed by no binding that is?
+    fn only_dead_locals(&self, keys: &BTreeSet<String>, except: &[usize], at: u32) -> bool {
+        let mut locals = Vec::new();
+        for k in keys {
+            if !(k.starts_with(AT) || k.starts_with(PART)) {
+                return false;
+            }
+        }
+        for q in Handoff::places(keys) {
+            let Some(w) = q.strip_prefix('@').and_then(|r| r.split('.').next()).and_then(|n| n.parse::<usize>().ok()) else {
+                return false;
+            };
+            locals.push(w);
+        }
+        locals.iter().all(|&w| {
+            let mut ex = except.to_vec();
+            ex.push(w);
+            !self.live_after(w, at) && !self.viewed_after(w, &ex, at)
+        })
+    }
+
+    /// What a bounded `push` or `set` into a list stores of its value
+    /// (`BoundedStore`), once the body's uses, loops and owned bindings
+    /// are in: `owned` the instances bound as owned copies, `record` the
+    /// locals known to hold a struct, `cow_binds` the copy-on-write flags
+    /// each binding sets.
+    fn bounded_store_kind(
+        &self,
+        st: &BoundedStoreAt,
+        owned: &[bool],
+        record: &[bool],
+        cow_binds: &HashMap<(Site, String), BTreeMap<String, bool>>,
+    ) -> BoundedStore {
+        let Some(v) = st.var else {
+            return if st.keys.is_empty() {
+                BoundedStore::Fresh
+            } else if self.only_dead_locals(&st.keys, &[], st.at) {
+                BoundedStore::Moved
+            } else {
+                BoundedStore::Copy
+            };
+        };
+        // A String or Bytes local holding a value that views nothing.
+        if st.keys.is_empty() {
+            return BoundedStore::Fresh;
+        }
+        // Not read or written after the store, and no other binding live
+        // after it views the local's block.
+        if self.live_after(v, st.at) || self.viewed_after(v, &[v], st.at) {
+            return BoundedStore::Copy;
+        }
+        // Every binding of it the frame's own (a fresh value, a struct
+        // `let` of a place, which is a copy, GH #713, an owned view), or
+        // a part of locals no one reaches after the store.
+        let own = self.vars[v].iter().all(|&i| {
+            let inst = &self.insts[i];
+            owned[i]
+                || inst.keys.is_empty()
+                || (record[v] && inst.place_rhs)
+                || self.only_dead_locals(&inst.keys, &[v], st.at)
+        });
+        if own {
+            return BoundedStore::Moved;
+        }
+        // Its writes copy it first, behind the whole value's flag, which
+        // every binding of it sets.
+        let flagged = !self.binds[v].is_empty()
+            && self
+                .binds[v]
+                .iter()
+                .all(|b| cow_binds.get(&(b.site, self.names[v].clone())).is_some_and(|f| f.contains_key("")));
+        if flagged {
+            BoundedStore::MoveIfOwned
+        } else {
+            BoundedStore::Copy
+        }
     }
 
     /// Does a write `w` into a local bound from a self field (`shared`,
@@ -4617,6 +4837,65 @@ mod tests {
         let mut names: Vec<String> = found(src).sites.into_iter().map(|(_, n)| n).collect();
         names.sort();
         names
+    }
+
+    /// What each bounded `push` or `set` of `body` (in a `main` beside a
+    /// record `L` holding `list: bounded[In; 4]`) stores, in source order
+    /// (`BoundedStore`).
+    fn bounded_stores(body: &str) -> Vec<BoundedStore> {
+        let src = format!(
+            r#"
+            type In {{ k: Int = 0; }}
+            type Out {{ inner: In = In {{ }}; }}
+            type L {{ list: bounded[In; 4]; }}
+            fn id(x: In) -> In {{ return x; }}
+            fn main() {{ {body} }}
+            "#
+        );
+        let mut stores: Vec<((u32, u32), BoundedStore)> = found(&src).bounded_stores.into_iter().collect();
+        stores.sort_by_key(|((_, at), _)| *at);
+        stores.into_iter().map(|(_, k)| k).collect()
+    }
+
+    /// GH #1918: a list the frame holds owns its elements, so a `push` or
+    /// `set` keeps the value it is handed only when nothing else names
+    /// it.
+    #[test]
+    fn a_bounded_store_keeps_only_what_nothing_else_names() {
+        use BoundedStore::*;
+        let pre = "let mut l = L { }; push(l.list, In { }) or discard;";
+        let one = |rest: &str| bounded_stores(&format!("{pre} {rest}"))[1..].to_vec();
+        // A literal, a call's fresh result.
+        assert_eq!(one("push(l.list, In { k: 1 }) or discard; set(l.list, 0, In { }) or discard;"), [Fresh, Fresh]);
+        // A local not used after: moved; used, written or carried round a
+        // loop after: copied.
+        assert_eq!(one("let mut y = In { }; y.k = 1; push(l.list, y) or discard;"), [Moved]);
+        assert_eq!(one("let mut y = In { }; push(l.list, y) or discard; println(y.k);"), [Copy]);
+        assert_eq!(one("let mut y = In { }; push(l.list, y) or discard; y.k = 2;"), [Copy]);
+        assert_eq!(one("let y = In { }; for i in 0..2 { push(l.list, y) or discard; }"), [Copy]);
+        assert_eq!(one("for i in 0..2 { let y = In { k: i }; push(l.list, y) or discard; }"), [Moved]);
+        // A local another binding views: copied.
+        assert_eq!(one("let y = In { }; let o = Out { inner: y }; push(l.list, y) or discard; println(o.inner.k);"), [Copy]);
+        // An element read, written and set back, the list read after:
+        // moved by its flag. Not written: copied (it is the element
+        // itself). With the list read no more, nothing tells.
+        let after = "println(count(l.list));";
+        assert_eq!(one(&format!("let mut x = at(l.list, 0) or In {{ }}; x.k = 5; set(l.list, 0, x) or discard; {after}")), [MoveIfOwned]);
+        assert_eq!(one(&format!("let x = at(l.list, 0) or In {{ }}; set(l.list, 1, x) or discard; {after}")), [Copy]);
+        assert_eq!(one("let x = at(l.list, 0) or In { }; set(l.list, 1, x) or discard;"), [Moved]);
+        // Another list's element, a field, a literal holding a local, a
+        // call that hands its parameter back.
+        assert_eq!(one(&format!("push(l.list, at(l.list, 0) or In {{ }}) or discard; {after}")), [Copy]);
+        assert_eq!(one("let o = Out { }; push(l.list, o.inner) or discard; println(o.inner.k);"), [Copy]);
+        assert_eq!(one("let o = Out { }; push(l.list, o.inner) or discard;"), [Moved]);
+        assert_eq!(one("let y = In { }; push(l.list, id(y)) or discard; println(y.k);"), [Copy]);
+        // A part of a local no one reaches after the store: moved — a
+        // literal of a dead local's parts, another list's element read in
+        // a `for` whose list is not read again. Read again: copied.
+        assert_eq!(one("let y = In { }; push(l.list, Out { inner: y }.inner) or discard;"), [Moved]);
+        assert_eq!(one("let mut h = L { }; for x in h.list { push(l.list, x) or discard; }"), [Moved]);
+        assert_eq!(one("let mut h = L { }; for x in h.list { push(l.list, x) or discard; } println(count(h.list));"), [Copy]);
+        assert_eq!(one("let mut h = L { }; for x in h.list { push(l.list, x) or discard; println(x.k); }"), [Copy]);
     }
 
     const LOCUS: &str = r#"

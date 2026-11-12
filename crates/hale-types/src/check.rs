@@ -2800,6 +2800,15 @@ fn hot_snapshot_message(method: &str) -> String {
 /// (spec/forms.md § Reading a cell).
 fn hot_cell_copy_message(reason: &str, in_loop: bool) -> String {
     let in_loop_text = if in_loop { " in a loop" } else { "" };
+    if reason == crate::view_bindings::reasons::BOUNDED_STORED {
+        return format!(
+            "hot-path copy: a value stored into a bounded list is copied \
+             here{in_loop_text} ({reason}): the list owns its elements, and \
+             another name still reaches this one. Hand `push` or `set` a \
+             value nothing else names: a literal, a call's result, or a \
+             local not used after the store."
+        );
+    }
     if reason == crate::view_bindings::reasons::PLACE_PARAM_STORED {
         return format!(
             "hot-path copy: a place's value stored into a part of a parameter \

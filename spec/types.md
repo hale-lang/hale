@@ -1347,6 +1347,31 @@ Semantics:
   2026-11-11 none of these retired: a locus storing a record of one
   8 KB String in a `bounded[String; 4]` back over itself grew by that
   String per store, for its lifetime.
+- **Every** bounded place owns its pointer-shaped elements, a local's
+  too (`l.list`, with `l` a record local): no slot holds a block
+  another name reaches, so `push(l.list, y); y.k = 2` leaves the
+  element as it was pushed, and writing an element read with `at`
+  and `set` back leaves `y` as it was. `push` and `set` store the
+  value they are handed only when nothing else names it: a literal,
+  a constructor, a call's fresh result, a String or Bytes local
+  holding one (nothing writes into a String under a local in place),
+  or a value no one reaches after the store: a local of the frame that
+  is not read or written after it (nor in a later iteration of a loop
+  it was declared before) and that no binding live after it views,
+  holding a value only it names (a fresh one, or a copy made at its
+  binding or at its first write, as an `at` binding written and `set`
+  back is), or a part of such locals (an element of a list a `for`
+  walks that nothing reads again, a literal of a dead local's fields).
+  Anything else — a local used after the store, a parameter, a field
+  or element of a value still read, a literal holding a local still
+  used — is stored as the list's own copy (a record element a fresh
+  block, deeply; a String or Bytes copied), which the allocation
+  survey reports as a store's copy (`copy: a value another name
+  reaches stored into a bounded list`). A local's list does not
+  retire what a `set` replaces: the frame's arena frees it with the
+  frame. Until 2026-11-12 only a place a locus holds copied: a local's
+  list kept the very block it was handed, and a write through either
+  name showed through the other (GH #1918).
 - A pointer-shaped element `push`ed or `set` into a bounded place under
   a **parameter** is kept in the frame that runs the call: a free fn
   allocates in its caller's arena (a fn that takes a record is never

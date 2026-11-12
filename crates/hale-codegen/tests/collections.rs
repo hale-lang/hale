@@ -1,4 +1,4 @@
-//! The `collections` integration-test binary: 17 test files of this area, kept
+//! The `collections` integration-test binary: 18 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -11,6 +11,8 @@ mod array_repeat;
 mod array_repeat_stack;
 #[path = "bounded_collections.rs"]
 mod bounded_collections;
+#[path = "bounded_local_copies.rs"]
+mod bounded_local_copies;
 #[path = "bounded_receiver_dispatch.rs"]
 mod bounded_receiver_dispatch;
 #[path = "chain_array_sources.rs"]
