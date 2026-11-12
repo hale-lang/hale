@@ -8,6 +8,55 @@ behavior.
 
 ## Unreleased
 
+## v0.32.12 — the chart's parts act under their own names (2026-11-11)
+
+**The chart's parts act under their own names.** Every stated position of a grafted organism's chart, its Board and every person holding a position is now a Forgejo user of its own at the habitat's Forgejo, kept in step with the chart by `graft` and every `apply`. A hat carries its position's persona, and a DNA leg pushes its work, opens its review and authors its own commits as that persona; commits a person or a harness hands it go out unchanged, under their own authors.
+
+**GitHub is a sink.** `hale habitat forge publish <organism>` carries the internal forge's `main` to GitHub as one pull request per publish, as the owner of the GitHub token, from a habitat on this machine or the one it points at.
+
+**Charts from code, and a board that shows who is on what.** `hale dna chart` prints a chart's lines and its people; `hale dna draft` proposes a starting chart from the process model as one Board batch; a Task its assignee took reads `taken` and sits in the board's In progress.
+
+**A replaced `bounded` field gives its memory back.** A locus that stored a record holding a `bounded[T; N]` of Strings kept every replaced element for its lifetime: one store of a record of one 8 KB String, repeated 20,000 times, peaked at 167 MB and now stays at 3 MB. `up --host` upgrades the habitat this machine points at however its host is named.
+
+The item-level notes follow.
+
+### Added
+
+- `hale habitat forge publish <organism> [--branch <name>] [--dry-run]` carries the main of an organism's repository at the habitat's Forgejo to GitHub as one pull request per publish: it pushes `sync/<YYYY-MM-DD>` and opens a pull request against `main` whose body lists the internal pull requests merged since the last publish, by title and internal number, with no links into the private forge and titles made inert (no `#<n>` links, no `@` mentions). Publishing again the same day updates that branch and pull request. Nothing is forced and the internal main is never touched: when GitHub's `main` has commits the internal main lacks (a merge-queue merge), the branch is a merge of the two authored as the GitHub token's owner, and a conflict stops the publish, naming the files. A habitat on another machine publishes there. `hale habitat forge <organism> github --repo <owner/name> --publish` names where it goes (its token the vault slot `forge-token` unless `--key-vault` names another), leaving the organism's forge as allocated.
+
+### The chart's personas at the habitat's Forgejo
+
+- Every stated position of a grafted organism's chart, its Board and every person who holds a position there is now a Forgejo user of its own at the habitat's Forgejo, so the forge shows the organism's parts discussing and cooperating rather than one account. Each persona writes to the organism's repository, has an identicon avatar drawn from its name and a token of its own in the habitat's vault (`forgejo-<key>-<position>`, `/` as `--`; `forgejo-<key>-board`; `forgejo-person-<user>`). A position's user is `<organism user>-<name>`, cut and hashed to fit Forgejo's 39 characters stably; a person's is their member name, one user in the habitat however many organisms have them.
+- `hale habitat graft` makes the grafted organism's personas, and every `hale habitat apply` keeps every organism's in step with its chart (an allocation `<key>/personas`): a new position gets its persona, a retired or closed one loses its user and slot, a person's user goes once no chart has them, and a second apply changes nothing. Only a user the habitat marked as a persona is ever removed. `hale habitat status` shows each organism's persona count; `organism remove` and `down --forget` remove the personas with the rest.
+
+### Added
+- `hale dna chart [project]` prints the org chart as the record states it, one line each (`position`, `mandate`, `under`, `keeps`, `holds`, `reviews`, `practice`), then `person <name>` for every holder who is a person: one answer the habitat reads to give each stated position and each person a forge persona.
+
+### A leg's work goes out as its position's persona
+
+- At the habitat's Forgejo a DNA leg now pushes its work, opens its review and authors its own commits as the persona of the position the Work is for (the hat's position, else `--as`), whether a person or a harness made the branch: the pull request's author is the persona's user, its token the persona's vault slot (`forgejo-<key>-<position>`), read from the organism's ledger the reconcile keeps. Commits the leg was handed are left as they were made. A position with no persona yet, or a persona with no token in the vault, falls back to the organism's own user as before, and the leg says so once (`hale dna work: note: …`). GitHub, no forge or no position: unchanged.
+
+### Fixed
+
+- `hale habitat up --host <name>` upgrades the habitat this machine points at in place however its host is named: a bare first label (`rack-a` for a recorded `rack-a.example.net`), another case, or a name resolving to the same address. It was refused unless spelled exactly as recorded, with advice to `down --forget`, which removes the habitat; another habitat is still refused, and the message now names the `up` that upgrades the one this machine points at.
+
+### Fixed
+
+- A record's `bounded[T; N]` field of Strings, Bytes or records now has its elements reclaimed. Before, they stayed in the locus's arena for the locus's lifetime in each of these cases: the record replaced whole (`self.f = v`), an element replaced by `set`, elements dropped by `clear` / `truncate`, the field assigned whole, or a `@form` cell holding the record replaced or removed. Storing a record with one 8 KB String back over itself 20 000 times peaked at 167 MB; it now stays at 3 MB. A synced `@form(hashmap)` copies such a cell's elements out on every read. A binding of `at(list, i)` held across a write that may replace the element, and a `for` over such a list, take their own copy.
+
+### Changed
+- A Task its assignee took (`TaskTake`, a reassignment by the one it names) reads `taken` on the tasks wire, and the face's board shows it in `In progress` with "taken by" on its card; a hand to someone stays `To do`.
+
+### Added
+- The hat carries the Work's position's persona at the habitat's forge (`position.persona`: its Forgejo user, the email that marks it, the vault slot of its token), read from the ledger the habitat keeps, so a leg commits and reviews as the position.
+
+### Added
+- `hale dna draft [project] [--dry-run] [--as <who>]` proposes a starting org chart as one Board batch, drafted from the process model: an architect, a dev and a qa under every process the graph states, an operator under every deployment, each with a mandate the Board amends; positions the chart already states are left alone.
+
+### Changed
+
+- A leg handed a worktree for a Work on an attached codebase (`hale dna work submit --from-worktree`) now pushes the branch as it was handed: the commits a person or a harness made keep their shas and authors and are never squashed or rewritten. What is left uncommitted becomes one new commit on top, authored by the persona of the Work's position, and a worktree that changes nothing against its base is refused. Whether to squash is decided at merge, on the forge. The outcome's receipt is the branch's patches, one per commit. A change to the organism's own genome is still one commit, the patch its owner makes a Mutation of.
+
 ## v0.32.11 — a working org chart, out of the box (2026-11-11)
 
 **A fresh habitat and a grafted organism each come with a working org chart.** `hale habitat up` seats the person running it on the habitat's Board and on its four positions; `hale habitat graft <sapling>` seats the person grafting as the sapling's founder. Each chart starts complete, and its Reviews settle with nobody else asked: on a fresh habitat, `up` and then `graft voice` give two charts in the face, each with its Board held and nothing left pending.
