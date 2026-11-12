@@ -29,7 +29,7 @@ browser/service boundary it proposed.
   and takes out) and then proposed (`BatchApply`) for the Board.
 - **Board** is the handed Tasks (`Commands::tasks`, from the record and its
   Ledger as one) and the Reviews in the lanes a board is read by: `Backlog`
-  (a Task handed to nobody), `To do` (handed to someone), `In progress` (in
+  (a Task handed to nobody), `To do` (handed to someone), `In progress` (taken by its assignee, in
   a transfer, or waiting on something), `In review` (a Review the Board has
   not decided) and `Done` (a decided Task, a settled Review). A fresh
   organization opens its whole starting chart as pending Reviews, so the
