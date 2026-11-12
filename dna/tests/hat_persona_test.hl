@@ -1,0 +1,61 @@
+import "../core" as dna;
+
+// The persona a hat carries for its position, read from the ledger the
+// habitat keeps beside the organism's allocations (one line per persona):
+// the user, the email that marks it, and the vault slot of its token, never
+// the token. A position the ledger does not name wears none.
+fn check() {
+    let ledger = "position\tposition:board\tvoice-board\tforgejo-573d3c8f642f-board\n"
+        + "position\tposition:api/dev\tvoice-api_dev\tforgejo-573d3c8f642f-api--dev\n"
+        + "person\triley\triley\tforgejo-person-riley\n";
+    let dev = dna::hat_persona_of(ledger, "573d3c8f642f", "position:api/dev");
+    std::test::assert_eq_str(
+        std::json::find_string_field(dev, "user"),
+        "voice-api_dev",
+        "the position's user at the forge",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(dev, "email"),
+        "voice-api_dev@573d3c8f642f.persona.habitat.invalid",
+        "the email that marks a persona as this organism's",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(dev, "token_vault"),
+        "forgejo-573d3c8f642f-api--dev",
+        "the slot, never the token",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(dev, "id"),
+        "position:api/dev",
+        "the persona names its position",
+    );
+    std::test::assert_eq_str(
+        dna::hat_persona_of(ledger, "573d3c8f642f", "position:api/reviewer"),
+        "",
+        "a position the ledger does not name wears no persona",
+    );
+    std::test::assert_eq_str(
+        dna::hat_persona_of(ledger, "573d3c8f642f", "position:api"),
+        "",
+        "a prefix of a position's id is no match",
+    );
+    std::test::assert_eq_str(
+        dna::hat_persona_of("", "573d3c8f642f", "position:board"),
+        "",
+        "no ledger, no persona",
+    );
+    // the hat carries it inside `position`, and only when there is one
+    let bare = dna::Hat { position_id: "position:api/dev", charter: "The dev." };
+    std::test::assert(
+        !std::str::contains(dna::hat_body(bare), "persona"),
+        "a hat with no persona says nothing of one",
+    );
+    let worn = dna::Hat { position_id: "position:api/dev", charter: "The dev.", persona: dev };
+    std::test::assert(
+        std::str::contains(dna::hat_body(worn), "\"persona\": {\"id\": \"position:api/dev\"")
+            && dna::hat_digest(worn) != dna::hat_digest(bare),
+        "the persona is in the hat's body, and its digest covers it: " + dna::hat_body(worn),
+    );
+}
+
+fn main() { check(); }

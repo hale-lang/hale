@@ -802,7 +802,10 @@ the claim row is that provider for the hat, so none is needed.) The position is 
 performer kind of the attempt admitted last, or the kind the request selects
 before one is (`edit` is `position:editor`; a judgment is `position:agent`; a
 person's work `position:human`); its `charter` is the record's `graph.node`
-text for that id, `""` until the graph names it. `targets` names what the
+text for that id, `""` until the graph names it; its `persona`, present when the
+habitat made the position a Forgejo user, is `{id, user, email, token_vault}`:
+what a leg commits, pushes and opens its review as, with the token the slot
+holds (the hat never carries it). `targets` names what the
 practices are drawn for, space-separated: the Work's locus path; `language:<l>`
 for every `written_in` edge of the attached application, or `system:dna`
 instead when the Work is an organization change; and the position. The practices come from memory
