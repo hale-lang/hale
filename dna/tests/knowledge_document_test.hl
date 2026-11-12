@@ -79,7 +79,7 @@ fn check() {
         name: "concept/équipe",
         supersedes: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     };
-    let digest = "sha256:46546f721686391dfff60bddeded00e5a6d9bfca225ebee94ccf884a7194a739";
+    let digest = "sha256:ac3e5f5adae502f6acef8dad49d4614dfaee296f9d83350c48995fd647d86790";
     std::test::assert_eq_str(
         dna::digest_of(previous_document(legacy, "org")),
         digest,
