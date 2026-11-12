@@ -15,6 +15,8 @@
 //!   hale dna record-rows [project]  the record's rows, one JSON object per line
 //!   hale dna show org|processes [--json] [project]  the graph's two perspectives, from memory
 //!   hale dna chart [project]      the org chart's lines as the record states it, and its people
+//!   hale dna draft [project] [--dry-run] [--as <who>]
+//!                                 a starting chart drafted from the process model, one Board batch
 //!   hale dna review <id> <verdict> a verdict, a row a node relays (the Review decides)
 //!   hale dna --embedded-digest  the DNA source this binary embeds, by name (GH #726)
 //!
@@ -957,6 +959,33 @@ pub fn run(raw_args: &[String]) -> ExitCode {
         // one line each (`position <id>`, `holds <id> <holder>`, …) and
         // `person <name>` for every holder; what the habitat reconciles
         // an organism's personas against
+        // `hale dna draft [project] [--dry-run] [--as <who>]`: a starting
+        // chart from the graph's processes and deployments, one batch the
+        // Board decides; a position the chart states is left alone
+        Some("draft") => {
+            let mut dir = PathBuf::from(".");
+            let mut forwarded = Vec::new();
+            let mut rest = args[1..].iter();
+            while let Some(a) = rest.next() {
+                if a == "--as" {
+                    forwarded.push(a.clone());
+                    if let Some(v) = rest.next() {
+                        forwarded.push(v.clone());
+                    }
+                } else if a == "--dry-run" {
+                    forwarded.push(a.clone());
+                } else if a.starts_with('-') {
+                    eprintln!("hale dna draft: `{a}` is not a flag of draft (--dry-run, --as)\nusage: hale dna draft [project] [--dry-run] [--as <who>]");
+                    return ExitCode::from(2);
+                } else if !Path::new(a).is_dir() {
+                    eprintln!("hale dna draft: `{a}` is not a directory (the project)");
+                    return ExitCode::from(2);
+                } else {
+                    dir = PathBuf::from(a);
+                }
+            }
+            host_exec("draft", &dir, &forwarded)
+        }
         Some("chart") => {
             let mut dir = PathBuf::from(".");
             for a in &args[1..] {
