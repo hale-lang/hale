@@ -6998,6 +6998,17 @@ static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
  * A payload-bearing enum's block is a NESTED entry also tagged
  * LOTUS_RETIRE_OFF_ENUM, whose descriptor is a variant table
  * (lotus_retire_variant).
+ * A record's `bounded[T; N]` field is inline storage, `{ int64 len,
+ * [N x T] }`, not a pointer: its entry is tagged
+ * LOTUS_RETIRE_OFF_BOUNDED, at the storage's offset, followed by the
+ * offset of slot 0 within the storage, the capacity, the slot stride,
+ * the length of the slot descriptor and that descriptor — one slot's,
+ * relative to the slot (`[0]` a String, `[0 | BYTES]` a Bytes, a NESTED
+ * entry at 0 a record). The walk reads `len` and visits the live slots
+ * [0, len) only: `clear` and `truncate` leave stale pointers past
+ * `len`, which a slot that is pushed again overwrites, so walking them
+ * would retire a block twice. Such an entry always takes the nested
+ * walk (lotus_form_retire_replaced), never the flat one.
  * `size` sentinels: -1 = old_blob is a NUL-terminated String
  * (strlen+1); -2 = old_blob is a Bytes blob (8 + len); >= 0 =
  * struct block of that many bytes. `n_offs` counts the descriptor's
@@ -7006,8 +7017,42 @@ static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
 #define LOTUS_RETIRE_OFF_BYTES ((int32_t)1 << 30)
 #define LOTUS_RETIRE_OFF_NESTED ((int32_t)1 << 29)
 #define LOTUS_RETIRE_OFF_ENUM ((int32_t)1 << 28)
+#define LOTUS_RETIRE_OFF_BOUNDED ((int32_t)1 << 27)
 #define LOTUS_RETIRE_OFF_MASK \
-    (~(LOTUS_RETIRE_OFF_BYTES | LOTUS_RETIRE_OFF_NESTED | LOTUS_RETIRE_OFF_ENUM))
+    (~(LOTUS_RETIRE_OFF_BYTES | LOTUS_RETIRE_OFF_NESTED | LOTUS_RETIRE_OFF_ENUM \
+       | LOTUS_RETIRE_OFF_BOUNDED))
+
+/* A BOUNDED entry at desc[i]: its slot walk's parameters, and the
+ * index of its last word (the caller resumes after it). 0 for a
+ * malformed entry, which stops the walk. `len` is read at `base + off`
+ * and clamped to [0, cap]. */
+typedef struct {
+    int64_t data_off, len, stride, sub_n;
+    const int32_t *sub;
+} lotus_retire_bounded_t;
+
+static int lotus_retire_bounded(const char *base, int32_t off,
+                                const int32_t *desc, int64_t n, int64_t *i,
+                                lotus_retire_bounded_t *out) {
+    int64_t j = *i;
+    if (j + 4 >= n) return 0;
+    int64_t data_off = desc[j + 1], cap = desc[j + 2], stride = desc[j + 3];
+    int64_t sub_n = desc[j + 4];
+    if (data_off < 0 || cap < 0 || stride <= 0 || sub_n < 0
+        || j + 4 + sub_n >= n)
+        return 0;
+    int64_t len;
+    memcpy(&len, base + off, sizeof len);
+    if (len < 0) len = 0;
+    if (len > cap) len = cap;
+    out->data_off = data_off;
+    out->len = len;
+    out->stride = stride;
+    out->sub_n = sub_n;
+    out->sub = desc + j + 5;
+    *i = j + 4 + sub_n;
+    return 1;
+}
 
 /* A NESTED entry also tagged LOTUS_RETIRE_OFF_ENUM points at a
  * payload-bearing enum's storage block, `{ int32 tag, body }`: what the
@@ -7099,6 +7144,16 @@ static int lotus_retire_collect(lotus_retire_blocks_t *b, const char *base,
     for (int64_t i = 0; i < n; i++) {
         int32_t e = desc[i];
         int32_t off = e & LOTUS_RETIRE_OFF_MASK;
+        if (e & LOTUS_RETIRE_OFF_BOUNDED) {
+            /* Inline storage, not a pointer: walk the live slots. */
+            lotus_retire_bounded_t bd;
+            if (!lotus_retire_bounded(base, off, desc, n, &i, &bd)) return 1;
+            for (int64_t k = 0; k < bd.len; k++) {
+                const char *slot = base + off + bd.data_off + k * bd.stride;
+                if (!lotus_retire_collect(b, slot, bd.sub, bd.sub_n, sized)) return 0;
+            }
+            continue;
+        }
         char *p;
         memcpy(&p, base + off, sizeof(char *));
         if (e & LOTUS_RETIRE_OFF_NESTED) {
@@ -7145,7 +7200,10 @@ static void lotus_form_retire_block(lotus_arena_t *a, void *old_blob,
 
 /* lotus_form_retire_replaced for an element whose descriptor has no
  * nested block — a String, a Bytes, or a record whose heap fields are
- * all top-level String and Bytes, which is most of them. The compiler
+ * all top-level String and Bytes, which is most of them. A descriptor
+ * with a BOUNDED entry never comes here (vec_retire_args_nested and
+ * lotus_vec_truncate route it to the nested walk): this one reads every
+ * word as a field's offset. The compiler
  * calls this one when it knows that (emit_vec_retire), so a flat
  * element never pays for the nested walk's block lists: it compares
  * each old field with the new element's field at the same offset and
@@ -7263,7 +7321,10 @@ void lotus_vec_truncate(void *vec_ptr, int64_t new_len, void *arena,
          * takes the flat retire. */
         int nested = 0;
         for (int64_t k = 0; k < n_desc; k++)
-            if (desc[k] & LOTUS_RETIRE_OFF_NESTED) { nested = 1; break; }
+            if (desc[k] & (LOTUS_RETIRE_OFF_NESTED | LOTUS_RETIRE_OFF_BOUNDED)) {
+                nested = 1;
+                break;
+            }
         void **elems = (void **)v->buf;
         for (size_t i = v->len; i > keep; i--) {
             void *old = elems[i - 1];
@@ -7395,6 +7456,17 @@ static void lotus_clone_out_walk(lotus_arena_t *dest, char *v,
     for (int64_t i = 0; i < n; i++) {
         int32_t e = desc[i];
         int32_t off = e & LOTUS_RETIRE_OFF_MASK;
+        if (e & LOTUS_RETIRE_OFF_BOUNDED) {
+            /* The live slots of an inline bounded field, each copied
+             * out as its own field would be. Slots past `len` keep the
+             * cell's stale pointers, which nothing reads. */
+            lotus_retire_bounded_t bd;
+            if (!lotus_retire_bounded(v, off, desc, n, &i, &bd)) return;
+            for (int64_t k = 0; k < bd.len; k++)
+                lotus_clone_out_walk(dest, v + off + bd.data_off + k * bd.stride,
+                                     bd.sub, bd.sub_n);
+            continue;
+        }
         char *p;
         memcpy(&p, v + off, sizeof p);
         if (e & LOTUS_RETIRE_OFF_NESTED) {
@@ -19973,6 +20045,37 @@ void lotus_str_field_replace_fixup(void *arena_ptr, char **slot,
  * knows (a field block, lotus_slot_alloc — a nested String assigned
  * in place) retires at its class; everything else at its walked
  * size. */
+/* Retire every block in `olds` that `news` does not hold (it
+ * survives), once, if it is `a`'s — at its capacity class when the
+ * arena's slot table knows it (a field block, lotus_slot_alloc), else
+ * at its walked size. `skip_a` / `skip_b` are never retired. */
+static void lotus_self_field_retire_diff(lotus_arena_t *a,
+                                         const lotus_retire_blocks_t *olds,
+                                         const lotus_retire_blocks_t *news,
+                                         const void *skip_a,
+                                         const void *skip_b) {
+    for (size_t i = 0; i < olds->n; i++) {
+        void *p = olds->p[i];
+        if (p == skip_a || p == skip_b) continue;
+        if (lotus_retire_blocks_has(news, p)) continue; /* survives */
+        int dup = 0;
+        for (size_t j = 0; j < i; j++)
+            if (olds->p[j] == p) { dup = 1; break; }
+        if (dup) continue;
+        if (!lotus_arena_contains_ptr(a, p)) continue;
+        int c = -1;
+        if (lotus_slot_state(a)) {
+            lotus_retire_lock(a);
+            c = lotus_slot_tab_take(lotus_slot_state(a), p);
+            lotus_retire_unlock(a);
+        }
+        if (c >= 0)
+            lotus_arena_retire_sized_cls(a, p, lotus_slot_class_cap(c), c);
+        else
+            lotus_arena_retire_sized_cls(a, p, olds->size[i], -1);
+    }
+}
+
 /* The walk both entries below share: `old_desc` over the old
  * snapshot, `new_desc` over the field's block (the same descriptor for
  * a record, tuple or array; for a payload enum, each value's own
@@ -19989,28 +20092,42 @@ static void lotus_self_field_retire_walk(lotus_arena_t *a, const void *old_snap,
     int ok = lotus_retire_collect(&olds, (const char *)old_snap, old_desc, old_n, 1);
     if (ok && new_desc && new_n > 0)
         ok = lotus_retire_collect(&news, (const char *)new_block, new_desc, new_n, 0);
-    if (ok) {
-        for (size_t i = 0; i < olds.n; i++) {
-            void *p = olds.p[i];
-            if (p == new_block || p == scrap) continue;
-            if (lotus_retire_blocks_has(&news, p)) continue; /* survives */
-            int dup = 0;
-            for (size_t j = 0; j < i; j++)
-                if (olds.p[j] == p) { dup = 1; break; }
-            if (dup) continue;
-            if (!lotus_arena_contains_ptr(a, p)) continue;
-            int c = -1;
-            if (lotus_slot_state(a)) {
-                lotus_retire_lock(a);
-                c = lotus_slot_tab_take(lotus_slot_state(a), p);
-                lotus_retire_unlock(a);
-            }
-            if (c >= 0)
-                lotus_arena_retire_sized_cls(a, p, lotus_slot_class_cap(c), c);
-            else
-                lotus_arena_retire_sized_cls(a, p, olds.size[i], -1);
-        }
-    }
+    if (ok) lotus_self_field_retire_diff(a, &olds, &news, new_block, scrap);
+    lotus_retire_blocks_free(&olds);
+    lotus_retire_blocks_free(&news);
+}
+
+/* `clear` / `truncate` on a bounded place a locus holds: retire what
+ * the elements the shrink dropped owned — slots [len, old_len) of
+ * `storage`, whose `len` already holds the new count — unless a kept
+ * element [0, len) still reaches it. `desc` is the place's one BOUNDED
+ * entry at offset 0 (codegen's retire_slots_desc over the storage). The
+ * dropped slots keep their pointers (stale, never read: every walk
+ * stops at `len`), and a later push overwrites them. They used to stay
+ * in the locus's arena for its lifetime. */
+void lotus_bounded_retire_tail(void *arena_ptr, const void *storage,
+                               int64_t old_len, const int32_t *desc,
+                               int64_t n) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !storage || !desc || n <= 0) return;
+    if (!(desc[0] & LOTUS_RETIRE_OFF_BOUNDED)) return;
+    int32_t off = desc[0] & LOTUS_RETIRE_OFF_MASK;
+    int64_t i = 0;
+    lotus_retire_bounded_t bd;
+    if (!lotus_retire_bounded((const char *)storage, off, desc, n, &i, &bd)) return;
+    int64_t cap = desc[2];
+    if (old_len > cap) old_len = cap;
+    if (old_len <= bd.len) return;
+    const char *data = (const char *)storage + off + bd.data_off;
+    lotus_retire_blocks_t olds, news;
+    lotus_retire_blocks_init(&olds);
+    lotus_retire_blocks_init(&news);
+    int ok = 1;
+    for (int64_t k = bd.len; ok && k < old_len; k++)
+        ok = lotus_retire_collect(&olds, data + k * bd.stride, bd.sub, bd.sub_n, 1);
+    for (int64_t k = 0; ok && k < bd.len; k++)
+        ok = lotus_retire_collect(&news, data + k * bd.stride, bd.sub, bd.sub_n, 0);
+    if (ok) lotus_self_field_retire_diff(a, &olds, &news, NULL, NULL);
     lotus_retire_blocks_free(&olds);
     lotus_retire_blocks_free(&news);
 }

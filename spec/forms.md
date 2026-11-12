@@ -1397,7 +1397,12 @@ churned map's arena therefore stays flat. Before, only top-level
 String fields retired: a replaced cell's Bytes and its nested records
 (their blocks and their own String and Bytes) stayed for good — a
 cell holding a nested record carrying a String and Bytes grew the
-arena from 64 KiB to 10.7 MiB over 100,000 sets.
+arena from 64 KiB to 10.7 MiB over 100,000 sets. A cell's
+`bounded[T; N]` field of Strings, Bytes or records is part of the cell
+(inline), and its live elements, `[0, count)`, are the cell's: they are
+copied in at `set`, retired with the cell, and copied out by a synced
+map's reads, like its other blocks (until 2026-11-11 they were
+neither retired nor copied out).
 
 From a map's first replace, the Strings its cells store are field
 blocks of their size class (`memory.md` § anchor retirement, the

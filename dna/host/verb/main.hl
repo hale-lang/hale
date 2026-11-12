@@ -259,6 +259,10 @@ fn main() {
             host::word(a, 1),
             host::word(a, 2),
         );
+    } else if verb == "habitat-forge-personas" {
+        // the chart's personas at the habitat's Forgejo: its users listed,
+        // or a plan's steps carried out (`hale habitat apply`)
+        ans = host::habitat_forge_personas_verb(host::word(a, 0), host::has_flag(a, "--list"));
     } else if verb == "habitat-apply" {
         // phase 4: a tenant's allocations brought back by the compose provider
         ans = host::habitat_apply_verb(host::word(a, 0));
@@ -350,6 +354,9 @@ fn main() {
         // `hale habitat graft` seeds the record through the host: its rows, one
         // JSON object per line in a file, and the declared purpose (GH #995)
         ans = host::record_seed_verb(root, host::word(a, 0), host::word(a, 1), memory);
+    } else if verb == "chart" {
+        // `hale dna chart [dir]`: the org chart's lines and its people, from the record
+        ans = host::chart_verb(root, memory);
     } else if verb == "show" {
         // GH #1086: `hale dna show org | processes [--json]`, queries over memory
         ans = host::show_verb(root, host::word(a, 0), host::has_flag(a, "--json"));

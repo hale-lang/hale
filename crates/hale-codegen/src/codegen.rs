@@ -22713,6 +22713,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 belem.as_ref().clone(),
                 bcap,
                 body,
+                owned,
                 scope,
             );
         }
@@ -22943,6 +22944,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         elem: CodegenTy,
         cap: u64,
         body: &Block,
+        owned: bool,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         let i64_t = self.context.i64_type();
@@ -22956,8 +22958,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ty
             )));
         }
-        let storage = v.into_pointer_value();
+        let mut storage = v.into_pointer_value();
         let st = self.llvm_bounded_storage_type(&elem, cap);
+        if owned && Self::bounded_elem_is_ptr(&elem) {
+            // The loop walks the list it started with: a write in the
+            // body may replace the place's elements and retire them
+            // (`crate::view_bindings`), so it walks the frame's own copy
+            // — the storage, and each live element owned in the frame's
+            // arena, as an owned array walk copies its array.
+            let snap = self.alloca_in_entry(st.into(), "for.bounded.owned")?;
+            let size = st.size_of().expect("a sized bounded storage");
+            self.builder
+                .build_memcpy(snap, 8, storage, 8, size)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let dest = self.current_arena_ptr()?;
+            let prev = std::mem::replace(&mut self.cell_owned_clone, true);
+            let res = self.anchor_bounded_elems_in_place(snap, &elem, cap, dest, "for.bounded.owned");
+            self.cell_owned_clone = prev;
+            res?;
+            storage = snap;
+        }
         let len_ptr = self
             .builder
             .build_struct_gep(st, storage, 0, "for.bounded.len.ptr")
@@ -35034,8 +35054,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// a pointer-shaped element is anchored in the place's arena, as
     /// a `push` anchors the one it adds: the holding locus's when a
     /// locus holds the place (`self.r.names`, `h.names`), the current
-    /// one otherwise (a record local's field). A program that writes
-    /// no such assignment emits none of this.
+    /// one otherwise (a record local's field). A place a locus holds
+    /// takes its own copy of each element and retires the ones it held.
+    /// A program that writes no such assignment emits none of this.
     fn lower_bounded_whole_assign(
         &mut self,
         target: &LValue,
@@ -35067,6 +35088,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "a `bounded` place assigned whole from a {src_ty:?}, not the place's own type"
             )));
         }
+        let locus_place = owner.is_some();
         let arena = match owner {
             Some(o) => {
                 let info = self.user_loci.get(&o.locus).cloned().expect("an lvalue's owner is a declared locus");
@@ -35085,9 +35107,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 None => self.current_arena_ptr()?,
             },
         };
-        let size = self.llvm_bounded_storage_type(elem, cap).size_of().expect("a sized bounded storage");
+        let st = self.llvm_bounded_storage_type(elem, cap);
+        let size = st.size_of().expect("a sized bounded storage");
+        // A place a locus holds owns its elements: the ones it held are
+        // retired once the new ones are its own (the descriptor's bounded
+        // entry over the storage, `lotus_self_field_retire_replaced`), so
+        // the new ones are copies, never a block another owner holds
+        // (`cell_owned_clone`). They stayed in the locus's arena for its
+        // lifetime.
+        let desc = if locus_place {
+            self.retire_slots_desc(vec![(0, CodegenTy::Bounded(Box::new(elem.clone()), cap), false)], 0)
+        } else {
+            Vec::new()
+        };
+        let old_snap = if desc.is_empty() {
+            None
+        } else {
+            let snap = self.alloca_in_entry(st.into(), "bounded.assign.old")?;
+            self.builder.build_memcpy(snap, 8, dest, 8, size).map_err(e)?;
+            Some(snap)
+        };
         self.builder.build_memmove(dest, 8, src.into_pointer_value(), 8, size).map_err(e)?;
-        self.anchor_bounded_elems_in_place(dest, elem, cap, arena, "bounded.assign")?;
+        let prev_owned = self.cell_owned_clone;
+        if old_snap.is_some() {
+            self.cell_owned_clone = true;
+        }
+        let anchored = self.anchor_bounded_elems_in_place(dest, elem, cap, arena, "bounded.assign");
+        self.cell_owned_clone = prev_owned;
+        anchored?;
+        if let Some(snap) = old_snap {
+            let g = self.self_field_retire_desc_global(&desc);
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let i64_t = self.context.i64_type();
+            let retire_fn = self
+                .module
+                .get_function("lotus_self_field_retire_replaced")
+                .expect("self-field retire declared");
+            self.builder
+                .build_call(
+                    retire_fn,
+                    &[
+                        arena.into(),
+                        snap.into(),
+                        dest.into(),
+                        ptr_t.const_null().into(),
+                        i64_t.const_zero().into(),
+                        g.as_pointer_value().into(),
+                        i64_t.const_int(desc.len() as u64, false).into(),
+                    ],
+                    "bounded.assign.retire",
+                )
+                .map_err(e)?;
+        }
         Ok(BlockEnd::Open)
     }
 

@@ -48,6 +48,8 @@ mod models;
 mod upgrade;
 #[path = "bodies.rs"]
 mod bodies;
+#[path = "personas.rs"]
+mod personas;
 
 static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -106,6 +108,8 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat [--head <url>] apply [<host>] [--fresh]
        hale habitat [--head <url>] nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat [--head <url>] forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
+       hale habitat forge <organism> github|none --publish [--repo <owner/name>] [--key-vault <slot>]
+       hale habitat forge publish <organism> [--branch <name>] [--dry-run]
        hale habitat handover [organism]
        hale habitat [--head <url>] host add <name> [--user <user>] [--port <n>]
        hale habitat [--head <url>] host join <name>
@@ -284,7 +288,11 @@ apply [<host>]       apply the allocations (of one host, or all) where they
                      --no-head is that process. A moved memory starts empty
                      on its new host: a memory that holds its organism's
                      record moves only with --fresh, and the habitat's own
-                     never.
+                     never. Every organism's chart is then reconciled with
+                     its personas at the habitat's Forgejo: a user per
+                     stated position, the Board and each person in it,
+                     made, granted the repository or removed (a graft
+                     does the same for the organism it grafts).
 nursery add <source> the Board trusts a nursery, a directory or a git
                      repository (the head's Commands::add_nursery), and what
                      it offers is read into the habitat's record. A git
@@ -309,6 +317,26 @@ forge <organism> <provider>
                      act itself with --no-head. `hale dna forge sync`
                      syncs with what is allocated. A graft takes
                      --forge <provider> over the habitat's policy.
+                     With --publish, github --repo owner/name names where
+                     `forge publish` sends the organism's main instead (its
+                     token the vault slot --key-vault names, `forge-token`
+                     by default), and none stops it; the forge stays as
+                     allocated.
+forge publish <organism>
+                     the organism's main at the habitat's Forgejo pushed to
+                     its GitHub repository (--publish) as the branch
+                     sync/<YYYY-MM-DD> (--branch to name another), and one
+                     pull request against GitHub's main opened, its body the
+                     internal pull requests merged since the last publish
+                     (titles and internal numbers, no links); again the
+                     same day, that branch and pull request are updated.
+                     Never forced, and the internal main never touched: when
+                     GitHub's main has commits the internal main lacks (a
+                     merge made there), the branch is a merge of the two,
+                     by the GitHub token's owner; a conflict stops it,
+                     naming the files. --dry-run prints what it would push
+                     and the pull request's body, and pushes nothing. A
+                     habitat on another machine publishes there.
 handover [organism]  what the habitat hands the organism's heart, one
                      NAME=value a line, a secret only by its vault slot's
                      name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,
@@ -412,8 +440,9 @@ status               the habitat, its genome and body, its face and, while
                      hosts with their readings endpoints, and each
                      allocation: its organism, whether each role's service
                      runs, the schema version memory and the nerves record
-                     against this toolchain's, and how a heart's declared
-                     migration last ran.
+                     against this toolchain's, how a heart's declared
+                     migration last ran, and how many personas its chart
+                     has at the habitat's Forgejo.
 down                 stop the habitat's body, its face and every service of
                      its compose project (`compose down`); its volumes are
                      kept, and `up` brings them back. --forget removes the
@@ -2718,7 +2747,8 @@ fn forget_identity(genome: &Path, id: &str) {
 /// The slots of `names` minted for the record `id` alone: each named for
 /// its organization's schema (`dna_<id…>`: memory's roles, the nerves'
 /// accounts, the record's key), and the ones named for its allocation key
-/// (its memory's superuser, its SSH key, its Forgejo token).
+/// (its memory's superuser, its SSH key, its Forgejo token and its
+/// personas' tokens, `forgejo-<key>-<position>`).
 fn minted_for(id: &str, names: &[String]) -> Vec<String> {
     if id.len() < 40 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Vec::new();
@@ -2727,7 +2757,8 @@ fn minted_for(id: &str, names: &[String]) -> Vec<String> {
     let schema = format!("dna_{}", &id[..40]);
     let key = &id[..12];
     let keyed = [format!("postgres-owner-{key}"), format!("ssh-habitat-{key}"), format!("forgejo-{key}")];
-    names.iter().filter(|n| n.contains(&schema) || keyed.contains(n)).cloned().collect()
+    let personas = format!("forgejo-{key}-");
+    names.iter().filter(|n| n.contains(&schema) || keyed.contains(n) || n.starts_with(&personas)).cloned().collect()
 }
 
 /// The record identity taken out of the manifest's `dna` table, every
@@ -3554,6 +3585,11 @@ fn status() -> ExitCode {
         }
         if row["roles"]["services"].is_object() {
             println!("  {}", services_status(&format!("{key}/services"), &observed));
+        }
+        // its chart's personas at the habitat's Forgejo, as the last
+        // reconcile left them
+        if let Some(l) = personas::status_line(&key) {
+            println!("  {l}");
         }
         // its body, which the habitat keeps on this machine
         if row["roles"]["body"].is_object() {
@@ -4396,6 +4432,11 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     // identity the habitat's own sign-in at the organism's issuer; outside
     // the graft row's branch, so a retry finishes what a failure left
     out.extend(sapling::allocate_roles(&child, &root)?);
+    // its chart's personas at the habitat's Forgejo, once its own user is
+    // made: each position's, the Board's and each person's (personas.rs);
+    // a graft is whole without them, and `hale habitat apply` makes what
+    // this one could not
+    out.extend(personas::lines_of(personas::reconcile(Some(&child[..12]))));
     // its codebases, as its manifest lists them: attached in its record
     // (`codebase.attached`, phase 3's attach), nothing cloned until a leg
     // works one; each once, however many times the graft goes on
@@ -4694,12 +4735,15 @@ mod tests {
             "forgejo-admin",
             "oidc-client-dna-local",
             "forge-token",
+            "forgejo-b7db12d6d180-board",
+            "forgejo-person-grace",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
         let mine = minted_for(id, &names);
-        assert_eq!(mine, names[..6].to_vec());
+        // its personas' tokens are its own; a person's is the habitat's
+        assert_eq!(mine, [&names[..6], &names[11..12]].concat());
         assert_eq!(minted_for(other, &names), vec![names[6].clone(), names[7].clone()]);
         // no identity, or not one: nothing
         assert!(minted_for("", &names).is_empty());

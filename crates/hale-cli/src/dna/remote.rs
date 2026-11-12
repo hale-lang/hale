@@ -579,6 +579,23 @@ enum ImageIo {
 }
 
 fn in_image_io(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo) -> String {
+    in_image_with(m, p, args, io, false)
+}
+
+/// The host a run in the toolchain image dials a port published on the
+/// habitat machine's loopback at, when that is not its own `127.0.0.1`:
+/// on a Mac, docker runs in a VM, and `--network host` is the VM's network,
+/// so the Mac's loopback (where the habitat publishes its Forgejo, its
+/// memory and its nerves) is `host.docker.internal`, as the habitat's own
+/// `body` and `face` reach it there.
+fn image_loopback_host(m: &Machine) -> Option<&'static str> {
+    (m.os == "Darwin").then_some("host.docker.internal")
+}
+
+/// `in_image_io`; with `loopback`, the run is told where the machine's
+/// loopback is (`HALE_DNA_LOOPBACK_HOST`, and the name mapped to the
+/// host's gateway) when that is not its own.
+fn in_image_with(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo, loopback: bool) -> String {
     let data = data_dir(m);
     let image = p["image"].as_str().unwrap_or("");
     let mut env = vec![
@@ -598,6 +615,10 @@ fn in_image_io(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo) -
         // SSH (a Mac's is launchd's, outside the image), never the image's
         ("HALE_DNA_NODE_EXPORTER", "off".to_string()),
     ];
+    let reach = if loopback { image_loopback_host(m) } else { None };
+    if let Some(host) = reach {
+        env.push(("HALE_DNA_LOOPBACK_HOST", host.to_string()));
+    }
     for k in FORWARDED {
         if let Ok(v) = std::env::var(k) {
             if !v.is_empty() {
@@ -621,6 +642,9 @@ fn in_image_io(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo) -
         g = sq(&m.gid),
         h = sq(&m.home),
     );
+    if let Some(host) = reach {
+        line.push_str(&format!(" --add-host {}", sq(&format!("{host}:host-gateway"))));
+    }
     for (k, v) in env {
         line.push_str(&format!(" -e {}", sq(&format!("{k}={v}"))));
     }
@@ -680,6 +704,26 @@ fn remove_pointer() {
     }
 }
 
+/// Whether `given` names the machine the pointer records as `kept`: the same
+/// name in any case, a bare name that is the other's first label (`rack-a` for
+/// `rack-a.example.net`), or two names that resolve to an address in common.
+fn same_machine(kept: &str, given: &str) -> bool {
+    let norm = |h: &str| h.trim().trim_end_matches('.').to_ascii_lowercase();
+    let (k, g) = (norm(kept), norm(given));
+    if k.is_empty() || g.is_empty() {
+        return false;
+    }
+    if k == g || (!g.contains('.') && k.split('.').next() == Some(g.as_str())) || (!k.contains('.') && g.split('.').next() == Some(k.as_str())) {
+        return true;
+    }
+    let addrs = |h: &str| -> Vec<std::net::IpAddr> {
+        use std::net::ToSocketAddrs;
+        (h, 22).to_socket_addrs().map(|a| a.map(|s| s.ip()).collect()).unwrap_or_default()
+    };
+    let ka = addrs(&k);
+    !ka.is_empty() && addrs(&g).iter().any(|a| ka.contains(a))
+}
+
 /// Whether something accepts a connection at `url`'s host and port.
 fn answers(url: &str) -> bool {
     use std::net::ToSocketAddrs;
@@ -719,12 +763,16 @@ pub(super) fn up(host: &str, user: Option<&str>, port: Option<u16>, name: &str, 
 
 fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image: Option<&str>, attach: bool, rest: &[String]) -> Result<Vec<String>, String> {
     let kept = pointer();
+    // the host as the pointer records it, when `host` names that machine
+    // another way (`rack-a` for `rack-a.example.net`): the pointer keeps one
+    // spelling, and a second `up` is the same upgrade in place
+    let recorded = kept.as_ref().and_then(|k| k["host"].as_str()).filter(|k| same_machine(k, host)).map(str::to_string);
+    let host = recorded.as_deref().unwrap_or(host);
     if let Some(k) = &kept {
-        if k["host"].as_str() != Some(host) || k["name"].as_str() != Some(name) {
+        let (kname, khost) = (k["name"].as_str().unwrap_or(""), k["host"].as_str().unwrap_or(""));
+        if khost != host || kname != name {
             return Err(format!(
-                "this machine points at the habitat `{}` on {} already: `hale habitat down --forget` forgets it first",
-                k["name"].as_str().unwrap_or(""),
-                k["host"].as_str().unwrap_or("")
+                "this machine points at the habitat `{kname}` on {khost} already: `hale habitat up --name {kname} --host {khost}` upgrades it in place; to point at another habitat instead, `hale habitat down --forget` removes this one first, and everything it holds"
             ));
         }
     } else if PathBuf::from(local_habitat_dir()).join("genome").exists() {
@@ -1416,12 +1464,23 @@ pub(super) fn organism_dna(p: &serde_json::Value, args: &[String]) -> ExitCode {
 /// `organism … dna` is: for the verbs that act on the genome there
 /// (`nursery refresh`).
 pub(super) fn run_there(p: &serde_json::Value, verb: &str, args: &[&str]) -> ExitCode {
+    run_there_with(p, verb, args, false)
+}
+
+/// `run_there` for a verb that dials what the habitat publishes on its
+/// machine's loopback (`forge publish`, its Forgejo): on a Mac, the run is
+/// told that loopback is `host.docker.internal`.
+pub(super) fn run_there_reaching_loopback(p: &serde_json::Value, verb: &str, args: &[&str]) -> ExitCode {
+    run_there_with(p, verb, args, true)
+}
+
+fn run_there_with(p: &serde_json::Value, verb: &str, args: &[&str], loopback: bool) -> ExitCode {
     let (t, m) = match checked_machine(p, verb) {
         Ok(tm) => tm,
         Err(code) => return code,
     };
     let mut cmd = t.ssh(false);
-    cmd.arg(posix(&in_image(&m, p, args, false))).stdin(Stdio::null());
+    cmd.arg(posix(&in_image_with(&m, p, args, ImageIo::None, loopback))).stdin(Stdio::null());
     match cmd.status() {
         Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
         Err(e) => {
@@ -1534,6 +1593,16 @@ pub(super) fn refuse_local_up(p: &serde_json::Value) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_host_named_another_way_is_the_machine_the_pointer_records() {
+        assert!(same_machine("rack-a.example.net", "rack-a"));
+        assert!(same_machine("rack-a", "rack-a.example.net"));
+        assert!(same_machine("Rack-A.Example.Net.", "rack-a.example.net"));
+        assert!(!same_machine("rack-a.example.net", "rack-b"));
+        assert!(!same_machine("rack-a.example.net", "rack-a.other.invalid"));
+        assert!(!same_machine("", "rack-a"));
+    }
+
     use super::*;
 
     // a habitat already running on the host and no pointer here is refused
@@ -1730,5 +1799,22 @@ mod tests {
         assert!(line.contains("-e 'HALE_VAULT_DIR=/home/h/.local/share/hale/vault'"), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_EXPECT='"), "{line}");
         assert!(line.ends_with("'hale-habitat:abc' habitat 'up' '--name' 'x'"), "{line}");
+    }
+
+    /// A run that dials the habitat machine's loopback is told where it is
+    /// on a Mac (docker's VM is not the Mac), and nothing on Linux, where
+    /// `--network host` is the machine's own network; a run that does not
+    /// ask is told nothing either way.
+    #[test]
+    fn a_run_reaching_the_loopback_is_told_where_it_is_on_a_mac() {
+        let p = serde_json::json!({ "image": "hale-habitat:abc" });
+        let mac = Machine { home: "/Users/h".into(), uid: "501".into(), gid: "20".into(), user: "h".into(), os: "Darwin".into() };
+        let line = in_image_with(&mac, &p, &["forge", "publish", "shop"], ImageIo::None, true);
+        assert!(line.contains("--network host") && line.contains(" --add-host 'host.docker.internal:host-gateway'"), "{line}");
+        assert!(line.contains("-e 'HALE_DNA_LOOPBACK_HOST=host.docker.internal'"), "{line}");
+        assert!(!in_image_with(&mac, &p, &["forge", "publish", "shop"], ImageIo::None, false).contains("LOOPBACK"));
+        let linux = Machine { os: "Linux".into(), ..mac };
+        let line = in_image_with(&linux, &p, &["forge", "publish", "shop"], ImageIo::None, true);
+        assert!(!line.contains("LOOPBACK") && !line.contains("--add-host"), "{line}");
     }
 }

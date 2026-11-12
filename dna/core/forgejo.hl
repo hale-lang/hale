@@ -108,6 +108,118 @@ fn forgejo_user_for(name: String, key: String) -> String {
     return (if len(base) > 26 { base[0..26] } else { base }) + "-" + key;
 }
 
+// ---- the chart's personas ---------------------------------------------------
+//
+// Each stated position of a grafted organism's chart, its Board and each
+// person who holds a position there is a Forgejo user of its own (`hale
+// habitat apply` keeps them: crates/hale-cli/src/dna/personas.rs). A
+// persona's user is marked by its email: an organism's position's or
+// Board's `<user>@<key>.persona.habitat.invalid`, a person's (one in the
+// habitat, whatever organisms they are a member of)
+// `<user>@person.habitat.invalid`. Only a user so marked is ever removed.
+
+// The email domain that marks the persona users of the organism keyed `key`.
+fn forgejo_persona_domain(key: String) -> String { return key + ".persona.habitat.invalid"; }
+// The email domain that marks a person's user.
+const FORGEJO_PERSON_DOMAIN: String = "person.habitat.invalid";
+// The start of a person's token's vault slot (`forgejo-person-<user>`); an
+// organism's personas' are `forgejo-<key>-<position>`.
+const FORGEJO_PERSON_VAULT: String = "forgejo-person-";
+
+// The organism keyed `key`'s personas as the last reconcile left them, a
+// line each: `<position|person>\t<position id or member>\t<user>\t<slot>`.
+fn forgejo_personas_path(key: String) -> String {
+    return local_habitat_dir() + "/allocations/" + key + "/personas";
+}
+
+// A position's persona as an organism's ledger names it: its Forgejo user
+// and its token's vault slot, both as the reconcile named them
+// (personas.rs) and never derived here. Empty when the ledger has none.
+type ForgejoPersona {
+    user: String = "";
+    slot: String = "";
+}
+
+// The persona of the position `id` in the ledger text `ledger`
+// (`forgejo_personas_path`): its `position\t<id>\t<user>\t<slot>` line.
+@bounded_by(ledger)
+fn forgejo_ledger_persona(ledger: String, id: String) -> ForgejoPersona {
+    if len(id) == 0 { return ForgejoPersona { }; }
+    let start = "position\t" + id + "\t";
+    let mut rest = ledger;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if !std::str::starts_with(line, start) { continue; }
+        let tail = line[len(start)..len(line)];
+        let tab = std::str::index_of(tail, "\t");
+        if tab <= 0 || tab == len(tail) - 1 { continue; }
+        return ForgejoPersona { user: tail[0..tab], slot: tail[(tab + 1)..len(tail)] };
+    }
+    return ForgejoPersona { };
+}
+
+// The habitat's Forgejo's users as its administrator lists them, a line
+// each: `<name>\t<email>`.
+type ForgejoUsers {
+    ok: Bool = false;
+    lines: String = "";
+    why: String = "";
+}
+
+// The `n`th whitespace-separated word of `line` (0 the first), "" past the
+// last.
+@bounded_by(line)
+fn forgejo_column(line: String, n: Int) -> String {
+    let mut i = 0;
+    let mut k = 0;
+    while i < len(line) {
+        while i < len(line) && (line[i..(i + 1)] == " " || line[i..(i + 1)] == "\t") { i = i + 1; }
+        let start = i;
+        while i < len(line) && line[i..(i + 1)] != " " && line[i..(i + 1)] != "\t" { i = i + 1; }
+        if i > start {
+            if k == n { return line[start..i]; }
+            k = k + 1;
+        }
+    }
+    return "";
+}
+
+// The habitat's Forgejo's users (`forgejo admin user list`, run in its
+// container: `ID Username Email …` a row), never its passwords or tokens.
+fn forgejo_users() -> ForgejoUsers {
+    let argv = forgejo_compose();
+    if len(argv) == 0 { return ForgejoUsers { why: "cannot make " + forgejo_dir() }; }
+    let r = run_tool(argv + "\nexec\n-T\nforge\nsh\n-c\nsu-exec git forgejo admin user list");
+    if r.code != 0 {
+        return ForgejoUsers {
+            why: "the habitat's Forgejo did not list its users: " + trim_nl(r.stderr),
+        };
+    }
+    let mut out = "";
+    let mut rest = r.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let id = forgejo_column(line, 0);
+        let name = forgejo_column(line, 1);
+        let email = forgejo_column(line, 2);
+        if len(id) == 0 || id == "ID" || len(name) == 0 || !std::str::contains(email, "@") {
+            continue;
+        }
+        out = out + name + "\t" + email + "\n";
+    }
+    return ForgejoUsers { ok: true, lines: out };
+}
+
+// Whether `email` marks a persona's user: an organism's or a person's.
+fn forgejo_persona_email(email: String) -> Bool {
+    return std::str::ends_with(email, ".persona.habitat.invalid")
+        || std::str::ends_with(email, "@" + FORGEJO_PERSON_DOMAIN);
+}
+
 // What Forgejo answered: its status and body, or why there was none.
 type ForgejoReply {
     ok: Bool = false;

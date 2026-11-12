@@ -950,6 +950,37 @@ fn teardown_local(root: String, action: String, args: String, by: String) -> Str
         return "the habitat's Forgejo did not delete " + first + " (id " + uid + "): "
             + teardown_failure(r);
     }
+    if action == "forgejo-persona-rm" {
+        // exactly the audited users, each by its name and the email that
+        // marks it a persona's
+        let listed = forgejo_users();
+        if !listed.ok { return listed.why; }
+        let mut rest = args + (if std::str::ends_with(args, "\n") { "" } else { "\n" });
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let email = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let at = std::str::index_of(email, "@");
+            if at <= 0 || !teardown_word(email) || !forgejo_persona_email(email) {
+                return "`" + email + "` is no persona's";
+            }
+            let user = email[0..at];
+            if !std::str::contains("\n" + listed.lines, "\n" + user + "\t") { continue; }
+            if !std::str::contains("\n" + listed.lines, "\n" + user + "\t" + email + "\n") {
+                return "plan_changed: the Forgejo user " + user
+                    + " is not the persona it was; nothing of it was deleted";
+            }
+            let r = run_tool(
+                forgejo_compose()
+                    + "\nexec\n-T\nforge\nsh\n-c\nsu-exec git forgejo admin user delete --username '"
+                    + user + "'",
+            );
+            if r.code != 0 && !std::str::contains(r.stderr + r.stdout, "does not exist") {
+                return "the habitat's Forgejo did not delete " + user + ": " + teardown_failure(r);
+            }
+        }
+        return "";
+    }
     if action == "organism-removed" { return organism_removed_rows(root, first, by); }
     return "-";
 }
@@ -1303,6 +1334,7 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
     let forge = std::io::fs::read_file(forge_cache_path(key)) or "";
     let fp = std::json::find_string_field(forge, "provider");
     let repo = std::json::find_string_field(forge, "repo");
+    let mut person_slots = "\n"; // the slots of the persons' users removed with it
     if fp == "forgejo" && len(repo) > 0 {
         let slash = std::str::index_of(repo, "/");
         let user = if slash > 0 { repo[0..slash] } else { repo };
@@ -1331,6 +1363,40 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
                     "its Forgejo account " + user + " could not be read (" + held.why
                         + "): it is left in the habitat's Forgejo, which forgetting the habitat removes",
                     "unknown", "-", "note", "", "", 85,
+                ),
+            );
+        }
+        // its chart's personas there: every user its key marks, and each
+        // person's no other organism's chart has
+        let gone = personas_gone(key);
+        if !gone.ok {
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "forge", subject,
+                    "its chart's personas at the habitat's Forgejo could not be read (" + gone.why
+                        + "): they are left there, and the next `hale habitat apply` removes them",
+                    "unknown", "-", "note", "", "", 85,
+                ),
+            );
+        } else if len(gone.emails) > 0 {
+            person_slots = person_slots + gone.slots;
+            let n = teardown_count(gone.emails, "\n");
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "forge", subject,
+                    "its chart's personas at the habitat's Forgejo: "
+                        + std::str::replace(trim_nl(gone.names), "\n", ", ")
+                        + (if len(gone.kept) > 0 {
+                            " (kept, as another organism's chart has them: "
+                                + std::str::replace(trim_nl(gone.kept), "\n", ", ") + ")"
+                        } else {
+                            ""
+                        }),
+                    teardown_plural(n, "account", "accounts"),
+                    "no: they are deleted",
+                    "forgejo-persona-rm", "", trim_nl(gone.emails), 54,
                 ),
             );
         }
@@ -1371,6 +1437,7 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
             let ours = !std::str::contains(keep, "\n" + f + "\n")
                 && (
                     std::str::contains(f, key) || std::str::contains(slots, "\n" + f + "\n")
+                        || std::str::contains(person_slots, "\n" + f + "\n")
                         || f == habitat_model_slot(key)
                         || (f == "oidc-service-" + name && grafted_organism(root, name).key == key)
                         || (len(nerves) > 0 && std::str::starts_with(f, nerves))
@@ -1619,6 +1686,80 @@ fn forgejo_held(key: String) -> ForgejoHeld {
         id: to_string(std::json::find_int_field(me.body, "id")),
         repos: teardown_sorted(lines),
     };
+}
+
+// The chart's personas removing the organism keyed `key` removes from the
+// habitat's Forgejo: every user its key marks (`forgejo_persona_domain`),
+// and each person's user its ledger names (`forgejo_personas_path`) that no
+// other organism's ledger does. `emails` the users' emails (each names its
+// user), `names` their names, `slots` the persons' slots, `kept` the
+// persons another organism keeps, a line each.
+type PersonasGone {
+    ok: Bool = false;
+    why: String = "";
+    emails: String = "";
+    names: String = "";
+    slots: String = "";
+    kept: String = "";
+}
+
+@bounded_by(key)
+fn personas_gone(key: String) -> PersonasGone {
+    let listed = forgejo_users();
+    if !listed.ok { return PersonasGone { why: listed.why }; }
+    let mut out = PersonasGone { ok: true };
+    let mine = "@" + forgejo_persona_domain(key);
+    let mut rest = listed.lines;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        if tab > 0 && std::str::ends_with(line, mine) {
+            out.emails = out.emails + line[(tab + 1)..len(line)] + "\n";
+            out.names = out.names + line[0..tab] + "\n";
+        }
+    }
+    // the other organisms' ledgers, side by side
+    let allocations = local_habitat_dir() + "/allocations";
+    let mut others = "";
+    let mut dirs = run_tool("ls\n-A\n" + allocations).stdout;
+    while len(dirs) > 0 {
+        let nl = std::str::index_of(dirs, "\n");
+        let d = if nl < 0 { dirs } else { dirs[0..nl] };
+        dirs = if nl < 0 { "" } else { dirs[(nl + 1)..len(dirs)] };
+        if len(d) > 0 && d != key {
+            others = others + (std::io::fs::read_file(forgejo_personas_path(d)) or "");
+        }
+    }
+    let mut ledger = std::io::fs::read_file(forgejo_personas_path(key)) or "";
+    while len(ledger) > 0 {
+        let nl = std::str::index_of(ledger, "\n");
+        let line = if nl < 0 { ledger } else { ledger[0..nl] };
+        ledger = if nl < 0 { "" } else { ledger[(nl + 1)..len(ledger)] };
+        if !std::str::starts_with(line, "person\t") { continue; }
+        let f = line[7..len(line)];
+        let t1 = std::str::index_of(f, "\t");
+        if t1 < 0 { continue; }
+        let g = f[(t1 + 1)..len(f)];
+        let t2 = std::str::index_of(g, "\t");
+        if t2 <= 0 { continue; }
+        let user = g[0..t2];
+        let slot = g[(t2 + 1)..len(g)];
+        if std::str::contains(others, "\t" + user + "\t") {
+            out.kept = out.kept + user + "\n";
+            continue;
+        }
+        let email = user + "@" + FORGEJO_PERSON_DOMAIN;
+        if std::str::contains("\n" + listed.lines, "\n" + user + "\t" + email + "\n") {
+            out.emails = out.emails + email + "\n";
+            out.names = out.names + user + "\n";
+        }
+        if std::str::starts_with(slot, FORGEJO_PERSON_VAULT) {
+            out.slots = out.slots + slot + "\n";
+        }
+    }
+    return out;
 }
 
 // The owner/name of each `r:<id>:<owner/name>` line, comma-separated.

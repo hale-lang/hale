@@ -276,7 +276,7 @@ When a Review opens, it records this routing calculation as a `review.routed` ro
 
 The forge is a gate, not a store. Code goes out through it as branches and verdicts come back through it; the organism reads nothing from it that it did not already decide. A Review lives in the record, its candidate is a branch in git, and the pull request is a mirror of it. The record wins.
 
-Which forge stands in the gate is an allocation, a role the habitat allocates as it allocates memory. On your machine it is the habitat's own Forgejo: `hale habitat up` brings it up with memory and the nerves, and a graft gives the organism a Forgejo user and a repository there, its token in the vault (`forgejo-<id>`). Nothing to set up:
+Which forge stands in the gate is an allocation, a role the habitat allocates as it allocates memory. On your machine it is the habitat's own Forgejo: `hale habitat up` brings it up with memory and the nerves, and a graft gives the organism a Forgejo user and a repository there, its token in the vault (`forgejo-<id>`), and a user for each position of its chart, its Board and each person who holds a position, each writing to that repository (the chart's personas, kept in step by `hale habitat apply`). Nothing to set up:
 
 ```sh
 hale habitat graft chat
@@ -302,6 +302,12 @@ Against whichever forge is allocated, `hale dna forge sync` (or the host, on eac
 4. Once a change is applied, comments the settlement (`github.commented`) and pushes the genome on approval.
 
 A leg's review at an attached codebase comes back as `task.delivered` when merged and `task.refused` when closed, the comments on it as receipts. Each forge acts as its allocation's token alone, the vault slot it names. A practice never names a forge: "open a review" is the verb, and the allocation answers it.
+
+At the habitat's Forgejo a leg's work goes out as the persona of the position it is for: whether a person or a harness made the branch, the leg pushes it with that persona's token (`forgejo-<id>-<position>`), opens the pull request as that persona's user, and authors any commit of its own as the persona; the commits it was handed stay as they were made. A position with no persona yet (before `hale habitat apply` has made it) falls back to the organism's own user, and the leg says so once:
+
+```text
+hale dna work: note: no persona of position:api/dev is in the habitat's ledger yet (`hale habitat apply` makes it), so the organism's own Forgejo user shop-<id> acts for it
+```
 
 > [!NOTE]
 > `gh` executes strictly using the `forge-token` slot from the vault (`hale dna secret set FORGE_TOKEN`). If the vault slot is empty, `forge sync` runs nothing and never falls back to a developer's personal `gh auth` session.

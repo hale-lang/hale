@@ -20,9 +20,17 @@ pub fn dir() -> PathBuf {
     vault::dir().join("data/hale/habitat/local")
 }
 
-/// The test process's habitat, born: its directory. Idempotent (`hale
-/// habitat up` is), so threads of one process may each ask.
+/// The test process's habitat, born: its directory. Threads of one process
+/// may each ask: `up` runs under a lock of the process's own, one at a time.
+/// `hale habitat up` is idempotent once a habitat is born, but two births of
+/// one directory at once are not: under libtest's threads (`cargo test`, the
+/// parity job) they raced on the genome's `git init` and its `hale.toml`,
+/// failing every test of a file that grafts (2026-11-11). nextest runs each
+/// test in a process of its own and never met it.
 pub fn habitat() -> PathBuf {
+    static BIRTH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // a test that panicked holding it leaves it poisoned, not the habitat
+    let _one = BIRTH.lock().unwrap_or_else(|e| e.into_inner());
     let operator = ["HALE_DNA_MEMORY_DSN_OWNER", "HALE_DNA_NATS_URL_OWNER"].iter().all(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
     let mut up = vault::hale();
     up.args(["habitat", "up", "--no-body", "--backends", if operator { "operator" } else { "own" }]).env("HALE_DNA_DISCOVER", "off").env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));

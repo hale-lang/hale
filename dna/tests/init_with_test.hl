@@ -383,6 +383,28 @@ locus App {
                 && !std::str::contains(left.stdout, "hole(s) the repository leaves"),
             "nothing of the starting organization is left pending: " + left.stdout,
         );
+        // `hale dna chart`: the chart's lines as the record states them, then
+        // its people, one answer the habitat's persona reconcile reads
+        let lines = self.dna("chart");
+        std::test::assert(
+            lines.code == 0
+                && std::str::contains(lines.stdout, "position position:board\n")
+                && std::str::contains(lines.stdout, "mandate position:board\n")
+                && std::str::contains(lines.stdout, "holds position:board riley\n")
+                && std::str::contains(lines.stdout, "position position:compose/operator\n")
+                && std::str::contains(lines.stdout, "person riley\n")
+                && !std::str::contains(lines.stdout, "person organization:"),
+            "the chart's lines and its one person: " + lines.stdout + lines.stderr,
+        );
+        let first = std::str::index_of(lines.stdout, "person riley\n");
+        std::test::assert(
+            first >= 0
+                && std::str::index_of(
+                    lines.stdout[(first + 1)..len(lines.stdout)],
+                    "person riley\n",
+                ) < 0,
+            "a person is listed once: " + lines.stdout,
+        );
 
         let killed = dna::run_tool("kill\n" + body);
         std::test::assert(self.gone(body, 600), "the organism stops");

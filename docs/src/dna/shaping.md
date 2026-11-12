@@ -319,6 +319,8 @@ hale dna: fill: `position:board` is no position or organization the record state
 
 (To propose and fill initial holes in a single step at graft time, use `hale habitat graft --with <pack>`—see [A pack at the graft](#a-pack-at-the-graft).)
 
+`hale dna chart [project]` prints the chart as the record states it, one line each: `position <id>`, `mandate <id>`, `under <id> <parent>`, `keeps <id> <text>`, `holds <id> <holder>`, `reviews <id> <node>`, `practice <name>`, then `person <name>` for every holder. It is the same listing a batch is planned against, and the one the habitat reads to give each stated position and each person a forge persona.
+
 ### Assigning a Holder (`hale dna fill`)
 
 Once a position is stated or proposed in the record, propose a holder with:

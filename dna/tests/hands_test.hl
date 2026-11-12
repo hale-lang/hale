@@ -7,6 +7,8 @@
 // contract the toolchain does not describe yet gives nothing. The hands
 // are part of the hat's body, so they move its digest, and the agent's
 // rendering names each one and says which to run before handing back.
+// At the habitat's Forgejo the hands push and open reviews as the persona
+// of the Work's position (`persona`).
 
 import "../core" as dna;
 import "../core/legs" as legs;
@@ -128,5 +130,116 @@ fn check() {
         "no hands: the brief says to answer from it alone: " + thinking,
     );
 }
-main locus App { run() { check(); } }
+
+// The persona a leg's push, review and own commits go as at the habitat's
+// Forgejo: the ledger's line for the Work's position when its token is in
+// the vault, else the organism's own user and a note saying so; GitHub, no
+// forge or no position leave the organism's own, silently.
+fn persona() {
+    let key = "k1";
+    let fj = dna::ForgeAllocation {
+        provider: "forgejo",
+        repo: "todo-k1/todo",
+        key_vault: "forgejo-k1",
+        address: "http://127.0.0.1:16000",
+    };
+    let ledger = "position\tposition:board\ttodo-k1-board\tforgejo-k1-board\n"
+        + "position\tposition:api/dev\ttodo-k1-api_dev\tforgejo-k1-api--dev\n"
+        + "person\tgrace\tgrace\tforgejo-person-grace\n";
+
+    let dev = dna::forgejo_ledger_persona(ledger, "position:api/dev");
+    std::test::assert(
+        dev.user == "todo-k1-api_dev" && dev.slot == "forgejo-k1-api--dev",
+        "the ledger names a position's persona: " + dev.user + " " + dev.slot,
+    );
+    std::test::assert_eq_str(
+        dna::forgejo_ledger_persona(ledger, "position:api").user,
+        "",
+        "a position's id is matched whole, never by prefix",
+    );
+    std::test::assert_eq_str(
+        dna::forgejo_ledger_persona(ledger, "grace").user,
+        "",
+        "a person's line is not a position's",
+    );
+    std::test::assert_eq_str(
+        dna::forgejo_ledger_persona("", "position:board").user,
+        "",
+        "no ledger, no persona",
+    );
+
+    let as_dev = legs::forge_actor(fj, key, "position:api/dev", dev, true);
+    std::test::assert(
+        as_dev.persona
+            && as_dev.user == "todo-k1-api_dev"
+            && as_dev.slot == "forgejo-k1-api--dev"
+            && as_dev.email == "todo-k1-api_dev@k1.persona.habitat.invalid"
+            && as_dev.note == "",
+        "a persona with its token: its user pushes, its slot's token opens the review, its email authors the leg's commits",
+    );
+
+    let tokenless = legs::forge_actor(fj, key, "position:api/dev", dev, false);
+    std::test::assert(
+        !tokenless.persona
+            && tokenless.user == "todo-k1"
+            && tokenless.slot == "forgejo-k1"
+            && tokenless.email == ""
+            && std::str::contains(tokenless.note, "forgejo-k1-api--dev")
+            && std::str::contains(tokenless.note, "todo-k1 acts for it"),
+        "a persona whose slot is missing: the organism's slot, as before, with a note: "
+            + tokenless.note,
+    );
+
+    let unledgered = legs::forge_actor(
+        fj,
+        key,
+        "position:ops",
+        dna::forgejo_ledger_persona(ledger, "position:ops"),
+        false,
+    );
+    std::test::assert(
+        !unledgered.persona
+            && unledgered.slot == "forgejo-k1"
+            && std::str::contains(unledgered.note, "no persona of position:ops"),
+        "a position the ledger does not name yet: the organism's own, with a note: "
+            + unledgered.note,
+    );
+
+    let nobody = legs::forge_actor(fj, key, "", dev, true);
+    std::test::assert(
+        !nobody.persona && nobody.slot == "forgejo-k1" && nobody.note == "",
+        "no position: the organism's own, and nothing said",
+    );
+    let gh = legs::forge_actor(
+        dna::ForgeAllocation { provider: "github", repo: "o/r", key_vault: "forge-token" },
+        key,
+        "position:api/dev",
+        dev,
+        true,
+    );
+    std::test::assert(
+        !gh.persona && gh.slot == "forge-token" && gh.note == "",
+        "GitHub: unchanged, and nothing said",
+    );
+    let unforged = legs::forge_actor(
+        dna::ForgeAllocation { },
+        key,
+        "position:api/dev",
+        dev,
+        true,
+    );
+    std::test::assert(!unforged.persona && unforged.note == "", "no forge: unchanged");
+
+    std::test::assert_eq_str(
+        legs::work_position("{\"position\": {\"id\": \"position:api/dev\"}}", "position:agent"),
+        "position:api/dev",
+        "the Work's hat names the position its work is for",
+    );
+    std::test::assert_eq_str(
+        legs::work_position("{}", "position:agent"),
+        "position:agent",
+        "else the position the leg works as",
+    );
+}
+main locus App { run() { check(); persona(); } }
 fn main() { App { }; }

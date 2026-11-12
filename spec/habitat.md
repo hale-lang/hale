@@ -187,7 +187,12 @@ record's identity), `head.url`, and the head's launch token
 pointer, end with a `sign in` line while the face answers: the face's URL
 with that token (`/?token=…`), the link that opens the face once and sets
 its session, which is otherwise printed only in the face's own log. A machine points at one habitat, and one
-that runs a habitat of its own points at none.
+that runs a habitat of its own points at none. A second `up --host` with the
+pointer's name upgrades that habitat in place; its host may be named another
+way (a bare `rack-a` for a recorded `rack-a.example.net`, or any name resolving
+to an address the recorded one has), and the pointer keeps the spelling it
+recorded. Another name or another machine is refused, with the `up` that
+reaches the habitat this machine points at.
 
 Every verb on the admin machine reaches the habitat's head through the
 pointer (`--head`, `HALE_DNA_HEAD_URL` and `head.url` resolve as they do
@@ -498,6 +503,57 @@ past, by a merge there, is left as the forge has it), pushing as the
 organism's user with its token handed to git through a credential helper
 reading a private file.
 
+**The chart's personas** are Forgejo users of their own, so the habitat's
+forge shows the parts of each organism discussing and cooperating rather
+than one account talking to itself. Every organism with a repository at
+the habitat's Forgejo has one persona per position its chart states (a
+proposed position has none until the Board states it), one for its Board
+(`position:board`, stated or not), and one per person who holds a position
+there. A position's and the Board's user is the organism's:
+`<organism user>-<name>`, a `/` of the position's name as `_` (Forgejo
+takes no doubled dash), and its token is the vault slot
+`forgejo-<key>-<slug>`, the slug the name with each `/` as `--`
+(`forgejo-<key>-api--dev`, `forgejo-<key>-board`). A name longer than
+Forgejo's 39 characters, or one that is not lowercase letters, digits and
+single dashes, is cut and tidied and carries 8 hex digits of a hash of
+the organism's user and the position's id, so it is the same at every
+apply and never another position's. A person's user is the habitat's,
+one however many organisms the person is a member of: the member name
+(`holds:position:<p>|<who>`'s holder), or, for a name that is not plain,
+too long, or one Forgejo or the habitat keeps (`hale-admin`, `admin`, …),
+the name tidied with a hash; its token is `forgejo-person-<user>`. Each
+persona's user writes to its organism's repository (a person's to every
+repository of an organism that has them), has an avatar drawn from its
+name (a 96×96 identicon, uploaded as the persona, kept as data of the
+persona's so a later avatar can be chosen per hat) and the name Forgejo
+shows (`dev of shop`, `the Board of shop`, the member's name). A
+persona's user is marked by its email, `<user>@<key>.persona.habitat.invalid`
+or `<user>@person.habitat.invalid`; only a user so marked is ever removed,
+and a user of the name that is not so marked is said as a conflict and
+left alone. No token is printed: it goes from Forgejo into the vault.
+
+`hale habitat graft` reconciles the organism it grafts once its own user
+is made, and every `hale habitat apply` reconciles every organism (an
+allocation `<key>/personas` among what it applied): a persona missing is
+made and granted the repository; one whose position retired or closed is
+removed with its slot; a person's user and slot go once no organism's
+chart has the person; an organism no longer grafted loses its personas.
+A persona whose user exists is left alone, its token minted again only
+when its slot is missing, so a second apply changes nothing. An
+organism whose chart cannot be read keeps everything it has, and no
+person is removed while any chart is unread. A chart that cannot be read
+(its memory just moved, recreated or not answering) never makes the apply
+or the graft refuse: its organism's personas are `skipped (chart not
+read: …)` and left as they are, and the next apply reconciles them; nor
+does a Forgejo that does not answer. The chart is read with `hale dna
+chart` (the core's `org_chart`: stated positions, holds neither refused
+nor of a retired person, and a `person <name>` line per person holding a
+position); the plan is made by
+the toolchain (`crates/hale-cli/src/dna/personas.rs`) and carried out by
+`habitat-forge-personas`. Each organism's personas as the last reconcile
+left them are kept beside its allocations (`allocations/<key>/personas`),
+and `hale habitat status` shows their count under the organism.
+
 The forge's implementations sit behind the core's `Forge` interface:
 `ForgejoForge` (Forgejo's API, which maps onto GitHub's nearly one to one:
 a pull request per review, its approving or change-requesting reviews as
@@ -537,10 +593,89 @@ leg's hands are the same: their forge is `AllocatedForge`
 call, as forge sync does, and opens the leg's review at the allocated
 Forgejo (the codebase's repository there, by its url), through `gh` for
 GitHub, or refuses with `none`; the git hand (`ScratchGit`) pushes a
-leg's branch to a repository at the allocated Forgejo as the organism's
-own user, its token handed to git through a credential helper reading a
-private file. The guard refuses a `Hands` whose forge
-names a kind.
+leg's branch to a repository at the allocated Forgejo, its token handed to
+git through a credential helper reading a private file. The guard refuses
+a `Hands` whose forge names a kind.
+
+**A leg acts as the persona of the position its work is for.** Forge auth
+is the legs runner's, never a harness's or voice's: a leg handed work (a
+branch of commits in a worktree, a person's or a harness's alike) puts the
+position the Work is for on its hands (`wear`: the hat's `position.id`,
+else the leg's `--as`), and at the allocated Forgejo the git hand pushes
+the branch as that position's persona (its user the credential helper's
+username, its token the persona's slot), the forge hand opens the review
+with the persona's token, so the pull request's author is the persona's
+user, and the leg's own commits there (the commit it makes of the work, a
+fixup) are authored as the persona's user and email. Commits a person or
+a harness made are left as they are. The persona is the one the
+organism's ledger (`allocations/<key>/personas`) names for the position
+— the reconcile's names, never derived again by the leg. A position the
+ledger does not name yet (personas not reconciled, an older habitat, a
+position the chart does not state), or a persona whose slot holds no
+token, falls back to the organism's own user and slot, as before, and the
+leg says so once on its output (`hale dna work: note: …`), never as an
+error. With no position, a GitHub allocation or none, nothing changes:
+verdicts are read with the organism's own token in every case.
+
+**Publishing to GitHub.** Where the forge is the habitat's Forgejo, GitHub
+is a sink the owner feeds in batches: `hale habitat forge publish
+<organism> [--branch <name>] [--dry-run]` carries the main of the
+organism's repository at the Forgejo to GitHub as **one pull request per
+publish**. Where it goes is a `habitat.publish <id>` row (`{organism,
+provider, repo, key_vault}`), recorded by `hale habitat forge <organism>
+github --repo <owner/name> [--key-vault <slot>] --publish` as the act
+itself, never through the head, and beside the forge allocation, which it
+leaves as it is (an organism has one forge; a GitHub forge would take the
+Forgejo's place in the gate); `none --publish` stops it. Its token is the
+vault slot the row names, `forge-token` by default as a GitHub forge's;
+the Forgejo's is the organism's own, `forgejo-<id>`. A publish fetches the
+internal main, pushes it to GitHub as the branch `sync/<YYYY-MM-DD>` (the
+UTC date; `--branch` names another, never `main`), and opens one pull
+request from it against GitHub's `main`, titled `Publish <date>`, whose
+body lists the internal pull requests merged since the last publish by
+title and internal number (`internal PR <n>`: no `#<n>`, which GitHub links
+to its own, and no link into the private forge). A title is made inert on
+its way: put on one line, with a zero-width joiner (U+200D) after every `#`
+and `@`, so a `#12` in it links no issue of GitHub's and an `@name`
+mentions no one, while it reads as written. "Since the last publish"
+is read from git, not kept: a merged internal pull request is listed when
+its merge commit is on the internal main and not on GitHub's, so the first
+publish lists everything since GitHub's main. Run again the same day, the
+branch moves forward and its open pull request is updated, its title and
+body rewritten; no second one is opened. `--dry-run` prints what it would
+push (and any merge it would make), whether it would open or update, and
+the pull request's title and body, and pushes and opens nothing (it reads
+both forges). **Nothing is forced, and the internal main is never
+touched.** When GitHub's `main` holds the internal main already (a merge
+made there of a publish's pull request, and nothing new since), there is
+nothing to publish. When it has commits the internal main lacks (GitHub's
+merge queue merges with a merge commit), the branch pushed is a merge of
+the internal main (first parent) and GitHub's `main`, made in the
+publish's scratch repository; so is a merge with the branch an earlier
+publish the same day left at GitHub, which the new one then
+fast-forwards. A merge is authored and committed as the owner the GitHub
+token belongs to (GitHub's `/user`: its name, and its public email or its
+`<id>+<login>@users.noreply.github.com` address), and the pull request's
+body says the branch merges the two. A merge that conflicts stops the
+publish, naming the files, and nothing is pushed: the conflict is resolved
+in the internal forge. It also refuses, before anything is fetched, an
+organism with no Forgejo allocation, one with no `habitat.publish` row
+naming GitHub (saying how to record one), a vault holding no GitHub token
+in the row's slot or no token in the organism's Forgejo slot, and a vault
+served over HTTP (`HALE_VAULT_ADDR`). GitHub's `main` must exist. **A
+habitat on another machine publishes there**: with a pointer (`up
+--host`), both `forge publish` and `forge … --publish` run on the
+habitat's machine in its toolchain image (`remote::run_there`, as `nursery
+refresh` and `models` do), where its record, its vault and its Forgejo
+are; the output streams back. On a habitat machine that is a Mac, docker
+runs in a VM and `--network host` is the VM's network, not the Mac's, so
+the publish's run is given `HALE_DNA_LOOPBACK_HOST=host.docker.internal`
+(and that name mapped to the host's gateway), and it dials the Forgejo's
+recorded `127.0.0.1:<port>` there, as the habitat's `body` and `face`
+reach its loopback (`dna::reach_url`). The tokens go to git
+through a credential helper reading git's own environment and to curl,
+which speaks both forges' APIs, in a config read from its stdin: never on a
+command line.
 
 ## Nurseries and saplings
 
@@ -908,8 +1043,9 @@ grouped by what each item is:
   volume of theirs no other item names;
 - the vault: the slots the habitat and its organisms hold, by name, never a
   value: the ones the habitat minted (memory's and the nerves' accounts,
-  the OIDC clients, the record's key, Forgejo's administrator and each
-  organism's token, the habitat's SSH key) are removed, every account the
+  the OIDC clients, the record's key, Forgejo's administrator, each
+  organism's token and its chart's personas' tokens, each person's token
+  there, the habitat's SSH key) are removed, every account the
   habitat's and each organism's organization holds on the nerves among
   them (`nats-<org>-<role>`, and `nats-<org>-app-<name>` for every name an
   application was attached by, of every organism the record says it ever
@@ -990,7 +1126,10 @@ the habitat grafted (by its name, or its key when two share a name), the
 same way: the plan (`Commands::plan_remove_organism`, a read of the
 Board's) is its record and memory, its genome repository (the habitat's
 clone of a sapling is removed; a checkout of the person's is kept), its
-Forgejo repository and account, its allocations by host (this machine's
+Forgejo repository and account (and its chart's personas there, each by
+the email that marks it, with each person's user and slot that no other
+organism's chart has, by the personas each organism's last reconcile
+left), its allocations by host (this machine's
 volumes, another host's over SSH, an unanswering host's named and left),
 its compose services and projects, its vault slots and its files here, and
 its rows in the habitat's record: its `habitat.grafted` row and each
