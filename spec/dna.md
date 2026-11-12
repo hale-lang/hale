@@ -5867,6 +5867,16 @@ The live half is memory's, projected from the record by the spine
   (`node`, `because`), `fallback` (`path`, `because`), `fallback_to`. A
   Review takes its signers and gates from the same computation when it
   opens (**Signers from the route**, above).
+- **The chart's lines: `hale dna chart [project]`.** The host verb `chart`
+  prints the org chart as the record states it, one line each, the lines
+  a batch is planned against (**A batch of changes**): `position <id>`,
+  `mandate <id>`, `under <id> <parent>`, `keeps <id> <text>`, `holds <id>
+  <holder>`, `reviews <id> <node>`, `practice <name>`, and after them
+  `person <name>` for every holder who is a person (an organization
+  holding a seat is not one) and not retired. It reads the record alone,
+  takes at most one project directory and no flag, and is what the
+  habitat reconciles an organism's forge personas against: one user per
+  stated position, the Board among them, and each person.
 - **Perspectives: `hale dna show` (GH #1086).**
   `hale dna show org | processes [--json] [project]` is the host verb
   `show`. It takes `--json` and at most one project directory, and
@@ -7242,7 +7252,7 @@ otherwise.
 | `HALE_DNA_GRAFANA_ON_DEMAND=<dir>` | unset | The directory of the habitat's compose files (its allocation's), set on the `face` service when Grafana runs on demand: the standard face starts the `grafana` service there (`docker compose start`) for a signed-in use while Grafana does not answer, and stops it once unused for 15 minutes. Unset, the face never starts or stops it. Not set by hand. |
 | `HALE_DNA_FACE_HOME=<path>` | unset | The path the standard face lands a signed-in visitor on in place of the organization shell at `/` (`dna::face_home`); the shell is then at `/organization`. Not set by hand: the habitat's compose render sets it on its `face` service to `/app/`, the operator face. A value that is not a path of the face is ignored. |
 | `HALE_DNA_LISTEN_HOST=<addr>` | `127.0.0.1` | The address the face, the head and the OIDC stub bind (`dna::listen_host`). Not set by hand: the habitat's compose render sets it on its `face` service from the address the habitat declares (`127.0.0.1` for a local habitat); on macOS, where `face` runs on the project's network, it is `0.0.0.0` inside the container and compose publishes the ports on the declared address alone. |
-| `HALE_DNA_LOOPBACK_HOST=<host>` | `127.0.0.1` | The host a process dials a port published on this machine's loopback at (`dna::loopback_host`, `dna::reach_url`): an allocation's recorded `127.0.0.1:<port>` is dialled there. Not set by hand: the habitat's compose render sets `host.docker.internal` on its `body` and `face` on macOS, where they run on the project's network; on Linux they share the host's network and it is unset. A listener in the process's own container is dialled at `127.0.0.1` regardless. |
+| `HALE_DNA_LOOPBACK_HOST=<host>` | `127.0.0.1` | The host a process dials a port published on this machine's loopback at (`dna::loopback_host`, `dna::reach_url`): an allocation's recorded `127.0.0.1:<port>` is dialled there. Not set by hand: the habitat's compose render sets `host.docker.internal` on its `body` and `face` on macOS, where they run on the project's network; on Linux they share the host's network and it is unset. A `hale habitat forge publish` run through a pointer on a habitat machine that is a Mac is set it too (with the name mapped to the host's gateway), since `--network host` there is docker's VM, not the Mac. A listener in the process's own container is dialled at `127.0.0.1` regardless. |
 | `HALE_DNA_HEAD_STATE=<dir>` | `${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` | The project head's state directory (its launch token and key). |
 | `HALE_DNA_COMMAND_POLICY=<path>` | unset | The explicit authority policy the native command lanes and the governance verbs require; with none, they refuse. |
 | `HALE_DNA_KNOWLEDGE_COMMAND_POLICY=<path>` | empty policy | The policy file for Knowledge commands. |

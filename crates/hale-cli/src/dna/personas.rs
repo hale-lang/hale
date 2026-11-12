@@ -18,13 +18,17 @@
 //! token minted again only when its slot is missing, so a second apply
 //! changes nothing.
 //!
-//! The chart is read through the host verb `habitat-persona-chart`, the
-//! core's `org_chart` lines and a `person <name>` line per holder that is a
-//! person; Forgejo is spoken to through `habitat-forge-personas`, which
+//! The chart is read with `hale dna chart`, the core's `org_chart` lines
+//! and a `person <name>` line per person holding a position; Forgejo is spoken to through `habitat-forge-personas`, which
 //! lists its users and carries out a plan's steps. The plan itself is made
 //! here, from the charts, Forgejo's users and the vault's slots, by
 //! functions that touch nothing (`plan`), so what is made and removed is
 //! decided in one place and tested without a Forgejo.
+//!
+//! Personas never make a graft or an apply refuse: a chart that cannot be
+//! read (its memory just moved or recreated, not answering), or a Forgejo
+//! that does not, leaves them as they are, said as `skipped`, and the next
+//! apply reconciles them (`applied_entries`).
 //!
 //! A user is marked by its email: `<user>@<key>.persona.habitat.invalid`
 //! for an organism's, `<user>@person.habitat.invalid` for a person's. Only
@@ -211,7 +215,8 @@ pub(super) struct Chart {
 /// position, `person <name>` for each person, and `holds <id> <holder>`,
 /// whose holder is a person unless it is an organization
 /// (`organization:<name>`). Every other line is left (`mandate`, `under`,
-/// `practice`, …). Each name once, in the order first read.
+/// `practice`, …); a holder with a `:` (an organization) is no person.
+/// Each name once, in the order first read.
 pub(super) fn parse_chart(text: &str) -> Chart {
     let mut c = Chart::default();
     let add = |list: &mut Vec<String>, v: &str| {
@@ -227,7 +232,7 @@ pub(super) fn parse_chart(text: &str) -> Chart {
             add(&mut c.persons, who);
         } else if let Some(rest) = line.strip_prefix("holds ") {
             if let Some((_, holder)) = rest.split_once(' ') {
-                if !holder.starts_with("organization:") {
+                if !holder.contains(':') {
                     add(&mut c.persons, holder);
                 }
             }
@@ -430,11 +435,19 @@ fn forge_of(key: &str) -> Option<(String, String, String)> {
     (f("provider") == "forgejo" && !owner.is_empty() && !f("key_vault").is_empty()).then(|| (owner.to_string(), repo.clone(), f("key_vault")))
 }
 
-/// What a reconcile came to, an organism at a time: its key, and the line
-/// that says it, or why its personas were not reconciled.
+/// What a reconcile came to for one organism: its personas reconciled,
+/// with the line that says so, or skipped, with why (its chart not read).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Outcome {
+    Done(String),
+    Skipped(String),
+}
+
+/// What a reconcile came to, an organism at a time.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Reconciled {
     pub key: String,
-    pub outcome: Result<String, String>,
+    pub outcome: Outcome,
 }
 
 /// The personas of every organism the habitat holds with a repository at
@@ -486,7 +499,7 @@ pub(super) fn reconcile(only: Option<&str>) -> Result<Vec<Reconciled>, String> {
     let mut out = Vec::new();
     for o in &organisms {
         if let Some(e) = unread.get(&o.key) {
-            out.push(Reconciled { key: o.key.clone(), outcome: Err(format!("its chart was not read ({e}): its personas are left as they are")) });
+            out.push(Reconciled { key: o.key.clone(), outcome: Outcome::Skipped(format!("chart not read: {e}")) });
             continue;
         }
         let mine = &p.personas[&o.key];
@@ -496,17 +509,17 @@ pub(super) fn reconcile(only: Option<&str>) -> Result<Vec<Reconciled>, String> {
             std::fs::write(&path, &text).map_err(|e| format!("write {}: {e}", path.display()))?;
         }
         let people = mine.iter().filter(|x| matches!(x.hat, Hat::Person { .. })).count();
-        out.push(Reconciled { key: o.key.clone(), outcome: Ok(format!("{} at the habitat's Forgejo ({}, {})", mine.len(), plural(mine.len() - people, "position", "positions"), plural(people, "person", "people"))) });
+        out.push(Reconciled { key: o.key.clone(), outcome: Outcome::Done(format!("{} at the habitat's Forgejo ({}, {})", mine.len(), plural(mine.len() - people, "position", "positions"), plural(people, "person", "people"))) });
     }
     // the steps are the habitat's, not an organism's: what they came to is
     // said once, on the first organism's line
-    if let Some(first) = out.iter_mut().find(|r| r.outcome.is_ok()) {
+    if let Some(first) = out.iter_mut().find(|r| matches!(r.outcome, Outcome::Done(_))) {
         let said: Vec<String> = ["made", "minted", "granted", "removed", "forgot"].iter().filter_map(|w| done.get(*w).map(|n| format!("{w} {n}"))).collect();
         let mut extra = if said.is_empty() { "unchanged".to_string() } else { said.join(", ") };
         for c in &p.conflicts {
             extra.push_str(&format!("; {c}"));
         }
-        if let Ok(line) = &mut first.outcome {
+        if let Outcome::Done(line) = &mut first.outcome {
             line.push_str(&format!(": {extra}"));
         }
     }
@@ -515,20 +528,39 @@ pub(super) fn reconcile(only: Option<&str>) -> Result<Vec<Reconciled>, String> {
 
 /// The chart of the organism at `root`, as its reader answers it.
 fn read_chart(root: &Path) -> Result<Chart, String> {
-    // until `hale dna chart` (the org chart's own reader, the same lines
-    // with `person` lines) is the toolchain's, the habitat's verb
-    host_run("habitat-persona-chart", root, &[]).map(|t| parse_chart(&t))
+    // the org chart's own reader; it fails when the record cannot be read,
+    // never answering an unread chart as an empty one
+    host_run("chart", root, &[]).map(|t| parse_chart(&t))
 }
 
-/// `reconcile`'s outcome as the lines a graft or an apply says.
+/// `reconcile`'s outcome as the lines a graft says: never a failure, a
+/// graft is whole without its personas.
 pub(super) fn lines_of(r: Result<Vec<Reconciled>, String>) -> Vec<String> {
     match r {
-        Err(e) => vec![format!("{:<8}the chart's personas at the habitat's Forgejo: {e}", "note")],
+        Err(e) => vec![format!("{:<8}the chart's personas at the habitat's Forgejo: skipped ({e}); `hale habitat apply` makes them", "note")],
         Ok(list) => list
             .into_iter()
             .map(|x| match x.outcome {
-                Ok(l) => format!("personas {}: {l}", x.key),
-                Err(e) => format!("{:<8}the personas of {}: {e}", "note", x.key),
+                Outcome::Done(l) => format!("personas {}: {l}", x.key),
+                Outcome::Skipped(e) => format!("{:<8}the personas of {}: skipped ({e}); `hale habitat apply` makes them", "note", x.key),
+            })
+            .collect(),
+    }
+}
+
+/// `reconcile`'s outcome as the entries an apply lists among what it
+/// applied, each an allocation `<key>/personas` (`personas` when nothing
+/// was reached): every one ok, a skipped one saying why in its state, so
+/// personas never make an apply refuse or fail.
+pub(super) fn applied_entries(r: Result<Vec<Reconciled>, String>) -> Vec<serde_json::Value> {
+    let entry = |allocation: String, state: String| serde_json::json!({ "ok": true, "allocation": allocation, "host": "local", "provider": "forgejo", "state": state });
+    match r {
+        Err(e) => vec![entry("personas".to_string(), format!("skipped ({e})"))],
+        Ok(list) => list
+            .into_iter()
+            .map(|x| match x.outcome {
+                Outcome::Done(l) => entry(format!("{}/personas", x.key), l),
+                Outcome::Skipped(e) => entry(format!("{}/personas", x.key), format!("skipped ({e})")),
             })
             .collect(),
     }
@@ -713,7 +745,7 @@ mod tests {
 
     #[test]
     fn the_chart_is_read_from_its_lines() {
-        let c = parse_chart("position position:board\nmandate position:board\nposition position:api/dev\nunder position:api/dev seed:api\nholds position:board grace\nholds position:api/dev organization:shop\nholds position:api/dev ada\nperson grace\npractice standard/x\n");
+        let c = parse_chart("position position:board\nmandate position:board\nposition position:api/dev\nunder position:api/dev seed:api\nholds position:board grace\nholds position:api/dev organization:shop\nholds position:api/dev team:ops\nholds position:api/dev ada\nperson grace\npractice standard/x\n");
         assert_eq!(c.positions, vec!["position:board", "position:api/dev"]);
         assert_eq!(c.persons, vec!["grace", "ada"]);
     }
@@ -820,6 +852,30 @@ mod tests {
         let o = org(K, "todo", Some(chart(&["position:api/dev"], &["grace"])));
         let p = plan(std::slice::from_ref(&o), &Held::default(), true);
         assert_eq!(ledger_text(&p.personas[K]), format!("position\tposition:board\ttodo-{K}-board\tforgejo-{K}-board\nposition\tposition:api/dev\ttodo-{K}-api_dev\tforgejo-{K}-api--dev\nperson\tgrace\tgrace\tforgejo-person-grace\n"));
+    }
+
+    #[test]
+    fn a_chart_not_read_never_makes_an_apply_or_a_graft_refuse() {
+        let unread = || {
+            Ok(vec![
+                Reconciled { key: K.into(), outcome: Outcome::Done("3 at the habitat's Forgejo".into()) },
+                Reconciled { key: K2.into(), outcome: Outcome::Skipped("chart not read: hale dna chart: the record could not be read from memory".into()) },
+            ])
+        };
+        let entries = applied_entries(unread());
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| e["ok"] == serde_json::json!(true)), "{entries:?}");
+        assert_eq!(entries[1]["allocation"], format!("{K2}/personas"));
+        assert!(entries[1]["state"].as_str().unwrap().starts_with("skipped (chart not read: "));
+        // nor a Forgejo that does not answer
+        let down = applied_entries(Err("the habitat's Forgejo did not answer".into()));
+        assert!(down[0]["ok"] == serde_json::json!(true) && down[0]["state"].as_str().unwrap().starts_with("skipped ("));
+        // the graft says it as a note
+        let lines = lines_of(unread());
+        assert!(lines[0].starts_with(&format!("personas {K}: ")));
+        let note = format!("{:<8}", "note");
+        assert!(lines[1].starts_with(&format!("{note}the personas of ")) && lines[1].contains("skipped (chart not read: "), "{lines:?}");
+        assert!(lines_of(Err("x".into()))[0].starts_with(&note));
     }
 
     #[test]

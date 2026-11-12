@@ -82,54 +82,6 @@ fn habitat_forge_provision_verb(
 
 // ---- the chart's personas (crates/hale-cli/src/dna/personas.rs) ------------
 
-// `habitat-persona-chart` on a grafted organism's root: the org chart its
-// record states, as the core reads it (`dna::org_chart`: `position <id>`,
-// `mandate <id>`, `holds <id> <holder>`, `under <id> <parent>`, … a line
-// each, stated positions only, a retired holder or a refused hold left
-// out), and `person <name>` for each holder that is a person, each once.
-// What `hale habitat apply` makes the chart's personas at the habitat's
-// Forgejo from. Refused when the record cannot be read, so an unread chart
-// is never taken for an empty one.
-@bounded_by(root)
-fn habitat_persona_chart_verb(root: String, memory: dna::Memory) -> Answer {
-    let no_record = record_refusal(root);
-    if len(no_record) > 0 { return fail("habitat-persona-chart: " + no_record); }
-    let journal = dna::RoutedJournal {
-        record: dna::RecordJournal { repo: root },
-        ledger: memory.ledger,
-    };
-    if journal.revision() == 0 {
-        return fail("habitat-persona-chart: the record of " + root + " holds no rows");
-    }
-    let chart = dna::org_chart(journal, dna::MemoryReceipts { repo: root });
-    let mut persons = "\n";
-    let mut rest = chart;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if !std::str::starts_with(line, "holds ") { continue; }
-        let tail = line[6..len(line)];
-        let sp = std::str::index_of(tail, " ");
-        if sp < 0 { continue; }
-        let holder = tail[(sp + 1)..len(tail)];
-        if len(holder) == 0 || std::str::starts_with(holder, "organization:")
-            || std::str::contains(persons, "\n" + holder + "\n")
-        {
-            continue;
-        }
-        persons = persons + holder + "\n";
-    }
-    let mut out = chart;
-    let mut prest = persons[1..len(persons)];
-    while len(prest) > 0 {
-        let nl = std::str::index_of(prest, "\n");
-        out = out + "person " + prest[0..nl] + "\n";
-        prest = prest[(nl + 1)..len(prest)];
-    }
-    return answer(out);
-}
-
 // Whether `s` is a persona's user's name as the habitat makes one:
 // lowercase letters, digits, `-` and `_` (safe on the admin's shell line).
 fn persona_word(s: String) -> Bool {
