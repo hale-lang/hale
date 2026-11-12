@@ -1788,14 +1788,55 @@ struct StoreAt {
     block: Option<u32>,
 }
 
-/// A whole-value store of a local into a self field (`self.f = v;`):
-/// where, the field's place, the local, and the block it is a
-/// statement of.
-struct SelfStore {
+/// A local stored back into a place: whole into a self field (`self.f
+/// = v;`, `slot` `None`), or into a bounded list's slot (`set(<place>,
+/// <index>, v)`, `slot` the index). Where the store begins (`from`,
+/// before its operands are read) and ends (`at`), the place as the
+/// markers spell it (`self.r.xs`, a local's `@n.xs`), the local, the
+/// block it is a statement of, and, for a slot's, the position the
+/// local is read at as the value stored and the call's span.
+struct StoreBack {
+    from: u32,
     at: u32,
     place: String,
     var: usize,
     block: Option<u32>,
+    slot: Option<SlotIndex>,
+    value_use: Option<u32>,
+    span: (u32, u32),
+}
+
+/// The slot a bounded `at` reads or `set` writes, when the pass can
+/// tell two are the same: a local or a parameter, by its place (`@n`,
+/// `$i`), or an integer literal. Any other index is none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SlotIndex {
+    Name(String),
+    Lit(i64),
+}
+
+/// A local bound by a `let` from a bounded list's slot, `let mut x =
+/// at(<place>, <index>) or …`: its instance, the list's place, the
+/// index, and the `at` call's span.
+struct SlotBind {
+    inst: usize,
+    place: String,
+    index: SlotIndex,
+    call: (u32, u32),
+}
+
+/// A bounded intrinsic called on a list under a local (`count(l.xs)`,
+/// `at(l.xs, i)`, `push(l.xs, v)`): the local, the position it is read
+/// at as the list, the operation, the call's span, whether an `at`'s
+/// result is a primitive, and whether the value a `push` or `set`
+/// stores views anything (any key: a place's value, a local's).
+struct ListCall {
+    root: usize,
+    list_use: Option<u32>,
+    op: String,
+    span: (u32, u32),
+    scalar: bool,
+    stores_view: bool,
 }
 
 /// A write event: the writes, and the positions it spans (a call's
@@ -1918,7 +1959,22 @@ struct Walk<'p, 'a> {
     /// identify, a delivery), where.
     field_reads: Vec<(u32, String)>,
     opaque_calls: Vec<u32>,
-    self_stores: Vec<SelfStore>,
+    /// Locals stored back whole into a self field, or into a bounded
+    /// list's slot (`StoreBack`).
+    store_backs: Vec<StoreBack>,
+    /// Locals bound from a bounded list's slot; the bounded intrinsics
+    /// called on a local's list; and the positions a local is read at as
+    /// the receiver of a primitive field (`x.k`), which hands on none of
+    /// its blocks.
+    slot_binds: Vec<SlotBind>,
+    list_calls: Vec<ListCall>,
+    scalar_reads: BTreeSet<u32>,
+    /// The loop variables of a `for` over a range (`for i in 0..n`).
+    range_vars: BTreeSet<usize>,
+    /// The call a statement is through an `or` (`set(l.xs, i, x) or
+    /// discard;`), by its span, while it is walked: a bounded `set`
+    /// there runs wherever the statement does.
+    stmt_or_call: Option<(u32, u32)>,
     /// Writes into a local's or a parameter's value in place: the block
     /// written, spelled as the markers spell it, where, and whether
     /// anything below it may be written too (a call that may write
@@ -2044,7 +2100,12 @@ impl<'p, 'a> Walk<'p, 'a> {
             place_passed: Vec::new(),
             field_reads: Vec::new(),
             opaque_calls: Vec::new(),
-            self_stores: Vec::new(),
+            store_backs: Vec::new(),
+            slot_binds: Vec::new(),
+            list_calls: Vec::new(),
+            scalar_reads: BTreeSet::new(),
+            range_vars: BTreeSet::new(),
+            stmt_or_call: None,
             root_writes: Vec::new(),
             param_mask: 0,
             param_passes: Vec::new(),
@@ -2800,12 +2861,20 @@ impl<'p, 'a> Walk<'p, 'a> {
                 if scalar || surely_handle {
                     keys = real(&keys);
                 }
+                // `let mut x = at(<place>, <index>) or …`: the slot a
+                // store back sets again (`StoreBack`), named in the
+                // binding's scope.
+                let slot = self.slot_read(value);
                 let v = self.declare(&name.name, ty);
                 self.from_param[v] = from_param;
                 self.handle_only[v] = surely_handle;
                 self.scalar_hint[v] = scalar;
                 self.record_hint[v] |= self.class(value) == Class::Record;
+                let before = self.insts.len();
                 self.bind_parts(v, Site::Node(id.0), &name.name, keys, parts, *span, true, place_rhs);
+                if let (Some((place, index, call)), true) = (slot, self.insts.len() > before) {
+                    self.slot_binds.push(SlotBind { inst: before, place, index, call });
+                }
             }
             Stmt::LetTuple { names, value, id, span, .. } => {
                 let keys = in_cell(self.expr(value));
@@ -2988,7 +3057,10 @@ impl<'p, 'a> Walk<'p, 'a> {
                         if let Some(Some(var)) = self.lookup(&vid.name) {
                             let place = format!("self.{}", fields.join("."));
                             let block = self.block_stack.last().copied();
-                            self.self_stores.push(SelfStore { at: self.pos, place, var, block });
+                            let at = self.pos;
+                            let span = (span.start.0, span.end.0);
+                            let (slot, value_use) = (None, None);
+                            self.store_backs.push(StoreBack { from: at, at, place, var, block, slot, value_use, span });
                         }
                     }
                 }
@@ -3024,6 +3096,9 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.scopes.push(BTreeMap::new());
                 let v = self.declare(&name.name, self.views.binding(&name).clone());
                 self.from_param[v] = from_param;
+                if matches!(iter, Expr::Range { .. }) {
+                    self.range_vars.insert(v);
+                }
                 if self.scalar_hint[v] || self.handle_only[v] {
                     keys = real(&keys);
                 }
@@ -3104,11 +3179,18 @@ impl<'p, 'a> Walk<'p, 'a> {
                 // A call written as a statement: a store there runs
                 // wherever the statement does.
                 let saved = self.stmt_call.take();
+                let saved_or = self.stmt_or_call.take();
                 if let Expr::Call { span, .. } = e {
                     self.stmt_call = Some((span.start.0, span.end.0));
                 }
+                if let Expr::Or { inner, .. } = e {
+                    if let Expr::Call { span, .. } = inner.as_ref() {
+                        self.stmt_or_call = Some((span.start.0, span.end.0));
+                    }
+                }
                 let keys = self.expr(e);
                 self.stmt_call = saved;
+                self.stmt_or_call = saved_or;
                 return keys;
             }
             Stmt::Break(_) | Stmt::Continue(_) => self.exit(true),
@@ -3237,6 +3319,15 @@ impl<'p, 'a> Walk<'p, 'a> {
             Expr::Call { callee, args, span, .. } => self.call(e, callee, args, *span),
             Expr::Field { receiver, name, .. } => {
                 let keys = self.expr(receiver);
+                // A local read for a primitive field of it: nothing of its
+                // blocks is handed on.
+                if let Expr::Ident(id) = receiver.as_ref() {
+                    if let (Some(Some(v)), Class::Scalar) = (self.lookup(&id.name), self.class(e)) {
+                        if let Some(&u) = self.uses[v].last() {
+                            self.scalar_reads.insert(u);
+                        }
+                    }
+                }
                 let at = self.tick();
                 self.field_reads.push((at, name.name.clone()));
                 self.field_keys(e, receiver, keys, name)
@@ -3357,6 +3448,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         let mut unknown = false;
         let mut bounded = false;
         let mut bounded_at = false;
+        let mut bounded_any = false;
         // A target the pass cannot positively identify may write
         // anything: missed precision costs a copy, never a use after a
         // retire.
@@ -3406,6 +3498,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                     Target::Ctor => ctor = true,
                     Target::FormOp => form_op = true,
                     Target::Bounded => {
+                        bounded_any = true;
                         // `count` and `at` read the list; the rest write it.
                         bounded = !matches!(callee, Expr::Ident(id) if matches!(id.name.as_str(), "count" | "at"));
                         bounded_at = matches!(callee, Expr::Ident(id) if id.name == "at");
@@ -3432,6 +3525,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         ops.extend(receiver);
         ops.extend(args.iter().copied());
         let mut keys = self.operands(&ops);
+        let store_back = if bounded_any { self.bounded_call(call, callee, args, &keys, start, span) } else { None };
         // The callee runs once its operands are in: it may read any of
         // the program's fields.
         if unknown || summarized.is_some() {
@@ -3876,7 +3970,96 @@ impl<'p, 'a> Walk<'p, 'a> {
         if let Some(store) = self.stores.last_mut().filter(|s| s.at == 0) {
             store.at = self.pos;
         }
+        if let Some(i) = store_back {
+            self.store_backs[i].at = self.pos;
+        }
         result
+    }
+
+    /// A bounded intrinsic's call, its operands' keys in: on a list under
+    /// a local, a `ListCall`; a `set(<place>, <index>, v)` of a local `v`
+    /// into a self field's list or a local's, a store back (`StoreBack`,
+    /// its end placed once the call's write is), whose index it returns.
+    fn bounded_call(
+        &mut self,
+        call: Option<&Expr>,
+        callee: &Expr,
+        args: &[&Expr],
+        keys: &[Keys],
+        start: u32,
+        span: Span,
+    ) -> Option<usize> {
+        let (Expr::Ident(op), Some(list)) = (callee, args.first()) else { return None };
+        let at = (span.start.0, span.end.0);
+        if let Some((root, _)) = self.root_local(list) {
+            // The list is the first operand: the local's first read after
+            // the call begins is its read as the list.
+            let list_use = self.uses[root].iter().copied().find(|&u| u > start);
+            let scalar = call.is_some_and(|c| self.p.classify(self.views.expr(c)) == Class::Scalar);
+            let value = match op.name.as_str() {
+                "push" => 1,
+                "set" => 2,
+                _ => usize::MAX,
+            };
+            let stores_view = match (args.get(value), keys.get(value)) {
+                (Some(a), Some(k)) => !self.holds_no_view(a, k),
+                _ => false,
+            };
+            self.list_calls.push(ListCall { root, list_use, op: op.name.clone(), span: at, scalar, stores_view });
+        }
+        if op.name != "set" || args.len() != 3 {
+            return None;
+        }
+        let place = self.place_of(list).filter(|p| p.starts_with("self.") || p.starts_with('@'))?;
+        let slot = self.slot_index(args[1])?;
+        let Expr::Ident(vid) = args[2] else { return None };
+        let Some(Some(var)) = self.lookup(&vid.name) else { return None };
+        let value_use = self.uses[var].iter().copied().filter(|&u| u > start).last();
+        let block = (self.stmt_call == Some(at) || self.stmt_or_call == Some(at)).then(|| self.block_stack.last().copied()).flatten();
+        self.store_backs.push(StoreBack { from: start, at: 0, place, var, block, slot: Some(slot), value_use, span: at });
+        Some(self.store_backs.len() - 1)
+    }
+
+    /// Does the value `e` (its keys `keys`) surely hold no block another
+    /// name holds? A primitive, a record literal whose every field is a
+    /// primitive or such a literal, or a value that views nothing at all.
+    fn holds_no_view(&self, e: &Expr, keys: &Keys) -> bool {
+        fn literal(w: &Walk<'_, '_>, e: &Expr) -> bool {
+            // (A range's loop variable, bound untyped, is an integer.)
+            w.known_scalar(e)
+                || matches!(e, Expr::Ident(id) if matches!(w.lookup(&id.name), Some(Some(v)) if w.range_vars.contains(&v)))
+                || matches!(e, Expr::Struct { inits, .. } if inits.iter().all(|i| literal(w, &i.value)))
+        }
+        literal(self, e) || keys.as_ref().is_none_or(|k| k.is_empty())
+    }
+
+    /// The slot index a bounded `at` or `set` is handed, when two can be
+    /// told the same: a local or a parameter, or an integer literal.
+    fn slot_index(&self, e: &Expr) -> Option<SlotIndex> {
+        match e {
+            Expr::Ident(_) => self.place_of(e).map(SlotIndex::Name),
+            Expr::Literal(Literal::Int(n), _) => Some(SlotIndex::Lit(*n)),
+            _ => None,
+        }
+    }
+
+    /// `at(<place>, <index>)`, or it with an `or`: the bounded list's
+    /// place (under `self` or a local), the index, and the call's span.
+    fn slot_read(&self, e: &Expr) -> Option<(String, SlotIndex, (u32, u32))> {
+        let call = match e {
+            Expr::Or { inner, .. } => inner.as_ref(),
+            other => other,
+        };
+        let Expr::Call { callee, args, span, .. } = call else { return None };
+        let Expr::Ident(op) = callee.as_ref() else { return None };
+        if op.name != "at" || args.len() != 2 || self.lookup(&op.name).is_some() {
+            return None;
+        }
+        if !matches!(self.views.callee(call), Some(CalleeRef::Bounded)) {
+            return None;
+        }
+        let place = self.place_of(&args[0]).filter(|p| p.starts_with("self.") || p.starts_with('@'))?;
+        Some((place, self.slot_index(&args[1])?, (span.start.0, span.end.0)))
     }
 
     /// What a store is handed: a local, a literal (its key fields'
@@ -4024,7 +4207,9 @@ impl<'p, 'a> Walk<'p, 'a> {
                 continue;
             }
             let hit = self.writes.iter().any(|w| {
-                w.writes.touches(&inst.keys, self.p) && self.reaches(inst.var, inst.at, w.start, w.at, true)
+                w.writes.touches(&inst.keys, self.p)
+                    && self.reaches(inst.var, inst.at, w.start, w.at, true)
+                    && !self.sets_itself_back(inst.var, w)
             });
             if hit {
                 owned[i] = true;
@@ -4032,6 +4217,24 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
         }
         (out, owned)
+    }
+
+    /// Is the write `w` a slot store back of the local `v` into the slot
+    /// every binding of it read (`slot_matches`), with no use of `v` from
+    /// the store's start on but the value it stores? A self field's list
+    /// `set` copies the value in and then retires the element it
+    /// replaced, which is the one `v` holds: `v` is read for the copy
+    /// before the retire, and never again, so the store replaces nothing
+    /// `v` still needs.
+    fn sets_itself_back(&self, v: usize, w: &WriteAt) -> bool {
+        self.store_backs.iter().any(|st| {
+            st.var == v
+                && st.slot.is_some()
+                && st.from == w.start
+                && w.at <= st.at
+                && self.slot_matches(v, st)
+                && self.uses[v].iter().all(|&u| u < st.from || Some(u) == st.value_use)
+        })
     }
 
     /// Whether a use of the local `v`, holding the instance bound at
@@ -4461,55 +4664,180 @@ impl<'p, 'a> Walk<'p, 'a> {
         found.mixed_owners.extend(self.mixed_owners.iter().cloned());
     }
 
-    /// Does a write `w` into a local bound from a self field (`shared`,
-    /// its instances that still view the field) stay in the field's own
-    /// block, unseen? The get-modify-store idiom: `let mut v = self.f;
-    /// v.x[i] = y; self.f = v;` — every binding of the local is a
-    /// `let` (or `=`) of that one field, a whole store of the local back
-    /// into the same field follows the write on every path, nothing that
-    /// may read the field (a read of it or of a field holding it, a
-    /// call of the program's, a delivery) comes between, no other
-    /// binding views the field, and the local is not used after the
-    /// store. The store keeps the block the field already holds at each
-    /// place (GH #1542), so the write is what the field would have held.
+    /// Does a write `w` into a local bound from a place (`shared`, its
+    /// instances that still view it) stay in the place's own block,
+    /// unseen? Two get-modify-store idioms:
+    ///
+    /// - a self field stored back whole, `let mut v = self.f; v.x[i] = y;
+    ///   self.f = v;`: every binding of the local is a `let` (or `=`) of
+    ///   that one field, and the store keeps the block the field already
+    ///   holds at each place (GH #1542);
+    /// - a bounded list's slot set back, `let mut x = at(<place>, i) or
+    ///   …; x.f = y; set(<place>, i, x) or …;` with `<place>` a self
+    ///   field's list or a local's: every binding of the local is a `let`
+    ///   of that slot, the `set` names the same place and the same index
+    ///   (one local or parameter not rebound between, or one integer
+    ///   literal), and the local is bound in every loop the `set` is in.
+    ///   `at` hands back the element itself (GH #1905); a locus's `set`
+    ///   stores a copy and retires the element it replaced, which is no
+    ///   one's but the local's by then, and a local's list keeps the
+    ///   element it is handed (`local_list_unshared` says when nothing
+    ///   else holds it).
+    ///
+    /// For both, the store follows the write on every path, nothing that
+    /// may read the place (a read of it or of a field holding it, a call
+    /// of the program's, a delivery; for a local's list, any read of the
+    /// local) comes between, no other binding views the place while the
+    /// write may be seen, and the local is not used after the store. So
+    /// the write is what the place would have held.
     fn store_back_keeps(&self, w: &AssignWrite, shared: &[usize]) -> bool {
         let v = w.var;
-        let mut place: Option<&str> = None;
+        let mut kind: Option<(&str, Option<&SlotIndex>)> = None;
         for &i in &self.vars[v] {
             let inst = &self.insts[i];
             let mut places = at_places(&inst.keys);
             let (Some(p), None) = (places.next(), places.next()) else { return false };
-            if !inst.place_rhs || !p.starts_with("self.") || place.is_some_and(|q| q != p) {
+            let this = match self.slot_binds.iter().find(|b| b.inst == i) {
+                Some(b) if b.place == p && part_markers(&inst.keys).next().is_none() => (p, Some(&b.index)),
+                None if inst.place_rhs && p.starts_with("self.") => (p, None),
+                _ => return false,
+            };
+            if kind.is_some_and(|k| k != this) {
                 return false;
             }
-            place = Some(p);
+            kind = Some(this);
         }
-        let Some(place) = place else { return false };
+        let Some((place, slot)) = kind else { return false };
         let first_bind = shared.iter().map(|&i| self.insts[i].at).min().unwrap_or(0);
-        let segs: Vec<&str> = place.split('.').skip(1).collect();
-        // No other binding views the field (it would see the write).
-        let others = self.insts.iter().any(|o| {
-            o.var != v
-                && at_places(&o.keys).any(|q| places_overlap(q, place))
-                && self.uses[o.var].iter().any(|&u| u > first_bind)
-        });
-        if others {
-            return false;
+        // A local's list: the local that holds it, which must hold every
+        // block of the list alone.
+        let root = place.strip_prefix('@').map(|r| r.split('.').next().unwrap_or(r)).and_then(|n| n.parse::<usize>().ok());
+        if let Some(root) = root {
+            if slot.is_none() || !self.local_list_unshared(root) {
+                return false;
+            }
         }
-        self.self_stores.iter().filter(|st| st.var == v && st.place == place && st.at > w.at).any(|st| {
+        let segs: Vec<&str> = if root.is_some() { Vec::new() } else { place.split('.').skip(1).collect() };
+        self.store_backs.iter().filter(|st| st.var == v && st.place == place && st.slot.as_ref() == slot && st.at > w.at).any(|st| {
             if !st.block.is_some_and(|b| w.blocks.contains(&b)) {
                 return false;
             }
+            // A slot's: the same slot, and the local bound afresh in every
+            // loop the `set` is in (an element a `set` replaced is not the
+            // slot's on the next turn).
+            if slot.is_some() && !self.slot_matches(v, st) {
+                return false;
+            }
+            // No other binding views the place while the write may be seen
+            // (a slot's: one bound after the store, round no loop holding
+            // the write, sees what the store left there).
+            let others = self.insts.iter().any(|o| {
+                let later = slot.is_some() && o.at > st.at && !self.loops.iter().any(|&(ls, le)| ls < w.at && o.at <= le);
+                o.var != v
+                    && !later
+                    && at_places(&o.keys).any(|q| places_overlap(q, place))
+                    && self.uses[o.var].iter().any(|&u| u > first_bind)
+            });
+            if others {
+                return false;
+            }
             let around = self.loops_holding_not(w.at, st.at);
-            let within = |at: u32| (at > w.at && at < st.at) || around.iter().any(|&(ls, le)| ls < at && at <= le);
+            let within = |at: u32| (at > w.at && at < st.from) || around.iter().any(|&(ls, le)| ls < at && at <= le);
             let leaves = self.exits.iter().any(|&(at, jump)| {
-                (at > w.at && at < st.at) || (!jump && around.iter().any(|&(ls, le)| ls < at && at <= le))
+                (at > w.at && at < st.from) || (!jump && around.iter().any(|&(ls, le)| ls < at && at <= le))
+            });
+            // A local's list: no read of the local, and no binding of it,
+            // between.
+            let local_between = root.is_some_and(|r| {
+                self.uses[r].iter().any(|&u| within(u)) || self.binds[r].iter().any(|b| within(b.at))
             });
             !leaves
+                && !local_between
                 && !self.field_reads.iter().any(|(at, n)| within(*at) && segs.contains(&n.as_str()))
                 && !self.opaque_calls.iter().any(|&at| within(at))
                 && !self.uses[v].iter().any(|&u| u > st.at)
         })
+    }
+
+    /// Is the slot store `st` (`set(<place>, <index>, u)`) the slot every
+    /// binding of `u` read? Each is an `at` of the same place and index;
+    /// the latest before the store is not rebound before it, nor is a
+    /// local or parameter index; and every loop holding the store holds
+    /// each binding.
+    fn slot_matches(&self, u: usize, st: &StoreBack) -> bool {
+        let Some(index) = &st.slot else { return false };
+        let mut latest: Option<u32> = None;
+        for &i in &self.vars[u] {
+            let Some(b) = self.slot_binds.iter().find(|b| b.inst == i) else { return false };
+            if b.place != st.place || &b.index != index {
+                return false;
+            }
+            let at = self.insts[i].at;
+            if self.loops.iter().any(|&(ls, le)| ls < st.from && st.from <= le && !(ls < at && at <= le)) {
+                return false;
+            }
+            if at < st.from {
+                latest = Some(latest.map_or(at, |l| l.max(at)));
+            }
+        }
+        let Some(bound) = latest else { return false };
+        let between = |at: u32| at > bound && at < st.from;
+        if self.binds[u].iter().any(|b| between(b.at)) {
+            return false;
+        }
+        match index {
+            SlotIndex::Lit(_) => true,
+            SlotIndex::Name(n) => match n.strip_prefix('@').and_then(|r| r.parse::<usize>().ok()) {
+                Some(x) => !self.binds[x].iter().any(|b| between(b.at)),
+                None => !self.param_rebinds.iter().any(|(p, at)| n.strip_prefix('$') == Some(p.as_str()) && between(*at)),
+            },
+        }
+    }
+
+    /// Does the local `root` hold every block of its bounded lists alone,
+    /// so a write into an element read with `at` is seen through no other
+    /// name? A local's list keeps the very element it is handed when that
+    /// already lives in the frame's arena, so the conditions are about
+    /// every block that goes in or comes out:
+    ///
+    /// - every binding of the local is fresh (no instance: it views no
+    ///   place, no cell, no part of anything);
+    /// - the local is read only as a bounded intrinsic's list or for a
+    ///   primitive field of it (`l.n`);
+    /// - a `push` or `set` into it stores a value that views nothing (a
+    ///   literal, a fresh result), or is a slot store back of a local
+    ///   that keeps its slot (`slot_stays`);
+    /// - an `at` of it reads a primitive, or binds a local that keeps its
+    ///   slot.
+    fn local_list_unshared(&self, root: usize) -> bool {
+        if !self.vars[root].is_empty() {
+            return false;
+        }
+        let mut allowed: BTreeSet<u32> = BTreeSet::new();
+        for c in self.list_calls.iter().filter(|c| c.root == root) {
+            let ok = match c.op.as_str() {
+                "at" => c.scalar || self.slot_binds.iter().any(|b| b.call == c.span && self.slot_stays(self.insts[b.inst].var)),
+                "push" | "set" => {
+                    !c.stores_view || self.store_backs.iter().any(|st| st.span == c.span && st.slot.is_some() && self.slot_stays(st.var))
+                }
+                _ => true,
+            };
+            if !ok {
+                return false;
+            }
+            allowed.extend(c.list_use);
+        }
+        self.uses[root].iter().all(|u| allowed.contains(u) || self.scalar_reads.contains(u))
+    }
+
+    /// Does the local `u`, bound from bounded slots, hand none of the
+    /// element's blocks to anyone but its own slot? Every read of it is
+    /// for a primitive field, or the value of a slot store back of it
+    /// into the slot it read (`slot_matches`).
+    fn slot_stays(&self, u: usize) -> bool {
+        let back: BTreeSet<u32> =
+            self.store_backs.iter().filter(|st| st.var == u && self.slot_matches(u, st)).filter_map(|st| st.value_use).collect();
+        self.uses[u].iter().all(|x| self.scalar_reads.contains(x) || back.contains(x))
     }
 }
 
@@ -5239,7 +5567,8 @@ mod tests {
     const PLACES: &str = r#"
         type In { k: Int = 0; s: String = ""; }
         type P = enum { A(In), B };
-        type R { arr: [In; 2] = [In { }, In { }]; inner: In = In { }; e: P = P::B; }
+        type R { arr: [In; 2] = [In { }, In { }]; inner: In = In { }; e: P = P::B; items: bounded[In; 4]; spare: bounded[In; 4]; }
+        type L { list: bounded[In; 4]; other: bounded[In; 4]; n: Int = 0; }
         @form(vec)
         locus V { capacity { heap cells of In; } }
         fn poke(a: [In; 2]) { a[0].k = 1; }
@@ -5255,7 +5584,7 @@ mod tests {
         type Hits = distinct Int;
         fn hits() -> Hits { return Hits(1); }
         locus H {
-            params { r: R = R { }; arr: [In; 2] = [In { }, In { }]; v: V = V { }; }
+            params { r: R = R { }; arr: [In; 2] = [In { }, In { }]; v: V = V { }; lr: L = L { }; }
             fn other() -> Int { return 1; }
             fn body(p: R, cb: fn(Int) -> Int) { BODY }
         }
@@ -5320,6 +5649,102 @@ mod tests {
             place_copies("let b = self.arr; let mut a = self.arr; a[0].k = 3; self.arr = a; println(b[0].k);"),
             [("a[0].k = 3;".to_string(), PLACE_WRITTEN)]
         );
+    }
+
+    /// Is `x` copied in `body` (a method of `H`), by any rule: a copy on
+    /// its write (the local-place rule) or an owned binding (a write of
+    /// what it views while it is live)?
+    fn x_copied(body: &str) -> bool {
+        !place_copies(body).is_empty() || found(&PLACES.replace("BODY", body)).sites.iter().any(|(_, n)| n == "x")
+    }
+
+    /// A bounded list's slot read with `at`, written, and set back with
+    /// `set` at the same index: the write lands in the element the `set`
+    /// stores, as the self field's get-modify-store does — on a self
+    /// field's list and on a local's (downstream handoff: the shape the
+    /// `[i]` refusal on a bounded prescribes was a hot-path copy).
+    #[test]
+    fn a_bounded_slot_set_back_stays_in_the_list() {
+        use reasons::*;
+        let local = |body: &str| format!("let mut l = L {{ }}; push(l.list, In {{ }}) or discard; {body}");
+        let written = || vec![("x.k = 1;".to_string(), PLACE_WRITTEN)];
+        for idx in ["0", "j"] {
+            let at = format!("let j = one(); let mut x = at(l.list, {idx}) or In {{ }}; x.k = 1;");
+            assert!(!x_copied(&local(&format!("{at} set(l.list, {idx}, x) or discard;"))), "{idx}");
+            let at = format!("let j = one(); let mut x = at(self.r.items, {idx}) or In {{ }}; x.k = 1;");
+            assert!(!x_copied(&format!("{at} set(self.r.items, {idx}, x) or discard;")), "{idx}");
+        }
+        // The set as a bare statement, a read of a primitive field of the
+        // local before the write, the list filled with literals of
+        // primitives, a loop over the slots and a reading loop after it.
+        for body in [
+            local("let mut x = at(l.list, 0) or In { }; x.k = x.k + 1; set(l.list, 0, x);"),
+            "let mut l = L { }; for j in 0..3 { push(l.list, In { k: j, s: \"x\" }) or discard; } \
+             let mut x = at(l.list, 0) or In { }; x.k = 1; set(l.list, 0, x) or discard;"
+                .to_string(),
+            local(
+                "for i in 0..count(l.list) { let mut x = at(l.list, i) or In { }; x.k = 7; set(l.list, i, x) or discard; } \
+                 for i in 0..count(l.list) { let y = at(l.list, i) or In { }; println(y.k); }",
+            ),
+            "for i in 0..count(self.r.items) { let mut x = at(self.r.items, i) or In { }; x.k = 7; \
+             set(self.r.items, i, x) or discard; }"
+                .to_string(),
+        ] {
+            assert!(!x_copied(&body), "{body}");
+        }
+
+        // Still copies, on both kinds of list: another index (or one the
+        // pass cannot tell is the same), another list, no set at all, the
+        // index rebound between, the list read between the write and the
+        // set, the local used after the set, a call of the program's
+        // between, the set not on every path.
+        let still = [
+            ("set(L, 1, x) or discard;", "0"),
+            ("set(L, 0, x) or discard;", "j"),
+            ("set(L, j + 0, x) or discard;", "j"),
+            ("set(O, 0, x) or discard;", "0"),
+            ("", "0"),
+            ("j = j + 1; set(L, j, x) or discard;", "j"),
+            ("println(count(L)); set(L, 0, x) or discard;", "0"),
+            ("set(L, 0, x) or discard; println(x.k);", "0"),
+            ("let n = self.other(); set(L, 0, x) or discard;", "0"),
+            ("if one() > 0 { set(L, 0, x) or discard; }", "0"),
+        ];
+        for (tail, idx) in still {
+            for (list, other) in [("l.list", "l.other"), ("self.r.items", "self.r.spare")] {
+                let tail = tail.replace('L', list).replace('O', other);
+                let body = format!("let mut j = one(); let mut x = at({list}, {idx}) or In {{ }}; x.k = 1; {tail}");
+                let body = if list == "l.list" { local(&body) } else { body };
+                assert!(x_copied(&body), "{body}");
+            }
+        }
+        // On a local's list the copy is the write's, as before.
+        assert_eq!(place_copies(&local("let mut x = at(l.list, 0) or In { }; x.k = 1; set(l.list, 1, x) or discard;")), written());
+
+        // A local's list whose element another name may hold: a local's
+        // value pushed into it, the element pushed into another list, the
+        // element bound whole elsewhere and read after the write, the
+        // list's local read whole, the local bound from a place. (The
+        // element read before the write sees nothing of it.)
+        let rest = "let mut x = at(l.list, 0) or In { }; x.k = 1; set(l.list, 0, x) or discard;";
+        for (before, after) in [
+            ("let y = In { }; push(l.list, y) or discard;", ""),
+            ("let mut o = R { }; push(l.list, o.inner) or discard;", ""),
+            ("let mut o = L { }; push(o.list, at(l.list, 0) or In { }) or discard;", ""),
+            ("let z = at(l.list, 0) or In { };", "println(z.k);"),
+            ("let c = l; println(c.n);", ""),
+        ] {
+            assert_eq!(place_copies(&local(&format!("{before} {rest} {after}"))), written(), "{before}");
+        }
+        assert!(!x_copied(&local(&format!("let z = at(l.list, 0) or In {{ }}; println(z.k); {rest}"))));
+        assert_eq!(
+            place_copies(&local(
+                "let mut o = L { }; let mut x = at(l.list, 0) or In { }; x.k = 1; push(o.list, x) or discard; \
+                 set(l.list, 0, x) or discard;"
+            )),
+            written()
+        );
+        assert_eq!(place_copies(&format!("let mut l = self.lr; {rest}")), written());
     }
 
     #[test]
