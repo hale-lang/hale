@@ -2823,9 +2823,11 @@ fn hot_cell_copy_message(reason: &str, in_loop: bool) -> String {
              element, a parameter, a `match` payload or a `for` element \
              never reaches what it was read from; it stays in the place \
              without a copy only as a get-modify-store \
-             (`let mut v = self.f; v.x[i] = y; self.f = v;`) with nothing \
-             reading the field between, or read the place again and \
-             write through it (`self.f.x[i] = y`).",
+             (`let mut v = self.f; v.x[i] = y; self.f = v;`, or a bounded \
+             list's slot set back, `let mut x = at(l.xs, i) or …; x.f = y; \
+             set(l.xs, i, x) or …;`) with nothing reading the place \
+             between, or read the place again and write through it \
+             (`self.f.x[i] = y`).",
             if in_loop { " in a loop" } else { "" }
         );
     }
