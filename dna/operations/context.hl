@@ -31,6 +31,8 @@ locus HatReader {
         receipts: dna::Receipts = dna::FileReceipts { };
         knowledge: KnowledgeSource = dna::MemoryKnowledge { };
         ledger_ready: Bool = false;
+        // the organism's root, for the persona the habitat keeps beside it
+        root: String = "";
         p: dna::WorkflowProjection = dna::WorkflowProjection { };
         loaded: Bool = false;
         code: String = "";
@@ -183,7 +185,7 @@ locus HatReader {
             requires: node.requires,
             cost_ceiling: node.cost_ceiling,
             knowledge_bindings: node.knowledge_bindings,
-            history: self.history_json(work_id), head: self.j.head()
+            history: self.history_json(work_id), head: self.j.head(), root: self.root
         }, pkg, ready);
         if ready
             && self.knowledge.keep_hat(

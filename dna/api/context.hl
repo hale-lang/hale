@@ -39,6 +39,7 @@ locus ContextWire {
             receipts: dna::MemoryReceipts { repo: root },
             knowledge: dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV },
             ledger_ready: ledger.ready(),
+            root: root,
         };
         let hat = reader.read(query.id);
         if mode != "local" {

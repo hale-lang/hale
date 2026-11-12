@@ -176,7 +176,7 @@ The **hat** (`dna/core/hat.hl`) is a deterministic, structured representation of
 
 ### Contents of a Hat
 
-- **Position & Governance:** The target position, its charter, and all ratified practices bound to the Work's target (with their digests/IDs).
+- **Position & Governance:** The target position, its charter, its persona at the habitat's forge when it has one (the user to commit and review as, its email, the vault slot of its token), and all ratified practices bound to the Work's target (with their digests/IDs).
 - **Work Specification:** Objective, target, output contract (`Patch`, `Assessment`, etc.), data classification, requirements, admitted effect classes, cost ceiling, and bound knowledge nodes.
 - **Hands & Validation:** The tool definitions granted by the output contract (name, description, JSON Schema of arguments), the tool grant authorizing them, and the subset of tools designated as outcome validators.
 - **Model Resolution:** The selected model (`mode`, `size`, `category`, `model`, and the routing rule that selected it).

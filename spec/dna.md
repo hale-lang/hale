@@ -2405,7 +2405,12 @@ memory is named to it.
   the attempt admitted last names, or the kind the request selects
   before one is, or, for a Work whose requirement names
   `position:<name>` (`ask-position`), that position — and its charter (the record's `graph.node` text for
-  that id, `""` until the graph names it); read under OIDC, it is the
+  that id, `""` until the graph names it), and its **persona** when the
+  habitat made one (`position.persona`: the Forgejo user the position
+  commits and reviews as, the email that marks it, and the vault slot of
+  its token, never the token; read from the ledger the habitat keeps beside
+  the organism's allocations, `hat_persona_json`, and left out when there is
+  none; the digest covers it); read under OIDC, it is the
   lease holder's — the person the record maps the bearer to, whose
   `attempt.claimed` row is the Work's current, unexpired, unreleased
   lease; any other caller is refused `403 lease_required`; the practices
