@@ -386,7 +386,7 @@ fn verdict_changes() {
     // iteration, and no advisory site is added.
     pinned(
         "dna/api",
-        4199,
+        4201,
         &[
             "__lib_dna__core___batch__batch_diff",
             "__lib_dna__core___batch__batch_filing",
