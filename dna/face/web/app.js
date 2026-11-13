@@ -334,10 +334,12 @@ function drawGraph(host, org, current) {
   const parentOf = new Map();
   const link = (p, cs) => { for (const c of cs || []) { parentOf.set(c.id, p.id); link(c, c.children); } };
   for (const r of org.roots) { parentOf.set(r.id, "purpose"); link(r, r.children); }
-  for (const [c, p] of parentOf) elements.push({ data: { id: "e:" + c, source: c, target: p } });
+  // edges run from what a node sits under down to it, so the layout flows
+  // from the purpose at the top
+  for (const [c, p] of parentOf) elements.push({ data: { id: "e:" + c, source: p, target: c } });
   if (S.cy) { try { S.cy.destroy(); } catch (e) { /* a torn-down canvas */ } }
   const cy = window.cytoscape({
-    container: host, elements, userPanningEnabled: true, boxSelectionEnabled: false, autounselectify: true, wheelSensitivity: 0.2,
+    container: host, elements, userPanningEnabled: true, boxSelectionEnabled: false, autounselectify: true, wheelSensitivity: 0.2, minZoom: 0.3, maxZoom: 1.25,
     style: [
       { selector: "node", style: { shape: "round-rectangle", "background-color": v("--raised"), "border-color": v("--line-strong"), "border-width": 1,
         label: "data(label)", color: v("--ink"), "font-family": v("--sans"), "font-size": 12, "text-wrap": "wrap", "text-max-width": 150,
@@ -349,7 +351,7 @@ function drawGraph(host, org, current) {
       { selector: "node.vacant", style: { "border-color": v("--amber") } },
       { selector: "node.organism", style: { "border-style": "dashed", "border-color": v("--cyan-dim") } },
       { selector: "node.current", style: { "border-color": v("--cyan"), "border-width": 2 } },
-      { selector: "edge", style: { width: 1, "line-color": v("--line-strong"), "curve-style": "taxi", "taxi-direction": "upward", "taxi-turn": 24, "target-arrow-shape": "none" } },
+      { selector: "edge", style: { width: 1, "line-color": v("--line-strong"), "curve-style": "taxi", "taxi-direction": "downward", "taxi-turn": 24, "target-arrow-shape": "none" } },
     ],
     layout: { name: "breadthfirst", directed: true, roots: "#purpose", spacingFactor: 1.05, padding: 16, avoidOverlap: true },
   });
