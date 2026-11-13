@@ -1,0 +1,77 @@
+// dna/tests/compose_facets_test.hl — a compose file's services with their
+// facets, as ingest reads them (GH #1907): built or pulled, the shape
+// (one build, many placements), and whether each runs the repository's
+// code. Read as written: anchors merged, a build mapping's context and
+// target, the `dna.runs=repository` label.
+import "../operations" as ops;
+
+const COMPOSE: String = "name: synth
+
+x-app: &app
+  build: .
+  image: ghcr.io/acme/synth:dev
+
+services:
+  api:
+    <<: *app
+    command: [\"synth-api\"]
+  worker:
+    <<: *app
+    command: [\"synth-worker\"]
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      target: serve
+    ports:
+      - \"8080:8080\"
+  tool:
+    image: ubuntu:24.04
+    labels:
+      - dna.runs=repository
+    command: [\"/usr/local/bin/synth-tool\"]
+  postgres:
+    image: postgres:17
+    volumes:
+      - pg:/var/lib/postgresql/data
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    command: [\"--config.file=/etc/prometheus/prometheus.yml\"]
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+volumes:
+  pg:
+";
+
+fn main() {
+    let lines = ops::ingest_compose_services(COMPOSE, "synth");
+    std::test::assert_eq_str(
+        lines,
+        "api\tbuilt\tsynth\ttrue\n"
+            + "worker\tbuilt\tsynth\ttrue\n"
+            + "web\tbuilt\tweb-serve\ttrue\n"
+            + "tool\tpulled\ttool\ttrue\n"
+            + "postgres\tpulled\tpostgres\tfalse\n"
+            + "prometheus\tpulled\tprometheus\tfalse\n",
+        "two services of one anchored image are one shape; a build mapping is its context and target; a labelled pulled image runs the repository's code; a database and a monitor do not",
+    );
+    std::test::assert_eq_str(
+        ops::ingest_compose_shape("x", ".", "", "", "repo"),
+        "repo",
+        "a build at the root is the repository's shape",
+    );
+    std::test::assert_eq_str(
+        ops::ingest_compose_shape("x", "./services/edge/", "", "", "repo"),
+        "edge",
+        "a build context's last segment",
+    );
+    std::test::assert_eq_str(
+        ops::ingest_compose_shape("x", ".", "", "registry.local:5000/team/thing:1.2", "repo"),
+        "thing",
+        "an image's name, without its registry and tag",
+    );
+    std::test::assert(ops::ingest_runs_label("- \"dna.runs=repository\""), "a quoted list item");
+    std::test::assert(ops::ingest_runs_label("dna.runs: repository"), "a mapping entry");
+    std::test::assert(!ops::ingest_runs_label("- dna.runs=elsewhere"), "another value");
+}

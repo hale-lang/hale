@@ -5235,7 +5235,18 @@ The live half is memory's, projected from the record by the spine
   off) and recognizes: the **purpose** — the `README.md`'s title and
   first paragraph, and none without a `README.md`, so an empty tree is
   an empty graph; **processes** — the compose file's services
-  (`compose.yaml`, `compose.yml`, `docker-compose.*`), then the
+  (`compose.yaml`, `compose.yml`, `docker-compose.*`), each with the
+  facets the file gives it (`graph_process_body`, GH #1907): `origin`
+  `built` when the deployment builds its image or `pulled` when it takes
+  one as it is; `shape`, the build it is one placement of (its image's
+  name without the tag, else its build context, `.` being the repository
+  by its name; a pulled image's shape is its own name), so services of
+  one build are one shape; and `runs`, whether it runs the repository's
+  code: every built one, and a pulled one the file labels
+  `dna.runs=repository`, never a database, a queue or a monitor the
+  repository only configures. The file is read as written: an `x-…:
+  &anchor` block's `build` and `image` reach a service that merges it
+  (`<<: *anchor`), the service's own keys winning. Then the
   `compose` **deployment** that runs them (built), and each host
   command the root's `hale.toml` declares (`[dna.host.<command>]`, a
   process a habitat places on a host) not already a service, with the
@@ -5888,9 +5899,14 @@ The live half is memory's, projected from the record by the spine
   [--as <who>]`.** The host verb `draft` proposes a starting chart as one
   batch the Board decides, planned and proposed exactly as `hale dna apply`
   plans and proposes a file. Its first version follows the process model
-  and nothing else: for every `process:<p>` node the graph states, an
-  `architect`, a `dev` and a `qa` opened under it (`<p>/architect`, …) with
-  a mandate the Board amends; for every `deployment:<d>`, an `operator`
+  and nothing else: for every `process:<p>` node the graph states that
+  runs the repository's code (its `runs` facet; a process that does not
+  gets no seat), an `architect`, a `dev` and a `qa` with a mandate the
+  Board amends, one set per shape: a shape of one service is opened under
+  it (`<p>/architect`, …); a shape several services share (one build, many
+  placements) is opened once, named by the shape, under the deployment that
+  runs them (`<shape>/architect` under `deployment:compose`); a process
+  ingested before shapes is its own. For every `deployment:<d>`, an `operator`
   under it. A position the chart already states is left alone, so the
   draft is safe to ask for again, and a graph with every triad in place
   answers that there is nothing to draft. `--dry-run` prints the chart it
