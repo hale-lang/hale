@@ -8,6 +8,22 @@ behavior.
 
 ## Unreleased
 
+## v0.32.13 — a bounded list holds values, wherever it lives (2026-11-12)
+
+**A bounded list holds values, wherever it lives.** `push` and `set` on a local's `bounded[T; N]` list stored the very value they were handed, so `push(l.list, y); y.k = 2` changed `l.list[0]`, and a write through the element showed in `y` (#1918). Every bounded list now owns its elements, as a list a locus holds already did: a fresh value, or one nothing reads again, goes in as it is; anything another name still reaches is copied.
+
+**Read, change, set back is free.** `let mut x = at(xs, i) or …; x.f = y; set(xs, i, x) or …;`, the shape the `[i]` refusal on a bounded prescribes, is no longer reported by `hale verify` as a hot-path copy and costs no copy at all when nothing else can see the slot, on a locus's list and on a local's.
+
+The item-level notes follow.
+
+### Fixed
+
+- `hale verify` no longer reports a hot-path copy (`copy: written local bound from a place`) for a bounded list's slot that is read, written and set back: `let mut x = at(xs, i) or …; x.f = y; set(xs, i, x) or …;`, which is the shape the `[i]` refusal on a bounded prescribes. It now applies to a self field's list and to a local's list, with the same index (one local or parameter not rebound between, or one integer literal) and nothing reading the list between. The write lands in the element the `set` stores again. A local's list qualifies only while it holds every element alone, because a local's list keeps an element it is handed from the frame (downstream handoff).
+
+### Fixed
+
+- `push` and `set` on a local record's `bounded[T; N]` list now store a value of the list's own, as a list a locus holds already did. Before, a local's list kept the very block it was handed, so `push(l.list, y); y.k = 2` changed `l.list[0]`, and a write through an element showed in the binding it came from (GH #1918). A literal, a call's result, a local not used after the store, or an element read with `at`, written and `set` back to its slot is still kept without a copy. `hale verify`'s hot-path rule now also accepts that set back on a local's list after pushing locals into it or handing its elements to another list. Anything another name still reaches is copied, and on a hot path `hale verify` reports that copy (`copy: a value another name reaches stored into a bounded list`).
+
 ## v0.32.12 — the chart's parts act under their own names (2026-11-11)
 
 **The chart's parts act under their own names.** Every stated position of a grafted organism's chart, its Board and every person holding a position is now a Forgejo user of its own at the habitat's Forgejo, kept in step with the chart by `graft` and every `apply`. A hat carries its position's persona, and a DNA leg pushes its work, opens its review and authors its own commits as that persona; commits a person or a harness hands it go out unchanged, under their own authors.
