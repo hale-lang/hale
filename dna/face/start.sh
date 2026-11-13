@@ -122,7 +122,7 @@ if [[ -n "$project" ]]; then
   top=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) || fail 'project must be a Git worktree'
   [[ "$(cd -- "$top" && pwd -P)" == "$project" ]] || fail 'pass the DNA project root, not a subdirectory'
 fi
-for asset in index.html app.js styles.css; do
+for asset in index.html app.js styles.css cytoscape.min.js; do
   [[ -r "$face/web/$asset" && -s "$face/web/$asset" ]] || fail "missing browser asset: $asset"
 done
 # The DSN carries the head role's password: refuse it without echoing it.

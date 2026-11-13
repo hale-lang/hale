@@ -1,12 +1,15 @@
 // The optional browser shell is three static files, loaded before
 // listening: the face (`index.html`), its script (`app.js`) and its
-// stylesheet (`styles.css`). No network proxy exists.
+// stylesheet (`styles.css`), plus the graph library the face draws its
+// charts with (`cytoscape.min.js`, vendored beside them) when the webroot
+// has it. No network proxy exists.
 locus WebAssets {
     params {
         enabled: Bool = false;
         index: String = "";
         app: String = "";
         styles: String = "";
+        graph: String = "";
         error: String = "";
     }
     fn load(root: String) -> Bool {
@@ -19,17 +22,24 @@ locus WebAssets {
         self.index = std::io::fs::read_file(root + "/index.html") or "";
         self.app = std::io::fs::read_file(root + "/app.js") or "";
         self.styles = std::io::fs::read_file(root + "/styles.css") or "";
+        self.graph = std::io::fs::read_file(root + "/cytoscape.min.js") or "";
         self.enabled = len(self.index) > 0 && len(self.app) > 0 && len(self.styles) > 0;
         if self.enabled { self.error = ""; }
         return self.enabled;
     }
     fn serves(path: String) -> Bool {
-        return self.enabled && (path == "/" || path == "/app.js" || path == "/styles.css");
+        return self.enabled
+            && (
+                path == "/"
+                    || path == "/app.js"
+                    || path == "/styles.css"
+                    || (path == "/cytoscape.min.js" && len(self.graph) > 0)
+            );
     }
     fn response(path: String) -> std::http::Response {
         let content_type = if path == "/" {
             "text/html; charset=utf-8"
-        } else if path == "/app.js" {
+        } else if path == "/app.js" || path == "/cytoscape.min.js" {
             "text/javascript; charset=utf-8"
         } else {
             "text/css; charset=utf-8"
@@ -38,6 +48,8 @@ locus WebAssets {
             self.index
         } else if path == "/app.js" {
             self.app
+        } else if path == "/cytoscape.min.js" {
+            self.graph
         } else {
             self.styles
         };

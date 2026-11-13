@@ -774,7 +774,16 @@ locus Cases {
         let p = f.practice("PRIVATE-RECORD-NAME", "PRIVATE-RECORD-TEXT", "org", "", false);
         f.prepare_web();
         std::io::fs::write_file(f.webroot + "/secret.txt", "PRIVATE-ASSET-CANARY") or discard;
+        // the vendored graph library is served beside the three when the webroot has it
+        std::io::fs::write_file(f.webroot + "/cytoscape.min.js", "/* graph library */") or discard;
         let before = f.refs(); f.start();
+        let graph = f.http("GET", "/cytoscape.min.js", "", "");
+        std::test::assert_eq_int(graph.status, 200, graph.body);
+        std::test::assert_eq_str(
+            dna::response_header(graph.headers, "Content-Type"),
+            "text/javascript; charset=utf-8",
+            "the graph library is a script",
+        );
         let paths = "/\n/app.js\n/styles.css";
         let mut i = 0;
         while i < dna::count_lines(paths) {

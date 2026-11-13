@@ -1,7 +1,8 @@
 # The face
 
 The face is the DNA organism's people surface: three static files
-(`web/index.html`, `web/app.js`, `web/styles.css`) served by the standard face
+(`web/index.html`, `web/app.js`, `web/styles.css`) and one vendored library
+(`web/cytoscape.min.js`, see Vendored below) served by the standard face
 (`dna/face/standard`) in front of the head (`dna/api/project_service`, which
 serves surfaces only). It has no build step, no runtime package dependencies,
 no database connection and no domain engine: it reads the head's surface and
@@ -16,9 +17,12 @@ browser/service boundary it proposed.
 ## Three screens
 
 - **Organization** is the org chart as the graph states it, read from
-  `Commands::org`: every position under what it sits under, who holds it,
-  whether its mandate is ratified, and the positions the record proposes and
-  the Board has not decided (dashed, with their Review). A grafted organism is
+  `Commands::org`, drawn as a graph: one node per position, per part of the
+  code positions sit under, and per child organization, an edge from each to
+  what it sits under, the purpose at the root. Who holds a position is on its
+  node; a position the record proposes and the Board has not decided is
+  dashed; a vacant one is marked. Tapping a node selects it, and the chips
+  under the graph list the same nodes for a reader without the canvas. A grafted organism is
   a child organization, linked to its own face: the face you open is the
   horizon, and its chart is its own record's. Selecting a position shows its
   mandate, its holders and what it signs; filling it (`HoldFill`) and opening a
@@ -79,11 +83,19 @@ it lands on its own organization at `/`, and the habitat's chart links to it
 under the organism. Both sign in through the habitat's identity; a face on a
 project network reaches it through the host (`HALE_DNA_LOOPBACK_HOST`).
 
+## Vendored
+
+`web/cytoscape.min.js` is [Cytoscape.js](https://js.cytoscape.org) 3.30.4,
+MIT, copied from its npm distribution unchanged; the head serves it beside
+the three assets when the webroot has it, and without it the chart is its
+chips. Update it by replacing the file and this line.
+
 ## Development and verification
 
 Edit the three files under `web/`, restart the head to load the changed
-assets, then reload the browser. The head serves the three assets and nothing
-else from the directory; URLs never become filesystem paths.
+assets, then reload the browser. The head serves the three assets, the
+vendored library, and nothing else from the directory; URLs never become
+filesystem paths.
 
 Browser tests live in `tests/`: Playwright against the real API over a record
 the native fixture writes, one spec per screen. From the repository root, with
