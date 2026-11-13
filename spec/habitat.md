@@ -218,7 +218,10 @@ directory only when it answered and left no mark of a graft (a pinned
 record, `.hale/dna`); otherwise the directory is kept and the command
 that goes on from it is printed, `hale habitat graft --resume <path>
 [flags]`: the same graft run on that directory, nothing shipped, which
-takes only a directory under `<habitat>/grafted/` that exists there. The organism's own verbs (`hale dna review`,
+takes only a directory under `<habitat>/grafted/` that exists there. A
+nursery that is a directory on the admin machine is staged on it and
+what was staged shipped there the same way (§ Nurseries and saplings, A
+directory nursery). The organism's own verbs (`hale dna review`,
 `task create`, `work run`, `show`, …) run in its directory there through
 `hale habitat organism <name> dna <verb> [args…]`, at the person's terminal
 when there is one; locally the same verb runs them in the organism's
@@ -816,6 +819,39 @@ grafts it. A sapling needs nothing beyond what an attached repository
 needs: a `hale.toml` with its `[dna] needs`, and, for a heart migration,
 a command that runs from a fresh fetch.
 
+**A directory nursery** is read where it is, at its committed `HEAD`
+(its own sapling pinned at that commit by that tree's digest; the
+working tree's uncommitted changes and untracked files never reach a
+sapling), and staged under the habitat's directory of the machine that
+read it: its index and packs, as the directory holds them, as
+`nurseries/<key>`, and a mirror (`git clone --mirror`) of each sapling
+repository that is a directory on that machine, its own among them, as
+`nurseries/repos/<key>`. Each key is the first eight bytes of the sha256
+of the source or repository path as named, in hex, so it is the same on
+every machine. A nursery read again where its directory is not reads the
+staged copy, its own sapling pinned at the mirror's `HEAD`, and a graft
+or an `organism upgrade` whose sapling's repository is not on the
+machine fetches from the mirror. **A directory nursery works for a
+habitat on another machine** (a pointer, `up --host`): `hale habitat
+nursery add <dir>` stages it on the admin machine, then ships what was
+staged to the habitat's machine, packed with `tar` and unpacked over the
+pointer's own SSH login (its user and port) into the habitat's directory
+there (`<home>/.local/share/hale/habitat/local` of that login, the
+`HALE_DNA_HABITAT` every run there is given) under the same keys, each
+copy replacing the one there whole; only then does the Board trust it,
+so the head reads it at once. Adding a directory the Board trusts
+already reads the shipped copy there. `hale habitat nursery refresh`
+through a pointer stages and ships again every trusted directory nursery
+that is a directory on the admin machine, then reads the nurseries
+there, so a commit made since is filed for the Board as a newer
+revision, and the graft or upgrade after its ratification fetches it
+from the new mirror. The copy is written as the login's user, the uid
+every run there in the toolchain image runs as, so it is theirs to read.
+A nursery that cannot be read on the admin machine is never shipped:
+`add` refuses it and nothing is trusted; `refresh` names it, ships the
+rest, reads the nurseries there and fails. A git nursery, and a sapling
+at a git URL, are fetched where the habitat runs, as on one machine.
+
 **The hale organism** is the organism that works on the Hale toolchain.
 Its genome is the tree the toolchain carries at `dna/nursery/saplings/hale`
 (its `hale.toml` with `[dna]`, its main, a README), pinned by that tree's
@@ -1187,7 +1223,7 @@ socket), so the habitat's head must be up.
 | `organism upgrade <name> [--plan]` | Moves an organism grafted from a sapling to the revision the habitat pins now, keeping its record, data and allocations: the revision fetched and its digest checked, its tree moved with its graft's changes carried, its migrations run, its services re-applied, a `habitat.organism.upgraded` row recorded and its placed host commands re-run (§ Nurseries and saplings). |
 | `host remove <name> [--plan]` | Removes the host, a `habitat.host` row in state `removed`, planned first: with allocations on it, the plan (each allocation and what stops or is deleted on that host) is executed only once the host's name is typed back at a terminal; `--plan` prints the plan and exits (above). `local` is not removed. |
 | `graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, its application placed on the host `--host` names (the habitat's own machine without one, as `--host local` there) and each body part filled as planned (below). |
-| `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; a git nursery's source may name a revision (`<url>#<tag-or-commit>`), and adding a repository the Board trusts at another revision re-pins it: the earlier source is retired (`state: removed`, `repinned` naming the new one), so the nursery is read at the revision named last; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
+| `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; a git nursery's source may name a revision (`<url>#<tag-or-commit>`), and adding a repository the Board trusts at another revision re-pins it: the earlier source is retired (`state: removed`, `repinned` naming the new one), so the nursery is read at the revision named last; `refresh`: every nursery read again; through a pointer, a nursery that is a directory here is staged here and shipped to the habitat's machine first, by `add` and by each `refresh` (§ Nurseries and saplings); `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
 | `forge <organism> forgejo\|github\|file\|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
 | `models <organism>\|--all [--plan]` | Points a grafted organism's model map (every one's and the habitat's own genome's with `--all`; the genome's alone as `models habitat`) at the habitat's models, as a graft does (`spec/dna.md`, The habitat's models): its key drawn in the provider's family and copied into its slot, the provider's reader vault restaged, the provider asked what it serves, and each category no person wrote mapped there in the name `hale habitat`; a tenant served nothing ends in the provider's `grant` as a `next` line. For an organism grafted before the provider, or a model placed since. `--plan` says what it would draw, copy and map, and does nothing. Refused when the habitat holds no models provider. Through a pointer it runs on the habitat's machine. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
@@ -1302,7 +1338,16 @@ The first screen lists the web UIs across the habitat's organisms, not
 the organisms themselves (their state and pulse are the organisms
 screen's): one row each, with its label, its organism, its link
 and how to sign in, from `Commands::uis` (`spec/dna.md`, The habitat's
-face). Each organism's face is one, `<organism> face`, at the address its
+face). A visitor signed in to the habitat is handed into a grafted
+organism's face by the habitat head's `GET /organisms/<name>/face`: a
+redirect to that face's address with its own launch token (read from
+`<habitat>/allocations/<key>/face-state/head.token`, the head's own
+directory), which opens its `/` and sets its session as `hale habitat open`
+would; nobody not signed in to the habitat is handed in (401), an organism
+the habitat does not hold is unknown (404), and a token the head cannot
+read (a face on another machine) is a 404 naming the face's own URL. The
+token is in the redirect and nowhere else. The habitat's org chart links
+each child organization through it. Each organism's face is one, `<organism> face`, at the address its
 graft row holds, signed in through the habitat's sign-in. Each UI the
 organism's manifest declares (`[dna.ui.<name>]`: `label`, `service`,
 `path`, `login`; `spec/dna.md` § Declared web UIs) is another, read from

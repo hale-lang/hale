@@ -158,6 +158,14 @@ The habitat tells the application's compose which of those roles it runs itself:
    ```
 
    The upgrade fetches the pinned revision into `<habitat>/saplings/<name>` and checks its digest exactly as a graft does (a mismatch moves nothing), checks the organism's tree out there with what its graft wrote carried (the record's pin in its `hale.toml`, the tables and `.gitignore` lines the graft added), re-materializes `vendor/dna`, runs the heart's declared migrations, re-applies its services allocation (its images pulled for the new revision, or built from the new tree when it publishes none; see below), and records a `habitat.organism.upgraded` row. Anything else changed in that checkout is carried only when it applies cleanly at the new revision; otherwise the upgrade refuses before anything moves. Last, each host command placed for it (`organism place`) runs its `install` again at the new revision, over your SSH logins: at a terminal (sudo asks there), or printed as the `hale habitat organism place …` lines left to run. An organism already at the pinned revision is refused, naming a newer revision that waits for `ratify`. Through a pointer, everything but the placements runs on the habitat's machine.
+5. **A nursery in a local directory:** `hale habitat nursery add ./my-nursery` trusts a directory as a nursery. Its saplings are pinned at the directory's committed `HEAD`, never its working tree: commit first, since uncommitted changes and untracked files are not part of any sapling. The habitat stages a copy of the nursery and a mirror of each sapling repository on your machine under its own directory (`nurseries/<key>` and `nurseries/repos/<key>`), and grafts and upgrades fetch from that mirror. **This works for a habitat on another machine too** (one you brought up with `hale habitat up --host <machine>`): `nursery add` stages the directory on your machine, then ships the staged copy and its mirrors to the habitat's machine over the same SSH login the pointer uses, into the habitat's directory there, before the Board trusts it. A later commit reaches the habitat through `nursery refresh`, which stages and ships every trusted directory nursery again before it reads them, so the new commit is filed for the Board to ratify:
+
+   ```sh
+   hale habitat nursery add ./my-nursery        # staged here, shipped there, trusted, read
+   git -C ./my-nursery commit -am "next"        # a new revision of its own sapling
+   hale habitat nursery refresh                 # shipped again; the new commit filed for the Board
+   hale habitat nursery ratify my-app && hale habitat organism upgrade my-app
+   ```
 
 ---
 
@@ -318,7 +326,7 @@ The operator face's **organisms** screen lists each of `voice`'s allocations wit
 
 #### Web UIs on the Home Screen
 
-The operator face's first screen, **habitat**, lists the web UIs across all your organisms: each organism's face (`voice face`), and each UI an organism declares in its `hale.toml`, with its label, its organism, its link and how to sign in:
+A link to a grafted organism's face from the habitat's org chart goes through the habitat head's `/organisms/<name>/face`, which hands you in signed in (the organism's face has its own launch-token gate, as every face does). The operator face's first screen, **habitat**, lists the web UIs across all your organisms: each organism's face (`voice face`), and each UI an organism declares in its `hale.toml`, with its label, its organism, its link and how to sign in:
 
 ```toml
 [dna.ui.console]

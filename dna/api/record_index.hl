@@ -263,6 +263,27 @@ fn index_answers(url: String) -> Bool {
 // face's address and the head's, its declared purpose and its pulse (the
 // worst state its allocations' providers observe now: `up`, `degraded` or
 // `down`; "" when none is observed).
+// The organism named `name` among the habitat's grafted ones: its key
+// and its face's address as `<key>\t<face>`, "" when none is so named
+// (by the name its graft row carries, else by its key).
+@bounded_by(j)
+fn organism_face_of(j: dna::Journal, name: String) -> String {
+    if len(name) == 0 { return ""; }
+    let grafted = dna::habitat_latest(j, "habitat.grafted");
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "habitat.grafted" && dna::habitat_holds(grafted, e.entity, i) {
+            let named = std::json::find_string_field(e.body, "name");
+            if named == name || (len(named) == 0 && e.entity == name) {
+                return e.entity + "\t" + std::json::find_string_field(e.body, "face");
+            }
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
 @bounded_by(j)
 fn index_organisms(root: String, j: dna::Journal, cap: Int, seer: Observer) -> String {
     let out = std::json::Builder { };

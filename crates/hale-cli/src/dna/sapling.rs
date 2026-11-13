@@ -940,15 +940,37 @@ pub(super) fn nursery_cmd(args: &[String]) -> std::process::ExitCode {
                 Ok(p) if p.is_dir() => p.display().to_string(),
                 _ => source.clone(),
             };
-            if Path::new(&source).is_dir() {
+            let pointer = super::remote::pointer();
+            let mut shipped = false;
+            if let Some(p) = ships_to(pointer.as_ref(), &source) {
+                // the habitat runs on another machine, which reads no
+                // directory of this one: staged here and shipped there
+                // before the Board trusts it, so the head reads it at once
+                let (lines, failed) = ship_local_nurseries(p, std::slice::from_ref(&source));
+                if let Some(e) = failed.first() {
+                    eprintln!("hale habitat nursery add: {e}; nothing was trusted");
+                    return ExitCode::from(1);
+                }
+                for l in lines {
+                    println!("{l}");
+                }
+                shipped = true;
+            } else if Path::new(&source).is_dir() {
                 let _ = crate::dna::pack::nursery(Some(&source));
             }
             match head_call("Commands::add_nursery", serde_json::json!({ "source": source })) {
                 Ok(v) if v["ok"] == serde_json::json!(true) => {
                     println!("{:<8}{source}: the Board trusts it", "nursery");
                     // what the head read of it
-                    if let Some(said) = v["why"].as_str().filter(|w| !w.is_empty()) {
+                    let said = v["why"].as_str().unwrap_or("");
+                    if !said.is_empty() {
                         println!("{said}");
+                    }
+                    // trusted before, so the head read nothing: what was
+                    // shipped is read there now, a newer commit filed for
+                    // the Board
+                    if let Some(p) = pointer.as_ref().filter(|_| shipped && said == TRUSTED_ALREADY) {
+                        return super::remote::run_there(p, "nursery", &["nursery", "refresh"]);
                     }
                 }
                 Ok(v) => {
@@ -968,7 +990,32 @@ pub(super) fn nursery_cmd(args: &[String]) -> std::process::ExitCode {
             refreshed()
         }
         (Some("refresh"), None, 1) => match super::remote::pointer() {
-            Some(p) => super::remote::run_there(&p, "nursery", &["nursery", "refresh"]),
+            Some(p) => {
+                // every trusted nursery that is a directory here staged
+                // again and shipped, so a commit made since reaches the
+                // habitat's machine before it reads them
+                let (lines, failed) = match head_call("Commands::nurseries", serde_json::json!({ "limit": 200 })) {
+                    Ok(v) => {
+                        let rows: Vec<serde_json::Value> = v["nurseries"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+                        let sources: Vec<String> = rows.iter().filter(|r| r["kind"] == "dir").filter_map(|r| r["source"].as_str()).filter(|s| Path::new(s).is_dir()).map(str::to_string).collect();
+                        ship_local_nurseries(&p, &sources)
+                    }
+                    Err(e) => (Vec::new(), vec![format!("the nurseries the habitat trusts could not be read ({e}), so none from this machine was shipped")]),
+                };
+                for l in lines {
+                    println!("{l}");
+                }
+                for e in &failed {
+                    eprintln!("hale habitat nursery refresh: {e}");
+                }
+                let ok = failed.is_empty();
+                let code = super::remote::run_there(&p, "nursery", &["nursery", "refresh"]);
+                if ok {
+                    code
+                } else {
+                    ExitCode::from(1)
+                }
+            }
             None => refreshed(),
         },
         (Some("ratify"), Some(name), 2) => match head_call("Commands::ratify_sapling", serde_json::json!({ "name": name })) {
@@ -1018,6 +1065,61 @@ pub(super) fn nursery_cmd(args: &[String]) -> std::process::ExitCode {
     }
 }
 
+/// The habitat a nursery added as `source` is shipped to: the one the
+/// pointer `pointer` names, when `source` is a directory on this machine.
+/// No pointer (the habitat is this machine's, which reads the directory
+/// where it is) or a git URL (fetched by the habitat where it runs): none.
+fn ships_to<'a>(pointer: Option<&'a serde_json::Value>, source: &str) -> Option<&'a serde_json::Value> {
+    pointer.filter(|_| Path::new(source).is_dir())
+}
+
+/// What the head says when it trusts a nursery already, and so reads
+/// nothing of it (`habitat_nursery_add`, `dna/api/habitat_rows.hl`).
+const TRUSTED_ALREADY: &str = "the Board trusts it already";
+
+/// Each of `sources`, a nursery directory on this machine, read here (which
+/// stages it under this machine's habitat directory: its files, and a
+/// mirror of each sapling repository here, its own among them, at their
+/// commits; never a working tree), then everything staged shipped to the
+/// habitat's machine through the pointer `p`, under the same keys there
+/// (`remote::ship_staged`). The habitat there reads the nursery, and its
+/// grafts and upgrades fetch the saplings, from that copy. What was
+/// shipped (no line when nothing was), and what was not, a line each: a
+/// nursery not read here is never shipped, the others are.
+fn ship_local_nurseries(p: &serde_json::Value, sources: &[String]) -> (Vec<String>, Vec<String>) {
+    let hab = PathBuf::from(local_habitat_dir());
+    let mut rels: Vec<String> = Vec::new();
+    let mut failed = Vec::new();
+    for src in sources {
+        let n = match crate::dna::pack::nursery(Some(src)) {
+            Ok(n) => n,
+            Err(e) => {
+                failed.push(format!("the nursery {src} was not read here: {e}"));
+                continue;
+            }
+        };
+        let staged = crate::dna::pack::staged_for_shipping(&hab, src, &n);
+        if staged.is_empty() {
+            failed.push(format!("the nursery {src} was read, but nothing of it was staged under {}", hab.display()));
+        }
+        for r in staged {
+            if !rels.contains(&r) {
+                rels.push(r);
+            }
+        }
+    }
+    if rels.is_empty() {
+        return (Vec::new(), failed);
+    }
+    match super::remote::ship_staged(p, &rels) {
+        Ok(line) => (vec![line], failed),
+        Err(e) => {
+            failed.push(e);
+            (Vec::new(), failed)
+        }
+    }
+}
+
 fn refreshed() -> std::process::ExitCode {
     match refresh() {
         Ok(lines) => {
@@ -1035,6 +1137,19 @@ fn refreshed() -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
+
+    /// A directory nursery is shipped only to a habitat on another
+    /// machine: with no pointer the habitat here reads it where it is, and
+    /// a git URL is fetched where the habitat runs.
+    #[test]
+    fn a_nursery_is_shipped_only_from_a_directory_to_a_habitat_elsewhere() {
+        let p = serde_json::json!({ "name": "home", "host": "habitat.example.net", "dir": "/home/h/.local/share/hale/habitat/local" });
+        let dir = std::env::temp_dir().display().to_string();
+        assert!(super::ships_to(None, &dir).is_none(), "no pointer: nothing shipped");
+        assert!(super::ships_to(Some(&p), "https://example.org/nursery.git").is_none());
+        assert!(super::ships_to(Some(&p), "/no/such/nursery/dir").is_none());
+        assert_eq!(super::ships_to(Some(&p), &dir), Some(&p));
+    }
 
     #[test]
     fn a_graft_onto_local_places_through_compose() {

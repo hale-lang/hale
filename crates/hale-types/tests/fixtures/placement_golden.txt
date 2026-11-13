@@ -13353,6 +13353,11 @@ dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/organism_face_test.hl
+dynamic	__StdJsonBuilder	on main	in tests
+shared	__lib_dna__core___journal__MemJournal@main1	__lib_dna__core___journal__MemJournal #63b83e2f
+shared	dynamic	sites in the stdlib #919aadb4
+
 == dna/tests/organization_source_request_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
