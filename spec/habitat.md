@@ -1338,7 +1338,16 @@ The first screen lists the web UIs across the habitat's organisms, not
 the organisms themselves (their state and pulse are the organisms
 screen's): one row each, with its label, its organism, its link
 and how to sign in, from `Commands::uis` (`spec/dna.md`, The habitat's
-face). Each organism's face is one, `<organism> face`, at the address its
+face). A visitor signed in to the habitat is handed into a grafted
+organism's face by the habitat head's `GET /organisms/<name>/face`: a
+redirect to that face's address with its own launch token (read from
+`<habitat>/allocations/<key>/face-state/head.token`, the head's own
+directory), which opens its `/` and sets its session as `hale habitat open`
+would; nobody not signed in to the habitat is handed in (401), an organism
+the habitat does not hold is unknown (404), and a token the head cannot
+read (a face on another machine) is a 404 naming the face's own URL. The
+token is in the redirect and nowhere else. The habitat's org chart links
+each child organization through it. Each organism's face is one, `<organism> face`, at the address its
 graft row holds, signed in through the habitat's sign-in. Each UI the
 organism's manifest declares (`[dna.ui.<name>]`: `label`, `service`,
 `path`, `login`; `spec/dna.md` § Declared web UIs) is another, read from

@@ -326,7 +326,7 @@ The operator face's **organisms** screen lists each of `voice`'s allocations wit
 
 #### Web UIs on the Home Screen
 
-The operator face's first screen, **habitat**, lists the web UIs across all your organisms: each organism's face (`voice face`), and each UI an organism declares in its `hale.toml`, with its label, its organism, its link and how to sign in:
+A link to a grafted organism's face from the habitat's org chart goes through the habitat head's `/organisms/<name>/face`, which hands you in signed in (the organism's face has its own launch-token gate, as every face does). The operator face's first screen, **habitat**, lists the web UIs across all your organisms: each organism's face (`voice face`), and each UI an organism declares in its `hale.toml`, with its label, its organism, its link and how to sign in:
 
 ```toml
 [dna.ui.console]

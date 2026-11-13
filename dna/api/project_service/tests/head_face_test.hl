@@ -48,6 +48,32 @@ fn main() {
         "curl\n-s\n-b\n" + jar + "\n-o\n/dev/null\n-w\n%{http_code}\n" + face + "/",
     );
     std::test::assert_eq_str(dna::trim_nl(again.stdout), "200", "the cookie opens it again");
+    // an organism's face: nobody not signed in here is handed in; a name
+    // the habitat does not hold is unknown; this head serves no habitat
+    let bare_org = fixture::curl("GET", face + "/organisms/voice/face", "", "");
+    std::test::assert_eq_int(bare_org.status, 401, "bare, no hand-in: " + bare_org.body);
+    std::test::assert(
+        !std::str::contains(bare_org.body, f.token()),
+        "the launch token is never in an answer's body",
+    );
+    let org = dna::run_tool(
+        "curl\n-s\n-b\n" + jar + "\n-o\n/dev/null\n-w\n%{http_code}\n" + face
+            + "/organisms/voice/face",
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(org.stdout),
+        "404",
+        "launched, an unknown organism: " + org.stderr,
+    );
+    let odd = dna::run_tool(
+        "curl\n-s\n-b\n" + jar + "\n-o\n/dev/null\n-w\n%{http_code}\n" + face
+            + "/organisms/..%2Fx/face",
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(odd.stdout),
+        "404",
+        "a name that is no segment: " + odd.stderr,
+    );
     let asset = fixture::curl("GET", face + "/app.js", "", "");
     std::test::assert(
         asset.status == 200 && asset.body == fixture::SHELL_JS,
