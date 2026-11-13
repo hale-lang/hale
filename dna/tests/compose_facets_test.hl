@@ -71,6 +71,18 @@ fn main() {
         "thing",
         "an image's name, without its registry and tag",
     );
+    // an anchored build mapping keeps its context and target whatever
+    // order its keys come in (a `dockerfile` first dropped them once)
+    std::test::assert_eq_str(
+        ops::ingest_compose_services(
+            "x-api: &api\n  build:\n    dockerfile: Dockerfile\n    context: ./api\n    target: api\n"
+                + "x-web: &web\n  build:\n    context: ./web\n    dockerfile: Dockerfile\n    target: serve\n"
+                + "services:\n  api:\n    <<: *api\n  web:\n    <<: *web\n",
+            "repo",
+        ),
+        "api\tbuilt\tapi-api\ttrue\nweb\tbuilt\tweb-serve\ttrue\n",
+        "two anchored build mappings are two shapes, their keys in any order",
+    );
     std::test::assert(ops::ingest_runs_label("- \"dna.runs=repository\""), "a quoted list item");
     std::test::assert(ops::ingest_runs_label("dna.runs: repository"), "a mapping entry");
     std::test::assert(!ops::ingest_runs_label("- dna.runs=elsewhere"), "another value");

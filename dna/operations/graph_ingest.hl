@@ -152,6 +152,7 @@ fn ingest_compose_services(text: String, repo: String) -> String {
     let mut a_target = "";
     let mut a_image = "";
     let mut a_in_build = false;
+    let mut a_child = -1;
     // the service being read
     let mut svc = "";
     let mut child = -1;
@@ -194,25 +195,28 @@ fn ingest_compose_services(text: String, repo: String) -> String {
             section = key;
             let amp = std::str::index_of(t, "&");
             anchor = if amp >= 0 { std::str::trim(t[(amp + 1)..len(t)]) } else { "" };
-            a_build = ""; a_target = ""; a_image = ""; a_in_build = false;
+            a_build = ""; a_target = ""; a_image = ""; a_in_build = false; a_child = -1;
             child = -1;
             continue;
         }
         if len(anchor) > 0 && section != "services" {
-            if key == "build" {
-                a_build = ingest_value(line);
-                a_in_build = len(a_build) == 0;
-                if a_in_build { a_build = "."; }
-            } else if a_in_build && key == "context" {
-                a_build = ingest_value(line);
-            } else if a_in_build && key == "target" {
-                a_target = ingest_value(line);
-            } else if key == "image" {
-                a_image = ingest_value(line);
+            // the block's own keys sit at one indent; a build mapping's keys
+            // are deeper, in any order, and only a key back at the block's
+            // indent leaves the mapping
+            if a_child < 0 { a_child = ind; }
+            if ind == a_child && len(key) > 0 {
                 a_in_build = false;
-            } else if len(key) > 0 {
-                a_in_build = false;
+                if key == "build" {
+                    a_build = ingest_value(line);
+                    a_in_build = len(a_build) == 0;
+                    if a_in_build { a_build = "."; }
+                } else if key == "image" {
+                    a_image = ingest_value(line);
+                }
+                continue;
             }
+            if a_in_build && ind > a_child && key == "context" { a_build = ingest_value(line); }
+            if a_in_build && ind > a_child && key == "target" { a_target = ingest_value(line); }
             continue;
         }
         if section != "services" { continue; }
