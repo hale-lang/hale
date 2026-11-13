@@ -405,6 +405,7 @@ pub const HEAD_FILES: &[EmbeddedFile] = at![
     "dna/face/standard/index.hl",
     "dna/face/standard/main.hl",
     "dna/face/web/app.js",
+    "dna/face/web/cytoscape.min.js",
     "dna/face/web/index.html",
     "dna/face/web/styles.css",
     "dna/face/start.sh",
