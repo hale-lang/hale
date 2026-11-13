@@ -11719,6 +11719,8 @@ dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__host___host__NodeRelay	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
+== dna/tests/compose_facets_test.hl
+
 == dna/tests/compose_projects_test.hl
 
 == dna/tests/concern_identity_test.hl

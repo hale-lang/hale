@@ -1200,6 +1200,7 @@ fn dna_fixture_set_is_complete() {
             "codebase_attach_test.hl",
             "codebase_go_test.hl",
             "command_relay_trust_test.hl",
+            "compose_facets_test.hl",
             "compose_projects_test.hl",
             "concern_identity_test.hl",
             "concern_restart_test.hl",

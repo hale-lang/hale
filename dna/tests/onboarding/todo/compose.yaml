@@ -27,6 +27,11 @@ name: todo
 services:
   api:
     image: ubuntu:24.04
+    # a pulled image that runs the repository's binary: the graph's
+    # process runs the repository's code (dna.runs), so a drafted chart
+    # seats it
+    labels:
+      - dna.runs=repository
     network_mode: host
     # the binary needs OpenSSL's runtime library, which the image lacks
     command:
@@ -64,6 +69,8 @@ services:
 
   ui:
     image: node:22-alpine
+    labels:
+      - dna.runs=repository
     # the generated client is TypeScript; a browser runs the JavaScript tsc
     # makes of it. The page is built in a copy, so nothing is written into
     # the repository.

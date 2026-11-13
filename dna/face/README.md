@@ -71,7 +71,10 @@ From this checkout, building the head's seeds from the working tree:
 ```
 
 Either prints the face's loopback URL and the sign-in link. `--port` selects
-another port; `--help` lists the rest. The launcher starts the stub OpenID
+another port; `--help` lists the rest. The launcher serves the assets beside
+it; `HALE_FACE_WEBROOT=<dir>` serves another directory instead, and on a
+habitat the directory `<habitat>/face-web/` does the same when it holds an
+`index.html` (a dev override, said on the face's log). The launcher starts the stub OpenID
 provider and signs you in through it; the head's memory DSN
 (`HALE_DNA_MEMORY_DSN_HEAD`, as `hale dna memory migrate` prints it) lets
 Knowledge read memory's projection; without it the face reads the record's

@@ -138,6 +138,35 @@ fn graph_node_body(kind: String, name: String, text: String, source: String) -> 
     return b.result();
 }
 
+// A process node's body, with what the compose file says of how it comes
+// to run (its facets, GH #1907): `origin` `built` (the deployment builds
+// its image) or `pulled` (an image as it is); `shape` the build it is one
+// placement of (its image's name without the tag, else its build context;
+// a pulled image's shape is its own name), so services of one build are
+// one shape; `runs` `true` when it runs the repository's code (built, or a
+// pulled image the compose file labels `dna.runs=repository`), `false` for
+// a database, a queue or a monitor the repository only configures. A
+// chart drafted from the graph opens positions for what runs the
+// repository's code, one set per shape.
+fn graph_process_body(
+    name: String,
+    source: String,
+    origin: String,
+    shape: String,
+    runs: Bool
+) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", "process");
+    b.string_field("name", name);
+    if len(source) > 0 { b.string_field("source", source); }
+    b.string_field("origin", origin);
+    b.string_field("shape", shape);
+    b.string_field("runs", if runs { "true" } else { "false" });
+    b.end_object();
+    return b.result();
+}
+
 // A hyperedge being written: its members in order, the transport it is
 // over (`via`), and the parties it reaches that are not nodes (`outside`,
 // e.g. "callers"). `id()` is the row's entity and `body()` its body.
