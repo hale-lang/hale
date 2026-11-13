@@ -207,8 +207,8 @@ fn api() {
     // only the renames-aware walk sees.
     pinned(
         "api",
-        763,
-        765,
+        764,
+        766,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
