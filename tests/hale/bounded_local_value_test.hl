@@ -1,0 +1,117 @@
+// A local's `bounded[T; N]` list owns its elements (spec/types.md §
+// bounded, GH #1918): `push` and `set` store a value of the list's own,
+// so a write through the value handed in never reaches the element, and
+// a write through an element read with `at` (set back or not) never
+// reaches the value it came from.
+//
+// Before, a record local's list kept the very block it was handed when
+// that block was already in the frame's arena: `push(l.list, y); y.k =
+// 2;` changed `l.list[0]`. Lists a locus holds copied since #1905.
+
+type Item { k: Int = 0; s: String = ""; }
+type Outer { n: Int = 0; inner: Item = Item { }; }
+type Items { list: bounded[Item; 4]; }
+type Outers { list: bounded[Outer; 4]; }
+type Names { list: bounded[String; 4]; }
+
+fn main() {
+    // The reported program.
+    let mut l = Items { };
+    let mut y = Item { };
+    push(l.list, y) or raise;
+    y.k = 2;
+    let a = at(l.list, 0) or Item { };
+    std::test::assert_eq_int(a.k, 0, "a write to a pushed local does not reach the element");
+    let mut x = at(l.list, 0) or Item { };
+    x.k = 5;
+    set(l.list, 0, x) or raise;
+    std::test::assert_eq_int(y.k, 2, "an element written and set back does not reach the local");
+    let b = at(l.list, 0) or Item { };
+    std::test::assert_eq_int(b.k, 5, "the set back keeps the write");
+
+    // `set` of a local used after.
+    let mut z = Item { k: 3, s: "three" };
+    set(l.list, 0, z) or raise;
+    z.k = 4;
+    z.s = "four";
+    let c = at(l.list, 0) or Item { };
+    std::test::assert_eq_int(c.k, 3, "a write to a set local does not reach the element");
+    std::test::assert_eq_str(c.s, "three", "nor its String");
+
+    // An element written with no set back.
+    let mut w = at(l.list, 0) or Item { };
+    w.k = 99;
+    let d = at(l.list, 0) or Item { };
+    std::test::assert_eq_int(d.k, 3, "a written element read is the reader's");
+
+    // One local pushed twice is two elements.
+    let t = Item { k: 7 };
+    push(l.list, t) or raise;
+    push(l.list, t) or raise;
+    let mut e = at(l.list, 1) or Item { };
+    e.k = 70;
+    set(l.list, 1, e) or raise;
+    let f = at(l.list, 2) or Item { };
+    std::test::assert_eq_int(f.k, 7, "a sibling slot keeps its own element");
+
+    // Another list's element.
+    let mut m = Items { };
+    push(m.list, at(l.list, 0) or Item { }) or raise;
+    let mut q = at(m.list, 0) or Item { };
+    q.k = 77;
+    set(m.list, 0, q) or raise;
+    let r = at(l.list, 0) or Item { };
+    std::test::assert_eq_int(r.k, 3, "an element pushed into another list is that list's own");
+
+    // A nested record, and a literal holding a local.
+    let mut lo = Outers { };
+    let mut o = Outer { n: 1 };
+    push(lo.list, o) or raise;
+    o.inner.k = 3;
+    let g = at(lo.list, 0) or Outer { };
+    std::test::assert_eq_int(
+        g.inner.k,
+        0,
+        "a nested write to a pushed local does not reach the element",
+    );
+    let mut i = Item { };
+    push(lo.list, Outer { inner: i }) or raise;
+    i.k = 4;
+    let h = at(lo.list, 1) or Outer { };
+    std::test::assert_eq_int(h.inner.k, 0, "a literal holding a local stores its own copy");
+
+    // A local bound in the loop and not used after each push.
+    let mut ln = Items { };
+    for n in 0..4 {
+        let mut it = Item { k: n };
+        it.k = it.k * 10;
+        push(ln.list, it) or raise;
+    }
+    let last = at(ln.list, 3) or Item { };
+    std::test::assert_eq_int(last.k, 30, "a moved local keeps its value");
+
+    // An element handed to another list, then written and set back.
+    let mut src = Items { };
+    push(src.list, Item { k: 8 }) or raise;
+    let mut dst = Items { };
+    push(dst.list, at(src.list, 0) or Item { }) or raise;
+    let mut el = at(src.list, 0) or Item { };
+    push(dst.list, el) or raise;
+    el.k = 80;
+    set(src.list, 0, el) or raise;
+    let s0 = at(src.list, 0) or Item { };
+    let d0 = at(dst.list, 0) or Item { };
+    let d1 = at(dst.list, 1) or Item { };
+    std::test::assert_eq_int(s0.k, 80, "the set back keeps the write");
+    std::test::assert_eq_int(d0.k, 8, "an element handed to another list is that list's own");
+    std::test::assert_eq_int(d1.k, 8, "and so is the element pushed through a local");
+
+    // Strings.
+    let mut ls = Names { };
+    let mut s = "hello";
+    push(ls.list, s) or raise;
+    s = "world";
+    set(ls.list, 0, s) or raise;
+    s = "after";
+    std::test::assert_eq_str(at(ls.list, 0) or "", "world", "a String element keeps the value set");
+}

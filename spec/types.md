@@ -452,12 +452,17 @@ parameter's value it was read from. Four shapes are not copies:
   read the list (for a local's, any read of the local) or a call of the
   program's comes between, no other binding views the list, and `x` is
   not used after. `at` hands back the element itself and the `set`
-  stores it again. A local's list keeps the very element it is handed,
-  so it qualifies only while it holds every element alone: the local is
-  bound fresh, read only as a bounded intrinsic's list or for a
-  primitive field, what is pushed or set into it views nothing (or is
-  such a slot set back), and every `at` of it reads a primitive or binds
-  a local read only for primitive fields or set back to its slot;
+  stores it again, uncopied (§ `bounded[T; N]`: a slot set back is the
+  list's own). A local's list qualifies only while it holds every
+  element alone: the local is bound fresh (a record copied whole from
+  another may share its lists' elements with it), read only as a
+  bounded intrinsic's list or for a primitive field, and every `at` of
+  it reads a primitive, is handed straight to a `push` or `set`, or
+  binds a local read only for primitive fields, as the value of a
+  `push` or `set`, or set back to its slot. What is pushed or set into
+  it needs nothing more: every `push` and `set` stores a value of the
+  list's own (until 2026-11-12, a value pushed that viewed anything, or
+  an element handed to another list, disqualified it);
 - a parameter: an argument is passed by reference, and a callee that
   writes through its parameter (`fn bump(r: R) { r.a[0] = 1; }`) writes
   the caller's value;
@@ -1362,6 +1367,36 @@ Semantics:
   2026-11-11 none of these retired: a locus storing a record of one
   8 KB String in a `bounded[String; 4]` back over itself grew by that
   String per store, for its lifetime.
+- **Every** bounded place owns its pointer-shaped elements, a local's
+  too (`l.list`, with `l` a record local): no slot holds a block
+  another name reaches, so `push(l.list, y); y.k = 2` leaves the
+  element as it was pushed, and writing an element read with `at`
+  and `set` back leaves `y` as it was. `push` and `set` store the
+  value they are handed only when nothing else names it: a literal,
+  a constructor, a call's fresh result, a String or Bytes local
+  holding one (nothing writes into a String under a local in place),
+  or a value no one reaches after the store: a local of the frame that
+  is not read or written after it (nor in a later iteration of a loop
+  it was declared before) and that no binding live after it views,
+  holding a value only it names (a fresh one, or a copy made at its
+  binding or at its first write), or a part of such locals, all the way
+  down (an element of a list a `for` walks that nothing reads again, a
+  literal of a dead local's fields; not one of a record copied whole
+  from another still read, which shares its lists' elements). A slot
+  set back, `let mut x = at(l.xs, i) or …; x.f = y; set(l.xs, i, x)`
+  with `x` used no more, is stored as it is too: `x` holds the slot's
+  own element, written in place where § "A local bound from a place is
+  yours" keeps the write there, or the write's copy of it.
+  Anything else — a local used after the store, a parameter, a field
+  or element of a value still read, a literal holding a local still
+  used — is stored as the list's own copy (a record element a fresh
+  block, deeply; a String or Bytes copied), which the allocation
+  survey reports as a store's copy (`copy: a value another name
+  reaches stored into a bounded list`). A local's list does not
+  retire what a `set` replaces: the frame's arena frees it with the
+  frame. Until 2026-11-12 only a place a locus holds copied: a local's
+  list kept the very block it was handed, and a write through either
+  name showed through the other (GH #1918).
 - A pointer-shaped element `push`ed or `set` into a bounded place under
   a **parameter** is kept in the frame that runs the call: a free fn
   allocates in its caller's arena (a fn that takes a record is never

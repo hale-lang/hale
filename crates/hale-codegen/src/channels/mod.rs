@@ -1289,9 +1289,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // bounded[T; N] fallible intrinsics: push/at with a
                 // bounded-typed first arg. Falls through to the
                 // user-fn path when arg0 isn't bounded.
+                let call_id = match inner {
+                    Expr::Call { id, .. } => *id,
+                    _ => hale_syntax::ast::NodeId::NONE,
+                };
                 if let Some(result) = self
                     .try_lower_bounded_fallible_intrinsic(
-                        &id.name, args, scope,
+                        &id.name, args, scope, call_id,
                     )?
                 {
                     return Ok(result);

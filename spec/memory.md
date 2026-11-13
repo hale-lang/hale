@@ -1606,7 +1606,8 @@ reclaim on a real-world long-running workload:
      element `at` handed back, and the `set` stores it again — a
      locus's list copies it in and then retires the element it
      replaced, which only `x`, done with, held; a local's list keeps
-     it (types.md lists when a local's list holds its elements alone).
+     it as it is, with no copy of the `set`'s own (types.md lists when
+     a local's list holds its elements alone).
 
      The same holds for a retiring form's OWN fields (a
      `@form(vec)`, or a `@form(hashmap)` that retires — rule #6's

@@ -24,6 +24,17 @@ use crate::codegen::CodegenTy;
 use crate::codegen::Cx;
 use crate::codegen::FallibleCallResult;
 use crate::codegen::Scope;
+use hale_syntax::ast::NodeId;
+
+/// Whether a bounded store copies its value (`Cx::bounded_store_owns`):
+/// never (the plain anchor), always (the place's own copy), or unless the
+/// `i1` says the frame owns the value already.
+#[derive(Clone, Copy)]
+enum StoreCopy<'ctx> {
+    Never,
+    Always,
+    Unless(inkwell::values::IntValue<'ctx>),
+}
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Static (no-IR) type resolution for intrinsic dispatch —
@@ -440,7 +451,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 at_args.push(receiver.clone());
                 at_args.push(args[0].clone());
                 return self.lower_bounded_fallible_intrinsic(
-                    "at", &at_args, scope,
+                    "at", &at_args, scope, NodeId::NONE,
                 );
             }
             CodegenTy::Array(elem, n) => (*elem, n),
@@ -546,11 +557,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
+        call: NodeId,
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
         if self.user_fn_shadows_bounded_intrinsic(name, args, scope) {
             return Ok(None);
         }
-        self.lower_bounded_fallible_intrinsic(name, args, scope)
+        self.lower_bounded_fallible_intrinsic(name, args, scope, call)
     }
 
     /// The intrinsic itself, with no shadow check.
@@ -560,12 +572,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// protocol (spec/types.md § `bounded[T; N]`), typed by the
     /// checker off the RECEIVER and not off any free-fn name, so a
     /// program that declares `fn at` must not change what `.get(i)`
-    /// means.
+    /// means. `call` is the call's id, which the owned-view column keys
+    /// what a `push` or `set` stores by (`BoundedStore`).
     fn lower_bounded_fallible_intrinsic(
         &mut self,
         name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
+        call: NodeId,
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
         let want_args = match name {
             "push" | "at" => 2,
@@ -620,7 +634,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // an already-anchored value is identity.
                 self.refuse_element_through_member_param("push", &args[0], &elem, scope)?;
                 let xv = if Self::bounded_elem_is_ptr(&elem) {
-                    let owned = Self::bounded_place_owns_elems(&args[0], &place_owner, scope);
+                    let owned = self.bounded_store_owns(&args[0], &place_owner, &args[1], call, scope)?;
                     let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
                     self.emit_bounded_elem_store_copy(xv, &elem, target, owned, "bounded.push")?
                 } else {
@@ -852,7 +866,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.refuse_element_through_member_param("set", &args[0], &elem, scope)?;
                 let mut retire_into = None;
                 let xv = if Self::bounded_elem_is_ptr(&elem) {
-                    let owned = Self::bounded_place_owns_elems(&args[0], &place_owner, scope);
+                    let owned = self.bounded_store_owns(&args[0], &place_owner, &args[2], call, scope)?;
                     let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
                     // A place a locus holds owns its elements: the one
                     // `set` replaces is retired below.
@@ -1018,27 +1032,103 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Does a `push` or `set` of `value` into the bounded place `recv`
+    /// store the place's own copy of it? Every bounded place owns its
+    /// pointer-shaped elements: a slot never holds a block another name
+    /// reaches, or a write through either would show in the other
+    /// (GH #1918). A place that owns its elements outright
+    /// (`bounded_place_owns_elems`: a locus holds it, or a bounded local
+    /// views one) copies every value. Any other place — a record local's
+    /// list, `l.list` — keeps a value nothing else names as it is, by the
+    /// owned-view column's answer for the store (`BoundedStore`): a
+    /// fresh value, or a local not used after the store. A local whose
+    /// value may still be a place's is moved when its copy-on-write flag
+    /// says the frame owns it by now, and copied otherwise: the answer is
+    /// then a runtime `i1`.
+    fn bounded_store_owns(
+        &mut self,
+        recv: &Expr,
+        owner: &Option<Option<crate::codegen::LvalueOwner<'ctx>>>,
+        value: &Expr,
+        call: NodeId,
+        scope: &Scope<'ctx>,
+    ) -> Result<StoreCopy<'ctx>, CodegenError> {
+        if Self::bounded_place_owns_elems(recv, owner, scope) {
+            return Ok(StoreCopy::Always);
+        }
+        use hale_types::view_bindings::BoundedStore;
+        Ok(match self.owned_views.bounded_store(call, value.span().start.0) {
+            BoundedStore::Fresh | BoundedStore::Moved => StoreCopy::Never,
+            BoundedStore::Copy => StoreCopy::Always,
+            BoundedStore::MoveIfOwned => {
+                let flag = match value {
+                    Expr::Ident(id) => scope
+                        .locals
+                        .get(&id.name)
+                        .and_then(|(slot, _)| self.cell_part_flags.get(&(*slot, String::new())).copied()),
+                    _ => None,
+                };
+                match flag {
+                    Some(flag) => {
+                        let owned = self
+                            .builder
+                            .build_load(self.context.bool_type(), flag, "bounded.store.owned")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into_int_value();
+                        StoreCopy::Unless(owned)
+                    }
+                    // No flag was ever set for the local: copy.
+                    None => StoreCopy::Always,
+                }
+            }
+        })
+    }
+
     /// The copy a `push` or `set` stores into a bounded slot of a
-    /// pointer element. `owned` (`bounded_place_owns_elems`): the
-    /// place's own — a String or Bytes already in `dest` copied too
+    /// pointer element. `owned` (`bounded_store_owns`): the place's own —
+    /// a String or Bytes already in `dest` copied too
     /// (`cell_owned_clone`), a record always fresh — as a `@form(vec)`
     /// element's is (`emit_vec_cell_copy_ptr`). Otherwise the plain
-    /// anchor, which passes a value already in `dest` through.
+    /// anchor, which passes a value already in `dest` through. A runtime
+    /// answer branches between the two.
     fn emit_bounded_elem_store_copy(
         &mut self,
         value: BasicValueEnum<'ctx>,
         elem: &CodegenTy,
         dest: PointerValue<'ctx>,
-        owned: bool,
+        owned: StoreCopy<'ctx>,
         site: &str,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        if !owned {
-            return self.emit_cross_arena_store_deep_copy_ptr(value, elem, dest, site);
+        let owned_copy = |cx: &mut Self| -> Result<BasicValueEnum<'ctx>, CodegenError> {
+            let prev = std::mem::replace(&mut cx.cell_owned_clone, true);
+            let res = cx.emit_return_value_deep_copy(value, elem, dest);
+            cx.cell_owned_clone = prev;
+            res
+        };
+        match owned {
+            StoreCopy::Never => self.emit_cross_arena_store_deep_copy_ptr(value, elem, dest, site),
+            StoreCopy::Always => owned_copy(self),
+            StoreCopy::Unless(frame_owns) => {
+                let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+                let func = self.current_fn.expect("bounded store in fn body");
+                let keep_bb = self.context.append_basic_block(func, &format!("{site}.keep"));
+                let copy_bb = self.context.append_basic_block(func, &format!("{site}.copy"));
+                let join_bb = self.context.append_basic_block(func, &format!("{site}.stored"));
+                self.builder.build_conditional_branch(frame_owns, keep_bb, copy_bb).map_err(err)?;
+                self.builder.position_at_end(keep_bb);
+                let kept = self.emit_cross_arena_store_deep_copy_ptr(value, elem, dest, site)?;
+                let keep_end = self.builder.get_insert_block().expect("positioned");
+                self.builder.build_unconditional_branch(join_bb).map_err(err)?;
+                self.builder.position_at_end(copy_bb);
+                let copied = owned_copy(self)?;
+                let copy_end = self.builder.get_insert_block().expect("positioned");
+                self.builder.build_unconditional_branch(join_bb).map_err(err)?;
+                self.builder.position_at_end(join_bb);
+                let phi = self.builder.build_phi(value.get_type(), &format!("{site}.value")).map_err(err)?;
+                phi.add_incoming(&[(&kept, keep_end), (&copied, copy_end)]);
+                Ok(phi.as_basic_value())
+            }
         }
-        let prev = std::mem::replace(&mut self.cell_owned_clone, true);
-        let res = self.emit_return_value_deep_copy(value, elem, dest);
-        self.cell_owned_clone = prev;
-        res
     }
 
     /// `set(place, i, x)` on a bounded place a locus holds: retire what
