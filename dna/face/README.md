@@ -23,7 +23,9 @@ browser/service boundary it proposed.
   node; a position the record proposes and the Board has not decided is
   dashed; a vacant one is marked. Tapping a node selects it, and the chips
   under the graph list the same nodes for a reader without the canvas. A grafted organism is
-  a child organization, linked to its own face: the face you open is the
+  a child organization, linked to its own face through the head's
+  `/organisms/<name>/face`, which hands a visitor signed in here into that
+  face with its own launch token: the face you open is the
   horizon, and its chart is its own record's. Selecting a position shows its
   mandate, its holders and what it signs; filling it (`HoldFill`) and opening a
   position under it (`PositionOpen`) are the record's commands, each a Board

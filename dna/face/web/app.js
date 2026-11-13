@@ -249,7 +249,7 @@ function mandateOf(name) {
 // One node of the chart as a chip: the graph's index, and what a reader
 // without the canvas gets.
 function chip(n, current) {
-  const attrs = { class: "chip " + n.kind + (n.state === "proposed" ? " proposed" : ""), href: n.kind === "organism" ? n.face : href("org", n.id), "aria-current": n.id === current ? "true" : null };
+  const attrs = { class: "chip " + n.kind + (n.state === "proposed" ? " proposed" : ""), href: n.kind === "organism" ? organismFace(n) : href("org", n.id), "aria-current": n.id === current ? "true" : null };
   if (n.kind === "organism") attrs.target = "_blank";
   const a = el("a", attrs, el("span", { class: "name" }, n.name));
   if (n.kind === "position") a.append(el("span", { class: "holders " + (n.holders.length ? "" : "vacant") }, n.state === "proposed" ? "proposed" : n.holders.length ? "held by " + n.holders.join(", ") : "vacant"));
@@ -257,6 +257,10 @@ function chip(n, current) {
   if (n.kind === "part") a.append(el("span", { class: "holders" }, n.nodeKind || "part"));
   return el("li", {}, a);
 }
+
+// A grafted organism's face, entered signed in: the head's route hands a
+// visitor signed in here into that face with its own launch token.
+function organismFace(n) { return "/organisms/" + encodeURIComponent(n.name) + "/face"; }
 
 // Every node of the chart, roots first, each before its children.
 function chartNodes(org) {
@@ -328,7 +332,7 @@ function drawGraph(host, org, current) {
   for (const n of chartNodes(org)) {
     const sub = n.kind === "position" ? (n.state === "proposed" ? "proposed" : n.holders.length ? n.holders.join(", ") : "vacant")
       : n.kind === "organism" ? "child organization" : (n.nodeKind || "");
-    elements.push({ data: { id: n.id, label: n.name + (sub ? "\n" + sub : ""), kind: n.kind, face: n.face || "" },
+    elements.push({ data: { id: n.id, label: n.name + (sub ? "\n" + sub : ""), kind: n.kind, face: n.kind === "organism" ? organismFace(n) : "" },
       classes: [n.kind, n.state === "proposed" ? "proposed" : "", n.kind === "position" && !n.holders.length && n.state !== "proposed" ? "vacant" : "", n.id === current ? "current" : ""].filter(Boolean).join(" ") });
   }
   const parentOf = new Map();
