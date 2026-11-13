@@ -1,0 +1,349 @@
+// dna/operations/draft_plan.hl — the chart a repository's code calls for,
+// planned from its processes and its units (GH #1907, the ingest slice's
+// steps 2 to 6). The plan is pure: processes with the program each runs
+// and the deployment that runs it, the units of code with their sizes and
+// reach (`code_units.hl`), and one knob, the budget: how much exclusive
+// code one set of positions holds. Out come the sets to open: one per
+// program over budget, one per bin of smaller programs of one deployment
+// packed under it, and an expert per group of code two or more programs
+// share. The host's `draft` renders the plan as a batch for the Board.
+import "../core" as dna;
+
+// What one process runs: `<process>\t<deployment>\t<program>` a line.
+// What the plan says: `set\t<name>\t<under>\t<lines>\t<programs>` for a
+// set of architect, dev and qa (`under` the node it is opened under,
+// `programs` space-separated), and `expert\t<name>\t<under>\t<lines>\t<units>`
+// for one expert of shared code.
+fn draft_plan(processes: String, units: String, budget: Int) -> String {
+    let b = if budget > 0 { budget } else { 8000 };
+    // the programs, once each, with the first process and deployment running them
+    let mut programs = "\n"; // `<program>\t<process>\t<deployment>\n`
+    let mut rest = processes;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let row = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(row) == 0 { continue; }
+        let t1 = std::str::index_of(row, "\t");
+        let proc = row[0..t1];
+        let r1 = row[(t1 + 1)..len(row)];
+        let t2 = std::str::index_of(r1, "\t");
+        let dep = r1[0..t2];
+        let prog = r1[(t2 + 1)..len(r1)];
+        if len(prog) == 0 || std::str::contains(programs, "\n" + prog + "\t") { continue; }
+        programs = programs + prog + "\t" + proc + "\t" + dep + "\n";
+    }
+    // each program's unit, reach, and how many programs reach each unit
+    let mut unit_of = "\n"; // `<program>\t<unit>\n`
+    let mut reach_of = "\n"; // `<program>\t<units>\n`
+    let mut counts = "\n"; // `<unit>\t<n>\n`
+    let mut p = programs[1..len(programs)];
+    while len(p) > 0 {
+        let nl = std::str::index_of(p, "\n");
+        let row = p[0..nl];
+        p = p[(nl + 1)..len(p)];
+        let prog = row[0..std::str::index_of(row, "\t")];
+        let u = program_unit(units, prog);
+        unit_of = unit_of + prog + "\t" + u + "\n";
+        let r = if len(u) > 0 { units_reach(units, u) } else { "" };
+        reach_of = reach_of + prog + "\t" + r + "\n";
+        let touched = if len(u) > 0 { u + (if len(r) > 0 { " " + r } else { "" }) } else { "" };
+        let mut i = 0;
+        while len(dna::nth_word(touched, i)) > 0 {
+            counts = count_up(counts, dna::nth_word(touched, i));
+            i = i + 1;
+        }
+    }
+    // each program's exclusive code: its unit and what it alone reaches
+    let mut sized = ""; // `<lines>\t<program>\t<process>\t<deployment>\n`
+    p = programs[1..len(programs)];
+    while len(p) > 0 {
+        let nl = std::str::index_of(p, "\n");
+        let row = p[0..nl];
+        p = p[(nl + 1)..len(p)];
+        let prog = row[0..std::str::index_of(row, "\t")];
+        let u = tsv_field(unit_of, prog);
+        let r = tsv_field(reach_of, prog);
+        let mut lines = if len(u) > 0 { unit_lines(units, u) } else { 0 };
+        let mut i = 0;
+        while len(dna::nth_word(r, i)) > 0 {
+            let x = dna::nth_word(r, i);
+            i = i + 1;
+            if count_of(counts, x) == 1 { lines = lines + unit_lines(units, x); }
+        }
+        sized = sized + to_string(lines) + "\t" + row + "\n";
+    }
+    let mut out = "";
+    // programs over budget: a set of their own, under their process
+    let mut small = ""; // the rest, per deployment
+    let mut s = sized;
+    while len(s) > 0 {
+        let nl = std::str::index_of(s, "\n");
+        let row = s[0..nl];
+        s = s[(nl + 1)..len(s)];
+        let t1 = std::str::index_of(row, "\t");
+        let lines = std::str::parse_int(row[0..t1]) or 0;
+        let r1 = row[(t1 + 1)..len(row)];
+        let t2 = std::str::index_of(r1, "\t");
+        let prog = r1[0..t2];
+        let r2 = r1[(t2 + 1)..len(r1)];
+        let t3 = std::str::index_of(r2, "\t");
+        let proc = r2[0..t3];
+        if lines > b {
+            out = out + "set\t" + prog + "\tprocess:" + proc + "\t" + to_string(lines) + "\t" + prog
+                + "\n";
+        } else {
+            small = small + row + "\n";
+        }
+    }
+    // the smaller programs of one deployment, largest first, packed into
+    // bins of at most a budget; a bin of one is that program's set under
+    // its process, a bin of several is named by its largest and opened
+    // under the deployment
+    while len(small) > 0 {
+        // the deployment of the first row
+        let first = small[0..std::str::index_of(small, "\n")];
+        let dep = last_field(first);
+        let mut mine = "";
+        let mut others = "";
+        let mut q = small;
+        while len(q) > 0 {
+            let nl = std::str::index_of(q, "\n");
+            let row = q[0..nl];
+            q = q[(nl + 1)..len(q)];
+            if last_field(row) == dep {
+                mine = mine + row + "\n";
+            } else {
+                others = others + row + "\n";
+            }
+        }
+        small = others;
+        let ordered = sort_desc(mine);
+        // greedy bins
+        let mut bins = ""; // `<lines>\t<name>\t<process>\t<programs>\n`
+        let mut o = ordered;
+        while len(o) > 0 {
+            let nl = std::str::index_of(o, "\n");
+            let row = o[0..nl];
+            o = o[(nl + 1)..len(o)];
+            let t1 = std::str::index_of(row, "\t");
+            let lines = std::str::parse_int(row[0..t1]) or 0;
+            let r1 = row[(t1 + 1)..len(row)];
+            let t2 = std::str::index_of(r1, "\t");
+            let prog = r1[0..t2];
+            let r2 = r1[(t2 + 1)..len(r1)];
+            let proc = r2[0..std::str::index_of(r2, "\t")];
+            bins = bin_in(bins, lines, prog, proc, b);
+        }
+        let mut bb = bins;
+        while len(bb) > 0 {
+            let nl = std::str::index_of(bb, "\n");
+            let row = bb[0..nl];
+            bb = bb[(nl + 1)..len(bb)];
+            let t1 = std::str::index_of(row, "\t");
+            let lines = row[0..t1];
+            let r1 = row[(t1 + 1)..len(row)];
+            let t2 = std::str::index_of(r1, "\t");
+            let name = r1[0..t2];
+            let r2 = r1[(t2 + 1)..len(r1)];
+            let t3 = std::str::index_of(r2, "\t");
+            let proc = r2[0..t3];
+            let progs = r2[(t3 + 1)..len(r2)];
+            let several = len(dna::nth_word(progs, 1)) > 0;
+            let under = if several && len(dep) > 0 { dep } else { "process:" + proc };
+            out = out + "set\t" + name + "\t" + under + "\t" + lines + "\t" + progs + "\n";
+        }
+    }
+    // shared code: units two or more programs reach, grouped by their
+    // directory two deep, an expert per group of at least half a budget,
+    // the smaller groups together as the library's
+    let mut groups = "\n"; // `<group>\t<lines>\t<units>\n`
+    let mut c = counts[1..len(counts)];
+    while len(c) > 0 {
+        let nl = std::str::index_of(c, "\n");
+        let row = c[0..nl];
+        c = c[(nl + 1)..len(c)];
+        let t = std::str::index_of(row, "\t");
+        let u = row[0..t];
+        let n = std::str::parse_int(row[(t + 1)..len(row)]) or 0;
+        if n < 2 || unit_is_main(units, u) { continue; }
+        groups = group_in(groups, group_of(u), unit_lines(units, u), u);
+    }
+    let mut rest_lines = 0;
+    let mut rest_units = "";
+    let mut gg = groups[1..len(groups)];
+    while len(gg) > 0 {
+        let nl = std::str::index_of(gg, "\n");
+        let row = gg[0..nl];
+        gg = gg[(nl + 1)..len(gg)];
+        let t1 = std::str::index_of(row, "\t");
+        let grp = row[0..t1];
+        let r1 = row[(t1 + 1)..len(row)];
+        let t2 = std::str::index_of(r1, "\t");
+        let lines = std::str::parse_int(r1[0..t2]) or 0;
+        let us = r1[(t2 + 1)..len(r1)];
+        if lines * 2 >= b {
+            out = out + "expert\t" + expert_name(grp) + "\tposition:board\t" + to_string(lines)
+                + "\t" + us + "\n";
+        } else {
+            rest_lines = rest_lines + lines;
+            rest_units = if len(rest_units) == 0 { us } else { rest_units + " " + us };
+        }
+    }
+    if rest_lines > 0 {
+        out = out + "expert\tlibrary\tposition:board\t" + to_string(rest_lines) + "\t" + rest_units
+            + "\n";
+    }
+    return out;
+}
+
+// The unit a program is built from: the main unit whose last segment is
+// the program's name, "" when none is.
+fn program_unit(units: String, prog: String) -> String {
+    let mains = units_programs(units);
+    let mut m = mains;
+    while len(m) > 0 {
+        let nl = std::str::index_of(m, "\n");
+        let d = m[0..nl];
+        m = m[(nl + 1)..len(m)];
+        if last_segment_of(d) == prog { return d; }
+    }
+    return "";
+}
+
+fn last_segment_of(path: String) -> String {
+    let mut out = path;
+    let mut rest = path;
+    while len(rest) > 0 {
+        let slash = std::str::index_of(rest, "/");
+        if slash < 0 { break; }
+        rest = rest[(slash + 1)..len(rest)];
+        out = rest;
+    }
+    return out;
+}
+
+// The group a shared unit belongs to: its directory two segments deep
+// (`src/core/x/y` is `src/core`; `pkg` is `pkg`).
+fn group_of(u: String) -> String {
+    let s1 = std::str::index_of(u, "/");
+    if s1 < 0 { return u; }
+    let rest = u[(s1 + 1)..len(u)];
+    let s2 = std::str::index_of(rest, "/");
+    return if s2 < 0 { u } else { u[0..(s1 + 1 + s2)] };
+}
+
+// A group's position name: its segments joined by `-`, so `src/core` is
+// the expert `src-core`.
+fn expert_name(grp: String) -> String { return std::str::replace(grp, "/", "-"); }
+
+fn count_up(counts: String, u: String) -> String {
+    let at = std::str::index_of(counts, "\n" + u + "\t");
+    if at < 0 { return counts + u + "\t1\n"; }
+    let start = at + len(u) + 2;
+    let r = counts[start..len(counts)];
+    let end = std::str::index_of(r, "\n");
+    let n = (std::str::parse_int(r[0..end]) or 0) + 1;
+    return counts[0..start] + to_string(n) + r[end..len(r)];
+}
+
+fn count_of(counts: String, u: String) -> Int {
+    let at = std::str::index_of(counts, "\n" + u + "\t");
+    if at < 0 { return 0; }
+    let r = counts[(at + len(u) + 2)..len(counts)];
+    return std::str::parse_int(r[0..std::str::index_of(r, "\n")]) or 0;
+}
+
+// The value after `<key>\t` in `\n`-led tab rows.
+fn tsv_field(rows: String, key: String) -> String {
+    let at = std::str::index_of(rows, "\n" + key + "\t");
+    if at < 0 { return ""; }
+    let r = rows[(at + len(key) + 2)..len(rows)];
+    let nl = std::str::index_of(r, "\n");
+    return if nl < 0 { r } else { r[0..nl] };
+}
+
+fn last_field(row: String) -> String {
+    let mut rest = row;
+    let mut out = row;
+    while len(rest) > 0 {
+        let t = std::str::index_of(rest, "\t");
+        if t < 0 { break; }
+        rest = rest[(t + 1)..len(rest)];
+        out = rest;
+    }
+    return out;
+}
+
+// Rows `<lines>\t…` by lines descending (an insertion sort: a few dozen rows).
+fn sort_desc(rows: String) -> String {
+    let mut out = "";
+    let mut r = rows;
+    while len(r) > 0 {
+        let nl = std::str::index_of(r, "\n");
+        let row = r[0..nl];
+        r = r[(nl + 1)..len(r)];
+        let lines = std::str::parse_int(row[0..std::str::index_of(row, "\t")]) or 0;
+        // find the place
+        let mut before = "";
+        let mut after = out;
+        let mut placed = false;
+        let mut o = out;
+        while len(o) > 0 && !placed {
+            let onl = std::str::index_of(o, "\n");
+            let orow = o[0..onl];
+            let olines = std::str::parse_int(orow[0..std::str::index_of(orow, "\t")]) or 0;
+            if lines > olines { after = o; placed = true; break; }
+            before = before + orow + "\n";
+            o = o[(onl + 1)..len(o)];
+        }
+        if !placed { after = ""; }
+        out = before + row + "\n" + after;
+    }
+    return out;
+}
+
+// A program into the first bin with room, else a bin of its own; a bin is
+// named by its first (largest) program.
+fn bin_in(bins: String, lines: Int, prog: String, proc: String, budget: Int) -> String {
+    let mut out = "";
+    let mut placed = false;
+    let mut b = bins;
+    while len(b) > 0 {
+        let nl = std::str::index_of(b, "\n");
+        let row = b[0..nl];
+        b = b[(nl + 1)..len(b)];
+        if placed { out = out + row + "\n"; continue; }
+        let t1 = std::str::index_of(row, "\t");
+        let have = std::str::parse_int(row[0..t1]) or 0;
+        if have + lines <= budget {
+            let r1 = row[(t1 + 1)..len(row)];
+            let t2 = std::str::index_of(r1, "\t");
+            let name = r1[0..t2];
+            let r2 = r1[(t2 + 1)..len(r1)];
+            let t3 = std::str::index_of(r2, "\t");
+            let first_proc = r2[0..t3];
+            let progs = r2[(t3 + 1)..len(r2)];
+            out = out + to_string(have + lines) + "\t" + name + "\t" + first_proc + "\t" + progs
+                + " " + prog + "\n";
+            placed = true;
+        } else {
+            out = out + row + "\n";
+        }
+    }
+    if !placed { out = out + to_string(lines) + "\t" + prog + "\t" + proc + "\t" + prog + "\n"; }
+    return out;
+}
+
+fn group_in(groups: String, grp: String, lines: Int, u: String) -> String {
+    let at = std::str::index_of(groups, "\n" + grp + "\t");
+    if at < 0 { return groups + grp + "\t" + to_string(lines) + "\t" + u + "\n"; }
+    let start = at + len(grp) + 2;
+    let r = groups[start..len(groups)];
+    let end = std::str::index_of(r, "\n");
+    let row = r[0..end];
+    let t = std::str::index_of(row, "\t");
+    let had = std::str::parse_int(row[0..t]) or 0;
+    let us = row[(t + 1)..len(row)];
+    return groups[0..start] + to_string(had + lines) + "\t" + us + " " + u + r[end..len(r)];
+}

@@ -447,6 +447,7 @@ fn draft_verb(
     seed: String,
     dry_run: Bool,
     who_flag: String,
+    budget: Int,
     memory: dna::Memory
 ) -> Answer {
     let no_record = record_refusal(root);
@@ -459,8 +460,109 @@ fn draft_verb(
     let g = dna::record_graph(journal, receipts);
     let bodies = dna::record_graph_bodies(journal, receipts);
     let chart = dna::org_chart(journal, receipts);
-    let mut text = "# drafted from the process model: a triad per shape of process, an operator per deployment\n";
+    // the repository's units of code, when its language is read (Go
+    // today): then the chart is planned by budget (`ops::draft_plan`);
+    // without them, a set per shape of process
+    let units = draft_units(root);
+    let mut text = if len(units) > 0 {
+        "# drafted from the code: a set of positions per program or bin of programs within the budget of "
+            + to_string(if budget > 0 { budget } else { 8000 })
+            + " exclusive lines, an expert per group of shared code, an operator per deployment\n"
+    } else {
+        "# drafted from the process model: a triad per shape of process, an operator per deployment\n"
+    };
     let mut opened = 0;
+    if len(units) > 0 {
+        let mut deployment = "";
+        let mut processes = "";
+        let mut rest0 = g.nodes;
+        while len(rest0) > 1 {
+            let body = rest0[1..len(rest0)];
+            let nl = std::str::index_of(body, "\n");
+            let id = body[0..nl];
+            rest0 = body[nl..len(body)];
+            if std::str::starts_with(id, "deployment:") && len(deployment) == 0 { deployment = id; }
+        }
+        rest0 = g.nodes;
+        while len(rest0) > 1 {
+            let body = rest0[1..len(rest0)];
+            let nl = std::str::index_of(body, "\n");
+            let id = body[0..nl];
+            rest0 = body[nl..len(body)];
+            if !std::str::starts_with(id, "process:") { continue; }
+            let b = dna::graph_body_of(bodies, id);
+            if std::json::find_string_field(b, "runs") == "false" { continue; }
+            let program = std::json::find_string_field(b, "program");
+            processes = processes + id[8..len(id)] + "\t" + deployment + "\t"
+                + (if len(program) > 0 { program } else { draft_shape(b, id[8..len(id)]) }) + "\n";
+        }
+        let plan = ops::draft_plan(processes, units, budget);
+        let mut pl = plan;
+        while len(pl) > 0 {
+            let nl = std::str::index_of(pl, "\n");
+            let row = pl[0..nl];
+            pl = pl[(nl + 1)..len(pl)];
+            let t1 = std::str::index_of(row, "\t");
+            let what = row[0..t1];
+            let r1 = row[(t1 + 1)..len(row)];
+            let t2 = std::str::index_of(r1, "\t");
+            let name = r1[0..t2];
+            let r2 = r1[(t2 + 1)..len(r1)];
+            let t3 = std::str::index_of(r2, "\t");
+            let mut under = r2[0..t3];
+            // an expert sits under the board; a repository whose board is
+            // not yet stated seats it under the deployment instead
+            if under == "position:board" && !dna::chart_has(chart, "position position:board") {
+                if len(deployment) == 0 { continue; }
+                under = deployment;
+            }
+            let r3 = r2[(t3 + 1)..len(r2)];
+            let t4 = std::str::index_of(r3, "\t");
+            let lines = r3[0..t4];
+            let members = r3[(t4 + 1)..len(r3)];
+            if !draft_word(name) { continue; }
+            let part = if what == "set" {
+                (if len(dna::nth_word(members, 1)) > 0 { "the programs " } else { "the program " })
+                    + std::str::replace(members, " ", ", ") + " (" + lines + " lines of their own)"
+            } else {
+                "the shared code of " + std::str::replace(members, " ", ", ") + " (" + lines
+                    + " lines)"
+            };
+            let roles = if what == "set" { "architect dev qa" } else { "expert" };
+            let mut i = 0;
+            while len(dna::nth_word(roles, i)) > 0 {
+                let role = dna::nth_word(roles, i);
+                i = i + 1;
+                let position = "position:" + name + "/" + role;
+                if dna::chart_has(chart, "position " + position) { continue; }
+                text = text + "open " + name + "/" + role + " under " + under + " | "
+                    + draft_mandate(role, part) + "\n";
+                opened = opened + 1;
+            }
+        }
+        // an operator per deployment, as ever
+        rest0 = g.nodes;
+        while len(rest0) > 1 {
+            let body = rest0[1..len(rest0)];
+            let nl = std::str::index_of(body, "\n");
+            let id = body[0..nl];
+            rest0 = body[nl..len(body)];
+            if !std::str::starts_with(id, "deployment:") { continue; }
+            let name = id[11..len(id)];
+            if !draft_word(name) { continue; }
+            let position = "position:" + name + "/operator";
+            if dna::chart_has(chart, "position " + position) { continue; }
+            text = text + "open " + name + "/operator under " + id + " | "
+                + draft_mandate("operator", "deployment `" + name + "`") + "\n";
+            opened = opened + 1;
+        }
+        if opened == 0 {
+            return answer(
+                "nothing to draft: the chart already seats every program, shared group and deployment the code states\n",
+            );
+        }
+        return apply_text(root, seed, text, dry_run, who_flag, "", false, memory);
+    }
     // the shapes: `<shape>\t<members>` a line, counted first so a shape of
     // several services opens one set under the deployment that runs them
     let mut shapes = "\n";
@@ -520,7 +622,7 @@ fn draft_verb(
             let position = "position:" + name + "/" + role;
             if dna::chart_has(chart, "position " + position) { continue; }
             text = text + "open " + name + "/" + role + " under " + under + " | "
-                + draft_mandate(role, kind, name) + "\n";
+                + draft_mandate(role, kind + " `" + name + "`") + "\n";
             opened = opened + 1;
         }
     }
@@ -530,6 +632,18 @@ fn draft_verb(
         );
     }
     return apply_text(root, seed, text, dry_run, who_flag, "", false, memory);
+}
+
+// The repository's units of code (`ops::go_units`), from its tracked
+// files, when it is a Go module; "" otherwise.
+fn draft_units(root: String) -> String {
+    let listed = dna::run_tool("git\n-C\n" + root + "\n-c\ncore.quotePath=false\nls-files");
+    if listed.code != 0 { return ""; }
+    let files = listed.stdout;
+    if !std::str::contains("\n" + files, "\ngo.mod\n") { return ""; }
+    let mod_path = ops::go_module_path(std::io::fs::read_file(root + "/go.mod") or "");
+    if len(mod_path) == 0 { return ""; }
+    return ops::go_units(root, files, mod_path);
 }
 
 // The shape a process node's body names (`graph_process_body`), its own
@@ -550,8 +664,7 @@ fn draft_word(name: String) -> Bool {
 }
 
 // The mandate the draft proposes for a role on a part; the Board amends it.
-fn draft_mandate(role: String, kind: String, name: String) -> String {
-    let part = kind + " `" + name + "`";
+fn draft_mandate(role: String, part: String) -> String {
     if role == "architect" {
         return "Decides: how " + part
             + " is shaped, and what the dev builds next. May not: write its code, or approve its own changes. Cites: the contract, the practices in force. Escalates: a change that touches another part, to the Board.";
@@ -563,6 +676,10 @@ fn draft_mandate(role: String, kind: String, name: String) -> String {
     if role == "qa" {
         return "Decides: whether a change to " + part
             + " works, and signs it. May not: write it. Cites: the tests, the contract. Escalates: a failure the dev cannot fix, to the architect.";
+    }
+    if role == "expert" {
+        return "Decides: how " + part
+            + " changes, and reviews every change to it. May not: change what depends on it without the owners of that. Cites: the contract, the callers. Escalates: a change that breaks a caller, to the Board.";
     }
     return "Decides: how " + part
         + " runs and when it is moved. May not: change its code. Cites: the deployment's file, the hosts' capacity. Escalates: capacity it does not have, to the Board.";
