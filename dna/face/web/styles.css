@@ -81,30 +81,21 @@ main { padding: calc(var(--u) * 4); max-width: 1480px; width: 100%; margin: 0 au
 .state.refused { color: var(--coral); }
 .note { color: var(--muted); font-size: 13px; }
 
-/* org chart: a tree, children nested */
-.chart { list-style: none; margin: 0; padding: 0; }
-.chart ul { list-style: none; margin: 0 0 0 calc(var(--u) * 6); padding: 0; border-left: 1px solid var(--line-strong); }
-.chart li { margin: calc(var(--u) * 2) 0; position: relative; }
-.chart ul > li::before {
-  content: ""; position: absolute; left: calc(var(--u) * -6); top: 18px; width: calc(var(--u) * 5); border-top: 1px solid var(--line-strong);
-}
-.pos {
-  display: grid; grid-template-columns: 1fr auto; gap: calc(var(--u) * 1) calc(var(--u) * 4); align-items: center;
-  padding: calc(var(--u) * 2) calc(var(--u) * 3); border: 1px solid var(--line); border-radius: 3px; background: var(--raised);
-  color: inherit; width: 100%; text-align: left;
-}
-.pos:hover { border-color: var(--line-strong); text-decoration: none; }
-.pos[aria-current="true"] { border-color: var(--cyan); }
-.pos .name { font-weight: 600; }
-.pos .kind { color: var(--faint); font-size: 12px; font-family: var(--mono); }
-.pos .holders { color: var(--muted); font-size: 13px; grid-column: 1 / -1; }
-.pos .holders.vacant { color: var(--amber); }
-.pos .mandate { font-size: 12px; font-family: var(--mono); color: var(--faint); }
-.pos .mandate.ratified { color: var(--green); }
-.pos .mandate.pending { color: var(--amber); }
-.pos.organism { border-style: dashed; }
-.pos.part { background: transparent; border-color: transparent; padding-left: 0; }
-.pos.part .name { color: var(--muted); font-weight: 500; }
+/* org chart: the graph, and its chips as the index */
+.graph { height: 520px; min-height: 320px; border: 1px solid var(--line); border-radius: 3px; background: var(--paper); }
+@media (max-width: 900px) { .graph { height: 60vh; } }
+.chips { list-style: none; display: flex; flex-wrap: wrap; gap: calc(var(--u) * 1.5); margin: calc(var(--u) * 3) 0 0; padding: 0; }
+.chips a { display: inline-flex; gap: calc(var(--u) * 1.5); align-items: baseline; color: inherit; font-size: 12.5px; padding: var(--u) calc(var(--u) * 2); border: 1px solid var(--line); border-radius: 2px; background: var(--raised); }
+.chips a:hover { border-color: var(--line-strong); text-decoration: none; }
+.chips a[aria-current="true"] { border-color: var(--cyan); }
+.chips a .name { font-weight: 600; }
+.chips a .holders { color: var(--muted); }
+.chips a .holders.vacant { color: var(--amber); }
+.chips a.proposed { border-style: dashed; }
+.chips a.proposed .name { color: var(--amber); }
+.chips a.part { background: transparent; }
+.chips a.part .name { color: var(--muted); font-weight: 500; }
+.chips a.organism { border-style: dashed; border-color: var(--cyan-dim); }
 
 /* inspector */
 .insp dl { display: grid; grid-template-columns: max-content 1fr; gap: calc(var(--u) * 1.5) calc(var(--u) * 4); margin: 0; }
@@ -153,8 +144,6 @@ form.act textarea { min-height: 72px; }
 .badge.retired, .badge.declined, .badge.refused { color: var(--coral); border-color: var(--coral); }
 @media (prefers-reduced-motion: no-preference) { .pos, .card { transition: border-color 120ms ease; } }
 
-.pos.proposed { border-style: dashed; }
-.pos.proposed .name { color: var(--amber); }
 
 /* a chart change, checked before it is proposed */
 .preview .diff { display: grid; gap: 2px; margin-top: var(--u); padding: var(--u) calc(var(--u) * 2); border: 1px solid var(--rule); font-size: 12.5px; }

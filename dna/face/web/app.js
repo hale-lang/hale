@@ -246,35 +246,37 @@ function mandateOf(name) {
   return { state: m.accepted ? "ratified" : (m.projection_state || "proposed"), node: m };
 }
 
-function positionNode(n, current) {
-  const isCurrent = n.id === current;
-  const attrs = { class: "pos " + n.kind, href: n.kind === "organism" ? n.face : href("org", n.id), "aria-current": isCurrent ? "true" : null };
+// One node of the chart as a chip: the graph's index, and what a reader
+// without the canvas gets.
+function chip(n, current) {
+  const attrs = { class: "chip " + n.kind + (n.state === "proposed" ? " proposed" : ""), href: n.kind === "organism" ? n.face : href("org", n.id), "aria-current": n.id === current ? "true" : null };
   if (n.kind === "organism") attrs.target = "_blank";
-  const head = el("a", attrs,
-    el("span", { class: "name" }, n.name),
-    el("span", { class: "kind" }, n.kind === "organism" ? (n.state || "organism") : n.kind === "part" ? "" : "position"),
-  );
-  if (n.kind === "position") {
-    if (n.state === "proposed") head.classList.add("proposed");
-    head.append(el("span", { class: "holders " + (n.holders.length ? "" : "vacant") }, n.state === "proposed" ? "proposed, awaiting the Board" : n.holders.length ? "held by " + n.holders.join(", ") : "vacant"));
-    head.append(el("span", { class: "mandate " + n.mandate.state }, "mandate " + n.mandate.state));
-  }
-  if (n.kind === "organism") head.append(el("span", { class: "holders" }, n.purpose ? n.purpose.split(":")[0] + ": grafted organism" : "grafted organism"));
-  const li = el("li", {}, head);
-  if (n.children && n.children.length) li.append(el("ul", {}, n.children.map(c => positionNode(c, current))));
-  return li;
+  const a = el("a", attrs, el("span", { class: "name" }, n.name));
+  if (n.kind === "position") a.append(el("span", { class: "holders " + (n.holders.length ? "" : "vacant") }, n.state === "proposed" ? "proposed" : n.holders.length ? "held by " + n.holders.join(", ") : "vacant"));
+  if (n.kind === "organism") a.append(el("span", { class: "holders" }, "child organization"));
+  if (n.kind === "part") a.append(el("span", { class: "holders" }, n.nodeKind || "part"));
+  return el("li", {}, a);
+}
+
+// Every node of the chart, roots first, each before its children.
+function chartNodes(org) {
+  const out = [];
+  const walk = n => { out.push(n); for (const c of n.children || []) walk(c); };
+  for (const r of org.roots) walk(r);
+  return out;
 }
 
 function renderOrg(main) {
   if (S.errors.index) { main.append(stateCard("unavailable", "the record's index is unavailable: " + errorText(S.errors.index))); return; }
   const org = organization();
   const current = S.route.id;
+  const graph = el("div", { class: "graph", role: "img", "aria-label": "The org chart as a graph; the chips below list its nodes" });
   const canvas = el("section", { class: "panel", "aria-label": "Org chart" },
-    el("header", {}, el("h2", {}, "Positions"), el("span", { class: "note" }, S.index && S.index.purpose ? S.index.purpose.split(".")[0] + "." : "")),
-    org.roots.length ? el("ul", { class: "chart" }, el("li", {},
-      el("div", { class: "pos part" }, el("span", { class: "name" }, "purpose")),
-      el("ul", {}, org.roots.map(r => positionNode(r, current))))) : stateCard("", "the record states no positions yet"),
+    el("header", {}, el("h2", {}, "Organization"), el("span", { class: "note" }, S.index && S.index.purpose ? S.index.purpose.split(".")[0] + "." : "")),
+    org.roots.length ? graph : stateCard("", "the record states no positions yet"),
+    org.roots.length ? el("ul", { class: "chips" }, chartNodes(org).map(n => chip(n, current))) : "",
   );
+  if (org.roots.length) queueMicrotask(() => drawGraph(graph, org, current));
   const insp = el("aside", { class: "panel insp", "aria-label": "Inspector" });
   const node = org.byId.get(current);
   if (!node) {
@@ -311,6 +313,55 @@ function positionInspector(n, org) {
   }
   if (S.calls.has("PositionOpen")) wrap.append(openPositionForm(org, n));
   return wrap;
+}
+
+// The chart drawn as a graph: one node per position, part and child
+// organization, an edge from each to what it sits under, the purpose at
+// the root. Cytoscape lays it out top-down; tapping a node selects it as
+// its chip does. Without the library (a webroot without the vendored
+// file) the chips alone are the chart.
+function drawGraph(host, org, current) {
+  if (typeof window.cytoscape !== "function") { host.replaceWith(el("p", { class: "note" }, "the graph library is not served; the chips below are the chart")); return; }
+  const css = getComputedStyle(document.documentElement);
+  const v = name => css.getPropertyValue(name).trim();
+  const elements = [{ data: { id: "purpose", label: (S.index && S.index.purpose ? S.index.purpose.split(".")[0] : "purpose"), kind: "purpose" } }];
+  for (const n of chartNodes(org)) {
+    const sub = n.kind === "position" ? (n.state === "proposed" ? "proposed" : n.holders.length ? n.holders.join(", ") : "vacant")
+      : n.kind === "organism" ? "child organization" : (n.nodeKind || "");
+    elements.push({ data: { id: n.id, label: n.name + (sub ? "\n" + sub : ""), kind: n.kind, face: n.face || "" },
+      classes: [n.kind, n.state === "proposed" ? "proposed" : "", n.kind === "position" && !n.holders.length && n.state !== "proposed" ? "vacant" : "", n.id === current ? "current" : ""].filter(Boolean).join(" ") });
+  }
+  const parentOf = new Map();
+  const link = (p, cs) => { for (const c of cs || []) { parentOf.set(c.id, p.id); link(c, c.children); } };
+  for (const r of org.roots) { parentOf.set(r.id, "purpose"); link(r, r.children); }
+  for (const [c, p] of parentOf) elements.push({ data: { id: "e:" + c, source: c, target: p } });
+  if (S.cy) { try { S.cy.destroy(); } catch (e) { /* a torn-down canvas */ } }
+  const cy = window.cytoscape({
+    container: host, elements, userPanningEnabled: true, boxSelectionEnabled: false, autounselectify: true, wheelSensitivity: 0.2,
+    style: [
+      { selector: "node", style: { shape: "round-rectangle", "background-color": v("--raised"), "border-color": v("--line-strong"), "border-width": 1,
+        label: "data(label)", color: v("--ink"), "font-family": v("--sans"), "font-size": 12, "text-wrap": "wrap", "text-max-width": 150,
+        "text-valign": "center", "text-halign": "center", width: "label", height: "label", padding: "10px", "line-height": 1.3 } },
+      { selector: "node.purpose", style: { "background-color": v("--panel"), "border-color": v("--line"), color: v("--muted") } },
+      { selector: "node.part", style: { "background-color": v("--panel"), "border-style": "solid", color: v("--muted") } },
+      { selector: "node.position", style: { "font-weight": 500 } },
+      { selector: "node.proposed", style: { "border-style": "dashed", "border-color": v("--amber"), color: v("--amber") } },
+      { selector: "node.vacant", style: { "border-color": v("--amber") } },
+      { selector: "node.organism", style: { "border-style": "dashed", "border-color": v("--cyan-dim") } },
+      { selector: "node.current", style: { "border-color": v("--cyan"), "border-width": 2 } },
+      { selector: "edge", style: { width: 1, "line-color": v("--line-strong"), "curve-style": "taxi", "taxi-direction": "upward", "taxi-turn": 24, "target-arrow-shape": "none" } },
+    ],
+    layout: { name: "breadthfirst", directed: true, roots: "#purpose", spacingFactor: 1.05, padding: 16, avoidOverlap: true },
+  });
+  cy.on("tap", "node", ev => {
+    const d = ev.target.data();
+    if (d.kind === "purpose") return;
+    if (d.kind === "organism") { if (d.face) window.open(d.face, "_blank", "noopener"); return; }
+    location.hash = href("org", d.id);
+  });
+  cy.on("mouseover", "node", () => { host.style.cursor = "pointer"; });
+  cy.on("mouseout", "node", () => { host.style.cursor = ""; });
+  S.cy = cy;
 }
 
 // The sentence the record gives a position nobody described yet.

@@ -6878,7 +6878,9 @@ on the port the browser opens (8792; `--port`), the head on the loopback
 behind it (`--head-port`, 8796; it learns the face's as
 `HALE_DNA_PUBLIC_PORT`, its origin for sign-in, host checks and
 commands). The face is three static files (`dna/face/web`: `index.html`,
-`app.js`, `styles.css`), three screens over the head's surface: the org
+`app.js`, `styles.css`) and the vendored graph library it draws its charts
+with (`cytoscape.min.js`, served beside them when the webroot has it, the
+chart falling back to its chips without it), three screens over the head's surface: the org
 chart as the graph states it (**The chart and the board**, above), the
 board of handed Tasks and Reviews, and the knowledge the record holds,
 every write a command the signed-in person could issue from the CLI. The

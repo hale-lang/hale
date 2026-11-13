@@ -18,6 +18,8 @@ test.describe('the org chart', () => {
     const before = await service.refs();
     await page.goto(service.url('org'));
     const chart = page.getByRole('region', { name: 'Org chart' });
+    // the chart is drawn as a graph (the library's canvas) over its chips
+    await expect(chart.locator('.graph canvas').first()).toBeVisible();
     await expect(chart.getByRole('link', { name: /^board/ })).toBeVisible();
     await expect(chart.getByRole('link', { name: /^api\/dev/ })).toBeVisible();
     await expect(chart).toContainText(`held by ${process.env.USER}`);
