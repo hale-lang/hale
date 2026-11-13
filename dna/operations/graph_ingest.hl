@@ -91,6 +91,239 @@ fn ingest_indent(line: String) -> Int {
     return n;
 }
 
+// The last segment of a path or an image reference: what follows its
+// last `/`, the whole when it has none.
+fn ingest_last_segment(s: String) -> String {
+    let mut out = s;
+    let mut rest = s;
+    while len(rest) > 0 {
+        let slash = std::str::index_of(rest, "/");
+        if slash < 0 { break; }
+        rest = rest[(slash + 1)..len(rest)];
+        out = rest;
+    }
+    return out;
+}
+
+// The shape a built service is one placement of (`graph_process_body`):
+// its image's name without the tag and the registry path, else its build
+// context's last segment (`.` is the repository, by its name) with the
+// target it builds, else its own name.
+fn ingest_compose_shape(
+    name: String,
+    build: String,
+    target: String,
+    image: String,
+    repo: String
+) -> String {
+    if len(image) > 0 {
+        let mut i = ingest_last_segment(image);
+        let colon = std::str::index_of(i, ":");
+        if colon > 0 { i = i[0..colon]; }
+        if len(i) > 0 { return i; }
+    }
+    if len(build) > 0 {
+        let mut c = build;
+        while len(c) > 1 && std::str::ends_with(c, "/") { c = c[0..(len(c) - 1)]; }
+        c = ingest_last_segment(c);
+        if c == "." || len(c) == 0 { c = repo; }
+        return if len(target) > 0 { c + "-" + target } else { c };
+    }
+    return name;
+}
+
+// The compose file's services with their facets, one a line:
+// `<name>\t<origin>\t<shape>\t<runs>` (`graph_process_body`), in the file's
+// order. Read as the file is written, not as compose resolves it: a
+// top-level `x-…: &anchor` block's `build` and `image` reach a service
+// that merges it (`<<: *anchor`), a service's own keys win, a `build`
+// written as a mapping is its `context` and `target`, and a label
+// `dna.runs=repository` (a list item or a mapping entry under `labels`)
+// says a pulled image runs the repository's code. `repo` names the
+// repository, the shape of a build whose context is `.`.
+fn ingest_compose_services(text: String, repo: String) -> String {
+    let it = std::iter::Lines { };
+    let mut from = 0;
+    let mut section = "";
+    // the anchors: `<name>\t<build>\t<target>\t<image>` a line
+    let mut anchors = "\n";
+    let mut anchor = "";
+    let mut a_build = "";
+    let mut a_target = "";
+    let mut a_image = "";
+    let mut a_in_build = false;
+    let mut a_child = -1;
+    // the service being read
+    let mut svc = "";
+    let mut child = -1;
+    let mut s_build = "";
+    let mut s_target = "";
+    let mut s_image = "";
+    let mut s_merge = "";
+    let mut s_runs_label = false;
+    let mut s_in_build = false;
+    let mut s_in_labels = false;
+    let mut s_key_indent = -1;
+    let mut out = "";
+    while from >= 0 && from < len(text) {
+        let line = it.line_at(text, from);
+        from = it.next_idx(text, from);
+        let t = std::str::trim(line);
+        if len(t) == 0 || std::str::starts_with(t, "#") { continue; }
+        let ind = ingest_indent(line);
+        let key = ingest_key(line);
+        if ind == 0 {
+            if len(svc) > 0 {
+                out = out
+                    + ingest_compose_service_line(
+                        svc,
+                        s_build,
+                        s_target,
+                        s_image,
+                        s_merge,
+                        s_runs_label,
+                        anchors,
+                        repo,
+                    );
+                svc = "";
+            }
+            if len(anchor) > 0 {
+                anchors = anchors + anchor + "\t" + a_build + "\t" + a_target + "\t" + a_image
+                    + "\n";
+                anchor = "";
+            }
+            section = key;
+            let amp = std::str::index_of(t, "&");
+            anchor = if amp >= 0 { std::str::trim(t[(amp + 1)..len(t)]) } else { "" };
+            a_build = ""; a_target = ""; a_image = ""; a_in_build = false; a_child = -1;
+            child = -1;
+            continue;
+        }
+        if len(anchor) > 0 && section != "services" {
+            // the block's own keys sit at one indent; a build mapping's keys
+            // are deeper, in any order, and only a key back at the block's
+            // indent leaves the mapping
+            if a_child < 0 { a_child = ind; }
+            if ind == a_child && len(key) > 0 {
+                a_in_build = false;
+                if key == "build" {
+                    a_build = ingest_value(line);
+                    a_in_build = len(a_build) == 0;
+                    if a_in_build { a_build = "."; }
+                } else if key == "image" {
+                    a_image = ingest_value(line);
+                }
+                continue;
+            }
+            if a_in_build && ind > a_child && key == "context" { a_build = ingest_value(line); }
+            if a_in_build && ind > a_child && key == "target" { a_target = ingest_value(line); }
+            continue;
+        }
+        if section != "services" { continue; }
+        if child < 0 { child = ind; }
+        if ind == child && len(key) > 0 {
+            if len(svc) > 0 {
+                out = out
+                    + ingest_compose_service_line(
+                        svc,
+                        s_build,
+                        s_target,
+                        s_image,
+                        s_merge,
+                        s_runs_label,
+                        anchors,
+                        repo,
+                    );
+            }
+            svc = key;
+            s_build = ""; s_target = ""; s_image = ""; s_merge = ""; s_runs_label = false;
+            s_in_build = false; s_in_labels = false; s_key_indent = -1;
+            continue;
+        }
+        if len(svc) == 0 || ind <= child { continue; }
+        if s_key_indent < 0 { s_key_indent = ind; }
+        if ind == s_key_indent && len(key) > 0 {
+            s_in_build = false;
+            s_in_labels = false;
+            if key == "build" {
+                s_build = ingest_value(line);
+                s_in_build = len(s_build) == 0;
+                if s_in_build { s_build = "."; }
+            } else if key == "image" {
+                s_image = ingest_value(line);
+            } else if key == "<<" {
+                let star = std::str::index_of(t, "*");
+                if star >= 0 { s_merge = std::str::trim(t[(star + 1)..len(t)]); }
+            } else if key == "labels" {
+                s_in_labels = true;
+            }
+            continue;
+        }
+        if s_in_build && key == "context" { s_build = ingest_value(line); }
+        if s_in_build && key == "target" { s_target = ingest_value(line); }
+        if s_in_labels && ingest_runs_label(t) { s_runs_label = true; }
+    }
+    if len(svc) > 0 {
+        out = out
+            + ingest_compose_service_line(
+                svc,
+                s_build,
+                s_target,
+                s_image,
+                s_merge,
+                s_runs_label,
+                anchors,
+                repo,
+            );
+    }
+    return out;
+}
+
+// Whether a `labels` line says the service runs the repository's code:
+// `- dna.runs=repository`, `- "dna.runs=repository"` or `dna.runs: repository`.
+fn ingest_runs_label(t: String) -> Bool {
+    let mut s = t;
+    if std::str::starts_with(s, "-") { s = std::str::trim(s[1..len(s)]); }
+    s = std::str::replace(std::str::replace(s, "\"", ""), "'", "");
+    return s == "dna.runs=repository" || std::str::trim(s) == "dna.runs: repository";
+}
+
+// One service's line of `ingest_compose_services`, its anchor merged in
+// where its own keys say nothing.
+fn ingest_compose_service_line(
+    name: String,
+    build: String,
+    target: String,
+    image: String,
+    merge: String,
+    runs_label: Bool,
+    anchors: String,
+    repo: String
+) -> String {
+    let mut b = build;
+    let mut tg = target;
+    let mut im = image;
+    if len(merge) > 0 {
+        let at = std::str::index_of(anchors, "\n" + merge + "\t");
+        if at >= 0 {
+            let rest = anchors[(at + len(merge) + 2)..len(anchors)];
+            let nl = std::str::index_of(rest, "\n");
+            let row = rest[0..nl];
+            let t1 = std::str::index_of(row, "\t");
+            let after = row[(t1 + 1)..len(row)];
+            let t2 = std::str::index_of(after, "\t");
+            if len(b) == 0 { b = row[0..t1]; tg = after[0..t2]; }
+            if len(im) == 0 { im = after[(t2 + 1)..len(after)]; }
+        }
+    }
+    let built = len(b) > 0;
+    let origin = if built { "built" } else { "pulled" };
+    let shape = if built { ingest_compose_shape(name, b, tg, im, repo) } else { name };
+    let runs = built || runs_label;
+    return name + "\t" + origin + "\t" + shape + "\t" + (if runs { "true" } else { "false" })
+        + "\n";
+}
+
 // A YAML mapping key on this line ("" when the line is not one).
 fn ingest_key(line: String) -> String {
     let t = std::str::trim(line);
@@ -524,29 +757,45 @@ locus GraphIngest {
         }
         if len(self.compose) == 0 { return; }
         let text = self.read(self.compose);
-        let it = std::iter::Lines { };
-        let mut from = 0;
-        let mut inside = false;
-        let mut child = -1;
+        // each service with its facets: how it comes to run, and whether
+        // it runs the repository's code (`graph_process_body`)
+        let mut repo = self.root;
+        while len(repo) > 1 && std::str::ends_with(repo, "/") { repo = repo[0..(len(repo) - 1)]; }
+        repo = ingest_last_segment(repo);
+        let services = ingest_compose_services(text, repo);
         let mut names = "";
-        while from >= 0 && from < len(text) {
-            let line = it.line_at(text, from);
-            from = it.next_idx(text, from);
-            let t = std::str::trim(line);
-            if len(t) == 0 || std::str::starts_with(t, "#") { continue; }
-            let key = ingest_key(line);
-            let ind = ingest_indent(line);
-            if ind == 0 { inside = key == "services"; child = -1; continue; }
-            if !inside { continue; }
-            if child < 0 { child = ind; }
-            if ind == child && len(key) > 0 { names = names + key + "\n"; }
-        }
-        let mut rest = names;
+        let mut rest = services;
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
-            let p = rest[0..nl];
+            let row = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
-            let n = self.node("process", p, "", self.compose);
+            let t1 = std::str::index_of(row, "\t");
+            let p = row[0..t1];
+            let after = row[(t1 + 1)..len(row)];
+            let t2 = std::str::index_of(after, "\t");
+            let origin = after[0..t2];
+            let more = after[(t2 + 1)..len(after)];
+            let t3 = std::str::index_of(more, "\t");
+            let shape = more[0..t3];
+            let runs = more[(t3 + 1)..len(more)] == "true";
+            names = names + p + "\n";
+            if !graph_text_ok(p) {
+                self.refuse(
+                    self.compose + ": a process named `" + p
+                        + "` cannot be a node: a name is one printable line, at most "
+                        + to_string(GRAPH_NAME_MAX) + " bytes, with no `|`",
+                );
+                continue;
+            }
+            let id = graph_node_id("process", p);
+            if self.emit(
+                "graph.node",
+                id,
+                graph_process_body(p, self.compose, origin, shape, runs),
+            ) {
+                self.nodes = self.nodes + 1;
+                self.kinds = self.kinds + "process\n";
+            }
             self.processes = self.processes + p + "\n";
         }
         let runs = GraphEdge { kind: "runs" };
