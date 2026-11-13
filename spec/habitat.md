@@ -1201,7 +1201,22 @@ The habitat is served as every organism is: the standard face over its own
 head (`spec/dna.md`, The habitat's face). `up` starts the `face` service
 (`hale dna head <genome>`) beside `body` (`hale dna dev <genome> --no-iris`)
 in the habitat's compose project, its state under `face-state` in the
-habitat's directory. The habitat's address, and each organism's, is a block
+habitat's directory.
+
+**The face's assets, a dev override.** The face serves the browser assets
+the toolchain embeds (`dna/face/web`, materialized beside the launcher and
+rewritten at every start), read once when it starts. For working on them
+against a running habitat, the launcher serves another directory instead:
+`HALE_FACE_WEBROOT` when it is set, else the habitat directory's `face-web/`
+(`HALE_DNA_HABITAT`, else `HOME`, which the `face` service is given) when
+that directory holds an `index.html`. The directory must hold every asset
+the launcher names, or the face refuses to start as it does without the
+embedded ones; the launcher says `face: serving the browser assets from
+<dir> (a dev override; …)` on its log when it does. So a checkout's
+`dna/face/web` copied to `<habitat>/face-web/` is served after `docker
+compose restart face`, and removing the directory returns the face to the
+embedded assets at the next restart. Nothing else reads the directory; it
+is never written by the habitat. The habitat's address, and each organism's, is a block
 of 8 loopback ports recorded in `dna.head.url` (the habitat's in its
 genome's, an organism's in its own, assigned at its graft); the face is the
 block's base and the head the next port (`http://127.0.0.1:<head_port>`,
