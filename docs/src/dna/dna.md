@@ -241,7 +241,7 @@ When you run `hale habitat graft <dir> --attach` on a multi-service repository t
 - `hale.toml` receives only `[environments.org]` (no root application entrypoint or `.hale/dna/baseline.topology`).
 - The graft inspects the repository to seed the initial knowledge graph:
   - **Purpose:** Extracted from the title and first paragraph of `README.md`.
-  - **Processes & Seeds:** Derived from services in `compose.yaml` and Hale seed directories.
+  - **Processes & Seeds:** Derived from services in `compose.yaml`, workloads in Kubernetes manifests (`k8s/`, `kubernetes/`, `manifests/`, `deploy/`) and Hale seed directories.
   - **Contracts & Docs:** Discovered under `spec/` and markdown documentation.
   - **Gates & Witnesses:** Extracted from CI job definitions and `FRICTION.md` entries.
 - Writes `dna/org/structure.hl` with `operational_roles()` (defaulting to `""`; edit before grafting to include roles from `"support accounts billing on-call"` under each deployment).

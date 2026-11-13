@@ -279,6 +279,80 @@ fn ingest_compose_services(text: String, repo: String) -> String {
     return out;
 }
 
+// Whether a tracked path is a Kubernetes manifest ingest reads: a `.yaml`
+// or `.yml` under `k8s/`, `kubernetes/`, `manifests/` or `deploy/`, at any
+// depth (a kustomize tree's base and overlays alike).
+fn ingest_k8s_path(path: String) -> Bool {
+    if !(std::str::ends_with(path, ".yaml") || std::str::ends_with(path, ".yml")) { return false; }
+    return std::str::starts_with(path, "k8s/")
+        || std::str::starts_with(path, "kubernetes/")
+        || std::str::starts_with(path, "manifests/")
+        || std::str::starts_with(path, "deploy/");
+}
+
+// The workloads a manifest declares, one a line:
+// `<name>\t<kind>\t<image>\t<labelled>`, for each document (`---`) whose
+// `kind` is a workload (`Deployment`, `StatefulSet`, `DaemonSet`, `Job`,
+// `CronJob`): its `metadata.name`, the first container `image` it names
+// ("" when none), and whether its metadata labels say `dna.runs:
+// repository`. A `Service`, a `ConfigMap` or a `Kustomization` is not a
+// workload and yields nothing.
+fn ingest_k8s_workloads(text: String) -> String {
+    let it = std::iter::Lines { };
+    let mut from = 0;
+    let mut out = "";
+    let mut kind = "";
+    let mut name = "";
+    let mut image = "";
+    let mut labelled = false;
+    let mut section = "";
+    let mut in_labels = false;
+    while from >= 0 && from <= len(text) {
+        if from == len(text) { break; }
+        let line = it.line_at(text, from);
+        from = it.next_idx(text, from);
+        let t = std::str::trim(line);
+        if std::str::starts_with(t, "---") {
+            out = out + ingest_k8s_workload_line(kind, name, image, labelled);
+            kind = ""; name = ""; image = ""; labelled = false; section = ""; in_labels = false;
+            continue;
+        }
+        if len(t) == 0 || std::str::starts_with(t, "#") { continue; }
+        let ind = ingest_indent(line);
+        let key = ingest_key(line);
+        if ind == 0 {
+            section = key;
+            in_labels = false;
+            if key == "kind" { kind = ingest_value(line); }
+            continue;
+        }
+        if section == "metadata" {
+            if ind == 2 && key == "name" && len(name) == 0 { name = ingest_value(line); }
+            if ind == 2 && len(key) > 0 { in_labels = key == "labels"; }
+            if in_labels && ind > 2 && key == "dna.runs" && ingest_value(line) == "repository" {
+                labelled = true;
+            }
+        }
+        if section == "spec" && key == "image" && len(image) == 0 { image = ingest_value(line); }
+    }
+    return out + ingest_k8s_workload_line(kind, name, image, labelled);
+}
+
+fn ingest_k8s_workload_line(kind: String, name: String, image: String, labelled: Bool) -> String {
+    if len(name) == 0 { return ""; }
+    if !(
+        kind == "Deployment"
+            || kind == "StatefulSet"
+            || kind == "DaemonSet"
+            || kind == "Job"
+            || kind == "CronJob"
+    ) {
+        return "";
+    }
+    return name + "\t" + kind + "\t" + image + "\t" + (if labelled { "true" } else { "false" })
+        + "\n";
+}
+
 // Whether a `labels` line says the service runs the repository's code:
 // `- dna.runs=repository`, `- "dna.runs=repository"` or `dna.runs: repository`.
 fn ingest_runs_label(t: String) -> Bool {
@@ -589,6 +663,7 @@ locus GraphIngest {
         // a position is fitted with, never what grants it authority
         roles: String = "";
         runs: String = ""; // `<deployment>\t<process>` per process a deployment runs
+        built_shapes: String = "\n"; // the shapes the compose file builds, one a line
         deployments: String = "";
         practices: String = "";
         nodes: Int = 0;
@@ -778,6 +853,9 @@ locus GraphIngest {
             let t3 = std::str::index_of(more, "\t");
             let shape = more[0..t3];
             let runs = more[(t3 + 1)..len(more)] == "true";
+            if origin == "built" && !std::str::contains(self.built_shapes, "\n" + shape + "\n") {
+                self.built_shapes = self.built_shapes + shape + "\n";
+            }
             names = names + p + "\n";
             if !graph_text_ok(p) {
                 self.refuse(
@@ -840,6 +918,90 @@ locus GraphIngest {
             let n = self.node("process", p, "", "hale.toml");
             self.processes = self.processes + p + "\n";
             self.add(runs, "process", "process:" + p);
+        }
+        self.note_runs(runs);
+        self.edge(runs);
+    }
+    // The processes the repository's Kubernetes manifests run (GH #1907):
+    // every workload (`Deployment`, `StatefulSet`, `DaemonSet`, `Job`,
+    // `CronJob`) a tracked manifest under `k8s/`, `kubernetes/`,
+    // `manifests/` or `deploy/` declares, once by name (a kustomize overlay
+    // repeats its base's), run by the `kubernetes` deployment. A workload
+    // the compose file already runs is the same process, run by both. One
+    // the compose file does not is a process of its own: built when its
+    // image is a shape the compose file builds or is named as the
+    // repository is, else pulled, and running the repository's code when
+    // built or labelled `dna.runs: repository` in its metadata.
+    fn k8s_step() {
+        let mut repo = ingest_last_segment(self.root);
+        let mut found = "";
+        let mut rest = self.files;
+        while len(rest) > 1 {
+            let body = rest[1..len(rest)];
+            let nl = std::str::index_of(body, "\n");
+            let path = body[0..nl];
+            rest = body[nl..len(body)];
+            if !ingest_k8s_path(path) { continue; }
+            let mut ws = ingest_k8s_workloads(self.read(path));
+            while len(ws) > 0 {
+                let e = std::str::index_of(ws, "\n");
+                let row = ws[0..e];
+                ws = ws[(e + 1)..len(ws)];
+                let t1 = std::str::index_of(row, "\t");
+                let name = row[0..t1];
+                if !ingest_process_shaped(name) { continue; }
+                if std::str::contains("\n" + found, "\n" + name + "\t") { continue; }
+                found = found + row + "\t" + path + "\n";
+            }
+        }
+        if len(found) == 0 { return; }
+        let runs = GraphEdge { kind: "runs" };
+        self.add(runs, "deployment", self.node("deployment", "kubernetes", "built", "k8s"));
+        let mut fs = found;
+        while len(fs) > 0 {
+            let e = std::str::index_of(fs, "\n");
+            let row = fs[0..e];
+            fs = fs[(e + 1)..len(fs)];
+            // `<name>\t<kind>\t<image>\t<labelled>\t<path>`
+            let t1 = std::str::index_of(row, "\t");
+            let name = row[0..t1];
+            let r1 = row[(t1 + 1)..len(row)];
+            let t2 = std::str::index_of(r1, "\t");
+            let r2 = r1[(t2 + 1)..len(r1)];
+            let t3 = std::str::index_of(r2, "\t");
+            let image = r2[0..t3];
+            let r3 = r2[(t3 + 1)..len(r2)];
+            let t4 = std::str::index_of(r3, "\t");
+            let labelled = r3[0..t4] == "true";
+            let path = r3[(t4 + 1)..len(r3)];
+            if !std::str::contains(self.processes, "\n" + name + "\n") {
+                let image_shape = ingest_compose_shape(name, "", "", image, repo);
+                let built = len(image) > 0
+                    && (
+                        std::str::contains(self.built_shapes, "\n" + image_shape + "\n")
+                            || image_shape == repo
+                    );
+                let shape = if built { image_shape } else { name };
+                if graph_text_ok(name) {
+                    let id = graph_node_id("process", name);
+                    if self.emit(
+                        "graph.node",
+                        id,
+                        graph_process_body(
+                            name,
+                            path,
+                            if built { "built" } else { "pulled" },
+                            shape,
+                            built || labelled,
+                        ),
+                    ) {
+                        self.nodes = self.nodes + 1;
+                        self.kinds = self.kinds + "process\n";
+                    }
+                    self.processes = self.processes + name + "\n";
+                }
+            }
+            self.add(runs, "process", "process:" + name);
         }
         self.note_runs(runs);
         self.edge(runs);
@@ -1933,6 +2095,7 @@ locus GraphIngest {
         self.purpose_step();
         self.compose_step();
         self.host_step();
+        self.k8s_step();
         self.seeds_step();
         self.contracts_step();
         self.descriptions_step();

@@ -1,0 +1,93 @@
+// dna/tests/k8s_workloads_test.hl — the workloads a Kubernetes manifest
+// declares, as ingest reads them (GH #1907): each `Deployment`,
+// `StatefulSet`, `DaemonSet`, `Job` or `CronJob` document by name, with
+// its first container image and the `dna.runs: repository` label; a
+// `Service`, a `ConfigMap` or a `Kustomization` is nothing. And which
+// tracked paths are manifests at all.
+import "../operations" as ops;
+
+const MANIFESTS: String = "apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: synth
+  labels:
+    app: api
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/acme/synth:1.4.0
+          args: [\"synth-api\"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+spec:
+  ports:
+    - port: 80
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  template:
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17
+---
+# a tool from an image the repository does not build, which runs its code
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly
+  labels:
+    dna.runs: repository
+spec:
+  schedule: \"0 2 * * *\"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: nightly
+              image: ubuntu:24.04
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: synth-config
+data:
+  LOG: info
+";
+
+fn main() {
+    std::test::assert_eq_str(
+        ops::ingest_k8s_workloads(MANIFESTS),
+        "api\tDeployment\tghcr.io/acme/synth:1.4.0\tfalse\n"
+            + "postgres\tStatefulSet\tpostgres:17\tfalse\n"
+            + "nightly\tCronJob\tubuntu:24.04\ttrue\n",
+        "the workloads by name, with their first image and the label; a Service and a ConfigMap are nothing",
+    );
+    std::test::assert_eq_str(
+        ops::ingest_k8s_workloads(
+            "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n",
+        ),
+        "",
+        "a kustomization is no workload",
+    );
+    std::test::assert(ops::ingest_k8s_path("k8s/base/api.yaml"), "a manifest under k8s/");
+    std::test::assert(
+        ops::ingest_k8s_path("k8s/overlays/prod/kustomization.yml"),
+        "an overlay's, any depth",
+    );
+    std::test::assert(ops::ingest_k8s_path("deploy/web.yaml"), "under deploy/");
+    std::test::assert(!ops::ingest_k8s_path("compose.yaml"), "the compose file is not one");
+    std::test::assert(!ops::ingest_k8s_path("k8s/README.md"), "a document under k8s/ is not one");
+    std::test::assert(!ops::ingest_k8s_path("src/k8s/thing.yaml"), "only at the root");
+}
