@@ -1,0 +1,229 @@
+// dna/operations/code_units.hl — the units of code a repository holds and
+// what each reaches (GH #1907, the ingest slice's "units of code with
+// sizes, and which units each process reaches"), for a chart drafted from
+// the code. The first language is Go: a unit is a package directory, its
+// size the lines of its non-test sources, a main package a program, and
+// reach the module-internal imports followed to their closure. The shape
+// is one for every language: `<dir>\t<lines>\t<main>\t<imports>` a line,
+// imports space-separated, so a reader for another language yields the
+// same lines and the draft reads nothing of the language.
+import "../core" as dna;
+
+// The module path a `go.mod` declares ("" when none).
+fn go_module_path(text: String) -> String {
+    let it = std::iter::Lines { };
+    let mut from = 0;
+    while from >= 0 && from < len(text) {
+        let t = std::str::trim(it.line_at(text, from));
+        from = it.next_idx(text, from);
+        if std::str::starts_with(t, "module ") { return std::str::trim(t[7..len(t)]); }
+    }
+    return "";
+}
+
+// Whether a Go source is a program (`package main`).
+fn go_is_main(text: String) -> Bool {
+    let it = std::iter::Lines { };
+    let mut from = 0;
+    while from >= 0 && from < len(text) {
+        let t = std::str::trim(it.line_at(text, from));
+        from = it.next_idx(text, from);
+        if std::str::starts_with(t, "package ") {
+            return std::str::trim(t[8..len(t)]) == "main";
+        }
+    }
+    return false;
+}
+
+// The module-internal imports of a Go source, as directories relative to
+// the module root, space-separated: `import "m/a/b"` and every quoted path
+// in an `import (…)` block whose path is the module's or under it (the
+// module root itself is `.`).
+fn go_file_imports(text: String, mod_path: String) -> String {
+    let it = std::iter::Lines { };
+    let mut from = 0;
+    let mut out = "";
+    let mut in_block = false;
+    while from >= 0 && from < len(text) {
+        let t = std::str::trim(it.line_at(text, from));
+        from = it.next_idx(text, from);
+        let mut quoted = "";
+        if in_block {
+            if std::str::starts_with(t, ")") { in_block = false; continue; }
+            quoted = go_quoted(t);
+        } else if t == "import (" {
+            in_block = true;
+            continue;
+        } else if std::str::starts_with(t, "import ") {
+            quoted = go_quoted(t);
+        } else if std::str::starts_with(t, "func ")
+            || std::str::starts_with(t, "type ")
+            || std::str::starts_with(t, "var ")
+            || std::str::starts_with(t, "const ")
+        {
+            // imports come first in a Go file
+            break;
+        }
+        if len(quoted) == 0 { continue; }
+        let rel = if quoted == mod_path {
+            "."
+        } else if std::str::starts_with(quoted, mod_path + "/") {
+            quoted[(len(mod_path) + 1)..len(quoted)]
+        } else {
+            ""
+        };
+        if len(rel) == 0 || std::str::contains(" " + out + " ", " " + rel + " ") { continue; }
+        out = if len(out) == 0 { rel } else { out + " " + rel };
+    }
+    return out;
+}
+
+// The first double-quoted string on a line, "" when none.
+fn go_quoted(t: String) -> String {
+    let open = std::str::index_of(t, "\"");
+    if open < 0 { return ""; }
+    let rest = t[(open + 1)..len(t)];
+    let close = std::str::index_of(rest, "\"");
+    return if close < 0 { "" } else { rest[0..close] };
+}
+
+// The lines of a text: its newlines, plus one for a last line without.
+fn text_lines(text: String) -> Int {
+    let mut n = 0;
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { n = n + 1; break; }
+        n = n + 1;
+        rest = rest[(nl + 1)..len(rest)];
+    }
+    return n;
+}
+
+// The directory of a path, `.` for a file at the root.
+fn path_dir(path: String) -> String {
+    let mut dir = path;
+    let mut last = -1;
+    let mut i = 0;
+    while i < len(path) {
+        if path[i..(i + 1)] == "/" { last = i; }
+        i = i + 1;
+    }
+    return if last < 0 { "." } else { path[0..last] };
+}
+
+// The Go units of the repository at `root`, from its tracked `files` (one
+// path a line): a unit per directory holding a non-test `.go` file outside
+// `vendor/`, with its lines, whether it is a program, and the units it
+// imports, in the order the directories are first met.
+fn go_units(root: String, files: String, mod_path: String) -> String {
+    // `<dir>\t<lines>\t<main>\t<imports>` per unit, built as files come
+    let mut units = "\n";
+    let mut rest = files;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let path = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(path) == 0
+            || !std::str::ends_with(path, ".go")
+            || std::str::ends_with(path, "_test.go")
+        {
+            continue;
+        }
+        if std::str::starts_with(path, "vendor/") || std::str::contains(path, "/vendor/") {
+            continue;
+        }
+        let text = std::io::fs::read_file(root + "/" + path) or "";
+        if len(text) == 0 { continue; }
+        let dir = path_dir(path);
+        let lines = text_lines(text);
+        let main = go_is_main(text);
+        let imports = go_file_imports(text, mod_path);
+        let at = std::str::index_of(units, "\n" + dir + "\t");
+        if at < 0 {
+            units = units + dir + "\t" + to_string(lines) + "\t"
+                + (if main { "true" } else { "false" }) + "\t"
+                + imports + "\n";
+            continue;
+        }
+        // fold into the unit's line
+        let start = at + 1;
+        let row_rest = units[start..len(units)];
+        let end = std::str::index_of(row_rest, "\n");
+        let row = row_rest[0..end];
+        let t1 = std::str::index_of(row, "\t");
+        let r1 = row[(t1 + 1)..len(row)];
+        let t2 = std::str::index_of(r1, "\t");
+        let r2 = r1[(t2 + 1)..len(r1)];
+        let t3 = std::str::index_of(r2, "\t");
+        let had_lines = std::str::parse_int(r1[0..t2]) or 0;
+        let had_main = r2[0..t3] == "true";
+        let mut had_imports = r2[(t3 + 1)..len(r2)];
+        let mut i = 0;
+        while len(dna::nth_word(imports, i)) > 0 {
+            let w = dna::nth_word(imports, i);
+            i = i + 1;
+            if std::str::contains(" " + had_imports + " ", " " + w + " ") { continue; }
+            had_imports = if len(had_imports) == 0 { w } else { had_imports + " " + w };
+        }
+        let new_row = dir + "\t" + to_string(had_lines + lines) + "\t"
+            + (if had_main || main { "true" } else { "false" }) + "\t" + had_imports;
+        units = units[0..start] + new_row + row_rest[end..len(row_rest)];
+    }
+    return units[1..len(units)];
+}
+
+// One field of a unit's line: 1 lines, 2 main, 3 imports; "" when the
+// unit is not among `units`.
+fn unit_field(units: String, dir: String, n: Int) -> String {
+    let at = std::str::index_of("\n" + units, "\n" + dir + "\t");
+    if at < 0 { return ""; }
+    let rest = ("\n" + units)[(at + len(dir) + 2)..(len(units) + 1)];
+    let nl = std::str::index_of(rest, "\n");
+    let row = if nl < 0 { rest } else { rest[0..nl] };
+    let t1 = std::str::index_of(row, "\t");
+    if n == 1 { return row[0..t1]; }
+    let r1 = row[(t1 + 1)..len(row)];
+    let t2 = std::str::index_of(r1, "\t");
+    if n == 2 { return r1[0..t2]; }
+    return r1[(t2 + 1)..len(r1)];
+}
+
+fn unit_lines(units: String, dir: String) -> Int {
+    return std::str::parse_int(unit_field(units, dir, 1)) or 0;
+}
+fn unit_is_main(units: String, dir: String) -> Bool { return unit_field(units, dir, 2) == "true"; }
+
+// The units reached from `start` by following imports to their closure,
+// space-separated in the order they are reached, `start` itself left out.
+fn units_reach(units: String, start: String) -> String {
+    let mut reached = "";
+    let mut queue = unit_field(units, start, 3);
+    let mut q = 0;
+    while len(dna::nth_word(queue, q)) > 0 {
+        let d = dna::nth_word(queue, q);
+        q = q + 1;
+        if d == start || std::str::contains(" " + reached + " ", " " + d + " ") { continue; }
+        if len(unit_field(units, d, 1)) == 0 { continue; }
+        reached = if len(reached) == 0 { d } else { reached + " " + d };
+        let more = unit_field(units, d, 3);
+        if len(more) > 0 { queue = queue + " " + more; }
+    }
+    return reached;
+}
+
+// The programs among `units`: the directories of its main packages, one a
+// line, in the units' order.
+fn units_programs(units: String) -> String {
+    let mut out = "";
+    let mut rest = units;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let row = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(row) == 0 { continue; }
+        let dir = row[0..std::str::index_of(row, "\t")];
+        if unit_is_main(units, dir) { out = out + dir + "\n"; }
+    }
+    return out;
+}

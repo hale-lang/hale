@@ -148,12 +148,18 @@ fn graph_node_body(kind: String, name: String, text: String, source: String) -> 
 // a database, a queue or a monitor the repository only configures. A
 // chart drafted from the graph opens positions for what runs the
 // repository's code, one set per shape.
+// `program` is the program the process runs, as its command names it
+// (`ingest_program`): the first word of its command, or the word a shell
+// or a launcher script hands on to; "" when the file names none, and the
+// image's own entrypoint runs. One image may carry many programs, and a
+// chart drafted from the graph takes the program as its unit of code.
 fn graph_process_body(
     name: String,
     source: String,
     origin: String,
     shape: String,
-    runs: Bool
+    runs: Bool,
+    program: String
 ) -> String {
     let b = std::json::Builder { };
     b.begin_object();
@@ -163,6 +169,7 @@ fn graph_process_body(
     b.string_field("origin", origin);
     b.string_field("shape", shape);
     b.string_field("runs", if runs { "true" } else { "false" });
+    if len(program) > 0 { b.string_field("program", program); }
     b.end_object();
     return b.result();
 }

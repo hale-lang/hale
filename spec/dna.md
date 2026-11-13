@@ -5244,9 +5244,16 @@ The live half is memory's, projected from the record by the spine
   one build are one shape; and `runs`, whether it runs the repository's
   code: every built one, and a pulled one the file labels
   `dna.runs=repository`, never a database, a queue or a monitor the
-  repository only configures. The file is read as written: an `x-…:
+  repository only configures; and `program`, the program it runs as its
+  `entrypoint` and `command` name it (the first word's last segment, or
+  the word a shell's `exec` or a launcher script such as `entrypoint.sh`
+  hands on to; absent when the file names none and the image's own
+  entrypoint runs), so one image carrying many programs is many units of
+  code and not one. The file is read as written: an `x-…:
   &anchor` block's `build` and `image` reach a service that merges it
-  (`<<: *anchor`), the service's own keys winning. Then the
+  (`<<: *anchor`), the service's own keys winning; a command is a flow
+  list, a string or a block list, a folded item continued on the lines
+  after it. Then the
   `compose` **deployment** that runs them (built); every workload
   (`Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob`) a tracked
   manifest under `k8s/`, `kubernetes/`, `manifests/` or `deploy/`
@@ -5255,7 +5262,9 @@ The live half is memory's, projected from the record by the spine
   file already runs is that process, run by both; another is a process
   of its own, built when its image's name is a shape the compose file
   builds or the repository's own name, else pulled, and running the
-  repository's code when built or labelled `dna.runs: repository`; and each host
+  repository's code when built or labelled `dna.runs: repository`, its
+  `program` the first container's `command` and `args` as a compose
+  service's command is read; and each host
   command the root's `hale.toml` declares (`[dna.host.<command>]`, a
   process a habitat places on a host) not already a service, with the
   `host` deployment that runs them (placed) — processes first, since a
