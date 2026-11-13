@@ -312,6 +312,7 @@ crates/hale-codegen/tests/bounded_field_retire.rs#22 283872056d8612e8
 crates/hale-codegen/tests/bounded_field_retire.rs#23 cbe30a470ce47d64
 crates/hale-codegen/tests/bounded_local_copies.rs#0 d4275fdcef4d5b13
 crates/hale-codegen/tests/bounded_local_copies.rs#5 d4275fdcef4d5b13
+crates/hale-codegen/tests/bounded_local_copies.rs#8 d4275fdcef4d5b13
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#0 617296ff76880391
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#1 f15c53a1c7e82351
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#2 8629337572e41e26
