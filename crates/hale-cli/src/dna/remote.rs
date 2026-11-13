@@ -1425,6 +1425,12 @@ pub(super) fn habitat_on_machine(p: &serde_json::Value, script: impl Fn(&str) ->
 /// `script` (made for what the machine is) run on the habitat's machine
 /// over the pointer's login, once its record is the one the pointer names.
 fn on_checked_machine(p: &serde_json::Value, script: impl Fn(&Machine) -> String) -> Result<String, String> {
+    let (t, m) = checked(p)?;
+    t.run(&script(&m))
+}
+
+/// The pointer's machine, once its record is the one the pointer names.
+fn checked(p: &serde_json::Value) -> Result<(Target, Machine), String> {
     let t = Target::of(p);
     let m = probe(&t)?;
     let expected = p["identity"].as_str().unwrap_or("").to_string();
@@ -1432,7 +1438,71 @@ fn on_checked_machine(p: &serde_json::Value, script: impl Fn(&Machine) -> String
     if let Some(why) = pointer_refusal(&t.host, &expected, &found) {
         return Err(why);
     }
-    t.run(&script(&m))
+    Ok((t, m))
+}
+
+/// What this machine staged of a nursery read from a directory here
+/// (`pack::staged_for_shipping`: `nurseries/<key>` and
+/// `nurseries/repos/<key>`, relative to the habitat's directory) shipped to
+/// the habitat's machine through the pointer, under the same paths in the
+/// habitat's directory there (`<home>/.local/share/hale/habitat/local`, the
+/// `HALE_DNA_HABITAT` every run there is given). The keys hash the source as
+/// named, so the habitat there reads the nursery (`pack::nursery`) and
+/// fetches its saplings (graft, `organism upgrade`) from what was shipped,
+/// as a habitat here reads what it staged. Shipped as the person's login
+/// there, the uid every run there and the habitat's face run as, so the
+/// copy is theirs to read. Each path replaces the one there whole. What it
+/// shipped, a line.
+pub(super) fn ship_staged(p: &serde_json::Value, rels: &[String]) -> Result<String, String> {
+    let (t, m) = checked(p)?;
+    let there = habitat_dir(&m);
+    super::progress(&format!("shipping the staged nursery to {}:{there}/nurseries", t.host));
+    ship_into(&PathBuf::from(local_habitat_dir()), rels, t.ssh(false), &there)?;
+    Ok(format!("{:<8}{} shipped to {}:{there}/nurseries, the habitat's copy", "shipped", rels.join(", "), t.host))
+}
+
+/// `rels` under `here` packed (`tar`) into `via`, a command that runs the
+/// shell line it is handed last on the habitat's machine (`ssh`), which
+/// unpacks them under `there`.
+pub(in crate::dna) fn ship_into(here: &std::path::Path, rels: &[String], mut via: Command, there: &str) -> Result<(), String> {
+    if rels.is_empty() {
+        return Ok(());
+    }
+    if let Some(r) = rels.iter().find(|r| !r.starts_with("nurseries/") || r.split('/').any(|c| c.is_empty() || c == "." || c == "..")) {
+        return Err(format!("`{r}` is not a path under the habitat's nurseries"));
+    }
+    let mut tar = Command::new("tar");
+    // a Mac's tar writes its extended attributes (as AppleDouble `._`
+    // files without COPYFILE_DISABLE), which a mirror there would take
+    // for refs
+    tar.env("COPYFILE_DISABLE", "1");
+    if cfg!(target_os = "macos") {
+        tar.arg("--no-xattrs");
+    }
+    let mut tar = tar.arg("-C").arg(here).arg("-cf").arg("-").args(rels).stdout(Stdio::piped()).spawn().map_err(|e| format!("tar: {e}"))?;
+    let Some(out) = tar.stdout.take() else { return Err("tar: no output".to_string()) };
+    let unpacked = via.arg(posix(&ship_script(there, rels))).stdin(out).output();
+    let packed = tar.wait();
+    // the far side's refusal first: a packer whose reader went away fails
+    // for that alone
+    match unpacked {
+        Err(e) => Err(format!("the staged nursery was not shipped: {e}")),
+        Ok(o) if !o.status.success() => Err(format!("the staged nursery was not unpacked under {there}: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        Ok(_) if !packed.is_ok_and(|s| s.success()) => Err(format!("tar could not pack {} under {}", rels.join(", "), here.display())),
+        Ok(_) => Ok(()),
+    }
+}
+
+/// The script that unpacks a shipment on the habitat's machine: into a
+/// directory of its own beside the copies, then each path moved over the
+/// one there, so a copy is the one shipped whole or the one before.
+fn ship_script(there: &str, rels: &[String]) -> String {
+    let words: Vec<String> = rels.iter().map(|r| sq(r)).collect();
+    format!(
+        "umask 022; h={h}; mkdir -p \"$h/nurseries/repos\" && t=$(mktemp -d \"$h/nurseries/.shipping.XXXXXX\") || exit 1; trap 'rm -rf \"$t\"' EXIT; tar -C \"$t\" -xf - || exit 1; for r in {w}; do rm -rf \"$h/$r\" && mv \"$t/$r\" \"$h/$r\" || exit 1; done",
+        h = sq(there),
+        w = words.join(" "),
+    )
 }
 
 /// `hale habitat organism <name> dna <verb> [args…]` through a pointer:
@@ -1770,6 +1840,22 @@ mod tests {
     fn a_remote_word_is_quoted_whole() {
         assert_eq!(sq("a b"), "'a b'");
         assert_eq!(sq("it's"), "'it'\\''s'");
+    }
+
+    /// A shipment is unpacked under the habitat's nurseries there and
+    /// nowhere else: a path outside them is refused before anything is
+    /// packed, and the script that unpacks one is `sh`'s.
+    #[test]
+    fn a_shipment_lands_under_the_habitats_nurseries_alone() {
+        let here = std::env::temp_dir();
+        for bad in ["genome", "nurseries/../genome", "nurseries//x", "/etc/x", "nurseries/./x"] {
+            let why = ship_into(&here, &[bad.to_string()], Command::new("false"), "/h").unwrap_err();
+            assert!(why.contains("is not a path under the habitat's nurseries"), "{bad}: {why}");
+        }
+        assert!(ship_into(&here, &[], Command::new("false"), "/h").is_ok(), "nothing to ship runs nothing");
+        let script = ship_script("/home/it's/habitat", &["nurseries/0123456789abcdef".to_string(), "nurseries/repos/0123456789abcdef".to_string()]);
+        assert!(script.contains("h='/home/it'\\''s/habitat'") && script.contains("for r in 'nurseries/0123456789abcdef' 'nurseries/repos/0123456789abcdef'; do"), "{script}");
+        assert!(Command::new("sh").arg("-n").arg("-c").arg(&script).status().unwrap().success());
     }
 
     #[test]
