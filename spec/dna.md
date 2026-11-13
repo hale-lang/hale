@@ -5247,7 +5247,15 @@ The live half is memory's, projected from the record by the spine
   repository only configures. The file is read as written: an `x-…:
   &anchor` block's `build` and `image` reach a service that merges it
   (`<<: *anchor`), the service's own keys winning. Then the
-  `compose` **deployment** that runs them (built), and each host
+  `compose` **deployment** that runs them (built); every workload
+  (`Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob`) a tracked
+  manifest under `k8s/`, `kubernetes/`, `manifests/` or `deploy/`
+  declares, once by its `metadata.name` (an overlay repeats its base's),
+  with the `kubernetes` deployment that runs them: a workload the compose
+  file already runs is that process, run by both; another is a process
+  of its own, built when its image's name is a shape the compose file
+  builds or the repository's own name, else pulled, and running the
+  repository's code when built or labelled `dna.runs: repository`; and each host
   command the root's `hale.toml` declares (`[dna.host.<command>]`, a
   process a habitat places on a host) not already a service, with the
   `host` deployment that runs them (placed) — processes first, since a
