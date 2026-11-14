@@ -1,0 +1,152 @@
+// tests/hale/api_decimal_string_test.hl — a `Decimal<S>` read from a JSON
+// string (spec/api.md § Codecs, spec/types.md § Decimal<S>): an API that
+// quotes its prices (`{"price": "97000.50"}`) and one that sends numbers
+// both decode, through `T::api_decode` and `T::from_json` alike, a field,
+// a list's element, an enum's value and a map's value. The string holds
+// the JSON number grammar and nothing else, read exactly at the field's
+// scale (no float on the way); a digit past the scale, a space, a sign
+// `+`, an escape or an empty string is the field's `wrong_type`. Writing
+// is a number of the Decimal's digits unless the field's tag says
+// `json:"...,string"`, which writes the digits in a JSON string.
+// Downstream handoff: `{"price": "97000.50"}` into a `Decimal<8>` field
+// was refused `wrong_type`.
+
+type Side = enum { Buy, Limit(Decimal<2>) };
+type Mark { name: String; px: Decimal<2>; }
+type Quote {
+    sym: String;
+    price: Decimal<8>;
+    bid: Decimal<2> = 0d;
+    fills: bounded[Decimal<4>; 4];
+    side: Side = Side::Buy;
+    marks: bounded[Mark; 2] indexed_by name -> px;
+}
+
+// what an exchange that wants strings is sent: the same shapes, tagged
+type Order {
+    sym: String `json:"symbol"`;
+    price: Decimal<2> `json:",string"`;
+    qty: Decimal<4> `json:"quantity,string"`;
+    stops: bounded[Decimal<2>; 2] `json:",string"`;
+    fee: Decimal<2> = 0.1d;
+}
+
+fn refused(text: String, field: String, what: String) {
+    let got = Quote::api_decode(text) or {
+        std::test::assert_eq_str(err.kind, "wrong_type", what + ": the kind");
+        std::test::assert_eq_str(err.field, field, what + ": the field");
+        return;
+    };
+    std::test::assert(false, what + ": decoded " + Quote::api_encode(got));
+}
+
+fn main() {
+    // a string and a number, side by side, every place a Decimal sits
+    let q = Quote::api_decode(
+        "{\"sym\":\"X\",\"price\":\"97000.50\",\"bid\":96999.5,\"fills\":[\"0.5\",1.25,\"-2\",\"1e-3\"],"
+            + "\"side\":{\"Limit\":\"10.10\"},\"marks\":{\"a\":\"1.5\",\"b\":2}}",
+    ) or {
+        std::test::assert(false, "a quoted price: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert(q.price == 97000.5d, "a quoted field at scale 8");
+    std::test::assert_eq_str("" + q.price, "97000.5", "every digit, no float");
+    std::test::assert(q.bid == 96999.5d, "a number beside it");
+    std::test::assert_eq_int(count(q.fills), 4, "four elements");
+    let f0 = at(q.fills, 0) or raise;
+    let f2 = at(q.fills, 2) or raise;
+    let f3 = at(q.fills, 3) or raise;
+    std::test::assert(f0 == 0.5d && f2 == -2d, "a quoted element, a negative one");
+    std::test::assert(f3 == 0.001d, "an exponent inside the string, read exactly");
+    let mut marks = "";
+    for m in q.marks {
+        marks = marks + m.name + "=" + m.px + ";";
+    }
+    std::test::assert_eq_str(marks, "a=1.5;b=2;", "a map's quoted value");
+    // written back as numbers: the type declares no `string` (the enum's
+    // quoted value is read back here too)
+    std::test::assert_eq_str(
+        Quote::api_encode(q),
+        "{\"sym\":\"X\",\"price\":97000.5,\"bid\":96999.5,\"fills\":[0.5,1.25,-2,0.001],\"side\":{\"Limit\":10.1},\"marks\":{\"a\":1.5,\"b\":2}}",
+        "a number of its digits",
+    );
+
+    // a big value keeps every digit (a double would not)
+    let big = Quote::api_decode("{\"sym\":\"X\",\"price\":\"1234567890.12345678\"}") or raise;
+    std::test::assert_eq_str(
+        "" + big.price,
+        "1234567890.12345678",
+        "eighteen digits through a string",
+    );
+
+    // the string holds a JSON number, at the scale, and nothing else
+    refused("{\"sym\":\"X\",\"price\":\"1.123456789\"}", "price", "a ninth place is no Decimal<8>");
+    refused("{\"sym\":\"X\",\"price\":\"\"}", "price", "an empty string");
+    refused("{\"sym\":\"X\",\"price\":\" 1\"}", "price", "a space inside");
+    refused("{\"sym\":\"X\",\"price\":\"1 \"}", "price", "a trailing space");
+    refused("{\"sym\":\"X\",\"price\":\"+1\"}", "price", "a leading plus");
+    refused("{\"sym\":\"X\",\"price\":\".5\"}", "price", "a leading dot");
+    refused("{\"sym\":\"X\",\"price\":\"0x10\"}", "price", "a hex spelling");
+    refused(
+        "{\"sym\":\"X\",\"price\":\"\\u0031\"}",
+        "price",
+        "an escape, though it spells a digit",
+    );
+    refused("{\"sym\":\"X\",\"price\":\"NaN\"}", "price", "no number");
+    refused(
+        "{\"sym\":\"X\",\"price\":1,\"fills\":[\"1.00001\"]}",
+        "fills",
+        "an element past its scale",
+    );
+    refused(
+        "{\"sym\":\"X\",\"price\":1,\"side\":{\"Limit\":\"1.001\"}}",
+        "side",
+        "an enum value past its scale",
+    );
+    refused(
+        "{\"sym\":\"X\",\"price\":1,\"marks\":{\"a\":\"x\"}}",
+        "marks",
+        "a map value that is no number",
+    );
+
+    // `json:"...,string"` writes the digits in a string; either form reads
+    let mut o = Order { sym: "X", price: 97000.5d, qty: 0.0001d };
+    push(o.stops, 96000d) or raise;
+    push(o.stops, 95999.99d) or raise;
+    let text = Order::api_encode(o);
+    std::test::assert_eq_str(
+        text,
+        "{\"symbol\":\"X\",\"price\":\"97000.5\",\"quantity\":\"0.0001\",\"stops\":[\"96000\",\"95999.99\"],\"fee\":0.1}",
+        "a tagged field and a tagged list as strings, the untagged one a number",
+    );
+    let back = Order::api_decode(text) or raise;
+    std::test::assert(back.price == o.price && back.qty == o.qty, "a round trip through strings");
+    let n = Order::api_decode(
+        "{\"symbol\":\"X\",\"price\":1.5,\"quantity\":2,\"stops\":[3]}",
+    ) or raise;
+    std::test::assert(n.price == 1.5d && n.qty == 2d, "a string-tagged field reads a number too");
+
+    // the record codecs (`json:` tags) read and write the same way
+    let j = Order::from_json(
+        "{\"symbol\":\"Y\",\"price\":\"0.25\",\"quantity\":\"3\",\"fee\":\"0.05\"}",
+    ) or raise;
+    std::test::assert(
+        j.price == 0.25d && j.qty == 3d && j.fee == 0.05d,
+        "from_json reads quoted Decimals",
+    );
+    std::test::assert_eq_str(
+        Order::to_json(j),
+        "{\"symbol\":\"Y\",\"price\":\"0.25\",\"quantity\":\"3\",\"stops\":[],\"fee\":0.05}",
+        "to_json writes the tagged ones as strings",
+    );
+    let bad = Order::from_json("{\"symbol\":\"Y\",\"price\":\"0.251\",\"quantity\":\"3\"}") or {
+        std::test::assert_eq_str(
+            err.kind,
+            "wrong_type",
+            "from_json: a third place is no Decimal<2>",
+        );
+        std::test::assert_eq_str(err.field, "price", "from_json: the field named");
+        o
+    };
+    std::test::assert(bad.price == o.price, "refused, never truncated");
+}

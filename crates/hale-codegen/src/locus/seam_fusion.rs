@@ -99,7 +99,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let at = self.context.i64_type().const_int(offset, false);
             let slot =
                 emit(unsafe { self.builder.build_in_bounds_gep(self.context.i8_type(), body, &[at], "enum.field.ptr") })?;
-            emit(self.builder.build_store(slot, *v))?;
+            // align 1: the body is at offset 4 (`lower_enum_variant_alloc_in`).
+            emit(self.builder.build_store(slot, *v))?
+                .set_alignment(1)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             offset += crate::codegen::codegen_ty_size_bytes(self.context, ty);
         }
         Ok(())

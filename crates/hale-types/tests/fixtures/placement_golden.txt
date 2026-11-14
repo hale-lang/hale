@@ -1576,7 +1576,7 @@ row	D@literal1.t	Tok	main	default
 shared	D@literal1.__rpc_h_1	__StdApiHttpListener #80abdd5b
 shared	dynamic	sites in the seed #042a0a8b
 
-== crates/hale-codegen/tests/api_pb_codec.rs#07425596
+== crates/hale-codegen/tests/api_pb_codec.rs#82d5263b
 root	Desk	the entry
 domain	pool:__api_grpc	async_io
 row	Desk@literal1	Desk	main	default

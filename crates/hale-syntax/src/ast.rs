@@ -2590,6 +2590,11 @@ pub struct TypeDecl {
     /// generated text's own coordinates, so nothing else tells the two
     /// apart; the snapshot reads this to record the site's origin.
     pub synthetic: bool,
+    /// `@positional type Row { ... }`: a record the JSON codecs carry as an
+    /// array of its fields in declaration order, not an object keyed by
+    /// them (spec/api.md § Codecs, Positional records). Only a struct takes
+    /// it; the parser refuses it on any other form.
+    pub positional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -2804,16 +2804,30 @@ payload picks the consumer mode:
   `bounded[T; N]` or `[T; N]` of any of those as a JSON array (more
   elements than `N` is `too_long`, fewer than a fixed array's
   `too_short`; an absent `bounded` field is empty). A `Decimal<S>`
-  field is a JSON number read at the field's scale, every digit kept,
-  an exponent applied exactly (`1e-7`, `1.50E+1`; 2026-11-07,
-  downstream handoff); a number with a nonzero digit past the scale,
-  one whose mantissa no i128 holds, a spelling that is no JSON number
-  (`+1`, `.5`, `1.`, `01`), or not a number is `JsonError { kind:
-  "wrong_type", field }`, never truncated or read as zero
-  (spec/types.md § Decimal<S>, spec/api.md § Codecs). The key is the
-  tag value, else
-  the field name; unmatched keys (and nested objects/arrays under them)
-  are skipped. A missing field raises `JsonError { kind: "missing_field",
+  field is a JSON number, or a JSON string holding one (`"97000.50"`;
+  2026-11-14, downstream handoff), read at the field's scale, every
+  digit kept and no float on the way, an exponent applied exactly
+  (`1e-7`, `1.50E+1`; 2026-11-07, downstream handoff); a number with a
+  nonzero digit past the scale, one whose mantissa no i128 holds, a
+  spelling that is no JSON number (`+1`, `.5`, `1.`, `01`, or a string
+  holding one of those, a space or an escape), or not a number is
+  `JsonError { kind: "wrong_type", field }`, never truncated or read as
+  zero (spec/types.md § Decimal<S>, spec/api.md § Codecs). The key is
+  the tag value before its first comma (so a key holds no comma), else
+  the field name (a tag of options alone, `json:",string"`, keeps the
+  name); the one option is
+  `string`, on a `Decimal<S>` field or a list of them, which `to_json`
+  writes as a JSON string of the digits (`"97000.5"`), and any other
+  option, or `string` on another field, is refused at the field.
+  Unmatched keys (and nested objects/arrays under them)
+  are skipped. A record marked `@positional` (`@positional type Candle
+  { t: Int; close: Decimal<2>; }`) has the codec without a tag and
+  crosses as an array of its fields in declaration order (`[1688666400,
+  "3005.5"]`), a field or a list's element of it too; its rules are the
+  api codec's (spec/api.md § Codecs, Positional records): an element
+  past the last field is skipped, a field the row ends before is absent
+  (its default, or `missing_field` naming `<Type>.<field>`), and its
+  fields' tags name no key. A missing field raises `JsonError { kind: "missing_field",
   field }` unless the field declares a default, which fills it: a
   literal (`= "USD"`, `= -1`), an enum variant (`= Side::Buy`), a record
   literal (`= Instrument { sym: "Y", tick: 2 }`, its own fields' defaults
@@ -2826,7 +2840,8 @@ payload picks the consumer mode:
   `std::json::Value` field alone holds `null` as its text.
   `from_json` is `fallible`, so callers must address it. The same tags
   drive emit: `Type::to_json(v) -> String` serializes a value back (bare
-  numbers/bools, a Decimal's exact digits at its scale, escaped strings,
+  numbers/bools, a Decimal's exact digits at its scale (in a string
+  where its tag says `string`), escaped strings,
   an enum's variant name, nested structs and lists recursed),
   round-tripping with `from_json`; it is not fallible. The check is the
   gate: a tagged struct with a field the codec does not carry (`Bytes`,

@@ -222,8 +222,21 @@ fn struct_decl(model: &ClientModel, name: &str, t: &TypeSchema) -> Result<String
     let idents = field_idents(t);
     let mut out = format!("type {ident} {{\n");
     for ((key, f), field) in t.properties.iter().zip(&idents) {
-        let tag = if field != key && !matches!(f, FieldSchema::Presence { .. }) {
-            format!(" `json:\"{}\"`", key.replace('\\', "\\\\").replace('"', "\\\""))
+        // a Decimal the server writes as a JSON string (`json:"...,string"`)
+        // is written so by the client too
+        let quoted = {
+            fn quoted(f: &FieldSchema) -> bool {
+                match f {
+                    FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } => t.starts_with("Decimal<"),
+                    FieldSchema::List { items, .. } | FieldSchema::Nullable { inner: items, .. } => quoted(items),
+                    _ => false,
+                }
+            }
+            quoted(f)
+        };
+        let tag = if (field != key || quoted) && !matches!(f, FieldSchema::Presence { .. }) {
+            let named = if field != key { key.replace('\\', "\\\\").replace('"', "\\\"") } else { String::new() };
+            format!(" `json:\"{named}{}\"`", if quoted { ",string" } else { "" })
         } else {
             String::new()
         };

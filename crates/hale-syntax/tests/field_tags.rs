@@ -96,3 +96,43 @@ fn a_block_is_still_not_a_struct_literal() {
         "an `if` block must not be parsed as a struct literal"
     );
 }
+
+/// A `json:` tag's value is a key, then options after commas
+/// (`json:"px,string"`); a tag of options alone keeps the field's name
+/// (spec/semantics.md § Metadata tags).
+#[test]
+fn a_json_tag_is_its_key_then_its_options() {
+    use hale_syntax::json_gen::{json_tag_key, json_tag_options};
+    assert_eq!(json_tag_key(Some("json:\"px,string\"")), Some("px".to_string()));
+    assert_eq!(json_tag_options(Some("json:\"px,string\"")), vec!["string".to_string()]);
+    assert_eq!(json_tag_key(Some("json:\",string\"")), None, "no key: the field's name");
+    assert_eq!(json_tag_options(Some("wire:\"u8\" json:\",string\"")), vec!["string".to_string()]);
+    assert_eq!(json_tag_key(Some("json:\"quantity\"")), Some("quantity".to_string()));
+    assert!(json_tag_options(Some("json:\"quantity\"")).is_empty());
+    assert_eq!(json_tag_key(Some("wire:\"u8\"")), None);
+}
+
+/// `@positional` marks a record (spec/api.md § Codecs, Positional records)
+/// and nothing else.
+#[test]
+fn positional_marks_a_record() {
+    let prog = parse_source("@positional type Row { t: Int; px: Decimal<2>; }\ntype Plain { t: Int; }").expect("parse");
+    let marked: Vec<(String, bool)> = prog
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopDecl::Type(td) => Some((td.name.name.clone(), td.positional)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(marked, vec![("Row".to_string(), true), ("Plain".to_string(), false)]);
+    for (src, want) in [
+        ("@positional type Px = Int;", "`@positional` marks a record, and `Px` is no record"),
+        ("@positional type Side = enum { Buy, Sell };", "`@positional` marks a record, and `Side` is no record"),
+        ("@positional fn f() { }", "expected `type` after `@positional`"),
+        ("@sealed @positional type Row { t: Int; }", "`@positional` marks a `type`, and stacks with no other annotation"),
+    ] {
+        let err = parse_source(src).err().unwrap_or_else(|| panic!("`{src}` parsed"));
+        assert!(err[0].message.starts_with(want), "`{src}`: {}", err[0].message);
+    }
+}

@@ -1464,6 +1464,63 @@ fn json_refusal(
     }
 }
 
+/// The first `@positional` record `te` reaches, through its fields, its
+/// lists' elements and its enums' values, by its name and the path of
+/// fields that reaches it (empty when `te` is one). A surface serves none
+/// (law 5, spec/api.md § Codecs, Positional records): a description, the
+/// generated clients and an MCP tool's input name a record's fields as an
+/// object's keys, so a positional record is read and written with the
+/// program's own codec calls only (`T::api_decode`, `T::from_json`, ...).
+pub fn positional_reach(shapes: &Shapes<'_>, te: &TypeExpr) -> Option<(String, Vec<String>)> {
+    fn walk(
+        shapes: &Shapes<'_>,
+        te: &TypeExpr,
+        path: &mut Vec<String>,
+        seen: &mut BTreeSet<String>,
+    ) -> Option<(String, Vec<String>)> {
+        use crate::topic_identity::TypeClass;
+        let d = shapes.dealias(te);
+        if let Some((elem, _, _)) = hale_syntax::json_gen::wire_list(&d) {
+            return walk(shapes, elem, path, seen);
+        }
+        match shapes.classify(&d) {
+            TypeClass::Struct { name, fields } => {
+                if shapes.is_positional(name) {
+                    return Some((shapes.display_name(name), path.clone()));
+                }
+                if !seen.insert(name.to_string()) {
+                    return None;
+                }
+                for f in fields {
+                    path.push(f.name.name.clone());
+                    if let Some(r) = walk(shapes, &f.ty, path, seen) {
+                        return Some(r);
+                    }
+                    path.pop();
+                }
+                None
+            }
+            TypeClass::Enum { name, variants } => {
+                if !seen.insert(name.to_string()) {
+                    return None;
+                }
+                for v in variants {
+                    for value in &v.fields {
+                        path.push(v.name.name.clone());
+                        if let Some(r) = walk(shapes, value, path, seen) {
+                            return Some(r);
+                        }
+                        path.pop();
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+    walk(shapes, te, &mut Vec::new(), &mut BTreeSet::new())
+}
+
 /// Law 6, the statement of a row whose error type is
 /// `ClosureViolation`: what `hale check --api` prints beside the member,
 /// for each such row, by surface and member.
@@ -1711,6 +1768,27 @@ pub fn surface_laws(
                     )
                 };
                 diags.push(Diag::ty(r.span, message).with_related(h.name_span, "the handler"));
+                continue;
+            }
+            // a positional record is a wire another program defines; a
+            // surface's own wire names every field
+            if let Some((record, path)) = positional_reach(&shapes, &ty.te) {
+                let at = if path.is_empty() {
+                    format!("its {slot} `{record}`")
+                } else {
+                    format!("its {slot} `{}` has a field `{}` of `{record}`", ty.display, path.join("."))
+                };
+                diags.push(
+                    Diag::ty(
+                        r.span,
+                        format!(
+                            "rpc `{m}`: {at}, a `@positional` record, which a surface does not serve: a description, \
+                             the generated clients and an MCP tool name a record's fields as keys. Serve a keyed record, \
+                             and read or write the positional one with `{record}::api_decode` / `api_encode`"
+                        ),
+                    )
+                    .with_related(h.name_span, "the handler"),
+                );
             }
         }
         // Law 9: a route is well formed and binds its parameters to the
@@ -2844,6 +2922,27 @@ pub enum FieldSchema {
     Unformed,
 }
 
+/// A field's schema as its `json:` tag has it written: `json:"key,string"`
+/// puts a `Decimal<S>` (or each of a list's) in a JSON string holding its
+/// digits, `{"type": "string", "x-hale-type": "Decimal<2>"}`, which is what
+/// the encoder writes (spec/api.md § Codecs). The decoder reads a Decimal
+/// from either form.
+fn tagged_schema(tag: Option<&str>, schema: FieldSchema) -> FieldSchema {
+    if !hale_syntax::json_gen::json_tag_options(tag).iter().any(|o| o == "string") {
+        return schema;
+    }
+    fn quote(f: FieldSchema) -> FieldSchema {
+        match f {
+            FieldSchema::Scalar { hale_type: Some(t), unit, .. } if t.starts_with("Decimal<") => {
+                FieldSchema::Scalar { json: "string", hale_type: Some(t), unit }
+            }
+            FieldSchema::List { items, max, exact } => FieldSchema::List { items: Box::new(quote(*items)), max, exact },
+            f => f,
+        }
+    }
+    quote(schema)
+}
+
 /// A struct's schema: its properties in declaration order, each its
 /// JSON key (a `json:"key"` tag renames it) and schema, and the keys a
 /// value must carry (every field without a literal default).
@@ -2942,11 +3041,7 @@ impl<'a> Schemas<'a> {
                     let pairs = hale_syntax::json_gen::presence_pairs(fields, &is_bool);
                     let clears = hale_syntax::json_gen::presence_clears(fields, &is_bool);
                     for f in fields {
-                        let key = f
-                            .tag
-                            .as_deref()
-                            .and_then(|t| hale_syntax::desugar::tag_value(t, "json"))
-                            .unwrap_or_else(|| f.name.name.clone());
+                        let key = hale_syntax::json_gen::json_tag_key(f.tag.as_deref()).unwrap_or_else(|| f.name.name.clone());
                         let name = f.name.name.as_str();
                         if let Some((of, _)) = pairs.iter().find(|(_, flag)| *flag == name) {
                             properties.push((key, FieldSchema::Presence { of: of.to_string(), flag: name.to_string(), clears: false }));
@@ -2967,7 +3062,7 @@ impl<'a> Schemas<'a> {
                                 let lifted = elem_fields
                                     .iter()
                                     .find(|g| g.name.name == k.name)
-                                    .and_then(|g| g.tag.as_deref().and_then(|t| hale_syntax::desugar::tag_value(t, "json")))
+                                    .and_then(|g| hale_syntax::json_gen::json_tag_key(g.tag.as_deref()))
                                     .unwrap_or_else(|| k.name.clone());
                                 let mut value = out.get(&elem_name).cloned().unwrap_or(TypeSchema { properties: Vec::new(), required: Vec::new() });
                                 value.properties.retain(|(p, _)| *p != lifted);
@@ -2976,12 +3071,8 @@ impl<'a> Schemas<'a> {
                                 // (its JSON key in the record, as `lifted` is the key's)
                                 let of = f.map_value.as_ref().and_then(|v| {
                                     let g = elem_fields.iter().find(|g| g.name.name == v.name)?;
-                                    let vkey = g
-                                        .tag
-                                        .as_deref()
-                                        .and_then(|t| hale_syntax::desugar::tag_value(t, "json"))
-                                        .unwrap_or_else(|| v.name.clone());
-                                    Some((vkey, Box::new(self.type_ref(&g.ty, out))))
+                                    let vkey = hale_syntax::json_gen::json_tag_key(g.tag.as_deref()).unwrap_or_else(|| v.name.clone());
+                                    Some((vkey, Box::new(tagged_schema(g.tag.as_deref(), self.type_ref(&g.ty, out)))))
                                 });
                                 map = Some(FieldSchema::Map { name: elem_name, key: k.name.clone(), lifted, value, max, of });
                             }
@@ -2989,7 +3080,7 @@ impl<'a> Schemas<'a> {
                         // an optional field (a map among them) is its value's
                         // schema or `null`
                         if let Some((_, flag)) = pairs.iter().find(|(of, _)| *of == name) {
-                            let inner = map.unwrap_or_else(|| self.type_ref(&f.ty, out));
+                            let inner = map.unwrap_or_else(|| tagged_schema(f.tag.as_deref(), self.type_ref(&f.ty, out)));
                             let schema = match inner {
                                 FieldSchema::Unformed => FieldSchema::Unformed,
                                 inner => FieldSchema::Nullable {
@@ -3005,7 +3096,7 @@ impl<'a> Schemas<'a> {
                             properties.push((key, m));
                             continue;
                         }
-                        properties.push((key.clone(), self.type_ref(&f.ty, out)));
+                        properties.push((key.clone(), tagged_schema(f.tag.as_deref(), self.type_ref(&f.ty, out))));
                         if hale_syntax::json_gen::wire_required(&self.shapes.dealias(&f.ty), f.default.is_some()) {
                             required.push(key);
                         }

@@ -49,6 +49,7 @@ import_decl       = "import" , STRING_LIT , "as" , IDENTIFIER , ";" ;
 top_decl          = locus_decl
                   | perspective_decl
                   | type_decl
+                  | positional_type       (* spec/api.md § Codecs *)
                   | const_decl
                   | function_decl
                   | module_decl
@@ -1025,6 +1026,13 @@ contract_fn       = "fn" , IDENTIFIER , [ generic_params ] ,
 
 
 (* === 11. Type declarations ==================================== *)
+
+(* `@positional` marks a record the JSON codecs carry as an array of its
+   fields in declaration order (spec/api.md § Codecs, Positional
+   records). It precedes the struct form only, and stacks with no other
+   annotation. *)
+positional_type   = "@" , "positional" , "type" , IDENTIFIER ,
+                    [ generic_params ] , "{" , { struct_field } , "}" ;
 
 type_decl         = "type" , IDENTIFIER , "=" , type_expr , ";"
                   | "type" , IDENTIFIER , [ generic_params ] , "{" ,

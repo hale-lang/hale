@@ -487,6 +487,12 @@ impl<'a> Shapes<'a> {
     /// the primitive it stands for, a quantity or point with its unit
     /// tag), a struct (declared or builtin) with its fields, an enum, or
     /// anything else.
+    /// Whether `name` is a declared `@positional` record (spec/api.md §
+    /// Codecs, Positional records).
+    pub fn is_positional(&self, name: &str) -> bool {
+        self.types.get(name).is_some_and(|t| t.positional)
+    }
+
     pub fn classify(&self, te: &TypeExpr) -> TypeClass<'a> {
         if let TypeExpr::Primitive(p, _) = te {
             return TypeClass::Prim(*p);

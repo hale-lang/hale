@@ -113,3 +113,57 @@ fn an_enum_field_and_a_list_field_are_carried() {
     );
     assert!(msgs.is_empty(), "got: {msgs:?}");
 }
+
+// ---- the `json:` tag's options and the positional record (spec/api.md §
+// Codecs): `string` is the one option and is a Decimal's; a positional
+// record's fields have no key; `@positional` opts a record into its codec.
+
+#[test]
+fn a_tag_option_other_than_string_or_on_no_decimal_is_refused() {
+    let msgs = check(
+        r#"
+        type Quote { px: Decimal<2> `json:"px,string"`; n: Int `json:"n,string"`; at: Decimal<2> `json:",omitempty"`; }
+        fn f() -> String { return Quote::to_json(Quote { px: 1d, n: 1, at: 2d }); }
+    "#,
+    );
+    let want = [
+        "`Quote.n`: `json:` tag option `string` writes a Decimal as a JSON string, and the field is `Int`: it is for a `Decimal<S>` field or a list of them",
+        "`Quote.at`: `json:` tag option `omitempty` is not one: the one option is `string`, a Decimal written as a JSON string (`json:\"price,string\"`)",
+    ];
+    for w in want {
+        assert!(msgs.iter().any(|m| m == w), "want {w}; got: {msgs:?}");
+    }
+    assert_eq!(msgs.len(), 2, "the Decimal's `string` is admitted: {msgs:?}");
+    // a list of Decimals takes it too
+    let msgs = check(
+        r#"
+        type Stops { px: bounded[Decimal<2>; 4] `json:",string"`; }
+        fn f() -> String { return Stops::to_json(Stops { }); }
+    "#,
+    );
+    assert!(msgs.is_empty(), "got: {msgs:?}");
+}
+
+#[test]
+fn a_positional_record_has_its_codec_and_no_keys() {
+    // no tag needed: `@positional` is the opt-in
+    let msgs = check(
+        r#"
+        @positional type Row { t: Int; px: Decimal<2> `json:",string"`; }
+        fn f() -> Int { let r = Row::from_json("[1, 2]") or raise; return r.t; }
+    "#,
+    );
+    assert!(msgs.is_empty(), "got: {msgs:?}");
+    let msgs = check(
+        r#"
+        @positional type Row { t: Int `json:"time"`; px: Decimal<2>; }
+        fn f() -> Int { let r = Row::from_json("[1, 2]") or raise; return r.t; }
+    "#,
+    );
+    assert_eq!(
+        msgs,
+        vec![
+            "`Row.t`: `Row` is a `@positional` record, which crosses JSON as an array of its fields in order, so its fields have no key and `json:\"time\"` names none; drop the key (an option stays: `json:\",string\"`)"
+        ]
+    );
+}

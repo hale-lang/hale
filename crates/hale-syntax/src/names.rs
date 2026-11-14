@@ -642,7 +642,7 @@ fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
 }
 
 fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
-    let TypeDecl { name: n, display, generics: gs, body, span: _, id: _, synthetic: _ } = t;
+    let TypeDecl { name: n, display, generics: gs, body, span: _, id: _, synthetic: _, positional: _ } = t;
     name(n, f);
     opt_text(display, f);
     generics(gs, f);

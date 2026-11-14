@@ -122,6 +122,39 @@ fn law_5_every_shape_has_a_codec_form() {
     );
 }
 
+/// A positional record is a wire another program defines: a program reads
+/// and writes it with its own codec calls, and a surface serves none, as a
+/// row's whole value or anywhere inside one (spec/api.md § Codecs,
+/// Positional records).
+#[test]
+fn law_5_a_positional_record_is_not_served() {
+    let rows_src = "
+@positional type Level { px: Decimal<2>; qty: Decimal<4>; }
+type Book { sym: String; bids: bounded[Level; 4]; }
+locus Desk {
+    fn book(c: CancelOrder) -> Book { return Book { sym: \"X\" }; }
+    fn level(l: Level) -> Cancelled { return Cancelled { order: 1, was_open: true }; }
+}
+";
+    let rows = |api: &str| row_errors(&format!("{BASE}\n{rows_src}\n{api}"));
+    assert_eq!(
+        rows("api Desks { rpc Desk::book; }"),
+        vec![
+            "rpc `Desk::book`: its response `Book` has a field `bids` of `Level`, a `@positional` record, which a \
+             surface does not serve: a description, the generated clients and an MCP tool name a record's fields as \
+             keys. Serve a keyed record, and read or write the positional one with `Level::api_decode` / `api_encode`"
+        ]
+    );
+    assert_eq!(
+        rows("api Desks { rpc Desk::level; }"),
+        vec![
+            "rpc `Desk::level`: its request `Level`, a `@positional` record, which a surface does not serve: a \
+             description, the generated clients and an MCP tool name a record's fields as keys. Serve a keyed record, \
+             and read or write the positional one with `Level::api_decode` / `api_encode`"
+        ]
+    );
+}
+
 /// A list crosses as a field of a record: `bounded[T; N]` and `[T; N]` of
 /// what a field carries are admitted; an unbounded `[T]`, a list of lists, a
 /// list of what the codec does not carry, and a request or response that is
