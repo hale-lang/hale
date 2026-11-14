@@ -11727,7 +11727,8 @@ impl<'a> Checker<'a> {
                         // what a field default may read is judged here, where
                         // it is declared, with no binding in scope
                         let defaults: Vec<&'a Expr> = fields.iter().filter_map(|f| f.default.as_ref()).collect();
-                        self.judge_defaults_where_declared(&defaults, &t.generics);
+                        let typed = self.judge_defaults_where_declared(&defaults, &t.generics);
+                        self.refuse_valueless_field_defaults(&t.name.name, fields, &typed);
                         // A field default is not typed here, but lowering
                         // emits it at every literal of the type that
                         // leaves the field, so the defaults its calls
@@ -19267,6 +19268,76 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// One of the six `bounded[T; N]` intrinsic names (`count`, `push`,
+    /// `at`, `set`, `clear`, `truncate`) called on a first argument that
+    /// is not a `bounded`, with no declaration of the name in scope to
+    /// answer it: the refusal, at the call. The intrinsic dispatches on
+    /// its first argument's type (spec/types.md § bounded[T; N]), and
+    /// `count` stays a bare callee the check admits for the accumulator
+    /// vocabulary (`count()`), so `count(record)` passed the check and the
+    /// build refused it as a call to an unknown free fn with no file or
+    /// line (downstream handoff) — the twin of `len` on a `bounded`.
+    ///
+    /// Only a type the check knows is refused: an `Unknown` receiver, a
+    /// generic parameter or anything else it cannot name stays silent, as
+    /// before. A record holding a `bounded` field is pointed at it.
+    fn bounded_intrinsic_misapplied(&self, name: &str, args: &[Expr], recv: &Ty, at: Span) -> Option<Diag> {
+        if self.locals.lookup(name).is_some()
+            || self.top.lookup(name).is_some()
+            || self.generic_fns.contains_key(name)
+        {
+            return None;
+        }
+        let mut t = recv.clone();
+        for _ in 0..16 {
+            let Ty::Named(n) = &t else { break };
+            let Some(TopSymbol::Type(info)) = self.top.lookup(n) else { break };
+            let TypeKind::Alias(a) = &info.kind else { break };
+            t = a.clone();
+        }
+        let known = match &t {
+            Ty::Prim(_) | Ty::Array(..) | Ty::Tuple(_) => true,
+            Ty::Named(n) => matches!(
+                self.top.lookup(n),
+                Some(TopSymbol::Type(_) | TopSymbol::Locus(_) | TopSymbol::Interface(_))
+            ),
+            _ => false,
+        };
+        if !known {
+            return None;
+        }
+        let recv_spelled = Self::spell_receiver(&args[0]);
+        let mut hint = String::new();
+        if let Ty::Named(n) = &t {
+            if let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(fields), .. })) = self.top.lookup(n) {
+                if let Some(f) = fields.iter().find(|f| matches!(f.ty, Ty::Bounded(..))) {
+                    let rest: Vec<String> = args[1..].iter().map(|_| "…".to_string()).collect();
+                    let tail = if rest.is_empty() { String::new() } else { format!(", {}", rest.join(", ")) };
+                    hint = format!(
+                        " — its field `{}` is a `{}`: `{name}({recv_spelled}.{}{tail})`",
+                        f.name,
+                        f.ty.display(),
+                        f.name
+                    );
+                }
+            }
+        }
+        if hint.is_empty() && name == "count" {
+            if let Some(sig) = crate::builtin_sigs::bare_builtin_sig("len") {
+                if sig.result(std::slice::from_ref(&t), |_| false).is_some() {
+                    hint = format!(" — a `{}`'s length is `len({recv_spelled})`", t.display());
+                }
+            }
+        }
+        Some(Diag::ty(
+            at,
+            format!(
+                "`{name}` does not apply to a `{}`: it is an intrinsic of a `bounded[T; N]`, and no `fn {name}` is declared for this argument{hint} (spec/types.md § bounded[T; N])",
+                t.display()
+            ),
+        ))
+    }
+
 
     /// GH #892: does the program's OWN `fn NAME` answer this call,
     /// ahead of the `bounded[T; N]` intrinsic of the same name?
@@ -21290,11 +21361,11 @@ impl<'a> Checker<'a> {
     /// literal and call that leaves the default. The walk is no
     /// evaluation: it records nothing, and its other findings are not
     /// reported here.
-    fn judge_defaults_where_declared(&mut self, defaults: &[&'a Expr], generics: &[GenericParam]) {
+    fn judge_defaults_where_declared(&mut self, defaults: &[&'a Expr], generics: &[GenericParam]) -> Vec<(&'a Expr, Ty)> {
         let defaults: Vec<&'a Expr> =
             defaults.iter().copied().filter(|d| self.defaults_judged.insert(*d as *const Expr as usize)).collect();
         if defaults.is_empty() {
-            return;
+            return Vec::new();
         }
         let saved_locals = std::mem::replace(&mut self.locals, ScopeStack::new());
         let seen = self.expr_types.as_ref().map(Vec::len);
@@ -21308,9 +21379,11 @@ impl<'a> Checker<'a> {
         let judged = std::mem::replace(&mut self.defaults_judged_at_literals, true);
         let scan = std::mem::replace(&mut self.default_scan, Some(Vec::new()));
         let uses = std::mem::take(&mut self.default_uses);
+        let mut typed: Vec<(&'a Expr, Ty)> = Vec::with_capacity(defaults.len());
         for d in defaults {
             self.struct_defaults_typing.push(d);
-            let _ = self.check_expr(d);
+            let got = self.check_expr(d);
+            typed.push((d, got));
             self.struct_defaults_typing.pop();
         }
         let unresolved = std::mem::replace(&mut self.default_scan, scan).unwrap_or_default();
@@ -21335,6 +21408,58 @@ impl<'a> Checker<'a> {
                 };
                 self.diags.push(Diag::ty(span, message));
             }
+        }
+        typed
+    }
+
+    /// A record field's default that produces no value: `meta: Meta = { };`
+    /// parses `{ }` as an empty block, whose type is `()`. The default is
+    /// typed where it is declared and again at each literal that leaves
+    /// the field, and both walks keep only their quantity findings, so the
+    /// check said ok and the build refused it as a block with no trailing
+    /// expression, with no file or line (downstream handoff). A field
+    /// default is a value of the field's type, so one of type `()` is
+    /// refused here, at the default, with the record literal spelled out
+    /// when the field holds a record.
+    fn refuse_valueless_field_defaults(&mut self, type_name: &str, fields: &[hale_syntax::ast::StructField], typed: &[(&'a Expr, Ty)]) {
+        let field_tys: BTreeMap<String, Ty> = match self.top.lookup(type_name) {
+            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(infos), .. })) => {
+                infos.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()
+            }
+            _ => BTreeMap::new(),
+        };
+        for (default, got) in typed {
+            if !matches!(got, Ty::Unit) {
+                continue;
+            }
+            let Some(f) = fields.iter().find(|f| f.default.as_ref().is_some_and(|d| std::ptr::eq(d, *default))) else {
+                continue;
+            };
+            let want = field_tys.get(f.name.name.as_str()).cloned().unwrap_or(Ty::Unknown);
+            if matches!(want, Ty::Unit | Ty::Unknown) {
+                continue;
+            }
+            let record = match &want {
+                Ty::Named(n) => matches!(
+                    self.top.lookup(n),
+                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_), .. }))
+                ),
+                _ => false,
+            };
+            let hint = match (default, record) {
+                (Expr::Block(_), true) => format!(
+                    ": `{{ ... }}` alone is a block, and a block with no tail value produces nothing; a record literal names its type: `{} {{ }}`",
+                    want.display()
+                ),
+                (Expr::Block(_), false) => {
+                    ": `{ ... }` alone is a block, and a block with no tail value produces nothing; give it a value to produce".to_string()
+                }
+                _ => ": this expression produces no value (a call to a fn that returns nothing, or an `if` / `match` with no tail value)".to_string(),
+            };
+            self.diags.push(Diag::ty(
+                default.span(),
+                format!("field `{}`: declared `{}`, default is `()`{hint}", f.name.name, want.display()),
+            ));
         }
     }
 
@@ -22898,6 +23023,7 @@ impl<'a> Checker<'a> {
                     {
                         let mark = self.walk_mark();
                         let recv_ty = self.check_expr(&args[0]);
+                        let probe_ty = recv_ty.clone();
                         let shadowed = match &recv_ty {
                             Ty::Bounded(elem, cap) => self
                                 .user_fn_shadows_bounded_intrinsic(
@@ -23072,6 +23198,9 @@ impl<'a> Checker<'a> {
                         // roll back the speculative diags and let the
                         // ordinary call paths resolve it.
                         self.discard_since(mark);
+                        if let Some(d) = self.bounded_intrinsic_misapplied(&id.name, args, &probe_ty, expr.span()) {
+                            self.diags.push(d);
+                        }
                     }
                 }
                 // M3 stage 3 (2026-07-02): generic fn call

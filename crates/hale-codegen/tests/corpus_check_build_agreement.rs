@@ -3266,3 +3266,90 @@ fn a_record_holding_itself_by_value_is_refused_by_the_check_not_the_build() {
         "hale_cb_record_holding_itself_through_a_bounded",
     );
 }
+
+/// A `bounded[T; N]` intrinsic called on a first argument that is not a
+/// `bounded`, with no `fn` of the name declared: `count(b)` on a record
+/// checked clean (`count` is a bare callee the check admits for the
+/// accumulator vocabulary) and the build refused it as a call to an
+/// unknown free fn, with no file or line (downstream handoff). The check
+/// refuses it at the call, as it refuses `len` on a `bounded`, and points
+/// at the record's `bounded` field when it has one. A program's own `fn
+/// count` over the record still answers the call, and the field's count
+/// lowers.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_bounded_intrinsic_on_a_non_bounded_argument_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type Bag { items: bounded[String; 4]; }\n\
+                 fn main() { let b = Bag { }; std::test::assert_eq_int(count(b), 0, \"count on a record\"); }\n",
+                "count(b)",
+                "`count` does not apply to a `Bag`: it is an intrinsic of a `bounded[T; N]`, and no `fn count` is \
+                 declared for this argument — its field `items` is a `bounded[String; 4]`: `count(b.items)`",
+            ),
+            (
+                "type Bag { items: bounded[String; 4]; }\n\
+                 fn main() { let b = Bag { }; clear(b); println(\"x\"); }\n",
+                "clear(b)",
+                "`clear` does not apply to a `Bag`",
+            ),
+            (
+                "fn main() { let s = \"abc\"; println(to_string(count(s))); }\n",
+                "count(s)",
+                "`count` does not apply to a `String`: it is an intrinsic of a `bounded[T; N]`, and no `fn count` is \
+                 declared for this argument — a `String`'s length is `len(s)`",
+            ),
+        ],
+        "bounded_intrinsic_misapplied",
+    );
+    assert_built(
+        "type Bag { items: bounded[String; 4]; }\n\
+         fn count(b: Bag) -> Int { return 7; }\n\
+         fn main() { let b = Bag { }; println(to_string(count(b))); }\n",
+        "hale_cb_count_declared_for_record",
+    );
+    assert_built(
+        "type Bag { items: bounded[String; 4]; }\n\
+         fn main() { let b = Bag { }; println(to_string(count(b.items))); }\n",
+        "hale_cb_count_of_bounded_field",
+    );
+}
+
+/// A record field's default that produces no value: `meta: Meta = { };`
+/// parses `{ }` as an empty block, whose type is `()`. The default was
+/// typed and its findings discarded but for a quantity's, so the check
+/// said ok and the build refused it ("block used as expression has no
+/// trailing expression") with no file or line (downstream handoff). The
+/// check refuses it at the default, spelling the record literal.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_valueless_field_default_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type Meta { count: Int = 0; }\n\
+                 type Page { meta: Meta = { }; }\n\
+                 fn main() { let p = Page { }; println(to_string(p.meta.count)); }\n",
+                "{ }",
+                "field `meta`: declared `Meta`, default is `()`: `{ ... }` alone is a block, and a block with no tail \
+                 value produces nothing; a record literal names its type: `Meta { }`",
+            ),
+            (
+                "type Page { n: Int = { }; }\n\
+                 fn main() { let p = Page { }; println(to_string(p.n)); }\n",
+                "{ }",
+                "field `n`: declared `Int`, default is `()`",
+            ),
+        ],
+        "valueless_field_default",
+    );
+    assert_built(
+        "type Meta { count: Int = 0; }\n\
+         type Page { meta: Meta = Meta { }; }\n\
+         fn main() { let p = Page { }; println(to_string(p.meta.count)); }\n",
+        "hale_cb_record_literal_field_default",
+    );
+}

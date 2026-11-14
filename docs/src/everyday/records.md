@@ -50,6 +50,7 @@ fn main() {
 
 - **Compile-time field verification:** Unknown field names, missing required fields (fields without defaults), or mismatched field types fail compilation at the literal—including for cross-seed records constructed as `alias::Config { ... }`.
 - **A record cannot hold itself by value:** `type Node { next: Node; }` (or `A` holding a `B` that holds an `A`) has no smallest value, and `hale check` refuses it at the field that closes the ring. Hold children in a `bounded[Node; N]` (it starts empty), or in an enum variant beside one that holds none (`type Link = enum { End, Next(Node) };`), or keep them elsewhere and hold a key.
+- **A record field's default names its type:** write `meta: Meta = Meta { };`, not `meta: Meta = { };`. A bare `{ }` is an empty block, which produces no value, and `hale check` refuses it at the default and spells the literal (`Meta { }`).
 - **Top-level only:** `type` declarations must appear at the top level outside any `locus` body.
 - **No loci inside records:** Because records are pure values with no lifecycle hooks, a `type` field (or `enum` variant) cannot hold a `locus` or a function pointer whose signature names a locus (`fn() -> Worker`). Store loci inside another locus's `params` instead. (A record field typed by an `interface` is permitted because it is a non-owning reference.)
 

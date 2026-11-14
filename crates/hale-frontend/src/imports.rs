@@ -465,6 +465,39 @@ pub fn claim_library_files(
     None
 }
 
+/// The refusal of an import that names the importing seed itself: one
+/// of its own files (`import "util"` in a directory seed holding
+/// `util.hl`), or its own directory. `None` for any other target.
+fn self_import_message(
+    target: &ImportTarget,
+    lib_key: &Path,
+    import_path: &str,
+    scope_key: &Path,
+    alias_scopes: &AliasScopes,
+) -> Option<String> {
+    match target {
+        ImportTarget::SingleFile(_) => {
+            let own = alias_scopes.files.get(scope_key)?;
+            if !own.iter().any(|f| f == lib_key) {
+                return None;
+            }
+            let file = lib_key.file_name().and_then(|s| s.to_str()).unwrap_or(import_path);
+            Some(format!(
+                "`{import_path}` names {file}, a file of this seed: a seed's files share one scope, so its \
+                 declarations are already in scope by their bare names, and a seed does not import itself — \
+                 call them as `name(...)`, not `alias::name(...)`, and drop this import"
+            ))
+        }
+        ImportTarget::Directory(_) => (lib_key == scope_key).then(|| {
+            format!(
+                "`{import_path}` names this seed's own directory: its declarations are already in scope by \
+                 their bare names, and a seed does not import itself — call them as `name(...)`, not \
+                 `alias::name(...)`, and drop this import"
+            )
+        }),
+    }
+}
+
 pub fn resolve_imports(
     imports: &[hale_syntax::ast::Import],
     importer_dir: &Path,
@@ -631,6 +664,24 @@ pub fn resolve_imports(
         // (`seed_cache` is the lib's rename map, fixed when the lib was
         // first resolved). dna/host's files import `dna` 57 times, which
         // pushed its 982 rows 57 times: 55,974 of the table's 58,005.
+        // A seed does not import itself (spec/projects.md § Seeds): a
+        // file of the importing seed, or the seed's own directory, is
+        // already in scope by its bare names. Every one of its files is
+        // in `visited` already, so the import parsed nothing, bound no
+        // row, and every `alias::name` was refused as "not an import or
+        // a type of this seed" while the import itself said nothing
+        // (downstream handoff). Refused at the import that has to go.
+        if let Some(message) = self_import_message(&target, &lib_key, &imp.path, scope_key, alias_scopes) {
+            errors.push(unresolved_import_diag(
+                imp.path_span,
+                message.clone(),
+                IoDiag::target(&lib_key, message),
+                file_bases,
+                sources,
+                src,
+            ));
+            return Err(());
+        }
         let rows_present = alias_scopes.binds(&alias, &lib_key);
         alias_scopes.record_binding(scope_key, &alias, &lib_key);
         // GH #820: before anything is parsed, check that no file of

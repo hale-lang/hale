@@ -1321,6 +1321,18 @@ Semantics:
   `count` ("\`len\` does not apply to a \`bounded[String; 4]\`: a
   \`bounded\`'s live count is \`count(x)\`"), where the build refused it
   with no file or line until 2026-10-18.
+- The other way round, an intrinsic's name called on a first argument
+  that is not a `bounded`, with no `fn` of that name declared to answer
+  it, is refused by the check at the call, naming the argument's type
+  and, for a record holding a `bounded` field, that field
+  ("\`count\` does not apply to a \`Bag\`: it is an intrinsic of a
+  \`bounded[T; N]\`, and no \`fn count\` is declared for this argument
+  — its field \`items\` is a \`bounded[String; 4]\`: \`count(b.items)\`").
+  Until 2026-11-14 `count(record)` passed the check (`count` is a bare
+  callee the check admits for the accumulator vocabulary, `count()`) and
+  the build refused it as a call to an unknown free fn, with no file or
+  line. An argument whose type the check does not know (a generic
+  parameter) is left to the build, as before.
 - A bounded place (a field, a locus param) is
   assigned whole only from a value of its own type, `bounded[T; N]`
   with the same `T` and `N`: `row.models = req.models` copies the
@@ -1682,6 +1694,14 @@ Three init shapes:
   default of its own, and one that leaves such a field out is refused
   at the literal ("type `T`: missing field `f`"), in any default, by
   the check rather than the build.
+  A record type's field default is a value of the field's type, so one
+  that produces none (type `()`) is refused at the default: `meta: Meta
+  = { };` is an empty block, not a record literal ("field \`meta\`:
+  declared \`Meta\`, default is \`()\`: \`{ ... }\` alone is a block, and
+  a block with no tail value produces nothing; a record literal names
+  its type: \`Meta { }\`"). Until 2026-11-14 the check said ok and the
+  build refused it as a block with no trailing expression, with no file
+  or line.
 - `name: T;` — **required**. The caller MUST supply the field at
   the locus literal site; instantiation without it is a compile
   error. Use for fields where no sensible default exists (e.g.
