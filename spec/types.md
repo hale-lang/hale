@@ -1752,6 +1752,32 @@ holds no declaration for its sibling's types. The test harness's
 build, which skips the rest of the check, judges this rule too, so
 lowering keeps no guard of its own (F.40 phase 3, C7).
 
+**A record may not contain itself by value.** A record is a value, and
+every one holds a whole value of each field's type, so a record that
+holds its own kind by value, directly or around a ring of records,
+through a field, a tuple's part or a fixed array's element, has no
+floor: no literal can build one. A field left to a default (`child: Cfg
+= Cfg { }`) expands the same default again, and a field the literal must
+write needs a value of the type being built. The check refuses the
+declaration at the field that closes the ring, naming each field on it:
+
+```text
+main.hl:1:57: type error: a record cannot contain itself by value: `Cfg.child: Cfg` puts a whole `Cfg` inside every `Cfg`, so none can be built. Hold the `Cfg` values a `Cfg` may have in a `bounded[Cfg; N]` (it starts empty), or in an enum variant beside one that holds none (`type Child = enum { Nothing, One(Cfg) }`), or keep them elsewhere and hold a key
+```
+
+A generic record is followed with its type arguments substituted (`b:
+Box<Cfg>` with `type Box<T> { v: T; }` is a ring), an alias to its
+target. The shapes that give a record of its own kind a floor are not
+rings, and build: a `bounded[Cfg; N]` field (it starts empty), and an
+enum whose variants hold one (`child: Link = Link::End` with `type Link =
+enum { End, Next(Cfg) }`); so are a fn type, an interface, a locus and a
+perspective, which hold no record value. The test harness's build judges
+this rule too. (Until 2026-11-14 the check said ok and the build
+expanded the default until the compiler's own stack overflowed; a
+record holding its own kind through a `bounded` or an enum overflowed it
+the same way at every deep copy, which is now a function of its own per
+such type.)
+
 ## `inferred` params
 
 Per F.3: a param declared `: inferred` (instead of `= value`)

@@ -3232,3 +3232,37 @@ fn a_fn_value_is_a_fresh_factory_at_every_position() {
                  fn main() { let t = apply(mk2, \"a\"); println(t.0.name, t.1); }\n";
     assert_eq!(build_and_run_probe(built, "fresh_aggregate_fn_value"), Ok("a1\nbye a\n".to_string()), "{built}");
 }
+
+/// A record that holds its own kind by value, directly or around a ring
+/// of records: `hale check` said ok and the build expanded the default
+/// until the compiler's stack ran out (downstream handoff). The check
+/// refuses it at the field that closes the ring, so the build is never
+/// reached. A record holding its own kind through a `bounded` builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_record_holding_itself_by_value_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type Cfg { limit: String = \"\"; has_child: Bool = false; child: Cfg = Cfg { }; }\n\
+                 fn main() { let c = Cfg { limit: \"1\" }; std::test::assert_eq_str(c.limit, \"1\", \"r\"); }\n",
+                "child: Cfg = Cfg { };",
+                "a record cannot contain itself by value: `Cfg.child: Cfg` puts a whole `Cfg` inside every `Cfg`",
+            ),
+            (
+                "type A { n: Int = 0; b: B = B { }; }\n\
+                 type B { a: A = A { }; }\n\
+                 fn main() { let a = A { }; println(to_string(a.n)); }\n",
+                "a: A = A { };",
+                "a record cannot contain itself by value: the ring `A.b: B` → `B.a: A`",
+            ),
+        ],
+        "self_containing_record",
+    );
+    assert_built(
+        "type Cfg { limit: String = \"\"; kids: bounded[Cfg; 4]; }\n\
+         fn main() { let mut c = Cfg { limit: \"1\" }; push(c.kids, Cfg { limit: \"2\" }) or { return; }; println(count(c.kids)); }\n",
+        "hale_cb_record_holding_itself_through_a_bounded",
+    );
+}
