@@ -1,0 +1,43 @@
+// An enum's payload lives in a byte body after its i32 tag, at offset 4,
+// so a payload wider than four bytes is never at its natural alignment.
+// The payload's loads and stores were emitted at the type's own alignment
+// (16 for a Decimal), which x86-64 lowers to `movaps`: a Decimal payload
+// faulted there the first time a value was built, matched or deep-copied
+// (a record returned from a fn copies its enum fields), while aarch64,
+// which tolerates the unaligned access, passed.
+
+type Side = enum { Buy, Limit(Decimal<2>), Stop(Int, Decimal<4>) };
+type Order { name: String; side: Side = Side::Buy; }
+
+fn limit_of(s: Side) -> Decimal<2> {
+    let mut out: Decimal<2> = 0d;
+    match s {
+        Side::Limit(px) -> { out = px; },
+        _ -> { },
+    }
+    return out;
+}
+
+fn make(name: String, px: Decimal<2>) -> Order {
+    return Order { name: name, side: Side::Limit(px) };
+}
+
+fn main() {
+    let s = Side::Limit(97000.5d);
+    std::test::assert_eq_str("" + limit_of(s), "97000.5", "a Decimal payload built and matched");
+
+    let o = make("a", 1.25d);
+    std::test::assert_eq_str(
+        "" + limit_of(o.side),
+        "1.25",
+        "a Decimal payload through a returned record",
+    );
+
+    match Side::Stop(7, 0.0001d) {
+        Side::Stop(n, px) -> {
+            std::test::assert_eq_int(n, 7, "an Int payload at offset 4");
+            std::test::assert_eq_str("" + px, "0.0001", "a Decimal payload after it");
+        },
+        _ -> std::test::assert(false, "the Stop variant"),
+    }
+}

@@ -34228,6 +34228,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // byte array and use it as a base; each field stores
             // at an 8-byte stride (per codegen_ty_size_bytes,
             // which rounds everything to 8 except Decimal at 16).
+            // The body follows the i32 tag, so it sits at offset 4
+            // and no field is aligned past that: every payload
+            // access is align 1. x86-64 lowers an i128 at its
+            // natural align 16 to `movaps`, which faults on the
+            // offset-4 slot (aarch64 tolerates it).
             let body_ptr = self
                 .builder
                 .build_struct_gep(storage_ty, ptr, 1, "enum.body.ptr")
@@ -34251,6 +34256,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 };
                 self.builder
                     .build_store(slot_ptr, *val)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .set_alignment(1)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 offset += codegen_ty_size_bytes(self.context, ty);
             }
@@ -34469,6 +34476,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .builder
                 .build_load(llvm_ty, slot_ptr, "enum.field")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // align 1: the body is at offset 4 (`lower_enum_variant_alloc_in`).
+            if let Some(inst) = inkwell::values::BasicValue::as_instruction_value(&val) {
+                inst.set_alignment(1).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             out.push((val, ty.clone()));
             offset += codegen_ty_size_bytes(self.context, ty);
         }
