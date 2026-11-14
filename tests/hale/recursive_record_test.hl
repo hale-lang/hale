@@ -1,0 +1,74 @@
+// tests/hale/recursive_record_test.hl — a record holding records of its
+// own kind, through the two shapes that give it a floor
+// (spec/types.md § A record may not contain itself by value): a
+// `bounded` of it, which starts empty, and an enum variant beside one
+// that holds none. Each deep copy of such a value (a push, a return, a
+// copy, a store into a locus's field) used to unroll by type around the
+// ring and overflow the compiler's stack (downstream handoff).
+type Node {
+    name: String = "";
+    kids: bounded[Node; 4];
+}
+
+type Link = enum { End, Next(Chain) };
+
+type Chain {
+    label: String = "";
+    next: Link = Link::End;
+}
+
+fn tree() -> Node {
+    let mut leaf = Node { name: "leaf" };
+    let mut mid = Node { name: "mid" };
+    push(mid.kids, leaf) or {
+        return mid;
+    };
+    let mut root = Node { name: "root" };
+    push(root.kids, mid) or {
+        return root;
+    };
+    return root;
+}
+
+fn chain() -> Chain {
+    return Chain {
+        label: "a",
+        next: Link::Next(Chain { label: "b", next: Link::Next(Chain { label: "c" }) }),
+    };
+}
+
+fn depth(c: Chain) -> Int {
+    match c.next {
+        Link::Next(n) -> {
+            return 1 + depth(n);
+        },
+        _ -> {
+            return 1;
+        },
+    }
+    return 0;
+}
+
+locus Keeper {
+    params {
+        root: Node = Node { };
+    }
+    fn keep(n: Node) -> Int {
+        self.root = n;
+        return count(self.root.kids);
+    }
+}
+
+fn main() {
+    let root = tree();
+    let copy = root;
+    let mid = at(copy.kids, 0) or Node { };
+    let leaf = at(mid.kids, 0) or Node { };
+    std::test::assert_eq_str(leaf.name, "leaf", "two levels down a copied, returned tree");
+    std::test::assert_eq_int(count(leaf.kids), 0, "the leaf holds none");
+
+    let k = Keeper { };
+    std::test::assert_eq_int(k.keep(root), 1, "stored into a locus's field");
+
+    std::test::assert_eq_int(depth(chain()), 3, "a chain of three through an enum variant");
+}

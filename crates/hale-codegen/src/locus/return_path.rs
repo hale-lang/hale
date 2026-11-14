@@ -276,6 +276,138 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ty: &CodegenTy,
         dest_arena: PointerValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if let Some(name) = self.recursive_copy_name(ty) {
+            return self.emit_outlined_deep_copy(&name, value, ty, dest_arena);
+        }
+        self.emit_deep_copy_inline(value, ty, dest_arena)
+    }
+
+    /// The record or payload enum whose deep copy is emitted as a
+    /// function of its own: a type that reaches itself through what it
+    /// holds — a `bounded` of its own record (`kids: bounded[Cfg; 4]`),
+    /// an enum variant's payload (`child: Sub`, `type Sub = enum {
+    /// Nothing, One(Cfg) }`), a tuple or array on the way. Those are the
+    /// shapes a record may hold its own kind through (a ring by value is
+    /// refused before lowering, `self_containing_record`), and the copy
+    /// walks a value of them to whatever depth the value has. The inline
+    /// copy unrolls the walk by type, so it followed such a type around
+    /// its ring until the compiler's stack ran out (downstream handoff);
+    /// a function per type turns the ring into a call.
+    fn recursive_copy_name(&mut self, ty: &CodegenTy) -> Option<String> {
+        let name = match ty {
+            CodegenTy::TypeRef(n) => n,
+            CodegenTy::Enum(n) if self.user_enums.get(n).is_some_and(|e| e.has_payload) => n,
+            _ => return None,
+        };
+        if let Some(known) = self.recursive_copy_types.get(name) {
+            return known.then(|| name.clone());
+        }
+        let reaches = self.copy_type_reaches(ty, name, &mut std::collections::BTreeSet::new());
+        self.recursive_copy_types.insert(name.clone(), reaches);
+        reaches.then(|| name.clone())
+    }
+
+    /// Whether a value of `ty` holds, at any depth, a value of the record
+    /// or enum `target`, through every part a deep copy walks.
+    fn copy_type_reaches(
+        &self,
+        ty: &CodegenTy,
+        target: &str,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) -> bool {
+        let parts: Vec<CodegenTy> = match ty {
+            CodegenTy::TypeRef(n) => {
+                if !seen.insert(n.clone()) {
+                    return false;
+                }
+                match self.user_types.get(n) {
+                    Some(info) => info.fields.values().map(|(_, t)| t.clone()).collect(),
+                    None => return false,
+                }
+            }
+            CodegenTy::Enum(n) => {
+                if !seen.insert(n.clone()) {
+                    return false;
+                }
+                match self.user_enums.get(n) {
+                    Some(info) => info.variants.iter().flat_map(|v| v.field_tys.iter().cloned()).collect(),
+                    None => return false,
+                }
+            }
+            CodegenTy::Bounded(e, _) | CodegenTy::Array(e, _) => vec![(**e).clone()],
+            CodegenTy::Tuple(ts) => ts.clone(),
+            _ => return false,
+        };
+        parts.iter().any(|p| {
+            matches!(p, CodegenTy::TypeRef(n) | CodegenTy::Enum(n) if n == target)
+                || self.copy_type_reaches(p, target, seen)
+        })
+    }
+
+    /// The deep copy of a value of the recursive type `name`, as a call to
+    /// `__hale_deep_copy.<name>` (one per type and per `cell_owned_clone`
+    /// mode), emitted the first time it is asked for: its body is the
+    /// inline copy of one level, whose own copies of `name` call it again.
+    fn emit_outlined_deep_copy(
+        &mut self,
+        name: &str,
+        value: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let fname = format!("__hale_deep_copy.{}.{}", name, if self.cell_owned_clone { "owned" } else { "shared" });
+        let func = match self.module.get_function(&fname) {
+            Some(f) => f,
+            None => {
+                let ptr_t = self.context.ptr_type(AddressSpace::default());
+                let fn_ty = ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                let f = self.module.add_function(&fname, fn_ty, Some(inkwell::module::Linkage::Internal));
+                // Emitted aside: the caller's block, function and debug
+                // location are put back as they were.
+                let saved_block = self.builder.get_insert_block();
+                let saved_fn = self.current_fn;
+                let saved_loc = self.di_current_loc;
+                let saved_pos = self.di_current_pos;
+                let entry = self.context.append_basic_block(f, "entry");
+                self.builder.position_at_end(entry);
+                self.di_begin_function();
+                self.current_fn = Some(f);
+                let src = f.get_nth_param(0).expect("src param");
+                let arena = f.get_nth_param(1).expect("arena param").into_pointer_value();
+                let body = self.emit_deep_copy_inline(src, ty, arena);
+                let ret = body.and_then(|v| self.builder.build_return(Some(&v)).map(|_| ()).map_err(err));
+                self.current_fn = saved_fn;
+                if let Some(bb) = saved_block {
+                    self.builder.position_at_end(bb);
+                }
+                if let Some(loc) = saved_loc {
+                    self.builder.set_current_debug_location(loc);
+                }
+                self.di_current_loc = saved_loc;
+                self.di_current_pos = saved_pos;
+                ret?;
+                f
+            }
+        };
+        let copied = self
+            .builder
+            .build_call(func, &[value.into(), dest_arena.into()], "deep_copy.rec")
+            .map_err(err)?
+            .try_as_basic_value()
+            .left()
+            .expect("deep copy returns ptr");
+        Ok(copied)
+    }
+
+    /// One level of the deep copy, every part of it recursing through
+    /// [`Self::emit_return_value_deep_copy`].
+    fn emit_deep_copy_inline(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match ty {
             CodegenTy::Bounded(_, _) => Err(CodegenError::Unsupported(
                 "bounded[T; N] is not a first-class value — it cannot \
