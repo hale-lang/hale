@@ -637,9 +637,7 @@ fn draft_verb(
 // The repository's units of code (`ops::go_units`), from its tracked
 // files, when it is a Go module; "" otherwise.
 fn draft_units(root: String) -> String {
-    let listed = dna::run_tool("git\n-C\n" + root + "\n-c\ncore.quotePath=false\nls-files");
-    if listed.code != 0 { return ""; }
-    let files = listed.stdout;
+    let files = ops::repository_files(root);
     if !std::str::contains("\n" + files, "\ngo.mod\n") { return ""; }
     let mod_path = ops::go_module_path(std::io::fs::read_file(root + "/go.mod") or "");
     if len(mod_path) == 0 { return ""; }

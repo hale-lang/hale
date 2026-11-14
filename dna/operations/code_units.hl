@@ -9,6 +9,14 @@
 // same lines and the draft reads nothing of the language.
 import "../core" as dna;
 
+// The repository's tracked files, one path a line as git holds them, ""
+// when the directory is no repository (the reader's input, as ingest's).
+fn repository_files(root: String) -> String {
+    let listed = dna::run_tool("git\n-C\n" + root + "\n-c\ncore.quotePath=false\nls-files");
+    if listed.code != 0 { return ""; }
+    return listed.stdout;
+}
+
 // The module path a `go.mod` declares ("" when none).
 fn go_module_path(text: String) -> String {
     let it = std::iter::Lines { };
