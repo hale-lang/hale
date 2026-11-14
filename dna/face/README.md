@@ -23,7 +23,9 @@ browser/service boundary it proposed.
   node; a position the record proposes and the Board has not decided is
   dashed; a vacant one is marked. Tapping a node selects it, and the chips
   under the graph list the same nodes for a reader without the canvas. A grafted organism is
-  a child organization, linked to its own face: the face you open is the
+  a child organization, linked to its own face through the head's
+  `/organisms/<name>/face`, which hands a visitor signed in here into that
+  face with its own launch token: the face you open is the
   horizon, and its chart is its own record's. Selecting a position shows its
   mandate, its holders and what it signs; filling it (`HoldFill`) and opening a
   position under it (`PositionOpen`) are the record's commands, each a Board
@@ -69,7 +71,10 @@ From this checkout, building the head's seeds from the working tree:
 ```
 
 Either prints the face's loopback URL and the sign-in link. `--port` selects
-another port; `--help` lists the rest. The launcher starts the stub OpenID
+another port; `--help` lists the rest. The launcher serves the assets beside
+it; `HALE_FACE_WEBROOT=<dir>` serves another directory instead, and on a
+habitat the directory `<habitat>/face-web/` does the same when it holds an
+`index.html` (a dev override, said on the face's log). The launcher starts the stub OpenID
 provider and signs you in through it; the head's memory DSN
 (`HALE_DNA_MEMORY_DSN_HEAD`, as `hale dna memory migrate` prints it) lets
 Knowledge read memory's projection; without it the face reads the record's

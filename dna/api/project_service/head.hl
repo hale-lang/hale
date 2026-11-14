@@ -737,6 +737,79 @@ locus Head {
         return http.error(status, code, message, retryable);
     }
 
+    // `GET /organisms/<name>/face`: a visitor signed in to the habitat is
+    // sent to a grafted organism's face signed in, with that face's own
+    // launch token (`<habitat>/allocations/<key>/face-state/head.token`,
+    // readable here because the habitat directory is this head's own), as
+    // `hale habitat open` would hand it to them. The organism's face gates
+    // its `/` on its token as every face does, so a bare link from the
+    // habitat's chart lands on its gate; this is the link. Nobody not
+    // signed in here gets it (401), an organism the habitat does not hold
+    // is unknown (404), and a token this head cannot read (a face on another
+    // machine) means the face signs in by its own URL (404, naming it). The
+    // token travels in the redirect's Location and nowhere else: never in
+    // a page, a log or an error.
+    fn organism_face(req: std::http::Request, path: String, person: String) -> std::http::Response {
+        let launched = len(self.cfg.token) > 0
+            && api::token_matches(
+                dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"),
+                self.cfg.token,
+            );
+        let signed_in = self.cfg.principal_mode == "oidc" && len(person) > 0;
+        if !launched && !signed_in {
+            return self.error(
+                401,
+                "unauthenticated",
+                "sign in to the habitat first: its face hands you into an organism's",
+                false,
+            );
+        }
+        let name = path[11..(len(path) - 5)];
+        if len(name) == 0 || name == ".." || ui::clean(name) != name {
+            return self.error(404, "organism_unknown", "no organism is named so", false);
+        }
+        let ctx = context_of(self.cfg);
+        if len(ctx.active_root) == 0 {
+            return self.error(404, "organism_unknown", "this head serves no habitat", false);
+        }
+        let found = api::organism_face_of(api::habitat_journal(ctx.active_root), name);
+        if len(found) == 0 {
+            return self.error(
+                404,
+                "organism_unknown",
+                "the habitat holds no organism `" + name + "`",
+                false,
+            );
+        }
+        let tab = std::str::index_of(found, "\t");
+        let key = found[0..tab];
+        let mut face = found[(tab + 1)..len(found)];
+        while len(face) > 1 && std::str::ends_with(face, "/") { face = face[0..(len(face) - 1)]; }
+        let token = dna::trim_nl(
+            std::io::fs::read_file(
+                dna::local_habitat_dir() + "/allocations/" + key + "/face-state/head.token",
+            )
+            or "",
+        );
+        if len(face) == 0 || len(token) == 0 || std::str::contains(token, "\n") {
+            let where = if len(face) > 0 { ": " + face } else { "" };
+            return self.error(
+                404,
+                "face_signin_unavailable",
+                "the face of `" + name + "` signs in by its own URL" + where
+                    + " (its launch token is not readable here)",
+                false,
+            );
+        }
+        return std::http::Response {
+            status: 302,
+            content_type: "text/plain",
+            headers: "Location: " + face + "/?token=" + token
+                + "\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff",
+            body: "",
+        };
+    }
+
     // The head envelope (§2.4) around `data`.
     fn envelope(status: Int, active_id: String, data: String) -> std::http::Response {
         let http = api::Http { };
@@ -784,7 +857,12 @@ locus Head {
             );
         }
         if code == "project_not_found" {
-            return self.error(404, code, "no registered project has that application_id", false);
+            return self.error(
+                404,
+                code,
+                "no registered project has that application_id",
+                false,
+            );
         }
         if code == "request_conflict" {
             return self.error(
@@ -827,7 +905,12 @@ locus Head {
             );
         }
         if code == "unsupported_media_type" {
-            return self.error(415, code, "commands require Content-Type application/json", false);
+            return self.error(
+                415,
+                code,
+                "commands require Content-Type application/json",
+                false,
+            );
         }
         if code == "commands_unsupported" {
             return self.error(503, code, "the head's command origin is not configured", false);
@@ -863,7 +946,12 @@ locus Head {
 
     fn head_read(raw_query: String) -> std::http::Response {
         if len(raw_query) > 0 {
-            return self.error(400, "invalid_query", "the head read takes no query fields", false);
+            return self.error(
+                400,
+                "invalid_query",
+                "the head read takes no query fields",
+                false,
+            );
         }
         let ctx = context_of(self.cfg);
         let j = HeadJournal { state_dir: self.cfg.state_dir };
@@ -1000,7 +1088,12 @@ locus Head {
             let key = pair[0..eq];
             let value = http.decode(pair[(eq + 1)..len(pair)]);
             if !value.ok || std::str::contains(seen, "|" + key + "|") {
-                return self.error(400, "invalid_query", "invalid or duplicate query field", false);
+                return self.error(
+                    400,
+                    "invalid_query",
+                    "invalid or duplicate query field",
+                    false,
+                );
             }
             seen = seen + key + "|";
             if key == "run" { run_id = value.text; }
@@ -1225,14 +1318,17 @@ locus Head {
             else { j.finish(id, "failed", -1, "", plan.reason, plan.outcome); }
         } else if plan.kind == "run" {
             let p = start_run(self.cfg, ctx, id, plan);
-            if p.pid <= 0 { j.finish(id, "failed", -1, "", "the run could not be started", "{}"); }
+            if p.pid <= 0 {
+                j.finish(id, "failed", -1, "", "the run could not be started", "{}");
+            }
             else {
                 j.running(
                     id,
                     "run",
                     p.pid,
                     cmd_digest(
-                        "timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n" + p.dir
+                        "timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n"
+                            + p.dir
                             + "/script.sh",
                     ),
                     deadline,
@@ -1244,7 +1340,9 @@ locus Head {
             if p.pid <= 0 {
                 j.finish(id, "failed", -1, "", "the body child could not be started", "{}");
             }
-            else { j.running(id, "body", p.pid, cmd_digest(plan.argv), deadline, plan.external); }
+            else {
+                j.running(id, "body", p.pid, cmd_digest(plan.argv), deadline, plan.external);
+            }
         } else {
             j.finish(id, "failed", -1, "", "the plan names no execution kind", "{}");
         }
@@ -1257,7 +1355,9 @@ locus Head {
         let wire = api::CommandWire { };
         let ctx = context_of(self.cfg);
         let child = child_view(self.cfg, "api");
-        if len(ctx.active_id) == 0 || !child.alive { return self.command_error("head_detached"); }
+        if len(ctx.active_id) == 0 || !child.alive {
+            return self.command_error("head_detached");
+        }
         if req.method == "POST" {
             let origin = wire.header(req.headers, "Origin");
             if !origin.valid
@@ -1272,7 +1372,9 @@ locus Head {
         // GH #989: under OIDC the child verifies the session's own ID token,
         // forwarded as the bearer on every request
         let child_token = if self.cfg.principal_mode == "local" && req.method == "POST" {
-            dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "")
+            dna::trim_nl(
+                std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "",
+            )
         } else {
             ""
         };
@@ -1350,7 +1452,9 @@ locus Head {
     fn read_call(req: std::http::Request, member: String) -> std::http::Response {
         let ctx = context_of(self.cfg);
         let child = child_view(self.cfg, "api");
-        if len(ctx.active_id) == 0 || !child.alive { return self.command_error("head_detached"); }
+        if len(ctx.active_id) == 0 || !child.alive {
+            return self.command_error("head_detached");
+        }
         let commands = commands_port_of(self.cfg);
         if commands <= 0 {
             return self.error(
@@ -1365,13 +1469,16 @@ locus Head {
         let bearer = if self.cfg.principal_mode == "oidc" && !token_ok {
             self.auth.session_token(req)
         } else {
-            dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "")
+            dna::trim_nl(
+                std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "",
+            )
         };
         if len(bearer) == 0 {
             return self.error(401, "unauthenticated", "sign in at /auth/login", false);
         }
         let digest = std::http::header(req, "Hale-Surface-Digest");
-        let headers = "Content-Type: application/json\r\nAuthorization: Bearer " + bearer + "\r\n"
+        let headers = "Content-Type: application/json\r\nAuthorization: Bearer " + bearer
+            + "\r\n"
             + (if len(digest) > 0 { "Hale-Surface-Digest: " + digest + "\r\n" } else { "" })
             + "Content-Length: " + to_string(len(req.body)) + "\r\n";
         let up = api::exchange(
@@ -1435,7 +1542,8 @@ locus Head {
                     421,
                     "misdirected_request",
                     "this head answers as 127.0.0.1, localhost"
-                        + (if len(declared) > 0 { " or " + declared } else { "" }) + ", on port "
+                        + (if len(declared) > 0 { " or " + declared } else { "" })
+                        + ", on port "
                         + port + " or " + own + " only",
                     false,
                 );
@@ -1532,7 +1640,10 @@ locus Head {
                 let record = dna::MemoryRecord { repo: ctx.active_root };
                 let members = record.git("config\n--local\n--get-all\ndna.oidc.member");
                 if len(
-                    dna::member_of(if members.code == 0 { members.stdout } else { "" }, subject),
+                    dna::member_of(
+                        if members.code == 0 { members.stdout } else { "" },
+                        subject,
+                    ),
                 ) > 0 {
                     return self.error(
                         403,
@@ -1544,7 +1655,10 @@ locus Head {
                 }
                 let services = record.git("config\n--local\n--get-all\ndna.oidc.service");
                 if len(
-                    dna::member_of(if services.code == 0 { services.stdout } else { "" }, subject),
+                    dna::member_of(
+                        if services.code == 0 { services.stdout } else { "" },
+                        subject,
+                    ),
                 ) == 0 {
                     return self.error(
                         403,
@@ -1645,13 +1759,26 @@ locus Head {
                 body: "",
             };
         }
+        // a signed-in visitor's way into a grafted organism's face (organism_face)
+        if req.method == "GET"
+            && std::str::starts_with(path, "/organisms/")
+            && std::str::ends_with(path, "/face")
+            && len(path) > 16
+        {
+            return self.organism_face(req, path, gate_person);
+        }
         settle_all(self.cfg);
         if path == HEAD_PREFIX
             || path == HEAD_PREFIX + "/projects"
             || path == HEAD_PREFIX + "/logs"
         {
             if req.method != "GET" {
-                return self.error(405, "method_not_allowed", "this head route is a read", false);
+                return self.error(
+                    405,
+                    "method_not_allowed",
+                    "this head route is a read",
+                    false,
+                );
             }
             if path == HEAD_PREFIX { return self.head_read(raw_query); }
             if path == HEAD_PREFIX + "/projects" { return self.projects_read(raw_query); }
@@ -1661,7 +1788,12 @@ locus Head {
         // which writes `changed` whenever the active project's rows move
         if path == HEAD_PREFIX + "/events" {
             if req.method != "GET" {
-                return self.error(405, "method_not_allowed", "the event stream is a read", false);
+                return self.error(
+                    405,
+                    "method_not_allowed",
+                    "the event stream is a read",
+                    false,
+                );
             }
             let slot = claim_push_slot(self.slots, req.conn_fd);
             if slot < 0 {
@@ -1681,7 +1813,9 @@ locus Head {
             if req.method == "POST" { return self.submit(req); }
             return self.lookup(raw_query);
         }
-        if path == APPLICATIONS_PREFIX || std::str::starts_with(path, APPLICATIONS_PREFIX + "/") {
+        if path == APPLICATIONS_PREFIX
+            || std::str::starts_with(path, APPLICATIONS_PREFIX + "/")
+        {
             return self.proxy(req);
         }
         if std::str::starts_with(path, HEAD_PREFIX + "/read-call/") && req.method == "POST" {

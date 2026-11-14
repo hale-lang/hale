@@ -68,6 +68,8 @@ grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the fa
 node    local: node_exporter 1.11.1 on :9100, a container of the habitat's (hale-node-exporter)
 ```
 
+**Working on the face against a running habitat.** The face reads its browser assets once at start, from the toolchain's embedded copy. To try a checkout's `dna/face/web` on a habitat without rebuilding the image, copy it to `<habitat directory>/face-web/` (the directory the `face` service has as its home) and `docker compose restart face`; the face's log says it is serving the override. Remove the directory and restart to return to the embedded assets. `HALE_FACE_WEBROOT` names any other directory.
+
 Grafana runs only while someone uses it. `up` creates its service without starting it; the first time you open `/grafana/`, the face starts it and shows a "starting the habitat's dashboards" page that reloads itself every few seconds until Grafana answers (if Grafana does not come up within a minute, the page says why and stops reloading; reload it to try again). Once nobody has used it for 15 minutes, the face stops it again. A dashboard left open in a browser tab refreshes itself every 30 seconds, and that counts as use. `HALE_DNA_GRAFANA=on` keeps Grafana running from `up` to `down` instead. The dashboards come with the toolchain: when an `up` brings dashboards that changed, Grafana shows the new ones from then on (it reads its dashboard files again every 10 seconds, and `up` restarts a Grafana it leaves running when they changed); an `up` that changed none restarts nothing.
 
 Beside each node exporter runs a container exporter (cAdvisor, the container `hale-cadvisor`; on a Mac, inside docker's VM), and Grafana's **Services** dashboard shows what runs where, whatever a machine's system: every container on every machine with the organism and part it is, its image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window, and in the same table and graphs every service the habitat placed on a host with `organism place` (kind `systemd` or `launchd`), read from its own readings: whether it answers (one that does not shows as down), its uptime, memory and CPU. Every container the habitat runs is labelled `hale.habitat`, `hale.organism` and `hale.role` (an organism's own compose services through an override of the habitat's, never by editing its files), so the dashboard shows the habitat's containers by default, organism by organism, with **show: everything on the host** for whatever else a machine runs beside them.
@@ -156,6 +158,14 @@ The habitat tells the application's compose which of those roles it runs itself:
    ```
 
    The upgrade fetches the pinned revision into `<habitat>/saplings/<name>` and checks its digest exactly as a graft does (a mismatch moves nothing), checks the organism's tree out there with what its graft wrote carried (the record's pin in its `hale.toml`, the tables and `.gitignore` lines the graft added), re-materializes `vendor/dna`, runs the heart's declared migrations, re-applies its services allocation (its images pulled for the new revision, or built from the new tree when it publishes none; see below), and records a `habitat.organism.upgraded` row. Anything else changed in that checkout is carried only when it applies cleanly at the new revision; otherwise the upgrade refuses before anything moves. Last, each host command placed for it (`organism place`) runs its `install` again at the new revision, over your SSH logins: at a terminal (sudo asks there), or printed as the `hale habitat organism place …` lines left to run. An organism already at the pinned revision is refused, naming a newer revision that waits for `ratify`. Through a pointer, everything but the placements runs on the habitat's machine.
+5. **A nursery in a local directory:** `hale habitat nursery add ./my-nursery` trusts a directory as a nursery. Its saplings are pinned at the directory's committed `HEAD`, never its working tree: commit first, since uncommitted changes and untracked files are not part of any sapling. The habitat stages a copy of the nursery and a mirror of each sapling repository on your machine under its own directory (`nurseries/<key>` and `nurseries/repos/<key>`), and grafts and upgrades fetch from that mirror. **This works for a habitat on another machine too** (one you brought up with `hale habitat up --host <machine>`): `nursery add` stages the directory on your machine, then ships the staged copy and its mirrors to the habitat's machine over the same SSH login the pointer uses, into the habitat's directory there, before the Board trusts it. A later commit reaches the habitat through `nursery refresh`, which stages and ships every trusted directory nursery again before it reads them, so the new commit is filed for the Board to ratify:
+
+   ```sh
+   hale habitat nursery add ./my-nursery        # staged here, shipped there, trusted, read
+   git -C ./my-nursery commit -am "next"        # a new revision of its own sapling
+   hale habitat nursery refresh                 # shipped again; the new commit filed for the Board
+   hale habitat nursery ratify my-app && hale habitat organism upgrade my-app
+   ```
 
 ---
 
@@ -316,7 +326,7 @@ The operator face's **organisms** screen lists each of `voice`'s allocations wit
 
 #### Web UIs on the Home Screen
 
-The operator face's first screen, **habitat**, lists the web UIs across all your organisms: each organism's face (`voice face`), and each UI an organism declares in its `hale.toml`, with its label, its organism, its link and how to sign in:
+A link to a grafted organism's face from the habitat's org chart goes through the habitat head's `/organisms/<name>/face`, which hands you in signed in (the organism's face has its own launch-token gate, as every face does). The operator face's first screen, **habitat**, lists the web UIs across all your organisms: each organism's face (`voice face`), and each UI an organism declares in its `hale.toml`, with its label, its organism, its link and how to sign in:
 
 ```toml
 [dna.ui.console]

@@ -25,7 +25,7 @@ mod sapling;
 mod forget;
 
 #[path = "remote.rs"]
-mod remote;
+pub(super) mod remote;
 
 #[path = "readings.rs"]
 mod readings;
