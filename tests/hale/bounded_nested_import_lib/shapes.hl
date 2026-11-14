@@ -1,0 +1,8 @@
+// The library half of bounded_nested_import_test.hl: a record whose
+// `bounded` field sits one record down, declared in another seed than
+// the calls that count it.
+type Inner { items: bounded[String; 4]; }
+
+type Outer { inner: Inner = Inner { }; }
+
+type Many { outs: bounded[Outer; 2]; }
