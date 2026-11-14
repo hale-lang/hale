@@ -505,8 +505,8 @@ fn operations() {
     // out), so the row is no longer one the correction changes.
     pinned(
         "operations",
-        542,
-        562,
+        543,
+        563,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
@@ -538,6 +538,7 @@ fn operations() {
         hold_person  does={alloc}
         hole_role_position  does={alloc}
         ingest_program  does={alloc}
+        repository_files  does={syscall,block,alloc}
         under_node_of  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ",
     );
