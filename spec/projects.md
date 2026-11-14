@@ -235,6 +235,27 @@ in that file and nothing else. The one exception is a `main.hl`
 in the importer's own directory, which stays a rule-1 single-file
 library: a seed does not import itself.
 
+**A seed does not import itself** in any spelling. An import that
+names one of the importing seed's own files (`import "util" as util;`
+or `import "./util"` in a directory seed holding `util.hl`) or the
+seed's own directory (`import "."`) is refused, located at the path
+literal: those declarations are already in scope by their bare names,
+in the one scope the seed's files share.
+
+```text
+/tmp/app/main.hl:1:8: type error: `util` names util.hl, a file of this seed: a seed's files share one scope, so its declarations are already in scope by their bare names, and a seed does not import itself — call them as `name(...)`, not `alias::name(...)`, and drop this import
+    import "util" as util;
+           ^^^^^^
+```
+
+The seed is what the target names: `hale run main.hl` builds the file
+alone, so there `util.hl` is no file of the seed and `import "util"`
+is a rule-1 single-file library, as it always was. (Until 2026-11-14
+the import resolved and said nothing, but every file it named had been
+parsed already as the seed's own, so it bound no name, and each
+`util::double(2)` was refused as "\`util\` is not an import or a type
+of this seed" — an error at every use and none at the import.)
+
 **A file belongs to exactly one library.** So a rule-1 single-file
 import of a file that a directory import somewhere in the same
 build also takes is **refused**, with a located error at the

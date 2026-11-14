@@ -616,6 +616,19 @@ impl std::fmt::Display for CodegenError {
 impl std::error::Error for CodegenError {}
 
 impl CodegenError {
+    /// A positionless `Unsupported` placed at `span`, the expression whose
+    /// lowering raised it; every other error, and one that already names a
+    /// place, is returned as it was. A synthesized zero span names no
+    /// place and is not attached.
+    pub(crate) fn located_at(self, span: hale_syntax::Span) -> CodegenError {
+        match self {
+            CodegenError::Unsupported(msg) if !(span.start.0 == 0 && span.end.0 == 0) => {
+                CodegenError::UnsupportedAt(msg, span)
+            }
+            other => other,
+        }
+    }
+
     /// A row lowering requires, absent from the lowering view (F.40 phase
     /// 3's exit). The snapshot provides the row for every program that
     /// reaches lowering, so its absence is a compiler defect: refused here,
@@ -24879,6 +24892,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let hop = matches!(e, Expr::Call { .. } | Expr::Or { .. }) && hale_types::seam_expand::is_seam_pos(e.span().start.0);
         let before = if hop { self.call_sites_here() } else { Vec::new() };
         let result = self.lower_expr_at(e, scope);
+        // A refusal raised with no place of its own is placed at the
+        // innermost expression of the user's source being lowered when it
+        // was raised, so the build names a file, line and column for it
+        // (`block used as expression has no trailing expression` was a bare
+        // `codegen error:` line, downstream handoff). The innermost frame
+        // places it first; an outer frame sees `UnsupportedAt` and keeps it.
+        // A stdlib body's spans are another coordinate space that overlaps
+        // the user's files (`di_enter_stmt`), so its refusals stay as they
+        // were.
+        let result = match result {
+            Err(err @ CodegenError::Unsupported(_)) if self.lowering_user_code() => Err(err.located_at(e.span())),
+            other => other,
+        };
         if hop {
             self.inline_new_hop_calls(&before);
         }
@@ -28175,18 +28201,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // user file parsed at a real file base and does count. A
         // program that reaches `std::ts` only through the stdlib
         // records nothing and gets the unlocated message.
-        let in_user_code = self
-            .builder
+        if self.lowering_user_code() {
+            self.ts_call_span = Some(qn.span);
+        }
+    }
+
+    /// Whether the function being emitted is the user's source, whose
+    /// spans a renderer can place: not a stdlib body (merged from
+    /// `hale_stdlib::AP_SOURCE`, a coordinate space that overlaps the
+    /// user's files) nor a synthesized `__*` helper (copied or zero
+    /// spans). `__lib_*` is an imported user file parsed at a real file
+    /// base and counts — the test `di_enter_stmt` makes.
+    pub(crate) fn lowering_user_code(&self) -> bool {
+        self.builder
             .get_insert_block()
             .and_then(|bb| bb.get_parent())
             .map(|f| {
                 let n = f.get_name().to_string_lossy().into_owned();
                 !n.starts_with("__") || n.starts_with("__lib_")
             })
-            .unwrap_or(false);
-        if in_user_code {
-            self.ts_call_span = Some(qn.span);
-        }
+            .unwrap_or(false)
     }
 
     /// A `std::*` call at statement position: [`Cx::lower_std_call`],

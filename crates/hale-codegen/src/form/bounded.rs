@@ -41,7 +41,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// enough of the expression grammar to type a bounded
     /// receiver: locals, `self`, field chains through TypeRef /
     /// LocusRef, a call's result (a free fn, a locus method on a
-    /// local or on `self`) and an `or` expression over one.
+    /// local or on `self`, the `at` intrinsic), an `or` expression
+    /// over one, an array element and a record literal.
     ///
     /// The intrinsics dispatch on their first argument's type
     /// (`spec/types.md` § bounded[T; N]), and the checker types that
@@ -50,6 +51,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// this walk stopped at a field chain rooted in a local or
     /// `self`, so the same call reached the build untyped and was
     /// refused as a call to an unknown free fn (downstream handoff).
+    /// Until 2026-11-14 it stopped at an array element
+    /// (`count(rows[0].inner.items)`), a record literal
+    /// (`count(lib::Outer { }.inner.items)`) and an `at` result
+    /// (`count((at(m.outs, 0) or d).inner.items)`) the same way, local
+    /// or imported records alike (downstream handoff).
     pub(crate) fn static_expr_codegen_ty(
         &self,
         e: &Expr,
@@ -76,6 +82,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .and_then(|li| li.fields.get(&name.name))
                         .map(|(_, t)| t.clone()),
                     _ => None,
+                }
+            }
+            // An element of a fixed array: `rows[0].inner.items`.
+            Expr::Index { receiver, .. } => match self.static_expr_codegen_ty(receiver, scope)? {
+                CodegenTy::Array(elem, _) => Some(*elem),
+                _ => None,
+            },
+            // A record literal: `Outer { }.inner.items`, an imported
+            // seed's `lib::Outer { }` by its mangled name, as lowering
+            // resolves the literal.
+            Expr::Struct { path, .. } => {
+                let name = if path.segments.len() > 1 {
+                    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                    self.mangled_for_path(&segs)?
+                } else {
+                    path.segments.first()?.name.clone()
+                };
+                if self.user_types.contains_key(&name) {
+                    Some(CodegenTy::TypeRef(name))
+                } else if self.user_loci.contains_key(&name) {
+                    Some(CodegenTy::LocusRef(name))
+                } else {
+                    None
+                }
+            }
+            // `at(f, i)`, the intrinsic itself: its success type is the
+            // bounded's element, so `(at(m.outs, 0) or d).inner.items`
+            // types as the intrinsic lowers it (a declaration that
+            // shadows it answers by its own return).
+            Expr::Call { callee, args, .. }
+                if matches!(callee.as_ref(), Expr::Ident(i) if i.name == "at")
+                    && args.len() == 2
+                    && !self.user_fn_shadows_bounded_intrinsic("at", args, scope) =>
+            {
+                match self.bounded_recv_spec(args, scope) {
+                    Some((elem, _)) => Some(elem),
+                    None => self.call_returned_ty(callee, scope),
                 }
             }
             // A call's success type: a locus method on a receiver the

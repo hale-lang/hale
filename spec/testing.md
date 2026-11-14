@@ -374,7 +374,13 @@ span: `path:line:col: codegen error: message`, with the offending
 source line and a caret, from `build`, `run`, `test`, `bench` and
 `replay` alike, byte for byte the same line from each. A codegen
 refusal with no span to point at prints `codegen error: message` and
-nothing else, from all of them. These commands have no
+nothing else, from all of them. A refusal raised while an expression of
+the program's own source is being lowered carries that expression's
+span, the innermost one, even where the code that raised it had none to
+give (2026-11-14: `block used as expression has no trailing expression`
+was a bare `codegen error:` line); one raised inside a stdlib body or a
+synthesized helper, whose spans are no position in the program's files,
+stays unlocated. These commands have no
 machine-readable channel, so this is a text contract only; `check`
 never reaches codegen and is unaffected (2026-09-20, GH #848; before
 it only `build` used the span, and the rest printed the error's Rust

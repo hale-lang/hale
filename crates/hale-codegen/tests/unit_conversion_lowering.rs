@@ -198,9 +198,14 @@ fn a_nested_defaults_cast_is_lowered_by_its_paths_row() {
 fn a_cast_without_its_row_is_an_ordinary_call() {
     let narrowing = format!("{DECLS}fn main() {{\n    let n = 70;\n    let s = Session(n) or 0;\n    println(Int(s));\n}}\n");
     let total = format!("{DECLS}fn main() {{\n    let n = 70;\n    let o = OrderId(n);\n    println(Int(o));\n}}\n");
-    for (tag, src, refusal) in [
-        ("narrowing", &narrowing, "`or` over call to unknown fn `Session`"),
-        ("total", &total, "call to `OrderId`: no free fn / generic fn / fn-pointer binding with that name is in scope"),
+    for (tag, src, refusal, at) in [
+        ("narrowing", &narrowing, "`or` over call to unknown fn `Session`", "Session(n) or 0"),
+        (
+            "total",
+            &total,
+            "call to `OrderId`: no free fn / generic fn / fn-pointer binding with that name is in scope",
+            "OrderId(n)",
+        ),
     ] {
         let program = hale_syntax::parse_source(src).expect("parses");
         let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
@@ -217,7 +222,11 @@ fn a_cast_without_its_row_is_an_ordinary_call() {
         let mut cut = whole;
         cut.typed = hale_types::typed_bodies::TypedBodies::default();
         match lower("cut", &cut) {
-            Err(CodegenError::Unsupported(msg)) => assert_eq!(msg, refusal, "{tag}"),
+            // placed at the call (`lower_expr` places a positionless refusal)
+            Err(CodegenError::UnsupportedAt(msg, span)) => {
+                assert_eq!(msg, refusal, "{tag}");
+                assert_eq!(span.slice(src), at, "{tag}");
+            }
             other => panic!("{tag}: expected the strict callee's refusal, got {other:?}"),
         }
     }

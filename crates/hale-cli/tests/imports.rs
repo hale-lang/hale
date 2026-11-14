@@ -1,4 +1,4 @@
-//! The `imports` integration-test binary: 15 test files of this area, kept
+//! The `imports` integration-test binary: 16 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -21,6 +21,8 @@ mod import_alias_vs_free_fn;
 mod import_library_key;
 #[path = "import_library_names.rs"]
 mod import_library_names;
+#[path = "import_own_seed.rs"]
+mod import_own_seed;
 #[path = "import_parse_error_gates.rs"]
 mod import_parse_error_gates;
 #[path = "import_qualified_topic.rs"]

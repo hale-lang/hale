@@ -1,0 +1,44 @@
+// tests/hale/bounded_nested_import_test.hl — a `bounded` intrinsic over a
+// field one record down, where the records are declared in another seed
+// (spec/types.md § bounded[T; N]). The build types the intrinsic's first
+// argument with a walk of its own, which stopped at an array element, a
+// record literal and an `at(...)` result: each checked and was refused as
+// a call to an unknown free fn (downstream handoff). Through a local and
+// a parameter it built already; those are pinned beside them.
+import "./bounded_nested_import_lib" as shapes;
+
+fn through_param(o: shapes::Outer) -> Int {
+    return count(o.inner.items);
+}
+
+fn main() {
+    let mut o = shapes::Outer { };
+    push(o.inner.items, "a") or {
+        std::test::assert(false, "push into the nested bounded");
+        return;
+    };
+    std::test::assert_eq_int(count(o.inner.items), 1, "through a local");
+    std::test::assert_eq_int(through_param(o), 1, "through a parameter");
+
+    let xs = [o, shapes::Outer { }];
+    std::test::assert_eq_int(count(xs[0].inner.items), 1, "an array element's field");
+    std::test::assert_eq_int(count(xs[1].inner.items), 0, "the other element's field");
+
+    std::test::assert_eq_int(count(shapes::Outer { }.inner.items), 0, "a record literal's field");
+
+    let mut m = shapes::Many { };
+    push(m.outs, o) or {
+        std::test::assert(false, "push the record");
+        return;
+    };
+    std::test::assert_eq_int(
+        count((at(m.outs, 0) or shapes::Outer { }).inner.items),
+        1,
+        "an `at` result's field",
+    );
+    std::test::assert_eq_int(
+        count((at(m.outs, 1) or shapes::Outer { }).inner.items),
+        0,
+        "the fallback's field",
+    );
+}
