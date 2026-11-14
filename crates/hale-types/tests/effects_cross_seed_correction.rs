@@ -313,8 +313,8 @@ fn host() {
     // `ForgejoApi` and `run_tool`), so the correction changes them.
     pinned(
         "host",
-        599,
-        608,
+        600,
+        609,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -386,6 +386,7 @@ fn host() {
         declared_secret_line  does={syscall,block,env,alloc}
         definitions_verb  does={syscall,block,alloc}
         descendants  does={syscall,block,alloc}
+        draft_units  does={syscall,block,alloc}
         draw_secret  does={syscall,block,alloc}
         drop_here  does={syscall,block,alloc}
         drop_include_line  does={syscall,block,alloc}
@@ -504,8 +505,8 @@ fn operations() {
     // out), so the row is no longer one the correction changes.
     pinned(
         "operations",
-        534,
-        554,
+        543,
+        563,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
@@ -537,6 +538,7 @@ fn operations() {
         hold_person  does={alloc}
         hole_role_position  does={alloc}
         ingest_program  does={alloc}
+        repository_files  does={syscall,block,alloc}
         under_node_of  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ",
     );

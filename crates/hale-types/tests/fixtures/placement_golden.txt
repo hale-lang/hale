@@ -11840,6 +11840,8 @@ dynamic	__lib_dna__host___host__NodeRelay	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/draft_plan_test.hl
+
 == dna/tests/edge_projection_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

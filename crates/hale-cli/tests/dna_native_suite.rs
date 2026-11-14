@@ -1207,6 +1207,7 @@ fn dna_fixture_set_is_complete() {
             "declared_secrets_test.hl",
             "deployment_test.hl",
             "dogfood_voice_test.hl",
+            "draft_plan_test.hl",
             "edge_projection_test.hl",
             "edge_unlink_test.hl",
             "editing_seed_test.hl",

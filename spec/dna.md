@@ -5913,17 +5913,32 @@ The live half is memory's, projected from the record by the spine
   Review takes its signers and gates from the same computation when it
   opens (**Signers from the route**, above).
 - **A chart drafted from the code: `hale dna draft [project] [--dry-run]
-  [--as <who>]`.** The host verb `draft` proposes a starting chart as one
-  batch the Board decides, planned and proposed exactly as `hale dna apply`
-  plans and proposes a file. Its first version follows the process model
-  and nothing else: for every `process:<p>` node the graph states that
-  runs the repository's code (its `runs` facet; a process that does not
-  gets no seat), an `architect`, a `dev` and a `qa` with a mandate the
-  Board amends, one set per shape: a shape of one service is opened under
-  it (`<p>/architect`, …); a shape several services share (one build, many
-  placements) is opened once, named by the shape, under the deployment that
-  runs them (`<shape>/architect` under `deployment:compose`); a process
-  ingested before shapes is its own. For every `deployment:<d>`, an `operator`
+  [--as <who>] [--budget <lines>]`.** The host verb `draft` proposes a
+  starting chart as one batch the Board decides, planned and proposed
+  exactly as `hale dna apply` plans and proposes a file. When the
+  repository's units of code are read (a Go module: `ops::go_units`, a
+  unit per package directory with its non-test lines, its programs and
+  what each imports), the chart is planned by budget (`ops::draft_plan`,
+  GH #1907): every process that runs the repository's code names a
+  program (its `program` facet, else its shape), a program's unit is the
+  main unit of its name, and its size is that unit and what it alone
+  reaches; a program over the budget (`--budget`, 8,000 exclusive lines
+  by default: the one knob, how much code one set of positions holds)
+  gets `architect`, `dev` and `qa` of its own under its process; the
+  smaller programs of one deployment, largest first, pack into bins of
+  at most a budget, a bin of one its program's set under its process, a
+  bin of several named by its largest and opened under the deployment;
+  the code two or more programs reach is grouped by its directory two
+  deep, a group of at least half a budget an `expert` (`<dir-with-dashes>/expert`,
+  under `position:board`), the smaller groups together as `library/expert`.
+  Each mandate names the programs or the shared code it is about and
+  their lines, for the Board to amend. Without units (no language read),
+  the first version's rule holds: for every `process:<p>` that runs the
+  repository's code, an `architect`, a `dev` and a `qa`, one set per
+  shape: a shape of one service is opened under it (`<p>/architect`, …);
+  a shape several services share is opened once, named by the shape,
+  under the deployment that runs them; a process ingested before shapes
+  is its own. In both, for every `deployment:<d>`, an `operator`
   under it. A position the chart already states is left alone, so the
   draft is safe to ask for again, and a graph with every triad in place
   answers that there is nothing to draft. `--dry-run` prints the chart it

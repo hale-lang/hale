@@ -355,12 +355,13 @@ fn main() {
         // JSON object per line in a file, and the declared purpose (GH #995)
         ans = host::record_seed_verb(root, host::word(a, 0), host::word(a, 1), memory);
     } else if verb == "draft" {
-        // `hale dna draft [dir] [--dry-run] [--as <who>]`: a starting chart from the process model, one Board batch
+        // `hale dna draft [dir] [--dry-run] [--as <who>] [--budget <lines>]`: a starting chart from the code, one Board batch
         ans = host::draft_verb(
             root,
             seed,
             host::has_flag(a, "--dry-run"),
             host::flag(a, "--as"),
+            std::str::parse_int(host::flag(a, "--budget")) or 0,
             memory,
         );
     } else if verb == "chart" {

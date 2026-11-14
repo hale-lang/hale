@@ -248,6 +248,7 @@ pub const OPERATION_FILES: &[EmbeddedFile] = at![
     "dna/operations/context.hl",
     "dna/operations/definition_drafts.hl",
     "dna/operations/definitions.hl",
+    "dna/operations/draft_plan.hl",
     "dna/operations/governance_admission.hl",
     "dna/operations/governance_command.hl",
     "dna/operations/governance_policy.hl",

@@ -1,0 +1,51 @@
+// dna/tests/draft_plan_test.hl — the chart a repository's code calls for
+// (GH #1907): programs sized by what they alone reach, one over budget a
+// set of its own, the smaller ones of a deployment packed into bins under
+// it, and the code two or more programs share as experts, by group, the
+// small groups together as the library's.
+import "../operations" as ops;
+
+const UNITS: String = "cmd/api\t3000\ttrue\tinternal/core internal/apionly pkg/util\n"
+    + "cmd/worker\t1500\ttrue\tinternal/core internal/workonly pkg/util\n"
+    + "cmd/big\t9000\ttrue\tinternal/core\n"
+    + "cmd/md\t2000\ttrue\tinternal/core internal/mdonly\n"
+    + "internal/core\t5000\tfalse\t\n"
+    + "internal/apionly\t2000\tfalse\t\n"
+    + "internal/workonly\t500\tfalse\t\n"
+    + "internal/mdonly\t1000\tfalse\t\n"
+    + "pkg/util\t1000\tfalse\t\n";
+
+const PROCESSES: String = "api\tdeployment:compose\tapi\n"
+    + "worker\tdeployment:compose\tworker\n"
+    + "big\tdeployment:compose\tbig\n"
+    + "md-a\tdeployment:compose\tmd\n"
+    + "md-b\tdeployment:compose\tmd\n"
+    + "tool\tdeployment:compose\tzzz\n"
+    + "postgres\tdeployment:compose\t\n";
+
+fn main() {
+    let plan = ops::draft_plan(PROCESSES, UNITS, 8000);
+    std::test::assert_eq_str(
+        plan,
+        "set\tbig\tprocess:big\t9000\tbig\n"
+            + "set\tapi\tdeployment:compose\t8000\tapi md zzz\n"
+            + "set\tworker\tprocess:worker\t2000\tworker\n"
+            + "expert\tinternal-core\tposition:board\t5000\tinternal/core\n"
+            + "expert\tlibrary\tposition:board\t1000\tpkg/util\n",
+        "a program over budget stands alone under its process; the rest, largest first, pack into bins of a budget (api 5000 + md 3000, and zzz, a program with no unit, weighs nothing and joins them; worker alone); a shared group of half a budget or more is an expert, the small ones the library's; a process naming no program is nothing",
+    );
+    // a tighter budget splits the bin and makes the small shared group an expert
+    let tight = ops::draft_plan(PROCESSES, UNITS, 2000);
+    std::test::assert(
+        std::str::contains(tight, "set\tapi\tprocess:api\t5000\tapi\n")
+            && std::str::contains(tight, "set\tmd\tprocess:md-a\t3000\tmd\n")
+            && std::str::contains(tight, "expert\tpkg-util\tposition:board\t1000\tpkg/util\n"),
+        "the budget is the knob: " + tight,
+    );
+    std::test::assert_eq_str(
+        ops::draft_plan(PROCESSES, "", 8000),
+        "set\tapi\tdeployment:compose\t0\tapi worker big md zzz\n",
+        "no units: every program is a set of nothing, packed together",
+    );
+    std::test::assert_eq_str(ops::draft_plan("", UNITS, 8000), "", "no processes, no plan");
+}
