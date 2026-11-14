@@ -1767,6 +1767,7 @@ fn build_resolved_lowered(
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
         current_fn: None,
+        recursive_copy_types: BTreeMap::new(),
         current_user_fn_ret: None,
         in_failure_handler: false,
         current_self: None,
@@ -4032,6 +4033,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// per-enum, decided at decl registration (see the EnumInfo /
     /// layout comment below and fixture 45-enum-payloads).
     pub(crate) user_enums: BTreeMap<String, EnumInfo>,
+    /// Per record or payload enum, whether it reaches itself through what
+    /// it holds, so its deep copy is a function of its own
+    /// (`emit_outlined_deep_copy`). Filled as copies are emitted.
+    pub(crate) recursive_copy_types: BTreeMap<String, bool>,
     /// F.20: user-declared interface names. Phase A registers
     /// them here so `type_expr_to_codegen_ty` can resolve an
     /// interface-typed signature slot to `CodegenTy::Interface`.

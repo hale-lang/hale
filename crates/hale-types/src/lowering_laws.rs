@@ -68,6 +68,8 @@ const TOP_LEVEL_ENTRY: RuleId = RuleId::registered("verification/structural", "m
 const CROSS_POOL_VALUE: RuleId = RuleId::registered("verification/structural", "cross-pool-spawn-as-a-value");
 /// GH #813, #870: a locus cannot contain itself by value.
 const SELF_CONTAINING: RuleId = RuleId::registered("verification/structural", "self-containing-locus");
+/// A record type cannot contain itself by value.
+const SELF_CONTAINING_RECORD: RuleId = RuleId::registered("verification/structural", "self-containing-record");
 
 /// Every law that replaced a lowering backstop, over `bundle`.
 pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec<Diag> {
@@ -78,6 +80,7 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
     diags.extend(Law { rule: RULE_18, eval: placement_entry_consumed }.diags(&rows));
     diags.extend(Law { rule: CROSS_POOL_VALUE, eval: cross_pool_spawn_used_as_a_value }.diags(&rows));
     diags.extend(Law { rule: SELF_CONTAINING, eval: self_containing_locus }.diags(&rows));
+    diags.extend(Law { rule: SELF_CONTAINING_RECORD, eval: self_containing_record }.diags(&rows));
     diags
 }
 
@@ -1338,5 +1341,264 @@ fn plain_callee_name(callee: &Expr) -> Option<&str> {
             Some(q.segments[0].name.as_str())
         }
         _ => None,
+    }
+}
+
+
+/// One by-value edge of the record containment graph: the field of the
+/// record it leaves, the record it reaches, and the field's type as
+/// written, for the ring the diagnostic prints.
+struct RecordEdge<'a> {
+    field: &'a hale_syntax::ast::StructField,
+    target: String,
+}
+
+/// A record type that contains itself by value, directly (`type Cfg {
+/// child: Cfg; }`) or around a ring of records (`A` holds a `B` that
+/// holds an `A`), through a tuple's part or a fixed array's element too.
+///
+/// A record is a value: every one holds a whole value of each field's
+/// type, so a record in such a ring holds another of its own kind, which
+/// holds another, with no floor. No literal can build one: a field left
+/// to a default (`child: Cfg = Cfg { }`) expands the same default again,
+/// and a field the literal must write needs a value of the type it is
+/// building. Before this the check said ok and lowering expanded the
+/// default until the compiler's own stack ran out ("thread 'main' has
+/// overflowed its stack"), downstream handoff; a ring with no default
+/// built a type no program could construct. The harness's lowering view
+/// demands this law as the check does, so no entry point lowers one.
+///
+/// The edges are the by-value ones only. A `bounded[T; N]` starts empty
+/// and an enum variant's payload is one variant among others, so a
+/// record holding a `bounded` or an enum of its own kind has a floor and
+/// is not refused; neither is a fn type, an interface, a locus or a
+/// perspective, which hold no record value. A generic record's fields
+/// are followed with its type arguments substituted (`b: Box<Cfg>` with
+/// `type Box<T> { v: T; }`), an alias to its target, and a qualified
+/// path through the bundle's import renames. A record this bundle does
+/// not declare has no edges.
+fn self_containing_record(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let bundle = rows.bundle;
+    fn collect<'a>(items: &'a [TopDecl], out: &mut BTreeMap<&'a str, &'a TypeDecl>) {
+        for item in items {
+            match item {
+                TopDecl::Type(t) => {
+                    out.entry(t.name.name.as_str()).or_insert(t);
+                }
+                TopDecl::Module(m) => collect(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut types: BTreeMap<&str, &TypeDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        collect(&program.items, &mut types);
+    }
+    if !types.values().any(|t| matches!(t.body, TypeDeclBody::Struct(_))) {
+        return;
+    }
+    let renames: BTreeMap<Vec<String>, &str> =
+        bundle.import_renames.iter().map(|(k, v)| (k.clone(), v.as_str())).collect();
+    // The by-value edges out of every non-generic record. A generic
+    // record is reached through its instantiations, each followed with
+    // its arguments substituted.
+    let mut edges: BTreeMap<&str, Vec<RecordEdge<'_>>> = BTreeMap::new();
+    for (name, decl) in &types {
+        let TypeDeclBody::Struct(fields) = &decl.body else { continue };
+        if !decl.generics.is_empty() {
+            continue;
+        }
+        let mut out_edges = Vec::new();
+        for f in fields {
+            let mut reached = BTreeSet::new();
+            record_values_held(&f.ty, &BTreeMap::new(), &types, &renames, 0, &mut reached);
+            for target in reached {
+                out_edges.push(RecordEdge { field: f, target });
+            }
+        }
+        edges.insert(name, out_edges);
+    }
+    // Gray/black DFS; a back edge to a record on the path closes a ring,
+    // reported once at the field that closes it.
+    let mut finished: BTreeSet<String> = BTreeSet::new();
+    let mut reported: BTreeSet<Vec<(String, String)>> = BTreeSet::new();
+    for name in edges.keys().copied().collect::<Vec<_>>() {
+        let mut path: Vec<(String, Option<usize>)> = Vec::new();
+        walk_record_containment(name, &edges, &types, &mut path, &mut finished, &mut reported, out);
+    }
+}
+
+/// One DFS step of the record containment walk. `path` holds each
+/// record on the way here and the index of the edge taken out of it.
+fn walk_record_containment(
+    name: &str,
+    edges: &BTreeMap<&str, Vec<RecordEdge<'_>>>,
+    types: &BTreeMap<&str, &TypeDecl>,
+    path: &mut Vec<(String, Option<usize>)>,
+    finished: &mut BTreeSet<String>,
+    reported: &mut BTreeSet<Vec<(String, String)>>,
+    out: &mut Vec<Violation>,
+) {
+    if finished.contains(name) {
+        return;
+    }
+    let Some(out_edges) = edges.get(name) else { return };
+    path.push((name.to_string(), None));
+    for (i, edge) in out_edges.iter().enumerate() {
+        path.last_mut().expect("pushed above").1 = Some(i);
+        if let Some(at) = path.iter().position(|(n, _)| *n == edge.target) {
+            // The ring: each record from `at` on, by the field it holds
+            // the next one in.
+            let ring: Vec<&RecordEdge<'_>> = path[at..]
+                .iter()
+                .filter_map(|(n, e)| Some(&edges.get(n.as_str())?[(*e)?]))
+                .collect();
+            let holders: Vec<&str> = path[at..].iter().map(|(n, _)| n.as_str()).collect();
+            let mut key: Vec<(String, String)> =
+                holders.iter().zip(&ring).map(|(h, e)| (h.to_string(), e.field.name.name.clone())).collect();
+            key.sort();
+            if !reported.insert(key) {
+                continue;
+            }
+            let shown = |n: &str| types.get(n).and_then(|t| t.display.clone()).unwrap_or_else(|| n.to_string());
+            let steps: Vec<String> = holders
+                .iter()
+                .zip(&ring)
+                .map(|(h, e)| format!("`{}.{}: {}`", shown(h), e.field.name.name, type_expr_spelled(&e.field.ty)))
+                .collect();
+            let closing = edge.field;
+            let record = shown(name);
+            let target = shown(&edge.target);
+            let ring_text = if steps.len() > 1 { format!("the ring {}", steps.join(" → ")) } else { steps[0].clone() };
+            out.push(Violation::error(
+                SELF_CONTAINING_RECORD,
+                closing.span,
+                format!(
+                    "a record cannot contain itself by value: {ring_text} puts a whole `{target}` inside every \
+                     `{target}`, so none can be built. Hold the `{target}` values a `{record}` may have in a \
+                     `bounded[{target}; N]` (it starts empty), or in an enum variant beside one that holds none \
+                     (`type Child = enum {{ Nothing, One({target}) }}`), or keep them elsewhere and hold a key",
+                ),
+            ));
+            continue;
+        }
+        walk_record_containment(&edge.target, edges, types, path, finished, reported, out);
+    }
+    path.pop();
+    finished.insert(name.to_string());
+}
+
+/// The records a value of type `te` holds by value: a record named
+/// directly, through an alias, a tuple's part, a fixed array's element,
+/// or a generic record's fields with `subst` applied. `depth` bounds the
+/// expansion of generic records and aliases, which a ring of generics
+/// could otherwise unfold without end.
+fn record_values_held(
+    te: &TypeExpr,
+    subst: &BTreeMap<String, TypeExpr>,
+    types: &BTreeMap<&str, &TypeDecl>,
+    renames: &BTreeMap<Vec<String>, &str>,
+    depth: u32,
+    out: &mut BTreeSet<String>,
+) {
+    if depth > 16 {
+        return;
+    }
+    match te {
+        TypeExpr::Named { path, generic_args, .. } => {
+            let name: String = if path.segments.len() == 1 {
+                let n = path.segments[0].name.as_str();
+                if let Some(bound) = subst.get(n) {
+                    record_values_held(bound, &BTreeMap::new(), types, renames, depth + 1, out);
+                    return;
+                }
+                n.to_string()
+            } else {
+                let key: Vec<String> = path.segments.iter().map(|s| s.name.clone()).collect();
+                match renames.get(&key) {
+                    Some(m) => m.to_string(),
+                    None => return,
+                }
+            };
+            let Some(decl) = types.get(name.as_str()) else { return };
+            // The type arguments, with this level's substitution applied.
+            let args: Vec<TypeExpr> = generic_args.iter().map(|a| substitute(a, subst)).collect();
+            let inner: BTreeMap<String, TypeExpr> =
+                decl.generics.iter().map(|g| g.name.name.clone()).zip(args).collect();
+            match &decl.body {
+                TypeDeclBody::Struct(fields) => {
+                    if decl.generics.is_empty() {
+                        out.insert(name);
+                    } else {
+                        for f in fields {
+                            record_values_held(&f.ty, &inner, types, renames, depth + 1, out);
+                        }
+                    }
+                }
+                TypeDeclBody::Alias(target) => record_values_held(target, &inner, types, renames, depth + 1, out),
+                TypeDeclBody::Enum(_) | TypeDeclBody::Scalar(_) => {}
+            }
+        }
+        TypeExpr::Tuple(parts, _) => {
+            for p in parts {
+                record_values_held(p, subst, types, renames, depth, out);
+            }
+        }
+        TypeExpr::Array { elem, size: Some(_), .. } => record_values_held(elem, subst, types, renames, depth, out),
+        TypeExpr::Array { size: None, .. }
+        | TypeExpr::Bounded { .. }
+        | TypeExpr::Primitive(..)
+        | TypeExpr::Projection { .. }
+        | TypeExpr::Function { .. }
+        | TypeExpr::Perspective { .. } => {}
+    }
+}
+
+/// `te` with each generic parameter `subst` binds replaced.
+fn substitute(te: &TypeExpr, subst: &BTreeMap<String, TypeExpr>) -> TypeExpr {
+    if subst.is_empty() {
+        return te.clone();
+    }
+    match te {
+        TypeExpr::Named { path, generic_args, span } => {
+            if path.segments.len() == 1 && generic_args.is_empty() {
+                if let Some(b) = subst.get(path.segments[0].name.as_str()) {
+                    return b.clone();
+                }
+            }
+            TypeExpr::Named {
+                path: path.clone(),
+                generic_args: generic_args.iter().map(|a| substitute(a, subst)).collect(),
+                span: *span,
+            }
+        }
+        TypeExpr::Tuple(parts, span) => TypeExpr::Tuple(parts.iter().map(|p| substitute(p, subst)).collect(), *span),
+        TypeExpr::Array { elem, size, span } => {
+            TypeExpr::Array { elem: Box::new(substitute(elem, subst)), size: size.clone(), span: *span }
+        }
+        other => other.clone(),
+    }
+}
+
+/// A field's type as the author wrote it, for the ring a diagnostic
+/// prints: `Cfg`, `lib::Cfg`, `(Int, Cfg)`, `[Cfg; 2]`, `Box<Cfg>`.
+fn type_expr_spelled(te: &TypeExpr) -> String {
+    match te {
+        TypeExpr::Named { path, generic_args, .. } => {
+            let head = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+            if generic_args.is_empty() {
+                head
+            } else {
+                format!("{head}<{}>", generic_args.iter().map(type_expr_spelled).collect::<Vec<_>>().join(", "))
+            }
+        }
+        TypeExpr::Tuple(parts, _) => format!("({})", parts.iter().map(type_expr_spelled).collect::<Vec<_>>().join(", ")),
+        TypeExpr::Array { elem, size: Some(Expr::Literal(hale_syntax::ast::Literal::Int(n), _)), .. } => {
+            format!("[{}; {n}]", type_expr_spelled(elem))
+        }
+        TypeExpr::Array { elem, .. } => format!("[{}; N]", type_expr_spelled(elem)),
+        TypeExpr::Bounded { elem, cap, .. } => format!("bounded[{}; {cap}]", type_expr_spelled(elem)),
+        TypeExpr::Primitive(p, _) => crate::ty::Ty::Prim(*p).display(),
+        other => other.form_name().to_string(),
     }
 }

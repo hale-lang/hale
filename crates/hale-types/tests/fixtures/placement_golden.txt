@@ -8846,6 +8846,9 @@ row	__StdRandRng@main3	__StdRandRng	main	default
 row	__StdRandRng@main4	__StdRandRng	main	default
 row	__StdRandRng@main5	__StdRandRng	main	default
 
+== tests/hale/recursive_record_test.hl
+row	Keeper@main1	Keeper	main	default
+
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default
 dynamic	__lib_tests__hale__release_generic_owner_lib___main__Worker	on main	in the seed
