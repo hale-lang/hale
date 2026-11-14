@@ -164,6 +164,10 @@ fn ingest_compose_services(text: String, repo: String) -> String {
     let mut s_in_build = false;
     let mut s_in_labels = false;
     let mut s_key_indent = -1;
+    // the words of the service's `entrypoint` and `command`, as written
+    let mut s_entry = "";
+    let mut s_cmd = "";
+    let mut s_in_cmd = ""; // "entrypoint" or "command" while its block list is being read
     let mut out = "";
     while from >= 0 && from < len(text) {
         let line = it.line_at(text, from);
@@ -184,6 +188,7 @@ fn ingest_compose_services(text: String, repo: String) -> String {
                         s_runs_label,
                         anchors,
                         repo,
+                        ingest_program(s_entry + " " + s_cmd),
                     );
                 svc = "";
             }
@@ -233,11 +238,13 @@ fn ingest_compose_services(text: String, repo: String) -> String {
                         s_runs_label,
                         anchors,
                         repo,
+                        ingest_program(s_entry + " " + s_cmd),
                     );
             }
             svc = key;
             s_build = ""; s_target = ""; s_image = ""; s_merge = ""; s_runs_label = false;
             s_in_build = false; s_in_labels = false; s_key_indent = -1;
+            s_entry = ""; s_cmd = ""; s_in_cmd = "";
             continue;
         }
         if len(svc) == 0 || ind <= child { continue; }
@@ -245,6 +252,16 @@ fn ingest_compose_services(text: String, repo: String) -> String {
         if ind == s_key_indent && len(key) > 0 {
             s_in_build = false;
             s_in_labels = false;
+            s_in_cmd = "";
+            if key == "command" || key == "entrypoint" {
+                let v = ingest_command_words(ingest_value(line));
+                if len(v) > 0 {
+                    if key == "command" { s_cmd = v; } else { s_entry = v; }
+                } else {
+                    s_in_cmd = key;
+                }
+                continue;
+            }
             if key == "build" {
                 s_build = ingest_value(line);
                 s_in_build = len(s_build) == 0;
@@ -262,6 +279,18 @@ fn ingest_compose_services(text: String, repo: String) -> String {
         if s_in_build && key == "context" { s_build = ingest_value(line); }
         if s_in_build && key == "target" { s_target = ingest_value(line); }
         if s_in_labels && ingest_runs_label(t) { s_runs_label = true; }
+        if len(s_in_cmd) > 0 {
+            // a block list: each `- word` an item, a folded or literal item
+            // (`- >-`, `- |`) continued on the deeper lines after it
+            let item = ingest_list_item(t);
+            if len(item) > 0 {
+                if s_in_cmd == "command" {
+                    s_cmd = s_cmd + " " + item;
+                } else {
+                    s_entry = s_entry + " " + item;
+                }
+            }
+        }
     }
     if len(svc) > 0 {
         out = out
@@ -274,6 +303,7 @@ fn ingest_compose_services(text: String, repo: String) -> String {
                 s_runs_label,
                 anchors,
                 repo,
+                ingest_program(s_entry + " " + s_cmd),
             );
     }
     return out;
@@ -307,23 +337,61 @@ fn ingest_k8s_workloads(text: String) -> String {
     let mut labelled = false;
     let mut section = "";
     let mut in_labels = false;
+    // the first container's `command` and `args`, as written
+    let mut command = "";
+    let mut args = "";
+    let mut in_list = ""; // "command" or "args" while its block list is being read
+    let mut list_indent = -1;
     while from >= 0 && from <= len(text) {
         if from == len(text) { break; }
         let line = it.line_at(text, from);
         from = it.next_idx(text, from);
         let t = std::str::trim(line);
         if std::str::starts_with(t, "---") {
-            out = out + ingest_k8s_workload_line(kind, name, image, labelled);
+            out = out
+                + ingest_k8s_workload_line(
+                    kind,
+                    name,
+                    image,
+                    labelled,
+                    ingest_program(command + " " + args),
+                );
             kind = ""; name = ""; image = ""; labelled = false; section = ""; in_labels = false;
+            command = ""; args = ""; in_list = ""; list_indent = -1;
             continue;
         }
         if len(t) == 0 || std::str::starts_with(t, "#") { continue; }
         let ind = ingest_indent(line);
         let key = ingest_key(line);
+        if len(in_list) > 0 {
+            if ind > list_indent && std::str::starts_with(t, "-") {
+                let item = ingest_list_item(t);
+                if in_list == "command" {
+                    command = command + " " + item;
+                } else {
+                    args = args + " " + item;
+                }
+                continue;
+            }
+            in_list = "";
+        }
         if ind == 0 {
             section = key;
             in_labels = false;
             if key == "kind" { kind = ingest_value(line); }
+            continue;
+        }
+        if section == "spec" && (key == "command" || key == "args") && len(image) >= 0 {
+            let taken = if key == "command" { command } else { args };
+            if len(taken) == 0 {
+                let v = ingest_command_words(ingest_value(line));
+                if len(v) > 0 {
+                    if key == "command" { command = v; } else { args = v; }
+                } else {
+                    in_list = key;
+                    list_indent = ind;
+                }
+            }
             continue;
         }
         if section == "metadata" {
@@ -335,10 +403,23 @@ fn ingest_k8s_workloads(text: String) -> String {
         }
         if section == "spec" && key == "image" && len(image) == 0 { image = ingest_value(line); }
     }
-    return out + ingest_k8s_workload_line(kind, name, image, labelled);
+    return out
+        + ingest_k8s_workload_line(
+            kind,
+            name,
+            image,
+            labelled,
+            ingest_program(command + " " + args),
+        );
 }
 
-fn ingest_k8s_workload_line(kind: String, name: String, image: String, labelled: Bool) -> String {
+fn ingest_k8s_workload_line(
+    kind: String,
+    name: String,
+    image: String,
+    labelled: Bool,
+    program: String
+) -> String {
     if len(name) == 0 { return ""; }
     if !(
         kind == "Deployment"
@@ -350,7 +431,7 @@ fn ingest_k8s_workload_line(kind: String, name: String, image: String, labelled:
         return "";
     }
     return name + "\t" + kind + "\t" + image + "\t" + (if labelled { "true" } else { "false" })
-        + "\n";
+        + "\t" + program + "\n";
 }
 
 // Whether a `labels` line says the service runs the repository's code:
@@ -364,6 +445,61 @@ fn ingest_runs_label(t: String) -> Bool {
 
 // One service's line of `ingest_compose_services`, its anchor merged in
 // where its own keys say nothing.
+// The words of a command written inline: a YAML flow list (`["a", "b"]`)
+// or a plain string, its brackets, commas and quotes gone; "" for none.
+fn ingest_command_words(v: String) -> String {
+    let mut s = std::str::trim(v);
+    if std::str::starts_with(s, "[") && std::str::ends_with(s, "]") { s = s[1..(len(s) - 1)]; }
+    s = std::str::replace(s, ",", " ");
+    s = std::str::replace(std::str::replace(s, "\"", ""), "'", "");
+    return std::str::trim(s);
+}
+
+// One item of a block list, its quotes gone: `- word` is `word`; a fold or
+// literal marker (`- >-`, `- |`) is nothing, and a line that is no item is
+// taken whole, as the continuation of the folded item before it.
+fn ingest_list_item(t: String) -> String {
+    let mut s = t;
+    if std::str::starts_with(s, "-") {
+        s = std::str::trim(s[1..len(s)]);
+        if s == ">-" || s == ">" || s == "|" || s == "|-" || s == ">+" || s == "|+" { return ""; }
+    }
+    return std::str::replace(std::str::replace(s, "\"", ""), "'", "");
+}
+
+// The program a command runs: the first word's last segment, unless that
+// is a shell (`sh -c '… exec prog …'`: the word after `exec`, else the
+// shell's script's first word) or a launcher script (`entrypoint.sh
+// prog …`: the next word). "" for no command.
+fn ingest_program(words: String) -> String {
+    let first = ingest_last_segment(dna::nth_word(words, 0));
+    // a command that is only flags runs the image's own entrypoint
+    if len(first) == 0 || std::str::starts_with(dna::nth_word(words, 0), "-") { return ""; }
+    if first == "sh" || first == "bash" || first == "dash" || first == "zsh" || first == "ash" {
+        let mut i = 1;
+        let mut after_exec = "";
+        let mut script_first = "";
+        while len(dna::nth_word(words, i)) > 0 {
+            let w = dna::nth_word(words, i);
+            if w == "exec" && len(dna::nth_word(words, i + 1)) > 0 {
+                after_exec = dna::nth_word(words, i + 1);
+                break;
+            }
+            if len(script_first) == 0 && !std::str::starts_with(w, "-") && w != "&&" && w != "||" {
+                script_first = w;
+            }
+            i = i + 1;
+        }
+        let chosen = if len(after_exec) > 0 { after_exec } else { script_first };
+        return ingest_last_segment(chosen);
+    }
+    if std::str::ends_with(first, ".sh") {
+        let next = dna::nth_word(words, 1);
+        if len(next) > 0 && !std::str::starts_with(next, "-") { return ingest_last_segment(next); }
+    }
+    return first;
+}
+
 fn ingest_compose_service_line(
     name: String,
     build: String,
@@ -372,7 +508,8 @@ fn ingest_compose_service_line(
     merge: String,
     runs_label: Bool,
     anchors: String,
-    repo: String
+    repo: String,
+    program: String
 ) -> String {
     let mut b = build;
     let mut tg = target;
@@ -395,7 +532,7 @@ fn ingest_compose_service_line(
     let shape = if built { ingest_compose_shape(name, b, tg, im, repo) } else { name };
     let runs = built || runs_label;
     return name + "\t" + origin + "\t" + shape + "\t" + (if runs { "true" } else { "false" })
-        + "\n";
+        + "\t" + program + "\n";
 }
 
 // A YAML mapping key on this line ("" when the line is not one).
@@ -852,7 +989,10 @@ locus GraphIngest {
             let more = after[(t2 + 1)..len(after)];
             let t3 = std::str::index_of(more, "\t");
             let shape = more[0..t3];
-            let runs = more[(t3 + 1)..len(more)] == "true";
+            let last = more[(t3 + 1)..len(more)];
+            let t4 = std::str::index_of(last, "\t");
+            let runs = last[0..t4] == "true";
+            let program = last[(t4 + 1)..len(last)];
             if origin == "built" && !std::str::contains(self.built_shapes, "\n" + shape + "\n") {
                 self.built_shapes = self.built_shapes + shape + "\n";
             }
@@ -869,7 +1009,7 @@ locus GraphIngest {
             if self.emit(
                 "graph.node",
                 id,
-                graph_process_body(p, self.compose, origin, shape, runs),
+                graph_process_body(p, self.compose, origin, shape, runs, program),
             ) {
                 self.nodes = self.nodes + 1;
                 self.kinds = self.kinds + "process\n";
@@ -973,7 +1113,10 @@ locus GraphIngest {
             let r3 = r2[(t3 + 1)..len(r2)];
             let t4 = std::str::index_of(r3, "\t");
             let labelled = r3[0..t4] == "true";
-            let path = r3[(t4 + 1)..len(r3)];
+            let r4 = r3[(t4 + 1)..len(r3)];
+            let t5 = std::str::index_of(r4, "\t");
+            let program = r4[0..t5];
+            let path = r4[(t5 + 1)..len(r4)];
             if !std::str::contains(self.processes, "\n" + name + "\n") {
                 let image_shape = ingest_compose_shape(name, "", "", image, repo);
                 let built = len(image) > 0
@@ -993,6 +1136,7 @@ locus GraphIngest {
                             if built { "built" } else { "pulled" },
                             shape,
                             built || labelled,
+                            program,
                         ),
                     ) {
                         self.nodes = self.nodes + 1;

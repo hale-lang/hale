@@ -20,7 +20,8 @@ spec:
       containers:
         - name: api
           image: ghcr.io/acme/synth:1.4.0
-          args: [\"synth-api\"]
+          command: [\"/entrypoint.sh\"]
+          args: [\"synth-api\", \"--port\", \"80\"]
 ---
 apiVersion: v1
 kind: Service
@@ -57,6 +58,9 @@ spec:
           containers:
             - name: nightly
               image: ubuntu:24.04
+              command:
+                - /usr/local/bin/synth-nightly
+                - --dry-run
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -69,10 +73,10 @@ data:
 fn main() {
     std::test::assert_eq_str(
         ops::ingest_k8s_workloads(MANIFESTS),
-        "api\tDeployment\tghcr.io/acme/synth:1.4.0\tfalse\n"
-            + "postgres\tStatefulSet\tpostgres:17\tfalse\n"
-            + "nightly\tCronJob\tubuntu:24.04\ttrue\n",
-        "the workloads by name, with their first image and the label; a Service and a ConfigMap are nothing",
+        "api\tDeployment\tghcr.io/acme/synth:1.4.0\tfalse\tsynth-api\n"
+            + "postgres\tStatefulSet\tpostgres:17\tfalse\t\n"
+            + "nightly\tCronJob\tubuntu:24.04\ttrue\tsynth-nightly\n",
+        "the workloads by name, with their first image, the label and the program (a launcher's next word; a block-list command's first); a Service and a ConfigMap are nothing",
     );
     std::test::assert_eq_str(
         ops::ingest_k8s_workloads(

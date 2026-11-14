@@ -48,13 +48,13 @@ fn main() {
     let lines = ops::ingest_compose_services(COMPOSE, "synth");
     std::test::assert_eq_str(
         lines,
-        "api\tbuilt\tsynth\ttrue\n"
-            + "worker\tbuilt\tsynth\ttrue\n"
-            + "web\tbuilt\tweb-serve\ttrue\n"
-            + "tool\tpulled\ttool\ttrue\n"
-            + "postgres\tpulled\tpostgres\tfalse\n"
-            + "prometheus\tpulled\tprometheus\tfalse\n",
-        "two services of one anchored image are one shape; a build mapping is its context and target; a labelled pulled image runs the repository's code; a database and a monitor do not",
+        "api\tbuilt\tsynth\ttrue\tsynth-api\n"
+            + "worker\tbuilt\tsynth\ttrue\tsynth-worker\n"
+            + "web\tbuilt\tweb-serve\ttrue\t\n"
+            + "tool\tpulled\ttool\ttrue\tsynth-tool\n"
+            + "postgres\tpulled\tpostgres\tfalse\t\n"
+            + "prometheus\tpulled\tprometheus\tfalse\t\n",
+        "two services of one anchored image are one shape and two programs; a build mapping is its context and target; a labelled pulled image runs the repository's code; a database and a monitor do not; the program is the command's first word, and flags alone name none",
     );
     std::test::assert_eq_str(
         ops::ingest_compose_shape("x", ".", "", "", "repo"),
@@ -80,8 +80,39 @@ fn main() {
                 + "services:\n  api:\n    <<: *api\n  web:\n    <<: *web\n",
             "repo",
         ),
-        "api\tbuilt\tapi-api\ttrue\nweb\tbuilt\tweb-serve\ttrue\n",
+        "api\tbuilt\tapi-api\ttrue\t\nweb\tbuilt\tweb-serve\ttrue\t\n",
         "two anchored build mappings are two shapes, their keys in any order",
+    );
+    // the program a command runs: a plain word, a launcher script's next
+    // word, a shell's `exec`, a block list, a folded script
+    std::test::assert_eq_str(
+        ops::ingest_program("/app/bin/synth-api --port 80"),
+        "synth-api",
+        "the first word",
+    );
+    std::test::assert_eq_str(
+        ops::ingest_program("entrypoint.sh settle --once"),
+        "settle",
+        "a launcher script hands on",
+    );
+    std::test::assert_eq_str(
+        ops::ingest_program("sh -c apt-get update && exec todo-api --host 0.0.0.0"),
+        "todo-api",
+        "a shell's exec",
+    );
+    std::test::assert_eq_str(
+        ops::ingest_program("bash -c npm start"),
+        "npm",
+        "a shell script's first word when nothing is exec'd",
+    );
+    std::test::assert_eq_str(ops::ingest_program(""), "", "no command");
+    std::test::assert_eq_str(
+        ops::ingest_compose_services(
+            "services:\n  node:\n    build: .\n    command:\n      - voice-node\n      - --id\n  api:\n    build: .\n    command:\n      - sh\n      - -c\n      - >-\n        cd /app\n        && exec voice-api --port 8080\n",
+            "repo",
+        ),
+        "node\tbuilt\trepo\ttrue\tvoice-node\napi\tbuilt\trepo\ttrue\tvoice-api\n",
+        "a block-list command and a folded shell script",
     );
     std::test::assert(ops::ingest_runs_label("- \"dna.runs=repository\""), "a quoted list item");
     std::test::assert(ops::ingest_runs_label("dna.runs: repository"), "a mapping entry");

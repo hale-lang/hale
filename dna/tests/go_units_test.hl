@@ -1,0 +1,76 @@
+// dna/tests/go_units_test.hl — the Go units of a repository and what each
+// reaches (GH #1907): a unit per package directory with its non-test
+// lines, the programs among them, module-internal imports followed to
+// their closure, so a shared unit and an exclusive one tell apart.
+import "../operations" as ops;
+import "../core" as dna;
+
+fn put(root: String, path: String, text: String) {
+    let dir = root + "/" + ops::path_dir(path);
+    let made = dna::run_tool("mkdir\n-p\n" + dir);
+    std::io::fs::write_file(root + "/" + path, text) or discard;
+}
+
+fn main() {
+    let root = dna::scratch_root("go-units");
+    put(root, "go.mod", "module example.com/synth\n\ngo 1.22\n");
+    put(
+        root,
+        "cmd/api/main.go",
+        "package main\n\nimport (\n\t\"fmt\"\n\t\"example.com/synth/internal/core\"\n\tonly \"example.com/synth/internal/apionly\"\n)\n\nfunc main() { fmt.Println(core.V, only.V) }\n",
+    );
+    put(
+        root,
+        "cmd/worker/main.go",
+        "package main\n\nimport \"example.com/synth/internal/core\"\n\nfunc main() { _ = core.V }\n",
+    );
+    put(
+        root,
+        "internal/core/core.go",
+        "package core\n\nimport \"example.com/synth/pkg/util\"\n\nvar V = util.One\n",
+    );
+    put(root, "internal/core/more.go", "package core\n\nvar W = 2\n");
+    put(
+        root,
+        "internal/core/core_test.go",
+        "package core\n\nimport \"testing\"\n\nfunc TestV(t *testing.T) {}\n",
+    );
+    put(root, "internal/apionly/x.go", "package apionly\n\nvar V = 1\n");
+    put(root, "pkg/util/u.go", "package util\n\nconst One = 1\n");
+    put(root, "vendor/other/v.go", "package other\n");
+    let files = "go.mod\ncmd/api/main.go\ncmd/worker/main.go\ninternal/core/core.go\ninternal/core/more.go\ninternal/core/core_test.go\ninternal/apionly/x.go\npkg/util/u.go\nvendor/other/v.go\nREADME.md\n";
+    let mod_path = ops::go_module_path(std::io::fs::read_file(root + "/go.mod") or "");
+    std::test::assert_eq_str(mod_path, "example.com/synth", "the module path");
+    let units = ops::go_units(root, files, mod_path);
+    std::test::assert_eq_str(
+        units,
+        "cmd/api\t9\ttrue\tinternal/core internal/apionly\n"
+            + "cmd/worker\t5\ttrue\tinternal/core\n"
+            + "internal/core\t8\tfalse\tpkg/util\n"
+            + "internal/apionly\t3\tfalse\t\n"
+            + "pkg/util\t3\tfalse\t\n",
+        "a unit per directory with its non-test lines (two files folded), its program-ness and its internal imports; vendor and tests left out",
+    );
+    std::test::assert_eq_str(ops::units_programs(units), "cmd/api\ncmd/worker\n", "the programs");
+    std::test::assert_eq_str(
+        ops::units_reach(units, "cmd/api"),
+        "internal/core internal/apionly pkg/util",
+        "reach follows imports to their closure",
+    );
+    std::test::assert_eq_str(
+        ops::units_reach(units, "cmd/worker"),
+        "internal/core pkg/util",
+        "a program's own reach",
+    );
+    std::test::assert_eq_int(ops::unit_lines(units, "internal/core"), 8, "a unit's lines");
+    std::test::assert(
+        ops::unit_is_main(units, "cmd/api") && !ops::unit_is_main(units, "pkg/util"),
+        "main-ness",
+    );
+    std::test::assert_eq_str(
+        ops::units_reach(units, "nowhere"),
+        "",
+        "an unknown unit reaches nothing",
+    );
+    dna::scratch_done(root);
+}
