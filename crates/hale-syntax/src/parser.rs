@@ -796,6 +796,36 @@ impl Parser {
                 break;
             }
             let kind_tok = self.peek_at(1);
+            // `@positional type Row { ... }`: a record the JSON codecs carry
+            // as an array of its fields in order (spec/api.md § Codecs). It
+            // marks a struct and stacks with nothing.
+            if matches!(&kind_tok, TokenKind::Ident(s) if s == "positional") {
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // `positional`
+                if leading_span.is_some() || form.is_some() || locality.is_some() {
+                    return Err(Diag::parse(at.span, "`@positional` marks a `type`, and stacks with no other annotation"));
+                }
+                if !matches!(self.peek(), TokenKind::Type) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "expected `type` after `@positional`: it marks a record (`@positional type Row { ... }`)",
+                    ));
+                }
+                let mut td = self.parse_type_decl()?;
+                if !matches!(td.body, TypeDeclBody::Struct(_)) {
+                    return Err(Diag::parse(
+                        at.span,
+                        format!(
+                            "`@positional` marks a record, and `{}` is no record: a positional record crosses JSON as \
+                             an array of its fields, so it declares them (`@positional type {} {{ ... }}`)",
+                            td.name.name, td.name.name
+                        ),
+                    ));
+                }
+                td.positional = true;
+                td.span = at.span.merge(td.span);
+                return Ok(TopDecl::Type(td));
+            }
             let is_ffi = matches!(&kind_tok, TokenKind::Ident(s) if s == "ffi");
             let is_form = matches!(&kind_tok, TokenKind::Ident(s) if s == "form");
             let is_locality =
@@ -6637,6 +6667,7 @@ impl Parser {
                     span: kw.span.merge(close.span),
                     id: NodeId::NONE,
                     synthetic: false,
+                    positional: false,
                 });
             }
             // alias. It is the one `type` form that takes no generic
@@ -6718,6 +6749,7 @@ impl Parser {
                     span: kw.span.merge(end),
                     id: NodeId::NONE,
                     synthetic: false,
+                    positional: false,
                 });
             }
             // The denomination, `in UNIT` / `in 100ms` / `in 100 ms`.
@@ -6761,6 +6793,7 @@ impl Parser {
                     span: kw.span.merge(end),
                     id: NodeId::NONE,
                     synthetic: false,
+                    positional: false,
                 });
             }
             Ok(TypeDecl {
@@ -6771,6 +6804,7 @@ impl Parser {
                 span: kw.span.merge(end),
                 id: NodeId::NONE,
                 synthetic: false,
+                positional: false,
             })
         } else {
             // struct form: type X { fields }
@@ -6788,6 +6822,7 @@ impl Parser {
                 span: kw.span.merge(close.span),
                 id: NodeId::NONE,
                 synthetic: false,
+                positional: false,
             })
         }
     }

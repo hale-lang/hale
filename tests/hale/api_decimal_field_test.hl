@@ -3,9 +3,10 @@
 // list's element and a whole value, as a JSON number read at the field's
 // scale with every digit kept, written back as its digits; a number with a
 // nonzero digit past the scale is the field's `wrong_type`, never a
-// truncation, and a string is no number. Downstream handoff: a request
-// with a `price: Decimal<2>` field was refused by law 5 ("which the JSON
-// codec does not carry").
+// truncation. A JSON string holding a number is read the same way
+// (`api_decimal_string_test.hl`); a string holding anything else is no
+// number. Downstream handoff: a request with a `price: Decimal<2>` field
+// was refused by law 5 ("which the JSON codec does not carry").
 
 type Line { sku: String; px: Decimal<2>; }
 type Order {
@@ -56,7 +57,8 @@ fn main() {
         "px",
         "an element past i128, named by its own field",
     );
-    refused("{\"total\":\"12.34\"}", "total", "a string is no number");
+    refused("{\"total\":\"twelve\"}", "total", "a string holding no number is no number");
+    refused("{\"total\":true}", "total", "a bool is no number");
     refused(
         "{\"total\":1,\"lines\":[{\"sku\":\"a\",\"px\":0.001}]}",
         "px",

@@ -596,7 +596,7 @@ impl Shift for PerspectiveMember {
     }
 }
 
-shift_struct!(TypeDecl { name, display, generics, body, span, id, synthetic });
+shift_struct!(TypeDecl { name, display, generics, body, span, id, synthetic, positional });
 
 impl Shift for TypeDeclBody {
     fn shift(&mut self, d: Move) {

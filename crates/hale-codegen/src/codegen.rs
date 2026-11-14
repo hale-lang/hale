@@ -13012,6 +13012,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             span,
             id: NodeId::NONE,
             synthetic: true,
+            positional: false,
         };
         let option_decl = TypeDecl {
             display: None,
@@ -13036,6 +13037,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             span,
             id: NodeId::NONE,
             synthetic: true,
+            positional: false,
         };
         vec![result_decl, option_decl]
     }
@@ -14225,6 +14227,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             span: template.span.clone(),
             id: template.id,
             synthetic: template.synthetic,
+            positional: template.positional,
         })
     }
 
