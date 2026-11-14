@@ -1,0 +1,48 @@
+// dna/tests/organism_face_test.hl — the organism a habitat holds by name,
+// with its key and its face's address, as the head's hand-in route reads
+// it (`api::organism_face_of`): the latest graft row of each organism, by
+// the name it carries, else by its key; nothing for a name the habitat
+// does not hold.
+import "../api" as api;
+import "../core" as dna;
+
+fn graft(j: dna::MemJournal, key: String, name: String, face: String) {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("child", key);
+    b.string_field("parent", "habitat");
+    if len(name) > 0 { b.string_field("name", name); }
+    b.string_field("face", face);
+    b.string_field("head", "");
+    b.end_object();
+    let r = j.append(j.revision(), "habitat.grafted", key, b.result());
+}
+
+fn main() {
+    let j = dna::MemJournal { };
+    graft(j, "0a1b2c3d4e5f", "voice", "http://habitat.example:10232");
+    graft(j, "9f8e7d6c5b4a", "", "http://habitat.example:10240/");
+    std::test::assert_eq_str(
+        api::organism_face_of(j, "voice"),
+        "0a1b2c3d4e5f\thttp://habitat.example:10232",
+        "by the name its graft row carries",
+    );
+    std::test::assert_eq_str(
+        api::organism_face_of(j, "9f8e7d6c5b4a"),
+        "9f8e7d6c5b4a\thttp://habitat.example:10240/",
+        "by its key when the row names nothing",
+    );
+    std::test::assert_eq_str(
+        api::organism_face_of(j, "nowhere"),
+        "",
+        "a name the habitat does not hold",
+    );
+    std::test::assert_eq_str(api::organism_face_of(j, ""), "", "no name");
+    // a later graft row of the same organism is the one that counts
+    graft(j, "0a1b2c3d4e5f", "voice", "http://habitat.example:10300");
+    std::test::assert_eq_str(
+        api::organism_face_of(j, "voice"),
+        "0a1b2c3d4e5f\thttp://habitat.example:10300",
+        "the latest graft row",
+    );
+}

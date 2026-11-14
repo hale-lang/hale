@@ -122,8 +122,27 @@ if [[ -n "$project" ]]; then
   top=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) || fail 'project must be a Git worktree'
   [[ "$(cd -- "$top" && pwd -P)" == "$project" ]] || fail 'pass the DNA project root, not a subdirectory'
 fi
+# The browser assets: the embedded ones beside this launcher, unless a dev
+# override says otherwise (spec/habitat.md, The face's assets, a dev
+# override): HALE_FACE_WEBROOT names a directory to serve instead, else the
+# habitat's `face-web/` directory serves when it holds an index.html, so a
+# checkout's dna/face/web copied there is served at the next restart and
+# the embedded assets return when the directory goes.
+web=${HALE_FACE_WEBROOT:-}
+if [[ -z "$web" ]]; then
+  habitat_dir=${HALE_DNA_HABITAT:-${HOME:-}}
+  if [[ -n "$habitat_dir" && -s "$habitat_dir/face-web/index.html" ]]; then web=$habitat_dir/face-web; fi
+fi
+if [[ -n "$web" ]]; then
+  valid_path "$web" || fail 'the browser assets directory cannot contain newlines'
+  [[ -d "$web" ]] || fail "browser assets directory does not exist: $web"
+  web=$(cd -- "$web" && pwd -P)
+  printf 'face: serving the browser assets from %s (a dev override; the embedded assets return when it goes)\n' "$web" >&2
+else
+  web=$face/web
+fi
 for asset in index.html app.js styles.css cytoscape.min.js; do
-  [[ -r "$face/web/$asset" && -s "$face/web/$asset" ]] || fail "missing browser asset: $asset"
+  [[ -r "$web/$asset" && -s "$web/$asset" ]] || fail "missing browser asset: $asset"
 done
 # The DSN carries the head role's password: refuse it without echoing it.
 if [[ -n "${HALE_DNA_MEMORY_DSN_HEAD:-}" && ! "$HALE_DNA_MEMORY_DSN_HEAD" =~ ^postgres(ql)?://[^@/[:space:]]+@[^/[:space:]]+/[^[:space:]]+$ ]]; then
@@ -365,7 +384,7 @@ if [[ -n "${HALE_DNA_MEMORY_DSN_HEAD:-}" ]]; then printf 'face: Knowledge reads 
 printf 'face: stop with Ctrl-C; the API child, a local body and running commands keep running and are re-adopted by the next head\n'
 env -u LOTUS_OBS HALE_DNA_COMMANDS_PORT="$commands_port" HALE_DNA_PUBLIC_PORT="$port" "$head" "$head_port" "$api" "$api_port" ${project:+"$project"} <&0 &
 child=$!
-env -u LOTUS_OBS "$face_bin" "$port" "$face/web" "$head_port" &
+env -u LOTUS_OBS "$face_bin" "$port" "$web" "$head_port" &
 face_child=$!
 # either one ending ends the launch: a face with no head, or a head with no face, is no door
 # (polled with kill -0: the system Bash of macOS is 3.2, which has no `wait -n`)

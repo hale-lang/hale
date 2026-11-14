@@ -7360,6 +7360,7 @@ otherwise.
 | `HALE_API_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt api binary to launch, as `--api` does. A binary handed in is checked before anything is built. |
 | `HALE_HEAD_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt head (project service) binary to launch, as `--head` does. |
 | `HALE_FACE_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt standard face (`dna/face/standard`) to start in front of the head, as `--face` does. `hale dna head` hands in the one it built. |
+| `HALE_FACE_WEBROOT=<dir>` | the embedded assets beside the launcher, else `<habitat>/face-web/` when it holds an `index.html` | `dna/face/start.sh`: the directory the face serves its browser assets from, a dev override for working on the face against a running habitat (`spec/habitat.md`, The face's assets); it must hold every asset the launcher names. |
 | `HALE_DNA_PUBLIC_PORT=<port>` | unset (the head's own) | The port the browser reaches the head on, when the standard face stands in front of it (`dna/face/start.sh` sets it to the face's): the origin the head signs in under, answers as and checks a command against. |
 | `HALE_OIDC_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt stub OpenID provider (`dna/oidc/serve`) to start. `hale dna head` hands in the one it built. |
 | `HALE_REFLEXES_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt reflexes binary (`dna/reflexes`) to start beside an attached project. `hale dna head` hands in the one it built. |

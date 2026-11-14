@@ -11972,7 +11972,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/faces_named_test.hl
 row	__lib_dna__operations___graph_ingest__GraphIngest@main1	__lib_dna__operations___graph_ingest__GraphIngest	main	default
-shared	dynamic	sites in operations #f6dd8606
+shared	dynamic	sites in operations #c3c90210
 shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/first_run_test.hl
@@ -12039,6 +12039,8 @@ shared	dynamic	sites in core #de2fb49b
 shared	dynamic	sites in tests #4bfcca70
 shared	dynamic	sites in the stdlib #919aadb4
 
+== dna/tests/go_units_test.hl
+
 == dna/tests/grant_layering_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -12088,13 +12090,13 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/graph_holes_edges_test.hl
 dynamic	__lib_dna__operations___graph_ingest__GraphIngest	on main	in tests
-shared	dynamic	sites in operations #f6dd8606
+shared	dynamic	sites in operations #c3c90210
 shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/graph_holes_test.hl
 row	App@main1	App	main	default
 shared	dynamic	sites in core #de2fb49b
-shared	dynamic	sites in operations #f6dd8606
+shared	dynamic	sites in operations #c3c90210
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main
@@ -12481,6 +12483,8 @@ dynamic	__lib_dna__core___memory_record__MemoryReceipts	on main
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main
 dynamic	__lib_dna__core___memory_spine__MemoryLeases	on main
 shared	dynamic	sites in the stdlib #919aadb4
+
+== dna/tests/k8s_workloads_test.hl
 
 == dna/tests/knowledge_binding_recovery_test.hl
 root	App	the entry
@@ -13351,6 +13355,11 @@ dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/organism_face_test.hl
+dynamic	__StdJsonBuilder	on main	in tests
+shared	__lib_dna__core___journal__MemJournal@main1	__lib_dna__core___journal__MemJournal #63b83e2f
+shared	dynamic	sites in the stdlib #919aadb4
+
 == dna/tests/organization_source_request_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -14170,7 +14179,7 @@ dynamic	__lib_dna__core___memory_embed__Words	on main
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
-shared	dynamic	sites in operations #f6dd8606
+shared	dynamic	sites in operations #c3c90210
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___memory_record__MemoryReceipts	on main
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main
@@ -20822,8 +20831,8 @@ dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCode
 dynamic	__lib_dna__operations___memory_tail__GraphReceipts	on main
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
 
-== shared sites in operations #f6dd8606
-dynamic	__StdIterLines	on main
+== shared sites in operations #c3c90210
+dynamic	__StdIterLines	on main|unknown (no caller)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___graph__GraphEdge	on main|unknown (no caller)|unknown (no instance)
 

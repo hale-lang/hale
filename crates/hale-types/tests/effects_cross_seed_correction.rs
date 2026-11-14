@@ -207,8 +207,8 @@ fn api() {
     // only the renames-aware walk sees.
     pinned(
         "api",
-        763,
-        765,
+        764,
+        766,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -504,8 +504,8 @@ fn operations() {
     // out), so the row is no longer one the correction changes.
     pinned(
         "operations",
-        522,
-        541,
+        534,
+        554,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
@@ -536,6 +536,7 @@ fn operations() {
         held_machine  does={alloc}
         hold_person  does={alloc}
         hole_role_position  does={alloc}
+        ingest_program  does={alloc}
         under_node_of  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ",
     );

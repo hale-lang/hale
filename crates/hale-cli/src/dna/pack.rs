@@ -105,12 +105,41 @@ fn stage_key(s: &str) -> String {
     openssl::sha::sha256(s.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
-pub(super) fn staged_nursery_dir(source: &str) -> PathBuf {
-    PathBuf::from(super::local_habitat_dir()).join("nurseries").join(stage_key(source))
+/// Where a nursery read from `source` is staged, under a habitat's
+/// directory: `nurseries/<key>`, the key a hash of the source as named.
+fn staged_nursery_rel(source: &str) -> String {
+    format!("nurseries/{}", stage_key(source))
+}
+
+/// Where a local repository `repo` is mirrored, under a habitat's
+/// directory: `nurseries/repos/<key>`, the key a hash of the path as named.
+fn staged_repo_rel(repo: &str) -> String {
+    format!("nurseries/repos/{}", stage_key(repo))
 }
 
 pub(super) fn staged_repo_dir(repo: &str) -> PathBuf {
-    PathBuf::from(super::local_habitat_dir()).join("nurseries").join("repos").join(stage_key(repo))
+    PathBuf::from(super::local_habitat_dir()).join(staged_repo_rel(repo))
+}
+
+/// What staging the directory nursery `n` (read as `from`) left under the
+/// habitat's directory `hab` here, each path relative to it: the nursery's
+/// staged copy (under the name it was read by and its canonical path) and
+/// the mirror of each sapling's repository that is a directory here (its
+/// own, `repo = "."`, among them). What a habitat on another machine is
+/// shipped (`remote::ship_staged`) so it reads the nursery, and fetches
+/// its saplings, from the same keys under its own directory: a key hashes
+/// the source as named, never where it is staged. Paths staging did not
+/// write (a sapling at a git URL, a mirror that failed) are left out.
+pub(super) fn staged_for_shipping(hab: &Path, from: &str, n: &Nursery) -> Vec<String> {
+    let mut rels = vec![staged_nursery_rel(from), staged_nursery_rel(&n.source)];
+    rels.extend(n.saplings.iter().map(|s| staged_repo_rel(&s.repo)));
+    let mut out: Vec<String> = Vec::new();
+    for r in rels {
+        if !out.contains(&r) && hab.join(&r).is_dir() {
+            out.push(r);
+        }
+    }
+    out
 }
 
 fn relative_pack_path(path: &str) -> Result<&Path, String> {
@@ -149,16 +178,22 @@ fn stage_nursery_into(root: &Path, entries: &[Entry], hab: &Path, dst: &Path) ->
 }
 
 pub(super) fn stage_local_repo(repo: &str) {
-    let hab = PathBuf::from(super::local_habitat_dir());
+    stage_local_repo_in(Path::new(&super::local_habitat_dir()), repo);
+}
+
+/// `repo`, a repository on this machine, mirrored under the habitat's
+/// directory `hab` (`nurseries/repos/<key>`): its committed history only,
+/// never a working tree.
+fn stage_local_repo_in(hab: &Path, repo: &str) {
     if !hab.is_dir() || repo.starts_with("toolchain:") {
         return;
     }
-    let hab = hab.canonicalize().unwrap_or(hab);
+    let hab = hab.canonicalize().unwrap_or_else(|_| hab.to_path_buf());
     let src = Path::new(repo);
     if !src.exists() || src.starts_with(&hab) {
         return;
     }
-    let dst = staged_repo_dir(repo);
+    let dst = hab.join(staged_repo_rel(repo));
     let _ = fs::remove_dir_all(&dst);
     if let Some(parent) = dst.parent() {
         let _ = fs::create_dir_all(parent);
@@ -175,23 +210,26 @@ fn stage_local_nursery(
     entries: &[Entry],
     saplings: &[Sapling],
 ) -> Result<(), String> {
-    let hab = PathBuf::from(super::local_habitat_dir());
+    stage_local_nursery_in(Path::new(&super::local_habitat_dir()), from, root, entries, saplings)
+}
+
+fn stage_local_nursery_in(hab: &Path, from: &str, root: &Path, entries: &[Entry], saplings: &[Sapling]) -> Result<(), String> {
     if !hab.is_dir() {
         return Ok(());
     }
-    let hab = hab.canonicalize().unwrap_or(hab);
+    let hab = hab.canonicalize().unwrap_or_else(|_| hab.to_path_buf());
     if root.starts_with(&hab) {
         return Ok(());
     }
     let canon = root.display().to_string();
-    let dst = staged_nursery_dir(&canon);
+    let dst = hab.join(staged_nursery_rel(&canon));
     stage_nursery_into(root, entries, &hab, &dst)?;
     if from != canon {
-        let alias = staged_nursery_dir(from);
+        let alias = hab.join(staged_nursery_rel(from));
         stage_nursery_into(root, entries, &hab, &alias)?;
     }
     for s in saplings {
-        stage_local_repo(&s.repo);
+        stage_local_repo_in(&hab, &s.repo);
     }
     Ok(())
 }
@@ -236,6 +274,24 @@ fn own_saplings(saplings: &mut [Sapling], repo: &str, at: &Path, commit: &str) -
     Ok(())
 }
 
+/// The nursery `from`, a directory no longer (or never) on this machine,
+/// as it was staged under the habitat's directory `hab` (here, or shipped
+/// from the machine that staged it); `None` when nothing is staged for it.
+fn staged_in(hab: &Path, from: &str) -> Option<Result<Nursery, String>> {
+    let staged = hab.join(staged_nursery_rel(from));
+    if !staged.is_dir() {
+        return None;
+    }
+    Some((|| {
+        let text = fs::read_to_string(staged.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
+        let (entries, mut saplings) = index_of(&text, from)?;
+        // the nursery's own repository, as staging mirrored it (the staged
+        // nursery is its files alone, with no history to pin)
+        own_saplings(&mut saplings, from, &hab.join(staged_repo_rel(from)), "HEAD")?;
+        Ok(Nursery { entries, saplings, source: from.to_string(), root: Some(staged) })
+    })())
+}
+
 /// The nursery `--from` names, or the toolchain's.
 pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
     let Some(from) = from else {
@@ -261,14 +317,8 @@ pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
         stage_local_nursery(from, &root, &entries, &saplings)?;
         return Ok(Nursery { entries, saplings, source: root.display().to_string(), root: Some(root) });
     }
-    let staged = staged_nursery_dir(from);
-    if staged.is_dir() {
-        let text = fs::read_to_string(staged.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
-        let (entries, mut saplings) = index_of(&text, from)?;
-        // the nursery's own repository, as staging mirrored it (the staged
-        // nursery is its files alone, with no history to pin)
-        own_saplings(&mut saplings, from, &staged_repo_dir(from), "HEAD")?;
-        return Ok(Nursery { entries, saplings, source: from.to_string(), root: Some(staged) });
+    if let Some(read) = staged_in(Path::new(&super::local_habitat_dir()), from) {
+        return read;
     }
     // a git repository: cloned once into the cache, fetched, and read at
     // the revision named (the default branch's head without one)
@@ -605,6 +655,125 @@ mod tests {
         assert!(!dst.join(".habitat").exists());
         assert!(relative_pack_path("../outside.pack").is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let o = Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    /// A repository with `files` committed, at `dir`.
+    fn repo_at(dir: &Path, files: &[(&str, &str)]) {
+        fs::create_dir_all(dir).unwrap();
+        git_in(dir, &["init", "-q", "-b", "main"]);
+        for (rel, text) in files {
+            let at = dir.join(rel);
+            fs::create_dir_all(at.parent().unwrap()).unwrap();
+            fs::write(at, text).unwrap();
+        }
+        git_in(dir, &["add", "-A"]);
+        git_in(dir, &["commit", "-q", "-m", "x"]);
+    }
+
+    /// The directory nursery at `src` read and staged under `hab` as
+    /// `pack::nursery` reads a directory (named by its canonical path, as
+    /// `hale habitat nursery add` names it).
+    fn staged_here(hab: &Path, src: &Path) -> (String, Nursery) {
+        let root = src.canonicalize().unwrap();
+        let from = root.display().to_string();
+        let (entries, mut saplings) = index_of(&fs::read_to_string(root.join("nursery.toml")).unwrap(), &from).unwrap();
+        own_saplings(&mut saplings, &from, &root, "HEAD").unwrap();
+        stage_local_nursery_in(hab, &from, &root, &entries, &saplings).unwrap();
+        (from.clone(), Nursery { entries, saplings, source: from, root: Some(root) })
+    }
+
+    /// What a habitat on another machine is shipped of a directory
+    /// nursery: the nursery's staged copy and the mirror of each sapling
+    /// repository on this machine (its own among them), each under the key
+    /// its source names; a sapling at a git URL has no mirror and nothing
+    /// of it is shipped, and a habitat directory with nothing staged ships
+    /// nothing.
+    #[test]
+    fn a_directory_nursery_ships_what_staging_wrote_under_its_keys() {
+        let base = std::env::temp_dir().join(format!("hale_ship_plan_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let other = base.join("other");
+        repo_at(&other, &[("hale.toml", "[dna]\n")]);
+        let other = other.canonicalize().unwrap().display().to_string();
+        let (other_rev, other_digest) = digest_at(Path::new(&other), "HEAD").unwrap();
+        let index = format!(
+            "[[pack]]\nname = \"ops\"\nversion = \"1\"\npath = \"packs/ops.pack\"\n\n[[sapling]]\nname = \"app\"\nrepo = \".\"\n\n[[sapling]]\nname = \"lib\"\nrepo = \"{other}\"\nrevision = \"{other_rev}\"\ndigest = \"{other_digest}\"\n\n[[sapling]]\nname = \"far\"\nrepo = \"https://example.org/far\"\nrevision = \"v1\"\ndigest = \"sha256:{z}\"\n",
+            z = "0".repeat(64)
+        );
+        let src = base.join("src");
+        repo_at(&src, &[("nursery.toml", &index), ("packs/ops.pack", "open ops/dev | Decides: ops.\n")]);
+        let hab = base.join("here");
+        fs::create_dir_all(&hab).unwrap();
+        let (from, n) = staged_here(&hab, &src);
+        let empty = base.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert!(staged_for_shipping(&empty, &from, &n).is_empty(), "nothing staged, nothing shipped");
+        let rels = staged_for_shipping(&hab, &from, &n);
+        assert_eq!(rels, vec![format!("nurseries/{}", stage_key(&from)), format!("nurseries/repos/{}", stage_key(&from)), format!("nurseries/repos/{}", stage_key(&other))]);
+        assert!(rels.iter().all(|r| r.rsplit('/').next().is_some_and(|k| k.len() == 16 && k.chars().all(|c| c.is_ascii_hexdigit()))), "{rels:?}");
+        assert!(!rels.contains(&staged_repo_rel("https://example.org/far")), "a git URL is fetched where it is, never shipped");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A directory nursery staged here and shipped to a habitat on another
+    /// machine (`ship_into`, with `sh` standing in for the SSH login) reads
+    /// there as it does here: the sapling pinned at the directory's
+    /// committed HEAD, never its working tree, and a graft's clone of the
+    /// shipped mirror holds that tree. A commit made since, staged and
+    /// shipped again, is the newer revision there, each shipped copy
+    /// replaced whole.
+    #[test]
+    fn a_directory_nursery_shipped_to_another_machine_reads_and_fetches_there() {
+        let base = std::env::temp_dir().join(format!("hale_ship_there_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let src = base.join("src");
+        repo_at(&src, &[("nursery.toml", "[[sapling]]\nname = \"app\"\nrepo = \".\"\n"), ("hale.toml", "[dna]\n")]);
+        // never committed: not what the habitat there pins or fetches
+        fs::write(src.join("hale.toml"), "[dna]\nneeds = [\"memory\"]\n").unwrap();
+        fs::write(src.join("draft.hl"), "fn main() { }\n").unwrap();
+        let (here, there) = (base.join("here"), base.join("there/habitat/local"));
+        fs::create_dir_all(&here).unwrap();
+        fs::create_dir_all(&there).unwrap();
+        let ship = |rels: &[String]| {
+            let mut via = Command::new("/bin/sh");
+            via.arg("-c");
+            crate::dna::habitat::remote::ship_into(&here, rels, via, &there.display().to_string()).unwrap();
+        };
+        let (from, n) = staged_here(&here, &src);
+        assert!(staged_in(&there, &from).is_none(), "nothing there before it is shipped");
+        ship(&staged_for_shipping(&here, &from, &n));
+        let read = staged_in(&there, &from).unwrap().unwrap();
+        let (head, digest) = digest_at(&src, "HEAD").unwrap();
+        let app = &read.saplings[0];
+        assert_eq!((app.repo.as_str(), app.revision.as_str(), app.digest.as_str()), (from.as_str(), head.as_str(), digest.as_str()), "pinned at the committed HEAD, as here");
+        assert_eq!((n.saplings[0].revision.as_str(), n.saplings[0].digest.as_str()), (head.as_str(), digest.as_str()));
+        // a graft there: the repo's path is not on that machine, its mirror is
+        let store = base.join("there/store");
+        let mirror = there.join(staged_repo_rel(&app.repo));
+        git_in(&base, &["clone", "-q", "--no-checkout", &mirror.display().to_string(), &store.display().to_string()]);
+        assert_eq!(digest_at(&store, &app.revision).unwrap().1, digest);
+        assert_eq!(git_in(&store, &["show", &format!("{head}:hale.toml")]), "[dna]", "the committed file, not the working tree's");
+        assert!(Command::new("git").arg("-C").arg(&store).args(["cat-file", "-e", &format!("{head}:draft.hl")]).status().unwrap().code() != Some(0), "an uncommitted file never ships");
+        // a commit since: staged and shipped again, the newer revision there
+        fs::write(there.join(staged_nursery_rel(&from)).join("stale"), "from the copy before").unwrap();
+        git_in(&src, &["add", "hale.toml"]);
+        git_in(&src, &["commit", "-q", "-m", "y"]);
+        let (from, n) = staged_here(&here, &src);
+        ship(&staged_for_shipping(&here, &from, &n));
+        let again = staged_in(&there, &from).unwrap().unwrap();
+        let (newer, _) = digest_at(&src, "HEAD").unwrap();
+        assert_ne!(newer, head);
+        assert_eq!(again.saplings[0].revision, newer, "the newer commit reaches the habitat there");
+        assert!(!there.join(staged_nursery_rel(&from)).join("stale").exists(), "a shipped copy is replaced whole");
+        let left: Vec<_> = fs::read_dir(there.join("nurseries")).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|f| f.starts_with(".shipping")).collect();
+        assert!(left.is_empty(), "no unpacking directory is left: {left:?}");
+        let _ = fs::remove_dir_all(&base);
     }
 }
 
