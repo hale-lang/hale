@@ -197,7 +197,12 @@ before anything is served:
    (§ Codecs): a request or response that is itself one is refused with
    the record to declare, "rpc \`Shelf::bare\`: its response is \`[Int;
    3]\`, a list, which crosses as a field of a record: declare one
-   (\`type Page { items: [Int; 3]; }\`)". A
+   (\`type Page { items: [Int; 3]; }\`)". A shape that reaches a
+   `@positional` record is refused, naming the field that reaches it,
+   since a surface's own wire names every field (§ Codecs, Positional
+   records): "rpc \`Desk::book\`: its response \`Book\` has a field
+   \`bids\` of \`Level\`, a \`@positional\` record, which a surface does
+   not serve: …". A
    `ClosureViolation` error carries no schema (law 6), so no form is
    asked of it. R1 holds every row to the JSON codec, the one codec a
    serve site has (R2a lowers the JSON codec and no other; a serve site's
@@ -2422,7 +2427,8 @@ the subscriptions admitted and not ended, over every connection;
 A request, a response and an error cross under the exposure's codec
 (F.36). The JSON codec is generated from the type, as the GH #1106
 binding's was: `Int`, `Float`, `Bool`, `String`, `Decimal<S>` and nested
-structs of the same, with a `json:"key"` tag renaming a key; a plain alias
+structs of the same, with a `json:"key"` tag renaming a key (the tag's
+text after a comma is its options: `json:"price,string"`, below); a plain alias
 (`type Count = Int;`) is what its chain ends at, and a builtin record
 (`IndexError`) its fields as the description gives them; an identity, a range
 and a quantity are their integer (`spec/units.md` § Layout and the
@@ -2463,11 +2469,28 @@ truncation, a mantissa no i128 holds at the scale is `wrong_type` as
 well, never a wrong number (`12345678901234567890123456789012.5` at
 scale 8 decoded to a negative value), a spelling that is no JSON
 number (`+1`, `.5`, `1.`, `01`) is `wrong_type` though the Decimal
-literal admits some of them, and a string, a bool or an object is
-`wrong_type` too, as for any number. Its schema is
-`{"type": "number", "x-hale-type": "Decimal<2>"}`: a reader that keeps
-the digits reads the scale there, and one that does not reads a JSON
-number. Protobuf carries it as its digits in a `string` (proto3 has no
+literal admits some of them, and a bool or an object is `wrong_type`
+too, as for any number. A JSON string holding a number is read as that
+number (2026-11-14, downstream handoff: an API that quotes its prices
+sends `{"price": "97000.50"}`, which was `wrong_type`): the string's
+text is held to the same grammar, an exponent included, and read
+exactly with no float on the way, so `"97000.50"` and `97000.50` decode
+to the same value, while a string holding anything else — a space, a
+`+`, an escape (`"\u0031"`), nothing at all, a word — or a digit past
+the scale is `wrong_type`, a field, a list's element, an enum's value
+and a map's value alike. The decoder reads either form whatever the
+field declares. The encoder writes a number, unless the field's tag
+says `string` (`price: Decimal<2> `json:"price,string"`;`, or
+`json:",string"` keeping the field's name): it then writes the same
+digits in a JSON string (`"97000.5"`), for an API that wants its prices
+quoted; on a list of Decimals the option quotes each element. The
+option is a Decimal's alone, and any other option is refused at the
+field (`json:` tag option `omitempty` is not one ...). Its schema is
+`{"type": "number", "x-hale-type": "Decimal<2>"}`, and `{"type":
+"string", "x-hale-type": "Decimal<2>"}` for a field tagged `string`: a
+reader that keeps the digits reads the scale there, and one that does
+not reads a JSON number (or the string the server writes); the Hale
+client declares the field with the same tag. Protobuf carries it as its digits in a `string` (proto3 has no
 decimal; `string price = 1; // Hale: Decimal<2>`), the generated Hale
 client declares the field `Decimal<S>` and reads it at that scale (a
 reply it cannot read as one — a digit past the scale, a mantissa past
@@ -2475,6 +2498,43 @@ i128, no number — is the call's `Lost` outcome naming the parse's
 kind and input, as a reply the codec refuses is, never `0d`;
 2026-11-07, downstream handoff), and
 the TypeScript and JavaScript clients hold it as a `number`.
+
+**A positional record** (2026-11-14, downstream handoff) is a record
+marked `@positional`: `@positional type Candle { t: Int; open: Decimal<2>;
+close: Decimal<2>; vol: Decimal<4>; }`. It crosses JSON as an array of
+its fields in declaration order, `[1688666400, "2990.5", 3005, 100.5]`,
+not an object, which is how many APIs send the rows of a table (candles,
+the levels of an order book: `{"bids": [["3000.40", "0.5", 1], ...]}`). A
+field of it, a list of it (`bids: bounded[Level; 50];`, an array of
+arrays) and a map's value (the key lifted out, the rest in order) are
+each carried, and element `i` is read as field `i` would be as an
+object's member, with the same strictness, so one row mixes kinds (a
+Decimal from a string beside an `Int` from a number). Every declared
+field is an element: no presence pair is read (`has_x` is the `Bool`
+element it is), and a field's `json:` tag names no key (a key in it is
+refused; the `string` option stays). An element past the last field is
+skipped, as an object's unknown key is, so a row that gains a column
+keeps decoding. A row that ends before a field leaves the field absent,
+as a key left out is: it takes its declared default, a `bounded` list is
+empty, and any other field is `missing_field`; `null` is an absent
+element too. Since a row has no keys, every refusal inside one names its
+field `<Type>.<field>` (`missing_field: Level.qty`, `wrong_type:
+Candle.vol`). Where a row is read, a value that is no well-formed array
+is `wrong_type` for the field holding it (the list's field, for an
+element), or for the record itself (`wrong_type: Level`) when it is the
+whole value, or a single field `T::from_json` reads (the record codecs
+do not check a field's kind before reading it). The encoder writes every field, in order,
+`[1688666400,2990.5,3005,100.5]`. The record's own codecs are
+`T::api_decode` / `T::api_encode` and `T::from_json` / `T::to_json`
+(`@positional` opts a record into the latter as a `json:` tag does), and
+protobuf carries it as any record, its fields numbered by place already.
+A surface does not serve one (law 5 refuses a row whose request,
+response or error reaches a positional record, naming the field that
+does): its description, the generated clients and an MCP tool's input
+name a record's fields as an object's keys, and a positional record is
+the shape of a wire another program defines, read and written with the
+program's own codec calls. The contract digest never covers the codec,
+so `@positional` changes no shape hash.
 
 **An instant and a duration.** The stdlib's `Time` (a point over
 `Duration` with no origin, `spec/types.md`) is the one point the codec

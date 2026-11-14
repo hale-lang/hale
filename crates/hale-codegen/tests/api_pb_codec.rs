@@ -462,7 +462,9 @@ fn main() {{ Desk {{ }}; }}
 
 /// A list of `Decimal<S>` is carried by both codecs as a `Decimal<S>` field
 /// is (#1532): in JSON each element a number at the element's scale, every
-/// digit kept (written as `to_string` writes it, trailing zeros dropped), a nonzero digit past the scale `wrong_type`; in protobuf each
+/// digit kept (written as `to_string` writes it, trailing zeros dropped), a nonzero digit past the scale `wrong_type`, and a string
+/// holding a number read as the number (2026-11-14, downstream handoff), one
+/// holding anything else `wrong_type`; in protobuf each
 /// element its digits in a string occurrence (length-delimited, so there is
 /// no packed form). An api surface admits a Decimal row (its schema a number
 /// named with its scale, spec/api.md § Codecs); the codecs are reached here
@@ -497,6 +499,7 @@ main locus Desk {
         self.json("{\"amounts\":[1.234],\"exact\":[1,2]}");
         self.json("{\"amounts\":[1,2,3,4],\"exact\":[1,2]}");
         self.json("{\"amounts\":[\"1.5\"],\"exact\":[1,2]}");
+        self.json("{\"amounts\":[\"x\"],\"exact\":[1,2]}");
         self.json("{\"exact\":[1]}");
         let exact = std::bytes::concat(__api_pb_put_str(2, "1"), __api_pb_put_str(2, "2"));
         self.pb(std::bytes::concat(std::bytes::concat(__api_pb_put_str(1, "7.25"), __api_pb_put_str(1, "-0.01")), exact));
@@ -518,6 +521,8 @@ fn main() { Desk { }; }
             r#"pb {"amounts":[],"exact":[1,2]}"#,
             "json refused wrong_type amounts",
             "json refused too_long amounts",
+            r#"json {"amounts":[1.5],"exact":[1,2]}"#,
+            r#"pb {"amounts":[1.5],"exact":[1,2]}"#,
             "json refused wrong_type amounts",
             "json refused too_short exact",
             r#"pb {"amounts":[7.25,-0.01],"exact":[1,2]}"#,

@@ -175,7 +175,7 @@ Every type reachable from an `rpc` row is encoded and decoded strictly. Unknown 
 | Hale Type / Pattern | JSON Wire Format | Protobuf (`.proto`) Format | Refusal Conditions (`malformed`) |
 |---|---|---|---|
 | `Int`, `Float`, `Bool`, `String` | Standard JSON primitives | `optional int64`, `double`, `bool`, `string` | `wrong_type`, `missing_field` (if no default) |
-| `Decimal<S>` | JSON number at scale `S`, every digit kept (`12.34`; schema `{"type": "number", "x-hale-type": "Decimal<2>"}`) | `optional string` (its digits; `// Hale: Decimal<2>`) | A nonzero digit past `S`, or a string (`wrong_type`), never a truncation |
+| `Decimal<S>` | JSON number at scale `S`, every digit kept (`12.34`; schema `{"type": "number", "x-hale-type": "Decimal<2>"}`); a string holding a number (`"12.34"`) reads the same; tagged `` `json:"price,string"` `` it is written as that string (schema `"type": "string"`) | `optional string` (its digits; `// Hale: Decimal<2>`) | A nonzero digit past `S`, or a string holding no JSON number (`wrong_type`), never a truncation |
 | `distinct T` / `quantity Int in u` | Underlying scalar value (`Int` count for quantities) | Underlying scalar (`// Hale: Type, q(u)`) | `wrong_type` |
 | `Time` | UTC RFC 3339 string ending in `Z` (`"2026-10-12T03:04:05.123456789Z"`) | `optional int64` (nanoseconds) | Non-UTC offset, missing `Z`, or past year 2262 (`wrong_type`) |
 | `Duration` | Integer nanoseconds (`1500000000` = `1.5s`) | `optional int64` (nanoseconds) | `wrong_type` |
@@ -291,6 +291,22 @@ let reply = PlaceReply::api_encode(desk.place(order));
 ```
 
 `T::api_decode` applies the exact same validation rules as a served exposure (`wrong_type`, `missing_field`, `too_long`, `too_short`, `duplicate_key`), reporting the offending field name in `err.field` (or `"payload"` when decoding a top-level enum).
+
+### Positional Records (`@positional`)
+
+Another program's API may send a table's rows as arrays rather than objects: candles as `[[1688666400, 2990.0, 3010.0, 2995.0, 3005.0, 100.5], ...]`, book levels as `[["3000.40", "0.5", 1], ...]`. A record marked `@positional` crosses JSON as an array of its fields in declaration order:
+
+```hale,fragment
+@positional type Level { px: Decimal<2>; qty: Decimal<4>; orders: Int = 1; }
+type Depth { bids: bounded[Level; 50]; asks: bounded[Level; 50]; }
+
+let depth = Depth::api_decode(body) or raise;
+let text = Depth::api_encode(depth);   // {"bids":[[3000.4,0.5,1],...],"asks":[...]}
+```
+
+Element `i` is read as field `i` would be, as strictly, so a Decimal from a string sits beside an `Int` from a number. Elements past the last field are skipped (a row that gains a column keeps decoding). A row that ends before a field leaves it absent: its default, an empty `bounded` list, or `missing_field` naming `Level.qty`; every error inside a row names its field `<Type>.<field>`, since a row has no keys. All fields are elements (a `has_x` flag is a plain `Bool` element), and the encoder writes them all in order. Protobuf carries the record as any other.
+
+A positional record is the shape of a wire someone else defined, so a served surface does not carry one: a row whose request, response or error reaches it is refused by the check, because the description, the generated clients and MCP tools name a record's fields as keys. Serve a keyed record and convert at the edge.
 
 ---
 

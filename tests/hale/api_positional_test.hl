@@ -1,0 +1,197 @@
+// tests/hale/api_positional_test.hl — a positional record (spec/api.md §
+// Codecs, Positional records): `@positional type` crosses JSON as an array
+// of its fields in declaration order, so the rows a price API sends as
+// arrays of arrays (`[[1688666400, 2990.0, 3010.0, 2995.0, 3005.0, 100.5],
+// ...]`, `[["3000.40", "0.5", 1], ...]`) decode into a `bounded[Row; N]`
+// field, each element read as a field of its type (a Decimal from a string
+// beside an Int from a number), and encode back as arrays. An element past
+// the last field is skipped, as an object's unknown key is; a row that
+// ends before a field leaves it absent (its default, or `missing_field`
+// naming `<Type>.<field>`); every refusal inside a row names the field
+// that way, since a row has no keys. Downstream handoff: candle and
+// order-book rows had no codec form.
+
+@positional type Candle {
+    t: Int;
+    open: Decimal<2>;
+    high: Decimal<2>;
+    low: Decimal<2>;
+    close: Decimal<2>;
+    vol: Decimal<4>;
+}
+
+@positional type Level {
+    px: Decimal<2>;
+    qty: Decimal<4>;
+    orders: Int = 1;
+}
+
+// a row of every other kind an element can be: a string, a bool, an
+// instant, a payload-free enum, a nested row and a list
+type Venue = enum { Lit, Dark };
+@positional type Trade {
+    id: String;
+    taker: Bool;
+    at: Time;
+    venue: Venue;
+    level: Level;
+    tags: bounded[String; 2];
+    has_note: Bool;
+}
+
+// rows inside an object, the way an API's page holds them; a tagged
+// field opts `Page` into `from_json` too
+type Page {
+    sym: String `json:"symbol"`;
+    candles: bounded[Candle; 3];
+    bids: bounded[Level; 2];
+    asks: [Level; 1];
+}
+
+// a map whose value is a row: the key lifted out, the rest in order
+@positional type Tick { sym: String; px: Decimal<2> `json:",string"`; }
+type Board { ticks: bounded[Tick; 2] indexed_by sym; }
+
+fn level_refused(text: String, kind: String, field: String, what: String) {
+    let got = Level::api_decode(text) or {
+        std::test::assert_eq_str(err.kind, kind, what + ": the kind");
+        std::test::assert_eq_str(err.field, field, what + ": the field");
+        return;
+    };
+    std::test::assert(false, what + ": decoded " + Level::api_encode(got));
+}
+
+fn page_refused(text: String, kind: String, field: String, what: String) {
+    let got = Page::api_decode(text) or {
+        std::test::assert_eq_str(err.kind, kind, what + ": the kind");
+        std::test::assert_eq_str(err.field, field, what + ": the field");
+        return;
+    };
+    std::test::assert(false, what + ": decoded " + Page::api_encode(got));
+}
+
+fn main() {
+    let text = "{\"symbol\":\"X\",\"candles\":[[1688666400, 2990.0, 3010.0, 2995.0, 3005.0, 100.5],"
+        + "[1688670000,\"3005\",\"3020.5\",\"3001\",\"3019.25\",\"7.0001\"]],"
+        + "\"bids\":[[\"3000.40\",\"0.5\",1],[\"2999\",\"1.25\",3,\"ignored\",[]]],\"asks\":[[\"3001\",2]]}";
+    let p = Page::api_decode(text) or {
+        std::test::assert(false, "a page of rows: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_int(count(p.candles), 2, "two candles");
+    let c0 = at(p.candles, 0) or raise;
+    let c1 = at(p.candles, 1) or raise;
+    std::test::assert_eq_int(c0.t, 1688666400, "an Int from a number");
+    std::test::assert(
+        c0.open == 2990d && c0.close == 3005d && c0.vol == 100.5d,
+        "Decimals from numbers",
+    );
+    std::test::assert(c1.high == 3020.5d && c1.vol == 7.0001d, "Decimals from strings");
+    let b0 = at(p.bids, 0) or raise;
+    let b1 = at(p.bids, 1) or raise;
+    std::test::assert(
+        b0.px == 3000.4d && b0.qty == 0.5d && b0.orders == 1,
+        "mixed kinds in one row",
+    );
+    std::test::assert(b1.orders == 3, "the elements past the last field are skipped");
+    std::test::assert(
+        p.asks[0].px == 3001d && p.asks[0].orders == 1,
+        "a short row takes the default",
+    );
+    std::test::assert_eq_str(
+        Page::api_encode(p),
+        "{\"symbol\":\"X\",\"candles\":[[1688666400,2990,3010,2995,3005,100.5],[1688670000,3005,3020.5,3001,3019.25,7.0001]],"
+            + "\"bids\":[[3000.4,0.5,1],[2999,1.25,3]],\"asks\":[[3001,2,1]]}",
+        "written back as arrays, every field in order",
+    );
+    let back = Page::api_decode(Page::api_encode(p)) or raise;
+    std::test::assert(Page::api_encode(back) == Page::api_encode(p), "a round trip");
+
+    // the record codecs carry the same rows
+    let j = Page::from_json(text) or raise;
+    std::test::assert_eq_str(
+        Page::to_json(j),
+        Page::api_encode(p),
+        "from_json / to_json agree with the api codec",
+    );
+    let one = Candle::from_json("[1, \"2\", 3, 4, 5, 6]") or raise;
+    std::test::assert_eq_str(
+        Candle::to_json(one),
+        "[1,2,3,4,5,6]",
+        "a positional record's own codec",
+    );
+
+    // a row of every element kind; `has_note` is a plain element here
+    let tr = Trade::api_decode(
+        "[\"t-1\", true, \"2026-10-12T03:04:05Z\", \"Dark\", [\"1.5\", \"2\"], [\"a\", \"b\"], false]",
+    ) or raise;
+    std::test::assert(
+        tr.id == "t-1" && tr.taker && tr.level.px == 1.5d,
+        "a string, a bool and a nested row",
+    );
+    std::test::assert_eq_str(
+        Trade::api_encode(tr),
+        "[\"t-1\",true,\"2026-10-12T03:04:05Z\",\"Dark\",[1.5,2,1],[\"a\",\"b\"],false]",
+        "every kind written in place",
+    );
+
+    // a map of rows: the key lifted out of each
+    let board = Board::api_decode("{\"ticks\":{\"A\":[\"1.5\"],\"B\":[2]}}") or raise;
+    let mut ticks = "";
+    for t in board.ticks {
+        ticks = ticks + t.sym + "=" + t.px + ";";
+    }
+    std::test::assert_eq_str(ticks, "A=1.5;B=2;", "a row as a map's value");
+    std::test::assert_eq_str(
+        Board::api_encode(board),
+        "{\"ticks\":{\"A\":[\"1.5\"],\"B\":[\"2\"]}}",
+        "written back, the tagged Decimal as a string",
+    );
+
+    // too few: the missing field named with its record
+    level_refused("[\"1\"]", "missing_field", "Level.qty", "a row ends before a required field");
+    level_refused("[]", "missing_field", "Level.px", "an empty row");
+    level_refused(
+        "[\"1\", null]",
+        "missing_field",
+        "Level.qty",
+        "a null element is an absent field",
+    );
+    // each element as strict as a field
+    level_refused(
+        "[\"1\", \"2\", \"three\"]",
+        "wrong_type",
+        "Level.orders",
+        "an Int element sent as a string",
+    );
+    level_refused("[\"1.001\", 2]", "wrong_type", "Level.px", "an element past its scale");
+    level_refused("[true, 2]", "wrong_type", "Level.px", "a bool for a Decimal");
+    // a row is an array
+    level_refused("{\"px\": 1, \"qty\": 2}", "wrong_type", "Level", "an object for a row");
+    level_refused("[1, 2", "wrong_type", "Level", "an array that is not well formed");
+    // inside a record, the list names a row of the wrong kind
+    page_refused(
+        "{\"symbol\":\"X\",\"asks\":[[1,1]],\"bids\":[{\"px\":1}]}",
+        "wrong_type",
+        "bids",
+        "an object in a list of rows",
+    );
+    page_refused(
+        "{\"symbol\":\"X\",\"asks\":[[1,1]],\"bids\":[[1,1],[2,2],[3,3]]}",
+        "too_long",
+        "bids",
+        "more rows than the list holds",
+    );
+    page_refused(
+        "{\"symbol\":\"X\",\"asks\":[[1]]}",
+        "missing_field",
+        "Level.qty",
+        "a short row in a fixed array",
+    );
+    page_refused(
+        "{\"symbol\":\"X\",\"asks\":[[1,1]],\"candles\":[[1,2,3,4,5]]}",
+        "missing_field",
+        "Candle.vol",
+        "a candle without its volume",
+    );
+}

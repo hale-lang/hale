@@ -600,6 +600,10 @@ fn per_target_moves() {
 /// so its sites are once per invocation with the frames or without, and
 /// no verdict moves (13 and 7 did while the copy's connection helper,
 /// freeing at return, was the callback's caller).
+///
+/// `api_positional_test` (2026-11-14) moves two of its codec's verdicts,
+/// as the other programs that call the api codec themselves do
+/// (`api_codec_call_test`, `api_decimal_field_test`, ...).
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -634,6 +638,7 @@ const PINNED: &[&str] = &[
     "tests/hale/api_encode_linear_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_json_value_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_patch_field_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/api_positional_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_roles_test.hl: 0 go, 0 appear; dump 4 tags, 42 reclaim, 0 verdicts",
     "tests/hale/api_roles_xseed_test.hl: 0 go, 0 appear; dump 2 tags, 38 reclaim, 0 verdicts",
     "tests/hale/api_serve_test.hl: 0 go, 0 appear; dump 3 tags, 27 reclaim, 0 verdicts",

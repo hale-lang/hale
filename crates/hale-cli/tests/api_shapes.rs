@@ -167,12 +167,58 @@ fn a_decimal_is_described_as_a_number_at_its_scale_and_crosses_http_with_every_d
     let o = run(&["api", "call", &s.endpoint, "Library::price", "--json", r#"{"price":-0.50,"note":"half"}"#]);
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert_eq!(o.stdout.trim(), r#"{"price":-0.5,"note":"half"}"#, "written as its digits, the fraction's trailing zero dropped");
-    // a nonzero digit past the scale is refused, never truncated; a string is no number
-    for (payload, what) in [(r#"{"price":12.345}"#, "a third place"), (r#"{"price":"12.34"}"#, "a string")] {
+    // a string holding a number reads as the number does (an API that
+    // quotes its prices; downstream handoff), written back as a number
+    let o = run(&["api", "call", &s.endpoint, "Library::price", "--json", r#"{"price":"12.34"}"#]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(json_of(&o.stdout), json!({"price": 12.34, "note": ""}));
+    // a nonzero digit past the scale is refused, never truncated, in a
+    // number or a string; a string holding no number is no number
+    for (payload, what) in [
+        (r#"{"price":12.345}"#, "a third place"),
+        (r#"{"price":"12.345"}"#, "a quoted third place"),
+        (r#"{"price":"twelve"}"#, "a string holding no number"),
+    ] {
         let o = run(&["api", "call", &s.endpoint, "Library::price", "--json", payload]);
         assert_eq!(o.code, 2, "{what}: {}", o.stderr);
         assert_eq!(json_of(&o.stderr)["refusal"], json!({"kind": "malformed", "reason": "wrong_type: price"}), "{what}");
     }
+}
+
+/// `json:"...,string"` (spec/api.md § Codecs): a Decimal field the encoder
+/// writes as a JSON string is described as one, `{"type": "string",
+/// "x-hale-type": "Decimal<2>"}`, and the generated Hale client declares
+/// the field with the same tag, so it writes what the server writes.
+#[test]
+fn a_string_tagged_decimal_is_described_as_a_string_and_the_hale_client_keeps_the_tag() {
+    let dir = unique_dir("decimal_string");
+    let prog = dir.join("main.hl");
+    std::fs::write(
+        &prog,
+        "type Order { sym: String; price: Decimal<2> `json:\",string\"`; qty: Decimal<4> `json:\"quantity,string\"`; \
+         stops: bounded[Decimal<2>; 2] `json:\",string\"`; fee: Decimal<2> = 0d; }\n\
+         locus Desk { fn place(o: Order) -> Order { return o; } }\n\
+         api Desks { rpc Desk::place; }\n\
+         fn main() { }\n",
+    )
+    .expect("write the program");
+    let out = dir.join("out");
+    let e = hale().args(["api", "export", "--surface", "Desks", "--out"]).arg(&out).arg(&prog).output().expect("export");
+    assert!(e.status.success(), "{}", String::from_utf8_lossy(&e.stderr));
+    let openapi = json_of(&std::fs::read_to_string(out.join("Desks.openapi.json")).unwrap());
+    let props = &openapi["components"]["schemas"]["Order"]["properties"];
+    assert_eq!(props["price"], json!({"type": "string", "x-hale-type": "Decimal<2>"}));
+    assert_eq!(props["quantity"], json!({"type": "string", "x-hale-type": "Decimal<4>"}));
+    assert_eq!(props["stops"]["items"], json!({"type": "string", "x-hale-type": "Decimal<2>"}));
+    assert_eq!(props["fee"], json!({"type": "number", "x-hale-type": "Decimal<2>"}), "an untagged Decimal stays a number");
+    let hl = out.join("client.hl");
+    let o = hale().args(["api", "client", "--surface", "Desks", "--lang", "hale", "--out"]).arg(&hl).arg(&prog).output().expect("hale client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let client = std::fs::read_to_string(&hl).unwrap();
+    assert!(client.contains("price: Decimal<2> `json:\",string\"`;"), "{client}");
+    assert!(client.contains("quantity: Decimal<4> `json:\",string\"`;"), "{client}");
+    assert!(client.contains("stops: bounded[Decimal<2>; 2] `json:\",string\"`;"), "{client}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

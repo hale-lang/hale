@@ -16,9 +16,10 @@
 //!     when the key is absent).
 //!   - field types: what the api codecs carry of a field (`field_codec_shape`,
 //!     spec/api.md § Codecs): Int / Float / Bool / String / `Decimal<S>` (a
-//!     JSON number, its exact digits at the field's scale; a number with a
-//!     nonzero digit past the scale is the field's `wrong_type`, never a
-//!     truncation), a unit scalar as its `Int`, a `Time`, a `Duration`, a
+//!     JSON number or a JSON string holding one, its exact digits at the
+//!     field's scale; a nonzero digit past the scale is the field's
+//!     `wrong_type`, never a truncation; written as a number, or as a string
+//!     where the tag says `json:"key,string"`), a unit scalar as its `Int`, a `Time`, a `Duration`, a
 //!     `std::json::Value`, an enum (a payload-free variant its name), a
 //!     record of the same program (its own codec, generated beside the
 //!     tagged one's whether or not it carries a tag), and a `bounded[T; N]`
@@ -26,6 +27,9 @@
 //!     field the codec cannot carry, in it or in what it reaches, is left
 //!     ungenerated, and the check refuses the call naming the field
 //!     (`hale_types::json_codec_laws`), so a program that checks builds.
+//!   - a `@positional` record opts in without a tag and crosses as an array
+//!     of its fields in declaration order (spec/api.md § Codecs, Positional
+//!     records).
 //!
 //! The pass runs BEFORE typecheck (so the generated parser is itself
 //! checked and `from_json` resolves to a real fallible function the caller
@@ -162,6 +166,9 @@ struct MapValue {
     /// (`, has_name: true`, and `, clear_name: false` for a triple): the
     /// map supplied the key.
     key_inits: String,
+    /// The value field's `json:"...,string"`: a Decimal value written as a
+    /// JSON string, as the record writes the field.
+    quoted: bool,
 }
 
 /// What the value `field` of the records `record` of a map of values
@@ -188,7 +195,7 @@ fn map_value(
     if matches!(elem, Elem::Enum { unit_only: false, .. }) {
         return Err("its value is an enum with payloads");
     }
-    Ok(MapValue { field: field.to_string(), elem, elem_ty, key_inits: String::new() })
+    Ok(MapValue { field: field.to_string(), elem, elem_ty, key_inits: String::new(), quoted: tag_quoted(&vf.tag) })
 }
 
 /// The maps of values whose value the codec cannot carry, read as the
@@ -290,6 +297,11 @@ struct JsonField {
     /// says, and the decoder builds this default then
     /// ([`default_marker`], spliced in after the codec parses).
     default_expr: Option<Expr>,
+    /// `json:"key,string"` on a `Decimal<S>` field (or a list of them): the
+    /// encoder writes each Decimal as a JSON string holding its digits
+    /// (`"97000.5"`), as an API that quotes its prices expects. The decoder
+    /// reads a Decimal from a number or a string whatever the tag says.
+    quoted: bool,
 }
 
 /// The call a generated codec makes where field `field` of `record` takes
@@ -504,6 +516,12 @@ struct JsonType {
     /// The lifted key's clear flag, when the key has a presence triple: the
     /// map supplied the key, so it is not cleared.
     lifted_clear: Option<String>,
+    /// `@positional type`: on the JSON wire an array of the fields in
+    /// declaration order, not an object (spec/api.md § Codecs, Positional
+    /// records), with the name a refusal shows for the record. Its fields
+    /// have no key: each field's `key` is `<Type>.<field>`, which a refusal
+    /// names.
+    positional: Option<String>,
 }
 
 fn scalar_of(te: &TypeExpr) -> Option<ScalarTy> {
@@ -546,8 +564,38 @@ fn literal_src(e: &Expr) -> Option<String> {
     }
 }
 
-fn tag_json_key(tag: &Option<String>) -> Option<String> {
+/// A field's whole `json:"..."` tag value, when it has one: what opts its
+/// record into `T::from_json` / `T::to_json`.
+fn tag_json(tag: &Option<String>) -> Option<String> {
     tag.as_deref().and_then(|t| crate::desugar::tag_value(t, "json"))
+}
+
+/// The JSON key a field's `json:` tag names: the text before its first
+/// comma (`json:"px,string"` names `px`), `None` where the field has no
+/// tag or the tag names no key (`json:",string"`), so the key is the
+/// field's name.
+pub fn json_tag_key(tag: Option<&str>) -> Option<String> {
+    let v = crate::desugar::tag_value(tag?, "json")?;
+    let key = v.split(',').next().unwrap_or_default();
+    (!key.is_empty()).then(|| key.to_string())
+}
+
+/// The options a field's `json:` tag gives after its key, in order
+/// (`json:"px,string"` gives `["string"]`). The one option is `string`
+/// (a `Decimal<S>` written as a JSON string); the check refuses any other,
+/// and `string` on a field that is no Decimal (`json_codec_laws`).
+pub fn json_tag_options(tag: Option<&str>) -> Vec<String> {
+    let Some(v) = tag.and_then(|t| crate::desugar::tag_value(t, "json")) else { return Vec::new() };
+    v.split(',').skip(1).map(|o| o.trim().to_string()).collect()
+}
+
+fn tag_json_key(tag: &Option<String>) -> Option<String> {
+    json_tag_key(tag.as_deref())
+}
+
+/// Whether a field's `json:` tag asks for its Decimals as JSON strings.
+fn tag_quoted(tag: &Option<String>) -> bool {
+    json_tag_options(tag.as_deref()).iter().any(|o| o == "string")
 }
 
 /// A single-segment named type (`Inner`, not `mod::Inner` or `Box<T>`).
@@ -568,7 +616,9 @@ fn collect_json_type_names(items: &[TopDecl], out: &mut HashSet<String>) {
         match item {
             TopDecl::Type(td) => {
                 if let TypeDeclBody::Struct(fields) = &td.body {
-                    if fields.iter().any(|f| tag_json_key(&f.tag).is_some()) {
+                    // a positional record opts in as a tag does: its wire is
+                    // the JSON codec's own
+                    if td.positional || fields.iter().any(|f| tag_json(&f.tag).is_some()) {
                         out.insert(td.name.name.clone());
                     }
                 }
@@ -639,6 +689,8 @@ fn collect_tier2(program: &Program) -> Tier2 {
     collect_enum_kinds(&program.items, &mut enum_kinds);
     let mut records = BTreeMap::new();
     collect_record_fields(&program.items, &mut records);
+    let mut positional = BTreeMap::new();
+    collect_positional(&program.items, &mut positional);
     // every enum, as the codec reads it: `None` for one with a value the
     // codec cannot carry
     let mut enums: BTreeMap<String, Option<JsonEnum>> = BTreeMap::new();
@@ -679,12 +731,19 @@ fn collect_tier2(program: &Program) -> Tier2 {
                 .enumerate()
                 .map(|(at, f)| field_codec_shape(f, at, &scalars, &aliases, &enum_kinds, &records))
                 .collect();
-            let t = jfields.filter(|fs| !fs.is_empty()).map(|fields| JsonType {
-                name: name.clone(),
-                fields,
-                lifted: None,
-                lifted_flag: None,
-                lifted_clear: None,
+            let t = jfields.filter(|fs| !fs.is_empty()).map(|fields| {
+                let mut t = JsonType {
+                    name: name.clone(),
+                    fields,
+                    lifted: None,
+                    lifted_flag: None,
+                    lifted_clear: None,
+                    positional: None,
+                };
+                if let Some(shown) = positional.get(name) {
+                    make_positional(&mut t, shown);
+                }
+                t
             });
             (name, t)
         })
@@ -759,16 +818,89 @@ fn scalar_value_expr(s: ScalarTy) -> &'static str {
     }
 }
 
-/// The statement that holds the text `[lo, hi)` of `src` to the JSON
-/// number grammar (RFC 8259 § 6, `std::json::number_end`): a Decimal field
-/// or element is read from a JSON number and nothing else, so `1e-7` and
-/// `1.50E+1` are read exactly at the scale while `+1`, `.5`, `1.` and `01`
-/// (which the Decimal parser's literal spelling would admit) are the
-/// field's `wrong_type` (2026-11-07, downstream handoff).
-fn json_number_check(src: &str, lo: &str, hi: &str, key: &str) -> String {
+/// The statements that read the Decimal at `[lo, hi)` of `src` into
+/// `into` (`__f_px =`, or `let __ev: Decimal<2> =`, whose declared scale
+/// `range_parse_decimal` reads at): a JSON number, or a JSON string holding
+/// one (`"97000.50"`, as an API that quotes its prices sends it;
+/// 2026-11-14, downstream handoff). Either way the text is held to the JSON
+/// number grammar (RFC 8259 § 6, `std::json::number_end`) and read exactly,
+/// every digit kept and no float on the way: `1e-7` and `1.50E+1` are
+/// read at the scale, while `+1`, `.5`, `1.` and `01` (which the Decimal
+/// parser's literal spelling would admit; 2026-11-07, downstream handoff),
+/// a string holding anything else (a space, an escape, nothing) and a
+/// nonzero digit past the scale or a mantissa past i128 are the field's
+/// `wrong_type`, never a truncation.
+fn decimal_read(src: &str, lo: &str, hi: &str, key: &str, into: &str, ind: &str) -> String {
+    let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}");
     format!(
-        "if std::json::number_end({src}, {lo}, {hi}) != {hi} {{ fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}; }}"
+        "{ind}let __dq = {lo} < {hi} && std::str::byte_at_unchecked({src}, {lo}) == 34;\n\
+         {ind}let __dl = if __dq {{ {lo} + 1 }} else {{ {lo} }};\n\
+         {ind}let __dh = if __dq {{ {hi} - 1 }} else {{ {hi} }};\n\
+         {ind}if (__dq && ({hi} - {lo} < 2 || std::str::byte_at_unchecked({src}, {hi} - 1) != 34)) || std::json::number_end({src}, __dl, __dh) != __dh {{ {wrong}; }}\n\
+         {ind}{into} std::str::range_parse_decimal({src}, __dl, __dh) or {wrong};\n"
     )
+}
+
+/// The positional records among a set of codecs, by name: a field or an
+/// element of one is a JSON array, not an object.
+type Rows = HashSet<String>;
+
+/// The positional records of `types`.
+fn rows_of(types: &[JsonType]) -> Rows {
+    types.iter().filter(|t| t.positional.is_some()).map(|t| t.name.clone()).collect()
+}
+
+/// The check that the byte `c` opens record `tn`'s JSON: `[` for a
+/// positional record, `{` for any other.
+fn open_check(c: &str, tn: &str, rows: &Rows) -> &'static str {
+    match (rows.contains(tn), c) {
+        (true, "__c0") => "__c0 == 91",
+        (true, _) => "__e0 == 91",
+        (false, "__c0") => "__c0 == 123",
+        (false, _) => "__e0 == 123",
+    }
+}
+
+/// The scan of a positional record's JSON (spec/api.md § Codecs,
+/// Positional records): an array whose element `i` is field `i`, read as
+/// the object scan reads that field's value ([`field_read`]). Anything but
+/// a well-formed array is `wrong_type` naming the record. An element past
+/// the last field is skipped, as an object's unknown key is, so a row that
+/// gains a column keeps decoding; a row that ends before a field leaves it
+/// absent, as a key left out is: its default, or `missing_field` naming
+/// `<Type>.<field>` (`decoder_tail`).
+fn positional_scan(t: &JsonType, shown: &str, prefix: &str, strict: bool, rows: &Rows) -> String {
+    let mut b = String::new();
+    b.push_str("    let __r0 = std::json::next_non_ws(__s, 0, __total);\n");
+    b.push_str(&format!(
+        "    if __r0 >= __total || std::str::byte_at_unchecked(__s, __r0) != 91 || !std::json::valid(__s) {{ fail JsonError {{ kind: \"wrong_type\", field: \"{shown}\" }}; }}\n"
+    ));
+    b.push_str("    let mut __li = std::json::array_first_span(__s);\n");
+    b.push_str("    let mut __at = 0;\n");
+    b.push_str("    while !__li.done {\n");
+    b.push_str("        let __vs = __li.cur_start;\n");
+    b.push_str("        let mut __ve = __li.cur_end;\n");
+    b.push_str("        while __ve > __vs {\n");
+    b.push_str("            let __tc = std::str::byte_at_unchecked(__s, __ve - 1);\n");
+    b.push_str("            if __tc == 32 || __tc == 9 || __tc == 10 || __tc == 13 { __ve = __ve - 1; } else { break; }\n");
+    b.push_str("        }\n");
+    // the array is well formed, so a string's escapes are unescaped
+    // without first looking for one
+    if t.fields.iter().any(|f| matches!(f.kind, FieldKind::Scalar(ScalarTy::Str) | FieldKind::Time)) {
+        b.push_str("        let __esc = true;\n");
+    }
+    for (i, f) in t.fields.iter().enumerate() {
+        let kw = if i == 0 { "if" } else { "} else if" };
+        b.push_str(&format!("                {kw} __at == {i} {{\n"));
+        b.push_str(&field_read(t, f, prefix, strict, rows));
+    }
+    if !t.fields.is_empty() {
+        b.push_str("                }\n");
+    }
+    b.push_str("        __at = __at + 1;\n");
+    b.push_str("        __li = std::json::array_next_span(__li, __s);\n");
+    b.push_str("    }\n");
+    b
 }
 
 /// The strict reading: a number that does not parse is a wrong type,
@@ -793,15 +925,15 @@ fn strict_scalar_value_expr(s: ScalarTy, key: &str) -> String {
     }
 }
 
-fn generate_parser_src(t: &JsonType) -> String {
-    generate_parser_src_mode(t, "__json_parse_", false)
+fn generate_parser_src(t: &JsonType, rows: &Rows) -> String {
+    generate_parser_src_mode(t, "__json_parse_", false, rows)
 }
 
 /// `strict` refuses a value of the wrong JSON kind for its field
 /// (`JsonError { kind: "wrong_type", field }`) instead of reading it
 /// as the type's zero; the api binding's decoders are strict so a
 /// handler only ever sees a payload the caller actually sent.
-fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String {
+fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool, rows: &Rows) -> String {
     let mut b = String::new();
     match &t.lifted {
         Some(k) => b.push_str(&format!(
@@ -859,6 +991,20 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             b.push_str(&format!("    let mut __null_{}: Bool = false;\n", f.name));
         }
     }
+    if let Some(shown) = &t.positional {
+        b.push_str(&positional_scan(t, shown, prefix, strict, rows));
+    } else {
+        b.push_str(&object_scan(t, prefix, strict, rows));
+    }
+    b.push_str(&decoder_tail(t, prefix));
+    b.push_str("}\n");
+    b
+}
+
+/// The single-pass scan of an object's members, each key dispatched to
+/// its field's reading ([`field_read`]); an unknown key is skipped.
+fn object_scan(t: &JsonType, prefix: &str, strict: bool, rows: &Rows) -> String {
+    let mut b = String::new();
     // Inlined single-pass scan — no cursor structs, only Int offsets +
     // the leaf SIMD/range primitives. Skip to `{`, then walk members.
     b.push_str("    let mut __p = std::json::next_non_ws(__s, 0, __total);\n");
@@ -928,121 +1074,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             f.key.len(),
             f.key
         ));
-        // a field's `null` is its absence (2026-11-07, downstream handoff:
-        // the field takes its declared default, whatever its shape, or is
-        // `missing_field` with none, exactly as a key left out; the last
-        // of a key sent twice wins, so a `null` after a value leaves
-        // nothing of it). A `std::json::Value` field holds `null` as its
-        // text, as it holds any value, unless it is optional, where `null`
-        // is its absence as for any optional field; a triple's clear flag
-        // records that `null` was sent.
-        let optional = matches!(f.presence, Presence::Tracked(_));
-        let nullable = optional || !matches!(f.kind, FieldKind::Raw);
-        if nullable {
-            // a `null` after an earlier occurrence leaves nothing of it: the
-            // field is back at its default (or zero), a list empty
-            let reset = match &f.kind {
-                FieldKind::Scalar(s) => format!("__f_{} = {};", f.name, wire_zero(*s, &f.conv, &f.default_src)),
-                FieldKind::Time => format!("__f_{} = {};", f.name, f.default_src.as_deref().unwrap_or(EPOCH)),
-                FieldKind::Nested(_) | FieldKind::Enum { .. } => format!("__raw_{} = \"\";", f.name),
-                FieldKind::List { .. } => format!("clear(__h_{}.b);", f.name),
-                FieldKind::Raw => format!("__f_{} = {JSON_VALUE_NULL};", f.name),
-            };
-            let unseen = if f.tracks() { format!(" __seen_{} = false;", f.name) } else { String::new() };
-            // a triple's field records which: `null` clears it
-            let (cleared, set) = match clear_flag(t, &f.name) {
-                Some(_) => (format!(" __null_{} = true;", f.name), format!(" __null_{} = false;", f.name)),
-                None => (String::new(), String::new()),
-            };
-            b.push_str(&format!(
-                "                if std::str::range_eq(__s, __vs, __ve, \"null\") {{{unseen}{cleared} {reset} }} else {{{set}\n"
-            ));
-        }
-        if strict {
-            let want = match &f.kind {
-                FieldKind::Scalar(ScalarTy::Str) => "__c0 == 34",
-                FieldKind::Scalar(ScalarTy::Int)
-                | FieldKind::Scalar(ScalarTy::Float)
-                | FieldKind::Scalar(ScalarTy::Decimal(_)) => "__c0 == 45 || (__c0 >= 48 && __c0 <= 57)",
-                FieldKind::Scalar(ScalarTy::Bool) => "__c0 == 116 || __c0 == 102",
-                FieldKind::Nested(_) => "__c0 == 123",
-                FieldKind::Enum { .. } => "__c0 == 34 || __c0 == 123",
-                FieldKind::Time => "__c0 == 34",
-                FieldKind::List { key: Some(_), .. } => "__c0 == 123",
-                FieldKind::List { .. } => "__c0 == 91",
-                // any JSON value, held to its rules below
-                FieldKind::Raw => "__c0 != 0",
-            };
-            b.push_str(&format!(
-                "                    let __c0 = if __vs < __ve {{ std::str::byte_at_unchecked(__s, __vs) }} else {{ 0 }};\n                    if !({}) {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
-                want, f.key
-            ));
-        }
-        match &f.kind {
-            // a JSON value: its text as sent, held to a `Value`'s rules
-            FieldKind::Raw => {
-                b.push_str(&format!("                    let __rt_{} = __s[__vs..__ve];\n", f.name));
-                b.push_str(&json_value_read(&format!("__rt_{}", f.name), &format!("__f_{}", f.name), &f.key, "                    "));
-            }
-            // String: slice directly when escape-free (the common case),
-            // only unescape-copy when the scan saw a backslash.
-            FieldKind::Scalar(ScalarTy::Str) => b.push_str(&format!(
-                "                    if __esc {{ __f_{} = std::json::unescape_string(__s[(__vs + 1)..(__ve - 1)]); }} \
-                 else {{ __f_{} = __s[(__vs + 1)..(__ve - 1)]; }}\n",
-                f.name, f.name
-            )),
-            // A strict bool is a statement, not an expression: `fail`
-            // ends a block and does not produce a value.
-            FieldKind::Scalar(ScalarTy::Bool) if strict => b.push_str(&format!(
-                "                    if std::str::range_eq(__s, __vs, __ve, \"true\") {{ __f_{n} = true; }} \
-                 else if std::str::range_eq(__s, __vs, __ve, \"false\") {{ __f_{n} = false; }} \
-                 else {{ fail JsonError {{ kind: \"wrong_type\", field: \"{k}\" }}; }}\n",
-                n = f.name,
-                k = f.key
-            )),
-            // A Decimal is a JSON number (RFC 8259 § 6: `1e-7` and
-            // `1.50E+1` read exactly at the scale; `+1`, `.5`, `1.` and
-            // `01` are no number) with no nonzero digit past its field's
-            // scale: refused in either mode, never read as zero.
-            FieldKind::Scalar(s @ ScalarTy::Decimal(_)) => b.push_str(&format!(
-                "                    {}\n                    __f_{} = {};\n",
-                json_number_check("__s", "__vs", "__ve", &f.key),
-                f.name,
-                strict_scalar_value_expr(*s, &f.key)
-            )),
-            FieldKind::Scalar(s) if strict => b.push_str(&format!(
-                "                    __f_{} = {};\n",
-                f.name,
-                strict_scalar_value_expr(*s, &f.key)
-            )),
-            FieldKind::Scalar(s) => b.push_str(&format!(
-                "                    __f_{} = {};\n",
-                f.name,
-                scalar_value_expr(*s)
-            )),
-            FieldKind::Nested(_) | FieldKind::Enum { .. } => b.push_str(&format!(
-                "                    __raw_{} = __s[__vs..__ve];\n",
-                f.name
-            )),
-            FieldKind::Time => {
-                let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}", f.key);
-                b.push_str("                    let mut __tt = __s[(__vs + 1)..(__ve - 1)];\n");
-                b.push_str("                    if __esc { __tt = std::json::unescape_string(__tt); }\n");
-                b.push_str(&format!("                    if !std::str::ends_with(__tt, \"Z\") {{ {wrong}; }}\n"));
-                b.push_str(&format!("                    __f_{} = std::time::parse_time(__tt) or {wrong};\n", f.name));
-            }
-            FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: Some(v), .. } => {
-                b.push_str(&json_value_map_read(f, tn, k, v, prefix))
-            }
-            FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } => b.push_str(&json_map_read(f, tn, k, prefix)),
-            FieldKind::List { elem, .. } => b.push_str(&json_list_read(f, elem, prefix)),
-        }
-        if f.tracks() {
-            b.push_str(&format!("                    __seen_{} = true;\n", f.name));
-        }
-        if nullable {
-            b.push_str("                }\n");
-        }
+        b.push_str(&field_read(t, f, prefix, strict, rows));
     }
     if !first {
         b.push_str("                }\n");
@@ -1051,6 +1083,143 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
     b.push_str("            }\n"); // close the `:` else
     b.push_str("        }\n"); // close the key else
     b.push_str("    }\n"); // close while __more
+    b
+}
+
+/// The reading of field `f`'s value span `[__vs, __ve)` of `__s` (`__esc`
+/// says whether a string in it holds an escape): its `null`, the strict
+/// kind check, the value read into the field's local, and its key marked
+/// seen.
+fn field_read(t: &JsonType, f: &JsonField, prefix: &str, strict: bool, rows: &Rows) -> String {
+    let mut b = String::new();
+    // a field's `null` is its absence (2026-11-07, downstream handoff:
+    // the field takes its declared default, whatever its shape, or is
+    // `missing_field` with none, exactly as a key left out; the last
+    // of a key sent twice wins, so a `null` after a value leaves
+    // nothing of it). A `std::json::Value` field holds `null` as its
+    // text, as it holds any value, unless it is optional, where `null`
+    // is its absence as for any optional field; a triple's clear flag
+    // records that `null` was sent.
+    let optional = matches!(f.presence, Presence::Tracked(_));
+    let nullable = optional || !matches!(f.kind, FieldKind::Raw);
+    if nullable {
+        // a `null` after an earlier occurrence leaves nothing of it: the
+        // field is back at its default (or zero), a list empty
+        let reset = match &f.kind {
+            FieldKind::Scalar(s) => format!("__f_{} = {};", f.name, wire_zero(*s, &f.conv, &f.default_src)),
+            FieldKind::Time => format!("__f_{} = {};", f.name, f.default_src.as_deref().unwrap_or(EPOCH)),
+            FieldKind::Nested(_) | FieldKind::Enum { .. } => format!("__raw_{} = \"\";", f.name),
+            FieldKind::List { .. } => format!("clear(__h_{}.b);", f.name),
+            FieldKind::Raw => format!("__f_{} = {JSON_VALUE_NULL};", f.name),
+        };
+        let unseen = if f.tracks() { format!(" __seen_{} = false;", f.name) } else { String::new() };
+        // a triple's field records which: `null` clears it
+        let (cleared, set) = match clear_flag(t, &f.name) {
+            Some(_) => (format!(" __null_{} = true;", f.name), format!(" __null_{} = false;", f.name)),
+            None => (String::new(), String::new()),
+        };
+        b.push_str(&format!(
+            "                if std::str::range_eq(__s, __vs, __ve, \"null\") {{{unseen}{cleared} {reset} }} else {{{set}\n"
+        ));
+    }
+    if strict {
+        let want = match &f.kind {
+            FieldKind::Scalar(ScalarTy::Str) => "__c0 == 34",
+            FieldKind::Scalar(ScalarTy::Int) | FieldKind::Scalar(ScalarTy::Float) => {
+                "__c0 == 45 || (__c0 >= 48 && __c0 <= 57)"
+            }
+            // a number, or a string holding one
+            FieldKind::Scalar(ScalarTy::Decimal(_)) => "__c0 == 45 || (__c0 >= 48 && __c0 <= 57) || __c0 == 34",
+            FieldKind::Scalar(ScalarTy::Bool) => "__c0 == 116 || __c0 == 102",
+            // a record is an object, a positional one an array
+            FieldKind::Nested(tn) => open_check("__c0", tn, rows),
+            FieldKind::Enum { .. } => "__c0 == 34 || __c0 == 123",
+            FieldKind::Time => "__c0 == 34",
+            FieldKind::List { key: Some(_), .. } => "__c0 == 123",
+            FieldKind::List { .. } => "__c0 == 91",
+            // any JSON value, held to its rules below
+            FieldKind::Raw => "__c0 != 0",
+        };
+        b.push_str(&format!(
+            "                    let __c0 = if __vs < __ve {{ std::str::byte_at_unchecked(__s, __vs) }} else {{ 0 }};\n                    if !({}) {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
+            want, f.key
+        ));
+    }
+    match &f.kind {
+        // a JSON value: its text as sent, held to a `Value`'s rules
+        FieldKind::Raw => {
+            b.push_str(&format!("                    let __rt_{} = __s[__vs..__ve];\n", f.name));
+            b.push_str(&json_value_read(&format!("__rt_{}", f.name), &format!("__f_{}", f.name), &f.key, "                    "));
+        }
+        // String: slice directly when escape-free (the common case),
+        // only unescape-copy when the scan saw a backslash.
+        FieldKind::Scalar(ScalarTy::Str) => b.push_str(&format!(
+            "                    if __esc {{ __f_{} = std::json::unescape_string(__s[(__vs + 1)..(__ve - 1)]); }} \
+             else {{ __f_{} = __s[(__vs + 1)..(__ve - 1)]; }}\n",
+            f.name, f.name
+        )),
+        // A strict bool is a statement, not an expression: `fail`
+        // ends a block and does not produce a value.
+        FieldKind::Scalar(ScalarTy::Bool) if strict => b.push_str(&format!(
+            "                    if std::str::range_eq(__s, __vs, __ve, \"true\") {{ __f_{n} = true; }} \
+             else if std::str::range_eq(__s, __vs, __ve, \"false\") {{ __f_{n} = false; }} \
+             else {{ fail JsonError {{ kind: \"wrong_type\", field: \"{k}\" }}; }}\n",
+            n = f.name,
+            k = f.key
+        )),
+        // A Decimal is a JSON number, or a string holding one (RFC 8259
+        // § 6: `1e-7` and `1.50E+1` read exactly at the scale; `+1`, `.5`,
+        // `1.` and `01` are no number) with no nonzero digit past its
+        // field's scale: refused in either mode, never read as zero.
+        FieldKind::Scalar(ScalarTy::Decimal(_)) => b.push_str(&decimal_read(
+            "__s",
+            "__vs",
+            "__ve",
+            &f.key,
+            &format!("__f_{} =", f.name),
+            "                    ",
+        )),
+        FieldKind::Scalar(s) if strict => b.push_str(&format!(
+            "                    __f_{} = {};\n",
+            f.name,
+            strict_scalar_value_expr(*s, &f.key)
+        )),
+        FieldKind::Scalar(s) => b.push_str(&format!(
+            "                    __f_{} = {};\n",
+            f.name,
+            scalar_value_expr(*s)
+        )),
+        FieldKind::Nested(_) | FieldKind::Enum { .. } => b.push_str(&format!(
+            "                    __raw_{} = __s[__vs..__ve];\n",
+            f.name
+        )),
+        FieldKind::Time => {
+            let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}", f.key);
+            b.push_str("                    let mut __tt = __s[(__vs + 1)..(__ve - 1)];\n");
+            b.push_str("                    if __esc { __tt = std::json::unescape_string(__tt); }\n");
+            b.push_str(&format!("                    if !std::str::ends_with(__tt, \"Z\") {{ {wrong}; }}\n"));
+            b.push_str(&format!("                    __f_{} = std::time::parse_time(__tt) or {wrong};\n", f.name));
+        }
+        FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: Some(v), .. } => {
+            b.push_str(&json_value_map_read(f, tn, k, v, prefix, rows))
+        }
+        FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } => b.push_str(&json_map_read(f, tn, k, prefix)),
+        FieldKind::List { elem, .. } => b.push_str(&json_list_read(f, elem, prefix, rows)),
+    }
+    if f.tracks() {
+        b.push_str(&format!("                    __seen_{} = true;\n", f.name));
+    }
+    if nullable {
+        b.push_str("                }\n");
+    }
+    b
+}
+
+/// The end of a decoder: every required field checked seen, the nested
+/// records and enums decoded from their texts (or their defaults built),
+/// and the record constructed.
+fn decoder_tail(t: &JsonType, prefix: &str) -> String {
+    let mut b = String::new();
     // Presence checks.
     for f in &t.fields {
         if f.needs_seen() {
@@ -1105,7 +1274,6 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
         }
     }
     b.push_str(&construct_src(t, true));
-    b.push_str("}\n");
     b
 }
 
@@ -1339,17 +1507,18 @@ fn construct_src(t: &JsonType, json: bool) -> String {
 /// The statements that read one JSON element whose text is `[{src}[__es..__ee])`
 /// as `elem`, binding `__ev`; a value of the wrong kind is `wrong_type`
 /// for the list's `key`.
-fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) -> String {
+fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str, rows: &Rows) -> String {
     let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}");
     let mut b = format!("{ind}let __e0 = std::str::byte_at_unchecked({src}, __es);\n");
     let want = match elem {
         Elem::Scalar(ScalarTy::Str, _) => "__e0 == 34",
-        Elem::Scalar(ScalarTy::Int, _) | Elem::Scalar(ScalarTy::Float, _) | Elem::Scalar(ScalarTy::Decimal(_), _) => {
-            "__e0 == 45 || (__e0 >= 48 && __e0 <= 57)"
-        }
+        Elem::Scalar(ScalarTy::Int, _) | Elem::Scalar(ScalarTy::Float, _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57)",
+        // a number, or a string holding one
+        Elem::Scalar(ScalarTy::Decimal(_), _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57) || __e0 == 34",
         Elem::Scalar(ScalarTy::Bool, _) => "__e0 == 116 || __e0 == 102",
         Elem::Time => "__e0 == 34",
-        Elem::Nested(_) => "__e0 == 123",
+        // a record is an object, a positional one an array
+        Elem::Nested(tn) => open_check("__e0", tn, rows),
         Elem::Enum { .. } => "__e0 == 34 || __e0 == 123",
         Elem::Raw => "__e0 != 0",
     };
@@ -1374,16 +1543,12 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) ->
         Elem::Scalar(ScalarTy::Float, _) => {
             b.push_str(&format!("{ind}let __ev = std::str::parse_float({src}[__es..__ee]) or {wrong};\n"));
         }
-        // a Decimal<S> element is a JSON number read at the element's scale,
-        // every digit kept: the binding is declared `Decimal<S>`, so
-        // `range_parse_decimal` takes that scale, and a nonzero digit past it
-        // is `wrong_type`, as for a field
+        // a Decimal<S> element is a JSON number, or a string holding one,
+        // read at the element's scale, every digit kept: the binding is
+        // declared `Decimal<S>`, so `range_parse_decimal` takes that scale,
+        // and a nonzero digit past it is `wrong_type`, as for a field
         Elem::Scalar(d @ ScalarTy::Decimal(_), _) => {
-            b.push_str(&format!("{ind}{}\n", json_number_check(src, "__es", "__ee", key)));
-            b.push_str(&format!(
-                "{ind}let __ev: {} = std::str::range_parse_decimal({src}, __es, __ee) or {wrong};\n",
-                d.type_name()
-            ));
+            b.push_str(&decimal_read(src, "__es", "__ee", key, &format!("let __ev: {} =", d.type_name()), ind));
         }
         Elem::Scalar(ScalarTy::Bool, _) => {
             b.push_str(&format!("{ind}let __ev = std::str::range_eq({src}, __es, __ee, \"true\");\n"));
@@ -1441,7 +1606,7 @@ fn json_map_read(f: &JsonField, tn: &str, k: &str, prefix: &str) -> String {
 /// element's reading of it) and the record built of the member's key and
 /// it; a key already read is `duplicate_key`, more members than the holder
 /// holds `too_long`.
-fn json_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, prefix: &str) -> String {
+fn json_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, prefix: &str, rows: &Rows) -> String {
     let ind = "                    ";
     // the loop body, a level in
     let inner = format!("{ind}    ");
@@ -1457,7 +1622,7 @@ fn json_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, prefix: &
     b.push_str(&format!("{inner}for __mx in __h_{}.b {{ if __mx.{k} == __mk {{ {dup}; }} }}\n", f.name));
     b.push_str(&format!("{inner}let __es = __mi.val_start;\n"));
     b.push_str(&format!("{inner}let __ee = __mi.val_end;\n"));
-    b.push_str(&json_elem_read(&v.elem, "__ma", &f.key, prefix, &inner));
+    b.push_str(&json_elem_read(&v.elem, "__ma", &f.key, prefix, &inner, rows));
     b.push_str(&format!(
         "{inner}push(__h_{}.b, {tn} {{ {k}: __mk, {}: __ev{} }}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
         f.name, v.field, v.key_inits, f.key
@@ -1572,7 +1737,7 @@ fn generate_pb_entry_src(tn: &str, k: &str, key_no: u32, flag: Option<&str>, cle
 /// array checked whole (a malformed one is `wrong_type`), the holder
 /// cleared (the last of a key sent twice wins, as for any field), and
 /// each element read and pushed; more than the holder holds is `too_long`.
-fn json_list_read(f: &JsonField, elem: &Elem, prefix: &str) -> String {
+fn json_list_read(f: &JsonField, elem: &Elem, prefix: &str, rows: &Rows) -> String {
     let ind = "                    ";
     let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}", f.key);
     let mut b = String::new();
@@ -1589,7 +1754,7 @@ fn json_list_read(f: &JsonField, elem: &Elem, prefix: &str) -> String {
         "{ind}        if __et == 32 || __et == 9 || __et == 10 || __et == 13 {{ __ee = __ee - 1; }} else {{ break; }}\n"
     ));
     b.push_str(&format!("{ind}    }}\n"));
-    b.push_str(&json_elem_read(elem, "__la", &f.key, prefix, &format!("{ind}    ")));
+    b.push_str(&json_elem_read(elem, "__la", &f.key, prefix, &format!("{ind}    "), rows));
     b.push_str(&format!(
         "{ind}    push(__h_{}.b, {}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
         f.name,
@@ -1626,7 +1791,10 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
     // a record writes is linear in its text (re-concatenating `__b` with
     // every element kept each prefix alive until the record was written,
     // quadratic in a list: ~800 MB for a page of 1000 records).
-    b.push_str("    let __b = std::str::builder_new();\n    std::str::builder_append(__b, \"{\");\n");
+    // a positional record is an array of its fields in order, no keys
+    // (spec/api.md § Codecs, Positional records)
+    let (open, close) = if t.positional.is_some() { ("[", "]") } else { ("{", "}") };
+    b.push_str(&format!("    let __b = std::str::builder_new();\n    std::str::builder_append(__b, \"{open}\");\n"));
     // A record with an optional field writes a key only when its field is
     // present (and never its flag), so its separators are decided as it is
     // written; any other record's are fixed here, as they always were.
@@ -1639,7 +1807,9 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             continue;
         }
         let sep = if i == 0 { "" } else { "," };
-        let prefix = if dynamic {
+        let prefix = if t.positional.is_some() {
+            format!("\"{sep}\"")
+        } else if dynamic {
             format!("__sep + {}", prefix_lit("", &f.key))
         } else {
             prefix_lit(sep, &f.key)
@@ -1655,6 +1825,8 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             // a Float as the shortest text that reads back as the same
             // double (spec/api.md § Codecs)
             FieldKind::Scalar(ScalarTy::Float) if f.conv.is_none() => format!("{FLOAT_TEXT}(__v.{})", f.name),
+            // `json:"...,string"`: a Decimal's digits in a JSON string
+            FieldKind::Scalar(ScalarTy::Decimal(_)) if f.quoted => quoted_text(&format!("to_string(__v.{})", f.name)),
             FieldKind::Scalar(_) => match &f.conv {
                 Some(c) => format!("to_string({})", c.to_int(&format!("__v.{}", f.name))),
                 None => format!("to_string(__v.{})", f.name),
@@ -1675,7 +1847,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 let member = match value {
                     Some(v) => {
                         b.push_str(&format!("        let __xe: {} = __x.{};\n", v.elem_ty, v.field));
-                        json_elem_write(&v.elem, "__xe", fn_prefix)
+                        json_elem_write_q(&v.elem, "__xe", fn_prefix, v.quoted)
                     }
                     None => format!("{fn_prefix}{tn}__by_{k}(__x)"),
                 };
@@ -1696,7 +1868,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 b.push_str(&format!("    for __x in __v.{} {{\n", f.name));
                 b.push_str(&elem_bind(elem, elem_ty, "        "));
                 b.push_str(&format!("        if __n_{} > 0 {{ std::str::builder_append(__b, \",\"); }}\n", f.name));
-                b.push_str(&format!("        std::str::builder_append(__b, {});\n", json_elem_write(elem, "__xe", fn_prefix)));
+                b.push_str(&format!("        std::str::builder_append(__b, {});\n", json_elem_write_q(elem, "__xe", fn_prefix, f.quoted)));
                 b.push_str(&format!("        __n_{n} = __n_{n} + 1;\n    }}\n", n = f.name));
                 b.push_str("    std::str::builder_append(__b, \"]\");\n");
                 if dynamic {
@@ -1712,7 +1884,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
         }
         b.push_str(&close_tracked(t, f, &prefix));
     }
-    b.push_str("    std::str::builder_append(__b, \"}\");\n");
+    b.push_str(&format!("    std::str::builder_append(__b, \"{close}\");\n"));
     b.push_str("    return std::str::builder_finish(__b);\n}\n");
     b
 }
@@ -1748,6 +1920,21 @@ fn elem_bind(elem: &Elem, elem_ty: &str, ind: &str) -> String {
 const FLOAT_TEXT: &str = "std::str::__float_text";
 
 /// The JSON text of the list element `v`.
+/// A JSON string holding the text the Hale expression `text` makes, which
+/// needs no escape (a Decimal's digits).
+fn quoted_text(text: &str) -> String {
+    format!("\"\\\"\" + {text} + \"\\\"\"")
+}
+
+/// [`json_elem_write`], a Decimal element as a JSON string where its
+/// field's tag says `string` (`quoted`).
+fn json_elem_write_q(elem: &Elem, v: &str, fn_prefix: &str, quoted: bool) -> String {
+    match elem {
+        Elem::Scalar(ScalarTy::Decimal(_), None) if quoted => quoted_text(&format!("to_string({v})")),
+        _ => json_elem_write(elem, v, fn_prefix),
+    }
+}
+
 fn json_elem_write(elem: &Elem, v: &str, fn_prefix: &str) -> String {
     match elem {
         Elem::Scalar(ScalarTy::Str, _) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
@@ -2268,6 +2455,7 @@ fn generate_json_parsers_at(program: &mut Program, base: u32) -> HashSet<String>
     if types.is_empty() {
         return tagged;
     }
+    let rows = rows_of(&types);
 
     let mut existing_fns: HashSet<String> = HashSet::new();
     walk_fns(&program.items, &mut |name| {
@@ -2291,7 +2479,7 @@ fn generate_json_parsers_at(program: &mut Program, base: u32) -> HashSet<String>
             }
         }
         if !existing_fns.contains(&format!("{}{}", TIER2.decode, t.name)) {
-            src.push_str(&generate_parser_src(t));
+            src.push_str(&generate_parser_src(t, &rows));
         }
         if !existing_fns.contains(&format!("{}{}", TIER2.encode, t.name)) {
             src.push_str(&generate_emit_src(t));
@@ -2299,7 +2487,7 @@ fn generate_json_parsers_at(program: &mut Program, base: u32) -> HashSet<String>
     }
     for e in &enums {
         if !existing_fns.contains(&format!("{}{}", TIER2.decode, e.name)) {
-            src.push_str(&generate_enum_json_src(e, TIER2));
+            src.push_str(&generate_enum_json_src(e, TIER2, &rows));
         }
     }
     if !src.trim().is_empty() {
@@ -2701,6 +2889,38 @@ fn collect_record_fields(items: &[TopDecl], out: &mut std::collections::BTreeMap
     }
 }
 
+/// The positional records a bundle declares (`@positional type Row`), each
+/// by its name with the name a refusal shows: the author's last segment of
+/// an imported one (`lib::Row` is `Row`), else its own.
+fn collect_positional(items: &[TopDecl], out: &mut std::collections::BTreeMap<String, String>) {
+    for item in items {
+        match item {
+            TopDecl::Type(td) if td.positional => {
+                let shown = td
+                    .display
+                    .as_deref()
+                    .and_then(|d| d.rsplit("::").next())
+                    .unwrap_or(&td.name.name)
+                    .to_string();
+                out.insert(td.name.name.clone(), shown);
+            }
+            TopDecl::Module(m) => collect_positional(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// A positional record as its codec reads it: every declared field one
+/// element, in order, so no field is a presence flag (`has_x` is the
+/// `Bool` element it is), and each named in a refusal `<Type>.<field>`.
+fn make_positional(t: &mut JsonType, shown: &str) {
+    t.positional = Some(shown.to_string());
+    for f in &mut t.fields {
+        f.presence = Presence::No;
+        f.key = format!("{shown}.{}", f.name);
+    }
+}
+
 /// The plain aliases a bundle declares (`type Count = Int;`), by name.
 fn collect_aliases(items: &[TopDecl], out: &mut std::collections::BTreeMap<String, TypeExpr>) {
     for item in items {
@@ -2790,13 +3010,15 @@ fn generate_codecs(
                     pb_no: at as u32 + 1,
                     presence: Presence::No,
                     default_expr: None,
+                    quoted: false,
                 })
             })
             .collect();
         if let (Some(fields), false) = (jfields, types.iter().any(|t| &t.name == name)) {
-            types.push(JsonType { name: name.clone(), fields, lifted: None, lifted_flag: None, lifted_clear: None });
+            types.push(JsonType { name: name.clone(), fields, lifted: None, lifted_flag: None, lifted_clear: None, positional: None });
         }
     }
+    let rows = rows_of(&types);
     let mut src = String::new();
     if !have_jsonerror && !protobuf {
         src.push_str("type JsonError { kind: String; field: String; }\n");
@@ -2839,7 +3061,7 @@ fn generate_codecs(
             continue;
         }
         if !existing_fns.contains(&format!("__api_decode_{}", t.name)) {
-            src.push_str(&generate_parser_src_mode(t, "__api_decode_", true));
+            src.push_str(&generate_parser_src_mode(t, "__api_decode_", true, &rows));
         }
         if !existing_fns.contains(&format!("__api_encode_{}", t.name)) {
             src.push_str(&generate_emit_src_mode(t, "__api_encode_"));
@@ -2865,7 +3087,7 @@ fn generate_codecs(
             continue;
         }
         if !existing_fns.contains(&format!("__api_decode_{}", e.name)) {
-            src.push_str(&generate_enum_json_src(e, API));
+            src.push_str(&generate_enum_json_src(e, API, &rows));
         }
     }
     // the wire maps' value codecs: each (record, key) a map is keyed by
@@ -2936,9 +3158,12 @@ fn generate_codecs(
             lifted: Some(k.clone()),
             lifted_flag: flag,
             lifted_clear: clear,
+            // a positional record's map value is its fields but the key,
+            // in order
+            positional: t.positional.clone(),
         };
         if existing_fns.insert(format!("__api_decode_{tn}__by_{k}")) {
-            src.push_str(&generate_parser_src_mode(&value, "__api_decode_", true));
+            src.push_str(&generate_parser_src_mode(&value, "__api_decode_", true, &rows));
             src.push_str(&generate_emit_src_mode(&value, "__api_encode_"));
         }
     }
@@ -3087,7 +3312,7 @@ fn variant_record(e: &str, v: &str) -> String {
 /// a variant with one value `{"<Variant>": <value>}`, with several
 /// `{"<Variant>": [<value>, ...]}`, exactly as many; anything else, an
 /// unknown variant among it, is `wrong_type` for the field read.
-fn generate_enum_json_src(e: &JsonEnum, p: Prefixes) -> String {
+fn generate_enum_json_src(e: &JsonEnum, p: Prefixes, rows: &Rows) -> String {
     let n = &e.name;
     let wrong = "fail JsonError { kind: \"wrong_type\", field: __k };";
     let mut b = String::new();
@@ -3104,7 +3329,7 @@ fn generate_enum_json_src(e: &JsonEnum, p: Prefixes) -> String {
             b.push_str("        if __tc == 32 || __tc == 9 || __tc == 10 || __tc == 13 { __ee = __ee - 1; } else { break; }\n");
             b.push_str("    }\n");
             b.push_str(&format!("    if __ee <= __es {{ {wrong} }}\n"));
-            b.push_str(&json_elem_read(elem, "__src", RUNTIME_KEY, p.decode, "    "));
+            b.push_str(&json_elem_read(elem, "__src", RUNTIME_KEY, p.decode, "    ", rows));
             b.push_str("    return __ev;\n}\n");
         }
     }
@@ -3367,6 +3592,7 @@ fn map_entry_type(rec: &str, v: &MapValue) -> JsonType {
         pb_no: 1,
         presence: Presence::No,
         default_expr: None,
+        quoted: false,
     };
     let value = JsonField {
         name: "value".into(),
@@ -3377,8 +3603,9 @@ fn map_entry_type(rec: &str, v: &MapValue) -> JsonType {
         pb_no: 2,
         presence: Presence::No,
         default_expr: None,
+        quoted: false,
     };
-    JsonType { name: rec.to_string(), fields: vec![key, value], lifted: None, lifted_flag: None, lifted_clear: None }
+    JsonType { name: rec.to_string(), fields: vec![key, value], lifted: None, lifted_flag: None, lifted_clear: None, positional: None }
 }
 
 /// The records the variants with several values cross protobuf as, with
@@ -3420,10 +3647,11 @@ fn variant_records(e: &JsonEnum) -> Vec<(String, JsonType)> {
                     pb_no: i as u32 + 1,
                     presence: Presence::No,
                     default_expr: None,
+                    quoted: false,
                 }
             })
             .collect();
-        out.push((decl, JsonType { name: rec, fields, lifted: None, lifted_flag: None, lifted_clear: None }));
+        out.push((decl, JsonType { name: rec, fields, lifted: None, lifted_flag: None, lifted_clear: None, positional: None }));
     }
     out
 }
@@ -3579,6 +3807,7 @@ fn field_codec_shape(
         pb_no: at as u32 + 1,
         presence: Presence::No,
         default_expr,
+        quoted: tag_quoted(&f.tag),
     })
 }
 
@@ -3635,7 +3864,13 @@ fn collect_api_types(
                     .filter_map(|(at, f)| field_codec_shape(f, at, scalars, aliases, enums, records))
                     .collect();
                 mark_presence(fields, aliases, &mut jfields);
-                out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None, lifted_clear: None });
+                let mut t = JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None, lifted_clear: None, positional: None };
+                if td.positional {
+                    let mut shown = std::collections::BTreeMap::new();
+                    collect_positional(std::slice::from_ref(item), &mut shown);
+                    make_positional(&mut t, shown.get(&td.name.name).map_or(td.name.name.as_str(), String::as_str));
+                }
+                out.push(t);
             }
             TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, records, out),
             _ => {}

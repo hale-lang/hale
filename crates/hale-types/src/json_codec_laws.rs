@@ -25,6 +25,9 @@ const METHODS: [&str; 2] = ["from_json", "to_json"];
 
 pub fn json_codec_laws(bundle: &Bundle<'_>) -> Vec<Diag> {
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    // the tags' options, whether or not a call names the codec: a served
+    // row's codec reads them too
+    let mut diags = json_tag_laws(&programs);
     // every call left as written, before any type is classified: a
     // program with none (every program that builds) costs no `Shapes`
     let mut calls: Vec<(QualifiedName, usize)> = Vec::new();
@@ -45,7 +48,7 @@ pub fn json_codec_laws(bundle: &Bundle<'_>) -> Vec<Diag> {
         });
     }
     if calls.is_empty() {
-        return Vec::new();
+        return diags;
     }
     let slices: Vec<&[TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
     let shapes = Shapes::of_all(&slices);
@@ -57,7 +60,6 @@ pub fn json_codec_laws(bundle: &Bundle<'_>) -> Vec<Diag> {
             }
         }
     }
-    let mut diags = Vec::new();
     for (qn, arity) in calls.iter().map(|(q, a)| (q, *a)) {
         let n = qn.segments.len();
         let method = qn.segments[n - 1].name.as_str();
@@ -105,7 +107,9 @@ pub fn json_codec_laws(bundle: &Bundle<'_>) -> Vec<Diag> {
             diags.push(Diag::ty(qn.span, format!("{shown} takes one argument ({what}), got {arity}")));
             continue;
         }
-        let tagged = fields.iter().any(|f| f.tag.as_deref().and_then(|t| hale_syntax::desugar::tag_value(t, "json")).is_some());
+        // a positional record opts in as a tag does
+        let tagged =
+            td.positional || fields.iter().any(|f| f.tag.as_deref().and_then(|t| hale_syntax::desugar::tag_value(t, "json")).is_some());
         if !tagged {
             let hint = fields
                 .first()
@@ -137,6 +141,71 @@ pub fn json_codec_laws(bundle: &Bundle<'_>) -> Vec<Diag> {
             _ => format!("{shown}: the JSON codec does not carry `{name}` (a record of another seed among its fields, or a map of values it does not carry)"),
         };
         diags.push(Diag::ty(qn.span, message).with_related(td.name.span, "the record"));
+    }
+    diags
+}
+
+/// The `json:` tag's options (spec/semantics.md § Metadata tags,
+/// spec/api.md § Codecs). After its key a tag may say `string`
+/// (`json:"px,string"`, or `json:",string"` keeping the field's name): a
+/// `Decimal<S>` field, or a list of them, written as a JSON string holding
+/// its digits. Any other option, and `string` on a field that is no
+/// Decimal, is refused at the field, as is a key on a `@positional`
+/// record's field, whose place in the array is its name on the wire.
+pub fn json_tag_laws(programs: &[&Program]) -> Vec<Diag> {
+    let slices: Vec<&[TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
+    let shapes = Shapes::of_all(&slices);
+    let mut diags = Vec::new();
+    for p in programs {
+        for d in flat_decls(&p.items) {
+            let TopDecl::Type(td) = d else { continue };
+            let TypeDeclBody::Struct(fields) = &td.body else { continue };
+            for f in fields {
+                let Some(tag) = f.tag.as_deref() else { continue };
+                if hale_syntax::desugar::tag_value(tag, "json").is_none() {
+                    continue;
+                }
+                let at = format!("`{}.{}`", td.name.name, f.name.name);
+                if td.positional {
+                    if let Some(key) = hale_syntax::json_gen::json_tag_key(Some(tag)) {
+                        diags.push(Diag::ty(
+                            f.span,
+                            format!(
+                                "{at}: `{}` is a `@positional` record, which crosses JSON as an array of its fields \
+                                 in order, so its fields have no key and `json:\"{key}\"` names none; drop the key \
+                                 (an option stays: `json:\",string\"`)",
+                                td.name.name
+                            ),
+                        ));
+                    }
+                }
+                for opt in hale_syntax::json_gen::json_tag_options(Some(tag)) {
+                    if opt != "string" {
+                        diags.push(Diag::ty(
+                            f.span,
+                            format!(
+                                "{at}: `json:` tag option `{opt}` is not one: the one option is `string`, a Decimal \
+                                 written as a JSON string (`json:\"price,string\"`)"
+                            ),
+                        ));
+                        continue;
+                    }
+                    let ty = shapes.dealias(&f.ty);
+                    let elem = hale_syntax::json_gen::wire_list(&ty).map(|(e, _, _)| shapes.dealias(e));
+                    let decimal = |te: &TypeExpr| matches!(te, TypeExpr::Primitive(hale_syntax::ast::PrimType::Decimal(_), _));
+                    if !(decimal(&ty) || elem.as_ref().is_some_and(decimal)) {
+                        diags.push(Diag::ty(
+                            f.span,
+                            format!(
+                                "{at}: `json:` tag option `string` writes a Decimal as a JSON string, and the field is \
+                                 `{}`: it is for a `Decimal<S>` field or a list of them",
+                                crate::surfaces::type_text(&f.ty)
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
     }
     diags
 }
