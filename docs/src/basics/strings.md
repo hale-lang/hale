@@ -45,7 +45,7 @@ fn main() {
 
 ## Concatenation and `BytesBuilder`
 
-Use `+` to join a fixed number of strings, and `to_string(x)` to convert numbers, booleans, or durations into strings:
+Use `+` to join strings, and `to_string(x)` to convert numbers, booleans, or durations into strings:
 
 ```hale,fragment
 let first = "alice";
@@ -54,11 +54,30 @@ let full  = first + " " + last;
 let label = "n=" + to_string(42);
 ```
 
-### Building Strings in a Loop (`BytesBuilder`)
+### Building Strings in a Loop
 
-Do not accumulate strings with `out = out + chunk` inside a loop. Because `out + chunk` allocates a new string and copies the prefix on every iteration while old prefixes remain in the function's arena until return, loop concatenation uses `O(n²)` time and memory.
+Appending to a local declared `let mut` is linear: `out = out + chunk`, `out += chunk` and `out = f"{out}…"` append into a buffer the local owns, which grows by half again whenever it fills, so building `n` bytes costs `O(n)` time and memory. A chain of `+` such as `a + b + c` is one allocation, not one per `+`. The same holds for a `String` field of `self` grown inside a method.
 
-Instead, append into a single `std::bytes::BytesBuilder` (or use `std::str::join` when you already have a collection of strings):
+```hale
+fn page(n: Int) -> String {
+    let mut out = "[";
+    let mut i = 0;
+    while i < n {
+        if i > 0 { out += ", "; }
+        out = out + "{\"id\": " + to_string(i) + "}";
+        i = i + 1;
+    }
+    return out + "]";
+}
+
+fn main() {
+    println(page(3));   // [{"id": 0}, {"id": 1}, {"id": 2}]
+}
+```
+
+The buffer stays the local's only while nothing else holds the text. Strings are values, so a read that may keep the local's value (passing it to a function, binding it to another name, storing it, returning it) gives the buffer up, and the next append copies the whole text first; a copy taken before an append never sees it. Reading the text as an operand of `+`, of a comparison or of `len` keeps the buffer. So inside the loop, use the growing text only in those ways, and hand it on after the loop. A loop that appends and also passes the text to a call (`out += row; log(out);`) copies the text on every iteration, and so does appending to any other place (`rec.body = rec.body + row`); `hale check` warns on both, and `hale verify` fails on them.
+
+For those cases, or for a buffer that outlives one call, append into a `std::bytes::BytesBuilder` (or use `std::str::join` when you already have a collection of strings):
 
 ```hale
 fn page(n: Int) -> String {
@@ -76,6 +95,8 @@ fn main() {
     println(page(3));   // [{"id": 0}, {"id": 1}, {"id": 2}]
 }
 ```
+
+`len(s)` still measures the text on each call, so test a counter rather than `len(out)` in a long loop.
 
 ## F-Strings (`f"..."`)
 

@@ -1893,24 +1893,41 @@ as itself beside its tag; inlined into the seam, each of the producer's
 on to a method taking the set (an encoder of the outbound set, say) is
 not split and is built as any set is.
 
-### S15. Build a long text in one buffer, never with `s = s + chunk` in a loop
+### S15. Grow a long text in one place, and hand it on after the loop
 
-This rule applies on every path, hot or not. `s += chunk` is `s = s + chunk`, the same site. `s + chunk` makes a new
-String as long as both and copies `s` into it. Inside a loop the old `s`
-is not freed: it lives in the method's scratch until the method returns,
-so every prefix the loop made is still held at the end. Building `n`
-bytes in `k` appends holds about `n·k/2` bytes. Measured on v0.25.0,
-with 500-byte rows, as the growth of the process's peak resident set:
+This rule applies on every path, hot or not. An appending assignment
+(`out = out + chunk`, `out += chunk`, `out = f"{out}…"`) on a local
+declared `let mut`, or on a `String` field of `self`, appends into a
+buffer that place owns and grows geometrically, so building `n` bytes
+costs O(n) (spec/stdlib.md § "Building a String"). It stays linear only
+while nothing else holds the text: a read of the local that may keep
+the value (the local passed to a call, bound, stored or returned) gives
+the buffer up, and the next append copies the whole text first. So read
+the growing text in the loop only as an operand of `+`, of a comparison
+or of `len`, and hand it on after the loop:
 
-| text | appends | `out = out + row` | `BytesBuilder` |
-|---|---|---|---|
-| 500 KB | 1 000 | +250 MB | +2 MB |
-| 1 MB | 2 000 | +990 MB | +4 MB |
-| 2 MB | 4 000 | +3.9 GB | +8 MB |
+```hale
+fn page(n: Int) -> String {
+    let mut out = "[";
+    let mut i = 0;
+    while i < n {
+        if i > 0 { out += ", "; }
+        out = out + "{\"id\": " + to_string(i) + "}";
+        i = i + 1;
+    }
+    return out + "]";
+}
 
-Append into one `std::bytes::BytesBuilder` instead. It grows by
-doubling, so it holds the text once, plus slack. A list body is the
-common case:
+fn main() { println(page(3)); }
+```
+
+Two shapes are still quadratic, and the hot-path lint reports both at
+the append: a loop that appends to a local and also hands it to a call
+(`out += row; log(out);`), and an append to any other place
+(`rec.body = rec.body + row`), which builds a fresh String the size of
+the whole each time. For those, and for a buffer that outlives one
+call, append into a `std::bytes::BytesBuilder`: it grows by doubling
+and holds the text once, plus slack:
 
 ```hale
 locus JsonList {
@@ -1929,31 +1946,25 @@ locus JsonList {
     }
 }
 
-fn page(n: Int) -> String {
+fn main() {
     let rows = JsonList { };
-    let mut i = 0;
-    while i < n {
-        rows.add("{\"id\": " + to_string(i) + "}");
-        i = i + 1;
-    }
-    return "[" + rows.text() + "]";
+    rows.add("{\"id\": 0}");
+    println("[" + rows.text() + "]");
 }
-
-fn main() { println(page(3)); }
 ```
 
-A `+` that joins a fixed handful of pieces, such as one record rendered
-as one line, is fine. The rule is about a loop whose trip count grows
-with the input. `std::str::join` joins a `@form(vec)` of Strings in one
-allocation. `std::http::Server` assembled requests with `+` until
-2026-10-18: a 12 MiB body held about 9.5 GB before any handler ran.
-`hale check` does not flag the loop. **[convention]**
+Until GH #1947 every `+` made a new String and the frame's arena kept
+each one until the method returned, so a loop of appends held every
+prefix it made: a 350 KB text built in 8000 appends peaked at 4.5 GB.
+It now peaks at 4 MB. A chain of `+` (`a + b + c`) is one allocation.
+`std::str::join` joins a `@form(vec)` of Strings in one allocation.
+**[convention]**
 
 ### S16. Read a long text by position, never by slicing off the rest
 
 This rule also applies on every path. `rest = rest[(nl + 1)..len(rest)]`
 copies the remainder for each line, and each copy stays in scratch until
-the method returns: the same square as S15. Walk the text by position
+the method returns: the square an append that copies makes (S15). Walk the text by position
 instead. `std::str::bytes_view` measures it once, `byte_at` reads a byte
 against that length, and `std::str::slice(v, start, end)` copies only
 the line:
@@ -2159,8 +2170,9 @@ thread / pool / subject / fd counts in CI — see
   first-class; String-match the command routers.
 - **Floating state** — every named piece of state has one locus
   owner. State that "lives between loci" is a modeling error.
-- **Growing a String with `+` in a loop, or slicing off the rest of
-  one** — memory quadratic in the text, on every path (S15, S16).
+- **Handing a String to a call in the loop that appends to it, or
+  slicing off the rest of one** — memory quadratic in the text, on
+  every path (S15, S16).
 - **A hand-written `match` forwarding a set's members to another
   locus's methods** — a seam checks the coverage both ways (2.10).
 - **A sentinel for "absent" on the wire** (`""`, `-1`) — declare a

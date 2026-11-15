@@ -1217,7 +1217,7 @@ row	App@literal1.p	Plain	main	default
 row	App@literal1.se	Ser	main	default
 row	App@literal1.st	Str	main	default
 
-== crates/hale-cli/tests/styleguide_claims.rs#41eea4c5
+== crates/hale-cli/tests/styleguide_claims.rs#090fc2a4
 dynamic	__StdBytesBytesBuilder	on main	in the seed
 
 == crates/hale-cli/tests/styleguide_claims.rs#201ef3ec
@@ -9077,6 +9077,9 @@ row	~.s	__StdSecretSigner	main	inherited
 -- App@literal1.unset	Unset
 row	~	Unset	main	default
 row	~.c	__StdSecretCredential	main	inherited
+
+== tests/hale/string_append_test.hl
+row	Doc@main1	Doc	main	default
 
 == tests/hale/struct_let_copies_test.hl
 root	App	the entry

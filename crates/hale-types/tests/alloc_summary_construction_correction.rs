@@ -743,8 +743,9 @@ fn own_entries_run_to_exit_programs() {
     // builds its messages, and 20: `tests/hale/u256_codec_test.hl`, whose
     // codecs of 256-bit integers decode the same way (GH #1934); 21:
     // `tests/hale/api_map_wrong_kind_test.hl`, whose wire maps decode the
-    // same way (GH #1944).
-    assert_eq!(moved, 21, "the run-to-exit programs among the targets that lose a site");
+    // same way (GH #1944); 22: `tests/hale/string_append_test.hl`, whose
+    // `main` appends to Strings in its loops (GH #1947).
+    assert_eq!(moved, 22, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1054,6 +1055,12 @@ fn own_entries_run_to_exit_programs() {
             // the property test's copy of the per-byte escaper as it was:
             // its `\u00XX` digits were a concatenation per control byte
             "tests/hale/json_escape_runs_test.hl: old_hex_byte StringConcat @7937..7972 InvokedUnboundedly",
+            // `tests/hale/string_append_test.hl`: the appending assignments
+            // its loops make, to a local and to a field (GH #1947)
+            "tests/hale/string_append_test.hl: build StringConcat @705..774 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: build StringConcat @705..739 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: build StringConcat @705..724 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: Doc::build StringConcat @1200..1241 InUnboundedLoop",
             // `tests/hale/u256_arith_test.hl`: the parse refusals it loops over
             // build their assertion messages in the loop (GH #1934)
             "tests/hale/u256_arith_test.hl: conversions StringConcat @9516..9542 InUnboundedLoop",

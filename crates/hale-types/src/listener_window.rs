@@ -133,7 +133,7 @@ fn visit_or<'a>(d: &'a OrDisposition, f: &mut dyn FnMut(Visited<'a>)) {
     }
 }
 
-pub(crate) fn visit_stmt<'a>(s: &'a Stmt, f: &mut dyn FnMut(Visited<'a>)) {
+pub fn visit_stmt<'a>(s: &'a Stmt, f: &mut dyn FnMut(Visited<'a>)) {
     f(Visited::Stmt(s));
     match s {
         Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => visit_expr(value, f),

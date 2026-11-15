@@ -24,6 +24,7 @@ pub mod alloc_routing;
 pub mod arrangement;
 pub mod alloc_summary;
 pub mod iteration_reclaim;
+pub mod string_append;
 pub mod binding_rows;
 pub mod borrow_lifetime;
 pub mod bare_fallible;
@@ -104,7 +105,7 @@ pub(crate) mod listener_window;
 /// program holds, for a reader outside the crate that needs the node
 /// under a position (the LSP's goto-definition).
 pub mod expr_walk {
-    pub use crate::listener_window::{for_each_expression_root, visit_block, visit_expr, Root, Visited};
+    pub use crate::listener_window::{for_each_expression_root, visit_block, visit_expr, visit_stmt, Root, Visited};
 }
 pub mod unit_graph;
 pub mod units;

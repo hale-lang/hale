@@ -61,6 +61,27 @@ interface Handler {
 
 Hale interfaces use structural satisfaction: any locus that defines `fn handle(req: std::http::Request) -> std::http::Response` satisfies `std::http::Handler` without an explicit `impl` declaration. Conversely, a parameter typed as `Handler` exposes only `h.handle(req)`—accessing concrete locus fields (such as `h.routes`) is a compile-time error.
 
+### Building a Response Body
+
+A body assembled from many pieces is built by appending to one local and handing it to the `Response` once. Appending to a local is linear in the body's size (see [Strings & Text](../basics/strings.md#building-strings-in-a-loop)), as long as the loop reads the growing text only as an operand of `+`, a comparison or `len`:
+
+```hale
+locus Rows {
+    params { n: Int = 3; }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let mut body = "";
+        let mut i = 0;
+        while i < self.n {
+            body = body + "row " + to_string(i) + "\n";
+            i = i + 1;
+        }
+        return std::http::Response { status: 200, body: body };
+    }
+}
+```
+
+Passing `body` to a function inside the loop, or appending to a field of a record (`resp.body = resp.body + row`), copies the whole body on every iteration; `hale check` warns on both. For a JSON body of records, `T::api_encode` writes it in one pass.
+
 ---
 
 ## 2. Concurrent Serving

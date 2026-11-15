@@ -21,7 +21,8 @@ Inside any locus method or bus handler, a scratch sub-region opens on entry and 
 | Scalar field or array-element write (`self.x = v`, `self.arr[i] = v`) | Overwritten in place | Zero |
 | Whole-field replace in a method or handler (`self.latest = Thing { ... }`) | Old `String`/`Bytes` and nested records/tuples/arrays retire at return and recycle | Bounded by peak value size |
 | Fixed scalar scratch array (`let mut t: [Int; 16] = [0; 16];` indexed via `t[i]`) | Allocated on CPU stack frame (up to 8 KiB per function) | Zero |
-| String concatenation in a loop (`out = out + row`) | Allocates and copies prefix on every iteration | Quadratic within scratch |
+| Appending to a local or a `self` field in a loop (`out = out + row`, `out += row`) | Appends into a buffer the place owns, grown by half again when full | Linear in the text |
+| Appending in a loop that also hands the text to a call, or to another place (`rec.body = rec.body + row`) | Copies the whole text on every iteration | Quadratic within scratch (flagged by `hale check`) |
 | Growing `@form(vec)` / `@form(hashmap)` in an unbounded loop or handler | Appends to locus capacity slot until dissolve | Unbounded (flagged by `hale check`) |
 | `let`-bound locus or `BytesBuilder` constructed inside a loop or handler | Allocates a new region or heap buffer per iteration | Unbounded in loops / high churn |
 | `accept(c: Conn)` without `release(c: Conn)` on a daemon | Accepted child arena stays resident until parent dissolves | Unbounded with connection count |
@@ -64,17 +65,17 @@ Because a non-scratch free `fn` allocates from its caller's region, stack placem
 
 ## Avoiding Loop Accumulation
 
-### Building Strings and Buffers Incrementally (`BytesBuilder`)
+### Building Strings and Buffers Incrementally
 
-Concatenating strings in a loop (`out = out + render_row(i)`) allocates a fresh string on every iteration while keeping all previous intermediates alive in scratch until the function returns. This produces quadratic memory usage even in a single call:
+An appending assignment (`out = out + render_row(i)`, `out += …`, `out = f"{out}…"`) on a local declared `let mut`, or on a `String` field of `self`, appends into a buffer that place owns and grows geometrically, so it is linear in time and memory (spec/stdlib.md § "Building a String"). Before GH #1947 every `+` made a new String that stayed in scratch until the function returned, and the issue's loop of 44-byte rows peaked as follows; it now holds the text once:
 
-| Output Size | Rows (500 B each) | `out = out + row` Peak RSS | `BytesBuilder` Peak RSS |
+| Output Size | Appends | Before (peak RSS) | Now (peak RSS) |
 |---|---|---|---|
-| 500 KB | 1,000 | +250 MB | +2 MB |
-| 1 MB | 2,000 | +990 MB | +4 MB |
-| 2 MB | 4,000 | +3.9 GB | +8 MB |
+| 43 KB | 1,000 | 80 MB | 3.1 MB |
+| 175 KB | 4,000 | 1.18 GB | 3.5 MB |
+| 350 KB | 8,000 | 4.5 GB | 4.0 MB |
 
-Use `std::bytes::BytesBuilder` (or `std::json::Builder` for JSON) to grow a single extensible buffer in place (Styleguide rule S15):
+The buffer is the local's only while nothing else holds the text: a read that may keep the value (the local passed to a call, bound, stored or returned) gives it up, and the next append copies the text first. Inside the loop, read the growing text only as an operand of `+`, a comparison or `len`, and hand it on after the loop. A loop that appends and also hands the text to a call, and an append to any place but a local or a `self` field, copy the whole text each iteration; the hot-path survey flags both. For those, and for a buffer held across calls, use `std::bytes::BytesBuilder` (or `std::json::Builder` for JSON) to grow a single extensible buffer in place (Styleguide rule S15):
 
 ```hale
 fn render_row(i: Int) -> String {
@@ -155,6 +156,7 @@ The default survey warns on:
 - **Unbounded collection growth**: Calling `.push(x)` on `@form(vec)` or `.set(x)` on `@form(hashmap)` in an unbounded loop or handler (where the receiver has a declared type). Replace with capacity-bounded `@form(ring_buffer)` or `@form(lru_cache)`.
 - **Per-iteration / per-message heavy allocations**: Instantiating a `let`-bound locus literal, calling a factory function that returns a locus (`let m = zeros(r, c)` or `mat::zeros(r, c)`), or creating a `std::bytes::BytesBuilder` inside a loop or bus handler. (Unbound statement-level calls reclaim immediately and do not warn.)
 - **Allocating socket reads in loops**: Calling `recv`, `recv_bytes`, or `recv_with_source` inside a loop. Use `recv_into` with a hoisted `BytesBuilder` instead.
+- **Appends that copy the whole text**: An appending assignment (`out += row`) in a loop that also passes `out` to a call, binds, stores or returns it, or an append to a place other than a local or a `self` field (`rec.body = rec.body + row`). Each iteration copies the whole String; read the local after the loop, build in a local, or use a `BytesBuilder`.
 - **Missing `release` on daemon parents**: Declaring `accept(c: C)` without `release(c: C)` on a locus whose `run()` loops indefinitely.
 
 > [!NOTE]

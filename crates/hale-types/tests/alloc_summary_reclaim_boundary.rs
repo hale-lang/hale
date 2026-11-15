@@ -664,4 +664,5 @@ const PINNED: &[&str] = &[
     "tests/hale/sigterm_no_live_drain_reader_test.hl: 0 go, 0 appear; dump 3 tags, 13 reclaim, 0 verdicts",
     "tests/hale/sigterm_runs_drain_hook_test.hl: 0 go, 0 appear; dump 1 tags, 15 reclaim, 0 verdicts",
     "tests/hale/str_index_of_from_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/string_append_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 3 verdicts",
 ];
