@@ -18,3 +18,6 @@
 #1966 | or_generic_fallible.repro | hale can't compile this yet: `_` over call to unknown fn `_`
 #1966 | or_on_field_read.repro | hale can't compile this yet: `_` requires a fallible call expression; got a field read
 #1966 | or_substitute_type.repro | `_` substitute type mismatch: expected T, got T
+#1974 | generic_perspective_arg.repro | hale can't compile this yet: a generic fn specialized at `_`: a generic argument is a primitive or a declared type
+#1975 | generic_interface_locus_arg.repro | hale can't compile this yet: generic fn `_` arg # type mismatch after monomorphization: expected T, got T
+#1976 | generic_fn_as_value.repro | hale can't compile this yet: unknown identifier `_`
