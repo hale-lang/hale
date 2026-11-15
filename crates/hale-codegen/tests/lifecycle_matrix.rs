@@ -1005,7 +1005,7 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
     if asan {
         let abin = harness::unique_bin(&["lcmatrix_asan_", &slug(c)].concat());
         harness::build_source_asan(&p.src, &abin);
-        let arun = run_bin(&abin, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+        let arun = run_bin(&abin, &[("ASAN_OPTIONS", harness::ASAN_LEAKS), ("LOTUS_NO_CHUNK_POOL", "1")]);
         let _ = std::fs::remove_file(&abin);
         let report = [arun.stdout.as_str(), arun.stderr.as_str()].concat();
         let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();

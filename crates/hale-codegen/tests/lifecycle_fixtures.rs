@@ -2205,7 +2205,7 @@ fn l19_cross_pool_queued_run_canceled_under_asan() {
     let file = "l19_cross_pool_queued_run_canceled.hl";
     let bin = harness::unique_bin("hale_lifecycle_asan_l19_cross_pool");
     harness::build_source_asan(&source(file), &bin);
-    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::ASAN_LEAKS), ("LOTUS_NO_CHUNK_POOL", "1")]);
     let _ = std::fs::remove_file(&bin);
     let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
     let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
@@ -2226,7 +2226,7 @@ fn l19_pinned_yield_replaces_child_under_asan() {
     let file = "l19_pinned_yield_replaces_child.hl";
     let bin = harness::unique_bin("hale_lifecycle_asan_l19_pinned_yield");
     harness::build_source_asan(&source(file), &bin);
-    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::ASAN_LEAKS), ("LOTUS_NO_CHUNK_POOL", "1")]);
     let _ = std::fs::remove_file(&bin);
     let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
     assert!(
@@ -2244,7 +2244,7 @@ fn l19_pinned_yield_replaces_child_under_asan() {
 fn assert_clean_under_asan(file: &str, tag: &str, printed: fn(&Ran) -> bool) {
     let bin = harness::unique_bin(&format!("hale_lifecycle_asan_{tag}"));
     harness::build_source_asan(&source(file), &bin);
-    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::ASAN_LEAKS), ("LOTUS_NO_CHUNK_POOL", "1")]);
     let _ = std::fs::remove_file(&bin);
     let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
     let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
@@ -2334,7 +2334,7 @@ fn handler_reclaim_and_run_control_under_asan_both_dispatch_modes() {
             build_opts::build_source(&source(file), &bin, &options).expect("ASan build");
             let image = std::fs::read(&bin).expect("read ASan binary");
             assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");
-            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::ASAN_LEAKS), ("LOTUS_NO_CHUNK_POOL", "1")]);
             let _ = std::fs::remove_file(&bin);
             let report = format!("{}\n{}", ran.stdout, ran.stderr);
             for marker in SANITIZER_MARKERS {
@@ -2376,7 +2376,7 @@ fn retired_run_self_reclaim_has_one_owner_under_asan() {
                 build_opts::build_source(&src, &bin, &options).expect("ASan build");
                 let image = std::fs::read(&bin).expect("ASan binary");
                 assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
-                let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+                let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::ASAN_LEAKS), ("LOTUS_NO_CHUNK_POOL", "1")]);
                 let _ = std::fs::remove_file(&bin);
                 let report = format!("{}\n{}", ran.stdout, ran.stderr);
                 for marker in SANITIZER_MARKERS {
@@ -2424,7 +2424,7 @@ locus Kid {"#)
             build_opts::build_source(&src, &bin, &options).expect("ASan build");
             let image = std::fs::read(&bin).expect("ASan binary");
             assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
-            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::ASAN_LEAKS), ("LOTUS_NO_CHUNK_POOL", "1")]);
             let _ = std::fs::remove_file(&bin);
             let report = format!("{}\n{}", ran.stdout, ran.stderr);
             for marker in SANITIZER_MARKERS {

@@ -138,7 +138,7 @@ fn an_adopted_child_is_owned_by_the_field_and_adds_no_leak() {
     // === adopt adds no leak of its own ===========================
     let asan = build_asan("asan");
     let out = Command::new(&asan)
-        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .env("ASAN_OPTIONS", harness::ASAN_LEAKS)
         .output()
         .expect("run asan hale");
     let _ = std::fs::remove_file(&asan);
