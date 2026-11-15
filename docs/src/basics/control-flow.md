@@ -110,6 +110,7 @@ fn describe(n: Int) -> String {
 
 - **Exhaustiveness:** Every `match` is checked for exhaustiveness at compile time. Matching a `Bool` requires both `true` and `false`; matching an `enum` or set type ([Records & Data](../everyday/records.md)) requires covering every variant; matching open-ended types (`Int`, `String`) requires a `_` wildcard arm. Because `match` is exhaustive, a function can end with a `match` statement whose arms all `return`.
 - **Statement vs. expression:** `match` works as both a statement and an expression. Arms can be single expressions or `{ ... }` blocks (block-bodied arms still take a trailing comma).
+- **Flat patterns:** each part of a tuple pattern, like each value of a variant's pattern, is a binding, `_` or a literal (`(0, b) -> …`, `Shape::Line(l) -> …`). A nested pattern there (`((1, 2), 3)`, `(Light::Red, 3)`) is refused by `hale check`: bind the part and match the binding inside the arm.
 
 ### Condition `match` (Scrutinee-less `match`)
 

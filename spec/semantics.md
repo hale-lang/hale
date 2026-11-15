@@ -597,6 +597,20 @@ use, under whichever locus uses them, so one that builds an `I{}`
 some locus would post is rejected at the position. See `runtime.md`
 "Interest-based ownership (accept bubbling)."
 
+A cross-pool child is born on the owner's thread from a marshaled copy
+of its params, and nothing of it runs on the far side but that birth:
+each param must be a type the spawn marshals (a scalar of `Int`,
+`Float`, `Bool`, `Decimal`, `Duration` and `Time`, a `String`, a
+`Bytes`, a struct whose fields the bus carries, a fixed array of those),
+and the child keeps params, an optional `birth`, `drain` or `dissolve`,
+and a contract, never a non-empty `run()`, bus subscriptions, closures,
+capacity slots or an `accept` of its own. `hale check` refuses a child
+that breaks either, once, at the first literal the bubble plan posts
+across ("cross-pool spawn \`Ship{ }\`: it is born on \`World\`'s thread
+from a marshaled copy of its params, and hale can't compile this child
+that way yet: its param \`t\` is \`(Int, Int)\`, a tuple, …"); the build
+refused it after a passing check (GH #1942).
+
 **An interface `accept`.** `accept(c: I)` may name an interface
 (`spec/types.md` § Interface types). It accepts every locus that
 satisfies `I` — conformance as a coercion into `I` judges it, error
@@ -4723,6 +4737,15 @@ the field ("topic \`Ev\` declares \`payload: Msg\`, whose field \`x\` is
 a tuple (\`(Int, Int)\`), which the wire format does not carry").
 Until 2026-10-13 the check admitted every field and the build refused
 these, and every enum field, with no file or line.
+A literal subject's `of type` struct (`subscribe "m" as on_m of type
+M`) is held to the same rule, once per payload type, at the first clause
+that names it, and an array's element is a scalar or a struct, never an
+enum (a payload-free enum's tag travels alone): both reached the build
+until GH #1942. So does a binding's transport: a native `shm_ring`
+holds fixed-size struct slots, so a topic whose payload is an enum is
+refused at its entry, and a `layout:` ring hands its subscriber one
+record at a time, so a `Drain<T>` batch handler on one is refused at
+the `subscribe`.
 
 **Size.** A delivery is as large as its fields make it, and local
 delivery is bounded only by the payload arena (`spec/memory.md`):
@@ -4751,6 +4774,25 @@ For each `closure NAME { LEFT ~~ RIGHT within TOL; epoch
 3. If `<= TOL`: closure passes silently.
 4. If `> TOL`: flips the locus's "exploded" flag; emits a
    typed `ClosureViolation` event.
+
+The band is computed in one type: LEFT, RIGHT and TOL are all `Int`
+(a `Duration`, a `Decimal`) or all `Float`. An `Int` beside a `Float`
+— most often a literal beside `mean(self.x)`, which is a `Float` — is
+refused by `hale check` at the `Int` ("closure \`band\`: the band is a
+\`Float\` (the other side is one), and its tolerance is an \`Int\`; …
+write it as a \`Float\`").
+
+The accumulators `sum(…)`, `count()` and `mean(…)` are a closure
+assertion's, sampled once per epoch, and each accumulates one field of
+the locus (`sum(self.x)`, `mean(self.x)`). Outside a closure assertion
+they name nothing the build can call, an accumulator over a wider
+expression (`sum(self.a + self.b)`) has no slot to sample, and
+`prod(…)`, which the grammar reserves, has no lowering: `hale check`
+refuses each at the accumulator ("\`sum(…)\` is a closure assertion's
+accumulator …, and is compiled only there"; "hale can't compile the
+\`prod(…)\` accumulator yet"), where the build refused it after a
+passing check (GH #1942). A running product, or a sum of two fields,
+is kept in a field the locus updates, and asserted on.
 
 Epoch boundaries:
 
