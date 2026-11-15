@@ -1,0 +1,15 @@
+// A locus as a generic fn's type argument.
+// == main/main.hl ==
+locus L {
+    params {
+        n: Int = 1;
+    }
+}
+
+fn id<T>(x: T) -> T {
+    return x;
+}
+
+fn main() {
+    let l = id(L { });
+}
