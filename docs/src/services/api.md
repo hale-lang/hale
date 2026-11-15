@@ -183,7 +183,7 @@ Every type reachable from an `rpc` row is encoded and decoded strictly. Unknown 
 | `Duration` | Integer nanoseconds (`1500000000` = `1.5s`) | `optional int64` (nanoseconds) | `wrong_type` |
 | `bounded[T; N]` | JSON array of `0..=N` elements (optional on input; defaults to `[]`) | `repeated T` | Length > `N` (`too_long`) |
 | `[T; N]` | Fixed JSON array of exactly `N` elements | `repeated T` | Length > `N` (`too_long`), length < `N` (`too_short`) |
-| `bounded[T; N] indexed_by k` | JSON object keyed by `T.k` (`{"db": {"status": "up"}}`) | `map<string, T>` | Length > `N` (`too_long`), repeated key (`duplicate_key`) |
+| `bounded[T; N] indexed_by k` | JSON object keyed by `T.k` (`{"db": {"status": "up"}}`) | `map<string, T>` | Length > `N` (`too_long`), repeated key (`duplicate_key`), a map that is no object or a member that is no record, such as an array (`wrong_type`) |
 | `bounded[T; N] indexed_by k -> v` | JSON object mapping `T.k` to `T.v` (`{"db": "ok"}`) | `map<string, V>` | Length > `N` (`too_long`), repeated key (`duplicate_key`) |
 | `std::json::Value` | Arbitrary well-formed JSON (<= 64 levels deep, <= 64 KiB) | `optional string` | Invalid JSON, depth > 64, or size > 64 KiB |
 | Any field with a default | `null` is the key omitted: the declared default, whatever its shape (a literal, an enum variant, a nested record's declared default); a field with no default is `missing_field` | Declared as-is | A `std::json::Value` field alone holds `null` as its text |
@@ -327,7 +327,7 @@ params {
 ### Lifecycle, Receivers, and Execution Order
 
 - **Declaration & Birth Order**: `api::serve` must be the default initializer of a locus `params` field (calling `api::serve` inside a method body is a compile error). Declare receiver loci *before* the `api::Exposure` param so they are born before the exposure starts accepting calls.
-- **Receiver Binding (`receivers:`)**: Maps each locus type referenced in the surface to a locus instance held by the enclosing locus. When the holder has exactly one instance of a receiver type, `receivers:` can be omitted; if two instances of the same type exist, omitting `receivers:` is a compile error.
+- **Receiver Binding (`receivers:`)**: Maps each locus type referenced in the surface to a locus instance held by the enclosing locus. When the holder has exactly one instance of a receiver type, `receivers:` can be omitted; if two instances of the same type exist, omitting `receivers:` is a compile error. One exposure dispatches to at most 100 receiver types; a surface whose rows name more is refused at `receivers:`, and is served as two surfaces.
 - **Imported Surfaces**: To serve a surface declared in an imported library seed, pass `lib::SurfaceName` to `api::serve(lib::Svc, ...)`. The live description reports its base name (`Svc`).
 - **Lifecycle Controls**:
   - `self.public.wait()` (or `std::api::run_until_stopped(self.public)`) parks until the exposure stops or the process begins draining. If `main locus` omits `run()`, the compiler generates this wait automatically.

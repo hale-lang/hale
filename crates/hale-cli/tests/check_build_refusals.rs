@@ -192,3 +192,127 @@ fn an_imported_fallible_fn_read_as_a_value_is_refused_at_the_path() {
     assert!(ok, "check: {out}");
     assert!(built, "build: {bout}");
 }
+
+/// GH #1945: `or raise` hands the call's error on as the enclosing fn's
+/// own, so the two are one type. A mismatch passed the check and the build
+/// refused it in lowering's terms (`TypeRef("IoError")`); the check
+/// refuses it at the `or raise`, naming both types and the mapping. The
+/// mapping (`or fail CryptoError { … }`, the call's error in scope as
+/// `err`) checks and builds, and so does a raise of the declared type
+/// across a seed (`fallible(lib::Oops)` raising `lib::parse`'s error).
+#[test]
+fn an_or_raise_of_another_error_type_is_refused_at_the_or_raise() {
+    refused(
+        "fn seed() -> Bytes fallible(CryptoError) {\n    let b = std::os::getrandom(4) or raise;\n    return b;\n}\nfn main() { let b = seed() or { return; }; println(len(b)); }\n",
+        "or_raise_mismatch",
+        "2:13",
+        "`or raise` hands on the call's error, of type `IoError`, and the enclosing fn is declared `fallible(CryptoError)`: a raised error is the fn's own type. Map it, `or fail CryptoError { … }` (the call's error is in scope as `err`), or declare the fn `fallible(IoError)`",
+    );
+    let mapped = "fn seed() -> Bytes fallible(CryptoError) {\n    let b = std::os::getrandom(4) or fail CryptoError { kind: err.kind, detail: err.detail };\n    return b;\n}\nfn main() { let b = seed() or { return; }; println(len(b)); }\n";
+    let ((ok, out), (built, bout)) = check_and_build(mapped, "or_raise_mapped");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+    let lib = "type Oops { why: String = \"\"; }\n\
+               fn parse(s: String) -> Int fallible(Oops) { if s == \"bad\" { fail Oops { why: s }; } return 7; }\n";
+    let main = "import \"./lib\" as lib;\n\nfn twice(s: String) -> Int fallible(lib::Oops) { let n = lib::parse(s) or raise; return n * 2; }\n\nfn main() { println(twice(\"ok\") or 0); }\n";
+    let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", main), ("lib/lib.hl", lib)], "or_raise_cross_seed");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1945: a stdlib error type spelled by its path builds wherever its
+/// bare name does. `fallible(std::crypto::CryptoError)` checked clean and
+/// the build refused it, unlocated ("not in stdlib path-renames table");
+/// each path the shadowing law suggests now names the same builtin, so a
+/// raise of the stdlib call's error through it is the same type too.
+#[test]
+fn a_qualified_stdlib_error_type_builds_where_its_bare_name_does() {
+    let src = "fn sign(k: Bytes) -> Bytes fallible(std::crypto::CryptoError) {\n    let s = std::crypto::ed25519_sign(k, std::bytes::from_string(\"m\")) or raise;\n    return s;\n}\n\
+               fn read(p: String) -> String fallible(std::io::IoError) { let t = std::io::fs::read_file(p) or raise; return t; }\n\
+               fn parse(s: String) -> Int fallible(std::str::ParseError) { let n = std::str::parse_int(s) or raise; return n; }\n\
+               fn main() {\n    let s = sign(std::bytes::from_string(\"short\")) or { println(err.kind); return; };\n    println(len(s));\n    println(read(\"/nonexistent/x\") or \"none\");\n    println(parse(\"12\") or 0);\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "qualified_errors");
+    assert!(ok, "check: {out}");
+    assert!(built && !bout.contains("path-renames"), "build: {bout}");
+}
+
+/// GH #1944: an `indexed_by` field of a `json:`-tagged record had codecs
+/// that called helpers nothing declared, so the check refused the program
+/// naming them (`__json_parse_Pair__by_k`) with no location, and warned of
+/// a hot-path copy inside them. The record's `from_json` / `to_json` now
+/// carry the map, and no finding is raised inside the generated codec.
+#[test]
+fn an_indexed_by_field_of_a_json_tagged_record_checks_and_builds() {
+    let src = "type Pair { k: String `json:\"k\"`; v: Int `json:\"v\"`; }\n\
+               type Doc { ps: bounded[Pair; 4] indexed_by k `json:\"ps\"`; }\n\
+               fn main() {\n    let d = Doc::from_json(\"{\\\"ps\\\":{\\\"a\\\":{\\\"v\\\":1}}}\") or { println(err.kind); return; };\n    println(Doc::to_json(d));\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "indexed_by_json_tag");
+    assert!(ok && !out.contains("__json_") && !out.contains("hot-path"), "check: {out}");
+    assert!(built && !bout.contains("hot-path"), "build: {bout}");
+}
+
+/// GH #1946: an exposure's receivers are slots of its runtime, numbered
+/// within its key. The slots were 16, and a serve site with a 17th
+/// receiver type passed the check, was left unexpanded, and failed the
+/// build ("path call `api::serve` in expression position") — the check
+/// skipping its validation on the way. 17 builds now, and past the
+/// slots (100) the check refuses the site at its `receivers:`.
+#[test]
+fn api_serve_has_no_seventeen_receiver_cliff() {
+    let serve = |n: usize| {
+        let mut s = String::from("type Ping { n: Int; }\napi Public {\n");
+        for i in 0..n {
+            s.push_str(&format!("    rpc R{i}::ping;\n"));
+        }
+        s.push_str("}\nlocus Grants { fn holds(p: std::api::Principal, r: String) -> Bool { return true; } }\n");
+        for i in 0..n {
+            s.push_str(&format!("locus R{i} {{ fn ping(p: Ping) -> Ping {{ return p; }} }}\n"));
+        }
+        s.push_str("main locus Desk {\n    params {\n        g: Grants = Grants { };\n");
+        for i in 0..n {
+            s.push_str(&format!("        r{i}: R{i} = R{i} {{ }};\n"));
+        }
+        let receivers: Vec<String> = (0..n).map(|i| format!("R{i}: self.r{i}")).collect();
+        s.push_str("        fixture: std::api::test::Rpc = std::api::test::Rpc { roles: self.g };\n");
+        s.push_str(&format!(
+            "        public: api::Exposure = api::serve(Public, self.fixture, as: \"public\", receivers: {{ {} }}, bound: 8, on_full: refuse);\n",
+            receivers.join(", ")
+        ));
+        s.push_str("    }\n    run() { self.public.stop(); }\n}\nfn main() { Desk { }; }\n");
+        s
+    };
+    let ((ok, out), (built, bout)) = check_and_build(&serve(17), "serve_17");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+    let ((ok, out), (built, bout)) = check_and_build(&serve(101), "serve_101");
+    assert!(
+        !ok && out.contains("main.hl:")
+            && out.contains("type error: serve of `Public` as `public`: its rows name 101 receiver types, and an exposure dispatches to at most 100"),
+        "check: {out}"
+    );
+    assert!(!built && !bout.contains("codegen error"), "build: {bout}");
+}
+
+/// GH #1943, STABILITY.md § Deprecation: `std::json::Builder.field` and
+/// `.value` write their argument raw, as they always have, and the spec
+/// says they take a string; v0.33 makes them quote. Until then a call
+/// warns `deprecated:` at the call, naming the raw and the string
+/// variants, and still checks, builds and writes what it wrote before.
+#[test]
+fn a_builder_field_or_value_call_warns_deprecated_and_writes_raw() {
+    let src = "fn main() {\n    let b = std::json::Builder { };\n    b.begin_object();\n    b.field(\"n\", \"42\");\n    b.begin_array_field(\"xs\");\n    b.value(\"1\");\n    b.end_array();\n    b.end_object();\n    println(b.result());\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "builder_deprecated");
+    assert!(ok, "check: {out}");
+    assert!(
+        out.contains("main.hl:4:5: warning: deprecated: `std::json::Builder.field(name, value)` writes `value` raw")
+            && out.contains("write `raw_field(name, json)` for encoded JSON or `string_field(name, s)` for a string")
+            && out.contains("main.hl:6:5: warning: deprecated: `std::json::Builder.value(v)` writes `v` raw")
+            && out.matches("deprecated:").count() == 2,
+        "check: {out}"
+    );
+    assert!(built, "build: {bout}");
+    // the raw and string variants raise nothing
+    let quiet = "fn main() {\n    let b = std::json::Builder { };\n    b.begin_object();\n    b.raw_field(\"n\", \"42\");\n    b.string_field(\"s\", \"x\");\n    b.begin_array_field(\"xs\");\n    b.raw_value(\"1\");\n    b.string_value(\"y\");\n    b.end_array();\n    b.end_object();\n    println(b.result());\n}\n";
+    let ((ok, out), _) = check_and_build(quiet, "builder_quiet");
+    assert!(ok && !out.contains("deprecated"), "check: {out}");
+}

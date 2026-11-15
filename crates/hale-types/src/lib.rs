@@ -43,6 +43,7 @@ pub mod fleet;
 pub mod evidence;
 pub mod frontier;
 pub mod check;
+pub mod deprecations;
 pub mod closure_events;
 pub mod correspondence;
 pub mod handler_routing;

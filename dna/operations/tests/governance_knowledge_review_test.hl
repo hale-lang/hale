@@ -60,7 +60,7 @@ fn candidate(repo: String, kind: String, author: String, target: String, text: S
     append(j, "knowledge.proposed", digest, b.result());
     let q = std::json::Builder { };
     q.begin_object();
-    q.field("question", dna::record_json_quote("Exact candidate? " + text));
+    q.raw_field("question", dna::record_json_quote("Exact candidate? " + text));
     q.string_field("subject_digest", digest);
     q.string_field("knowledge_digest", digest);
     q.string_field("required_authority", "board");

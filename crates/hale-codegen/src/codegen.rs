@@ -1487,6 +1487,32 @@ fn compile_cached_runtime_object(
     compile_cached_runtime_object_with(options, &["clang".to_string()], "", source, stem, cflags)
 }
 
+/// Whether an object compiled with `cflags` is tied to the release of
+/// the clang that links it: a sanitizer's runtime checks its version by
+/// symbol name, and LTO bitcode is read by the linking clang's LLVM.
+fn binds_to_its_compiler(cflags: &[String]) -> bool {
+    cflags
+        .iter()
+        .any(|f| f.starts_with("-fsanitize=") || f.starts_with("-flto"))
+}
+
+/// What the host `clang` says it is (`clang --version`), asked once per
+/// process: the runtime-object key of an object that
+/// [`binds_to_its_compiler`]. A clang that cannot be run answers the
+/// empty string, and the compile that follows reports it.
+fn host_clang_identity() -> &'static str {
+    static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    IDENTITY.get_or_init(|| {
+        Command::new("clang")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    })
+}
+
 /// [`compile_cached_runtime_object`] with the C compiler spelled out:
 /// `cc[0]` is the program and the rest its leading arguments (`zig cc
 /// -target aarch64-linux-gnu.2.31` for a cross build, GH #970), and
@@ -1508,12 +1534,28 @@ pub(crate) fn compile_cached_runtime_object_with(
     const RT_CACHE_VERSION: u64 = 1;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RT_CACHE_VERSION.hash(&mut h);
-    // The host `clang` hashes as it always has, so every cached object
-    // on disk stays valid; only another compiler changes the key.
+    // The host `clang` hashes as it always has for an ordinary object,
+    // which is plain machine code any clang links; only another
+    // compiler changes that key.
     let host_clang = cc.len() == 1 && cc[0] == "clang";
     if !host_clang {
         cc.hash(&mut h);
         cc_version.hash(&mut h);
+    } else if binds_to_its_compiler(cflags) {
+        // GH #1952: a sanitizer object is not. It calls the sanitizer
+        // runtime's version check by name
+        // (`__asan_version_mismatch_check_apple_clang_1700`), and the
+        // link pulls the runtime of the clang that links it, so an object
+        // cached by the clang a toolchain update replaced no longer links
+        // (Apple clang 17's objects against clang 21's runtime). LTO
+        // bitcode is read by the linking clang's LLVM the same way. The
+        // host clang's release is part of those keys; `cc_version`
+        // stands in for it when a caller (a test) names one.
+        if cc_version.is_empty() {
+            host_clang_identity().hash(&mut h);
+        } else {
+            cc_version.hash(&mut h);
+        }
     }
     // An SDK chosen for the host clang moves the key; with none chosen
     // the key is what it always was.
@@ -39582,8 +39624,9 @@ mod tests {
     /// `runtime_object_key`, read from the cached object's name over a
     /// one-line translation unit (the runtime's own C would take seconds
     /// to compile): the source, a flag, and another compiler's version
-    /// move it; the host `clang`'s version, the stem and the cache's
-    /// place keep it.
+    /// move it; the host `clang`'s version moves it for a sanitizer object
+    /// (GH #1952) and keeps it otherwise, as the stem and the cache's
+    /// place do.
     #[test]
     fn runtime_object_key_moves_with_source_flags_and_compiler_and_keeps_the_host_clang() {
         let dir = std::env::temp_dir().join(format!("hale-codegen-rt-key-{}", std::process::id()));
@@ -39604,6 +39647,15 @@ mod tests {
         let other = ["clang", "-w"];
         assert_ne!(key(&a, &other, "1", "int x;\n", "t", &["-O1"]), key(&a, &other, "2", "int x;\n", "t", &["-O1"]), "another compiler's version");
         assert_eq!(base, key(&a, &["clang"], "clang version 99", "int x;\n", "t", &["-O1"]), "the host clang's version");
+        // GH #1952: a sanitizer object calls its runtime's version check
+        // by name, so the host clang's release moves its key.
+        let asan = ["-O1", "-fsanitize=address"];
+        assert_ne!(
+            key(&a, &["clang"], "clang version 17", "int x;\n", "t", &asan),
+            key(&a, &["clang"], "clang version 21", "int x;\n", "t", &asan),
+            "the host clang's version, under a sanitizer"
+        );
+        assert!(!host_clang_identity().is_empty(), "the host clang answers --version");
         assert_eq!(base, key(&a, &["clang"], "", "int x;\n", "u", &["-O1"]), "the stem");
         assert_eq!(base, key(&options("b"), &["clang"], "", "int x;\n", "t", &["-O1"]), "the cache's place");
         let _ = std::fs::remove_dir_all(&dir);

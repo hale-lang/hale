@@ -1,0 +1,80 @@
+// GH #1943: spec/stdlib.md § json::Builder documents an example and the
+// bytes it writes; written with `string_field` / `string_value`, which
+// quote and escape a string, it writes exactly those bytes. `raw_field` /
+// `raw_value` write JSON the caller encoded already, as given. `field` and
+// `value` still write raw, as they always have, and are deprecated (a call
+// warns `deprecated:`): v0.33 makes them quote. The separators are `": "`
+// and `", "`, pinned: documents the Builder wrote are stored and matched as
+// text.
+
+fn main() {
+    // the spec's example, verbatim
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", "alice");
+    b.int_field("age", 30);
+    b.begin_array_field("tags");
+    b.string_value("admin"); b.string_value("ops");
+    b.end_array();
+    b.end_object();
+    let out = b.result();
+    std::test::assert_eq_str(
+        out,
+        "{\"name\": \"alice\", \"age\": 30, \"tags\": [\"admin\", \"ops\"]}",
+        "the documented bytes",
+    );
+    std::test::assert(std::json::valid(out), "the example is JSON");
+
+    // a string is escaped, in a field and in an element
+    let e = std::json::Builder { };
+    e.begin_object();
+    e.string_field("q", "say \"hi\"\n");
+    e.begin_array_field("xs");
+    e.string_value("a\\b");
+    e.end_array();
+    e.end_object();
+    std::test::assert_eq_str(
+        e.result(),
+        "{\"q\": \"say \\\"hi\\\"\\n\", \"xs\": [\"a\\\\b\"]}",
+        "string_field and string_value escape their string",
+    );
+    std::test::assert(std::json::valid(e.result()), "escaped output is JSON");
+
+    // JSON already encoded goes through the raw variants, byte for byte
+    let r = std::json::Builder { };
+    r.begin_object();
+    r.raw_field("n", "42");
+    r.raw_field("doc", "{\"k\": [1, 2]}");
+    r.begin_array_field("mixed");
+    r.raw_value("1.5");
+    r.raw_value("null");
+    r.string_value("s");
+    r.end_array();
+    r.end_object();
+    std::test::assert_eq_str(
+        r.result(),
+        "{\"n\": 42, \"doc\": {\"k\": [1, 2]}, \"mixed\": [1.5, null, \"s\"]}",
+        "raw_field and raw_value write their JSON as given",
+    );
+
+    // the other typed helpers
+    let t = std::json::Builder { };
+    t.begin_array();
+    t.string_value("x");
+    t.int_value(3);
+    t.bool_value(true);
+    t.null_value();
+    t.end_array();
+    std::test::assert_eq_str(t.result(), "[\"x\", 3, true, null]", "the typed array helpers");
+    let s = std::json::Builder { };
+    s.begin_object();
+    s.string_field("a", "x");
+    s.bool_field("c", false);
+    s.null_field("d");
+    s.end_object();
+    std::test::assert_eq_str(
+        s.result(),
+        "{\"a\": \"x\", \"c\": false, \"d\": null}",
+        "the typed field helpers",
+    );
+}

@@ -93,7 +93,7 @@ fn placed_body(body: String, h: dna::Host, key: String) -> String {
     while !it.done {
         let k = std::json::obj_key_string(it, body);
         if k != "host" && k != "provider" && k != "project" {
-            b.field(k, std::json::obj_value_raw(it, body));
+            b.raw_field(k, std::json::obj_value_raw(it, body));
         }
         it = std::json::object_next(it, body);
     }

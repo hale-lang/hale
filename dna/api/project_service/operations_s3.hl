@@ -540,7 +540,7 @@ fn s3_stop_local_body(ctx: HeadContext) -> Plan {
     b.string_field("released_by", released_by);
     b.int_field("exit_code", code);
     if len(released_text) > 0 { b.string_field("release", released_text); }
-    b.field(
+    b.raw_field(
         "record",
         if before.ok { record_evidence(root, before.id) } else { record_unread("", before.why) },
     );
@@ -1051,7 +1051,7 @@ fn s3_connections_json(journal: String) -> String {
         b.string_field("url", c.url);
         b.string_field("position", c.position);
         b.string_field("purpose", c.purpose);
-        b.field("classes", s3_classes_json(c.classes));
+        b.raw_field("classes", s3_classes_json(c.classes));
         b.string_field("state", s3_connection_state(c));
         b.end_object();
     }
@@ -1196,9 +1196,9 @@ fn s3_project_detail_json(ctx: HeadContext, root: String) -> String {
     let journal = r.text_at(r.head("journal").id);
     let b = std::json::Builder { };
     b.begin_object();
-    b.field("connections", s3_connections_json(journal));
-    b.field("handoffs", s3_handoffs_json(root, journal + s3_ledger_text(root)));
-    b.field("secrets", s3_secrets_json(journal));
+    b.raw_field("connections", s3_connections_json(journal));
+    b.raw_field("handoffs", s3_handoffs_json(root, journal + s3_ledger_text(root)));
+    b.raw_field("secrets", s3_secrets_json(journal));
     b.end_object();
     return b.result();
 }

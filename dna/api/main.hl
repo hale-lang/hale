@@ -19,7 +19,7 @@ locus Wire {
         b.string_field("digest", p.digest);
         b.string_field("name", p.name);
         b.string_field("kind", p.kind);
-        b.field("text", dna::record_json_quote(p.text));
+        b.raw_field("text", dna::record_json_quote(p.text));
         b.string_field("text_status", p.text_status);
         b.bool_field("text_available", p.text_available);
         b.string_field("author", p.author);
@@ -81,7 +81,7 @@ locus Wire {
         // For an ordinary Review the question is declared in Record itself;
         // no canonical practice receipt is involved. Restricted subjects have
         // already received a different status from the shared query layer.
-        b.field(
+        b.raw_field(
             "question",
             dna::record_json_quote(
                 if r.text_available || r.text_status == "not_applicable" { r.question } else { "" },
@@ -102,7 +102,7 @@ locus Wire {
         b.string_field("capabilities_url", API_PREFIX + "/" + source.identity + "/capabilities");
         b.end_object();
         b.end_array();
-        b.field("page", http.page(1, 0, 1, source.head));
+        b.raw_field("page", http.page(1, 0, 1, source.head));
         b.end_object();
         return b.result();
     }
@@ -155,7 +155,7 @@ locus Wire {
         let wire = CommandWire { };
         if definitions && wire.origin_valid(command_origin) {
             let drafts = DefinitionDraftWire { };
-            b.field("definition_drafts", drafts.capability());
+            b.raw_field("definition_drafts", drafts.capability());
         }
         b.bool_field("runtime_observation", false);
         b.bool_field("recursive_workflows", false);
@@ -655,18 +655,20 @@ locus Api {
                 if len(p.id) == 0 {
                     return http.error(404, "practice_not_found", "no such practice", false);
                 }
-                b.value(wire.practice(p));
+                b.raw_value(wire.practice(p));
             } else {
                 let r = if len(query.id) > 0 { q.review_of(query.id) } else { q.review_at(index) };
                 if len(r.id) == 0 {
                     return http.error(404, "review_not_found", "no such review", false);
                 }
-                b.value(wire.review(self.organization_candidates.review_row(command_context, r)));
+                b.raw_value(
+                    wire.review(self.organization_candidates.review_row(command_context, r)),
+                );
             }
             index = index + 1;
         }
         b.end_array();
-        b.field("page", http.page(query.limit, query.offset, total, source.head));
+        b.raw_field("page", http.page(query.limit, query.offset, total, source.head));
         b.end_object();
         // A redaction appended while receipt text was read invalidates the
         // entire response. The next request loads its suppression marker.
@@ -891,7 +893,7 @@ locus Api {
         b.string_field("kind", kind);
         b.string_field("review_id", query.id);
         b.string_field("candidate_digest", digest);
-        b.field("document", dna::record_json_quote(document));
+        b.raw_field("document", dna::record_json_quote(document));
         b.end_object();
         return http.success(context.source, b.result());
     }
@@ -972,12 +974,12 @@ locus Api {
                     false,
                 );
             }
-            b.value(q.row_json(row));
+            b.raw_value(q.row_json(row));
             i = i + 1;
         }
         b.end_array();
-        b.field("page", http.page(query.limit, query.offset, total, snapshot));
-        b.field("basis", q.basis_json()); b.end_object();
+        b.raw_field("page", http.page(query.limit, query.offset, total, snapshot));
+        b.raw_field("basis", q.basis_json()); b.end_object();
         let record = dna::MemoryRecord { repo: self.root };
         let record_now = record.head("journal");
         if !record_now.ok { return http.unreadable(record_now); }
@@ -1043,13 +1045,13 @@ locus Api {
                     false,
                 );
             }
-            b.value(q.row_json(row));
+            b.raw_value(q.row_json(row));
             i = i + 1;
         }
         b.end_array();
-        b.field("page", http.page(query.limit, query.offset, total, snapshot));
-        b.field("basis", q.basis_json());
-        b.field("ownership", q.ownership_json());
+        b.raw_field("page", http.page(query.limit, query.offset, total, snapshot));
+        b.raw_field("basis", q.basis_json());
+        b.raw_field("ownership", q.ownership_json());
         b.end_object();
         let record = dna::MemoryRecord { repo: self.root };
         let record_now = record.head("journal");

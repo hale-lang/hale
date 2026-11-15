@@ -309,53 +309,53 @@ locus GraphItems {
         }
         let b = std::json::Builder { };
         b.begin_object();
-        b.field("id", self.quote(i.id));
-        b.field("kind", self.quote(i.kind));
-        b.field("text", self.quote(i.text));
-        b.field("author", self.quote(i.author));
-        b.field("projection_state", self.quote(i.provenance));
+        b.raw_field("id", self.quote(i.id));
+        b.raw_field("kind", self.quote(i.kind));
+        b.raw_field("text", self.quote(i.text));
+        b.raw_field("author", self.quote(i.author));
+        b.raw_field("projection_state", self.quote(i.provenance));
         b.string_field("revision", to_string(i.revision));
         b.bool_field("accepted", i.accepted);
-        b.field("name", self.quote(i.name));
-        b.field(
+        b.raw_field("name", self.quote(i.name));
+        b.raw_field(
             "supersedes",
             self.quote(if self.policy.visible(i.supersedes) { i.supersedes } else { "" }),
         );
         b.string_field("ratified_seq", to_string(row.ratified_seq));
-        b.field("source_provenance", "null");
+        b.raw_field("source_provenance", "null");
         b.end_object();
         return self.append(b.result());
     }
     fn edge(e: dna::KnowledgeEdge) -> Bool {
         let key = std::json::Builder { };
         key.begin_array();
-        key.value(self.quote(e.from));
-        key.value(self.quote(e.to));
-        key.value(self.quote(e.rel));
+        key.raw_value(self.quote(e.from));
+        key.raw_value(self.quote(e.to));
+        key.raw_value(self.quote(e.rel));
         key.end_array();
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("id", dna::digest_of(key.result()));
-        b.field("from_id", self.quote(e.from));
-        b.field("to_id", self.quote(e.to));
-        b.field("rel", self.quote(e.rel));
+        b.raw_field("from_id", self.quote(e.from));
+        b.raw_field("to_id", self.quote(e.to));
+        b.raw_field("rel", self.quote(e.rel));
         b.end_object();
         return self.append(b.result());
     }
     fn binding(v: dna::KnowledgeBinding) -> Bool {
         let key = std::json::Builder { };
         key.begin_array();
-        key.value(self.quote(v.idea));
-        key.value(self.quote(v.target));
-        key.value(self.quote(v.author));
+        key.raw_value(self.quote(v.idea));
+        key.raw_value(self.quote(v.target));
+        key.raw_value(self.quote(v.author));
         key.end_array();
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("id", dna::digest_of(key.result()));
-        b.field("idea_id", self.quote(v.idea));
-        b.field("target", self.quote(v.target));
-        b.field("author", self.quote(v.author));
-        b.field("class", self.quote(v.class));
+        b.raw_field("idea_id", self.quote(v.idea));
+        b.raw_field("target", self.quote(v.target));
+        b.raw_field("author", self.quote(v.author));
+        b.raw_field("class", self.quote(v.class));
         b.string_field(
             "applicability",
             if len(self.target) == 0 {
@@ -449,7 +449,7 @@ fn graph_read(
     b.string_field("record_revision", r.record_revision);
     b.end_object();
     b.begin_object_field("data");
-    b.field("items", items.result());
+    b.raw_field("items", items.result());
     b.begin_object_field("page");
     b.int_field("limit", r.limit);
     b.int_field("returned", items.count);
@@ -457,11 +457,11 @@ fn graph_read(
     if page.has_more {
         b.string_field("next_cursor", cursor);
     } else {
-        b.field("next_cursor", "null");
+        b.raw_field("next_cursor", "null");
     }
     b.string_field("snapshot", snapshot);
     b.end_object();
-    b.field("basis", basis);
+    b.raw_field("basis", basis);
     b.begin_object_field("coverage");
     b.string_field("bindings", "complete");
     b.string_field("runs", "unavailable");

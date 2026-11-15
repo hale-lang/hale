@@ -158,7 +158,7 @@ fn main() {
     );
     // result() is a snapshot: the Builder keeps accumulating.
     let snapshot = b.result();
-    b.value("trailing");
+    b.raw_value("trailing");
     std::test::assert_eq_str(snapshot, b.result()[0..len(snapshot)], "the snapshot is a prefix");
     std::test::assert(len(b.result()) > len(snapshot), "and the buffer kept growing");
     std::test::assert_eq_str(

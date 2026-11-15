@@ -452,7 +452,7 @@ locus ApplicationWire {
     fn state(s: ApplicationState) -> String {
         let b = std::json::Builder { };
         b.begin_object();
-        b.field("application", self.application(s));
+        b.raw_field("application", self.application(s));
         b.bool_field("online", s.online);
         if s.runtime_process_key != "" {
             b.begin_object_field("runtime");
@@ -494,9 +494,9 @@ locus ApplicationWire {
         b.begin_object_field("input");
         b.string_field("profile", "enum-value.v1");
         b.string_field("label", op.input_label);
-        b.field("choices", op.choices);
+        b.raw_field("choices", op.choices);
         b.end_object();
-        b.field("preconditions", "[\"incarnation_id\",\"revision\",\"principal\"]");
+        b.raw_field("preconditions", "[\"incarnation_id\",\"revision\",\"principal\"]");
         b.string_field("success_meaning", op.success_meaning);
         b.begin_object_field("recovery");
         b.string_field("lookup", "request_id");
@@ -511,7 +511,7 @@ locus ApplicationWire {
         b.string_field("command_id", r.command_id);
         b.string_field("request_id", r.request_id);
         b.string_field("application_id", r.application_id);
-        b.field(
+        b.raw_field(
             "principal",
             self.principal(Actor { mode: r.principal_mode, name: r.principal_name }),
         );
@@ -551,8 +551,8 @@ locus ApplicationWire {
         b.begin_object();
         b.string_field("api_version", "hale.v1");
         b.string_field("profile", APPLICATION_PROFILE);
-        b.field("principal", self.principal(actor));
-        b.field("data", data);
+        b.raw_field("principal", self.principal(actor));
+        b.raw_field("data", data);
         b.end_object();
         return self.response(200, b.result());
     }
@@ -636,7 +636,7 @@ locus ApplicationWire {
         b.begin_object();
         b.string_field("api_version", "hale.v1");
         b.string_field("profile", APPLICATION_PROFILE);
-        b.field("principal", self.principal(actor));
+        b.raw_field("principal", self.principal(actor));
         if refused {
             b.begin_object_field("error");
             b.string_field("code", "command_refused");
@@ -644,7 +644,7 @@ locus ApplicationWire {
             b.end_object();
         }
         b.begin_object_field("data");
-        b.field("receipt", self.receipt(result.receipt));
+        b.raw_field("receipt", self.receipt(result.receipt));
         b.end_object();
         b.end_object();
         return self.response(if refused { 409 } else { 200 }, b.result());

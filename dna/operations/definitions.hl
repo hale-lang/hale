@@ -355,7 +355,7 @@ locus DefinitionCodec {
             let key = std::json::obj_key_string(it, raw);
             let value = std::json::obj_value_raw(it, raw);
             if self.text(value) { b.string_field(key, self.decoded(value)); }
-            else { b.field(key, value); }
+            else { b.raw_field(key, value); }
             it = std::json::object_next(it, raw);
         }
         b.end_object();
@@ -371,7 +371,7 @@ locus DefinitionCodec {
             b.begin_array_field(key);
             let mut it = std::json::array_first(std::json::find_field_raw(document, key));
             while !it.done {
-                b.value(self.normalized_row(it.element));
+                b.raw_value(self.normalized_row(it.element));
                 it = std::json::array_next(it);
             }
             b.end_array();
@@ -642,9 +642,9 @@ locus Definitions {
             b.string_field("target", m.target);
             b.string_field("cost_ceiling", to_string(m.cost_ceiling));
             b.string_field("attempts", to_string(m.attempts));
-            b.end_object(); b.field("child", "null");
+            b.end_object(); b.raw_field("child", "null");
         } else {
-            b.field("leaf", "null"); b.begin_object_field("child");
+            b.raw_field("leaf", "null"); b.begin_object_field("child");
             b.string_field("id", dna::definition_name(m.child, m.child_revision));
             b.string_field("definition_id", m.child);
             b.string_field("revision", to_string(m.child_revision));
@@ -670,7 +670,7 @@ locus Definitions {
             let members = self.member_count(d.id, step);
             let mut i = 0;
             while i < members {
-                b.value(self.member_json(self.member_at(d.id, step, i)));
+                b.raw_value(self.member_json(self.member_at(d.id, step, i)));
                 i = i + 1;
             }
             b.end_array(); b.end_object(); step = step + 1;

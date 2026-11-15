@@ -1,0 +1,122 @@
+// GH #1944: a wire map (`bounded[T; N] indexed_by <key>`, spec/api.md §
+// Codecs) is an object whose members are the records without their key.
+// A member that is no record (an array where an object belongs) was read
+// as a record of its defaults, and a map sent as an array as empty, with
+// no error: `{"bars":{"AAPL":[{"o":1},{"o":2}]}}` decoded to `AAPL` with
+// no rows and the process exited 0. Each is the field's `wrong_type` now,
+// through the api codec and through a record's own `from_json`.
+//
+// A `json:`-tagged record with an `indexed_by` field and an `@positional`
+// record holding a map had codecs that called helpers nothing declared,
+// refused naming them; both carry the map.
+
+type Bar { o: Int = 0; }
+type Sym { symbol: String; rows: bounded[Bar; 4]; }
+type Doc { bars: bounded[Sym; 4] indexed_by symbol; }
+
+type Pair { k: String `json:"k"`; v: Int `json:"v"`; }
+type Tagged { ps: bounded[Pair; 4] indexed_by k `json:"ps"`; }
+
+@positional
+type Cell { at: String; n: Int; }
+type Board { cells: bounded[Cell; 2] indexed_by at; }
+@positional
+type Row { label: String; cells: bounded[Cell; 2] indexed_by at; }
+
+fn api(text: String) -> String {
+    let d = Doc::api_decode(text) or { return err.kind + ": " + err.field; };
+    let mut out = "decoded";
+    for s in d.bars { out = out + " " + s.symbol + "=" + to_string(count(s.rows)); }
+    return out;
+}
+
+fn tagged(text: String) -> String {
+    let d = Tagged::from_json(text) or { return err.kind + ": " + err.field; };
+    let mut out = "decoded";
+    for p in d.ps { out = out + " " + p.k + "=" + to_string(p.v); }
+    return out;
+}
+
+fn board(text: String) -> String {
+    let b = Board::api_decode(text) or { return err.kind + ": " + err.field; };
+    return "decoded " + to_string(count(b.cells));
+}
+
+fn main() {
+    // a record per member decodes
+    std::test::assert_eq_str(
+        api("{\"bars\":{\"AAPL\":{\"rows\":[{\"o\":1},{\"o\":2}]}}}"),
+        "decoded AAPL=2",
+        "a member that is a record",
+    );
+    // the issue's payload: a member that is an array
+    std::test::assert_eq_str(
+        api("{\"bars\":{\"AAPL\":[{\"o\":1},{\"o\":2}]}}"),
+        "wrong_type: bars",
+        "a member that is an array is the map's wrong_type",
+    );
+    std::test::assert_eq_str(
+        api("{\"bars\":{\"AAPL\": 3}}"),
+        "wrong_type: bars",
+        "a member that is a number",
+    );
+    std::test::assert_eq_str(
+        api("{\"bars\":[{\"symbol\":\"AAPL\"}]}"),
+        "wrong_type: bars",
+        "a map sent as an array",
+    );
+    std::test::assert_eq_str(api("{\"bars\":{}}"), "decoded", "an empty object is an empty map");
+    std::test::assert_eq_str(
+        api("{ \"bars\" : { \"MSFT\" : { \"rows\" : [ ] } } }"),
+        "decoded MSFT=0",
+        "space around a member is no wrong kind",
+    );
+
+    // a `json:`-tagged record's map, through its own codec
+    std::test::assert_eq_str(
+        tagged("{\"ps\":{\"a\":{\"v\":1},\"b\":{\"v\":2}}}"),
+        "decoded a=1 b=2",
+        "a tagged record's map",
+    );
+    std::test::assert_eq_str(
+        tagged("{\"ps\":{\"a\":[1]}}"),
+        "wrong_type: ps",
+        "from_json: a member that is an array",
+    );
+    std::test::assert_eq_str(
+        tagged("{\"ps\":[{\"k\":\"a\",\"v\":1}]}"),
+        "wrong_type: ps",
+        "from_json: a map sent as an array",
+    );
+    let t = Tagged::from_json("{\"ps\":{\"a\":{\"v\":1}}}") or {
+        std::test::assert(false, "a tagged map decodes: " + err.kind);
+        return;
+    };
+    std::test::assert_eq_str(
+        Tagged::to_json(t),
+        "{\"ps\":{\"a\":{\"v\":1}}}",
+        "a tagged map writes back as it was read",
+    );
+
+    // a positional record's map value is its fields but the key, an array
+    let b = Board::api_decode("{\"cells\":{\"x\":[1],\"y\":[2]}}") or {
+        std::test::assert(false, "a map of positional records: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_int(count(b.cells), 2, "two positional cells");
+    std::test::assert_eq_str(
+        board("{\"cells\":{\"x\":{\"n\":1}}}"),
+        "wrong_type: cells",
+        "a positional member sent as an object",
+    );
+    // a positional record holding a map
+    let r = Row::from_json("[\"r\",{\"x\":[3]}]") or {
+        std::test::assert(false, "a positional record with a map: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_str(r.label, "r", "the row's label");
+    for c in r.cells {
+        std::test::assert_eq_str(c.at, "x", "the map supplied the key");
+        std::test::assert_eq_int(c.n, 3, "and the value");
+    }
+}

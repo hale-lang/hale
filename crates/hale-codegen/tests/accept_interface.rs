@@ -88,7 +88,7 @@ fn run_asan(name: &str, src: &str) -> String {
     let bin = harness::unique_bin(name);
     harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
-        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .env("ASAN_OPTIONS", harness::ASAN_LEAKS)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .output()
         .expect("run the asan build");
