@@ -105,7 +105,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(ty, CodegenTy::Time) {
             return Err(CodegenError::Unsupported(format!(
-                "std::time::{name}: t must be Time, got {:?}",
+                "std::time::{name}: t must be Time, got {}",
                 ty
             )));
         }
@@ -272,7 +272,7 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         let (n_val, n_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(n_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::time::time_from_unix: n must be Int, got {:?}",
+                "std::time::time_from_unix: n must be Int, got {}",
                 n_ty
             )));
         }
@@ -383,7 +383,7 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::time::from_nanos: n must be Int, got {:?}",
+                "std::time::from_nanos: n must be Int, got {}",
                 ty
             )));
         }
@@ -464,7 +464,7 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         let (val, ty) = self.lower_expr(&args[0], scope)?;
         if ty != CodegenTy::Duration {
             return Err(CodegenError::Unsupported(format!(
-                "time::__idle_wait expects Duration, got {:?}",
+                "time::__idle_wait expects Duration, got {}",
                 ty
             )));
         }
@@ -546,7 +546,7 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         let (val, ty) = self.lower_expr(&args[0], scope)?;
         if ty != CodegenTy::Duration {
             return Err(CodegenError::Unsupported(format!(
-                "time::sleep expects Duration, got {:?}",
+                "time::sleep expects Duration, got {}",
                 ty
             )));
         }

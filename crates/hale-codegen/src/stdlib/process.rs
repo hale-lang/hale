@@ -140,7 +140,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (code_val, code_ty) = self.lower_expr(&args[0], scope)?;
         if code_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::exit: code must be Int, got {:?}",
+                "std::process::exit: code must be Int, got {}",
                 code_ty
             )));
         }
@@ -418,7 +418,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
             let (v, ty) = self.lower_expr(a, scope)?;
             if ty != CodegenTy::Int {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::process::__wait_deadline: arguments are Int, got {:?}",
+                    "std::process::__wait_deadline: arguments are Int, got {}",
                     ty
                 )));
             }
@@ -523,7 +523,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (pid_val, pid_ty) = self.lower_expr(&args[0], scope)?;
         if pid_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__wait_pid: pid must be Int, got {:?}",
+                "std::process::__wait_pid: pid must be Int, got {}",
                 pid_ty
             )));
         }
@@ -613,7 +613,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (pid_val, pid_ty) = self.lower_expr(&args[0], scope)?;
         if pid_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__try_wait_pid: pid must be Int, got {:?}",
+                "std::process::__try_wait_pid: pid must be Int, got {}",
                 pid_ty
             )));
         }
@@ -703,14 +703,14 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (pid_val, pid_ty) = self.lower_expr(&args[0], scope)?;
         if pid_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__signal_pid: pid must be Int, got {:?}",
+                "std::process::__signal_pid: pid must be Int, got {}",
                 pid_ty
             )));
         }
         let (sig_val, sig_ty) = self.lower_expr(&args[1], scope)?;
         if sig_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__signal_pid: sig must be Int, got {:?}",
+                "std::process::__signal_pid: sig must be Int, got {}",
                 sig_ty
             )));
         }
@@ -775,7 +775,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (pid_val, pid_ty) = self.lower_expr(&args[0], scope)?;
         if pid_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__kill_escalate: pid must be Int, got {:?}",
+                "std::process::__kill_escalate: pid must be Int, got {}",
                 pid_ty
             )));
         }
@@ -836,7 +836,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__pipe_read: fd must be Int, got {:?}",
+                "std::process::__pipe_read: fd must be Int, got {}",
                 fd_ty
             )));
         }
@@ -908,14 +908,14 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__pipe_write: fd must be Int, got {:?}",
+                "std::process::__pipe_write: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__pipe_write: s must be String, got {:?}",
+                "std::process::__pipe_write: s must be String, got {}",
                 s_ty
             )));
         }
@@ -1088,7 +1088,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !matches!(argv_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "{}: argv must be String (newline-\
-                 separated), got {:?}",
+                 separated), got {}",
                 surface, argv_ty
             )));
         }
@@ -1278,7 +1278,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (argv_val, argv_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(argv_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "{}: argv must be String, got {:?}",
+                "{}: argv must be String, got {}",
                 surface, argv_ty
             )));
         }
@@ -1416,7 +1416,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 0..=2 => {
                     if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
                         return Err(CodegenError::Unsupported(format!(
-                            "{}: option {} must be String, got {:?}",
+                            "{}: option {} must be String, got {}",
                             surface, i, ty
                         )));
                     }
@@ -1426,7 +1426,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 3 => {
                     if ty != CodegenTy::Bool {
                         return Err(CodegenError::Unsupported(format!(
-                            "{}: clear_env must be Bool, got {:?}",
+                            "{}: clear_env must be Bool, got {}",
                             surface, ty
                         )));
                     }
@@ -1439,7 +1439,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 _ => {
                     if !matches!(ty, CodegenTy::Int | CodegenTy::Duration) {
                         return Err(CodegenError::Unsupported(format!(
-                            "{}: option {} must be Int, got {:?}",
+                            "{}: option {} must be Int, got {}",
                             surface, i, ty
                         )));
                     }

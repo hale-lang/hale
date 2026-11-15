@@ -91,7 +91,7 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         let CodegenTy::Decimal(scale) = ty else {
             return Err(CodegenError::Unsupported(format!(
-                "std::decimal::to_float: arg must be Decimal, got {:?}",
+                "std::decimal::to_float: arg must be Decimal, got {}",
                 ty
             )));
         };
@@ -148,14 +148,14 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         let CodegenTy::Decimal(scale) = ty else {
             return Err(CodegenError::Unsupported(format!(
-                "std::decimal::format: arg 1 must be Decimal, got {:?}",
+                "std::decimal::format: arg 1 must be Decimal, got {}",
                 ty
             )));
         };
         let (places_v, places_ty) = self.lower_expr(&args[1], scope)?;
         if places_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::decimal::format: arg 2 (places) must be Int, got {:?}",
+                "std::decimal::format: arg 2 (places) must be Int, got {}",
                 places_ty
             )));
         }
@@ -209,7 +209,7 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         if ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::decimal::from_int: arg must be Int, got {:?}",
+                "std::decimal::from_int: arg must be Int, got {}",
                 ty
             )));
         }
@@ -252,7 +252,7 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::decimal::from_float: arg must be Float, got {:?}",
+                    "std::decimal::from_float: arg must be Float, got {}",
                     other
                 )))
             }

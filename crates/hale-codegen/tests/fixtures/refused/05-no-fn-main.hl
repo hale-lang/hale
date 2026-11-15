@@ -1,0 +1,8 @@
+// refused at line 4: program has no `fn main()`
+// A seed with no entry point: a program error, placed at the seed's
+// first declaration.
+type Point { x: Int; y: Int; }
+
+fn origin() -> Point {
+    return Point { x: 0, y: 0 };
+}

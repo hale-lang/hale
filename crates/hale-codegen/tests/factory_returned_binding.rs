@@ -354,7 +354,7 @@ fn a_factory_result_in_a_method_frame_is_leak_clean_under_asan() {
     // negative, so an uninstrumented build passes them vacuously.
     harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
-        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .env("ASAN_OPTIONS", harness::ASAN_LEAKS)
         .output()
         .expect("run asan binary");
     let _ = std::fs::remove_file(&bin);

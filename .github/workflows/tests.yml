@@ -1887,6 +1887,19 @@ jobs:
             --test corpus_check_build_agreement \
             -- --ignored --nocapture
 
+      - name: every refusal a corpus program reaches names its place
+        # GH #1941: lowering places a refusal raised with no place of its
+        # own at the nearest site it was crossing, so a build names a file
+        # and line for it. This sweep lowers every corpus program, the ones
+        # the check refuses included (the harness lowers without the check,
+        # so they reach lowering's refusals), and fails on a refusal with no
+        # place or with Rust Debug text in it. The fixture half of the file
+        # runs in the ordinary codegen partitions.
+        run: |
+          cargo test --release -p hale-codegen --features dynamic-llvm \
+            --test refusals_are_located \
+            -- --ignored --nocapture
+
       - name: LOTUS_ASAN=1 cargo test (corpus_oracle under ASAN)
         # #[ignore]'d like the tsan suite; --ignored opts in.
         # LOTUS_ASAN=1 is turned into `BuildOptions::asan` by the

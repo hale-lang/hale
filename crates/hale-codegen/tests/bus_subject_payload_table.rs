@@ -83,7 +83,7 @@ fn recording_a_subject_on_an_anchors_thread_never_frees_the_table_under_a_read()
             let out = Command::new("timeout")
                 .arg("60")
                 .arg(&bin)
-                .env("ASAN_OPTIONS", "detect_leaks=1")
+                .env("ASAN_OPTIONS", harness::ASAN_LEAKS)
                 .env("LOTUS_NO_CHUNK_POOL", "1")
                 .output()
                 .expect("run the fixture");

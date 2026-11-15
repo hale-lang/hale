@@ -90,14 +90,14 @@ impl<'ctx, 'p> IoTlsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::upgrade: fd must be Int, got {:?}",
+                "std::io::tls::upgrade: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::upgrade: host must be String, got {:?}",
+                "std::io::tls::upgrade: host must be String, got {}",
                 host_ty
             )));
         }
@@ -105,7 +105,7 @@ impl<'ctx, 'p> IoTlsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (verify_val, verify_ty) = self.lower_expr(&args[2], scope)?;
         if verify_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::upgrade: verify must be Bool, got {:?}",
+                "std::io::tls::upgrade: verify must be Bool, got {}",
                 verify_ty
             )));
         }
@@ -177,14 +177,14 @@ impl<'ctx, 'p> IoTlsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (h_val, h_ty) = self.lower_expr(&args[0], scope)?;
         if h_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::send_bytes: handle must be Int, got {:?}",
+                "std::io::tls::send_bytes: handle must be Int, got {}",
                 h_ty
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::send_bytes: bytes must be Bytes, got {:?}",
+                "std::io::tls::send_bytes: bytes must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -231,14 +231,14 @@ impl<'ctx, 'p> IoTlsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (h_val, h_ty) = self.lower_expr(&args[0], scope)?;
         if h_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::recv_bytes: handle must be Int, got {:?}",
+                "std::io::tls::recv_bytes: handle must be Int, got {}",
                 h_ty
             )));
         }
         let (max_val, max_ty) = self.lower_expr(&args[1], scope)?;
         if max_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::recv_bytes: max must be Int, got {:?}",
+                "std::io::tls::recv_bytes: max must be Int, got {}",
                 max_ty
             )));
         }
@@ -284,7 +284,7 @@ impl<'ctx, 'p> IoTlsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (h_val, h_ty) = self.lower_expr(&args[0], scope)?;
         if h_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::close: handle must be Int, got {:?}",
+                "std::io::tls::close: handle must be Int, got {}",
                 h_ty
             )));
         }
@@ -357,7 +357,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::connect: host must be String, got {:?}",
+                "std::io::tls::connect: host must be String, got {}",
                 host_ty
             )));
         }
@@ -365,7 +365,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::connect: port must be Int, got {:?}",
+                "std::io::tls::connect: port must be Int, got {}",
                 port_ty
             )));
         }
@@ -373,7 +373,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (t, tt) = self.lower_expr(&args[2], scope)?;
             if tt != CodegenTy::Duration {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::io::tls::connect_within: timeout must be a Duration, got {:?}",
+                    "std::io::tls::connect_within: timeout must be a Duration, got {}",
                     tt
                 )));
             }

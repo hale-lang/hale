@@ -174,7 +174,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::parse_int: s must be String, got {:?}",
+                "std::str::parse_int: s must be String, got {}",
                 s_ty
             )));
         }
@@ -236,7 +236,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::parse_float: s must be String, got {:?}",
+                "std::str::parse_float: s must be String, got {}",
                 s_ty
             )));
         }
@@ -305,7 +305,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::parse_decimal: s must be String, got {:?}",
+                "std::str::parse_decimal: s must be String, got {}",
                 s_ty
             )));
         }
@@ -402,7 +402,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::byte_at_unchecked: s must be String, got {:?}",
+                "std::str::byte_at_unchecked: s must be String, got {}",
                 s_ty
             )));
         }
@@ -410,7 +410,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(i_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::byte_at_unchecked: i must be Int, got {:?}",
+                "std::str::byte_at_unchecked: i must be Int, got {}",
                 i_ty
             )));
         }
@@ -469,7 +469,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_copy: s must be String, got {:?}",
+                "std::str::range_copy: s must be String, got {}",
                 s_ty
             )));
         }
@@ -482,7 +482,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             let (v, ty) = self.lower_expr(&args[idx], scope)?;
             if ty != CodegenTy::Int {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::str::range_copy: {} must be Int, got {:?}",
+                    "std::str::range_copy: {} must be Int, got {}",
                     name, ty
                 )));
             }
@@ -523,7 +523,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::json::{}: first arg must be String, got {:?}",
+                "std::json::{}: first arg must be String, got {}",
                 fn_name, s_ty
             )));
         }
@@ -532,7 +532,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (len_val, len_ty) = self.lower_expr(&args[2], scope)?;
         if !matches!(from_ty, CodegenTy::Int) || !matches!(len_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::json::{}: from and len must be Int, got {:?}, {:?}",
+                "std::json::{}: from and len must be Int, got {}, {}",
                 fn_name, from_ty, len_ty
             )));
         }
@@ -570,7 +570,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_parse_int: json must be String, got {:?}",
+                "std::str::range_parse_int: json must be String, got {}",
                 s_ty
             )));
         }
@@ -578,14 +578,14 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (start_val, start_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(start_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_parse_int: start must be Int, got {:?}",
+                "std::str::range_parse_int: start must be Int, got {}",
                 start_ty
             )));
         }
         let (end_val, end_ty) = self.lower_expr(&args[2], scope)?;
         if !matches!(end_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_parse_int: end_exclusive must be Int, got {:?}",
+                "std::str::range_parse_int: end_exclusive must be Int, got {}",
                 end_ty
             )));
         }
@@ -658,7 +658,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_parse_decimal: json must be String, got {:?}",
+                "std::str::range_parse_decimal: json must be String, got {}",
                 s_ty
             )));
         }
@@ -666,14 +666,14 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (start_val, start_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(start_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_parse_decimal: start must be Int, got {:?}",
+                "std::str::range_parse_decimal: start must be Int, got {}",
                 start_ty
             )));
         }
         let (end_val, end_ty) = self.lower_expr(&args[2], scope)?;
         if !matches!(end_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_parse_decimal: end_exclusive must be Int, got {:?}",
+                "std::str::range_parse_decimal: end_exclusive must be Int, got {}",
                 end_ty
             )));
         }
@@ -779,7 +779,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_eq: json must be String, got {:?}",
+                "std::str::range_eq: json must be String, got {}",
                 s_ty
             )));
         }
@@ -787,14 +787,14 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (start_val, start_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(start_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_eq: start must be Int, got {:?}",
+                "std::str::range_eq: start must be Int, got {}",
                 start_ty
             )));
         }
         let (end_val, end_ty) = self.lower_expr(&args[2], scope)?;
         if !matches!(end_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_eq: end_exclusive must be Int, got {:?}",
+                "std::str::range_eq: end_exclusive must be Int, got {}",
                 end_ty
             )));
         }
@@ -879,7 +879,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (t_val, t_ty) = self.lower_expr(&args[3], scope)?;
         if !matches!(t_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::range_eq: expected must be String, got {:?}",
+                "std::str::range_eq: expected must be String, got {}",
                 t_ty
             )));
         }
@@ -954,7 +954,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             let (v, ty) = self.lower_expr(a, scope)?;
             if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::str::{}: arg {} must be String, got {:?}",
+                    "std::str::{}: arg {} must be String, got {}",
                     hale_name, i, ty
                 )));
             }
@@ -1005,7 +1005,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::index_of: s must be String, got {:?}",
+                "std::str::index_of: s must be String, got {}",
                 s_ty
             )));
         }
@@ -1013,7 +1013,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (sub_val, sub_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(sub_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::index_of: sub must be String, got {:?}",
+                "std::str::index_of: sub must be String, got {}",
                 sub_ty
             )));
         }
@@ -1059,7 +1059,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             let (v, ty) = self.lower_expr(&args[i], scope)?;
             if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::str::index_of_from: {what} must be String, got {ty:?}"
+                    "std::str::index_of_from: {what} must be String, got {ty}"
                 )));
             }
             strs.push(self.unpack_view_if_needed(v, &ty)?);
@@ -1067,7 +1067,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (start, start_ty) = self.lower_expr(&args[2], scope)?;
         if !matches!(start_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::index_of_from: start must be Int, got {start_ty:?}"
+                "std::str::index_of_from: start must be Int, got {start_ty}"
             )));
         }
         let f = self
@@ -1108,14 +1108,14 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             if *want_str {
                 if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
                     return Err(CodegenError::Unsupported(format!(
-                        "std::str::range_index_of: {what} must be String, got {ty:?}"
+                        "std::str::range_index_of: {what} must be String, got {ty}"
                     )));
                 }
                 vals.push(self.unpack_view_if_needed(v, &ty)?.into());
             } else {
                 if !matches!(ty, CodegenTy::Int) {
                     return Err(CodegenError::Unsupported(format!(
-                        "std::str::range_index_of: {what} must be Int, got {ty:?}"
+                        "std::str::range_index_of: {what} must be Int, got {ty}"
                     )));
                 }
                 vals.push(v.into());
@@ -1155,7 +1155,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             CodegenTy::Int => self.coerce_to_float(v, &ty, "std::str::__float_text")?,
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::str::__float_text: expected Float, got {other:?}"
+                    "std::str::__float_text: expected Float, got {other}"
                 )))
             }
         };
@@ -1186,7 +1186,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::can_parse_int: s must be String, got {:?}",
+                "std::str::can_parse_int: s must be String, got {}",
                 s_ty
             )));
         }
@@ -1242,7 +1242,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                 ""
             };
             return Err(CodegenError::Unsupported(format!(
-                "std::str::{}: s must be String, got {:?}{}",
+                "std::str::{}: s must be String, got {}{}",
                 which, s_ty, hint
             )));
         }
@@ -1289,7 +1289,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::substring: s must be String, got {:?}",
+                "std::str::substring: s must be String, got {}",
                 s_ty
             )));
         }
@@ -1297,14 +1297,14 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (lo_val, lo_ty) = self.lower_expr(&args[1], scope)?;
         if lo_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::substring: lo must be Int, got {:?}",
+                "std::str::substring: lo must be Int, got {}",
                 lo_ty
             )));
         }
         let (hi_val, hi_ty) = self.lower_expr(&args[2], scope)?;
         if hi_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::substring: hi must be Int, got {:?}",
+                "std::str::substring: hi must be Int, got {}",
                 hi_ty
             )));
         }
@@ -1341,7 +1341,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::repeat: s must be String, got {:?}",
+                "std::str::repeat: s must be String, got {}",
                 s_ty
             )));
         }
@@ -1349,7 +1349,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (n_val, n_ty) = self.lower_expr(&args[1], scope)?;
         if n_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::repeat: n must be Int, got {:?}",
+                "std::str::repeat: n must be Int, got {}",
                 n_ty
             )));
         }
@@ -1387,20 +1387,20 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (p_val, p_ty) = self.lower_expr(&args[2], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::{}: s must be String, got {:?}",
+                "std::str::{}: s must be String, got {}",
                 which, s_ty
             )));
         }
         let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
         if w_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::{}: width must be Int, got {:?}",
+                "std::str::{}: width must be Int, got {}",
                 which, w_ty
             )));
         }
         if !matches!(p_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::{}: pad must be String, got {:?}",
+                "std::str::{}: pad must be String, got {}",
                 which, p_ty
             )));
         }
@@ -1452,7 +1452,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         ] {
             if **ty != CodegenTy::String {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::str::replace: {} must be String, got {:?}",
+                    "std::str::replace: {} must be String, got {}",
                     label, ty
                 )));
             }
@@ -1529,7 +1529,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::builder_append: builder must be Bytes \
-                 (from builder_new), got {:?}",
+                 (from builder_new), got {}",
                 b_ty
             )));
         }
@@ -1537,7 +1537,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::builder_append: s must be String, got {:?}",
+                "std::str::builder_append: s must be String, got {}",
                 s_ty
             )));
         }
@@ -1568,7 +1568,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::builder_len: builder must be Bytes, got {:?}",
+                "std::str::builder_len: builder must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -1606,7 +1606,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::builder_finish: builder must be Bytes, got {:?}",
+                "std::str::builder_finish: builder must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -1650,7 +1650,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (v_val, v_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(v_ty, CodegenTy::StringView | CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::clone: arg must be StringView or String, got {:?}",
+                "std::str::clone: arg must be StringView or String, got {}",
                 v_ty
             )));
         }
@@ -1690,7 +1690,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::can_parse_float: s must be String, got {:?}",
+                "std::str::can_parse_float: s must be String, got {}",
                 s_ty
             )));
         }
@@ -1741,7 +1741,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::str::from_bytes: b must be Bytes, got {:?}",
+                "std::str::from_bytes: b must be Bytes, got {}",
                 b_ty
             )));
         }

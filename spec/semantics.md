@@ -67,6 +67,9 @@ d }` returns `d` (2026-08-11 — previously the typechecker
 accepted this form and codegen rejected it as a fall-through).
 A body with *no* declared return type keeps statement-position
 semantics: the tail is evaluated for side effects.
+The same body's **last statement** is its value when it is a `match`,
+an `if` or a block: its arms and tails carry the value down, each leaf a
+return (§ "Definite return", below).
 
 Such a body returns nothing, so a `return` in it carries no value: a
 `return <expr>;` in a fn or mode with no `-> T` (a fallible fn's
@@ -169,8 +172,9 @@ Phase 2b entry in `spec/stdlib.md`.
   block ("this block ends in a \`match\` whose every arm leaves
   without a value … give an arm a value, or end the block with
   \`return\`"), as it refuses `let x = { return 1; };`. In a block
-  used as a statement (a fn body, a loop body) it stays the statement
-  it reads as. Until 2026-11-06 the check passed the arm above and
+  used as a statement (a loop body, a body that returns nothing) it
+  stays the statement it reads as; at the end of a body with a declared
+  return type it is the body's value (§ "Definite return", GH #1940). Until 2026-11-06 the check passed the arm above and
   the build refused it as a block with no trailing expression, where
   the same arm ending in `if … else …` built (downstream handoff);
   2026-11-07 refused the all-leaving trailing `match` in every
@@ -222,6 +226,68 @@ ignore.
 
 `match {` is not ambiguous with matching on a block expression:
 that shape is written `match (…) { … }`.
+
+## Definite return
+
+A body with a declared return type (a fn, a locus method, a mode with
+`-> T`, a fallible fn with a success type) returns a value on every
+path that reaches its end.
+
+**The result position.** Its tail is its value (above), and when its
+last statement is a `match`, an `if` or a block, that statement is the
+value: every arm of the `match` (an expression arm, or a block arm's
+own result position), the `if`'s then-block, each `else if` and its
+`else`, and a block's tail or last statement in turn. A leaf in result
+position is checked as the `return` it is, against the return type
+("this is the body's value (its last statement's arm or tail): expected
+\`String\`, got \`Int\`"), and lowered as one, for every result type:
+
+```hale
+fn word(n: Int) -> String {
+    match n { 1 -> "one", _ -> "other" }
+}
+
+fn sign(n: Int) -> Int {
+    if n > 0 { return 1; } else if n < 0 { -1 } else { 0 }
+}
+```
+
+A leaf that leaves (`return`, `fail`, …) is unchanged. A trailing
+`match` stays a statement in the grammar, and a trailing `if` some arm
+of which has no tail stays one too (§ "Expressions — `if` and block
+tails"); in a body that returns a value, the result position is what
+makes them its value.
+
+**Reaching the end.** A path **leaves** without reaching the end when
+it meets `return`, `fail`, `break`, `continue`, `terminate` or
+`violate`; an `if` with an `else` each of whose branches leaves; a
+`match` each of whose arms leaves (F.18 makes it exhaustive); a block
+that leaves; a `while true` loop no `break` leaves (a `break` inside a
+nested loop leaves that loop, not this one); or a statement whose value
+is a `match`, an `if … else` or a block expression that leaves on every
+path. Any other statement can complete, and the body can reach its end
+when its last statement can, or when it is empty. Such a body is a type
+error at the declaration's name, naming the path as a secondary
+location:
+
+```text
+main.hl:1:4: type error: fn `sign` returns `Int`, and its body can reach
+its end without a value: this `if` has no `else`, so when its condition
+is false the body ends after it. Return a value on that path, or end the
+body with its value (a tail expression, or a `match`, an `if … else` or
+a block whose every arm ends in one)
+    note: the path that reaches the end without a value at main.hl:2:5
+```
+
+The paths it names: an `if` with no `else`; a `while` loop whose
+condition can be false, and a `for` loop; the `break` that leaves a
+`while true`; an arm or block whose last statement completes; an empty
+body, block or arm. The judgment is the program's shape, not its
+values: `while n > 0 { return n; }` can finish as far as it is
+concerned, and a call that never returns (`std::process::exit`) is a
+call that completes. Until GH #1940 the check passed such a body and the
+build refused it as falling through, with no file or line; a tail
+`match` was refused the same way.
 
 ## Expression statements
 

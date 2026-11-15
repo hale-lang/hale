@@ -52,7 +52,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         | CodegenTy::TypeRef(_)
                 ) {
                     return Err(CodegenError::Unsupported(format!(
-                        "bounded[T; N]: element type {:?} not supported \
+                        "bounded[T; N]: element type {} not supported \
                          — scalars (Int / Float / Bool / Decimal / \
                          Duration / Time), String, Bytes, and user \
                          structs are covered",
@@ -76,8 +76,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 PrimType::BytesMut => Ok(CodegenTy::BytesMut),
                 PrimType::StringView => Ok(CodegenTy::StringView),
                 other => Err(CodegenError::Unsupported(format!(
-                    "type primitive `{:?}` in signature",
-                    other
+                    "type primitive `{}` in signature",
+                    hale_types::ty::prim_name(*other)
                 ))),
             },
             TypeExpr::Named { path, generic_args, .. }
@@ -302,7 +302,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Err(CodegenError::Unsupported(format!(
                         "generic instantiation `{}` not synthesized — \
                          discovery missed the use site; reachable from \
-                         {:?}",
+                         {}",
                         mangled, path.segments[0].name
                     )))
                 }
@@ -1067,8 +1067,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             if val_ty != declared_ty {
                 return Err(CodegenError::Unsupported(format!(
-                    "type `{}` field `{}` type mismatch: declared {:?}, \
-                     got {:?}",
+                    "type `{}` field `{}` type mismatch: declared {}, \
+                     got {}",
                     type_name, fname, declared_ty, val_ty
                 )));
             }

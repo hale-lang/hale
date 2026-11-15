@@ -314,7 +314,7 @@ impl<'ctx, 'p> MathStdlib<'ctx> for Cx<'ctx, 'p> {
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "std::math::{}: expected Float (or Int \
-                     passthrough), got {:?}",
+                     passthrough), got {}",
                     surface_name, other
                 )))
             }

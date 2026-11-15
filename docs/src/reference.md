@@ -121,7 +121,7 @@ All commands (`check`, `verify`, `build`, `run`, `test`, `bench`, `replay`) foll
     ^^^^
 ```
 
-- **Backend/codegen errors:** Constructs accepted by the typechecker that fail during lowering emit `path:line:col: codegen error: <message>` (or a positionless message if not tied to a single span).
+- **Backend/codegen errors:** Constructs accepted by the typechecker that fail during lowering emit `path:line:col: codegen error: <message>`, placed at the nearest expression, statement, member or declaration being lowered; one raised inside a standard library body ends `(in the standard library, <file>:<line>:<col>)`. A construct the compiler cannot lower yet says `hale can't compile this yet: …`; a positionless line is left only for a missing toolchain component or a failed link.
 - **Standard library effect notes:** When an `@effects` violation occurs inside a `std::*` body called by your code, the primary error points to your call site and attaches a `note: the '<effect>' effect happens here (in the standard library, <file>:<line>:<col>)`.
 - **NDJSON mode (`hale check --json`):** Emits one JSON object per line on `stdout` (`{"file": "...", "line": N, "col": N, "severity": "...", "kind": "...", "message": "..."}`) covering parse errors, type errors, I/O errors (`"kind": "io error"`, `line: 0`, `col: 0`), and stdlib notes (`file: ""`, `line: 0`, `col: 0`). Empty `stdout` means zero findings.
 

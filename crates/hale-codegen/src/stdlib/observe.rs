@@ -132,7 +132,7 @@ impl<'ctx, 'p> ObserveStdlib<'ctx> for Cx<'ctx, 'p> {
                 (Arg::Float, CodegenTy::Float) => v,
                 (Arg::Str, CodegenTy::String | CodegenTy::StringView) => self.unpack_view_if_needed(v, &ty)?,
                 _ => {
-                    return Err(CodegenError::Unsupported(format!("{cname}: an argument of type {ty:?}")));
+                    return Err(CodegenError::Unsupported(format!("{cname}: an argument of type {ty}")));
                 }
             };
             vals.push(v.into());

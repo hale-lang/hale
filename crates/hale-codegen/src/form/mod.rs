@@ -322,7 +322,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(name.as_str())
                 .map(|info| self.enum_storage_struct(info).into())
                 .ok_or_else(|| CodegenError::Unsupported(format!("unknown enum `{}`", name))),
-            other => Err(CodegenError::Unsupported(format!("no field block for {:?}", other))),
+            other => Err(CodegenError::Unsupported(format!("no field block for {}", other))),
         }
     }
 
@@ -635,7 +635,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         let CodegenTy::TypeRef(tn) = elem_ty else {
             return Err(CodegenError::Unsupported(format!(
-                "@form(heap) `{}`: the cell type must be a record with the `ordered_by` field, got {:?}",
+                "@form(heap) `{}`: the cell type must be a record with the `ordered_by` field, got {}",
                 locus_name, elem_ty
             )));
         };
@@ -654,7 +654,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::String => 2,
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "@form(heap) `{}`: `ordered_by` field `{}` is {:?}; a heap orders by an Int, Float, \
+                    "@form(heap) `{}`: `ordered_by` field `{}` is {}; a heap orders by an Int, Float, \
                      String, Time or Duration field",
                     locus_name, order.0, other
                 )))
@@ -859,7 +859,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let (idx_val, idx_ty) = self.lower_expr(&args[0], scope)?;
                     if idx_ty != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(
-                            "@form(vec) `{}`.get: index must be Int, got {:?}",
+                            "@form(vec) `{}`.get: index must be Int, got {}",
                             locus_name, idx_ty
                         )));
                     }
@@ -1099,7 +1099,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (idx_val, idx_ty) = self.lower_expr(&args[0], scope)?;
                 if idx_ty != CodegenTy::Int {
                     return Err(CodegenError::Unsupported(format!(
-                        "@form(vec) `{}`.set: index must be Int, got {:?}",
+                        "@form(vec) `{}`.set: index must be Int, got {}",
                         locus_name, idx_ty
                     )));
                 }
@@ -1120,7 +1120,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else if val_ty != elem_ty {
                     return Err(CodegenError::Unsupported(format!(
                         "@form(vec) `{}`.set: value type mismatch: expected \
-                         {:?}, got {:?}",
+                         {}, got {}",
                         locus_name, elem_ty, val_ty
                     )));
                 } else {
@@ -1767,7 +1767,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "@form(hashmap) `{}`.{}: slot `{}` cell type must be a \
-                     user-declared struct; got {:?}",
+                     user-declared struct; got {}",
                     locus_name, method_name, slot.name, other
                 )));
             }
@@ -1799,7 +1799,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )))?;
         if !matches!(key_codegen_ty, CodegenTy::Int | CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
-                "@form(hashmap) `{}`.{}: key type {:?} unsupported; v1 \
+                "@form(hashmap) `{}`.{}: key type {} unsupported; v1 \
                  supports Int and String keys only",
                 locus_name, method_name, key_codegen_ty
             )));
@@ -1867,7 +1867,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if key_ty != key_codegen_ty {
             return Err(CodegenError::Unsupported(format!(
                 "@form(hashmap) `{}`.{}: key arg type mismatch: expected \
-                 {:?}, got {:?}",
+                 {}, got {}",
                 locus_name, method_name, key_codegen_ty, key_ty
             )));
         }
@@ -2062,7 +2062,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (idx_val, idx_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(idx_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "@form(hashmap) `{}`.{}: index arg must be Int, got {:?}",
+                "@form(hashmap) `{}`.{}: index arg must be Int, got {}",
                 locus_name, method_name, idx_ty
             )));
         }
@@ -2348,7 +2348,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else if arg_ty != slot.elem_ty {
                     return Err(CodegenError::Unsupported(format!(
                         "@form(vec) `{}`.push arg type mismatch: \
-                         expected {:?}, got {:?}",
+                         expected {}, got {}",
                         locus_name, slot.elem_ty, arg_ty
                     )));
                 } else {
@@ -2699,7 +2699,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     CodegenTy::String => "lotus_vec_sort_string",
                     ref other => {
                         return Err(CodegenError::Unsupported(format!(
-                            "@form(vec) `{}`.sort: cell type {:?} has no \
+                            "@form(vec) `{}`.sort: cell type {} has no \
                              default ordering — use `sort_by(less_than)` \
                              with a user comparator instead.",
                             locus_name, other
@@ -2737,7 +2737,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     other => {
                         return Err(CodegenError::Unsupported(format!(
                             "@form(vec) `{}`.{}: cmp must be a fn-pointer \
-                             `fn(T, T) -> Bool`, got {:?}",
+                             `fn(T, T) -> Bool`, got {}",
                             locus_name, method_name, other
                         )));
                     }
@@ -2748,14 +2748,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     return Err(CodegenError::Unsupported(format!(
                         "@form(vec) `{}`.{}: cmp parameter types must \
-                         both be {:?}, got {:?}",
-                        locus_name, method_name, slot.elem_ty, cmp_params
+                         both be {}, got {}",
+                        locus_name, method_name, slot.elem_ty, crate::codegen::ty_list(&cmp_params)
                     )));
                 }
                 if cmp_ret.as_deref() != Some(&CodegenTy::Bool) {
                     return Err(CodegenError::Unsupported(format!(
-                        "@form(vec) `{}`.{}: cmp must return Bool, got {:?}",
-                        locus_name, method_name, cmp_ret
+                        "@form(vec) `{}`.{}: cmp must return Bool, got {}",
+                        locus_name, method_name, crate::codegen::ty_or_nothing(cmp_ret.as_deref())
                     )));
                 }
                 let cmp_fn_ptr = cmp_val.into_pointer_value();
@@ -2901,7 +2901,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     other => {
                         return Err(CodegenError::Unsupported(format!(
                             "@form(hashmap) `{}`.set: slot cell type must \
-                             be a user-declared struct; got {:?}",
+                             be a user-declared struct; got {}",
                             locus_name, other
                         )));
                     }
@@ -2939,7 +2939,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if arg_ty != expected_value_ty {
                     return Err(CodegenError::Unsupported(format!(
                         "@form(hashmap) `{}`.set arg type mismatch: \
-                         expected {:?}, got {:?}",
+                         expected {}, got {}",
                         locus_name, expected_value_ty, arg_ty
                     )));
                 }
@@ -3169,7 +3169,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if key_ty != key_codegen_ty {
                     return Err(CodegenError::Unsupported(format!(
                         "@form(hashmap) `{}`.has: key arg type mismatch: \
-                         expected {:?}, got {:?}",
+                         expected {}, got {}",
                         locus_name, key_codegen_ty, key_ty
                     )));
                 }
@@ -3308,7 +3308,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "@form(hashmap) `{}`.bump: cell type must be a user \
-                     struct; got {:?}",
+                     struct; got {}",
                     locus_name, other
                 )));
             }
@@ -3367,7 +3367,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if key_ty != key_codegen_ty {
             return Err(CodegenError::Unsupported(format!(
                 "@form(hashmap) `{}`.bump: key arg type mismatch — \
-                 expected {:?}, got {:?}",
+                 expected {}, got {}",
                 locus_name, key_codegen_ty, key_ty
             )));
         }
@@ -3582,7 +3582,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if arg_ty != slot.elem_ty {
                     return Err(CodegenError::Unsupported(format!(
                         "@form(ring_buffer) `{}`.push arg type mismatch: \
-                         expected {:?}, got {:?}",
+                         expected {}, got {}",
                         locus_name, slot.elem_ty, arg_ty
                     )));
                 }
@@ -3787,7 +3787,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     other => {
                         return Err(CodegenError::Unsupported(format!(
                             "@form(lru_cache) `{}`.put: slot cell type must \
-                             be a user-declared struct; got {:?}",
+                             be a user-declared struct; got {}",
                             locus_name, other
                         )));
                     }
@@ -3825,7 +3825,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if arg_ty != expected_value_ty {
                     return Err(CodegenError::Unsupported(format!(
                         "@form(lru_cache) `{}`.put arg type mismatch: \
-                         expected {:?}, got {:?}",
+                         expected {}, got {}",
                         locus_name, expected_value_ty, arg_ty
                     )));
                 }
@@ -4083,7 +4083,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if key_ty != key_codegen_ty {
                     return Err(CodegenError::Unsupported(format!(
                         "@form(lru_cache) `{}`.contains: key arg type \
-                         mismatch: expected {:?}, got {:?}",
+                         mismatch: expected {}, got {}",
                         locus_name, key_codegen_ty, key_ty
                     )));
                 }
@@ -4186,7 +4186,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "@form(lru_cache) `{}`.get: slot cell type must be a \
-                     user-declared struct; got {:?}",
+                     user-declared struct; got {}",
                     locus_name, other
                 )));
             }
@@ -4218,7 +4218,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )))?;
         if !matches!(key_codegen_ty, CodegenTy::Int | CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
-                "@form(lru_cache) `{}`.get: key type {:?} unsupported; v1 \
+                "@form(lru_cache) `{}`.get: key type {} unsupported; v1 \
                  supports Int and String keys only",
                 locus_name, key_codegen_ty
             )));
@@ -4247,7 +4247,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if key_ty != key_codegen_ty {
             return Err(CodegenError::Unsupported(format!(
                 "@form(lru_cache) `{}`.get: key arg type mismatch: expected \
-                 {:?}, got {:?}",
+                 {}, got {}",
                 locus_name, key_codegen_ty, key_ty
             )));
         }
@@ -4361,7 +4361,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "@form(lru_cache) `{}`.remove: slot cell type must be a \
-                     user-declared struct; got {:?}",
+                     user-declared struct; got {}",
                     locus_name, other
                 )));
             }
@@ -4391,7 +4391,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
         if key_ty != key_codegen_ty {
             return Err(CodegenError::Unsupported(format!(
-                "@form(lru_cache) `{}`.remove: key arg type mismatch: expected {:?}, got {:?}",
+                "@form(lru_cache) `{}`.remove: key arg type mismatch: expected {}, got {}",
                 locus_name, key_codegen_ty, key_ty
             )));
         }

@@ -71,7 +71,7 @@ pub use ownership::{
 
 pub use codegen::{
     stdlib_doc_source, stdlib_path_renames,
-    build_resolved, BuildOptions, CodegenError, CompileTarget,
+    build_resolved, BuildOptions, CodegenError, CompileTarget, CANT_COMPILE_YET,
     DebugSourceFile, DebugSources, LtoMode, TargetCpu, host_cpu_name,
     macos_linker_cannot_read_sdk,
 };

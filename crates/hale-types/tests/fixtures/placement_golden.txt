@@ -9095,6 +9095,11 @@ row	App@literal1.c	ViaLet	main	default
 row	App@literal1.d	ParamString	main	default
 row	App@literal1.e	Constant	main	default
 
+== tests/hale/tail_value_returns_test.hl
+row	Box@main2	Box	main	default
+row	Box@main3	Box	main	default
+row	Namer@main1	Namer	main	default
+
 == tests/hale/temp_locus_receiver_test.hl
 row	Lonely@main7	Lonely	main	default
 row	Lonely@main9	Lonely	main	default

@@ -157,7 +157,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None => {
                 if ty != CodegenTy::Enum(set.to_string()) {
                     return Err(CodegenError::UnsupportedAt(
-                        format!("a fused return of the set `{set}` got {ty:?}"),
+                        format!("a fused return of the set `{set}` got {ty}"),
                         e.span(),
                     ));
                 }

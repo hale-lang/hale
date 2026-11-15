@@ -59,7 +59,7 @@ impl<'ctx, 'p> IoFileStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::file::__open: path must be String, got {:?}",
+                "std::io::file::__open: path must be String, got {}",
                 path_ty
             )));
         }
@@ -67,7 +67,7 @@ impl<'ctx, 'p> IoFileStdlib<'ctx> for Cx<'ctx, 'p> {
         let (mode_val, mode_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(mode_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::file::__open: mode must be String, got {:?}",
+                "std::io::file::__open: mode must be String, got {}",
                 mode_ty
             )));
         }
@@ -125,14 +125,14 @@ impl<'ctx, 'p> IoFileStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::file::__write_bytes: fd must be Int, got {:?}",
+                "std::io::file::__write_bytes: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (bytes_val, bytes_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(bytes_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::file::__write_bytes: bytes must be Bytes, got {:?}",
+                "std::io::file::__write_bytes: bytes must be Bytes, got {}",
                 bytes_ty
             )));
         }
@@ -220,14 +220,14 @@ impl<'ctx, 'p> IoFileStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::file::__seek: fd must be Int, got {:?}",
+                "std::io::file::__seek: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (off_val, off_ty) = self.lower_expr(&args[1], scope)?;
         if off_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::file::__seek: offset must be Int, got {:?}",
+                "std::io::file::__seek: offset must be Int, got {}",
                 off_ty
             )));
         }
@@ -287,7 +287,7 @@ impl<'ctx, 'p> IoFileStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::file::__read_line: fd must be Int, got {:?}",
+                "std::io::file::__read_line: fd must be Int, got {}",
                 fd_ty
             )));
         }
@@ -331,7 +331,7 @@ impl<'ctx, 'p> IoFileStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::file::__close: fd must be Int, got {:?}",
+                "std::io::file::__close: fd must be Int, got {}",
                 fd_ty
             )));
         }
@@ -380,7 +380,7 @@ impl<'ctx, 'p> IoFileStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::file::__at_eof: fd must be Int, got {:?}",
+                "std::io::file::__at_eof: fd must be Int, got {}",
                 fd_ty
             )));
         }

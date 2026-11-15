@@ -21,6 +21,9 @@
 //!    another file's).
 //! 3. unit returns: `-> ()` is "no return type" on every fn-shaped
 //!    declaration.
+//!    3b. tail returns: in a body with a declared return type, a trailing
+//!    `match`, `if` or block carries the value down to its leaves, each a
+//!    `return` (GH #1940, `hale_syntax::desugar::desugar_tail_returns`).
 //! 4. construction aliases: a struct literal, variant path or
 //!    constructor pattern spelled with a type alias names the
 //!    declaration the alias chain ends at
@@ -101,6 +104,9 @@ pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
 fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]) {
     for p in programs.iter_mut() {
         normalize_unit_return_annotations(&mut p.items);
+        // After the unit returns: a `-> ()` body returns nothing, so its
+        // last statement is no value.
+        hale_syntax::desugar::desugar_tail_returns(p);
     }
     crate::mangle::resolve_construction_aliases(programs, context, seq.import_renames);
     for p in programs.iter_mut() {

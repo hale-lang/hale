@@ -152,7 +152,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(vec![self.with_printed_unit(e, s)?])
             }
             AddTree::Val(_, ty) => Err(CodegenError::Unsupported(format!(
-                "binary op operands of mixed types {:?} and {:?}",
+                "binary op operands of mixed types {} and {}",
                 CodegenTy::String,
                 ty
             ))),

@@ -924,7 +924,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(new_fat.into())
             }
             CodegenTy::Cell(_, _) => Err(CodegenError::Unsupported(format!(
-                "free-fn return of {:?}: F.22 capacity-slot cells \
+                "free-fn return of {}: F.22 capacity-slot cells \
                  can't cross fn boundaries — the cell's lifetime is \
                  the locus's slot, and the caller's frame doesn't \
                  know which slot to release/free into. Round-trip \

@@ -69,7 +69,7 @@ impl<'ctx, 'p> DiagStdlib<'ctx> for Cx<'ctx, 'p> {
         let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(name_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::diag::syscall_count: name must be String, got {:?}",
+                "std::diag::syscall_count: name must be String, got {}",
                 name_ty
             )));
         }

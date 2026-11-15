@@ -35,6 +35,7 @@ pub mod bus_graph;
 pub mod bus_inert;
 pub mod callgraph;
 pub mod capability;
+pub mod definite_return;
 pub mod effect_classes;
 pub mod effect_rows;
 pub mod effects;
