@@ -16,6 +16,14 @@
 # the same release PR. The fragments are `git rm`ed so the release
 # commit carries their removal.
 #
+# Every fragment declares its breaking changes (scripts/changelog-check.sh,
+# STABILITY.md): a `### Breaking` section, or a `Breaking: none` line.
+# The fold refuses a fragment that declares neither, gathers every
+# fragment's `### Breaking` bullets under one `### Breaking` heading at
+# the top of the version (`None.` under it when no fragment breaks
+# anything, so a release says so either way), and drops the
+# `Breaking: none` lines.
+#
 # Usage:
 #   scripts/changelog-fold.sh vX.Y.Z "headline" [YYYY-MM-DD]
 set -euo pipefail
@@ -39,6 +47,13 @@ fragments=()
 while IFS= read -r name; do
     [ -n "$name" ] && fragments+=("$dir/$name")
 done < <(ls "$dir" 2>/dev/null | grep -E '^[0-9]+\.md$' | sort -n || true)
+
+if [ "${#fragments[@]}" -gt 0 ]; then
+    scripts/changelog-check.sh "${fragments[@]}" >/dev/null || {
+        echo "changelog-fold: a fragment does not declare its breaking changes (above); fix it first" >&2
+        exit 1
+    }
+fi
 
 unreleased_count=$(grep -c '^## Unreleased$' "$changelog" || true)
 if [ "$unreleased_count" -ne 1 ]; then
@@ -70,19 +85,41 @@ if [ -z "$body_part" ] && [ "${#fragments[@]}" -eq 0 ]; then
     exit 1
 fi
 
+# A fragment's `### Breaking` section runs from its heading to the next
+# heading; the rest of the fragment is everything else, less the
+# `Breaking: none` line. Blank lines at either end of each are trimmed.
+trim_blank='/./,$!d'
+breaking_of() {
+    awk '/^### Breaking[[:space:]]*$/ { b = 1; next } /^(#|##|###) / { b = 0 } b' "$1" \
+        | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' | sed "$trim_blank"
+}
+rest_of() {
+    # awk re-terminates every line, so a fragment without a trailing
+    # newline cannot run into the next one.
+    awk '/^### Breaking[[:space:]]*$/ { b = 1; next } /^(#|##|###) / { b = 0 } !b && !/^Breaking: none[[:space:]]*$/' "$1" \
+        | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' | sed "$trim_blank"
+}
+breaking=""
+for f in ${fragments[@]+"${fragments[@]}"}; do
+    b=$(breaking_of "$f")
+    [ -n "$b" ] && breaking="${breaking:+$breaking
+}$b"
+done
+
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 {
     printf '%s\n\n' "$head_part"
     printf '## %s — %s (%s)\n\n' "$version" "$headline" "$date"
+    if [ "${#fragments[@]}" -gt 0 ]; then
+        printf '### Breaking\n\n%s\n\n' "${breaking:-None.}"
+    fi
     if [ -n "$body_part" ]; then
         printf '%s\n\n' "$body_part"
     fi
-    for f in "${fragments[@]}"; do
-        # awk 1 re-terminates every line, so a fragment without a
-        # trailing newline cannot run into the next one.
-        awk 1 "$f" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
-        printf '\n'
+    for f in ${fragments[@]+"${fragments[@]}"}; do
+        r=$(rest_of "$f")
+        [ -n "$r" ] && printf '%s\n\n' "$r"
     done
     printf '%s\n' "$tail_part"
 } > "$tmp"
