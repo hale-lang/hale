@@ -188,6 +188,20 @@ jobs:
           fi
           printf '%s\n' "$verdict" | grep -E '^(dna|cli|assets)=' >> "$GITHUB_OUTPUT"
 
+  # Every CHANGELOG fragment (unreleased/<pr>.md) declares its breaking
+  # changes: a `Breaking: none` line or a `### Breaking` heading with a
+  # bullet per break (STABILITY.md, GH #1950). Seconds, no toolchain, on
+  # every event, so a fragment pushed after the PR opens is checked too.
+  fragments:
+    name: changelog fragments
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: the checker's own cases
+        run: bash scripts/changelog-check.sh --self-test
+      - name: every fragment declares its breaking changes
+        run: bash scripts/changelog-check.sh
+
   # The fast lane: everything that needs no LLVM. hale-syntax,
   # hale-types, hale-model, hale-graph, hale-stdlib and hale-corpus have
   # no dependency on inkwell, so these jobs skip the LLVM install and the
@@ -1993,7 +2007,7 @@ jobs:
   required:
     name: required
     runs-on: ubuntu-24.04
-    needs: [scope, quick-build, quick, docs, build-cli, build-codegen, cli, codegen, dna, face-api, face-browser, cross, parity, tsan, asan, genmc]
+    needs: [scope, fragments, quick-build, quick, docs, build-cli, build-codegen, cli, codegen, dna, face-api, face-browser, cross, parity, tsan, asan, genmc]
     if: always()
     steps:
       - name: every job green or scoped out
@@ -2001,8 +2015,9 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key)\t\(.value.result)"'
-          # the quick jobs must pass, except on a diff that only touches
-          # README art, where no test job runs
-          must=$(echo "$RESULTS" | jq -r --arg assets "${{ needs.scope.outputs.assets }}" '(["scope"] + (if $assets == "true" then [] else ["quick-build","quick"] end))[] as $k | select(.[$k].result != "success") | $k')
+          # scope, fragments and the quick jobs must pass (the quick ones
+          # except on a diff that only touches
+          # README art, where no test job runs)
+          must=$(echo "$RESULTS" | jq -r --arg assets "${{ needs.scope.outputs.assets }}" '(["scope", "fragments"] + (if $assets == "true" then [] else ["quick-build","quick"] end))[] as $k | select(.[$k].result != "success") | $k')
           bad=$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')
           if [ -n "$must$bad" ]; then echo "::error::not green: $must $bad"; exit 1; fi

@@ -82,6 +82,10 @@ Hale has two kinds of keyword (decision F.43):
   future-use words is contextual, and each section says where its
   words are keywords.
 
+The list is frozen: [`keywords.txt`](./keywords.txt) holds every hard
+and contextual keyword, a test holds it equal to the compiler's, and a
+change to it is an RFC (STABILITY.md § Keywords).
+
 Two declarations of a contextual word stay refused, because the name
 would collide with the syntax the word introduces at the use site:
 
@@ -387,6 +391,9 @@ identity, a range) or a `unit` of such a name is an error
 trait           impl            async           await
 macro
 ```
+
+F.47 (proposed, awaiting confirmation) unreserves all five before
+1.0. Until it is confirmed and implemented they stay reserved.
 
 (`with` is no longer in this list — v1.x-VIOLATE recognizes it
 as a contextual keyword inside the `violate_stmt` production.

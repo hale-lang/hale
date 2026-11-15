@@ -3848,7 +3848,59 @@ would drown in them; the checked calls cover the sites that expect a
 failure. *Literal suffixes (`5u256`)*: a unit may be named `u256`, so a
 suffix collides with the unit dialect's literals.
 
-### F.47 — A body that returns a value ends in one, and its last statement is its value
+### F.47 — The five future-use words are unreserved before 1.0 (proposed)
+
+**Status: proposed, awaiting confirmation; not implemented.** The
+keyword list is frozen (STABILITY.md § Keywords), so the change, once
+confirmed, lands as its own PR that edits `spec/keywords.txt`, the
+lexer and spec/tokens.md § Reserved for future use together.
+
+**Problem.** `trait`, `impl`, `async`, `await` and `macro` are hard
+keywords with no grammar (spec/tokens.md § Reserved for future use):
+the lexer refuses them as names, and no production uses them. Before
+1.0 each is either designed or unreserved (GH #1950); a reservation
+carried into 1.x is a promise of syntax nobody has designed, kept at
+the price of five ordinary words.
+
+**Decision (proposed).** Unreserve all five: each lexes as an
+identifier, free as a field, parameter, local or fn name. Each word's
+feature already has a Hale answer that took a different shape:
+
+- `trait` / `impl`: conformance is structural (F.20). A locus
+  satisfies an `interface` by having its methods, with no declaration
+  that it does, and behaviour over a value type is a free `fn` that
+  takes the value. A nominal `impl I for T` block would add a second,
+  competing way to say what F.20 says by shape.
+- `async` / `await`: concurrency is the locus and the pool. Blocking
+  I/O parks a coroutine on a `where async_io` pool (F.35, chosen as a
+  "deployment-seam, no language-keyword extension"), so no function is
+  coloured and no call site waits by keyword.
+- `macro`: compile-time generation is the compiler's own desugar
+  sequence over annotations (`@form`, `@rpc`, `@positional`, the JSON
+  codecs), each a registered family (F.40) that the model and the
+  checker can see. User-defined macros would put code the model cannot
+  read in front of the checker, and nothing on the roadmap asks for
+  them.
+
+Unreserving costs nothing later. It accepts strictly more programs, so
+it can ship in any minor release with `Breaking: none`. If one of these
+features is ever designed, it takes its word as a **contextual**
+keyword (F.43), recognized only in its position, as `topic`, `fleet`
+and `unit` were. A hard reservation buys nothing a contextual keyword
+cannot do, and putting a word back into the hard set after 1.0 would
+break every program that uses it as a name.
+
+**Considered and rejected.** *Keep the five reserved through 1.x as
+insurance.* Under F.43 the insurance pays nothing, and the words stay
+unusable as names indefinitely. *Design them before 1.0.* Each would
+duplicate a shipped mechanism (F.20, F.35, the annotation families),
+which the 1.0 promise would then have to keep twice. *Unreserve some
+and keep others* (for example, keep `async`/`await` for an
+effect-typed future). Nothing in the effect system (effect classes and
+budgets) needs a keyword at a call site, and the split would need
+a reason per word that none of them has.
+
+### F.48 — A body that returns a value ends in one, and its last statement is its value
 
 **Problem.** `hale check` had no definite-return analysis (GH #1940).
 `fn sign(n: Int) -> Int { if n > 0 { return 1; } }` checked clean and
