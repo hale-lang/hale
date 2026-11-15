@@ -157,7 +157,7 @@ fn tool_json(t: ToolSpec) -> String {
     b.begin_object();
     b.string_field("name", t.name);
     b.string_field("description", t.description);
-    b.field("input_schema", t.input_schema);
+    b.raw_field("input_schema", t.input_schema);
     b.string_field("effect", t.effect);
     b.string_field("role", t.role);
     b.string_field("family", t.family);

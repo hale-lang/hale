@@ -354,7 +354,9 @@ fn rename_targets_exist() {
     // Compiler-SYNTHESIZED types: declared by codegen at lowering
     // time (`declare_builtin_types`), not by Hale source,
     // so they are legitimately absent from AP_SOURCE.
-    const SYNTHESIZED: &[&str] = &["ParseError"];
+    // GH #1945: the stdlib error types the shadowing law names by path
+    // are builtins of the same kind (`builtin_types.rs`).
+    const SYNTHESIZED: &[&str] = &["ParseError", "IndexError", "KeyError", "EmptyError", "CryptoError"];
     let missing: Vec<String> = hale_stdlib::PATH_RENAMES
         .iter()
         .filter(|(_, target)| {

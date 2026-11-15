@@ -402,7 +402,11 @@ site**; it pairs one surface with one transport instance:
   holds exactly one instance of a type, its binding may be elided and is
   inferred (both of `admin`'s above); two instances and no binding is an
   error naming both. Two serve sites may bind one surface to different
-  instances;
+  instances. One exposure dispatches to at most 100 receiver types
+  (each is a slot of the exposure, numbered within its key); a serve
+  site whose surface's rows name more is refused at its `receivers:`,
+  and the surface is served as two (GH #1946: the limit was 16, and a
+  17th type passed the check and failed the build);
 - the param is the **handle**: what the holder holds, waits on and stops
   (`self.public.wait()`, `self.public.stop()`, the `std::api::Handle`
   methods; `std::api::run_until_stopped(self.public)` is the wait).
@@ -2710,8 +2714,16 @@ it is an object keyed by each record's `name`, the record without its
 key as the value (`{"db": {"status": "up"}, "cache": {"status":
 "down"}}`): the key lifted out on encode, in the list's order, and
 restored on decode, where a value's own key field, if a payload sends
-one, is not read. A key the object repeats is refused `malformed`,
-`duplicate_key`; more entries than the list holds is `too_long`; an
+one, is not read. A map sent as anything but an object, or a member
+whose value is not the record's JSON (an object, or a positional
+record's array), is `wrong_type` naming the map's field, never a map
+read as empty or a record read as its defaults (GH #1944: an array
+member decoded as a record with nothing in it). The same rules hold in
+a record's own `from_json` / `to_json` (spec/semantics.md § Metadata
+tags), whether the record is `json:`-tagged or `@positional`, and no
+finding of the hot-path lint is reported inside the generated codecs,
+where nothing written can act on it. A key the object repeats is
+refused `malformed`, `duplicate_key`; more entries than the list holds is `too_long`; an
 absent map is empty, as an absent `bounded` list is. A map may be
 optional (a presence pair, above): an absent key and `null` are its
 absence, `{}` a present empty map, and its schema is the map's or `null`;

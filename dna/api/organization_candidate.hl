@@ -141,7 +141,7 @@ locus OrganizationCandidateWire {
         let mut i = 0; while i < dna::word_count(names) {
             let name = dna::nth_word(names, i);
             let count = std::json::find_field_raw(summary, name);
-            if !self.semantic_count(count) { return ""; } b.field(name, count); i = i + 1;
+            if !self.semantic_count(count) { return ""; } b.raw_field(name, count); i = i + 1;
         }
         b.end_object(); b.begin_array_field("declarations");
         let declarations = std::json::find_field_raw(document, "declarations");
@@ -310,8 +310,8 @@ locus OrganizationCandidateWire {
         b.end_object();
         b.begin_object_field("module");
         b.string_field("path", native.module_for(r));
-        b.field("base_text", dna::record_json_quote(read.base_text));
-        b.field("text", dna::record_json_quote(read.candidate_text));
+        b.raw_field("base_text", dna::record_json_quote(read.base_text));
+        b.raw_field("text", dna::record_json_quote(read.candidate_text));
         b.string_field("digest", r.source_digest);
         b.end_object();
         b.begin_object_field("candidate");
@@ -329,7 +329,7 @@ locus OrganizationCandidateWire {
             "sha256:" + ops::raw_digest(text.string(c.review_body, "diff_json")),
         );
         b.string_field("digest", dna::digest_of(read.semantic_diff));
-        b.field("document", dna::record_json_quote(read.semantic_diff));
+        b.raw_field("document", dna::record_json_quote(read.semantic_diff));
         b.end_object();
         b.end_object();
         b.begin_object_field("review");
@@ -389,7 +389,7 @@ locus OrganizationCandidateWire {
         b.string_field("kind", "organization_source_change");
         b.string_field("review_id", id);
         b.string_field("candidate_commit", candidate.candidate_commit);
-        b.field("document", dna::record_json_quote(document));
+        b.raw_field("document", dna::record_json_quote(document));
         b.end_object();
         let response = http.success(context.source, b.result());
         if !self.unchanged(record, source, read) {

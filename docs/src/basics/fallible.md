@@ -78,6 +78,7 @@ fn main() {
 - **Statement-position `or` blocks:** When a fallible call stands as a complete statement (`parse_count(s) or { log(err.kind); };`), its success value is discarded, so the `or` block does not need to produce a value of the success type.
 - **No binding `()` calls:** A fallible function whose success type is `()` cannot be bound to a `let` variable (`let ok = std::io::fs::write_file(p, s) or { };` is rejected); call it as a statement instead.
 - **No `or discard` in value bindings:** Writing `let n = parse_count(s) or discard;` is a compile error because `n` would have no value on failure; use `or <fallback>`, `or raise`, or call `parse_count(s) or discard;` as a statement.
+- **`or raise` keeps the error type:** `or raise` hands the call's error on as the enclosing function's own, so the two types must agree. Raising a `ParseError` out of a `fallible(AppErr)` function is a compile error at the `or raise` that names both types; translate it with `or fail AppErr { msg: err.kind }`, or declare the function `fallible(ParseError)`. A stdlib error type may be spelled by its path (`fallible(std::str::ParseError)`, `fallible(std::crypto::CryptoError)`) or its bare name; both are the same type.
 
 ## Chaining and Fallible Recovery Handlers
 

@@ -663,6 +663,17 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // bindings — useful when a project also has its own
     // local error types.
     (&["std", "str", "ParseError"], "ParseError"),
+    // GH #1945: the other stdlib error types, in the spellings the
+    // checker's shadowing law suggests (`resolve.rs`,
+    // `check_stdlib_error_shadowing`), resolve to the same bare builtins
+    // the stdlib's fallible fns fail with, so `fallible(std::crypto::
+    // CryptoError)` builds wherever `fallible(CryptoError)` does. Before,
+    // the check admitted the path and the build refused it, unlocated.
+    (&["std", "io", "IoError"], "IoError"),
+    (&["std", "index", "IndexError"], "IndexError"),
+    (&["std", "form", "hashmap", "KeyError"], "KeyError"),
+    (&["std", "form", "ring_buffer", "EmptyError"], "EmptyError"),
+    (&["std", "crypto", "CryptoError"], "CryptoError"),
     // GH #720 — the byte-view surface. `ByteView` is the struct in
     // str_view.hl; the three fns are its constructor and accessors,
     // routed to their bare Hale implementations like the

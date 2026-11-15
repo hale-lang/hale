@@ -47,9 +47,9 @@ locus KnowledgeBindingCodec {
     }
     fn identity(idea_id: String, target: String, author: String) -> String {
         let b = std::json::Builder { }; b.begin_array();
-        b.value(record_json_quote(idea_id));
-        b.value(record_json_quote(target));
-        b.value(record_json_quote(author));
+        b.raw_value(record_json_quote(idea_id));
+        b.raw_value(record_json_quote(target));
+        b.raw_value(record_json_quote(author));
         b.end_array();
         return digest_of(b.result());
     }

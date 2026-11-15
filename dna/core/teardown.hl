@@ -606,7 +606,7 @@ fn teardown_unplaced(body: String) -> String {
     let mut it = std::json::object_first(body);
     while !it.done {
         let k = std::json::obj_key_string(it, body);
-        if k != "host" { b.field(k, std::json::obj_value_raw(it, body)); }
+        if k != "host" { b.raw_field(k, std::json::obj_value_raw(it, body)); }
         it = std::json::object_next(it, body);
     }
     b.string_field("host", "");
@@ -994,7 +994,7 @@ fn teardown_removed_body(body: String, unplace: Bool) -> String {
     while !it.done {
         let k = std::json::obj_key_string(it, body);
         if k != "state" && !(unplace && k == "host") {
-            b.field(k, std::json::obj_value_raw(it, body));
+            b.raw_field(k, std::json::obj_value_raw(it, body));
         }
         it = std::json::object_next(it, body);
     }

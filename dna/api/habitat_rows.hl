@@ -130,7 +130,7 @@ fn habitat_hosts(root: String, limit: Int) -> HostRows {
         n = n + 1;
         // the host as its row states it (never the habitat's key: no row
         // holds one)
-        out.value(dna::host_row_body(h));
+        out.raw_value(dna::host_row_body(h));
     }
     out.end_array();
     return HostRows { ok: true, revision: j.revision(), hosts: out.result() };
@@ -442,7 +442,7 @@ fn habitat_allocations(root: String, limit: Int, seer: Observer) -> AllocationRo
         out.string_field("runs", seen.runs);
         let last = applies.get(entity) or dna::LatestRow { };
         let applied_body = if last.at >= 0 { j.read(last.at).body } else { "" };
-        out.field(
+        out.raw_field(
             "links",
             allocation_links(
                 root,
@@ -843,7 +843,7 @@ fn habitat_saplings(root: String, limit: Int) -> SaplingRows {
         out.string_field("revision", std::json::find_string_field(b, "revision"));
         out.string_field("digest", std::json::find_string_field(b, "digest"));
         out.string_field("nursery", std::json::find_string_field(b, "nursery"));
-        out.field("packs", std::json::find_field_raw(b, "packs"));
+        out.raw_field("packs", std::json::find_field_raw(b, "packs"));
         out.string_field(
             "proposed",
             if proposed != std::json::find_string_field(b, "revision") { proposed } else { "" },

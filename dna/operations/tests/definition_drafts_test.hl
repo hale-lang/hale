@@ -116,7 +116,7 @@ locus DraftProof {
         b.string_field("cost_ceiling", "-9223372036854775808");
         b.string_field("attempts", "2");
         b.end_object();
-        b.field("child", "null");
+        b.raw_field("child", "null");
         b.end_object();
         b.end_array();
         b.end_object();
@@ -127,7 +127,7 @@ locus DraftProof {
         b.begin_object();
         b.string_field("key", "nested");
         b.string_field("kind", "child");
-        b.field("leaf", "null");
+        b.raw_field("leaf", "null");
         b.begin_object_field("child");
         let id = if kind == "cycle" {
             "child"

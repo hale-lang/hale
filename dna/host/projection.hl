@@ -468,7 +468,7 @@ locus Projection {
         b.begin_object_field("expression");
         let attached = self.first_of("application.attached");
         if attached.seq >= 0 {
-            b.field("attached", attached.body);
+            b.raw_field("attached", attached.body);
         } else {
             b.null_field("attached");
         }
@@ -579,7 +579,7 @@ locus Projection {
                 b.string_field("candidate_shape", r.candidate_shape);
                 b.string_field("evidence", r.evidence);
                 if len(r.magnitude_raw) > 0 {
-                    b.field("magnitude", r.magnitude_raw);
+                    b.raw_field("magnitude", r.magnitude_raw);
                 } else {
                     b.null_field("magnitude");
                 }
@@ -623,7 +623,7 @@ locus Projection {
         i = 0;
         while i < self.rows() {
             let e = self.row(i);
-            if e.kind == "law.deferred" { b.value(e.body); }
+            if e.kind == "law.deferred" { b.raw_value(e.body); }
             i = i + 1;
         }
         b.end_array();
@@ -642,7 +642,7 @@ locus Projection {
                 if open >= 0 && close > open {
                     let fields = inner[(open + 1)..close];
                     let sep = if len(std::str::trim(fields)) > 0 { ", " } else { "" };
-                    b.value(
+                    b.raw_value(
                         "{" + fields + sep + "\"attempt\": " + quote(e.entity) + ", \"seq\": "
                             + to_string(e.seq) + "}",
                     );

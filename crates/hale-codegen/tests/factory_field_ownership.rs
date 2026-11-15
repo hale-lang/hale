@@ -504,7 +504,7 @@ fn a_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
     // negative, so an uninstrumented build passes them vacuously.
     harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
-        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .env("ASAN_OPTIONS", harness::ASAN_LEAKS)
         // GH #816: compiled in by the ASan cflags already
         // (`-DLOTUS_NO_CHUNK_POOL_DEFAULT=1`); stated here too so
         // this test does not depend on that default to see an arena
@@ -631,7 +631,7 @@ fn an_interface_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
     let bin = harness::unique_bin("factory_iface_field_asan");
     harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
-        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .env("ASAN_OPTIONS", harness::ASAN_LEAKS)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .output()
         .expect("run asan binary");

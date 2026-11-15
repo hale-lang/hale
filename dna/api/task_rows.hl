@@ -55,7 +55,7 @@ fn task_rows(root: String, limit: Int) -> TaskRows {
     b.begin_array();
     let mut i = 0;
     while i < p.count() && i < cap {
-        b.value(wire.row(p, p.at(i)));
+        b.raw_value(wire.row(p, p.at(i)));
         i = i + 1;
     }
     b.end_array();

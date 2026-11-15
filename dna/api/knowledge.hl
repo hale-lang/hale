@@ -267,7 +267,7 @@ locus KnowledgeWire {
         let mut i = 0;
         while i < dna::word_count(names) {
             let key = dna::nth_word(names, i);
-            if self.raw(basis, key) == "null" { b.field(key, "null"); }
+            if self.raw(basis, key) == "null" { b.raw_field(key, "null"); }
             else { b.string_field(key, self.string(basis, key)); }
             i = i + 1;
         }
@@ -393,8 +393,10 @@ locus KnowledgeWire {
         // Rebuild the public envelope only from schema-checked data and the
         // captured local Source. No upstream error text or extra fields pass.
         let b = std::json::Builder { };
-        b.begin_object(); b.field("items", items); b.field("page", page);
-        b.field("basis", self.raw(data, "basis")); b.field("coverage", coverage); b.end_object();
+        b.begin_object(); b.raw_field("items", items); b.raw_field("page", page);
+        b.raw_field("basis", self.raw(data, "basis"));
+        b.raw_field("coverage", coverage);
+        b.end_object();
         return http.success(request.source, b.result());
     }
     fn failure(upstream: KnowledgeUpstream) -> std::http::Response {
