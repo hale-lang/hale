@@ -209,23 +209,23 @@ let out = b.result();   // {"name": "Ada", "age": 36, "active": true}
 | `begin_array()` / `end_array()` | Opens and closes a JSON array (`[` ... `]`) |
 | `begin_object_field(name)` | Writes `"name": {` and opens a nested object scope |
 | `begin_array_field(name)` | Writes `"name": [` and opens a nested array scope |
-| `field(name, value)` / `string_field(name, value)` | Writes `"name": "escaped_value"` |
+| `string_field(name, value)` | Writes `"name": "escaped_value"` |
 | `int_field(name, value)` | Writes `"name": 123` |
 | `bool_field(name, value)` | Writes `"name": true` or `false` |
 | `null_field(name)` | Writes `"name": null` |
-| `value(v)` / `string_value(v)` | Writes a quoted, escaped string element inside an array |
+| `string_value(v)` | Writes a quoted, escaped string element inside an array |
 | `int_value(n)` / `bool_value(b)` / `null_value()` | Writes a number, `true`/`false` or `null` element inside an array |
 | `raw_field(name, json)` | Writes `"name": <json>`, the value as given, for JSON you encoded already |
 | `raw_value(json)` | Writes an array element as given, for JSON you encoded already |
 | `result() -> String` | Returns an independent copy of the accumulated JSON string |
 
-`field` and `value` quote and escape the string they are given, so
-`b.field("name", "alice")` writes `"name": "alice"`. A value that is
-already JSON (a number you formatted, a nested document, an array from
-`build_array`) goes through `raw_field` / `raw_value`, which write it
-byte for byte and check nothing. Before 2026-11-15 `field` and `value`
-wrote their argument raw; code written against that passes the same
-arguments to `raw_field` / `raw_value`.
+`field(name, value)` and `value(v)` are deprecated. They write their
+argument raw, exactly as `raw_field` / `raw_value` do, so
+`b.field("name", "alice")` writes `"name": alice`, which is not JSON.
+Each call warns `deprecated:`. Use `raw_field` / `raw_value` for JSON you
+encoded already (a number you formatted, a nested document, an array from
+`build_array`) and `string_field` / `string_value` for a string. v0.33
+makes `field` and `value` quote and escape their argument as a string.
 
 The Builder separates with `": "` and `", "`. The spacing is part of
 what it writes, and programs that store its documents and match them as

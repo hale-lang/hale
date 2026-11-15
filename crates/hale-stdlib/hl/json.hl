@@ -11,9 +11,11 @@
 // concatenation operations that show up in app code when
 // glueing JSON output together.
 //
-// Quoting: `quote` escapes per RFC 8259 (2026-05-16). `field`
-// and `value` quote the string they are given; `raw_field` and
-// `raw_value` write JSON the caller encoded already (GH #1943).
+// Quoting: `quote` escapes per RFC 8259 (2026-05-16).
+// `string_field` and `string_value` quote the string they are
+// given; `raw_field` and `raw_value` write JSON the caller
+// encoded already. `field` and `value` write raw too, and are
+// deprecated: v0.33 makes them quote (GH #1943).
 //
 // Separators are `": "` and `", "`, pinned: documents the
 // Builder wrote are kept in journals and matched as text by the
@@ -189,13 +191,14 @@ locus __StdJsonBuilder {
         }
     }
 
-    // Inside an object: emit `"name": "value"`, the string quoted
-    // and escaped (GH #1943). Before 2026-11-15 `field` wrote its
-    // value raw, so `field("name", "alice")` wrote `"name": alice`,
-    // which is not JSON; a value that is already JSON is
-    // `raw_field`'s.
+    // Inside an object: emit `"name": value`, `value` the wire
+    // bytes as given. Deprecated (GH #1943): the spec has always
+    // said `field` takes a string, and v0.33 makes it quote and
+    // escape one; a call warns `deprecated:` until then. Write
+    // `raw_field` for JSON already encoded, `string_field` for a
+    // string.
     fn field(name: String, value: String) {
-        self.raw_field(name, self.quote(value));
+        self.raw_field(name, value);
     }
 
     // Inside an object: emit `"name": value`, `value` the wire
@@ -212,7 +215,7 @@ locus __StdJsonBuilder {
     // with the right wire shape — string fields are quoted +
     // escaped, ints / bools render directly.
     fn string_field(name: String, value: String) {
-        self.field(name, value);
+        self.raw_field(name, self.quote(value));
     }
     fn int_field(name: String, value: Int) {
         self.raw_field(name, to_string(value));
@@ -246,17 +249,18 @@ locus __StdJsonBuilder {
         self.ctx = self.ctx + "a";
     }
 
-    // Inside an array: emit one string element, quoted and
-    // escaped. Mirror of `field` for arrays — no name, just the
-    // value (GH #1943: written raw before 2026-11-15).
-    fn value(v: String) { self.raw_value(self.quote(v)); }
+    // Inside an array: emit one element as given. Deprecated
+    // (GH #1943), as `field` is: v0.33 makes `value` quote its
+    // string. Write `raw_value` for JSON already encoded,
+    // `string_value` for a string.
+    fn value(v: String) { self.raw_value(v); }
     // Inside an array: emit one element as given, JSON the caller
     // encoded already. Mirror of `raw_field`.
     fn raw_value(v: String) {
         self.__bump_separator();
         self.buf.append_str(v);
     }
-    fn string_value(s: String) { self.value(s); }
+    fn string_value(s: String) { self.raw_value(self.quote(s)); }
     fn int_value(n: Int) { self.raw_value(to_string(n)); }
     fn bool_value(b: Bool) {
         let s: String = if b { "true" } else { "false" };

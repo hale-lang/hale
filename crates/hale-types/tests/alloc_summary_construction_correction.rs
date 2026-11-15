@@ -334,9 +334,8 @@ fn own_scope_let_block_scope_test() {
             // `secp256k1_recover` and their failure-code helper, GH #1929);
             // 511 since `wide.hl` came (GH #1934: `std::u256` /
             // `std::i256`'s fallible calls and the JSON codecs' hex
-            // helpers, 20 fns); 513 since `std::json::Builder` quotes
-            // in `field` and `value` and writes JSON as given in
-            // `raw_field` and `raw_value` (GH #1943)
+            // helpers, 20 fns); 513 since `std::json::Builder` writes
+            // JSON as given in `raw_field` and `raw_value` (GH #1943)
             changed_lines(&old.render(), &now.render()),
             [
                 "- # 513 fns, 32 entry points, 132 invoked-unboundedly",
@@ -548,14 +547,12 @@ fn reached_unowned_literal_positions() {
 }
 
 /// dna/oidc is the issuer's library seed: `oidc/serve` starts the HTTP
-/// loop over its `StubIssuer` in a program of its own. 156 copy fns
-/// invoked unboundedly since `std::json::Builder`'s writers go through
-/// `raw_field` (GH #1943), one more of the copy's under its handler.
+/// loop over its `StubIssuer` in a program of its own.
 #[test]
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (156, 13),
+        (155, 13),
         &[
             "b64",
             "decode",

@@ -1250,16 +1250,13 @@ Methods, grouped:
 
 - **Scopes:** `begin_object()`, `end_object()`,
   `begin_array()`, `end_array()`.
-- **Object entries (key + value in one call):** `field(name,
-  value)` for the common string case, the value quoted and
-  escaped (`string_field` is the same call); `int_field`,
-  `bool_field`, `null_field` for the other scalars; `raw_field(name,
-  json)` for a value that is JSON already, written as given and not
-  checked.
-- **Array entries / bare values:** `value(v)`, a string quoted and
-  escaped (`string_value` is the same call); `int_value`,
-  `bool_value`, `null_value`; `raw_value(json)`, an element written
-  as given.
+- **Object entries (key + value in one call):** `string_field(name,
+  s)`, the string quoted and escaped; `int_field`, `bool_field`,
+  `null_field` for the other scalars; `raw_field(name, json)` for a
+  value that is JSON already, written as given and not checked.
+- **Array entries / bare values:** `string_value(s)`, a string quoted
+  and escaped; `int_value`, `bool_value`, `null_value`;
+  `raw_value(json)`, an element written as given.
 - **Nested scopes inside an object:** `begin_object_field(name)`
   / `begin_array_field(name)` — emit `"name": ` then open the
   sub-scope.
@@ -1268,19 +1265,26 @@ Methods, grouped:
 ```hale
 let b = std::json::Builder { };
 b.begin_object();
-b.field("name", "alice");
+b.string_field("name", "alice");
 b.int_field("age", 30);
 b.begin_array_field("tags");
-b.value("admin"); b.value("ops");
+b.string_value("admin"); b.string_value("ops");
 b.end_array();
 b.end_object();
 let out = b.result();   // {"name": "alice", "age": 30, "tags": ["admin", "ops"]}
 ```
 
-Before 2026-11-15 `field` and `value` wrote their argument raw,
-so the example above wrote `{"name": alice, …}`, which is not
-JSON (GH #1943); code that handed them encoded JSON hands it to
-`raw_field` / `raw_value`.
+**Deprecated: `field(name, value)` and `value(v)`** (GH #1943).
+Both write their argument raw, as `raw_field` / `raw_value` do,
+although this section long described them as taking a string, so
+`b.field("name", "alice")` writes `"name": alice`, which is not
+JSON. Every call warns (`deprecated:`, at the call, STABILITY.md §
+Deprecation), naming `raw_field` / `raw_value` for JSON already
+encoded and `string_field` / `string_value` for a string. v0.33
+makes `field` and `value` quote and escape their argument as a
+string; a program that has moved to the explicit variants is
+unaffected. The warning comes from the table of deprecated stdlib
+callables (`hale_types::deprecations`).
 
 The flat-object readers (`find_*_field`, `array_first/next`)
 are the input side of the same v1 commitment: JSON is a wire

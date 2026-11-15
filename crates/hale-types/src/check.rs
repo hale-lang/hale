@@ -24187,6 +24187,14 @@ impl<'a> Checker<'a> {
                         if !is_callee {
                             self.refuse_method_value(&rt, name);
                         }
+                        // STABILITY.md § Deprecation: a call of a
+                        // deprecated stdlib method warns, at the call
+                        // (`deprecations::DEPRECATED_METHODS`).
+                        if is_callee && self.specializing.is_none() {
+                            if let Some(d) = rt_named(&rt).and_then(|n| crate::deprecations::deprecated_method(n, &name.name)) {
+                                self.diags.push(Diag::warn(*span, crate::deprecations::warning(d)));
+                            }
+                        }
                         t
                     }
                     None => {
@@ -27334,6 +27342,14 @@ fn written_quantity_literal(e: &Expr) -> Option<(i64, &str, bool)> {
             Expr::Literal(Literal::Quantity { value, unit }, _) => Some((*value, unit.as_str(), true)),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// The name a receiver's type is declared under, for a named type.
+fn rt_named(rt: &Ty) -> Option<&str> {
+    match rt {
+        Ty::Named(n) => Some(n.as_str()),
         _ => None,
     }
 }
