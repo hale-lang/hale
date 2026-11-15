@@ -75,7 +75,7 @@ An appending assignment (`out = out + render_row(i)`, `out += …`, `out = f"{ou
 | 175 KB | 4,000 | 1.18 GB | 3.5 MB |
 | 350 KB | 8,000 | 4.5 GB | 4.0 MB |
 
-The buffer is the local's only while nothing else holds the text: a read that may keep the value (the local passed to a call, bound, stored or returned) gives it up, and the next append copies the text first. Inside the loop, read the growing text only as an operand of `+`, a comparison or `len`, and hand it on after the loop. A loop that appends and also hands the text to a call, and an append to any place but a local or a `self` field, copy the whole text each iteration; the hot-path survey flags both. For those, and for a buffer held across calls, use `std::bytes::BytesBuilder` (or `std::json::Builder` for JSON) to grow a single extensible buffer in place (Styleguide rule S15):
+The buffer is the local's only while nothing else holds the text: a read that may keep the value (the local passed to a call, bound, stored or returned) gives it up, and the next append copies the text first. Inside the loop, read the growing text only as an operand of `+` or a comparison, in a slice, or as an argument of a `std::` reader returning a number or a `Bool` (`len`, `std::str::contains`), and hand it on after the loop. A loop that appends and also hands the text to a call, and an append to any place but a local or a `self` field, copy the whole text each iteration; the hot-path survey flags both. For those, and for a buffer held across calls, use `std::bytes::BytesBuilder` (or `std::json::Builder` for JSON) to grow a single extensible buffer in place (Styleguide rule S15):
 
 ```hale
 fn render_row(i: Int) -> String {

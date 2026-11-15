@@ -21,8 +21,11 @@
 //! (`emit_str_acc_release`, at the read, when it runs), so the next
 //! append copies into a fresh buffer and the value read keeps what it
 //! read. The reads that keep nothing are lowered without clearing it
-//! ([`Cx::lower_operand_borrowed`]): an operand of a `+` chain (the
-//! chain copies it), the argument of `len`, an operand of a comparison,
+//! ([`Cx::lower_operand_borrowed`], or `Cx::borrowed_args` for an
+//! argument): an operand of a `+` chain (the chain copies it), an operand
+//! of a comparison, the receiver of a slice (it copies), an argument of a
+//! call that keeps none (`hale_types::string_append::
+//! call_keeps_no_argument`, the rule `hale verify`'s finding reads too),
 //! and the place an appending assignment reads. Every other path that
 //! loads a String local goes through `lower_expr`'s identifier arm,
 //! which clears. A plain store to the local, and its `let`, clear it too.

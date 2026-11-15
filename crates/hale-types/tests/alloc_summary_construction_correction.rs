@@ -1060,7 +1060,10 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/string_append_test.hl: build StringConcat @705..774 InUnboundedLoop",
             "tests/hale/string_append_test.hl: build StringConcat @705..739 InUnboundedLoop",
             "tests/hale/string_append_test.hl: build StringConcat @705..724 InUnboundedLoop",
-            "tests/hale/string_append_test.hl: Doc::build StringConcat @1200..1241 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: build_reading StringConcat @1174..1243 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: build_reading StringConcat @1174..1208 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: build_reading StringConcat @1174..1193 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: Doc::build StringConcat @1759..1800 InUnboundedLoop",
             // `tests/hale/u256_arith_test.hl`: the parse refusals it loops over
             // build their assertion messages in the loop (GH #1934)
             "tests/hale/u256_arith_test.hl: conversions StringConcat @9516..9542 InUnboundedLoop",
@@ -1516,11 +1519,11 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 507",
+                "dna__core: 511",
                 "dna__core__pond__pq: 16",
                 "dna__core__pond__realtime__nats: 2",
-                "dna__host: 808",
-                "dna__operations: 258",
+                "dna__host: 824",
+                "dna__operations: 262",
                 "the stdlib's copy: 1",
             ])
         )]

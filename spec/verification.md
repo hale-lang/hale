@@ -3072,10 +3072,18 @@ assume the others in a build:
   `s = f"{s}…"` in a loop, where an append no longer copies otherwise
   (spec/stdlib.md § "Building a String"). Two shapes: the target is a
   local declared outside the loop and the loop also reads it in a way
-  that may keep the value (anything but an operand of `+`, of a
-  comparison or of `len`, or the append's own read), which gives the
-  local's buffer up before each append — reported with that read as
-  its step; or the target is a place other than a local or a field of
+  that may keep the value (anything but the reads spec/stdlib.md
+  § "Building a String" lists as keeping nothing — an operand of `+` or
+  of a comparison, a slice, an argument of a call that keeps none, the
+  append's own read: the same list lowering reads without giving the
+  buffer up), which gives the local's buffer up before each append —
+  reported with that read as its step. A read is not reported when the
+  statements after it in its own block start the local afresh (a plain
+  assignment: `tok = ""` after handing `tok` on) or leave the frame
+  (`return`, `fail`) before any append to it, nor when it is in a
+  `return`, a `fail` or a plain assignment to the local itself; the next
+  append then copies a fresh value, or never comes. The other shape: the
+  target is a place other than a local or a field of
   `self` (`rec.body`, `self.page.body`), which builds a fresh String
   the size of the whole each time. The message names the fix: read the
   local after the loop, or build in a local, or in a

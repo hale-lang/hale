@@ -336,9 +336,19 @@ to another name, stored, returned, captured into a record — gives the
 buffer up, and the next append copies the text into a fresh buffer
 before it writes; so a copy taken before an append never sees it. The
 reads that keep nothing do not give it up: an operand of a `+` chain
-(the chain copies it), the argument of `len`, an operand of a
-comparison, and the place an appending assignment itself reads. A
-plain assignment to the local, and its `let`, start it afresh.
+(the chain copies it), an operand of a comparison, a slice `s[lo..hi]`
+(it copies the bytes it names), the place an appending assignment
+itself reads, and an argument of a call that keeps none of its
+arguments. Those calls are `len` and the printers, the built-in
+`contains` and `starts_with`, and every `std::` function the surface
+table lists as lowered natively, classified pure (or allocating
+only), not fallible, and returning a value that cannot be an argument
+(an `Int`, `Float`, `Bool`, `Decimal`, 256-bit integer, `Duration`,
+`Time` or nothing): `std::str::contains`, `index_of`, `index_of_from`,
+`starts_with`, `ends_with` and the like. A call of a program fn, and a
+`std::` function returning a `String` (`substring`, `trim`), give the
+buffer up. A plain assignment to the local, and its `let`, start it
+afresh.
 
 So the loop that stays linear reads the growing text only in those
 ways, and hands it on after the loop:

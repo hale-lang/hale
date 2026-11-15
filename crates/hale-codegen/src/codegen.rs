@@ -1928,6 +1928,7 @@ fn build_resolved_lowered(
         xpool_fresh_slots: HashSet::new(),
         str_accs: HashMap::new(),
         str_parts_arrays: HashMap::new(),
+        borrowed_args: HashSet::new(),
         xpool_strings: HashMap::new(),
         site_files: options
             .debug
@@ -4916,6 +4917,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// GH #1947: each fn's one `[16 x ptr]` for the operands a String
     /// runtime call takes (`crate::string_append`).
     pub(crate) str_parts_arrays: HashMap<FunctionValue<'ctx>, PointerValue<'ctx>>,
+    /// GH #1947: the argument nodes of the calls being lowered that keep
+    /// none of their arguments (`hale_types::string_append::
+    /// call_keeps_no_argument`): an identifier among them is read without
+    /// giving up its local's append buffer.
+    pub(crate) borrowed_args: HashSet<*const Expr>,
     /// The backstop's report strings, one global each.
     pub(crate) xpool_strings: HashMap<String, PointerValue<'ctx>>,
     /// The source table the backstop locates its sites with (`debug`'s,
@@ -17489,7 +17495,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        // GH #1947: a call statement that keeps none of its arguments
+        // (`println(out);`) reads them as an expression's call does.
+        let marks = match stmt {
+            Stmt::Expr(Expr::Call { callee, args, .. }) => self.mark_borrowed_args(callee, args),
+            _ => Vec::new(),
+        };
         let r = self.lower_stmt_traced(stmt, scope);
+        self.unmark_borrowed_args(marks);
         // A value lowering inside the statement ended control flow
         // (`continue_dead`): the statement is terminated. A consumer
         // that refused the placeholder's type on the way (a String
@@ -24987,7 +25000,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1530 step 2: a seam's hop call is inlined into the seam
         let hop = matches!(e, Expr::Call { .. } | Expr::Or { .. }) && hale_types::seam_expand::is_seam_pos(e.span().start.0);
         let before = if hop { self.call_sites_here() } else { Vec::new() };
+        // GH #1947: a call that keeps none of its arguments reads an
+        // argument naming a String local without giving up its buffer.
+        let marks = match e {
+            Expr::Call { callee, args, .. } => self.mark_borrowed_args(callee, args),
+            _ => Vec::new(),
+        };
         let result = self.lower_expr_at(e, scope);
+        self.unmark_borrowed_args(marks);
         // A refusal raised with no place of its own is placed at the
         // innermost expression of the user's source being lowered when it
         // was raised, so the build names a file, line and column for it
@@ -25598,7 +25618,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // GH #1947: a read that may keep the value gives up the
                     // local's append buffer (`crate::string_append`).
                     if let Some(acc) = self.str_accs.get(&alloca).copied() {
-                        self.emit_str_acc_release(acc)?;
+                        if !self.borrowed_args.contains(&(e as *const Expr)) {
+                            self.emit_str_acc_release(acc)?;
+                        }
                     }
                     return Ok((loaded, ty));
                 }
@@ -26506,7 +26528,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // (`s[lo..=hi]`) maps to lotus_str_slice with hi+1
                 // since the helper takes exclusive `hi`.
                 if let Expr::Range { lo, hi, inclusive, .. } = index.as_ref() {
-                    let (recv_val, recv_ty) = self.lower_expr(receiver, scope)?;
+                    // The slice copies the bytes it names: the receiver is
+                    // read and not kept (GH #1947).
+                    let (recv_val, recv_ty) = self.lower_operand_borrowed(receiver, scope)?;
                     if !matches!(recv_ty, CodegenTy::String) {
                         return Err(CodegenError::Unsupported(format!(
                             "range slicing only supported on String in v0, \
@@ -27085,6 +27109,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.context.struct_type(&field_tys, false)
     }
 
+
+    /// GH #1947: when `callee` keeps none of its arguments
+    /// (`hale_types::string_append::call_keeps_no_argument`), mark the
+    /// arguments that are identifiers, so the identifier arm reads them
+    /// without giving up their locals' append buffers. Returns the marks
+    /// this call added, for [`Self::unmark_borrowed_args`].
+    pub(crate) fn mark_borrowed_args(&mut self, callee: &Expr, args: &[Expr]) -> Vec<*const Expr> {
+        if self.str_accs.is_empty() || !hale_types::string_append::call_keeps_no_argument(callee) {
+            return Vec::new();
+        }
+        args.iter()
+            .filter(|a| matches!(a, Expr::Ident(_)))
+            .map(|a| a as *const Expr)
+            .filter(|p| self.borrowed_args.insert(*p))
+            .collect()
+    }
+
+    pub(crate) fn unmark_borrowed_args(&mut self, marks: Vec<*const Expr>) {
+        for p in marks {
+            self.borrowed_args.remove(&p);
+        }
+    }
 
     /// A binary operator over its lowered operands: the coercions and
     /// operator rows `Expr::Binary` applies (a printable side of a String

@@ -1903,8 +1903,10 @@ costs O(n) (spec/stdlib.md § "Building a String"). It stays linear only
 while nothing else holds the text: a read of the local that may keep
 the value (the local passed to a call, bound, stored or returned) gives
 the buffer up, and the next append copies the whole text first. So read
-the growing text in the loop only as an operand of `+`, of a comparison
-or of `len`, and hand it on after the loop:
+the growing text in the loop only as an operand of `+` or of a
+comparison, in a slice, or as an argument of a `std::` reader that
+returns a number or a `Bool` (`len`, `std::str::contains`, `index_of`,
+`starts_with`), and hand it on after the loop:
 
 ```hale
 fn page(n: Int) -> String {

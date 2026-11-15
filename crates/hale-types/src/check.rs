@@ -2887,8 +2887,10 @@ fn hot_append_message(q: &crate::string_append::QuadraticAppend) -> String {
              reads it in a way that may keep the value (passed to a call, \
              bound, stored or returned), so every append first copies the \
              whole String: the loop is quadratic in time and memory. Read it \
-             after the loop, or only as an operand of `+`, of a comparison or \
-             of `len`; or build the text in a `std::bytes::BytesBuilder` \
+             after the loop, or only as an operand of `+` or a comparison, in \
+             a slice, or as an argument of a `std::` reader that returns a \
+             number or a `Bool` (`len`, `std::str::contains`); start it afresh \
+             after handing it on; or build the text in a `std::bytes::BytesBuilder` \
              (`append_str`) and `finish()` it once.",
             p = q.place
         ),

@@ -411,10 +411,64 @@ fn place_text(target: &LValue) -> String {
     s
 }
 
+/// Does a call of `callee` keep none of its arguments? Then an argument
+/// that names a local is a read that keeps nothing, and lowering hands
+/// the local's value over without giving up its append buffer.
+///
+/// - `len` and the printers, by names no fn can take: `len` measures,
+///   a printer writes the bytes out and keeps nothing.
+/// - the built-in call forms `contains` and `starts_with`, the same
+///   native readers as their `std::str` rows.
+/// - a `std::` function whose surface row is public, lowered natively
+///   (`Lower::Intrinsic`: no Hale body of its own, so nothing it does
+///   is a store the stdlib's source makes), classified pure or
+///   allocating only (`EffectSet::PURE` / `ALLOC`: it touches no
+///   locus, wire or process state), not fallible (an error payload
+///   could carry an argument), and returning a value that cannot be
+///   one of its arguments: an `Int`, `Float`, `Bool`, `Decimal`, 256-bit
+///   integer, `Duration`, `Time` or nothing. `std::str::contains`,
+///   `index_of`, `starts_with`, `ends_with`, `byte_at`, `can_parse_int`
+///   are such calls; `substring` (it returns a `String`) and every
+///   program fn are not.
+pub fn call_keeps_no_argument(callee: &Expr) -> bool {
+    use crate::stdlib_surface::{row, EffectSet, Lower, SigTy};
+    match callee {
+        Expr::Ident(i) => {
+            matches!(i.name.as_str(), "len" | "println" | "print" | "eprintln" | "eprint" | "contains" | "starts_with")
+        }
+        Expr::Path(q) => {
+            let segs: Vec<&str> = q.segments.iter().map(|s| s.name.as_str()).collect();
+            let Some(f) = row(&segs) else { return false };
+            let Some(sig) = f.sig.as_ref() else { return false };
+            f.is_public()
+                && matches!(f.lower, Lower::Intrinsic(_))
+                && !f.effects.is_unclassified()
+                && EffectSet::ALLOC.contains(f.effects)
+                && sig.fallible.is_none()
+                && matches!(
+                    sig.ret,
+                    SigTy::Int
+                        | SigTy::Uint
+                        | SigTy::Float
+                        | SigTy::Bool
+                        | SigTy::Decimal
+                        | SigTy::U256
+                        | SigTy::I256
+                        | SigTy::Duration
+                        | SigTy::Time
+                        | SigTy::Unit
+                )
+        }
+        _ => false,
+    }
+}
+
 /// The reads of a local that never keep its value, as lowering lowers
 /// them without giving up the local's buffer: an operand of a `+` chain
-/// (the chain copies it), the argument of `len`, an operand of a
-/// comparison, and the place an appending assignment reads.
+/// (the chain copies it), an operand of a comparison, an argument of a
+/// call that keeps none ([`call_keeps_no_argument`]), the String a range
+/// slices (`s[lo..hi]` copies), and the place an appending assignment
+/// reads.
 ///
 /// Calls `on_read` with every other read of `name` in the statements.
 fn sharing_reads(stmts: &[&Stmt], exprs: &[&Expr], name: &str, on_read: &mut dyn FnMut(Span)) {
@@ -434,9 +488,13 @@ fn sharing_reads(stmts: &[&Stmt], exprs: &[&Expr], name: &str, on_read: &mut dyn
                 }
             }
             Expr::Call { callee, args, .. } => {
-                if matches!(callee.as_ref(), Expr::Ident(i) if i.name == "len") && args.len() == 1 {
-                    consumed.push(&args[0] as *const Expr);
+                if call_keeps_no_argument(callee) {
+                    consumed.extend(args.iter().map(|a| a as *const Expr));
                 }
+            }
+            // `s[lo..hi]` copies the bytes it names into a fresh String.
+            Expr::Index { receiver, index, .. } if matches!(index.as_ref(), Expr::Range { .. }) => {
+                consumed.push(receiver.as_ref() as *const Expr);
             }
             _ => {}
         },
@@ -470,14 +528,109 @@ fn sharing_reads(stmts: &[&Stmt], exprs: &[&Expr], name: &str, on_read: &mut dyn
     }
 }
 
+/// The first read of `name` in the loop body `b` that gives the local's
+/// buffer up while a later iteration still appends to that buffer.
+///
+/// A read is excused, as the runtime makes it cheap, when what follows
+/// it in its own block (before any append to the local) starts the
+/// local afresh — a plain assignment, `tok = ""` after handing `tok` on
+/// — or leaves the frame (`return`, `fail`): the next append then copies
+/// the fresh value, or never comes. A read in a `return` or `fail`, and
+/// one in a plain assignment to the local itself (`s = f(s)`), is
+/// excused the same way.
 fn sharing_read_in_block(b: &Block, name: &str) -> Option<Span> {
-    let stmts: Vec<&Stmt> = b.stmts.iter().collect();
-    let tail: Vec<&Expr> = b.tail.as_deref().into_iter().collect();
-    let mut first = None;
-    sharing_reads(&stmts, &tail, name, &mut |s| {
-        first.get_or_insert(s);
-    });
-    first
+    unexcused_in_block(b, name).into_iter().next()
+}
+
+fn flat_reads(stmts: &[&Stmt], exprs: &[&Expr], name: &str) -> Vec<Span> {
+    let mut out = Vec::new();
+    sharing_reads(stmts, exprs, name, &mut |s| out.push(s));
+    out
+}
+
+fn unexcused_in_block(b: &Block, name: &str) -> Vec<Span> {
+    let mut out = Vec::new();
+    for (i, st) in b.stmts.iter().enumerate() {
+        let reads = unexcused_in_stmt(st, name);
+        if reads.is_empty() || starts_afresh(&b.stmts[i + 1..], name) {
+            continue;
+        }
+        out.extend(reads);
+    }
+    if let Some(t) = &b.tail {
+        out.extend(flat_reads(&[], &[t], name));
+    }
+    out
+}
+
+fn unexcused_in_stmt(st: &Stmt, name: &str) -> Vec<Span> {
+    match st {
+        Stmt::Return(..) | Stmt::Fail { .. } => Vec::new(),
+        // `s = f(s)`: the statement that reads the local starts it afresh
+        Stmt::Assign { target, op, value, .. }
+            if append_place(target) == AppendPlace::Local(name) && appended_parts(target, op, value).is_none() =>
+        {
+            Vec::new()
+        }
+        Stmt::If(i) => unexcused_in_if(i, name),
+        Stmt::While { cond, body, .. } => {
+            let mut v = flat_reads(&[], &[cond], name);
+            v.extend(unexcused_in_block(body, name));
+            v
+        }
+        Stmt::For { iter, body, .. } => {
+            let mut v = flat_reads(&[], &[iter], name);
+            v.extend(unexcused_in_block(body, name));
+            v
+        }
+        Stmt::Block(b) => unexcused_in_block(b, name),
+        Stmt::Match(m) => {
+            let mut v = flat_reads(&[], &[&m.scrutinee], name);
+            for a in &m.arms {
+                if let Some(g) = &a.guard {
+                    v.extend(flat_reads(&[], &[g], name));
+                }
+                match &a.body {
+                    MatchArmBody::Expr(e) => v.extend(flat_reads(&[], &[e], name)),
+                    MatchArmBody::Block(b) => v.extend(unexcused_in_block(b, name)),
+                }
+            }
+            v
+        }
+        other => flat_reads(&[other], &[], name),
+    }
+}
+
+fn unexcused_in_if(i: &IfStmt, name: &str) -> Vec<Span> {
+    let mut v = flat_reads(&[], &[&i.cond], name);
+    v.extend(unexcused_in_block(&i.then_block, name));
+    match i.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => v.extend(unexcused_in_block(b, name)),
+        Some(ElseBranch::ElseIf(n)) => v.extend(unexcused_in_if(n, name)),
+        None => {}
+    }
+    v
+}
+
+/// Do the statements after a read start the local afresh (a plain
+/// assignment to it) or leave the frame (`return`, `fail`) before any of
+/// them appends to it?
+fn starts_afresh(rest: &[Stmt], name: &str) -> bool {
+    for st in rest {
+        match st {
+            Stmt::Return(..) | Stmt::Fail { .. } => return true,
+            Stmt::Assign { target, op, value, .. }
+                if append_place(target) == AppendPlace::Local(name) && appended_parts(target, op, value).is_none() =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        if appends_to_local(std::slice::from_ref(st), None, name) {
+            return false;
+        }
+    }
+    false
 }
 
 fn sharing_read_in_expr(e: &Expr, name: &str) -> Option<Span> {
@@ -521,6 +674,48 @@ mod tests {
         assert_eq!(got.len(), 1, "{got:?}");
         assert_eq!(got[0].place, "out");
         assert!(matches!(got[0].why, QuadraticWhy::SharedInLoop { .. }));
+    }
+
+    #[test]
+    fn a_std_reader_that_keeps_nothing_is_not_a_sharing_read() {
+        let src = "fn f(n: Int) -> Int {\n let mut seen = \"\\n\";\n let mut i = 0;\n while i < n {\n let k = to_string(i % 7);\n if !std::str::contains(seen, \"\\n\" + k + \"\\n\") && std::str::index_of(seen, k) < 0 { seen = seen + k + \"\\n\"; }\n println(seen);\n let head = seen[0..1];\n i = i + len(head);\n }\n return len(seen);\n}\n";
+        assert!(found(src).is_empty(), "{:?}", found(src));
+    }
+
+    #[test]
+    fn a_std_fn_returning_a_string_is_a_sharing_read() {
+        let src = "fn f(n: Int) -> Int {\n let mut out = \"\";\n let mut i = 0;\n while i < n {\n out += \"row \";\n let t = std::str::trim(out);\n i = i + len(t);\n }\n return len(out);\n}\n";
+        assert_eq!(found(src).len(), 1, "{:?}", found(src));
+    }
+
+    #[test]
+    fn a_read_followed_by_a_reset_or_an_exit_is_not_reported() {
+        // a token handed on and started afresh; a `return` of the value;
+        // `s = f(s)` replacing it
+        let src = "fn g(s: String) -> Int { return len(s); }\nfn f(text: String) -> Int {\n let mut tok = \"\";\n let mut out = \"\";\n let mut k = 0;\n let mut i = 0;\n while i < len(text) {\n let ch = text[i..(i + 1)];\n if ch == \" \" { k = k + g(tok); tok = \"\"; } else { tok = tok + ch; }\n if k > 100 { return g(out); }\n out = out + ch;\n out = std::str::replace(out, \"aa\", \"a\");\n i = i + 1;\n }\n return k;\n}\n";
+        assert!(found(src).is_empty(), "{:?}", found(src));
+    }
+
+    #[test]
+    fn the_calls_that_keep_nothing() {
+        let callee = |src: &str| {
+            let b = body_of(&format!("fn f() {{ let s = \"x\"; {src}; }}"));
+            match &b.stmts[1] {
+                Stmt::Expr(Expr::Call { callee, .. }) => callee_keeps(callee),
+                other => panic!("{other:?}"),
+            }
+        };
+        fn callee_keeps(c: &Expr) -> bool {
+            call_keeps_no_argument(c)
+        }
+        assert!(callee("std::str::contains(s, \"a\")"));
+        assert!(callee("std::str::index_of(s, \"a\")"));
+        assert!(callee("std::str::ends_with(s, \"a\")"));
+        assert!(callee("len(s)"));
+        assert!(callee("println(s)"));
+        assert!(!callee("std::str::trim(s)"), "returns a String");
+        assert!(!callee("std::str::substring(s, 0, 1)"), "returns a String");
+        assert!(!callee("g(s)"), "a program fn");
     }
 
     #[test]

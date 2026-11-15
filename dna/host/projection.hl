@@ -306,6 +306,8 @@ locus Projection {
     }
     fn mutation_of(id: String) -> MutationRow {
         let mut m = MutationRow { id: id };
+        // the events grow in a local, stored once (GH #1947)
+        let mut events = m.events;
         let mut i = 0;
         while i < self.rows() {
             let e = self.row(i);
@@ -337,10 +339,11 @@ locus Projection {
                     m.disposition = kind;
                     m.detail = e.body;
                 }
-                m.events = m.events + kind + " ";
+                events = events + kind + " ";
             }
             i = i + 1;
         }
+        m.events = events;
         // a settled Review moves its mutation on: reviewed (approve) or
         // rejected — unless the assembly already took it further
         i = 0;

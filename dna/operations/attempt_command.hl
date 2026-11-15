@@ -798,6 +798,8 @@ locus AttemptCommandCodec {
     // the leg's kind did not.
     fn candidates(j: dna::Journal, c: GovernanceCommand) -> AttemptCandidates {
         let mut out = AttemptCandidates { };
+        // the names grow in a local, stored once (GH #1947)
+        let mut names = out.names;
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
@@ -812,7 +814,7 @@ locus AttemptCommandCodec {
                         out.kinds = out.kinds + (if len(out.kinds) > 0 { " " } else { "" })
                             + d.value.performer_kind;
                     }
-                    if len(why) == 0 { out.names = out.names + e.entity + "\n"; }
+                    if len(why) == 0 { names = names + e.entity + "\n"; }
                     if why != "kind" && why != "settled" { out.of_kind = out.of_kind + 1; }
                     if why == "in_process" { out.in_process = out.in_process + 1; }
                     if why == "awaiting" { out.awaiting = out.awaiting + 1; }
@@ -825,6 +827,7 @@ locus AttemptCommandCodec {
             }
             i = i + 1;
         }
+        out.names = names;
         return out;
     }
     // Why nothing awaits the leg, from what the scan found.

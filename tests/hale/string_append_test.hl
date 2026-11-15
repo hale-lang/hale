@@ -21,6 +21,23 @@ fn build(n: Int) -> String {
     return out;
 }
 
+// The same loop, reading the growing text through `std::` readers that
+// keep nothing of it (spec/stdlib.md § "Building a String"): still one
+// buffer.
+fn build_reading(n: Int) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        if !std::str::contains(out, "never") && std::str::index_of(out, "\t") < 0 {
+            out = out + "row number " + to_string(i) + " with some padding text here\n";
+        }
+        let head = out[0..3];
+        if head != "row" { return "wrong head"; }
+        i = i + 1;
+    }
+    return out;
+}
+
 // What a callee is handed is its own: an append after the call does not
 // reach it.
 fn keep(s: String) -> Row {
@@ -86,6 +103,26 @@ fn main() {
             "building 350 KB made " + to_string(allocs) + " heap allocations",
         );
     }
+
+    let before_reading = std::diag::heap_alloc_count();
+    let read_text = build_reading(8000);
+    let reading_allocs = std::diag::heap_alloc_count() - before_reading;
+    std::test::assert_eq_str(read_text, text, "the readers see the text as it grows");
+    if before_reading >= 0 {
+        std::test::assert(
+            reading_allocs < 400,
+            "reading while building made " + to_string(reading_allocs) + " heap allocations",
+        );
+    }
+
+    // A slice taken before an append is a copy, and keeps its bytes.
+    let mut w = "ab";
+    let first = w[0..len(w)];
+    w += "cd";
+    std::test::assert_eq_str(first, "ab", "the slice keeps what it copied");
+    std::test::assert(std::str::contains(w, "bc"), "the local has the append");
+    w += "ef";
+    std::test::assert_eq_str(w, "abcdef", "the readers did not disturb the appends");
 
     // A copy taken before an append does not see it.
     let mut s = "ab";

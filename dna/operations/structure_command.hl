@@ -70,6 +70,12 @@ fn held_row(kind: String, entity: String, body: String) -> String {
 
 fn held_state_of(j: AuthoredRows, receipts: dna::Receipts) -> HeldState {
     let out = HeldState { };
+    // each list grows in a local, stored once (GH #1947)
+    let mut persons = out.persons;
+    let mut retired = out.retired;
+    let mut positions = out.positions;
+    let mut equipment = out.equipment;
+    let mut holds = out.holds;
     let mut refused = "\n";
     let mut i = 0;
     while i < j.revision() {
@@ -86,17 +92,17 @@ fn held_state_of(j: AuthoredRows, receipts: dna::Receipts) -> HeldState {
     while i < j.revision() {
         let e = j.read(i);
         let who = j.author_of(i);
-        if !held_machine(who) && !std::str::contains(out.persons, "\n" + who + "\n") {
-            out.persons = out.persons + who + "\n";
+        if !held_machine(who) && !std::str::contains(persons, "\n" + who + "\n") {
+            persons = persons + who + "\n";
         }
-        if e.kind == "person.retired" { out.retired = out.retired + e.entity + "\n"; }
+        if e.kind == "person.retired" { retired = retired + e.entity + "\n"; }
         if e.kind == "graph.retired" {
-            out.positions = std::str::replace(out.positions, "\n" + e.entity + "\n", "\n");
+            positions = std::str::replace(positions, "\n" + e.entity + "\n", "\n");
             if std::str::starts_with(e.entity, "holds:") {
                 let bar = std::str::index_of(e.entity, "|");
                 if bar > 0 {
-                    out.holds = std::str::replace(
-                        out.holds,
+                    holds = std::str::replace(
+                        holds,
                         "\n" + e.entity[6..bar] + "\t" + e.entity[(bar + 1)..len(e.entity)] + "\n",
                         "\n",
                     );
@@ -125,16 +131,16 @@ fn held_state_of(j: AuthoredRows, receipts: dna::Receipts) -> HeldState {
             rest = rest[(nl + 1)..len(rest)];
             let entity = std::json::find_string_field(row, "entity");
             if std::json::find_string_field(row, "kind") == "graph.retired" {
-                out.positions = std::str::replace(out.positions, "\n" + entity + "\n", "\n");
+                positions = std::str::replace(positions, "\n" + entity + "\n", "\n");
             }
             if std::json::find_string_field(row, "kind") == "graph.node"
                 && (
                     std::str::starts_with(entity, "position:")
                         || std::str::starts_with(entity, "organization:")
                 )
-                && !std::str::contains(out.positions, "\n" + entity + "\n")
+                && !std::str::contains(positions, "\n" + entity + "\n")
             {
-                out.positions = out.positions + entity + "\n";
+                positions = positions + entity + "\n";
                 let fitted = dna::show_list(
                     dna::show_strings(
                         std::json::find_field_raw(
@@ -148,7 +154,7 @@ fn held_state_of(j: AuthoredRows, receipts: dna::Receipts) -> HeldState {
                     false,
                 );
                 if len(fitted) > 0 {
-                    out.equipment = out.equipment + entity + "\t" + fitted + "\n";
+                    equipment = equipment + entity + "\t" + fitted + "\n";
                 }
             }
             if std::str::starts_with(entity, "holds:") {
@@ -156,17 +162,17 @@ fn held_state_of(j: AuthoredRows, receipts: dna::Receipts) -> HeldState {
                 let pair = entity[6..bar] + "\t" + entity[(bar + 1)..len(entity)];
                 // a hold left (a vacate) takes the pair out; any other row states it
                 if std::json::find_string_field(row, "kind") == "graph.retired" {
-                    out.holds = std::str::replace(out.holds, "\n" + pair + "\n", "\n");
+                    holds = std::str::replace(holds, "\n" + pair + "\n", "\n");
                 }
-                else if !std::str::contains(out.holds, "\n" + pair + "\n") {
-                    out.holds = out.holds + pair + "\n";
+                else if !std::str::contains(holds, "\n" + pair + "\n") {
+                    holds = holds + pair + "\n";
                 }
             }
         }
         i = i + 1;
     }
     // an organization's members are persons the record knows too (GH #1123)
-    let mut pairs = out.holds;
+    let mut pairs = holds;
     while len(pairs) > 0 {
         let nl = std::str::index_of(pairs, "\n");
         let pair = pairs[0..nl];
@@ -175,11 +181,16 @@ fn held_state_of(j: AuthoredRows, receipts: dna::Receipts) -> HeldState {
         let who = pair[(tab + 1)..len(pair)];
         if tab > 0
             && std::str::starts_with(pair, "organization:")
-            && !std::str::contains(out.persons, "\n" + who + "\n")
+            && !std::str::contains(persons, "\n" + who + "\n")
         {
-            out.persons = out.persons + who + "\n";
+            persons = persons + who + "\n";
         }
     }
+    out.persons = persons;
+    out.retired = retired;
+    out.positions = positions;
+    out.equipment = equipment;
+    out.holds = holds;
     return out;
 }
 
