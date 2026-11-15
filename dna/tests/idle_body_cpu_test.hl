@@ -212,32 +212,52 @@ main locus App {
         // past the first ticks, which read what the body found
         std::time::sleep(3s);
         let hz = std::str::parse_int(dna::trim_nl(dna::run_tool("getconf\nCLK_TCK").stdout)) or 100;
-        let before = cpu_ticks(pid);
-        let t0 = std::time::monotonic_ns();
-        std::time::sleep(10s);
-        let after = cpu_ticks(pid);
-        let wall = std::time::monotonic_ns() - t0;
+        // three windows, judged by the quietest: a shared CI runner steals
+        // and lends cycles, so one window read 10-12% on main itself, while
+        // the regression this guards against (a body that spins) uses a
+        // core in every window
+        let mut best = 100;
+        let mut best_wall = 0;
+        let mut ran = true;
+        let mut w = 0;
+        while w < 3 {
+            let before = cpu_ticks(pid);
+            let t0 = std::time::monotonic_ns();
+            std::time::sleep(5s);
+            let after = cpu_ticks(pid);
+            let wall = std::time::monotonic_ns() - t0;
+            if before < 0 || after < 0 {
+                ran = false;
+            } else {
+                // percent of one core
+                let percent = (after - before) * 1000000000 / hz * 100 / wall;
+                eprintln(
+                    "idle_body_cpu_test: window ",
+                    to_string(w + 1),
+                    ": the idle body used ",
+                    to_string(percent),
+                    "% of a core over ",
+                    to_string(wall / 1000000),
+                    " ms (",
+                    to_string(j.revision()),
+                    " rows)",
+                );
+                if percent < best {
+                    best = percent;
+                    best_wall = wall;
+                }
+            }
+            w = w + 1;
+        }
         let k2 = dna::run_tool("kill\n" + pid);
         std::test::assert(
-            before >= 0 && after >= 0,
-            "the body ran the whole window: " + (std::io::fs::read_file(a + "/body.log") or ""),
-        );
-        // percent of one core
-        let used = (after - before) * 1000000000 / hz;
-        let percent = used * 100 / wall;
-        eprintln(
-            "idle_body_cpu_test: the idle body used ",
-            to_string(percent),
-            "% of a core over ",
-            to_string(wall / 1000000),
-            " ms (",
-            to_string(j.revision()),
-            " rows)",
+            ran,
+            "the body ran every window: " + (std::io::fs::read_file(a + "/body.log") or ""),
         );
         std::test::assert(
-            percent < 10,
-            "an idle body uses a small fraction of a core: " + to_string(percent) + "% over "
-                + to_string(wall / 1000000) + " ms",
+            best < 10,
+            "an idle body uses a small fraction of a core: " + to_string(best)
+                + "% over its quietest window of " + to_string(best_wall / 1000000) + " ms",
         );
 
         dna::scratch_done(scratch);
