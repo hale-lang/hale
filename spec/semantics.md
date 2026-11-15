@@ -2806,7 +2806,9 @@ payload picks the consumer mode:
   declares a `json:` tag itself; a nested failure propagates), and a
   `bounded[T; N]` or `[T; N]` of any of those as a JSON array (more
   elements than `N` is `too_long`, fewer than a fixed array's
-  `too_short`; an absent `bounded` field is empty). A `Decimal<S>`
+  `too_short`; an absent `bounded` field is empty), and a map of
+  records (`bounded[T; N] indexed_by <key>`, GH #1944) as the api
+  codec carries one, an object keyed by each record's key. A `Decimal<S>`
   field is a JSON number, or a JSON string holding one (`"97000.50"`;
   2026-11-14, downstream handoff), read at the field's scale, every
   digit kept and no float on the way, an exponent applied exactly
@@ -5875,7 +5877,18 @@ non-error value, that value is the expression's value
   clause then addresses the error in turn. The closure-
   violation channel is **not** entered. (An application may
   later promote a value error to a closure violation
-  explicitly, but no such syntax exists in v1.)
+  explicitly, but no such syntax exists in v1.) The payload
+  forwarded is the enclosing fn's error, so the call's error
+  type must be the one the fn declares: `std::os::getrandom(4)
+  or raise` in a `fallible(CryptoError)` fn is refused at the
+  `or raise`, naming both types, and is written `or fail
+  CryptoError { kind: err.kind, detail: err.detail }` (below)
+  or the fn declared `fallible(IoError)` (GH #1945: the check
+  admitted it and the build refused it in lowering's terms). A
+  stdlib error type spelled by its path (`std::crypto::CryptoError`,
+  `std::io::IoError`, `std::str::ParseError`, `std::index::IndexError`,
+  `std::form::hashmap::KeyError`, `std::form::ring_buffer::EmptyError`)
+  is the same type as its bare name, wherever either is written.
 - **`or <fallback>`** — binds `err` to `p` in scope and
   evaluates `<fallback>`. Its result is the expression's
   value. Type must match the success type. `<fallback>` may

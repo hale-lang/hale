@@ -295,7 +295,7 @@ locus OrganizationFixture {
                 "owner",
                 if link == 0 { "Org" } else { "chain" + to_string(link - 1) },
             );
-            chain.field("domain", "null");
+            chain.raw_field("domain", "null");
             chain.end_object();
             link = link + 1;
         }

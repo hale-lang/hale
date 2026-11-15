@@ -59,7 +59,7 @@ locus Http {
         b.string_field("record_head", source.head);
         b.string_field("record_revision", to_string(source.revision));
         b.end_object();
-        b.field("data", data);
+        b.raw_field("data", data);
         b.end_object();
         return self.response(200, b.result());
     }

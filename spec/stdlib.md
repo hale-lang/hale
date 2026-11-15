@@ -1234,20 +1234,34 @@ flushed even under pipes.
 document into an internal buffer. It tracks scope state in a
 single context stack (one char per open scope: `O`/`A` for
 object/array with at least one value already emitted, `o`/`a`
-for empty). The Builder inserts separators (`,` between
-siblings, `:` between key and value) automatically.
+for empty). The Builder inserts separators automatically: `", "`
+between siblings and `": "` between a key and its value.
+
+The spacing is part of the contract. Documents the Builder
+writes are stored (journal rows, record bodies) and matched as
+text by the programs that read them back
+(`contains(body, "\"parsed\": false")`), so compact separators
+would split every reader between the rows written before and
+after; the Builder keeps the spaced form, and a reader that
+needs to be indifferent to spacing reads through the field
+readers below.
 
 Methods, grouped:
 
 - **Scopes:** `begin_object()`, `end_object()`,
   `begin_array()`, `end_array()`.
 - **Object entries (key + value in one call):** `field(name,
-  value)` for the common string case; `string_field`,
-  `int_field`, `bool_field`, `null_field` for explicit typing.
-- **Array entries / bare values:** `value(v)` (string), plus
-  `string_value`, `int_value`, `bool_value`, `null_value`.
+  value)` for the common string case, the value quoted and
+  escaped (`string_field` is the same call); `int_field`,
+  `bool_field`, `null_field` for the other scalars; `raw_field(name,
+  json)` for a value that is JSON already, written as given and not
+  checked.
+- **Array entries / bare values:** `value(v)`, a string quoted and
+  escaped (`string_value` is the same call); `int_value`,
+  `bool_value`, `null_value`; `raw_value(json)`, an element written
+  as given.
 - **Nested scopes inside an object:** `begin_object_field(name)`
-  / `begin_array_field(name)` — emit `"name":` then open the
+  / `begin_array_field(name)` — emit `"name": ` then open the
   sub-scope.
 - **Finish:** `result() -> String` returns the assembled buffer.
 
@@ -1260,8 +1274,13 @@ b.begin_array_field("tags");
 b.value("admin"); b.value("ops");
 b.end_array();
 b.end_object();
-let out = b.result();   // {"name":"alice","age":30,"tags":["admin","ops"]}
+let out = b.result();   // {"name": "alice", "age": 30, "tags": ["admin", "ops"]}
 ```
+
+Before 2026-11-15 `field` and `value` wrote their argument raw,
+so the example above wrote `{"name": alice, …}`, which is not
+JSON (GH #1943); code that handed them encoded JSON hands it to
+`raw_field` / `raw_value`.
 
 The flat-object readers (`find_*_field`, `array_first/next`)
 are the input side of the same v1 commitment: JSON is a wire

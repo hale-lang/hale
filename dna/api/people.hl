@@ -71,12 +71,13 @@ locus PersonWire {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("profile", "dna.person-administration.v1");
-        b.field("person", common.quote(plan.person));
-        b.string_field("state", plan.state); b.field("successor", common.quote(plan.successor));
+        b.raw_field("person", common.quote(plan.person));
+        b.string_field("state", plan.state); b.raw_field("successor", common.quote(plan.successor));
         b.string_field("event_id", plan.event_id);
         b.string_field("subject_digest", plan.subject_digest);
-        b.field("tasks", plan.tasks); b.string_field("transferred", to_string(plan.transferred));
-        b.bool_field("authorized", result.authorized); b.field("recipients", result.recipients);
+        b.raw_field("tasks", plan.tasks);
+        b.string_field("transferred", to_string(plan.transferred));
+        b.bool_field("authorized", result.authorized); b.raw_field("recipients", result.recipients);
         b.begin_object_field("basis"); b.string_field("memory", "record+ledger");
         b.string_field("record_head", result.head);
         b.string_field("record_revision", to_string(result.revision));

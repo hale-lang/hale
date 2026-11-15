@@ -80,6 +80,7 @@ let roundtrip = Person::from_json(encoded) or raise;
   - **Enums**: a payload-free variant is its name as a JSON string (`"Buy"`), read back by name; a name no variant has is `wrong_type` for the field. A variant with values is written as the api codec writes it (`{"Circle": 1.5}`).
   - **Nested records**: Any field whose type is another record of the seed is parsed and serialized recursively, by that record's own codec (its keys its fields' tags, else their names), whether or not it declares a `json:` tag of its own.
   - **Lists**: a `bounded[T; N]` or `[T; N]` of any of those is a JSON array; more elements than `N` is `too_long`, fewer than a fixed array's `too_short`, and an absent `bounded` field is empty.
+  - **Maps**: a `bounded[T; N] indexed_by k` of records is a JSON object keyed by each record's `k`, the record without its key as the value (`{"AAPL": {"rows": []}}`). A map that is not an object, or a member that is not a record (an array where the record's object belongs), is `wrong_type` for the field, never an empty map.
 - **Positional rows**: many APIs send a table's rows as arrays (`[[1688666400, "2990.5", "3010", 100.5], ...]`). Mark the row's record `@positional` and it crosses as an array of its fields in declaration order, as a field, a list's element or a whole value; `@positional` gives the record `from_json` / `to_json` without a tag:
 
   ```hale,fragment
@@ -208,12 +209,27 @@ let out = b.result();   // {"name": "Ada", "age": 36, "active": true}
 | `begin_array()` / `end_array()` | Opens and closes a JSON array (`[` ... `]`) |
 | `begin_object_field(name)` | Writes `"name": {` and opens a nested object scope |
 | `begin_array_field(name)` | Writes `"name": [` and opens a nested array scope |
-| `string_field(name, value)` | Writes `"name": "escaped_value"` |
+| `field(name, value)` / `string_field(name, value)` | Writes `"name": "escaped_value"` |
 | `int_field(name, value)` | Writes `"name": 123` |
 | `bool_field(name, value)` | Writes `"name": true` or `false` |
-| `string_value(value)` | Writes a quoted, escaped string element inside an array |
-| `field(name, raw_json)` | Writes `"name": <raw_json>` for pre-formatted JSON fragments |
+| `null_field(name)` | Writes `"name": null` |
+| `value(v)` / `string_value(v)` | Writes a quoted, escaped string element inside an array |
+| `int_value(n)` / `bool_value(b)` / `null_value()` | Writes a number, `true`/`false` or `null` element inside an array |
+| `raw_field(name, json)` | Writes `"name": <json>`, the value as given, for JSON you encoded already |
+| `raw_value(json)` | Writes an array element as given, for JSON you encoded already |
 | `result() -> String` | Returns an independent copy of the accumulated JSON string |
+
+`field` and `value` quote and escape the string they are given, so
+`b.field("name", "alice")` writes `"name": "alice"`. A value that is
+already JSON (a number you formatted, a nested document, an array from
+`build_array`) goes through `raw_field` / `raw_value`, which write it
+byte for byte and check nothing. Before 2026-11-15 `field` and `value`
+wrote their argument raw; code written against that passes the same
+arguments to `raw_field` / `raw_value`.
+
+The Builder separates with `": "` and `", "`. The spacing is part of
+what it writes, and programs that store its documents and match them as
+text rely on it, so it does not change.
 
 ### String Escaping and Unescaping
 

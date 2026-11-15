@@ -2984,6 +2984,12 @@ fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
 fn check_hot_path_alloc(rows: &HotPathRows<'_>, out: &mut Vec<Violation>) {
     for (f, found) in hot_path_findings(rows) {
         for (span, msg) in found {
+            // GH #1944: a finding in the JSON codecs the compiler wrote
+            // (`json_gen`'s parse space) is nothing the program can act
+            // on: no file holds the code, and no `@unbounded` reaches it.
+            if !f.hot && hale_syntax::api_names::is_json_synth_pos(span.start.0) {
+                continue;
+            }
             if f.hot {
                 out.push(Violation::error(HOT_PATH, span, format!("@hot: {}", msg)));
             } else if !rows.summary.unbounded_fns.contains(&f.key) {
@@ -24678,6 +24684,26 @@ impl<'a> Checker<'a> {
                         // `or raise` diverges via closure
                         // violation; expression's value type is
                         // the success type.
+                        //
+                        // GH #1945: inside a fallible fn it hands the
+                        // inner error on as the fn's own, so the two
+                        // are one type; the build refused a mismatch,
+                        // unlocated in the program's terms, after the
+                        // check had admitted it.
+                        if let Some((_, expected)) = &self.fallible_ctx {
+                            if !expected.assignable_from(&payload) {
+                                let (want, got) = (expected.display(), payload.display());
+                                self.diags.push(Diag::ty(
+                                    *span,
+                                    format!(
+                                        "`or raise` hands on the call's error, of type `{got}`, and the enclosing fn \
+                                         is declared `fallible({want})`: a raised error is the fn's own type. Map \
+                                         it, `or fail {want} {{ … }}` (the call's error is in scope as `err`), or \
+                                         declare the fn `fallible({got})`",
+                                    ),
+                                ));
+                            }
+                        }
                         success
                     }
                     OrDisposition::Wait(span) => {

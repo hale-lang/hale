@@ -3397,7 +3397,7 @@ locus Dna {
         );
         if len(i.position) > 0 { b.string_field("position", i.position); }
         if len(i.codebase) > 0 { b.string_field("codebase", i.codebase); }
-        if len(i.integration) > 0 { b.field("integration", i.integration); }
+        if len(i.integration) > 0 { b.raw_field("integration", i.integration); }
         b.string_field("class", class);
         b.string_field("target", p.target);
         b.string_field("assignee", p.assignee);
@@ -4867,7 +4867,7 @@ locus Dna {
         asked.string_field("objective", objective);
         asked.string_field("target", target);
         asked.string_field("base", base);
-        asked.field("binding", encode_binding(binding_of(req)));
+        asked.raw_field("binding", encode_binding(binding_of(req)));
         asked.end_object();
         let xr = self.journal.append(
             self.journal.revision(),
@@ -5153,7 +5153,7 @@ locus Dna {
         asked.string_field("objective", req.objective);
         asked.string_field("target", req.target);
         asked.string_field("base", base);
-        asked.field("binding", encode_binding(binding_of(req)));
+        asked.raw_field("binding", encode_binding(binding_of(req)));
         // whose candidate, and by what: the leg's commit and the receipt that is its patch
         asked.string_field("leg", s.holder);
         asked.string_field("leg_commit", sha);
@@ -5366,7 +5366,7 @@ locus Dna {
         b.string_field("worktree", m.worktree);
         b.string_field("fitness_signals", m.fitness_signals);
         b.string_field("evidence", r.steps);
-        b.field("magnitude", magnitude_json(r.magnitude));
+        b.raw_field("magnitude", magnitude_json(r.magnitude));
         b.string_field("diff_text", r.diff_text);
         b.string_field("diff_json", r.diff_json);
         if prepared {

@@ -255,6 +255,51 @@ pub fn uncarried_wire_maps(programs: &[&Program]) -> Vec<(String, String, Span, 
     out
 }
 
+/// The value of a wire map of `t` keyed by its field `k` (`bounded[T; N]
+/// indexed_by k`, spec/api.md § Codecs): the record without its key, the
+/// key's presence flag and its clear flag, which are the map's. Its codecs
+/// are `<prefix><T>__by_<k>`, the decoder taking the map's key as `__key`.
+fn lifted_value_type(t: &JsonType, k: &str) -> JsonType {
+    let flag = t
+        .fields
+        .iter()
+        .find(|f| matches!(&f.presence, Presence::Flag(of) if of == k))
+        .map(|f| f.name.clone());
+    let clear = clear_flag(t, k).map(str::to_string);
+    JsonType {
+        name: t.name.clone(),
+        fields: t
+            .fields
+            .iter()
+            .filter(|f| f.name != k && Some(&f.name) != flag.as_ref() && Some(&f.name) != clear.as_ref())
+            .cloned()
+            .collect(),
+        lifted: Some(k.to_string()),
+        lifted_flag: flag,
+        lifted_clear: clear,
+        // a positional record's map value is its fields but the key, in
+        // order
+        positional: t.positional.clone(),
+    }
+}
+
+/// The (record, key) pairs the wire maps of `types` are keyed by, each
+/// once, in the order first met: the records whose `__by_<key>` codecs
+/// the maps' reads and writes call. A map of values names no such codec.
+fn wire_map_keys(types: &[JsonType]) -> Vec<(String, String)> {
+    let mut lifted: Vec<(String, String)> = Vec::new();
+    for t in types {
+        for f in &t.fields {
+            if let FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: None, .. } = &f.kind {
+                if !lifted.contains(&(tn.clone(), k.clone())) {
+                    lifted.push((tn.clone(), k.clone()));
+                }
+            }
+        }
+    }
+    lifted
+}
+
 /// The record a map of values crosses protobuf as, an entry of its
 /// `map<string, V>`: `__ApiMapEntry_<T>__<key>`.
 fn map_entry_record(record: &str, key: &str) -> String {
@@ -1307,7 +1352,7 @@ fn field_read(t: &JsonType, f: &JsonField, prefix: &str, strict: bool, rows: &Ro
         FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: Some(v), .. } => {
             b.push_str(&json_value_map_read(f, tn, k, v, prefix, rows))
         }
-        FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } => b.push_str(&json_map_read(f, tn, k, prefix)),
+        FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } => b.push_str(&json_map_read(f, tn, k, prefix, rows)),
         FieldKind::List { elem, .. } => b.push_str(&json_list_read(f, elem, prefix, rows)),
     }
     if f.tracks() {
@@ -1693,16 +1738,25 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str, ro
 /// key (`<prefix><T>__by_<key>`, the value's own key field, if it sends
 /// one, skipped as an unknown key); a key already read is `duplicate_key`,
 /// more members than the holder holds `too_long`.
-fn json_map_read(f: &JsonField, tn: &str, k: &str, prefix: &str) -> String {
+fn json_map_read(f: &JsonField, tn: &str, k: &str, prefix: &str, rows: &Rows) -> String {
     let ind = "                    ";
     let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}", f.key);
     let dup = format!("fail JsonError {{ kind: \"duplicate_key\", field: \"{}\" }}", f.key);
     let mut b = String::new();
     b.push_str(&format!("{ind}let __ma = __s[__vs..__ve];\n"));
-    b.push_str(&format!("{ind}if !std::json::valid(__ma) {{ {wrong}; }}\n"));
+    // GH #1944: the map is an object, and each member's value the record
+    // without its key (an object, a positional record's array): anything
+    // else is the field's `wrong_type`, never a map read as empty (the
+    // object cursor walks no member of an array) or a record read as its
+    // defaults
+    b.push_str(&format!("{ind}if !std::json::valid(__ma) || std::str::byte_at_unchecked(__ma, 0) != 123 {{ {wrong}; }}\n"));
     b.push_str(&format!("{ind}clear(__h_{}.b);\n", f.name));
     b.push_str(&format!("{ind}let mut __mi = std::json::object_first(__ma);\n"));
     b.push_str(&format!("{ind}while !__mi.done {{\n"));
+    b.push_str(&format!(
+        "{ind}    let __e0 = if __mi.val_start < __mi.val_end {{ std::str::byte_at_unchecked(__ma, __mi.val_start) }} else {{ 0 }};\n"
+    ));
+    b.push_str(&format!("{ind}    if !({}) {{ {wrong}; }}\n", open_check("__e0", tn, rows)));
     b.push_str(&format!("{ind}    let __mk = std::json::unescape_string(__ma[__mi.key_start..__mi.key_end]);\n"));
     b.push_str(&format!("{ind}    for __mx in __h_{}.b {{ if __mx.{k} == __mk {{ {dup}; }} }}\n", f.name));
     b.push_str(&format!(
@@ -1730,7 +1784,8 @@ fn json_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, prefix: &
     let dup = format!("fail JsonError {{ kind: \"duplicate_key\", field: \"{}\" }}", f.key);
     let mut b = String::new();
     b.push_str(&format!("{ind}let __ma = __s[__vs..__ve];\n"));
-    b.push_str(&format!("{ind}if !std::json::valid(__ma) {{ {wrong}; }}\n"));
+    // the map is an object (GH #1944: never an array read as empty)
+    b.push_str(&format!("{ind}if !std::json::valid(__ma) || std::str::byte_at_unchecked(__ma, 0) != 123 {{ {wrong}; }}\n"));
     b.push_str(&format!("{ind}clear(__h_{}.b);\n", f.name));
     b.push_str(&format!("{ind}let mut __mi = std::json::object_first(__ma);\n"));
     b.push_str(&format!("{ind}while !__mi.done {{\n"));
@@ -2666,6 +2721,19 @@ fn generate_json_parsers_at(program: &mut Program, base: u32) -> HashSet<String>
             src.push_str(&generate_enum_json_src(e, TIER2, &rows));
         }
     }
+    // GH #1944: a wire map's value codecs, `__json_parse_<T>__by_<key>` and
+    // `__json_to_json_<T>__by_<key>`, as the api codec has its own. Without
+    // them a `json:`-tagged or `@positional` record with an `indexed_by`
+    // field had codecs that called helpers nothing declared, refused with
+    // their generated names and no location.
+    for (tn, k) in wire_map_keys(&types) {
+        let Some(t) = types.iter().find(|t| t.name == tn) else { continue };
+        let value = lifted_value_type(t, &k);
+        if existing_fns.insert(format!("{}{tn}__by_{k}", TIER2.decode)) {
+            src.push_str(&generate_parser_src_mode(&value, TIER2.decode, false, &rows));
+            src.push_str(&generate_emit_src_mode(&value, TIER2.encode));
+        }
+    }
     if !src.trim().is_empty() {
         match parse_source_at(&src, base) {
             Ok(generated) => {
@@ -3268,23 +3336,15 @@ fn generate_codecs(
         }
     }
     // the wire maps' value codecs: each (record, key) a map is keyed by
-    let mut lifted: Vec<(String, String)> = Vec::new();
+    let lifted = wire_map_keys(&types);
     // and the maps of values', which protobuf carries as entry records
     let mut entries: Vec<(String, String, MapValue)> = Vec::new();
     for t in &types {
         for f in &t.fields {
-            match &f.kind {
-                FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: None, .. } => {
-                    if !lifted.contains(&(tn.clone(), k.clone())) {
-                        lifted.push((tn.clone(), k.clone()));
-                    }
+            if let FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: Some(v), .. } = &f.kind {
+                if !entries.iter().any(|(a, b, _)| a == tn && b == k) {
+                    entries.push((tn.clone(), k.clone(), v.clone()));
                 }
-                FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: Some(v), .. } => {
-                    if !entries.iter().any(|(a, b, _)| a == tn && b == k) {
-                        entries.push((tn.clone(), k.clone(), v.clone()));
-                    }
-                }
-                _ => {}
             }
         }
     }
@@ -3316,29 +3376,7 @@ fn generate_codecs(
             }
             continue;
         }
-        // the key and its presence flag and clear flag, if it has them,
-        // are the map's
-        let flag = t
-            .fields
-            .iter()
-            .find(|f| matches!(&f.presence, Presence::Flag(of) if of == k))
-            .map(|f| f.name.clone());
-        let clear = clear_flag(t, k).map(str::to_string);
-        let value = JsonType {
-            name: t.name.clone(),
-            fields: t
-                .fields
-                .iter()
-                .filter(|f| &f.name != k && Some(&f.name) != flag.as_ref() && Some(&f.name) != clear.as_ref())
-                .cloned()
-                .collect(),
-            lifted: Some(k.clone()),
-            lifted_flag: flag,
-            lifted_clear: clear,
-            // a positional record's map value is its fields but the key,
-            // in order
-            positional: t.positional.clone(),
-        };
+        let value = lifted_value_type(t, k);
         if existing_fns.insert(format!("__api_decode_{tn}__by_{k}")) {
             src.push_str(&generate_parser_src_mode(&value, "__api_decode_", true, &rows));
             src.push_str(&generate_emit_src_mode(&value, "__api_encode_"));

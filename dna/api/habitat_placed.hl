@@ -181,8 +181,8 @@ fn habitat_placements(root: String) -> PlacementRows {
         i = i + 1;
         if e.kind != "habitat.placed" && e.kind != "habitat.unplaced" { continue; }
         if !dna::habitat_holds(latest, e.entity, i - 1) { continue; }
-        all.value(e.body);
-        if e.kind == "habitat.placed" { held.value(e.body); }
+        all.raw_value(e.body);
+        if e.kind == "habitat.placed" { held.raw_value(e.body); }
     }
     held.end_array();
     all.end_array();

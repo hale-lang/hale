@@ -51,7 +51,7 @@ fn request(
     b.string_field("name", "tester");
     b.end_object();
     b.end_object();
-    b.field("arguments", arguments);
+    b.raw_field("arguments", arguments);
     b.end_object();
     return b.result();
 }

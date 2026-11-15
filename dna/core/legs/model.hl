@@ -105,7 +105,7 @@ fn assistant_calls_message(text: String, calls: String) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("role", "assistant");
-    if len(text) > 0 { b.string_field("content", text); } else { b.field("content", "null"); }
+    if len(text) > 0 { b.string_field("content", text); } else { b.raw_field("content", "null"); }
     b.begin_array_field("tool_calls");
     let mut it = std::json::array_first(calls);
     while !it.done {

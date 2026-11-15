@@ -603,7 +603,8 @@ fn per_target_moves() {
 ///
 /// `api_positional_test` (2026-11-14) moves two of its codec's verdicts,
 /// as the other programs that call the api codec themselves do
-/// (`api_codec_call_test`, `api_decimal_field_test`, ...).
+/// (`api_codec_call_test`, `api_decimal_field_test`, ...), and
+/// `api_map_wrong_kind_test` (GH #1944) one of its wire maps' codecs.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -637,6 +638,7 @@ const PINNED: &[&str] = &[
     "tests/hale/api_decimal_field_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_encode_linear_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_json_value_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
+    "tests/hale/api_map_wrong_kind_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 1 verdicts",
     "tests/hale/api_patch_field_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/api_positional_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_roles_test.hl: 0 go, 0 appear; dump 4 tags, 42 reclaim, 0 verdicts",

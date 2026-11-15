@@ -2763,6 +2763,23 @@ fn serve_laws_of(
                 row_types.push(t);
             }
         }
+        // GH #1946: an exposure dispatches to at most `MAX_RECEIVERS`
+        // receiver types, the slots its runtime holds; past them the
+        // expansion builds nothing, so the site is refused here rather
+        // than failing the build.
+        if row_types.len() > crate::rpc_expand::MAX_RECEIVERS {
+            let at = site.option("receivers").map_or(site.span, |e| e.span());
+            diags.push(Diag::ty(
+                at,
+                format!(
+                    "serve of `{surface}` as `{name}`: its rows name {} receiver types, and an exposure dispatches \
+                     to at most {}; serve the surface as two surfaces, each with its own exposure, or let fewer \
+                     loci answer its rows (spec/api.md § Serving)",
+                    row_types.len(),
+                    crate::rpc_expand::MAX_RECEIVERS
+                ),
+            ));
+        }
         // Law 4: a bound type is one the rows name.
         for i in site.receivers() {
             if !row_types.iter().any(|t| binds_type(i, t, &params)) {

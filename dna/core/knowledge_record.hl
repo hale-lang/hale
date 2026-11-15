@@ -65,7 +65,7 @@ locus KnowledgeRecord {
         let question = knowledge_question(i, target);
         let q = std::json::Builder { };
         q.begin_object();
-        q.field("question", record_json_quote(question));
+        q.raw_field("question", record_json_quote(question));
         q.string_field("subject_digest", digest);
         q.string_field("required_authority", "board");
         q.string_field("author", i.author);

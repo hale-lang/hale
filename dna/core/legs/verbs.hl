@@ -161,7 +161,7 @@ fn answer_json(verb: String, request_id: String, reply: Reply) -> String {
     b.string_field("request_id", request_id);
     b.string_field("state", std::json::find_string_field(data, "state"));
     b.string_field("reason", std::json::find_string_field(data, "reason"));
-    b.field("attempt", if len(attempt) > 0 { attempt } else { "null" });
+    b.raw_field("attempt", if len(attempt) > 0 { attempt } else { "null" });
     b.string_field(
         "record_head",
         std::json::find_string_field(
@@ -452,7 +452,7 @@ locus Leg {
             b.string_field("verb", "brief");
             b.string_field("state", "ok");
             b.string_field("work_id", std::json::find_string_field(hat, "work_id"));
-            b.field("hat", hat);
+            b.raw_field("hat", hat);
             b.string_field(
                 "record_head",
                 std::json::find_string_field(

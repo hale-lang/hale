@@ -660,11 +660,15 @@ locus __StdApiExposure {
         next_rid: Int = 1;
         inflight: Int = 0;
         entries: __StdApiRpcEntries = __StdApiRpcEntries { };
-        slot_state: [Int; 16] = [0; 16];
-        slot_stamp: [Int; 16] = [0; 16];
-        slot_gen: [Int; 16] = [0; 16];
-        slot_busy: [Int; 16] = [0; 16];
-        hello_sent: [Int; 16] = [0; 16];
+        // one entry per receiver slot: a slot is numbered within its key,
+        // `id * 100 + slot` (`key_of`), so an exposure has at most 100
+        // receivers, and the check refuses a serve site past that (GH #1946,
+        // `rpc_expand::MAX_RECEIVERS`)
+        slot_state: [Int; 100] = [0; 100];
+        slot_stamp: [Int; 100] = [0; 100];
+        slot_gen: [Int; 100] = [0; 100];
+        slot_busy: [Int; 100] = [0; 100];
+        hello_sent: [Int; 100] = [0; 100];
         probe_ok: Bool = true;
         // how long a shutdown waits for the calls executing: stop() waits
         // for them (a handler may take a while); a teardown, which may be

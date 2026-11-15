@@ -739,6 +739,7 @@ std::compress::gunzip | lookup=compress@2 | locus=false | effects=pure | sig=(By
 std::compress::gzip | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=gzip
 std::compress::unzstd | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=unzstd
 std::compress::zstd | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=zstd
+std::crypto::CryptoError | lookup=crypto@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::crypto::CryptoError` | suggest=-
 std::crypto::Sha256 | lookup=crypto@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=sha256
 std::crypto::__ed25519_public_key | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=__ed25519_public_key
 std::crypto::__secp256k1_public_key | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=__secp256k1_public_key
@@ -781,6 +782,8 @@ std::env::var | lookup=env@2 | locus=false | effects=env | sig=(Str) -> Str | re
 std::env::var_exists | lookup=env@2 | locus=false | effects=env | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=var_exists
 std::fmt::print | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::fmt::print` is not a stdlib function; writing to stdout is the builtin `print(x)`
 std::fmt::println | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::fmt::println` is not a stdlib function; writing a line to stdout is the builtin `println(x)`
+std::form::hashmap::KeyError | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::form::hashmap`
+std::form::ring_buffer::EmptyError | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::form::ring_buffer`
 std::hex::decode | lookup=hex@2 | locus=false | effects=pure | sig=(Str) -> Bytes ! ParseError | ret_ty=? | or=(Bytes, ParseError) | parks=false | holds=false | unknown=- | suggest=decode
 std::hex::digit | lookup=hex@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=digit
 std::hex::encode | lookup=hex@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=encode
@@ -841,7 +844,9 @@ std::i256::parse | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=fa
 std::i256::to_be_bytes | lookup=i256@2 | locus=false | effects=pure | sig=(I256) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=to_be_bytes
 std::i256::to_hex | lookup=i256@2 | locus=false | effects=pure | sig=(I256) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=to_hex
 std::i256::to_int | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=to_int
+std::index::IndexError | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::index`
 std::io | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std`
+std::io::IoError | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::io`
 std::io::MirrorRing | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::io::file::File | lookup=io::file@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::file::__at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__at_eof

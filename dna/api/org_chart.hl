@@ -310,13 +310,13 @@ fn org_chart(root: String, limit: Int, seer: Observer) -> OrgChart {
         positions.string_field("name", id[9..len(id)]);
         positions.string_field("text", std::json::find_string_field(body, "text"));
         positions.string_field("under", under);
-        positions.field("holders", org_strings(index_holders(graph, id)));
-        positions.field("reviews", org_strings(org_pair_seconds(graph, "reviews", id)));
+        positions.raw_field("holders", org_strings(index_holders(graph, id)));
+        positions.raw_field("reviews", org_strings(org_pair_seconds(graph, "reviews", id)));
         let roles = std::json::find_field_raw(
             std::json::find_field_raw(body, "equipment"),
             "roles",
         );
-        positions.field("roles", if len(roles) > 0 { roles } else { "[]" });
+        positions.raw_field("roles", if len(roles) > 0 { roles } else { "[]" });
         positions.string_field("mandate", org_mandate_of(mandates, id));
         positions.string_field("state", "stated");
         positions.string_field("review", "");
@@ -346,9 +346,9 @@ fn org_chart(root: String, limit: Int, seer: Observer) -> OrgChart {
         positions.string_field("name", r1[0..t2]);
         positions.string_field("text", r2[0..t3]);
         positions.string_field("under", under);
-        positions.field("holders", "[]");
-        positions.field("reviews", "[]");
-        positions.field("roles", "[]");
+        positions.raw_field("holders", "[]");
+        positions.raw_field("reviews", "[]");
+        positions.raw_field("roles", "[]");
         positions.string_field("mandate", org_mandate_of(mandates, id));
         positions.string_field("state", "proposed");
         positions.string_field("review", r3[(t4 + 1)..len(r3)]);

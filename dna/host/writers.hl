@@ -2255,7 +2255,7 @@ fn fleet_deploy(
     b.string_field("plan", fleet);
     b.string_field("revision", rev);
     b.string_field("seed", seed);
-    b.field("touched", touched_json(touched));
+    b.raw_field("touched", touched_json(touched));
     b.string_field("reason", reason);
     b.end_object();
     if !append_as(root, "fleet.deploy", entity, b.result(), "", memory) {
