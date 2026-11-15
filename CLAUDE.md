@@ -210,12 +210,20 @@ LOTUS_ASAN=1 cargo test --release -p hale-codegen \
     --test corpus_oracle -- --ignored --test-threads=1
 ```
 
+The ASan oracles run on a Mac too, with the Command Line Tools'
+`clang`. Apple ships no LeakSanitizer for arm64 macOS, so there they
+run under `harness::ASAN_LEAKS` = `detect_leaks=0` and catch
+use-after-frees and overflows; leaks are Linux's (CI). A cached
+sanitizer runtime object is keyed by the host `clang`'s release, so a
+developer-tools update recompiles it instead of failing the link on
+`___asan_version_mismatch_check_apple_clang_<N>` (GH #1952).
+
 Locus ownership has a generated matrix rather than hand-written
 cases: `crates/hale-codegen/tests/ownership_matrix.rs` builds every
-position × type × context (1470 cells) and runs four oracles on each
+position × type × context (1568 cells) and runs four oracles on each
 — `dissolve()` tag counts, `LOTUS_ARENA_RESIDENCY=1`, an ASan run,
 and the inline-vs-`let` differential. The default is a ~90-cell
-sample (~16 s); `HALE_MATRIX=full` runs all 1470 (~160 s) and belongs
+sample (~16 s); `HALE_MATRIX=full` runs all 1568 (~170 s) and belongs
 in a nightly job:
 
 ```sh

@@ -17,8 +17,10 @@
 //! renderer:
 //!
 //!   * **position** — where the locus-producing expression is
-//!     written (30 of them: `let`, bare statement, receiver,
-//!     argument retained / dropped, field read, `return` of a
+//!     written (32 of them: `let`, bare statement, receiver, a
+//!     receiver holder literal with a literal in its field,
+//!     argument retained / dropped, an argument to an interface
+//!     parameter whose callee writes its fields, field read, `return` of a
 //!     literal / factory / carrier, `return` through a call that
 //!     hands back its argument, param-field literal / factory /
 //!     `or raise` / `or <literal>` / `or <call>` / default / nested
@@ -77,7 +79,7 @@
 //!
 //! [`KNOWN_OPEN`] is **empty**. A4 landed with 200 open cells in
 //! four families; GH #921 A3 closed all four, and every one of the
-//! 1470 cells is now held to every oracle. An entry here is asserted
+//! matrix's cells is now held to every oracle. An entry here is asserted
 //! to FAIL, not skipped — so a cell that is listed and then passes
 //! fails the matrix just as a cell that is not listed and fails
 //! does. Adding one means a shape regressed, and it needs a reason
@@ -85,7 +87,7 @@
 //!
 //! ## Size
 //!
-//! The full matrix (30 × 7 × 7 = 1470 cells, ~140 s on seven threads)
+//! The full matrix (32 × 7 × 7 = 1568 cells, ~150 s on seven threads)
 //! is behind `HALE_MATRIX=full`, for a nightly job. The per-PR
 //! default runs a deterministic sample (~90 cells, ~17 s) that
 //! always contains one
@@ -141,7 +143,7 @@ const KNOWN_OPEN: &[(&str, &str)] = &[];
 /// How many cells the per-PR sample aims for.
 const TARGET_SAMPLE: usize = 60;
 
-/// A stride co-prime with the cell count (30 · 7 · 7 = 1470 = 2·3·5·7²),
+/// A stride co-prime with the cell count (32 · 7 · 7 = 1568 = 2⁵·7²),
 /// so topping the sample up visits the space evenly and
 /// deterministically.
 const FILL_STRIDE: usize = 101;
@@ -156,8 +158,9 @@ const DEADLINE: Duration = Duration::from_secs(90);
 // ===================================================================
 
 /// Every shape declares a locus called `Subj` with a `params` field
-/// `n: Int` and a method `probe() -> Int` answering `n + 1`, so one
-/// set of positions is written against all seven.
+/// `n: Int`, a method `probe() -> Int` answering `n + 1`, and a method
+/// `bump(k)` that WRITES `n` and answers `probe()`, so one set of
+/// positions is written against all seven.
 struct Shape {
     id: &'static str,
     decls: &'static str,
@@ -170,6 +173,7 @@ locus Subj {
     params { n: Int = 0; }
     dissolve() { println(\"D:subj\"); }
     fn probe() -> Int { return self.n + 1; }
+    fn bump(k: Int) -> Int { self.n = self.n + k; return self.probe(); }
 }
 ";
 
@@ -189,6 +193,7 @@ locus Subj {
     birth() { self.rows.push(Row { v: 3 }); }
     dissolve() { println(\"D:subj\"); }
     fn probe() -> Int { return self.n + self.rows.len(); }
+    fn bump(k: Int) -> Int { self.n = self.n + k; return self.probe(); }
 }
 ";
 
@@ -235,6 +240,7 @@ locus Subj {
     }
     dissolve() { println(\"D:subj\"); }
     fn probe() -> Int { return self.n + self.items.len(); }
+    fn bump(k: Int) -> Int { self.n = self.n + k; return self.probe(); }
 }
 ";
 
@@ -277,6 +283,7 @@ locus Subj {
     }
     dissolve() { println(\"D:subj\"); }
     fn probe() -> Int { return self.n + self.cells.len() - 1; }
+    fn bump(k: Int) -> Int { self.n = self.n + k; return self.probe(); }
 }
 ";
 
@@ -298,6 +305,7 @@ locus Subj {
     params { n: Int = 0; mid: Mid = Mid { }; }
     dissolve() { println(\"D:subj\"); }
     fn probe() -> Int { return self.n + self.mid.v(); }
+    fn bump(k: Int) -> Int { self.n = self.n + k; return self.probe(); }
 }
 ";
 
@@ -315,6 +323,7 @@ locus Subj {
     params { n: Int = 0; inner: Inner = Impl { }; }
     dissolve() { println(\"D:subj\"); }
     fn probe() -> Int { return self.n + self.inner.v(); }
+    fn bump(k: Int) -> Int { self.n = self.n + k; return self.probe(); }
 }
 ";
 
@@ -335,6 +344,7 @@ locus Subj {
     params { n: Int = 0; r: perspective(Route) = RouteV1 { }; }
     dissolve() { println(\"D:subj\"); }
     fn probe() -> Int { return self.n + self.r.v(); }
+    fn bump(k: Int) -> Int { self.n = self.n + k; return self.probe(); }
 }
 ";
 
@@ -367,6 +377,8 @@ const SHAPES: &[Shape] = &[
 /// about the subject alone.
 const COMMON: &str = "
 interface Probe { fn probe() -> Int; }
+
+interface Bumper { fn bump(k: Int) -> Int; }
 
 locus Cfg {
     dissolve() { println(\"D:cfg\"); }
@@ -409,6 +421,11 @@ fn pass(t: Subj) -> Subj { return t; }
 fn pick(a: Subj, b: Subj, first: Bool) -> Subj {
     if first { return a; }
     return b;
+}
+
+fn bump_via(b: Bumper) -> Int {
+    let first = b.bump(1);
+    return first + b.bump(2);
 }
 
 fn retain(t: Subj) -> Int {
@@ -530,6 +547,25 @@ const POSITIONS: &[Position] = &[
         "arg_dropped",
         "println(\"u=\", touch(Subj { n: 1 }));",
         "let a = Subj { n: 1 };\nprintln(\"u=\", touch(a));",
+    ),
+    // GH #1952: the two run-time crash shapes of 2026-09 that never
+    // reduced. A temporary holder literal whose field is itself a
+    // literal, used as a method receiver (`Outer { inner: Inner { } }
+    // .method()`): the outer is the receiver temporary, the inner a
+    // transfer into its field. Its twin names only the outer, so the
+    // inner stays a transfer in both spellings.
+    twinned_position(
+        "nested_receiver",
+        "println(\"u=\", Holder { c: Subj { n: 1 } }.peek());",
+        "let h = Holder { c: Subj { n: 1 } };\nprintln(\"u=\", h.peek());",
+    ),
+    // And an inline literal handed to an INTERFACE-typed parameter
+    // whose callee writes its fields through the contract (`bump`
+    // stores `n`), where the first field write faulted.
+    twinned_position(
+        "iface_arg_write",
+        "println(\"u=\", bump_via(Subj { n: 1 }));",
+        "let a = Subj { n: 1 };\nprintln(\"u=\", bump_via(a));",
     ),
     twinned_position(
         "field_read",
@@ -1267,7 +1303,7 @@ fn run_cell(c: Cell) -> Outcome {
     let arun = run_bin(
         &abin,
         &[
-            ("ASAN_OPTIONS", "detect_leaks=1"),
+            ("ASAN_OPTIONS", harness::ASAN_LEAKS),
             ("LOTUS_NO_CHUNK_POOL", "1"),
         ],
     );
@@ -1416,12 +1452,12 @@ fn matrix_behind_an_untaken_guard() {
 /// generator that silently produces two cells passes every oracle.
 #[test]
 fn the_matrix_is_rectangular_and_non_vacuous() {
-    assert_eq!(POSITIONS.len(), 30, "position axis changed size");
+    assert_eq!(POSITIONS.len(), 32, "position axis changed size");
     assert_eq!(SHAPES.len(), 7, "type axis changed size");
     assert_eq!(CONTEXTS.len(), 7, "context axis changed size");
 
     let all = all_cells();
-    assert_eq!(all.len(), 30 * 7 * 7);
+    assert_eq!(all.len(), 32 * 7 * 7);
     let ids: BTreeSet<String> = all.iter().map(|c| cell_id(*c)).collect();
     assert_eq!(ids.len(), all.len(), "two cells share an id");
 
@@ -1535,8 +1571,9 @@ fn the_matrix_is_rectangular_and_non_vacuous() {
     let with_twin =
         POSITIONS.iter().filter(|p| p.twin_stmts.is_some()).count();
     assert_eq!(
-        with_twin, 12,
-        "the differential covers the four expression positions and the \
+        with_twin, 14,
+        "the differential covers the six expression positions (four, \
+         and GH #1952's nested receiver and interface argument) and the \
          eight `return` ones (five direct, three through a call that \
          hands back its argument); if that set changed, say so here"
     );

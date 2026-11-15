@@ -660,7 +660,7 @@ pub const IDENTITIES: &[Identity] = &[
         computed: "hale build (`compile_cached_runtime_object_with`)",
         fold: Fold::DefaultHasher,
         covers: &[Input::RuntimeC, Input::CCompiler],
-        leaves_out: &[(Input::CCompiler, "the host `clang` hashes as it always has, so a cached object stays valid; only another compiler or another release moves the key")],
+        leaves_out: &[(Input::CCompiler, "the host `clang`'s release is left out of an ordinary object's key, plain machine code any clang links, so a cached object stays valid; it moves the key of a sanitizer or LTO object, which binds to the clang that links it (GH #1952), as another compiler or another release of one moves every key")],
         producer: ("crates/hale-codegen/src/codegen.rs", "compile_cached_runtime_object_with"),
         consumers: &["the runtime-object cache directory"],
         on_mismatch: "the object is recompiled",

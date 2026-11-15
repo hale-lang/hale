@@ -335,7 +335,7 @@ fn a_factory_argument_in_a_method_frame_is_leak_clean_under_asan() {
     // artifact really carries the ASan runtime.
     harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
-        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .env("ASAN_OPTIONS", harness::ASAN_LEAKS)
         .output()
         .expect("run asan binary");
     let _ = std::fs::remove_file(&bin);
@@ -617,7 +617,7 @@ fn an_if_expression_binding_in_a_method_frame_is_leak_clean_under_asan() {
     let bin = harness::unique_bin("fresh_temp_arm_asan");
     harness::build_source_asan(src, &bin);
     let out = Command::new(&bin)
-        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .env("ASAN_OPTIONS", harness::ASAN_LEAKS)
         .env("LOTUS_NO_CHUNK_POOL", "1")
         .output()
         .expect("run asan binary");

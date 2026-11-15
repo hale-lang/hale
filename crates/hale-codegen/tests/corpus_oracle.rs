@@ -286,7 +286,7 @@ fn run_with_deadline(bin: &Path, deadline: Duration) -> RunResult {
         // non-zero *with* their stderr banner rather than raising
         // SIGABRT — the banner lets the sanitizer oracle classify
         // (and the abnormal-exit fixture stays exempt by exit code).
-        .env("ASAN_OPTIONS", "detect_leaks=1");
+        .env("ASAN_OPTIONS", harness::ASAN_LEAKS);
     if asan_enabled() {
         // GH #816: make the arena's chunk recycling stop hiding
         // use-after-free from the sanitizer — a destroyed arena's
