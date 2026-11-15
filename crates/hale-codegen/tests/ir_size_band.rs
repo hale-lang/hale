@@ -103,10 +103,18 @@ const EMPTY: &str = "fn main() { }\n";
 // locus behind an interface, 8 of 69-http-router's defines): above the
 // floor 73-bounded-bus 3588, 43, 607; 89-nested-locus-teardown 5061, 54,
 // 506; 69-http-router 3173, 38, 282.
-const FLOOR: IrSize = IrSize { lines: 68403, defines: 716, calls: 7370 };
-const BOUNDED_BUS: IrSize = IrSize { lines: 71991, defines: 759, calls: 7977 };
-const NESTED_TEARDOWN: IrSize = IrSize { lines: 73464, defines: 770, calls: 7876 };
-const HTTP_ROUTER: IrSize = IrSize { lines: 71576, defines: 754, calls: 7652 };
+// Re-measured 2026-11-14 for GH #1934 (U256/I256): the floor had drifted
+// to ~73.7k lines with the stdlib's growth since the last re-pin, and
+// wide.hl's twenty bodies (parse, from_be_bytes, to_int, the checked
+// ops and mul_div for each width, which every program carries as it
+// carries every stdlib body) plus the hex-Int codec's two helpers add
+// ~2k lines and 22 defines to each. Above the floor 73-bounded-bus 3686,
+// 44, 657; 89-nested-locus-teardown 4833, 54, 475; 69-http-router 3256,
+// 38, 289.
+const FLOOR: IrSize = IrSize { lines: 75661, defines: 799, calls: 8134 };
+const BOUNDED_BUS: IrSize = IrSize { lines: 79347, defines: 843, calls: 8791 };
+const NESTED_TEARDOWN: IrSize = IrSize { lines: 80494, defines: 853, calls: 8609 };
+const HTTP_ROUTER: IrSize = IrSize { lines: 78917, defines: 837, calls: 8423 };
 
 fn ir_size_of(tag: &str, src: &str) -> IrSize {
     let bin = harness::unique_bin(&format!("ir_size_band_{tag}"));
