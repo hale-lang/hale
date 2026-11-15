@@ -420,7 +420,7 @@ fn plan_forge_configure(ctx: HeadContext, arguments: String) -> Plan {
     }
     let b = std::json::Builder { };
     b.begin_object();
-    b.field("board", logins_json(record.setting("github.board")));
+    b.raw_field("board", logins_json(record.setting("github.board")));
     b.end_object();
     return Plan { ok: true, kind: "inline", deadline_secs: 10, outcome: b.result() };
 }
@@ -599,10 +599,10 @@ fn with_field(json: String, key: String, raw: String) -> String {
     let mut it = std::json::object_first(object);
     while !it.done {
         let name = std::json::obj_key_string(it, object);
-        if name != key { b.field(name, std::json::obj_value_raw(it, object)); }
+        if name != key { b.raw_field(name, std::json::obj_value_raw(it, object)); }
         it = std::json::object_next(it, object);
     }
-    b.field(key, raw);
+    b.raw_field(key, raw);
     b.end_object();
     return b.result();
 }
@@ -704,10 +704,10 @@ fn credentials_json(cfg: HeadConfig, root: String) -> String {
     let needed = if len(root) > 0 { catalog_credentials(root) } else { "" };
     let b = std::json::Builder { };
     b.begin_object();
-    b.field("needed", words_json(needed));
-    b.field("vault_present", words_json(vault_present(needed)));
-    b.field("file_sources", words_json(file_names(cfg.sources_dir)));
-    b.field("env_present", words_json(env_present(needed)));
+    b.raw_field("needed", words_json(needed));
+    b.raw_field("vault_present", words_json(vault_present(needed)));
+    b.raw_field("file_sources", words_json(file_names(cfg.sources_dir)));
+    b.raw_field("env_present", words_json(env_present(needed)));
     b.end_object();
     return b.result();
 }

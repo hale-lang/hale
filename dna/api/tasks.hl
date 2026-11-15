@@ -7,38 +7,39 @@ locus TaskWire {
     params { }
     fn assignment(h: ops::TaskAssignmentRow) -> String {
         let b = std::json::Builder { }; b.begin_object();
-        b.field("event_id", dna::record_json_quote(h.event_id));
+        b.raw_field("event_id", dna::record_json_quote(h.event_id));
         b.string_field("sequence", to_string(h.sequence));
-        b.field("kind", dna::record_json_quote(h.kind));
-        b.field("from", dna::record_json_quote(h.from));
-        b.field("to", dna::record_json_quote(h.to)); b.field("by", dna::record_json_quote(h.by));
+        b.raw_field("kind", dna::record_json_quote(h.kind));
+        b.raw_field("from", dna::record_json_quote(h.from));
+        b.raw_field("to", dna::record_json_quote(h.to));
+        b.raw_field("by", dna::record_json_quote(h.by));
         b.end_object(); return b.result();
     }
     fn row(p: ops::TaskProjection, t: ops::TaskRow) -> String {
         let b = std::json::Builder { }; b.begin_object();
-        b.field("id", dna::record_json_quote(t.id));
-        b.field("outcome", dna::record_json_quote(t.outcome));
-        b.field("state", dna::record_json_quote(t.state));
-        b.field("assignee", dna::record_json_quote(t.assignee));
-        b.field("obligation", dna::record_json_quote(t.obligation));
-        b.field("acceptance_digest", dna::record_json_quote(t.acceptance_digest));
+        b.raw_field("id", dna::record_json_quote(t.id));
+        b.raw_field("outcome", dna::record_json_quote(t.outcome));
+        b.raw_field("state", dna::record_json_quote(t.state));
+        b.raw_field("assignee", dna::record_json_quote(t.assignee));
+        b.raw_field("obligation", dna::record_json_quote(t.obligation));
+        b.raw_field("acceptance_digest", dna::record_json_quote(t.acceptance_digest));
         b.bool_field("acceptance_bound", t.acceptance_bound);
         b.bool_field("evidence_required", t.evidence_required);
-        b.field("evidence_ref", dna::record_json_quote(t.evidence_ref));
-        b.field("waiting", dna::record_json_quote(t.waiting));
-        b.field("assignment_digest", dna::record_json_quote(t.assignment_digest));
+        b.raw_field("evidence_ref", dna::record_json_quote(t.evidence_ref));
+        b.raw_field("waiting", dna::record_json_quote(t.waiting));
+        b.raw_field("assignment_digest", dna::record_json_quote(t.assignment_digest));
         b.bool_field("reassignment_supported", t.reassignment_supported);
         b.bool_field("taken", t.taken);
         b.begin_array_field("history"); let mut i = 0;
         while i < p.history_count(t.id) {
-            b.value(self.assignment(p.history_at(t.id, i)));
+            b.raw_value(self.assignment(p.history_at(t.id, i)));
             i = i + 1;
         }
         b.end_array();
         // GH #946: the model calls the Task cost, from the same projection
         // the executions and `hale dna history` read
         let usage = ops::Usage { j: p.j };
-        b.field("usage", ops::usage_json(usage.under(t.id)));
+        b.raw_field("usage", ops::usage_json(usage.under(t.id)));
         b.end_object(); return b.result();
     }
     fn unavailable(code: String) -> std::http::Response {
@@ -120,23 +121,24 @@ locus TaskWire {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("profile", "dna.task-administration.v1");
-        if query.assignee != "" { b.field("assignee", dna::record_json_quote(query.assignee)); }
+        if query.assignee != "" { b.raw_field("assignee", dna::record_json_quote(query.assignee)); }
         b.begin_array_field("items");
-        if query.id != "" { b.value(self.row(p, exact)); }
+        if query.id != "" { b.raw_value(self.row(p, exact)); }
         else {
             i = 0; let mut matching = 0;
             while i < p.count() {
                 let row = p.at(i);
                 if query.assignee == "" || row.assignee == query.assignee {
                     if matching >= query.offset && matching < query.offset + query.limit {
-                        b.value(self.row(p, row));
+                        b.raw_value(self.row(p, row));
                     }
                     matching = matching + 1;
                 }
                 i = i + 1;
             }
         }
-        b.end_array(); b.field("page", http.page(query.limit, query.offset, total, source.head));
+        b.end_array();
+        b.raw_field("page", http.page(query.limit, query.offset, total, source.head));
         b.begin_object_field("basis");
         b.string_field("projection", "dna.task-administration/1");
         b.string_field("memory", "record+ledger");

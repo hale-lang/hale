@@ -138,7 +138,7 @@ fn request(
     b.string_field("name", PRINCIPAL);
     b.end_object();
     b.end_object();
-    b.field("arguments", if len(std::str::trim(arguments)) == 0 { "{}" } else { arguments });
+    b.raw_field("arguments", if len(std::str::trim(arguments)) == 0 { "{}" } else { arguments });
     b.end_object();
     return b.result();
 }

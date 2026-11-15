@@ -1134,7 +1134,7 @@ fn plan_amend(st: PlanState, bodies: String, p: String, text: String) -> PlanSta
     node.string_field("kind", "position");
     node.string_field("name", p[9..len(p)]);
     node.string_field("text", text);
-    node.field("equipment", if len(equipment) > 0 { equipment } else { "{\"roles\": []}" });
+    node.raw_field("equipment", if len(equipment) > 0 { equipment } else { "{\"roles\": []}" });
     node.end_object();
     out.order = out.order + "node\t" + p + "\t" + node.result() + "\n";
     let mut kept = chart_with(out.after, "keeps " + p + " ");

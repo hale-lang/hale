@@ -243,9 +243,9 @@ locus KnowledgeCommandCodec {
     fn edge_id(from_id: String, to_id: String, rel: String) -> String {
         let wire = GovernanceCommandCodec { }; let b = std::json::Builder { };
         b.begin_array();
-        b.value(wire.quote(from_id));
-        b.value(wire.quote(to_id));
-        b.value(wire.quote(rel));
+        b.raw_value(wire.quote(from_id));
+        b.raw_value(wire.quote(to_id));
+        b.raw_value(wire.quote(rel));
         b.end_array();
         return dna::digest_of(b.result());
     }

@@ -564,6 +564,20 @@ fn grpc_files(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, surface: &st
     out
 }
 
+/// The radix of a receiver's key: the exposure `id`'s receiver at `slot`
+/// subscribes under `id * SLOT_RADIX + slot`, as the runtime's
+/// `__StdApiRpcExposure::key_of` computes it (`api_rpc.hl`).
+pub const SLOT_RADIX: i64 = 100;
+
+/// The receiver types one exposure dispatches to at most (GH #1946): a
+/// slot is numbered within its key (`SLOT_RADIX`), and the runtime's
+/// exposure holds one entry per slot in arrays of this length
+/// (`slot_state: [Int; 100]`, …). A serve site whose rows name more is
+/// refused at the check (`surfaces::serve_laws`), at its `receivers:`;
+/// before, 16 was the length, and a 17th receiver passed the check, left
+/// the call unexpanded, and failed the build.
+pub const MAX_RECEIVERS: usize = SLOT_RADIX as usize;
+
 /// What of `std::api` the runtime declares (`hale_stdlib::API_RUNTIME_SOURCE`).
 const RUNTIME_NAMES: &[&str] = &[
     "Grants",
@@ -1408,7 +1422,9 @@ pub fn expand(
                             slots.push(r.locus.clone());
                         }
                     }
-                    if slots.len() > 16 {
+                    // past the runtime's slots: the law refuses the site
+                    // (`surfaces::serve_laws`), at its `receivers:`
+                    if slots.len() > MAX_RECEIVERS {
                         continue;
                     }
                     let params = crate::surfaces::param_types(l);
@@ -1791,7 +1807,7 @@ pub fn expand(
         }
         // the receivers' numbers, written into the literals that build them
         for (slot, field) in plan.fields.iter().enumerate() {
-            let key = id * 100 + slot as i64;
+            let key = id * SLOT_RADIX + slot as i64;
             let key_param = format!("__rpc_s_{id}");
             inject_key(l, field, &key_param, key, span);
         }
@@ -1866,7 +1882,7 @@ pub fn expand(
     for (i, plan) in plans.iter().enumerate() {
         let id = i as i64 + 1;
         for (slot, field) in plan.fields.iter().enumerate() {
-            let key = id * 100 + slot as i64;
+            let key = id * SLOT_RADIX + slot as i64;
             let key_param = format!("__rpc_s_{id}");
             for p in programs.iter_mut() {
                 number_constructions(&mut p.items, &plan.site.serving, field, &key_param, key);
@@ -3459,4 +3475,21 @@ fn number_constructions(items: &mut [TopDecl], serving: &str, field: &str, key_p
             }
         }
     });
+}
+
+#[cfg(test)]
+mod receiver_slots {
+    /// GH #1946: the runtime holds a slot per receiver in arrays of
+    /// `MAX_RECEIVERS`, and keys a slot as `SLOT_RADIX` does; the check's
+    /// limit is only as true as the runtime's arrays.
+    #[test]
+    fn the_runtime_holds_max_receivers_slots() {
+        let src = hale_stdlib::API_RUNTIME_SOURCE;
+        for array in ["slot_state", "slot_stamp", "slot_gen", "slot_busy", "hello_sent"] {
+            let decl = format!("{array}: [Int; {n}] = [0; {n}];", n = super::MAX_RECEIVERS);
+            assert!(src.contains(&decl), "api_rpc.hl declares `{decl}`");
+        }
+        assert!(src.contains(&format!("return self.id * {} + slot;", super::SLOT_RADIX)), "key_of keys by SLOT_RADIX");
+        assert!(super::MAX_RECEIVERS as i64 <= super::SLOT_RADIX, "a slot fits within its key");
+    }
 }

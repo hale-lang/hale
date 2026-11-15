@@ -214,8 +214,8 @@ fn usage_json(t: UsageTotals) -> String {
     b.string_field("input_tokens", to_string(t.input_tokens));
     b.string_field("output_tokens", to_string(t.output_tokens));
     b.string_field("cost_micros", to_string(t.cost_micros));
-    b.field("by_position", usage_lines_json(t.by_position, "position"));
-    b.field("by_backend", usage_lines_json(t.by_backend, "backend"));
+    b.raw_field("by_position", usage_lines_json(t.by_position, "position"));
+    b.raw_field("by_backend", usage_lines_json(t.by_backend, "backend"));
     b.end_object();
     return b.result();
 }

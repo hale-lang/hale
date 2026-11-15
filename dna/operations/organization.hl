@@ -423,9 +423,9 @@ locus Organization {
         b.bool_field("in_position_outline", row.in_position_outline);
         b.string_field("source_file", row.source_file);
         b.bool_field("sealed", row.sealed);
-        b.field("parameters", std::json::find_field_raw(c, "params"));
-        b.field("methods", std::json::find_field_raw(c, "methods"));
-        b.field("publishes", std::json::find_field_raw(c, "publishes"));
+        b.raw_field("parameters", std::json::find_field_raw(c, "params"));
+        b.raw_field("methods", std::json::find_field_raw(c, "methods"));
+        b.raw_field("publishes", std::json::find_field_raw(c, "publishes"));
         b.begin_array_field("subscribes");
         let mut sub = std::json::array_first(std::json::find_field_raw(c, "subscribes"));
         while !sub.done {
@@ -435,7 +435,7 @@ locus Organization {
             b.string_field("shed", std::json::find_string_field(sub.element, "shed"));
             let raw_capacity = std::json::find_field_raw(sub.element, "capacity");
             if raw_capacity == "null" {
-                b.field("capacity", "null");
+                b.raw_field("capacity", "null");
             } else {
                 b.string_field("capacity", raw_capacity);
             }
@@ -449,10 +449,10 @@ locus Organization {
             b.begin_object();
             b.string_field("child", std::json::find_string_field(sup.element, "child"));
             b.string_field("error", std::json::find_string_field(sup.element, "error"));
-            b.field("ops", std::json::find_field_raw(sup.element, "ops"));
+            b.raw_field("ops", std::json::find_field_raw(sup.element, "ops"));
             let retry = std::json::find_field_raw(sup.element, "retry");
             if retry == "null" {
-                b.field("retry", "null");
+                b.raw_field("retry", "null");
             } else {
                 b.string_field("retry", retry);
             }
