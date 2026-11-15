@@ -26,20 +26,20 @@ pub struct DeprecatedMethod {
 /// The deprecated stdlib methods.
 pub const DEPRECATED_METHODS: &[DeprecatedMethod] = &[
     // GH #1943: `field` and `value` write their argument raw, and the
-    // spec has always said they take a string. v0.33 makes them quote it,
+    // spec has always said they take a string. v0.34 makes them quote it,
     // so a call that hands them encoded JSON moves to the raw variant now.
     DeprecatedMethod {
         locus: "__StdJsonBuilder",
         method: "field",
         message: "`std::json::Builder.field(name, value)` writes `value` raw, as JSON already encoded; write \
-                  `raw_field(name, json)` for encoded JSON or `string_field(name, s)` for a string. v0.33 makes \
+                  `raw_field(name, json)` for encoded JSON or `string_field(name, s)` for a string. v0.34 makes \
                   `field` quote and escape its value as a string",
     },
     DeprecatedMethod {
         locus: "__StdJsonBuilder",
         method: "value",
         message: "`std::json::Builder.value(v)` writes `v` raw, as JSON already encoded; write `raw_value(json)` \
-                  for encoded JSON or `string_value(s)` for a string. v0.33 makes `value` quote and escape `v` \
+                  for encoded JSON or `string_value(s)` for a string. v0.34 makes `value` quote and escape `v` \
                   as a string",
     },
 ];
