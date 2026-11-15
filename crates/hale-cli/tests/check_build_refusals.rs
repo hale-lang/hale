@@ -295,7 +295,7 @@ fn api_serve_has_no_seventeen_receiver_cliff() {
 
 /// GH #1943, STABILITY.md § Deprecation: `std::json::Builder.field` and
 /// `.value` write their argument raw, as they always have, and the spec
-/// says they take a string; v0.33 makes them quote. Until then a call
+/// says they take a string; v0.34 makes them quote. Until then a call
 /// warns `deprecated:` at the call, naming the raw and the string
 /// variants, and still checks, builds and writes what it wrote before.
 #[test]

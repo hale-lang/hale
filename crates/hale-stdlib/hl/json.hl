@@ -15,7 +15,7 @@
 // `string_field` and `string_value` quote the string they are
 // given; `raw_field` and `raw_value` write JSON the caller
 // encoded already. `field` and `value` write raw too, and are
-// deprecated: v0.33 makes them quote (GH #1943).
+// deprecated: v0.34 makes them quote (GH #1943).
 //
 // Separators are `": "` and `", "`, pinned: documents the
 // Builder wrote are kept in journals and matched as text by the
@@ -193,7 +193,7 @@ locus __StdJsonBuilder {
 
     // Inside an object: emit `"name": value`, `value` the wire
     // bytes as given. Deprecated (GH #1943): the spec has always
-    // said `field` takes a string, and v0.33 makes it quote and
+    // said `field` takes a string, and v0.34 makes it quote and
     // escape one; a call warns `deprecated:` until then. Write
     // `raw_field` for JSON already encoded, `string_field` for a
     // string.
@@ -250,7 +250,7 @@ locus __StdJsonBuilder {
     }
 
     // Inside an array: emit one element as given. Deprecated
-    // (GH #1943), as `field` is: v0.33 makes `value` quote its
+    // (GH #1943), as `field` is: v0.34 makes `value` quote its
     // string. Write `raw_value` for JSON already encoded,
     // `string_value` for a string.
     fn value(v: String) { self.raw_value(v); }
