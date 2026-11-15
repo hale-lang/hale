@@ -1442,10 +1442,10 @@ row	App@main1	App	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#7cfb2316
 row	App@main1	App	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#f55749e4
+== crates/hale-codegen/tests/alloc_model_rss.rs#208dafdb
 row	App@main1	App	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#3156882a
+== crates/hale-codegen/tests/alloc_model_rss.rs#099bb3e9
 row	App@main1	App	main	default
 
 == crates/hale-codegen/tests/alloc_model_rss.rs#47d2a245
