@@ -285,9 +285,24 @@ alone). Open the PR, then add the file under its number in a
 second push. Two PRs that land the same day then touch two files
 instead of one hunk, so neither rebases over the other's entry.
 
+**Every fragment declares its breaking changes** (STABILITY.md):
+either a line reading exactly `Breaking: none`, or a `### Breaking`
+heading with one bullet per break, each naming what stops building
+or behaves differently and how to migrate. Never both, never
+neither. A break is anything that can make a program that built
+under the previous release stop building or behave differently, a
+newly refused form included, even one that never did anything useful.
+In the stable tier (`spec/stability.toml`) a removal warns with a
+`deprecated:` warning for a minor release before it is refused, and
+a patch release carries no semantic change at all. The `changelog
+fragments` CI job runs `scripts/changelog-check.sh`, and the fold
+refuses a fragment that declares neither.
+
 At release, `scripts/changelog-fold.sh vX.Y.Z "headline"` folds
 the fragments in PR order under the next version's heading and
-`git rm`s them; the release page is written above that
+`git rm`s them, gathering every fragment's Breaking bullets under
+one `### Breaking` heading at the top of the version (`None.` when
+there are none); the release page is written above that
 item-level list by hand. `hale fmt` walks only `.hl` files and the
 CI `scope` job classifies the directory as prose, so a fragment
 alone is a docs-only diff.

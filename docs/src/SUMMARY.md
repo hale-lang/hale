@@ -98,6 +98,7 @@
 ---
 
 - [Language & CLI Reference](./reference.md)
+- [Stability & Compatibility](./stability.md)
 - [Package Management & `pond` Catalog](./libraries.md)
 - [Verification & Model-Checking Reference](./verification.md)
 - [Formal Design Model (`%DESIGN v1`)](./the-design.md)

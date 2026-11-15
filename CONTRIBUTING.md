@@ -60,6 +60,17 @@ acceptance surface.
 - **The author owns commit cadence.** Open a PR; don't assume direct
   pushes to `main`.
 
+## Bugs, soundness and compatibility
+
+Every defect gets an issue labelled
+[`bug`](https://github.com/hale-lang/hale/labels/bug); a memory-safety
+or semantic unsoundness (a use-after-free or a race in a program the
+checker accepts, a stated law the checker does not enforce) also gets
+[`soundness`](https://github.com/hale-lang/hale/labels/soundness). A
+change's CHANGELOG fragment declares its breaking changes, and what a
+patch or a minor release may break is in
+[`STABILITY.md`](./STABILITY.md).
+
 ## Picking something up
 
 Open an issue describing what you want to change before a large PR, so
