@@ -1,0 +1,64 @@
+// std::time::parse_rfc3339 (GH #1948): an RFC 3339 timestamp with its
+// offset, read as the UTC instant it names. `parse_time` refuses an
+// offset rather than drop it; this reads one and applies it, so the
+// offset is never silently lost. A fixed `+hh:mm` needs no timezone
+// database, which is why it can be pure where local time cannot.
+
+/// The two decimal digits at `i` of `s` as a number, or -1.
+fn __std_time_two_digits(s: String, i: Int) -> Int {
+    let a = std::str::byte_at_unchecked(s, i) - 48;
+    let b = std::str::byte_at_unchecked(s, i + 1) - 48;
+    if a < 0 || a > 9 || b < 0 || b > 9 {
+        return -1;
+    }
+    return a * 10 + b;
+}
+
+/// The instant an RFC 3339 timestamp names: `parse_time`'s
+/// `YYYY-MM-DDTHH:MM:SS[.f]` followed by `Z` (either case) or an offset
+/// `+hh:mm` / `-hh:mm`, which is applied: `2026-11-15T10:00:00+02:00` is
+/// `2026-11-15T08:00:00Z`. Anything else, an offset past `23:59`, and an
+/// instant (or a local time before its offset) outside `Time`'s range is
+/// `ParseError { kind: "parse_rfc3339", input: s }`.
+fn __std_time_parse_rfc3339(s: String) -> Time fallible(ParseError) {
+    let n = len(s);
+    if n < 20 {
+        fail ParseError { kind: "parse_rfc3339", input: s };
+    }
+    let last = std::str::byte_at_unchecked(s, n - 1);
+    if last == 90 || last == 122 {
+        let utc = std::time::parse_time(std::str::substring(s, 0, n - 1) + "Z") or {
+            fail ParseError { kind: "parse_rfc3339", input: s };
+        };
+        return utc;
+    }
+    let sign = std::str::byte_at_unchecked(s, n - 6);
+    let hh = __std_time_two_digits(s, n - 5);
+    let mm = __std_time_two_digits(s, n - 2);
+    if (sign != 43 && sign != 45)
+        || std::str::byte_at_unchecked(s, n - 3) != 58
+        || hh < 0
+        || hh > 23
+        || mm < 0
+        || mm > 59
+    {
+        fail ParseError { kind: "parse_rfc3339", input: s };
+    }
+    let local = std::time::parse_time(std::str::substring(s, 0, n - 6) + "Z") or {
+        fail ParseError { kind: "parse_rfc3339", input: s };
+    };
+    let at = std::time::nanos(local);
+    let offset = (hh * 60 + mm) * 60 * 1000000000;
+    // UTC is the local time less the offset east of it; past either end
+    // of `Time` is the failure, never a wrapped instant.
+    if sign == 43 {
+        if at < -9223372036854775807 - 1 + offset {
+            fail ParseError { kind: "parse_rfc3339", input: s };
+        }
+        return std::time::from_nanos(at - offset);
+    }
+    if at > 9223372036854775807 - offset {
+        fail ParseError { kind: "parse_rfc3339", input: s };
+    }
+    return std::time::from_nanos(at + offset);
+}

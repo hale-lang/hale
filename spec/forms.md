@@ -410,6 +410,17 @@ re-raises as a closure violation, not as a `fallible(...)`
 return on `push`. From the language surface, `push` never
 errors. (See `spec/runtime.md` for the OOM trap convention.)
 
+So `v.push(x) or discard` is refused, as an `or` on any call that
+cannot fail is: an `or` says a failure is handled, and there is none
+to handle. A collection operation is fallible exactly when it can
+fail — `get`, `set` and `pop` miss past the length, a `bounded[T;
+N]`'s `push(f, x)` is full at `N` (`fallible(CapacityError)`), and a
+vec's `push` grows. The refusal names the method and says so (GH
+#1948, 2026-11-15): "\`v.push(…)\` is not fallible (it returns
+\`()\`); drop the \`or\` clause: a \`@form(vec)\` grows to hold what
+is pushed …". It used to say only that the left side was not
+fallible, which read as the operations disagreeing.
+
 ### `get`
 
 ```
@@ -1306,8 +1317,9 @@ is never a copy: those fields were copied with the read.
 survey (`hale check --dump-alloc-summary` prints `cell-copy (<reason>)`),
 so it counts toward `@budget(alloc_per_call = N)` and the `alloc`
 effect, and the hot-path lint reports it as it reports any other
-allocation there: a warning in a loop or a bus handler, an error
-anywhere in a `@hot` fn.
+allocation there: a warning in a loop or a bus handler (when asked
+for: `hale verify`, `hale check --warn-hot-path`), an error anywhere in
+a `@hot` fn.
 
 ## Lowering strategy
 

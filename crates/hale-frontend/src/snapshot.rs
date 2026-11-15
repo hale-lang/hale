@@ -230,6 +230,12 @@ pub struct Config {
     /// build rules. The editor's: `hale check` runs it itself, beside
     /// its reports, under its own `--no-warn-unbounded-alloc`.
     pub alloc_advisory: bool,
+    /// The hot-path allocation advisory (GH #1948): the hot-path lint's
+    /// warnings in the check's laws. Off by default, for every entry
+    /// point, so ordinary code is not reported; `hale verify` and `hale
+    /// check --warn-hot-path` turn it on. A `@hot` fn's findings are
+    /// errors whatever this says.
+    pub hot_path_advisory: bool,
     /// Whether the lowering view waits for a check with no error. On
     /// for every entry point; off only for the test harness's snapshot
     /// ([`Config::harness`]), which lowers what it is handed.
@@ -252,6 +258,7 @@ impl Config {
             wrap_main: false,
             build_rules: false,
             alloc_advisory: false,
+            hot_path_advisory: false,
             check_gates_lowering: true,
             adopt: Vec::new(),
         }
@@ -270,6 +277,7 @@ impl Config {
             wrap_main: false,
             build_rules: true,
             alloc_advisory: false,
+            hot_path_advisory: false,
             check_gates_lowering: true,
             adopt: Vec::new(),
         }
@@ -331,6 +339,7 @@ impl Config {
         d.flag(self.wrap_main);
         d.flag(self.build_rules);
         d.flag(self.alloc_advisory);
+        d.flag(self.hot_path_advisory);
         d.flag(self.check_gates_lowering);
         d.finish()
     }
@@ -1350,6 +1359,7 @@ impl Snapshot {
             roles: self.demand_role_rows().map_err(Clone::clone)?,
             surfaces: self.demand_surface_rows().map_err(Clone::clone)?,
             units: self.demand_units().map_err(Clone::clone)?,
+            hot_path_advisory: self.config.hot_path_advisory,
         };
         let plan = &walked.plan;
         let mut diags = scope.diags.clone();

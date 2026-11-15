@@ -1101,7 +1101,10 @@ struct_field      = IDENTIFIER , ":" , type_expr , [ "indexed_by" , IDENTIFIER ,
    pairs that downstream features parse (the binary-pack layer reads a
    `wire:` key; ignored otherwise). Shares the backtick lexing with time
    literals — a time literal only appears in expression position, a tag
-   only in field-declaration position. *)
+   only in field-declaration position. The tag is the last thing
+   before the `;`, after any `= default`; a tag written before the
+   default is a parse error at the `=` that says to write the default
+   first (GH #1948). *)
 field_tag         = "`" , { ? any char except backtick ? } , "`" ;
 
 enum_variant      = IDENTIFIER , [ "(" , type_expr , { "," , type_expr } , ")" ] ;
@@ -1712,6 +1715,9 @@ identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 (*                   closing line's whitespace is stripped from *)
 (*                   every line, no escapes (tokens.md § Block  *)
 (*                   strings)?                                   *)
+(*                 | ?raw string: `r`, N `#` (N >= 0), `"`, the  *)
+(*                   text as written (no escapes), `"`, N `#`    *)
+(*                   (tokens.md § Raw strings, GH #1948)?        *)
 (* FSTRING_LIT    = ?f"... {expr} ..."?                          *)
 (* BYTES_LIT      = ?b"..."?                                     *)
 (* QUANTITY_LIT   = ?<decimal int><identifier>, no space: the    *)

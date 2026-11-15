@@ -335,11 +335,13 @@ fn own_scope_let_block_scope_test() {
             // 511 since `wide.hl` came (GH #1934: `std::u256` /
             // `std::i256`'s fallible calls and the JSON codecs' hex
             // helpers, 20 fns); 513 since `std::json::Builder` writes
-            // JSON as given in `raw_field` and `raw_value` (GH #1943)
+            // JSON as given in `raw_field` and `raw_value` (GH #1943);
+            // 515 since `time_rfc3339.hl` came (GH #1948:
+            // `std::time::parse_rfc3339` and its digit helper)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 513 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 513 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 515 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 515 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -1178,7 +1180,8 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
             sharing += 1;
         }
     }
-    assert_eq!(sharing, 33, "the stdlib source files that share a name with the copy");
+    // 34 since `time_rfc3339.hl` came (GH #1948: `std::time::parse_rfc3339`).
+    assert_eq!(sharing, 34, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the

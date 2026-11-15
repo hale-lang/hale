@@ -45,9 +45,15 @@ pub(super) fn render(m: &Model, notes: &mut Vec<String>) -> Result<String, Strin
     }
     let _ = writeln!(
         o,
-        "# Each image <name>:latest holds the built binary under /app (`hale build <seed>`); it is"
+        "# Each image <name>:latest holds the built binary under /app (`hale build <seed>"
     );
-    let _ = writeln!(o, "# named here and never built or pushed.");
+    // GH #1948: an image runs on whatever node schedules it, so the binary
+    // it holds is built for the portable baseline, not the build host.
+    let _ = writeln!(
+        o,
+        "# --target-cpu portable`: a node's CPU is not the build host's); it is named here and never"
+    );
+    let _ = writeln!(o, "# built or pushed.");
     let _ = writeln!(
         o,
         "# No HorizontalPodAutoscaler: no scale policy is declared for this environment."

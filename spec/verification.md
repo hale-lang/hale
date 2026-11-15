@@ -2111,7 +2111,7 @@ manifest. `hale verify` fails on these as on any advisory.
 | **Dropped scope-local delivery** | a bus subscriber — or a locus that keeps one for its whole life: one its params defaults build, transitively, or its bodies build and `accept` or store in a field — built and dissolved inside one call (a `let` or a bare statement, neither stored in a field nor returned, with no `accept` owning it) whose enclosing scope runs on a classic cooperative pool (not `where async_io`; a free fn's domains are its callers'): its subscription registers with that pool, and the call holds the pool's worker for the subscriber's whole life, so a delivery to it waits for a park point of a `run()` on that worker (a sleep or a yield there delivers the pool's queued cells; one in a handler delivers nothing) and is dropped at its dissolve when none comes first (`spec/runtime.md` § "Subscriptions follow the tower"). The advisory does not look for the park point: it fires at every such literal. Reported at the literal, naming the locus, the call and the pool, and saying to place the pool `where async_io` or keep the subscriber beyond the call; a literal in a bus handler is type-check rule 20's, and a scope whose domains are unknown proves nothing. Read from the allocation summary's rows, the ownership graph and the placement table's dynamic sites | warning | `check_scope_local_subscriber_on_classic_pool` |
 | **Subscriber torn down at its statement** | a bus subscriber — or a locus that keeps one for its whole life (as the row above) — built by a literal in statement position (a bare statement; a let-bound one lives for its scope and hears across a park point there, and the row above judges it on a classic pool), whose locus writes neither `birth()` nor `run()`, with no `accept` of its type owning it: it is a transient throwaway (`spec/semantics.md` § "Locus instantiation") born and torn down inside the statement, its subscription with it, so a delivery can never reach it, and with no hook of its own the build was for the hearing alone; the program is silent by design and the author meant otherwise. A statement-position locus with a `run()` runs it and hears while it runs, and one with a `birth()` does its work there (a fire-and-forget literal, `spec/styleguide.md`), so neither is reported; nor is a holder with neither whose params field holds a child that has a `run()` (transitively: the statement lives while that child's `run()` runs, and the subscriber the holder keeps hears meanwhile); nor the entry (`main locus`). Reported at the literal, in a `birth()` or another hook, a method or a free fn; not in a `run()` body, a nested block's included (the runtime keeps a statement literal there alive while the `run()` runs, so it hears), not in a bus handler's (type-check rule 20's) and not in `fn main`'s (its literal is the program's root); naming the locus and the call, and saying to `accept` it in the enclosing locus or hold it in a field. Read from the allocation summary's rows (and their entry kind), the ownership graph and the declarations (which locus wrote a `run()`, which params field holds a locus) | warning | `check_subscriber_torn_down_at_its_statement` |
 | **Publish before its subscriber** | a send written, in one body, before a literal building a locus that subscribes to its subject — the literal's own locus, or a locus its params build (by their declared types), a `**` subscription covering the subject included, keyed or not — where the literal is a statement, a `let`'s value or an assignment's, and "before" is the order written (a send after the literal inside one loop is the next iteration's, which the built instance receives). A cell reaches the subscribers registered when it is published (`spec/runtime.md` § "Lifecycle obligations", line 6), so that subscriber never receives it. Reported at the send, the literal its witness, saying to build the subscriber first or publish once it exists. Read from the bundle's bodies, the scope and the bus graph. What a statically built tree publishes to itself while it is built is not this rule's (2026-10-12) | warning | `check_publish_before_subscriber` |
-| **Hot-path allocation** | an allocation per loop iteration or per bus message in the program's own fns: a locus instantiated, a factory's result bound (the factory is the free fn the summary resolved the call to, by declaration: an imported seed's through its alias, never a stdlib call; until 2026-10-17 a path's last segment was matched against the tail of every imported fn's mangled name, so an imported `one_arg` returning a locus made each `std::env::arg(i)` a finding, downstream handoff), an allocating receive in a loop; under `@hot` also `snapshot()` / `finish()` and a whole-struct `self.<field> =` replace. Read from the allocation summary's rows; an error under `@hot`, otherwise a warning that `@unbounded` or `@bounded_by(<name>)` silences | warning / error | `check_hot_path_alloc` |
+| **Hot-path allocation** | an allocation per loop iteration or per bus message in the program's own fns: a locus instantiated, a factory's result bound (the factory is the free fn the summary resolved the call to, by declaration: an imported seed's through its alias, never a stdlib call; until 2026-10-17 a path's last segment was matched against the tail of every imported fn's mangled name, so an imported `one_arg` returning a locus made each `std::env::arg(i)` a finding, downstream handoff), an allocating receive in a loop; under `@hot` also `snapshot()` / `finish()` and a whole-struct `self.<field> =` replace. Read from the allocation summary's rows; an error under `@hot`; elsewhere a warning only when asked for — `hale check --warn-hot-path` or `hale verify` (GH #1948, 2026-11-15) — that `@unbounded` or `@bounded_by(<name>)` silences | warning (opt-in) / error | `check_hot_path_alloc` |
 | **Unit declared once** | a `unit` declared twice (`spec/units.md` § "Declarations"): a unit is one node of the catalogue. Reported at the second declaration's name, with the first as its witness; a unit of a name the stdlib's time catalogue declares (`ms`, U4) is that unit declared again, the message naming the catalogue | error | `declared_twice` (units) |
 | **Declared unit** | an equation's target, a denomination or an origin that names no declared unit, at the name, suggesting the nearest declared one, a program's own before the stdlib's; a retired time unit (`m`) says what it is now instead (minutes are `min`) | error | `undeclared_units` (units) |
 | **Unit cycles multiply to one** | a cycle of unit equations whose product is not one, at the equation the closure found inconsistent, stating what it claims and what the other equations imply; the witness is the other path, each step at its declaration | error | `inconsistent_cycles` (units) |
@@ -3041,7 +3041,18 @@ assume the others in a build:
   turned its own reproducer into a correct program that the advisory
   still flagged — and the fix it suggested, `@no_block`, is a compile
   error on that program.
-- **Hot-path allocation lint — default-on advisory** (2026-07-16). Two
+- **Hot-path allocation lint — opt-in advisory** (2026-07-16; opt-in
+  since GH #1948, 2026-11-15). Its warnings are reported by `hale
+  verify` (the discipline gate, which fails on any finding) and by
+  `hale check --warn-hot-path`; `hale check`, `build`, `run`, `test` and
+  the editor report none, and a `@hot` fn's findings are errors
+  whatever is asked. It was on by default until then, and a first
+  program came out full of it: a `let x = Locus { … }` in a plain
+  `while` in `fn main`, a child born in a handler of a service with a
+  handful of messages. Neither is a path anyone certified hot, and
+  the lint cannot tell one from the 10k/s read loop it was written
+  for; the author can, with `@hot` on the path that is, or by asking.
+  The rest of this entry is what it finds when it runs. Two
   loop-scoped anti-patterns get a **warning** (never a build failure), so
   the allocation-free shape is the path of least resistance rather than
   expert folklore: (1) a **locus** (its own arena / heap buffer) or a
@@ -3053,7 +3064,7 @@ assume the others in a build:
   the unambiguous case); a plain value struct/type literal is not flagged
   (only loci and heap-bearing builders), and a per-invocation
   instantiation outside a loop reclaims at method exit. This is the
-  conservative default advisory; `@budget` is the strict opt-in contract
+  conservative advisory; `@budget` is the strict opt-in contract
   built on the same intent.
 
   Gap D extensions (2026-07-17): (3) a locus / `BytesBuilder`
@@ -3099,7 +3110,7 @@ assume the others in a build:
   names it as that (`in the JSON codecs the compiler generated …`), not
   a position in a file.
 - **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
-  escalation between the default advisory and `@budget`'s counted
+  escalation between the opt-in advisory and `@budget`'s counted
   ceiling: `@hot fn` certifies "this is a 10k/s-class path" and (a)
   **promotes the hot-path lint's findings inside that fn to hard
   errors** (prefixed `@hot:`), and (b) enables two stricter,
@@ -3263,7 +3274,8 @@ assume the others in a build:
   *runtime*. See `notes/closure-lifting.md`.
 
 The item-1 whole-program survey and the hot-path lint are advisory
-(warnings). The one build-failing *allocation* gate is opt-in:
+(warnings; the hot-path lint's only when asked for, `hale verify` or
+`hale check --warn-hot-path`). The one build-failing *allocation* gate is opt-in:
 `@budget(alloc_per_call = N)` on a fn — you ask for the ceiling, and a
 violation is a hard error. fd and thread bounds remain advisory / CI-gated
 (item 5), not automatic build failures.

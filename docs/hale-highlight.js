@@ -58,6 +58,11 @@
         // the same fence, so they precede the escaped string.
         { className: "string", begin: '""""', end: '""""' },
         { className: "string", begin: '"""', end: '"""' },
+        // Raw strings (spec/tokens.md § Raw strings): `r#"…"#`, `r"…"`,
+        // no escapes, so they precede the escaped string too.
+        { className: "string", begin: '\\br##"', end: '"##' },
+        { className: "string", begin: '\\br#"', end: '"#' },
+        { className: "string", begin: '\\br"', end: '"' },
         hljs.QUOTE_STRING_MODE,
         // `@form`, `@locality`, `@ffi` … annotations.
         { className: "meta", begin: "@\\w+" },
