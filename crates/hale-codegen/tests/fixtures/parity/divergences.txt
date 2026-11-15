@@ -5,8 +5,6 @@
 // lines. A divergence whose signature is not here fails the gate; so does
 // a listed reproducer that builds (or that the check refuses) again.
 // Delete a line, and its reproducer, with the fix that closes it.
-#1942 | empty_array_substitute.repro | hale can't compile this yet: empty array literal needs a type ascription (not yet supported in v#)
-#1942 | generic_locus_arg.repro | hale can't compile this yet: generic type argument `_` not supported (m# v#.# limits inference to primitives + named types as generic args)
 #1963 | capacity_slot_generic_arg.repro | hale can't compile this yet: no field `_` on locus self
 #1963 | generic_unpinned_arg.repro | hale can't compile this yet: generic fn `_`: no argument of this call pins `_`
 #1963 | unit_generic_arg.repro | hale can't compile this yet: call to `_`: no free fn / generic fn / fn-pointer binding with that name is in scope

@@ -1,8 +1,0 @@
-// `[]` as the `or` substitute of a call with no value.
-// == main/main.hl ==
-fn touch() -> () fallible(String) {
-}
-
-fn main() {
-    touch() or [];
-}
