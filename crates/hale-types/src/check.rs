@@ -796,81 +796,6 @@ fn unfresh_fn_value_message(shown: &str, l: &str) -> String {
     )
 }
 
-/// A fn, a method or an interface's method declared to return a `bounded`
-/// (written, or through an alias): the build cannot return one by value
-/// (it lives inline in its containing type, so it has no value of its own
-/// to hand back), and the check says so where the build would refuse it,
-/// with no file or line. A record holding the `bounded` returns it.
-fn bounded_return_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> Vec<Diag> {
-    // a declaration's type parameters are its own, opaque, whatever global
-    // type shares a name with one (`fn identity<T>(x: T) -> T` beside a
-    // `type T = bounded[...]` returns a T, not a bounded)
-    let returns_bounded = |te: &TypeExpr, generics: &[&GenericParam]| {
-        let opaque: BTreeMap<String, Ty> = generics.iter().map(|g| (g.name.name.clone(), Ty::Unknown)).collect();
-        let mut t = crate::resolve::resolve_type_expr_with(te, &top.names, &opaque);
-        for _ in 0..16 {
-            match t {
-                Ty::Named(ref n) => match top.lookup(n) {
-                    Some(TopSymbol::Type(info)) => match &info.kind {
-                        TypeKind::Alias(a) => t = a.clone(),
-                        _ => return None,
-                    },
-                    _ => return None,
-                },
-                Ty::Bounded(..) => return Some(t),
-                _ => return None,
-            }
-        }
-        None
-    };
-    let mut out = Vec::new();
-    let mut refuse = |what: String, te: &TypeExpr, generics: &[&GenericParam]| {
-        if let Some(t) = returns_bounded(te, generics) {
-            out.push(Diag::ty(
-                te.span(),
-                format!(
-                    "{what} returns a `{}`, and bounded[T; N] cannot be returned by value — it lives inline in its \
-                     containing type; return a record holding it (`type Names {{ items: {}; }}`), or fill a place \
-                     the caller passes",
-                    t.display(),
-                    t.display()
-                ),
-            ));
-        }
-    };
-    for program in bundle.programs.values() {
-        for item in flat_decls(&program.items) {
-            match item {
-                TopDecl::Fn(f) => {
-                    if let Some(te) = &f.ret {
-                        refuse(format!("`{}`", f.name.name), te, &f.generics.iter().collect::<Vec<_>>());
-                    }
-                }
-                TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        if let LocusMember::Fn(f) = m {
-                            if let Some(te) = &f.ret {
-                                let generics: Vec<&GenericParam> = l.generics.iter().chain(&f.generics).collect();
-                                refuse(format!("`{}::{}`", l.name.name, f.name.name), te, &generics);
-                            }
-                        }
-                    }
-                }
-                TopDecl::Interface(i) => {
-                    for m in &i.methods {
-                        if let Some(te) = &m.ret {
-                            refuse(format!("`{}::{}`", i.name.name, m.name.name), te, &[]);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    out
-}
-
-
 /// A record literal in a default that leaves out a field with no default
 /// of its own (`budget: BudgetSet = BudgetSet { }` where `BudgetSet` has a
 /// field `cap: Int;`). A default is typed where the literal or call that
@@ -1487,7 +1412,6 @@ pub fn check_bundle_rules(
     diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
     diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
     diags.extend(mixed_owner_diags(inputs.alloc_summary));
-    diags.extend(bounded_return_diags(bundle, top));
     diags.extend(literal_default_missing_field_diags(bundle, top));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
@@ -11769,6 +11693,7 @@ impl<'a> Checker<'a> {
                         let defaults: Vec<&'a Expr> = fields.iter().filter_map(|f| f.default.as_ref()).collect();
                         let typed = self.judge_defaults_where_declared(&defaults, &t.generics);
                         self.refuse_valueless_field_defaults(&t.name.name, fields, &typed);
+                        self.refuse_bounded_field_defaults(&t.name.name, fields);
                         // A field default is not typed here, but lowering
                         // emits it at every literal of the type that
                         // leaves the field, so the defaults its calls
@@ -16826,7 +16751,9 @@ impl<'a> Checker<'a> {
                 };
                 self.note_view_binding(name, &bound, ty.as_ref());
                 let cell = self.cell_of(value);
-                let param_place = matches!(bound, Ty::Bounded(_, _)) && self.under_param_place(value);
+                // A bounded local bound from a place under a parameter is
+                // the frame's own copy (decisions F.49), no view of it.
+                let param_place = false;
                 self.locals.insert(
                     &name.name,
                     LocalSym { ty: bound, is_mut: *is_mut, cell, param_place },
@@ -16936,39 +16863,22 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let stored = stored.as_ref().unwrap_or(value);
-                // A bounded[T; N] place is assigned whole only from
-                // another bounded value: the slots and the count are
-                // copied, as a whole-struct copy carries them
-                // (`spec/types.md` § bounded). Any other value (a
-                // literal, an array) has no bounded shape to copy;
-                // the intrinsics build one.
-                // A bounded local is a view of the place it was bound from
-                // (`spec/types.md` § bounded), whose owner a whole
-                // assignment needs, to anchor the elements where the place
-                // lives: the place is assigned instead.
-                let bounded_local = matches!(want, Ty::Bounded(_, _))
-                    && target.tail.is_empty()
-                    && matches!(op, AssignOp::Eq);
-                if bounded_local {
+                // A bounded[T; N] place, a field or a local (GH #1951: a
+                // bounded local is the frame's own list), is assigned
+                // whole only from another bounded value of its type, or
+                // from an array literal (`flows_into`): the slots and the
+                // count are copied, as a whole-struct copy carries them
+                // (`spec/types.md` § bounded). Any other value has no
+                // bounded shape to copy.
+                let bounded_refused = matches!(want, Ty::Bounded(_, _))
+                    && !matches!(got, Ty::Bounded(_, _) | Ty::Unknown)
+                    && !matches!(stored, Expr::Array(..));
+                if bounded_refused {
                     self.diags.push(Diag::ty(
                         *span,
                         format!(
-                            "`{0}` is a `{1}` local, a view of the place it was bound from, and a whole \
-                             assignment through it would keep its elements in this frame, not where that \
-                             place lives; assign the place itself (`self.xs = …`, `row.xs = …`)",
-                            target.head.name,
-                            want.display()
-                        ),
-                    ));
-                }
-                let bounded_refused =
-                    bounded_local || (matches!(want, Ty::Bounded(_, _)) && !matches!(got, Ty::Bounded(_, _) | Ty::Unknown));
-                if bounded_refused && !bounded_local {
-                    self.diags.push(Diag::ty(
-                        *span,
-                        format!(
-                            "a `{}` is assigned whole only from another `{}`; build one \
-                             through push(...) / set(...) / clear(...)",
+                            "a `{}` is assigned whole only from another `{}` or an array literal \
+                             (`[a, b]`, `[]`); build one through push(...) / set(...) / clear(...)",
                             want.display(),
                             want.display()
                         ),
@@ -19792,6 +19702,53 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // GH #1951: an array literal at a declared `bounded[T; N]` site is
+        // that bounded, its count the literal's length (`[]` is empty).
+        // A literal longer than the capacity is refused where it stands;
+        // each element flows into `T` from its own type.
+        if let (Ty::Bounded(we, cap), Expr::Array(elems, _)) = (want, value) {
+            if elems.len() as u64 > *cap {
+                self.diags.push(Diag::ty(
+                    value.span(),
+                    format!(
+                        "a `{}` holds at most {cap} element{}, and this literal has {}",
+                        want.display(),
+                        if *cap == 1 { "" } else { "s" },
+                        elems.len()
+                    ),
+                ));
+                return true;
+            }
+            let own = self
+                .array_elements
+                .get(&(value as *const Expr))
+                .map(|a| a.tys.clone())
+                .filter(|tys| tys.len() == elems.len());
+            let first = match got {
+                Ty::Array(ge, _) => (**ge).clone(),
+                _ => Ty::Unknown,
+            };
+            let mut all = true;
+            for (i, e) in elems.iter().enumerate() {
+                let t = own.as_ref().map_or(first.clone(), |tys| tys[i].clone());
+                let widen = matches!((we.as_ref(), &t), (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::Int)));
+                if !widen && !self.flows_into(we, &t, e) {
+                    self.diags.push(Diag::ty(
+                        e.span(),
+                        format!(
+                            "an element of `{}` in a literal of `{}`, whose elements are `{}`",
+                            t.display(),
+                            want.display(),
+                            we.display()
+                        ),
+                    ));
+                    all = false;
+                }
+            }
+            // Each refusal is reported at its element.
+            let _ = all;
+            return true;
+        }
         if want.assignable_from(got) || self.scalars.is_empty() {
             return want.assignable_from(got);
         }
@@ -21466,6 +21423,39 @@ impl<'a> Checker<'a> {
     /// default is a value of the field's type, so one of type `()` is
     /// refused here, at the default, with the record literal spelled out
     /// when the field holds a record.
+    /// A `bounded[T; N]` field starts empty and takes no default (GH
+    /// #1951 keeps the rule): an absent list decodes as empty, and a
+    /// literal that wants elements spells them (`Doc { tags: ["a"] }`).
+    /// Lowering never evaluated such a default, so a program that wrote
+    /// one got an empty list whatever it said.
+    fn refuse_bounded_field_defaults(&mut self, type_name: &str, fields: &[hale_syntax::ast::StructField]) {
+        for f in fields {
+            let Some(d) = &f.default else { continue };
+            let mut t = crate::resolve::resolve_type_expr(&f.ty, &self.top.names);
+            for _ in 0..16 {
+                match t {
+                    Ty::Named(ref n) => match self.top.lookup(n) {
+                        Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Alias(a), .. })) => t = a.clone(),
+                        _ => break,
+                    },
+                    _ => break,
+                }
+            }
+            if let Ty::Bounded(..) = t {
+                self.diags.push(Diag::ty(
+                    d.span(),
+                    format!(
+                        "type `{type_name}` field `{}`: a `{}` starts empty and takes no default; a literal \
+                         that wants elements spells them (`{type_name} {{ {}: [..] }}`), or fill it with push(...)",
+                        f.name.name,
+                        t.display(),
+                        f.name.name
+                    ),
+                ));
+            }
+        }
+    }
+
     fn refuse_valueless_field_defaults(&mut self, type_name: &str, fields: &[hale_syntax::ast::StructField], typed: &[(&'a Expr, Ty)]) {
         let field_tys: BTreeMap<String, Ty> = match self.top.lookup(type_name) {
             Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(infos), .. })) => {
@@ -23099,6 +23089,53 @@ impl<'a> Checker<'a> {
                                         want_args,
                                         if want_args == 1 { "" } else { "s" },
                                         args.len()
+                                    ),
+                                ));
+                            }
+                            // GH #1951: a call's result is a temporary,
+                            // so an intrinsic that writes the list would
+                            // write nothing anyone reads again.
+                            let writes = matches!(id.name.as_str(), "push" | "set" | "clear" | "truncate");
+                            let from_call = match &args[0] {
+                                Expr::Call { .. } => true,
+                                Expr::Or { inner, .. } => matches!(inner.as_ref(), Expr::Call { .. }),
+                                _ => false,
+                            };
+                            // A bounded local is the frame's own list
+                            // (decisions F.49): written by an intrinsic
+                            // only when declared `let mut`. A parameter is
+                            // the caller's place and keeps its own rule.
+                            if let (true, Expr::Ident(local)) = (writes, &args[0]) {
+                                if let Some(sym) = self.locals.lookup(&local.name) {
+                                    if !sym.is_mut && !sym.param_place {
+                                        self.diags.push(Diag::ty(
+                                            args[0].span(),
+                                            format!(
+                                                "`{0}` is a `{1}` local declared with `let`, and `{2}` writes it: \
+                                                 declare it `let mut {0}`. A local bound from a place is its own \
+                                                 copy (decisions F.49); to write the place, name it \
+                                                 (`{2}(self.xs, …)`)",
+                                                local.name,
+                                                sym.ty.display(),
+                                                id.name
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                            if writes && from_call {
+                                let verb = match id.name.as_str() {
+                                    "push" => "push into",
+                                    "set" => "set into",
+                                    other => other,
+                                };
+                                self.diags.push(Diag::ty(
+                                    args[0].span(),
+                                    format!(
+                                        "a call's result is no place to {verb}: `{}` writes its list, and this \
+                                         list is a temporary no one reads again; bind it first (`let mut xs = \
+                                         …; {}(xs, …)`)",
+                                        id.name, id.name
                                     ),
                                 ));
                             }
@@ -26835,10 +26872,12 @@ impl<'a> Checker<'a> {
         }
         if requires_all {
             for (fname, fty, has_default) in fields {
-                // bounded[T; N] fields auto-init empty and cannot
-                // be spelled in a literal.
+                // bounded[T; N] fields auto-init empty. A record's is
+                // spelled in a literal from a bounded value or an array
+                // literal (GH #1951, `flows_into`); a locus's params are
+                // not.
                 if matches!(fty, Ty::Bounded(_, _)) {
-                    if seen.contains_key(fname) {
+                    if seen.contains_key(fname) && kind_label != "type" {
                         self.diags.push(Diag::ty(
                             span,
                             format!(

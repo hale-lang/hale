@@ -1,0 +1,165 @@
+// `bounded[T; N]` lists as values (GH #1951 item 1, spec/types.md §
+// bounded[T; N], decisions F.49):
+//
+// - an array literal at a declared `bounded[T; N]` site is that bounded,
+//   its count the literal's length (`[]` is empty);
+// - a local bound from a literal or a call's result is the frame's own,
+//   assigned whole and pushed into when `let mut`;
+// - a fn, a locus member and an interface method return one by value,
+//   its String and record elements the caller's to read after the callee
+//   has returned;
+// - a local bound from a place is a copy, not a view: a write through
+//   either name never reaches the other.
+//
+// A literal longer than its capacity, `push(call(), x)` and a field
+// default are check errors (crates/hale-types/tests/diag_quality.rs).
+
+type Item { k: Int = 0; s: String = ""; }
+type Doc { title: String = ""; tags: bounded[String; 8]; items: bounded[Item; 4]; }
+
+fn ints() -> bounded[Int; 4] {
+    return [1, 2, 3];
+}
+
+fn tags_of(d: Doc) -> bounded[String; 8] {
+    let mut out: bounded[String; 8] = [];
+    for t in d.tags {
+        push(out, f"#{t}") or raise;
+    }
+    return out;
+}
+
+fn items_of(n: Int) -> bounded[Item; 4] {
+    let mut out: bounded[Item; 4] = [];
+    for i in 0..n {
+        push(out, Item { k: i, s: f"item {i}" }) or raise;
+    }
+    return out;
+}
+
+fn total_of(xs: bounded[Int; 4]) -> Int {
+    let mut total = 0;
+    for x in xs {
+        total = total + x;
+    }
+    return total;
+}
+
+interface Named {
+    fn names() -> bounded[String; 4];
+}
+
+locus Store {
+    params {
+        doc: Doc = Doc { };
+        prefix: String = "p";
+    }
+
+    // A member returns a list whose elements the call's scratch built.
+    fn items() -> bounded[Item; 4] {
+        let mut out: bounded[Item; 4] = [Item { k: 1, s: self.prefix + "-one" }];
+        push(out, Item { k: 2, s: self.prefix + "-two" }) or raise;
+        return out;
+    }
+
+    fn names() -> bounded[String; 4] {
+        return [self.prefix + "1", self.prefix + "2", self.prefix + "3"];
+    }
+
+    // A returned list stored whole into the locus's field.
+    fn keep() {
+        self.doc.items = self.items();
+    }
+
+    // A local bound from the field is the method's own.
+    fn local_copy() -> Int {
+        let mut mine = self.doc.items;
+        push(mine, Item { k: 9, s: "nine" }) or raise;
+        return count(mine);
+    }
+}
+
+fn names_through(n: Named) -> Int {
+    return count(n.names());
+}
+
+fn main() {
+    // Literals at declared sites.
+    let ids: bounded[Int; 4] = [1, 2, 3];
+    std::test::assert_eq_int(count(ids), 3, "a literal's count is its length");
+    std::test::assert_eq_int(at(ids, 2) or 0, 3, "its elements in order");
+    let none: bounded[Int; 4] = [];
+    std::test::assert_eq_int(count(none), 0, "`[]` is empty");
+    std::test::assert_eq_int(total_of([4, 5]), 9, "a literal argument");
+    let d = Doc { title: "t", tags: ["a", "b"] };
+    std::test::assert_eq_int(count(d.tags), 2, "a literal record field");
+    std::test::assert_eq_int(count(d.items), 0, "a field left out starts empty");
+
+    // Owned locals: pushed, assigned whole.
+    let mut tags: bounded[String; 8] = [];
+    push(tags, "x") or raise;
+    push(tags, "y") or raise;
+    std::test::assert_eq_int(count(tags), 2, "a `let mut` local is pushed into");
+    tags = ["only"];
+    std::test::assert_eq_int(count(tags), 1, "and assigned whole");
+    std::test::assert_eq_str(at(tags, 0) or "", "only", "from a literal");
+
+    // Return by value.
+    let t = tags_of(d);
+    std::test::assert_eq_int(count(t), 2, "a free fn's returned list");
+    std::test::assert_eq_str(at(t, 1) or "", "#b", "its String elements read after the return");
+    let its = items_of(3);
+    std::test::assert_eq_str((at(its, 2) or Item { }).s, "item 2", "its record elements");
+    std::test::assert_eq_int(count(ints()), 3, "count of a call's result");
+    std::test::assert_eq_int(count(tags_of(d)), 2, "count of a free fn's result");
+
+    let s = Store { };
+    let mine = s.items();
+    std::test::assert_eq_int(count(mine), 2, "a member's returned list");
+    std::test::assert_eq_str(
+        (at(mine, 1) or Item { }).s,
+        "p-two",
+        "its elements outlive the member's scratch",
+    );
+    std::test::assert_eq_int(names_through(s), 3, "through an interface");
+
+    // A returned list stored whole into a locus field.
+    s.keep();
+    std::test::assert_eq_int(count(s.doc.items), 2, "stored whole into the field");
+    std::test::assert_eq_str(
+        (at(s.doc.items, 0) or Item { }).s,
+        "p-one",
+        "the field holds the elements",
+    );
+    std::test::assert_eq_int(s.local_copy(), 3, "the local copy took the push");
+    std::test::assert_eq_int(count(s.doc.items), 2, "the field did not");
+
+    // Copy, not view.
+    let mut copy = ids;
+    push(copy, 9) or raise;
+    std::test::assert_eq_int(count(copy), 4, "the copy took the push");
+    std::test::assert_eq_int(count(ids), 3, "the original did not");
+    let mut rec = Doc { };
+    push(rec.tags, "one") or raise;
+    let held = rec.tags;
+    push(rec.tags, "two") or raise;
+    std::test::assert_eq_int(count(held), 1, "a write to the place does not reach the local");
+    let mut through = rec.tags;
+    clear(through);
+    std::test::assert_eq_int(
+        count(rec.tags),
+        2,
+        "a clear through the local does not reach the place",
+    );
+    let mut items = rec.items;
+    push(items, Item { k: 1, s: "a" }) or raise;
+    let mut first = at(items, 0) or Item { };
+    first.k = 5;
+    set(items, 0, first) or raise;
+    std::test::assert_eq_int(
+        count(rec.items),
+        0,
+        "a set through the local does not reach the place",
+    );
+    std::test::assert_eq_int((at(items, 0) or Item { }).k, 5, "the local holds the set");
+}

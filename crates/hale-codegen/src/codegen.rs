@@ -14427,13 +14427,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.bool_type().fn_type(&llvm_param_tys, false)
         } else {
             match &ret_ty {
-                Some(CodegenTy::Bounded(_, _)) => {
-                    return Err(CodegenError::Unsupported(
-                        "bounded[T; N] cannot be returned by value — it \
-                         lives inline in its containing type"
-                            .into(),
-                    ));
-                }
+                // GH #1951: a bounded list is returned as a record is, a
+                // pointer to its storage in the caller's arena.
+                Some(CodegenTy::Bounded(_, _)) => self
+                    .context
+                    .ptr_type(AddressSpace::default())
+                    .fn_type(&llvm_param_tys, false),
                 Some(CodegenTy::Int) | Some(CodegenTy::Duration) | Some(CodegenTy::Time) => self
                     .context
                     .i64_type()
@@ -15639,7 +15638,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_load(llvm_ret_ty, ret_alloca, "fn.ret.load")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 returned_locus = self.returned_locus_ptr(ret_ty, raw_ret)?;
-                if sig.non_allocating {
+                // GH #1951: a returned bounded list is the caller's own,
+                // copied out of whatever it was read from.
+                if sig.non_allocating && !matches!(ret_ty, CodegenTy::Bounded(..)) {
                     Some(raw_ret)
                 } else {
                     let dest_arena = self
@@ -16621,7 +16622,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (v, ty) = if let Some(lowered) = first.take() {
                 lowered
             } else if i < given {
-                self.lower_expr(&args[i - skip], scope)?
+                self.lower_arg_for(&args[i - skip], Some(&sig.params[i]), scope)?
             } else {
                 // Default expressions evaluate at the call site.
                 // For const/literal defaults that's a constant; for
@@ -18914,7 +18915,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // no bounded local emits nothing here.
                 let view_key = Self::bounded_view_key(&name.name);
                 if matches!(ty, CodegenTy::Bounded(_, _)) {
-                    let arena = self.bounded_owner_arena(value_to_lower, bounded_owner, scope)?;
+                    // GH #1951: a bounded local is the frame's own list: a
+                    // write into it (after its copy on write, when it was
+                    // bound from a place) anchors elements in this frame.
+                    let _ = bounded_owner;
+                    let arena = self.current_arena_ptr()?;
                     let slot = self.alloca_in_entry(
                         self.context.ptr_type(AddressSpace::default()).into(),
                         &format!("{}.view.arena", name.name),
@@ -19047,6 +19052,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // bounded).
                 if matches!(op, AssignOp::Eq) {
                     if let Some(CodegenTy::Bounded(elem, cap)) = self.place_declared_ty(target, scope) {
+                        if target.tail.is_empty() && target.head.name != "self" {
+                            return self.lower_bounded_local_assign(target, &elem, cap, value, *assign_id, scope);
+                        }
                         return self.lower_bounded_whole_assign(target, &elem, cap, value, scope);
                     }
                 }
@@ -24435,7 +24443,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .into_pointer_value();
                     self.current_arena_override = Some(caller_arena);
                 }
-                let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;
+                // GH #1951: a `bounded[T; N]` return takes an array literal
+                // as that bounded.
+                let (v, got_ty) = if matches!(declared_ty, CodegenTy::Bounded(..)) {
+                    self.lower_expr_into(e_to_lower, scope, Some(&declared_ty))?
+                } else {
+                    self.lower_expr(e_to_lower, scope)?
+                };
                 self.current_arena_override = saved_arena_override;
                 // G20 / F.20 Phase B follow-up: implicit
                 // locus → interface coercion at return position,
@@ -26777,6 +26791,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         hint: Option<&CodegenTy>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match (hint, e) {
+            // GH #1951: an array literal at a declared `bounded[T; N]` site
+            // is that bounded, its count the literal's length.
+            (Some(CodegenTy::Bounded(elem, cap)), Expr::Array(parts, _)) => {
+                let (elem, cap) = ((**elem).clone(), *cap);
+                let storage = self.lower_bounded_literal(parts, &elem, cap, scope)?;
+                Ok((storage.into(), CodegenTy::Bounded(Box::new(elem), cap)))
+            }
             (
                 Some(CodegenTy::Array(elem_hint, want_n)),
                 Expr::Array(parts, _),
@@ -26928,6 +26949,101 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+    }
+
+    /// GH #1951: the array literal `[e1, .., ek]` at a declared
+    /// `bounded[T; N]` site (`k <= N`, which the check holds): a fresh
+    /// `{ i64 len, [N x T] }` block in the current arena, its count `k`.
+    /// The list owns its elements, as `push` stores one: a pointer-shaped
+    /// element that is not a fresh value (a local, a field, an element
+    /// read) is stored as the list's own copy.
+    pub(crate) fn lower_bounded_literal(
+        &mut self,
+        parts: &[Expr],
+        elem: &CodegenTy,
+        cap: u64,
+        scope: &Scope<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        if parts.len() as u64 > cap {
+            return Err(CodegenError::Unsupported(format!(
+                "a literal of {} elements for a bounded of capacity {cap}",
+                parts.len()
+            )));
+        }
+        let mut vals = Vec::with_capacity(parts.len());
+        for p in parts {
+            let (v, got) = self.lower_expr_into(p, scope, Some(elem))?;
+            let v = if *elem == CodegenTy::Float && got == CodegenTy::Int {
+                self.coerce_to_float(v, &got, "bounded literal element")?.into()
+            } else {
+                v
+            };
+            let v = if Self::bounded_elem_is_ptr(elem) && !Self::expr_is_fresh_value(p) {
+                let dest = self.current_arena_ptr()?;
+                self.emit_owned_deep_copy(v, elem, dest)?
+            } else {
+                v
+            };
+            vals.push(v);
+        }
+        let st = self.llvm_bounded_storage_type(elem, cap);
+        let size = st.size_of().expect("a sized bounded storage");
+        let storage = self.arena_alloc(size, "bounded.literal")?;
+        let i64_t = self.context.i64_type();
+        let len_ptr = self.builder.build_struct_gep(st, storage, 0, "bounded.literal.len").map_err(err)?;
+        self.builder.build_store(len_ptr, i64_t.const_int(parts.len() as u64, false)).map_err(err)?;
+        let data_ptr = self.builder.build_struct_gep(st, storage, 1, "bounded.literal.data").map_err(err)?;
+        let elem_llvm = self.llvm_basic_type(elem);
+        for (i, v) in vals.into_iter().enumerate() {
+            let slot = unsafe {
+                self.builder
+                    .build_gep(elem_llvm, data_ptr, &[i64_t.const_int(i as u64, false)], "bounded.literal.slot")
+                    .map_err(err)?
+            };
+            self.builder.build_store(slot, v).map_err(err)?;
+        }
+        Ok(storage)
+    }
+
+    /// A value no other name reaches once built: a literal, a call's
+    /// result (but `at`, which hands back a list's element itself), an
+    /// f-string or an operator's result. Anything else (a local, a
+    /// field, an element, a carrier) may be another name's block.
+    pub(crate) fn expr_is_fresh_value(e: &Expr) -> bool {
+        match e {
+            Expr::Literal(..) | Expr::Struct { .. } | Expr::Array(..) | Expr::Binary { .. } => true,
+            Expr::Call { callee, .. } => !matches!(callee.as_ref(), Expr::Ident(i) if i.name == "at"),
+            _ => false,
+        }
+    }
+
+    /// An argument for a parameter of type `param`: an array literal for
+    /// a `bounded[T; N]` parameter is that bounded (GH #1951); anything
+    /// else lowers as it is.
+    pub(crate) fn lower_arg_for(
+        &mut self,
+        a: &Expr,
+        param: Option<&CodegenTy>,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        match param {
+            Some(t @ CodegenTy::Bounded(..)) => self.lower_expr_into(a, scope, Some(t)),
+            _ => self.lower_expr(a, scope),
+        }
+    }
+
+    /// The value of a `bounded[T; N]` site: an array literal built as
+    /// that bounded (`lower_bounded_literal`), anything else lowered as it
+    /// is.
+    pub(crate) fn lower_bounded_operand(
+        &mut self,
+        value: &Expr,
+        elem: &CodegenTy,
+        cap: u64,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_expr_into(value, scope, Some(&CodegenTy::Bounded(Box::new(elem.clone()), cap)))
     }
 
     /// Lower an `if`-as-expression. The then- and else- blocks must
@@ -31489,7 +31605,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(cs.self_ptr.into());
         for i in 0..sig.params.len() {
             let (v, ty) = if i < args.len() {
-                self.lower_expr(&args[i], scope)?
+                let want = self.type_expr_to_codegen_ty(&sig.params[i].ty).ok();
+                self.lower_arg_for(&args[i], want.as_ref(), scope)?
             } else {
                 let default_expr =
                     sig.params[i].default.as_ref().expect("checked above");
@@ -31999,7 +32116,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(recv_val.into_pointer_value().into());
         for i in 0..sig.params.len() {
             let (v, ty) = if i < args.len() {
-                self.lower_expr(&args[i], scope)?
+                let want = self.type_expr_to_codegen_ty(&sig.params[i].ty).ok();
+                self.lower_arg_for(&args[i], want.as_ref(), scope)?
             } else {
                 let default_expr = sig.params[i]
                     .default
@@ -35317,14 +35435,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         let e = |err: inkwell::builder::BuilderError| CodegenError::LlvmEmit(err.to_string());
-        // A bounded local is a view whose owner is not known here: the
-        // check refuses its whole assignment.
-        if target.tail.is_empty() {
-            return Err(CodegenError::UnsupportedAt(
-                format!("a whole assignment through the bounded local `{}`", target.head.name),
-                target.span,
-            ));
-        }
         let (dest, _, _, owner) = self.resolve_lvalue_chain(target, scope)?;
         if let Some(o) = owner.as_ref().filter(|o| !o.is_self) {
             let shown = format!("store into `{}`", o.locus.rsplit("__").next().unwrap_or(&o.locus));
@@ -35333,7 +35443,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (ptr, locus) = (o.ptr, o.locus.clone());
             self.emit_cross_pool_check(ptr, recv, &locus, &shown, target.span, scope)?;
         }
-        let (src, src_ty) = self.lower_expr(value, scope)?;
+        let (src, src_ty) = self.lower_bounded_operand(value, elem, cap, scope)?;
         if !matches!(&src_ty, CodegenTy::Bounded(se, sn) if se.as_ref() == elem && *sn == cap) {
             return Err(CodegenError::Unsupported(format!(
                 "a `bounded` place assigned whole from a {src_ty:?}, not the place's own type"
@@ -35413,6 +35523,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Open)
     }
 
+    /// GH #1951: `xs = value` where `xs` is a bounded local, the frame's
+    /// own list: it holds a value of its own afterwards. A literal and a
+    /// call's result are fresh and are bound as they are; any other value
+    /// (a place, another local) is copied into the frame's arena, its
+    /// pointer-shaped elements with it, so neither name reaches the
+    /// other's list. The local's copy-on-write flag says the frame owns it.
+    fn lower_bounded_local_assign(
+        &mut self,
+        target: &LValue,
+        elem: &CodegenTy,
+        cap: u64,
+        value: &Expr,
+        assign_id: NodeId,
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let e = |err: inkwell::builder::BuilderError| CodegenError::LlvmEmit(err.to_string());
+        let name = &target.head.name;
+        let Some((slot, slot_ty)) = scope.locals.get(name).cloned() else {
+            return Err(CodegenError::UnsupportedAt(format!("assignment to unknown local `{name}`"), target.span));
+        };
+        let (mut v, ty) = self.lower_bounded_operand(value, elem, cap, scope)?;
+        if !matches!(&ty, CodegenTy::Bounded(se, sn) if se.as_ref() == elem && *sn == cap) {
+            return Err(CodegenError::Unsupported(format!(
+                "a `bounded` local assigned whole from a {ty:?}, not the local's own type"
+            )));
+        }
+        if !Self::expr_is_fresh_value(value) {
+            let dest = self.current_arena_ptr()?;
+            v = self.emit_owned_deep_copy(v, &ty, dest)?;
+        }
+        self.builder.build_store(slot, v).map_err(e)?;
+        if let Some(fields) = self.owned_views.cow_bind(assign_id, name) {
+            let fields = fields.to_vec();
+            self.set_cell_part_flags(slot, &fields, true)?;
+        }
+        if let Some((arena_slot, _)) = scope.locals.get(&Self::bounded_view_key(name)).cloned() {
+            let arena = self.current_arena_ptr()?;
+            self.builder.build_store(arena_slot, arena).map_err(e)?;
+        }
+        let _ = slot_ty;
+        Ok(BlockEnd::Open)
+    }
+
     /// The scope key that holds the owning arena of the bounded place a
     /// bounded local `name` views (`let mut dest = self.xs`): not an
     /// identifier, so no program name meets it, and a block's end drops
@@ -35458,6 +35611,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<(PointerValue<'ctx>, Option<Option<LvalueOwner<'ctx>>>), CodegenError> {
         let target = Self::expr_place_lvalue(recv);
+        self.bounded_receiver_cow(recv, scope)?;
         // A place with an index evaluates it once, through the walk, which
         // also addresses the storage.
         if let Some(t) = target.as_ref().filter(|t| t.tail.iter().any(|s| matches!(s, LValueSeg::Index(_)))) {

@@ -411,11 +411,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         dest_arena: PointerValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match ty {
-            CodegenTy::Bounded(_, _) => Err(CodegenError::Unsupported(
-                "bounded[T; N] is not a first-class value — it cannot \
-                 be deep-copied on its own"
-                    .into(),
-            )),
+            // GH #1951: a bounded list on its own (a returned one, a local
+            // bound from a place): a fresh `{ i64 len, [N x T] }` block in
+            // `dest_arena`, the storage copied over and each live
+            // pointer-shaped element anchored there, as a record's bounded
+            // field is below.
+            CodegenTy::Bounded(elem, cap) => {
+                let st = self.llvm_bounded_storage_type(elem, *cap);
+                let size = st.size_of().expect("a sized bounded storage");
+                let alloc_fn = self.module.get_function("lotus_arena_alloc").expect("lotus_arena_alloc declared");
+                let i64_t = self.context.i64_type();
+                let fresh = self
+                    .builder
+                    .build_call(alloc_fn, &[dest_arena.into(), size.into(), i64_t.const_int(16, false).into()], "bounded.copy.alloc")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_arena_alloc returns ptr")
+                    .into_pointer_value();
+                self.emit_memcpy_call(fresh, value.into_pointer_value(), size, "bounded.copy")?;
+                self.anchor_bounded_elems_in_place(fresh, elem, *cap, dest_arena, "bounded.copy")?;
+                Ok(fresh.into())
+            }
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool

@@ -1852,13 +1852,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         match &ret_codegen_ty {
                             None => void_t.fn_type(&llvm_param_tys, false),
                             Some(rt) => match rt {
-                                CodegenTy::Bounded(_, _) => {
-                                    return Err(CodegenError::Unsupported(
-                                        "bounded[T; N] cannot be returned \
-                                         by value"
-                                            .into(),
-                                    ));
-                                }
+                                // GH #1951: a pointer to the list's storage
+                                // in the caller's arena, as a record.
+                                CodegenTy::Bounded(_, _) => self
+                                    .context
+                                    .ptr_type(AddressSpace::default())
+                                    .fn_type(&llvm_param_tys, false),
                                 CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => self
                                     .context
                                     .i64_type()
@@ -2024,13 +2023,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         Some(t) => {
                             let rt = self.type_expr_to_codegen_ty(t)?;
                             match rt {
-                                CodegenTy::Bounded(_, _) => {
-                                    return Err(CodegenError::Unsupported(
-                                        "bounded[T; N] cannot be returned \
-                                         by value"
-                                            .into(),
-                                    ));
-                                }
+                                // GH #1951: a pointer to the list's storage
+                                // in the caller's arena, as a record.
+                                CodegenTy::Bounded(_, _) => self
+                                    .context
+                                    .ptr_type(AddressSpace::default())
+                                    .fn_type(&llvm_param_tys, false),
                                 CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => self
                                     .context
                                     .i64_type()

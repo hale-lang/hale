@@ -1332,36 +1332,35 @@ as `Int`'s `/` does, and a runtime divisor (`d / n`) is the same
 integer division. When the count must round another way, narrow
 first, as `count` above does. **[error for an unnamed narrowing]**
 
-### C9. A `bounded` lives in its holder: count it, copy it whole, return its record
+### C9. A `bounded` is a value: count it, build it from a literal, copy it whole
 
-A `bounded[T; N]` is laid out inline in the value that holds it. Its
-operations are the intrinsics, and its lifetime is its holder's. Four
-edges follow from that, and the check refuses the wrong side of each:
+A `bounded[T; N]` is a fixed-capacity list. Its operations are the
+intrinsics; a literal at a declared site builds one; a local, a return
+and a whole assignment each hold a copy of their own. Four edges follow,
+and the check refuses the wrong side of each:
 
 ```hale
 type Row { names: bounded[String; 4]; }
-type Names { items: bounded[String; 4]; }
 
 fn fill(r: Row) {
     push(r.names, "a") or discard;
     push(r.names, "b") or discard;
 }
 
-fn first_two() -> Names {
-    let mut n = Names { };
-    push(n.items, "x") or discard;
-    push(n.items, "y") or discard;
-    return n;
+fn first_two() -> bounded[String; 4] {
+    let mut out: bounded[String; 4] = ["x"];
+    push(out, "y") or discard;
+    return out;
 }
 
 locus Roster {
-    params { row: Row = Row { }; spare: Names = Names { }; }
+    params { row: Row = Row { }; spare: Row = Row { }; }
     fn refill() {
         let mut mine = Row { };
         fill(mine);
         self.row = mine;
-        self.spare.items = first_two().items;
-        println(count(self.row.names), " ", count(self.spare.items));
+        self.spare.names = first_two();
+        println(count(self.row.names), " ", count(self.spare.names));
     }
 }
 
@@ -1370,24 +1369,24 @@ fn main() { let r = Roster { }; r.refill(); }
 
 - **`count(x)`, not `len(x)`.** `len` of a `bounded` is refused, and the
   diagnostic points at `count`. **[error]**
-- **Return the record, not the list.** A fn returning `bounded[T; N]` is
-  refused. Return a record that holds it, as `first_two` does; its
-  elements come back whole, and the caller can keep pushing.
-  **[error]**
+- **A literal fits its capacity.** `let xs: bounded[Int; 4] = [1, 2, 3];`
+  is a list of three; `[]` is empty. A literal longer than the capacity
+  is refused where it is written, and so is a field default: a
+  `bounded` field starts empty. **[error]**
 - **Fill a local, then store it whole.** A fn that pushes a `String`,
   `Bytes` or record into a `bounded` under its parameter allocates the
   element in the frame that runs the call. Handed a place under `self`
   (`fill(self.row)`), it would leave the locus holding elements that
   frame frees, so that argument is refused. Fill a local the frame owns
-  and store it whole (`self.row = mine`), which anchors the elements in
-  the locus's arena. Or write the elements through `self`, in a method
-  of the locus that holds the place. **[error]**
-- **Whole assignment is a copy.** Assigning one `bounded` place to
-  another of the same element type and capacity (`self.spare.items =
-  first_two().items`) copies the elements and the count. A later `push`
-  on either side does not reach the other. Anything else on the right,
-  such as an array literal or another capacity, is refused: build the
-  list with `push`. **[error for a mismatched type]**
+  and store it whole (`self.row = mine`), or return the list
+  (`first_two`), which anchors the elements in the locus's arena when it
+  is stored. **[error]**
+- **Whole assignment is a copy.** Assigning one `bounded` to a place or a
+  local of the same element type and capacity (`self.spare.names =
+  first_two()`) copies the elements and the count, and so does binding
+  a local from a place (`let mut l = self.row.names;`). A later `push`
+  on either side does not reach the other. Another element type or
+  capacity is refused. **[error for a mismatched type]**
 
 ### C10. A served HTTP edge: cap it in your own shape, and stream from a pool that parks
 
