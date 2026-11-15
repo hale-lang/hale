@@ -276,8 +276,8 @@ pub const AP_SOURCE: &str = concat!(
     // and `std::math::int_to_float`; nothing in the bundle precedes it.
     include_str!("../hl/rand.hl"),
     "\n",
-    // std::crypto: ed25519_keypair, one fn over a native primitive, and
-    // the Sha256 locus over the SHA-256 core's context.
+    // std::crypto: ed25519_keypair and the secp256k1 key, signature and
+    // recovery, fns over native primitives.
     include_str!("../hl/crypto.hl"),
     "\n",
     // std::observe::Probes (GH #1477): a locus over one native
@@ -459,9 +459,13 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "tcp", "Connections"], "__StdIoTcpConnections"),
     (&["std", "http", "Responder"], "__StdHttpResponder"),
     (&["std", "io", "udp", "Reader"], "__StdIoUdpReader"),
-    // std::crypto (crypto.hl): the Ed25519 key pair; the incremental
-    // SHA-256 (crypto_sha256.hl, appended to a program that names it).
+    // std::crypto (crypto.hl): the Ed25519 key pair and secp256k1's key,
+    // signature and recovery; the incremental SHA-256 (crypto_sha256.hl,
+    // appended to a program that names it).
     (&["std", "crypto", "ed25519_keypair"], "__std_crypto_ed25519_keypair"),
+    (&["std", "crypto", "secp256k1_public_key"], "__std_crypto_secp256k1_public_key"),
+    (&["std", "crypto", "secp256k1_recover"], "__std_crypto_secp256k1_recover"),
+    (&["std", "crypto", "secp256k1_sign"], "__std_crypto_secp256k1_sign"),
     (&["std", "crypto", "Sha256"], "__StdCryptoSha256"),
     // std::hex (hex.hl): base16 text of bytes.
     (&["std", "hex", "decode"], "__std_hex_decode"),

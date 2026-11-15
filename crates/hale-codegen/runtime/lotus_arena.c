@@ -33828,20 +33828,34 @@ static uint64_t lotus_sha512_rotr(uint64_t v, int n) {
     return (v >> n) | (v << (64 - n));
 }
 
-/* Core SHA-512 compute: hash `msg[0..len]` into `out[0..64]`.
+/* The initial hash values: SHA-512's, and SHA-384's (FIPS 180-4
+ * § 5.3.4), which differs from SHA-512 only in these and in keeping the
+ * first 48 bytes of the result. */
+static const uint64_t lotus_sha512_iv[8] = {
+    0x6a09e667f3bcc908ull, 0xbb67ae8584caa73bull, 0x3c6ef372fe94f82bull, 0xa54ff53a5f1d36f1ull,
+    0x510e527fade682d1ull, 0x9b05688c2b3e6c1full, 0x1f83d9abfb41bd6bull, 0x5be0cd19137e2179ull,
+};
+static const uint64_t lotus_sha384_iv[8] = {
+    0xcbbb9d5dc1059ed8ull, 0x629a292a367cd507ull, 0x9159015a3070dd17ull, 0x152fecd8f70e5939ull,
+    0x67332667ffc00b31ull, 0x8eb44a8768581511ull, 0xdb0c2e0d64f98fa7ull, 0x47b5481dbefa4fa4ull,
+};
+
+/* Core SHA-512 compute from the initial hash values `iv`: hash
+ * `msg[0..len]` into `out[0..64]` (SHA-384 keeps `out[0..48]`).
  * `out` must point to a writable 64-byte buffer. Pure function; no arena
  * allocation here so HMAC can reuse it. */
-static void lotus_sha512_compute(const unsigned char *msg,
-                                  int64_t len,
-                                  unsigned char out[64]) {
-    uint64_t h0 = 0x6a09e667f3bcc908ull;
-    uint64_t h1 = 0xbb67ae8584caa73bull;
-    uint64_t h2 = 0x3c6ef372fe94f82bull;
-    uint64_t h3 = 0xa54ff53a5f1d36f1ull;
-    uint64_t h4 = 0x510e527fade682d1ull;
-    uint64_t h5 = 0x9b05688c2b3e6c1full;
-    uint64_t h6 = 0x1f83d9abfb41bd6bull;
-    uint64_t h7 = 0x5be0cd19137e2179ull;
+static void lotus_sha512_compute_iv(const unsigned char *msg,
+                                     int64_t len,
+                                     const uint64_t iv[8],
+                                     unsigned char out[64]) {
+    uint64_t h0 = iv[0];
+    uint64_t h1 = iv[1];
+    uint64_t h2 = iv[2];
+    uint64_t h3 = iv[3];
+    uint64_t h4 = iv[4];
+    uint64_t h5 = iv[5];
+    uint64_t h6 = iv[6];
+    uint64_t h7 = iv[7];
 
     /* Padded message: original + 0x80 + zeros + 16-byte (128-bit) BE
      * bit-length. Total length a multiple of 128. The high 64 bits of the
@@ -33924,6 +33938,12 @@ static void lotus_sha512_compute(const unsigned char *msg,
     }
 }
 
+static void lotus_sha512_compute(const unsigned char *msg,
+                                  int64_t len,
+                                  unsigned char out[64]) {
+    lotus_sha512_compute_iv(msg, len, lotus_sha512_iv, out);
+}
+
 void *lotus_crypto_sha512(const void *b) {
     int64_t len = b ? lotus_bytes_len(b) : 0;
     const unsigned char *msg =
@@ -33986,6 +34006,156 @@ void *lotus_crypto_hmac_sha512(const void *key_b, const void *msg_b) {
     if (!blob) return lotus_bytes_empty_global();
     memcpy(lotus_bytes_data(blob), tag, 64);
     return blob;
+}
+
+/*
+ * HMAC-SHA384 per RFC 2104 / RFC 4231: the HMAC-SHA512 shape above with
+ * SHA-384 as the hash — the same 128-byte block, a 48-byte output, and a
+ * key longer than the block replaced by its 48-byte SHA-384 (downstream
+ * handoff: request signing against HTTP APIs that use HMAC-SHA384).
+ */
+void *lotus_crypto_hmac_sha384(const void *key_b, const void *msg_b) {
+    const int B = 128; /* SHA-384 block size, SHA-512's */
+    const int L = 48;  /* SHA-384 output */
+
+    int64_t klen = key_b ? lotus_bytes_len(key_b) : 0;
+    const unsigned char *kraw =
+        key_b ? (const unsigned char *)key_b + sizeof(int64_t) : NULL;
+    int64_t mlen = msg_b ? lotus_bytes_len(msg_b) : 0;
+    const unsigned char *mraw =
+        msg_b ? (const unsigned char *)msg_b + sizeof(int64_t) : NULL;
+
+    /* K' — key normalized to B bytes. */
+    unsigned char kprime[128];
+    memset(kprime, 0, B);
+    if (klen > B) {
+        unsigned char khash[64];
+        lotus_sha512_compute_iv(kraw, klen, lotus_sha384_iv, khash);
+        memcpy(kprime, khash, (size_t)L);
+    } else if (klen > 0) {
+        memcpy(kprime, kraw, (size_t)klen);
+    }
+
+    /* Inner: H((K' xor ipad) || m) */
+    int64_t inner_len = (int64_t)B + mlen;
+    unsigned char *inner_buf = (unsigned char *)malloc((size_t)inner_len);
+    if (!inner_buf) return lotus_bytes_empty_global();
+    for (int i = 0; i < B; i++) inner_buf[i] = kprime[i] ^ 0x36;
+    if (mlen > 0) memcpy(inner_buf + B, mraw, (size_t)mlen);
+    unsigned char inner_hash[64];
+    lotus_sha512_compute_iv(inner_buf, inner_len, lotus_sha384_iv, inner_hash);
+    memset(inner_buf, 0, (size_t)B);
+    free(inner_buf);
+
+    /* Outer: H((K' xor opad) || inner_hash[0..48]) */
+    unsigned char outer_buf[128 + 48];
+    for (int i = 0; i < B; i++) outer_buf[i] = kprime[i] ^ 0x5C;
+    memcpy(outer_buf + B, inner_hash, (size_t)L);
+    unsigned char tag[64];
+    lotus_sha512_compute_iv(outer_buf, B + L, lotus_sha384_iv, tag);
+
+    void *blob = lotus_caller_or_global_bytes_create(L);
+    if (!blob) return lotus_bytes_empty_global();
+    memcpy(lotus_bytes_data(blob), tag, (size_t)L);
+    return blob;
+}
+
+/*
+ * Keccak-256: the Keccak[c=512] sponge over Keccak-f[1600] with the
+ * ORIGINAL Keccak padding (a 0x01 domain byte ... 0x80), the hash
+ * Ethereum calls keccak256 — not FIPS 202's SHA3-256, which pads with
+ * 0x06 and so answers differently for every input. Rate 136 bytes,
+ * output 32. The state is 25 little-endian 64-bit lanes; input bytes
+ * are folded in one at a time, so no load is wider than a byte and no
+ * alignment is assumed.
+ */
+static const uint64_t lotus_keccak_rc[24] = {
+    0x0000000000000001ull, 0x0000000000008082ull, 0x800000000000808aull, 0x8000000080008000ull,
+    0x000000000000808bull, 0x0000000080000001ull, 0x8000000080008081ull, 0x8000000000008009ull,
+    0x000000000000008aull, 0x0000000000000088ull, 0x0000000080008009ull, 0x000000008000000aull,
+    0x000000008000808bull, 0x800000000000008bull, 0x8000000000008089ull, 0x8000000000008003ull,
+    0x8000000000008002ull, 0x8000000000000080ull, 0x000000000000800aull, 0x800000008000000aull,
+    0x8000000080008081ull, 0x8000000000008080ull, 0x0000000080000001ull, 0x8000000080008008ull,
+};
+
+/* The rotation offsets and the pi lane order, the "rho-pi" walk. */
+static const int lotus_keccak_rotc[24] = {
+    1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14, 27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44,
+};
+static const int lotus_keccak_piln[24] = {
+    10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4, 15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1,
+};
+
+static uint64_t lotus_keccak_rotl(uint64_t v, int n) {
+    return (v << n) | (v >> (64 - n));
+}
+
+static void lotus_keccak_f1600(uint64_t st[25]) {
+    for (int round = 0; round < 24; round++) {
+        uint64_t bc[5];
+        /* theta */
+        for (int i = 0; i < 5; i++) {
+            bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
+        }
+        for (int i = 0; i < 5; i++) {
+            uint64_t t = bc[(i + 4) % 5] ^ lotus_keccak_rotl(bc[(i + 1) % 5], 1);
+            for (int j = 0; j < 25; j += 5) st[j + i] ^= t;
+        }
+        /* rho and pi */
+        uint64_t t = st[1];
+        for (int i = 0; i < 24; i++) {
+            int j = lotus_keccak_piln[i];
+            uint64_t b0 = st[j];
+            st[j] = lotus_keccak_rotl(t, lotus_keccak_rotc[i]);
+            t = b0;
+        }
+        /* chi */
+        for (int j = 0; j < 25; j += 5) {
+            for (int i = 0; i < 5; i++) bc[i] = st[j + i];
+            for (int i = 0; i < 5; i++) {
+                st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
+            }
+        }
+        /* iota */
+        st[0] ^= lotus_keccak_rc[round];
+    }
+}
+
+/* XOR byte `b` into byte `pos` (0..199) of the state, lanes little-endian. */
+static void lotus_keccak_xor_byte(uint64_t st[25], int pos, unsigned char b) {
+    st[pos / 8] ^= (uint64_t)b << (8 * (pos % 8));
+}
+
+static void lotus_keccak256_compute(const unsigned char *msg, int64_t len, unsigned char out[32]) {
+    const int rate = 136;
+    uint64_t st[25];
+    memset(st, 0, sizeof st);
+    int pos = 0;
+    for (int64_t i = 0; i < len; i++) {
+        lotus_keccak_xor_byte(st, pos, msg[i]);
+        if (++pos == rate) {
+            lotus_keccak_f1600(st);
+            pos = 0;
+        }
+    }
+    /* pad10*1 with Keccak's 0x01 domain byte; one byte holds both ends
+     * when only one byte of the block is left (0x81). */
+    lotus_keccak_xor_byte(st, pos, 0x01);
+    lotus_keccak_xor_byte(st, rate - 1, 0x80);
+    lotus_keccak_f1600(st);
+    for (int i = 0; i < 32; i++) {
+        out[i] = (unsigned char)(st[i / 8] >> (8 * (i % 8)));
+    }
+}
+
+void *lotus_crypto_keccak256(const void *b) {
+    int64_t len = b ? lotus_bytes_len(b) : 0;
+    const unsigned char *msg =
+        b ? (const unsigned char *)b + sizeof(int64_t) : NULL;
+
+    unsigned char digest[32];
+    lotus_keccak256_compute(msg, len, digest);
+    return lotus_sha256_digest_bytes(digest);
 }
 
 /*

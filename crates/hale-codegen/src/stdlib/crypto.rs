@@ -88,6 +88,32 @@ pub(crate) trait CryptoStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_bytes_to_bytes(
+        &mut self,
+        id: IntrinsicId,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_verify(
+        &mut self,
+        id: IntrinsicId,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_secp256k1_recover_raw(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_rsa_pss_sha256_sign_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
@@ -119,6 +145,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             vals.push(self.unpack_view_if_needed(v, &ty)?);
         }
         Ok(vals)
+    }
+
+    /// Call the runtime's `c_fn` on `vals`, the result a pointer or an i64.
+    fn call_crypto_runtime(
+        &mut self,
+        c_fn: &str,
+        vals: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+        label: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let f = self
+            .module
+            .get_function(c_fn)
+            .unwrap_or_else(|| panic!("{c_fn} declared"));
+        Ok(self
+            .builder
+            .build_call(f, vals, label)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns a value"))
     }
 }
 
@@ -720,5 +766,147 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((b.into(), CodegenTy::Bool))
+    }
+
+    /// The `std::crypto` rows that take Bytes and answer Bytes through
+    /// one runtime call, the result in the caller's arena:
+    /// `hmac_sha384(key, message)` (the 48-byte RFC 4231 tag),
+    /// `keccak256(b)` (32 bytes, Keccak's padding, not SHA3-256's), and
+    /// the secp256k1 primitives `__secp256k1_public_key(secret)` and
+    /// `__secp256k1_sign(secret, digest)`, which answer the result or a
+    /// one-byte failure code `crypto.hl`'s bodies read.
+    fn lower_std_crypto_bytes_to_bytes(
+        &mut self,
+        id: IntrinsicId,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let (surface, names, c_fn): (&str, &[&str], &str) = match id {
+            IntrinsicId::CryptoHmacSha384 => ("hmac_sha384", &["key", "message"], "lotus_crypto_hmac_sha384"),
+            IntrinsicId::CryptoKeccak256 => ("keccak256", &["b"], "lotus_crypto_keccak256"),
+            IntrinsicId::CryptoSecp256k1PublicKeyRaw => {
+                ("__secp256k1_public_key", &["secret"], "lotus_crypto_secp256k1_public_key")
+            }
+            IntrinsicId::CryptoSecp256k1SignRaw => {
+                ("__secp256k1_sign", &["secret", "digest"], "lotus_crypto_secp256k1_sign")
+            }
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "not a Bytes-to-Bytes std::crypto row: {other:?}"
+                )))
+            }
+        };
+        let vals = self.lower_crypto_bytes_args(surface, names, args, scope)?;
+        let vals: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vals.iter().map(|v| (*v).into()).collect();
+        self.emit_set_caller_arena()?;
+        let v = self.call_crypto_runtime(c_fn, &vals, surface)?;
+        Ok((v, CodegenTy::Bytes))
+    }
+
+    /// The verifications that take three Bytes and answer Bool:
+    /// `rsa_pss_sha256_verify(public, message, signature)` and
+    /// `secp256k1_verify(public, digest, signature)`. The C fn returns i64
+    /// 1/0; narrowed to i1.
+    fn lower_std_crypto_verify(
+        &mut self,
+        id: IntrinsicId,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let (surface, names, c_fn): (&str, &[&str], &str) = match id {
+            IntrinsicId::CryptoRsaPssSha256Verify => (
+                "rsa_pss_sha256_verify",
+                &["public", "message", "signature"],
+                "lotus_crypto_rsa_pss_sha256_verify",
+            ),
+            IntrinsicId::CryptoSecp256k1Verify => {
+                ("secp256k1_verify", &["public", "digest", "signature"], "lotus_crypto_secp256k1_verify")
+            }
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "not a std::crypto verification: {other:?}"
+                )))
+            }
+        };
+        let vals = self.lower_crypto_bytes_args(surface, names, args, scope)?;
+        let vals: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vals.iter().map(|v| (*v).into()).collect();
+        let iv = self.call_crypto_runtime(c_fn, &vals, surface)?.into_int_value();
+        let b = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                iv,
+                self.context.i64_type().const_zero(),
+                &format!("{surface}.bool"),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((b.into(), CodegenTy::Bool))
+    }
+
+    /// `std::crypto::__secp256k1_recover(digest: Bytes, r: Bytes, s: Bytes,
+    /// recovery_id: Int) -> Bytes`: the 65-byte public key, or a one-byte
+    /// failure code `secp256k1_recover`'s body (`crypto.hl`) reads.
+    fn lower_std_crypto_secp256k1_recover_raw(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 4 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::__secp256k1_recover takes 4 args (digest, r, s, recovery_id), got {}",
+                args.len()
+            )));
+        }
+        let mut vals: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = self
+            .lower_crypto_bytes_args("__secp256k1_recover", &["digest", "r", "s"], &args[..3], scope)?
+            .iter()
+            .map(|v| (*v).into())
+            .collect();
+        let (id, ty) = self.lower_expr(&args[3], scope)?;
+        if ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::__secp256k1_recover: recovery_id must be Int, got {ty:?}"
+            )));
+        }
+        vals.push(id.into());
+        self.emit_set_caller_arena()?;
+        let v = self.call_crypto_runtime("lotus_crypto_secp256k1_recover", &vals, "secp256k1.recover")?;
+        Ok((v, CodegenTy::Bytes))
+    }
+
+    /// `std::crypto::rsa_pss_sha256_sign(key: Bytes, message: Bytes) ->
+    /// Bytes fallible(CryptoError)` (GH #1929): RSASSA-PSS over SHA-256,
+    /// MGF1-SHA256, a 32-byte salt; `key` a PEM RSA private key, PKCS#8
+    /// or PKCS#1. A NULL from the runtime (a PEM it cannot read, an
+    /// encrypted one, a key that is not RSA, a modulus too small) is
+    /// `CryptoError { kind: "rsa_pss_sha256_sign", detail }`, the detail
+    /// naming nothing of the key.
+    fn lower_std_crypto_rsa_pss_sha256_sign_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let vals = self.lower_crypto_bytes_args("rsa_pss_sha256_sign", &["key", "message"], args, scope)?;
+        // the signature lives in the caller's arena
+        self.emit_set_caller_arena()?;
+        let sig_ptr = self.call_crypto_runtime(
+            "lotus_crypto_rsa_pss_sha256_sign_or_null",
+            &[vals[0].into(), vals[1].into()],
+            "rsa_pss.sign.or_null",
+        )?;
+        let is_err = self
+            .builder
+            .build_is_null(sig_ptr.into_pointer_value(), "rsa_pss.sign.is_err")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let detail_ptr = self.global_string(
+            "signing failed (not an unencrypted PEM RSA private key, or a modulus too small for PSS)",
+        );
+        self.complete_crypto_fallible_call(
+            is_err,
+            detail_ptr.into(),
+            "rsa_pss_sha256_sign",
+            Some((sig_ptr, CodegenTy::Bytes)),
+            "crypto.rsa_pss_sha256_sign",
+        )
     }
 }

@@ -1,0 +1,66 @@
+// tests/hale/crypto_hmac_sha384_test.hl — `std::crypto::hmac_sha384`
+// against RFC 4231 § 4's test cases 1-7 (the HMAC-SHA-384 rows): a short
+// key, a key shorter than the output, combined data, a 25-byte key,
+// truncation (§ 4.6 checks the first 128 bits), and a 131-byte key,
+// longer than SHA-384's 128-byte block, which HMAC hashes first.
+// A downstream handoff signs HTTP requests with HMAC-SHA384.
+
+fn hex(s: String) -> Bytes {
+    return std::hex::decode(s) or b"";
+}
+
+fn mac(key: Bytes, data: Bytes) -> String {
+    return std::hex::encode(std::crypto::hmac_sha384(key, data));
+}
+
+fn main() {
+    std::test::assert_eq_str(
+        mac(hex(std::str::repeat("0b", 20)), b"Hi There"),
+        "afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59cfaea9ea9076ede7f4af152e8b2fa9cb6",
+        "test case 1",
+    );
+    std::test::assert_eq_str(
+        mac(b"Jefe", b"what do ya want for nothing?"),
+        "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649",
+        "test case 2: a key shorter than the output",
+    );
+    std::test::assert_eq_str(
+        mac(hex(std::str::repeat("aa", 20)), hex(std::str::repeat("dd", 50))),
+        "88062608d3e6ad8a0aa2ace014c8a86f0aa635d947ac9febe83ef4e55966144b2a5ab39dc13814b94e3ab6e101a34f27",
+        "test case 3: combined key and data",
+    );
+    std::test::assert_eq_str(
+        mac(
+            hex("0102030405060708090a0b0c0d0e0f10111213141516171819"),
+            hex(std::str::repeat("cd", 50)),
+        ),
+        "3e8a69b7783c25851933ab6290af6ca77a9981480850009cc5577c6e1f573b4e6801dd23c4a7d679ccf8a386c674cffb",
+        "test case 4: a 25-byte key",
+    );
+    let truncated = std::crypto::hmac_sha384(
+        hex(std::str::repeat("0c", 20)),
+        b"Test With Truncation",
+    );
+    std::test::assert_eq_str(
+        std::hex::encode(std::bytes::slice(truncated, 0, 16)),
+        "3abf34c3503b2a23a46efc619baef897",
+        "test case 5: the first 128 bits",
+    );
+    let big_key = hex(std::str::repeat("aa", 131));
+    std::test::assert_eq_str(
+        mac(big_key, b"Test Using Larger Than Block-Size Key - Hash Key First"),
+        "4ece084485813e9088d2c63a041bc5b44f9ef1012a2b588f3cd11f05033ac4c60c2ef6ab4030fe8296248df163f44952",
+        "test case 6: a key longer than the block is hashed first",
+    );
+    std::test::assert_eq_str(
+        mac(
+            big_key,
+            std::bytes::from_string(
+                "This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.",
+            ),
+        ),
+        "6617178e941f020d351e2f254e8fd32c602420feb0b8fb9adccebb82461e99c5a678cc31e799176d3860e6110c46523e",
+        "test case 7: a long key and long data",
+    );
+    std::test::assert_eq_int(len(std::crypto::hmac_sha384(b"", b"")), 48, "the tag is 48 bytes");
+}
