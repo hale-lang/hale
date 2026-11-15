@@ -169,7 +169,11 @@ fn report_counts_what_removal_would_warn() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("bare.hl");
     std::fs::write(&path, bare).unwrap();
-    let out = Command::new(hale_bin()).arg("check").arg(&path).output().expect("invoke hale check");
+    let out = Command::new(hale_bin())
+        .args(["check", "--warn-hot-path"])
+        .arg(&path)
+        .output()
+        .expect("invoke hale check");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let _ = std::fs::remove_dir_all(&dir);
     let count = |needle: &str| stderr.lines().filter(|l| l.contains(needle)).count();

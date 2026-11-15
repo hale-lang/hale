@@ -1,6 +1,6 @@
 # Strings & Text
 
-`String` in Hale is an immutable UTF-8 byte sequence, while `Bytes` holds arbitrary binary data (including null bytes). For text processing, Hale provides string interpolation (`f"..."`), multi-line raw block strings (`"""`), `BytesBuilder` for linear-time buffer construction, and `ByteView` for zero-rescan parsing.
+`String` in Hale is an immutable UTF-8 byte sequence, while `Bytes` holds arbitrary binary data (including null bytes). For text processing, Hale provides string interpolation (`f"..."`), multi-line raw block strings (`"""`), one-line raw strings (`r"..."`), `BytesBuilder` for linear-time buffer construction, and `ByteView` for zero-rescan parsing.
 
 ```hale
 fn main() {
@@ -148,6 +148,20 @@ Block strings obey four lexical rules (`spec/tokens.md` § Block strings):
 2. **Raw content (no escapes or interpolation):** Backslashes (`\n`, `\"`) and braces (`{`) are literal characters. Join with `+` if you need to splice runtime values.
 3. **Boundary newlines excluded:** The newline immediately following the opening `"""` and the newline immediately preceding the closing `"""` are not included in the string. Add a blank line before the closing `"""` if you want a trailing newline.
 4. **Extended fences (`""""`):** If a line inside the block string starts with `"""`, open and close the block string with four or more quotes (`""""`). `hale fmt` re-indents block strings alongside surrounding code without changing their contents.
+
+## Raw Strings
+
+A one-line text whose backslashes are its own, such as a regular expression or a Windows path, is a **raw string**: `r` before the opening quote. Nothing in it is an escape and `{` is plain text. When the text holds a `"`, put `#` between the `r` and the quote and close with `"#` (add more `#` if the text holds `"#`):
+
+```hale
+fn main() {
+    println(r"C:\temp\new");        // C:\temp\new
+    println(r"^\d+\.\d+$");        // ^\d+\.\d+$
+    println(r#"say "hi" {x}"#);    // say "hi" {x}
+}
+```
+
+A raw string is an ordinary `String` literal and goes wherever one does (`spec/tokens.md` § Raw strings).
 
 ## Slicing, Scanning, and `ByteView`
 

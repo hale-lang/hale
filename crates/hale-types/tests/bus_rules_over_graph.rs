@@ -540,6 +540,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         roles: &roles,
         surfaces: &surfaces,
         units: &units,
+        hot_path_advisory: false,
     };
     let diags = check_bundle_scoped(&bundle, &inputs, false, false, false);
     let cycles: Vec<(bool, &str)> = diags

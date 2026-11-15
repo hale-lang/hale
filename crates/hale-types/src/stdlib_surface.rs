@@ -1627,6 +1627,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("current", TIME, [] -> Time, Intrinsic(TimeCurrent)),
             row!("iso8601", PURE, [Time] -> Str, Intrinsic(TimeIso8601)),
             row!("parse_time", PURE, [Str] -> Time ! "ParseError", Intrinsic(TimeParseTime)),
+            // GH #1948: RFC 3339 with its offset applied, a Hale body
+            // (`time_rfc3339.hl`) over `parse_time` and the integer views.
+            row!("parse_rfc3339", PURE, _, Renamed),
             row!("unix", PURE, [Time] -> Int, Intrinsic(TimeUnix)),
             row!("nanos", PURE, [Time] -> Int, Intrinsic(TimeNanos)),
             row!("from_nanos", PURE, [Int] -> Time, Intrinsic(TimeFromNanos)),
@@ -2149,6 +2152,45 @@ fn nearest_namespace(segs: &[&str]) -> Option<String> {
         }
     }
     best.map(|(n, _)| n)
+}
+
+/// Stdlib types a program reaches for under a name they do not have
+/// (GH #1948): the path written, the type it means, and how it is used
+/// for what the name suggests. Read by [`type_hint`].
+const MOVED_TYPES: &[(&[&str], &str, &str)] = &[(
+    &["std", "str", "Builder"],
+    "std::bytes::BytesBuilder",
+    "It builds text too: `append_str(s)`, then `text_view()` (no copy) or `finish()`",
+)];
+
+/// The did-you-mean for a `std::` type path that names nothing
+/// (GH #1948): a tabled move ([`MOVED_TYPES`]), else the one stdlib type
+/// of the same name in another namespace (`std::http::Listener` →
+/// `std::io::tcp::Listener`). `segs` includes the leading `std`.
+pub fn type_hint(segs: &[&str]) -> Option<String> {
+    if let Some((_, to, how)) = MOVED_TYPES.iter().find(|(from, _, _)| *from == segs) {
+        return Some(format!("did you mean `{to}`? {how}"));
+    }
+    let last = segs.last()?;
+    let mut same: Vec<String> =
+        LOCUS_PATHS.iter().filter(|p| p.last() == Some(last) && **p != segs).map(|p| p.join("::")).collect();
+    same.dedup();
+    match same.as_slice() {
+        [one] => Some(format!("did you mean `{one}`?")),
+        _ => None,
+    }
+}
+
+/// Every public stdlib fn named `name`, by its full path, in table
+/// order (GH #1948): the did-you-mean for a bare call that names nothing
+/// (`substring(s, 0, 2)` → `std::str::substring`). A stdlib fn is called
+/// by its path.
+pub fn fn_paths_named(name: &str) -> Vec<String> {
+    SURFACES
+        .iter()
+        .filter(|s| s.public().any(|f| f.name == name))
+        .map(|s| format!("std::{}::{}", s.ns.join("::"), name))
+        .collect()
 }
 
 /// Nearest known name within the namespace, for the did-you-mean

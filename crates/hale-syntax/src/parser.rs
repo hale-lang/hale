@@ -6957,6 +6957,7 @@ impl Parser {
         // field. The backtick lexer is shared with time literals (which
         // only appear in expression position); in field-declaration
         // position it's a tag, and we keep its raw body verbatim.
+        let tag_span = self.peek_token().span;
         let tag = if matches!(self.peek(), TokenKind::TimeLit(_)) {
             match self.bump().kind {
                 TokenKind::TimeLit(body) => Some(body),
@@ -6965,6 +6966,20 @@ impl Parser {
         } else {
             None
         };
+        // GH #1948: a tag written before the default stopped at the `=`
+        // with "expected ;, got Eq".
+        if let (Some(body), None, true) = (&tag, &default, self.at(&TokenKind::Eq)) {
+            let eq = self.peek_token().span;
+            return Err(Diag::parse(
+                eq,
+                format!(
+                    "write the default before the tag: `{}: … = <default> `{}`;` \
+                     (a field's tag is the last thing before its `;`)",
+                    name.name, body
+                ),
+            )
+            .with_related(tag_span, "the tag, written before the default"));
+        }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(StructField {
             span: name.span.merge(semi.span),
@@ -8646,6 +8661,22 @@ impl Parser {
                 TokenKind::LBracket => {
                     let lb = self.bump();
                     let index = self.parse_expr()?;
+                    // GH #1948: `bounded[String; 4] { }` in value position
+                    // reads as an index of a name `bounded` and stopped at
+                    // the `;` with "expected ]". Say what it is instead.
+                    if self.at(&TokenKind::Semi)
+                        && matches!(&expr, Expr::Ident(id) if id.name == "bounded")
+                    {
+                        return Err(Diag::parse(
+                            expr.span().merge(self.peek_token().span),
+                            "`bounded[T; N]` is a type, not a value: there is no \
+                             `bounded` literal. A bounded list lives in a record's \
+                             field or a locus param and starts empty: declare \
+                             `type Names { items: bounded[String; 4]; }`, build \
+                             `let mut n = Names {};`, and add to it with \
+                             `push(n.items, x) or …` (spec/types.md § bounded[T; N])",
+                        ));
+                    }
                     let rb = self.expect(TokenKind::RBracket, "]")?;
                     let span = expr.span().merge(rb.span);
                     expr = Expr::Index {

@@ -101,6 +101,12 @@ fn main() {
         println!("    hale run {}      # compile + run", root.display());
         println!("    hale test {}     # run tests/", root.display());
         println!("    hale check {}    # typecheck + analyze", root.display());
+        // GH #1948: a build is tuned to this machine's CPU; what ships
+        // (an image, a release) is built for the portable baseline.
+        println!(
+            "    hale build {} --target-cpu portable   # a binary to ship (runs on other machines)",
+            root.display()
+        );
     }
     ExitCode::SUCCESS
 }

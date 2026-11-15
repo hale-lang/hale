@@ -205,7 +205,8 @@ Filter these reflexes before they cost you time.
 - **Embedded program text, SQL or JSON is a block string**: `"""`
   ending its line, the raw text, `"""` on a line of its own; the
   closing line's indent is stripped and nothing is escaped
-  (`spec/tokens.md` § Block strings).
+  (`spec/tokens.md` § Block strings). A one-line regex or path is a
+  raw string, `r"\d+"` (`r#"…"#` when it holds a `"`).
 - **No `return` inside `birth` / `run` / `dissolve` bodies.**
   Factor short-circuit logic into helper free fns.
 - **`fallible(E)` is rejected on substrate-facing surfaces:**
@@ -325,7 +326,8 @@ fighting the language instead of using it.
    surface).
 4. Write the smallest program that gets one thing working.
    `hale run <file-or-dir>` for fast feedback; `hale build`
-   for the native binary.
+   for the native binary, tuned to this machine's CPU
+   (`--target-cpu portable` for one you ship, such as an image).
 5. Iterate. Before you finish, run `hale fmt <file-or-dir>` —
    canonical form is tool-defined (zero config), so your diff
    touches only the lines you actually changed. Never

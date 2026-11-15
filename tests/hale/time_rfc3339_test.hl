@@ -1,0 +1,66 @@
+// tests/hale/time_rfc3339_test.hl — std::time::parse_rfc3339 (GH #1948):
+// an RFC 3339 offset is applied, never dropped, and anything that is not
+// `Z` or `±hh:mm` after the time is refused, as is an instant past
+// `Time`'s range. `parse_time` keeps refusing an offset.
+
+fn iso(s: String) -> String {
+    let t = std::time::parse_rfc3339(s) or {
+        return "refused";
+    };
+    return std::time::iso8601(t);
+}
+
+fn main() {
+    std::test::assert_eq_str(
+        iso("2026-11-15T10:00:00+02:00"),
+        "2026-11-15T08:00:00Z",
+        "east of UTC is earlier",
+    );
+    std::test::assert_eq_str(
+        iso("2026-11-15T10:00:00-05:30"),
+        "2026-11-15T15:30:00Z",
+        "west of UTC is later",
+    );
+    std::test::assert_eq_str(
+        iso("2026-11-15T00:30:00+01:00"),
+        "2026-11-14T23:30:00Z",
+        "across midnight",
+    );
+    std::test::assert_eq_str(
+        iso("2026-11-15T10:00:00-00:00"),
+        "2026-11-15T10:00:00Z",
+        "`-00:00` is UTC",
+    );
+    std::test::assert_eq_str(
+        iso("2026-11-15T10:00:00.25Z"),
+        "2026-11-15T10:00:00.25Z",
+        "`Z` and a fraction",
+    );
+    std::test::assert_eq_str(iso("2026-11-15T10:00:00z"), "2026-11-15T10:00:00Z", "`z` is `Z`");
+    std::test::assert_eq_str(
+        iso("2026-11-15T10:00:00.5+01:00"),
+        "2026-11-15T09:00:00.5Z",
+        "a fraction before an offset",
+    );
+    std::test::assert_eq_str(iso("2026-11-15T10:00:00"), "refused", "no offset at all");
+    std::test::assert_eq_str(
+        iso("2026-11-15T10:00:00+0200"),
+        "refused",
+        "an offset without its colon",
+    );
+    std::test::assert_eq_str(iso("2026-11-15T10:00:00+24:00"), "refused", "an offset past 23:59");
+    std::test::assert_eq_str(iso("2026-02-30T10:00:00+01:00"), "refused", "a day past its month");
+    std::test::assert_eq_str(
+        iso("2262-04-11T23:47:16-01:00"),
+        "refused",
+        "past Time's last instant once applied",
+    );
+    std::test::assert_eq_str(
+        iso("1677-09-21T00:12:44+01:00"),
+        "refused",
+        "before Time's first instant once applied",
+    );
+    let zero = std::time::time_from_unix(0);
+    let still = std::time::parse_time("2026-11-15T10:00:00+02:00") or zero;
+    std::test::assert(still == zero, "parse_time still refuses an offset");
+}

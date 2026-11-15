@@ -140,7 +140,9 @@ scripts/target-sysroot.sh x86_64-unknown-linux-musl
 # Cross-compile for glibc >= 2.31:
 hale build --target x86_64-unknown-linux-gnu app.hl
 
-# Cross-compile a fully static binary for Alpine / scratch containers:
+# Cross-compile a fully static binary for Alpine / scratch containers
+# (a cross build at the default CPU is generic; for a container you
+# build natively, say `--target-cpu portable`):
 hale build --target x86_64-unknown-linux-musl app.hl
 ```
 

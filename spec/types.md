@@ -560,7 +560,8 @@ Each copy is a site of the allocation survey (`place-copy (<reason>)`:
 place is passed to a call that may write through its parameter`, `copy:
 what the local was read from is written while it is live`), so it
 counts toward `@budget(alloc_per_call = N)` and the `alloc` effect, and
-the hot-path lint reports one in a loop, a bus handler or a `@hot` fn.
+the hot-path lint reports one in a loop or a bus handler (when asked for:
+`hale verify`, `hale check --warn-hot-path`) and in a `@hot` fn.
 A store's own copy is one too: `copy: a place's value stored into a
 part of a parameter` (`h.arr = r.arr`), and `copy: a value stored into
 a locus's field from outside its methods` (§ A store into a locus's
@@ -1394,7 +1395,13 @@ was refused too.
 
 Semantics:
 - Fields auto-initialize EMPTY. Literal init is rejected — the
-  intrinsics build a bounded value. Whole-STRUCT copies carry
+  intrinsics build a bounded value. There is no `bounded` value
+  literal either: `let x = bounded[String; 4] { };` is a parse error
+  at `bounded[String;` that says `bounded[T; N]` is a type, not a
+  value, and names the shape to write — a record field (`type Names {
+  items: bounded[String; 4]; }`), the record built (`Names {}`) and
+  `push` into its field (GH #1948; it was a bare "expected ], got
+  Semi"). Whether a `bounded` becomes a value is GH #1951. Whole-STRUCT copies carry
   elements + count by construction (the storage is inline).
 - A fn, a locus method or an interface method does not return a
   `bounded` (written, or through an alias): the check refuses the
@@ -1868,7 +1875,7 @@ write needs a value of the type being built. The check refuses the
 declaration at the field that closes the ring, naming each field on it:
 
 ```text
-main.hl:1:57: type error: a record cannot contain itself by value: `Cfg.child: Cfg` puts a whole `Cfg` inside every `Cfg`, so none can be built. Hold the `Cfg` values a `Cfg` may have in a `bounded[Cfg; N]` (it starts empty), or in an enum variant beside one that holds none (`type Child = enum { Nothing, One(Cfg) }`), or keep them elsewhere and hold a key
+main.hl:1:57: type error: a record cannot contain itself by value: `Cfg.child: Cfg` puts a whole `Cfg` inside every `Cfg`, so none can be built. Hold the `Cfg` values a `Cfg` may have in a `bounded[Cfg; N]` (it starts empty), or in an enum variant beside one that holds none (`type Child = enum { Nothing, One(Cfg) };`), or keep them elsewhere and hold a key
 ```
 
 A generic record is followed with its type arguments substituted (`b:
@@ -2017,7 +2024,12 @@ organization's gate runs) or on one file, every command that compiles
 exactly what they bundle) and `hale lsp` — any other bare callee is a
 type error — `call to X: no free fn, generic fn or fn-pointer binding
 with that name is in scope`, with a did-you-mean over the program's
-fns. The rule holds wherever the call stands: a statement, an operand,
+fns, or, when a stdlib fn has exactly that name, its path (`substring`
+→ `std::str::substring`: a stdlib fn is called by its path, GH
+#1948). A `std::` type path that names nothing (`std::str::Builder`)
+likewise names the stdlib type meant: a tabled move
+(`std::bytes::BytesBuilder`, which builds text too) or the one stdlib
+type of that name in another namespace. The rule holds wherever the call stands: a statement, an operand,
 a condition, a fn or method body, a lifecycle hook, a bus handler, a
 `params` default, a `const` initializer. Only a partial program a
 library caller assembles (a styleguide snippet, a test harness's

@@ -76,7 +76,10 @@ fn lsp_v1_diagnostics_lifecycle() {
 
     let broken = "fn main() {\n    let x: Int = \"not an int\";\n    println(x);\n}\n";
     let fixed = "fn main() {\n    let x: Int = 42;\n    println(x);\n}\n";
-    let warny = "locus L {\n    params { n: Int = 0; }\n    run() {\n        let mut i = 0;\n        while true {\n            let b = std::bytes::BytesBuilder { };\n            i = i + 1;\n        }\n    }\n}\nfn main() { L { }; }\n";
+    // A plain string that looks interpolated (a warning the editor shows),
+    // and a builder made per iteration of a run loop, which the hot-path
+    // lint reports only when asked for (GH #1948), never in the editor.
+    let warny = "locus L {\n    params { n: Int = 0; }\n    run() {\n        let mut i = 0;\n        while true {\n            let b = std::bytes::BytesBuilder { };\n            i = i + 1;\n            println(\"i={i}\");\n        }\n    }\n}\nfn main() { L { }; }\n";
     std::fs::write(&file, broken).expect("write seed file");
 
     let mut lsp = Lsp::start();
@@ -136,7 +139,7 @@ fn lsp_v1_diagnostics_lifecycle() {
         clear
     );
 
-    // Warning shapes → severity 2, hot-path lint present.
+    // Warning shapes → severity 2; the hot-path lint is not the editor's.
     lsp.send(serde_json::json!({
         "jsonrpc": "2.0", "method": "textDocument/didChange",
         "params": {
@@ -153,11 +156,13 @@ fn lsp_v1_diagnostics_lifecycle() {
         warn
     );
     assert!(
-        wdiags.iter().any(|d| d["message"]
-            .as_str()
-            .unwrap()
-            .contains("hot-path allocation")),
-        "hot-path lint expected: {}",
+        wdiags.iter().any(|d| d["message"].as_str().unwrap().contains("this is a plain string")),
+        "the interpolation lint expected: {}",
+        warn
+    );
+    assert!(
+        !wdiags.iter().any(|d| d["message"].as_str().unwrap().contains("hot-path allocation")),
+        "the hot-path lint is asked for, not the editor's default: {}",
         warn
     );
 

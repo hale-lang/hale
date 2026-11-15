@@ -398,6 +398,9 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     match hale_codegen::build_resolved(view, &output, &options) {
         Ok(()) => {
             eprintln!("built: {}{}", output.display(), tuned_for(&options));
+            if let Some(warning) = shipped_native_warning(&options) {
+                eprintln!("{warning}");
+            }
             if let hale_codegen::CompileTarget::Foreign(spec) = options.target {
                 if !spec.links_from(&hale_codegen::target::TargetSpec::host()) {
                     eprintln!(
@@ -528,6 +531,57 @@ pub(crate) fn run_build_or_run(cmd: &str, args: &[String]) -> ExitCode {
     return run_program(&target, &user_args, options, false);
 }
 
+/// Where this build's binary is likely shipped from (GH #1948): a
+/// container image being built (`/.dockerenv`, podman's and buildah's
+/// `/run/.containerenv`, or a root file system that is an overlay, as
+/// BuildKit's `RUN` is) or a CI job (`CI` set, as every CI service sets
+/// it). `None` on a developer's machine. A binary built in either runs
+/// on some other machine, whose CPU need not be this one's.
+fn shipping_context() -> Option<&'static str> {
+    let ci = std::env::var("CI").ok();
+    let container = std::path::Path::new("/.dockerenv").exists()
+        || std::path::Path::new("/run/.containerenv").exists()
+        || root_is_overlay(&std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default());
+    shipping_context_of(container, ci.as_deref())
+}
+
+fn shipping_context_of(container: bool, ci: Option<&str>) -> Option<&'static str> {
+    if container {
+        return Some("it is being built in a container");
+    }
+    match ci {
+        Some(v) if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false") => Some("it is being built on CI"),
+        _ => None,
+    }
+}
+
+/// Whether `/proc/self/mountinfo` says the root file system is an
+/// overlay: the mount point (field 5) is `/` and the file system type
+/// (the first field after the ` - ` separator) is `overlay`.
+fn root_is_overlay(mountinfo: &str) -> bool {
+    mountinfo.lines().any(|line| {
+        let Some((head, tail)) = line.split_once(" - ") else { return false };
+        head.split(' ').nth(4) == Some("/") && tail.split(' ').next() == Some("overlay")
+    })
+}
+
+/// The warning a host-tuned build prints where its binary is likely
+/// shipped (GH #1948): `hale build` tunes to the build machine's CPU by
+/// default (a recorded decision, for vectorized throughput), and an
+/// image built on a CI runner then died with SIGILL on another machine.
+/// The default stays; the note that it applies is a warning there.
+fn shipped_native_warning(options: &hale_codegen::BuildOptions) -> Option<String> {
+    use hale_codegen::{CompileTarget, TargetCpu};
+    if !matches!((&options.target, &options.target_cpu), (CompileTarget::Native, TargetCpu::Native)) {
+        return None;
+    }
+    let why = shipping_context()?;
+    Some(format!(
+        "warning: this binary is tuned for this host's CPU, and {why}: on a machine with another CPU \
+         it can die with SIGILL (illegal instruction). Build what you ship with `--target-cpu portable`."
+    ))
+}
+
 /// What the `built:` line adds about the CPU the binary is tuned
 /// for, so a binary carried to another machine is not a surprise:
 /// the host's by default (named, with the flag that builds one that
@@ -549,5 +603,30 @@ fn tuned_for(options: &hale_codegen::BuildOptions) -> String {
         }
         (_, TargetCpu::X86_64V3) => " (portable baseline)".to_string(),
         (_, TargetCpu::Named(name)) => format!(" (tuned for {name})"),
+    }
+}
+
+#[cfg(test)]
+mod shipping_tests {
+    use super::{root_is_overlay, shipping_context_of};
+
+    #[test]
+    fn a_container_or_ci_is_a_shipping_context() {
+        assert!(shipping_context_of(true, None).is_some());
+        assert!(shipping_context_of(false, Some("true")).is_some());
+        assert!(shipping_context_of(false, Some("1")).is_some());
+        assert_eq!(shipping_context_of(false, Some("false")), None);
+        assert_eq!(shipping_context_of(false, Some("")), None);
+        assert_eq!(shipping_context_of(false, None), None);
+    }
+
+    #[test]
+    fn an_overlay_root_is_a_container() {
+        let docker = "1234 1200 0:123 / / rw,relatime master:1 - overlay overlay rw,lowerdir=/x\n";
+        let host = "25 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n\
+                    40 25 0:40 / /var/lib/docker/overlay2/a/merged rw - overlay overlay rw\n";
+        assert!(root_is_overlay(docker));
+        assert!(!root_is_overlay(host));
+        assert!(!root_is_overlay(""));
     }
 }
