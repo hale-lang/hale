@@ -81,6 +81,12 @@ const ALIGNED: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/hale-syntax/src/json_gen.rs",
+        "int_hex_read",
+        "generated Hale source keeps its indentation so the expanded \
+         codec is readable in a dump",
+    ),
+    (
+        "crates/hale-syntax/src/json_gen.rs",
         "json_map_read",
         "generated Hale source keeps its indentation so the expanded \
          codec is readable in a dump",
