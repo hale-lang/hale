@@ -288,6 +288,10 @@ pub const AP_SOURCE: &str = concat!(
     // integers that can fail, over native primitives. Last, so no other
     // file's spans move.
     include_str!("../hl/wide.hl"),
+    "\n",
+    // std::time::parse_rfc3339 (GH #1948): an offset-aware parse over
+    // `parse_time`. Last, so no other file's spans move.
+    include_str!("../hl/time_rfc3339.hl"),
 );
 
 /// `std::law`: the standard constitutions, loaded only when a program
@@ -342,6 +346,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("crypto.hl", include_str!("../hl/crypto.hl")),
     ("probes.hl", include_str!("../hl/probes.hl")),
     ("wide.hl", include_str!("../hl/wide.hl")),
+    ("time_rfc3339.hl", include_str!("../hl/time_rfc3339.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -474,6 +479,8 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "crypto", "secp256k1_sign"], "__std_crypto_secp256k1_sign"),
     (&["std", "crypto", "Sha256"], "__StdCryptoSha256"),
     // std::hex (hex.hl): base16 text of bytes.
+    // std::time (time_rfc3339.hl): the offset-aware RFC 3339 parse.
+    (&["std", "time", "parse_rfc3339"], "__std_time_parse_rfc3339"),
     (&["std", "hex", "decode"], "__std_hex_decode"),
     (&["std", "hex", "digit"], "__std_hex_digit"),
     (&["std", "hex", "encode"], "__std_hex_encode"),

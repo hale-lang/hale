@@ -731,6 +731,9 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/tagged.hl#b5e9dd95
 
+== crates/hale-stdlib/hl/time_rfc3339.hl#c263c37e
+dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
+
 == crates/hale-stdlib/hl/url.hl#a4efffbc
 
 == crates/hale-stdlib/hl/wide.hl#87243d8d
@@ -6811,6 +6814,10 @@ row	App@literal1	App	main	default
 -- App@literal1.mid	Mid
 row	~	Mid	main	default
 row	~.leaf	Leaf	main	inherited
+
+== crates/hale-types/tests/hot_path_alloc.rs#e575004f
+template	Acc@main1	unbounded (built in a loop)
+row	Acc@main1	Acc	main	default
 
 == crates/hale-types/tests/hot_path_alloc.rs#0d3e5366
 

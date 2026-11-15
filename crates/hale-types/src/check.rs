@@ -615,6 +615,11 @@ pub struct CheckInputs<'a> {
     /// reads which type names are the dialect's. They read declarations
     /// only, so they are total over a program that does not typecheck.
     pub units: &'a crate::units::UnitRows,
+    /// Whether the hot-path lint reports its warnings (GH #1948, the
+    /// snapshot's `Config::hot_path_advisory`): off by default, on under
+    /// `hale verify` and `hale check --warn-hot-path`. A `@hot` fn's
+    /// findings are errors either way.
+    pub hot_path_advisory: bool,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
@@ -700,6 +705,8 @@ fn check_numbered_bundle(
         roles: &roles,
         surfaces: &surfaces,
         units: &units,
+        // The library entry reports every advisory.
+        hot_path_advisory: true,
     };
     let (mut diags, _, _) = check_bundle_rules(bundle, &inputs, &walk, allow_unowned_subscriber, &|_, _| None);
     diags.extend(typed_body_laws(bundle, &inputs, &walk.record));
@@ -1583,7 +1590,7 @@ pub fn check_bundle_rules(
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
     // (hoisted field / `recv_into`).
-    let rows = HotPathRows { summary: inputs.alloc_summary, top, stdlib: false };
+    let rows = HotPathRows { summary: inputs.alloc_summary, top, stdlib: false, advisory: inputs.hot_path_advisory };
     diags.extend(Law { rule: HOT_PATH, eval: check_hot_path_alloc }.diags(&rows));
     // A subscriber built and dissolved inside one call on a classic
     // cooperative pool: its deliveries are always dropped (spec/runtime.md
@@ -2986,7 +2993,7 @@ fn check_hot_path_alloc(rows: &HotPathRows<'_>, out: &mut Vec<Violation>) {
         for (span, msg) in found {
             if f.hot {
                 out.push(Violation::error(HOT_PATH, span, format!("@hot: {}", msg)));
-            } else if !rows.summary.unbounded_fns.contains(&f.key) {
+            } else if rows.advisory && !rows.summary.unbounded_fns.contains(&f.key) {
                 out.push(Violation::warning(HOT_PATH, span, msg));
             }
         }
@@ -3007,7 +3014,7 @@ pub fn hot_path_silenced(
     top: &TopScope,
     stdlib: bool,
 ) -> BTreeMap<crate::alloc_summary::FnKey, usize> {
-    hot_path_findings(&HotPathRows { summary, top, stdlib })
+    hot_path_findings(&HotPathRows { summary, top, stdlib, advisory: true })
         .into_iter()
         .filter(|(f, found)| !f.hot && !found.is_empty() && summary.unbounded_fns.contains(&f.key))
         .map(|(f, found)| (f.key.clone(), found.len()))
@@ -3098,6 +3105,12 @@ struct HotPathRows<'r> {
     /// [`hot_path_silenced`] asks, for `--report-unbounded-use`; the lint
     /// reports the program's own.
     stdlib: bool,
+    /// Whether a finding outside a `@hot` fn is reported, as a warning
+    /// (GH #1948): only when asked for, `hale verify` or `hale check
+    /// --warn-hot-path`. A first program's ordinary loop or handler is
+    /// not a path anyone certified hot, and a warning on every one of
+    /// them buried the rest.
+    advisory: bool,
 }
 
 // === GH #723: decorator stacks =====================================
@@ -23736,9 +23749,19 @@ impl<'a> Checker<'a> {
                             .filter(|(_, sym)| matches!(sym, TopSymbol::Fn(_)))
                             .map(|(n, _)| n.as_str())
                             .collect();
-                        let hint = closest_bare_name(name, &candidates)
-                            .map(|h| format!(" — did you mean `{}`?", h))
-                            .unwrap_or_default();
+                        // GH #1948: a stdlib fn of exactly this name is
+                        // the likelier meaning than a near user fn.
+                        let std_paths = crate::stdlib_surface::fn_paths_named(name);
+                        let hint = match std_paths.as_slice() {
+                            [] => closest_bare_name(name, &candidates)
+                                .map(|h| format!(" — did you mean `{}`?", h))
+                                .unwrap_or_default(),
+                            [one] => format!(" — did you mean `{one}`? A stdlib fn is called by its path"),
+                            many => format!(
+                                " — did you mean {}? A stdlib fn is called by its path",
+                                many.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(" or ")
+                            ),
+                        };
                         self.diags.push(Diag::ty(
                             id.span,
                             format!(
@@ -24655,14 +24678,54 @@ impl<'a> Checker<'a> {
                             },
                             _ => None,
                         };
-                        let msg = match callee {
-                            Some(c) => format!(
+                        // GH #1948: a method names itself too, and a
+                        // form's `push` says why it cannot fail, where
+                        // `get` / `set` / `pop` can.
+                        let method = match inner.as_ref() {
+                            Expr::Call { callee, .. } => match callee.as_ref() {
+                                Expr::Field { receiver, name, .. } => Some((receiver.as_ref(), name.name.as_str())),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        let msg = match (callee, method) {
+                            (None, Some((receiver, m))) => {
+                                let recv = Self::spell_receiver(receiver);
+                                let form = match receiver {
+                                    Expr::Ident(id) => match self.locals.lookup(&id.name).map(|l| &l.ty) {
+                                        Some(Ty::Named(n)) => self
+                                            .locus_decls
+                                            .get(n.as_str())
+                                            .and_then(|d| d.form.as_ref())
+                                            .map(|f| f.name.name.as_str()),
+                                        _ => None,
+                                    },
+                                    _ => None,
+                                };
+                                let why = match (form, m) {
+                                    (Some(f @ ("vec" | "heap")), "push") => format!(
+                                        ": a `@form({f})` grows to hold what is pushed, so `push` cannot \
+                                         fail, where `get`, `set` and `pop` can miss. (A \
+                                         `bounded[T; N]`'s `push(f, x)` is fallible: it can be full.)"
+                                    ),
+                                    (Some("ring_buffer"), "push") => ": a ring buffer's `push` answers \
+                                         `false` when it is full; test the `Bool`"
+                                        .to_string(),
+                                    _ => String::new(),
+                                };
+                                format!(
+                                    "`{recv}.{m}(…)` is not fallible (it returns `{}`); \
+                                     drop the `or` clause{why}",
+                                    other.display()
+                                )
+                            }
+                            (Some(c), _) => format!(
                                 "`{}` is not fallible (it returns `{}`); \
                                  drop the `or` clause",
                                 c,
                                 other.display()
                             ),
-                            None => format!(
+                            (None, None) => format!(
                                 "`or` disposition expects a fallible-typed \
                                  expression on the left; got `{}` (not fallible). \
                                  Drop the `or` clause if the call can't fail.",
@@ -26350,12 +26413,16 @@ impl<'a> Checker<'a> {
                     // GH #470: a std:: literal that matches nothing in
                     // the rename table is a typo, not an Unknown —
                     // `std::log::TotallyFakeSink {}` used to typecheck.
+                    let hint = crate::stdlib_surface::type_hint(&segs)
+                        .map(|h| format!(" — {h}"))
+                        .unwrap_or_default();
                     self.diags.push(Diag::ty(
                         span,
                         format!(
                             "unknown stdlib type `{}` in struct/locus \
-                             literal",
-                            key.join("::")
+                             literal{}",
+                            key.join("::"),
+                            hint
                         ),
                     ));
                     for init in inits {

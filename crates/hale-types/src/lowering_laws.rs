@@ -1477,7 +1477,7 @@ fn walk_record_containment(
                     "a record cannot contain itself by value: {ring_text} puts a whole `{target}` inside every \
                      `{target}`, so none can be built. Hold the `{target}` values a `{record}` may have in a \
                      `bounded[{target}; N]` (it starts empty), or in an enum variant beside one that holds none \
-                     (`type Child = enum {{ Nothing, One({target}) }}`), or keep them elsewhere and hold a key",
+                     (`type Child = enum {{ Nothing, One({target}) }};`), or keep them elsewhere and hold a key",
                 ),
             ));
             continue;

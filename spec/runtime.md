@@ -4466,7 +4466,14 @@ What the compiler emits for a native `hale build`:
   the toolchain's own cache, `hale iris` and the DNA host, run
   what they build), or for a machine the builder names. `hale
   build` says on its `built:` line which CPU the binary is tuned
-  for. (From 2026-11-02 to 2026-11-07 `hale build` defaulted to
+  for, and where its binary is likely shipped — in a container (a
+  `/.dockerenv` or `/run/.containerenv`, or an overlay root file
+  system, as a BuildKit `RUN` has) or on CI (`CI` set) — a host-tuned
+  build adds a `warning:` line naming the SIGILL risk and
+  `--target-cpu portable` (GH #1948; the default does not change).
+  The `hale init` next steps, the Kubernetes manifests `hale deploy
+  render` writes and the book's image example build with
+  `--target-cpu portable`. (From 2026-11-02 to 2026-11-07 `hale build` defaulted to
   the portable baseline below, after an image built on a CI
   runner's Arm CPU took that CPU's extensions with it and died
   with SIGILL under Docker on another; the one build whose machine

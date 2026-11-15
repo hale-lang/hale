@@ -2808,7 +2808,7 @@ pub const RULES: &[Rule] = &[
         title: "Hot-path allocation",
         // The allocation summary's rows (each own fn's sites and calls, where they are written, `@hot`, `@unbounded`), and the scope, for which literal names a locus and which call a factory.
         reads: Reads::Rows(&["alloc_summary", "top_scope"]),
-        gist: "an allocation per loop iteration or per bus message (warning; an error under `@hot`, where it also flags `snapshot()` / `finish()` and a whole-struct self-field replace)",
+        gist: "an allocation per loop iteration or per bus message (a warning only when asked for, `hale verify` or `hale check --warn-hot-path`; an error under `@hot`, where it also flags `snapshot()` / `finish()` and a whole-struct self-field replace)",
         family: "alloc_summary",
         evaluator: Some(site(CHECK, "check_hot_path_alloc")),
         state: State::Canonical,

@@ -96,3 +96,38 @@ fn main() { let w = W { }; w.put("y"); }
         ds
     );
 }
+
+/// GH #1948: `push` on a `@form(vec)` cannot fail (the vec grows), so an
+/// `or` on it is refused, as on any call that cannot fail; the refusal
+/// names the method and says why, where `get` takes the `or`.
+#[test]
+fn or_on_a_vec_push_names_the_method_and_why() {
+    let ds = diags(r#"
+@form(vec)
+locus Nums { capacity { heap items of Int; } }
+fn main() {
+    let v = Nums {};
+    v.push(1) or discard;
+    let x = v.get(0) or 0;
+    println(x);
+}
+"#);
+    assert_eq!(ds.len(), 1, "only the push is refused: {:?}", ds);
+    assert!(ds[0].contains("`v.push(…)` is not fallible"), "{}", ds[0]);
+    assert!(ds[0].contains("grows to hold what is pushed"), "{}", ds[0]);
+    assert!(ds[0].contains("`bounded[T; N]`'s `push(f, x)` is fallible"), "{}", ds[0]);
+}
+
+/// The fallible push is the bounded one: full is its failure.
+#[test]
+fn or_on_a_bounded_push_is_admitted() {
+    let ds = diags(r#"
+type Bag { items: bounded[Int; 2]; }
+fn main() {
+    let mut b = Bag {};
+    push(b.items, 1) or discard;
+    println(count(b.items));
+}
+"#);
+    assert!(ds.is_empty(), "{:?}", ds);
+}

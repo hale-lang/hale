@@ -1,6 +1,7 @@
 # Rendered by `hale deploy render` from svc: a pure function of the checked program.
-# Each image <name>:latest holds the built binary under /app (`hale build <seed>`); it is
-# named here and never built or pushed.
+# Each image <name>:latest holds the built binary under /app (`hale build <seed>
+# --target-cpu portable`: a node's CPU is not the build host's); it is named here and never
+# built or pushed.
 # No HorizontalPodAutoscaler: no scale policy is declared for this environment.
 ---
 apiVersion: apps/v1
