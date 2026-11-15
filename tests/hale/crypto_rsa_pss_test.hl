@@ -1,0 +1,246 @@
+// tests/hale/crypto_rsa_pss_test.hl — `std::crypto::rsa_pss_sha256_sign`
+// and `rsa_pss_sha256_verify` (GH #1929): RSASSA-PSS over SHA-256, MGF1
+// with SHA-256, a 32-byte salt. PSS draws a fresh salt per signature, so
+// signing has no fixed vector: a signature made here round-trips through
+// verification (two signatures of one message differ and both verify),
+// and a signature made by OpenSSL's command line verifies here:
+//
+//     openssl dgst -sha256 -sigopt rsa_padding_mode:pss \
+//         -sigopt rsa_pss_saltlen:32 -sign key.pem msg.txt
+//
+// over the message "hale rsa-pss fixture message". A signature with
+// another salt length, and a PKCS#1 v1.5 one, of the same message by the
+// same key do not verify. A downstream handoff signs HTTP requests with
+// an RSA key in PSS mode.
+//
+// THROWAWAY TEST KEYS. Every key in this file was generated for this test
+// alone (`openssl genpkey -algorithm RSA`), guards nothing, and is
+// published here on purpose. Never use them for anything else.
+
+// The 2048-bit test key, PKCS#8 ...
+const TEST_KEY_PKCS8: String = """
+    -----BEGIN PRIVATE KEY-----
+    MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCGAiA+4U8e2tN7
+    FOKzwlnel6488+o4DJy2qN9tr5e0Ligd4s7WtvNP21x8FEMBSVvXyjR+ddaT1U36
+    yCIFXXZaZxnlu3W9BSSZudsDNhklhcv4lYx9fogDY/M2p5JjrDLNQjlOiT4AzkdC
+    DZ+pOS2jZJfUrYn9pYPpJHuQDmFMyVeoxapJSgMwHVY8M2NidGbJdrs55lyPk6Zz
+    m4NH44VCr/0mll8GXkIS2/s92sqYSmjvLq1aQ9z5eF/zkVbHUkf2oKnV+S4nFKzu
+    rVgVPiPaSQ0WUvUAJ+9+KI9ETMvgtpza5hpyHm5j+rXct6GwkbeVh6VGQSmynuTi
+    Rq2DCghLAgMBAAECggEACnv2wzSkGLPiFnUR2iJ7HtEbI/r+o21JLXk/fGNf07bw
+    veCAHN2qDOC1TE0sLi5BGJGMqIAro4aYApDPKJWhVtKjfLe9LxFMmxemrN+kpAI4
+    bQsLjMiYzOXFoiGwxZ+JR0nGa1XixfQIMIDEXFxJgnOySpoGe75hTZzkazwqHJ8J
+    retfyX6ENWS1J/JQVaTj8ms1ZzLIuMLBEVfVuEftg4eTGkSjmj9NhoaAAlbHFFXY
+    BNwVCtRu6rCr3P/eUuNlclKuD34mC1hMMTvJ3oJ2XNVXQSOHOD8pOiUGBpdYQv2k
+    /aDqQib6pU851CNcDNJtbAeDtGWv7fP36QgPwlb9gQKBgQC5vSUKALzIq7UUh0k8
+    UWdRK05SuouaHvSoyGP3sJ2e0mWjt6r0acM7Onuq1oqct9LS8Ld8xQF0mhcgLNhT
+    EOkQ8Gsz8XEp4CWXPmPhcqISfT9Znu3D3AWoeeFk+GogS6hbV5TvTu39TGb8EBoR
+    GsXhC55c3KUTADuMKrL3Sry2qwKBgQC4s2wEIVv7C8R/QKQbBPDHXUsAOfpVwG7V
+    yalcyRYDKHBdALC9g+3Ry+SQiVM8u7T68pPahwGL7qDuJJoGq6PyiVCRtfzOUCMR
+    Fder2BVIr6JpSDC/yAv4EIO8kqYdRPEZPYWQ1qMSLiaxE7AHZ+eekA4+Q8tWhf13
+    SjwqETh04QKBgB44Vxlsi0q/HURMyq6ktAGx4Rl2vpYB6V641AMN2mdn5h+gF5GS
+    z7AIUOy34W+kPQoTHlePmjAFjjOu+DdzregSpe6anwXoMVWNUiTxSMtnU3JaeGcA
+    mm8R/Yk3HdVJWggalOHm3rPyxWLHn+YejAmUoVyMjdMsm4OvwtSXdWLnAoGAfhyk
+    SD2u3D8wr+KnKnu5G6crqr/rmdmG1BqZtWznxsg50IbEJuKJ45HgQoBBgVp5PE+d
+    fLxp5e3NnE0Jjjxr+RKhHJyyPPyitOvBEui7v6GMt24/OvOQmJROHtfS7HFCXgWP
+    yVGEjslMSeQzcRsVH0MlNoZ7tFxQsL7TTbXsYoECgYBsjdsUjfKlSYuOso5pfZMT
+    6878/DcxpljYOuwGRB2iik9hY8rMCb/3mO35zeA6bcBhNuIh3CSTtnAR6RXxMA5R
+    2KKNsqkxBRnDN6sqSOxNEhEjxmZfRsZKWApzRQlWYS1cJoRLodCRajCZA00RPJ1b
+    wXsileMaT+OdTfTkyQm95Q==
+    -----END PRIVATE KEY-----
+    """;
+
+// ... the same key in PKCS#1 form (`openssl rsa -traditional`) ...
+const TEST_KEY_PKCS1: String = """
+    -----BEGIN RSA PRIVATE KEY-----
+    MIIEogIBAAKCAQEAhgIgPuFPHtrTexTis8JZ3peuPPPqOAyctqjfba+XtC4oHeLO
+    1rbzT9tcfBRDAUlb18o0fnXWk9VN+sgiBV12WmcZ5bt1vQUkmbnbAzYZJYXL+JWM
+    fX6IA2PzNqeSY6wyzUI5Tok+AM5HQg2fqTkto2SX1K2J/aWD6SR7kA5hTMlXqMWq
+    SUoDMB1WPDNjYnRmyXa7OeZcj5Omc5uDR+OFQq/9JpZfBl5CEtv7PdrKmEpo7y6t
+    WkPc+Xhf85FWx1JH9qCp1fkuJxSs7q1YFT4j2kkNFlL1ACfvfiiPREzL4Lac2uYa
+    ch5uY/q13LehsJG3lYelRkEpsp7k4katgwoISwIDAQABAoIBAAp79sM0pBiz4hZ1
+    Edoiex7RGyP6/qNtSS15P3xjX9O28L3ggBzdqgzgtUxNLC4uQRiRjKiAK6OGmAKQ
+    zyiVoVbSo3y3vS8RTJsXpqzfpKQCOG0LC4zImMzlxaIhsMWfiUdJxmtV4sX0CDCA
+    xFxcSYJzskqaBnu+YU2c5Gs8KhyfCa3rX8l+hDVktSfyUFWk4/JrNWcyyLjCwRFX
+    1bhH7YOHkxpEo5o/TYaGgAJWxxRV2ATcFQrUbuqwq9z/3lLjZXJSrg9+JgtYTDE7
+    yd6CdlzVV0Ejhzg/KTolBgaXWEL9pP2g6kIm+qVPOdQjXAzSbWwHg7Rlr+3z9+kI
+    D8JW/YECgYEAub0lCgC8yKu1FIdJPFFnUStOUrqLmh70qMhj97CdntJlo7eq9GnD
+    Ozp7qtaKnLfS0vC3fMUBdJoXICzYUxDpEPBrM/FxKeAllz5j4XKiEn0/WZ7tw9wF
+    qHnhZPhqIEuoW1eU707t/Uxm/BAaERrF4QueXNylEwA7jCqy90q8tqsCgYEAuLNs
+    BCFb+wvEf0CkGwTwx11LADn6VcBu1cmpXMkWAyhwXQCwvYPt0cvkkIlTPLu0+vKT
+    2ocBi+6g7iSaBquj8olQkbX8zlAjERXXq9gVSK+iaUgwv8gL+BCDvJKmHUTxGT2F
+    kNajEi4msROwB2fnnpAOPkPLVoX9d0o8KhE4dOECgYAeOFcZbItKvx1ETMqupLQB
+    seEZdr6WAeleuNQDDdpnZ+YfoBeRks+wCFDst+FvpD0KEx5Xj5owBY4zrvg3c63o
+    EqXump8F6DFVjVIk8UjLZ1NyWnhnAJpvEf2JNx3VSVoIGpTh5t6z8sVix5/mHowJ
+    lKFcjI3TLJuDr8LUl3Vi5wKBgH4cpEg9rtw/MK/ipyp7uRunK6q/65nZhtQambVs
+    58bIOdCGxCbiieOR4EKAQYFaeTxPnXy8aeXtzZxNCY48a/kSoRycsjz8orTrwRLo
+    u7+hjLduPzrzkJiUTh7X0uxxQl4Fj8lRhI7JTEnkM3EbFR9DJTaGe7RcULC+0021
+    7GKBAoGAbI3bFI3ypUmLjrKOaX2TE+vO/Pw3MaZY2DrsBkQdoopPYWPKzAm/95jt
+    +c3gOm3AYTbiIdwkk7ZwEekV8TAOUdiijbKpMQUZwzerKkjsTRIRI8ZmX0bGSlgK
+    c0UJVmEtXCaES6HQkWowmQNNETydW8F7IpXjGk/jnU305MkJveU=
+    -----END RSA PRIVATE KEY-----
+    """;
+
+// ... and its public key (SPKI, `openssl pkey -pubout`).
+const TEST_PUBLIC: String = """
+    -----BEGIN PUBLIC KEY-----
+    MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAhgIgPuFPHtrTexTis8JZ
+    3peuPPPqOAyctqjfba+XtC4oHeLO1rbzT9tcfBRDAUlb18o0fnXWk9VN+sgiBV12
+    WmcZ5bt1vQUkmbnbAzYZJYXL+JWMfX6IA2PzNqeSY6wyzUI5Tok+AM5HQg2fqTkt
+    o2SX1K2J/aWD6SR7kA5hTMlXqMWqSUoDMB1WPDNjYnRmyXa7OeZcj5Omc5uDR+OF
+    Qq/9JpZfBl5CEtv7PdrKmEpo7y6tWkPc+Xhf85FWx1JH9qCp1fkuJxSs7q1YFT4j
+    2kkNFlL1ACfvfiiPREzL4Lac2uYach5uY/q13LehsJG3lYelRkEpsp7k4katgwoI
+    SwIDAQAB
+    -----END PUBLIC KEY-----
+    """;
+
+// Another throwaway 1024-bit key's public half, and the same key
+// encrypted under the passphrase "throwaway".
+const OTHER_PUBLIC: String = """
+    -----BEGIN PUBLIC KEY-----
+    MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDm8edTVJBKA87tjeqbh7WwCsN4
+    fN9juWd48bhas0c3Mtq3CliY+js6SfuJLZ12Dmpsy28jlc3CpPVtyobN9gKp3Pff
+    2YxCFxiNM85oEXgTXLMUeNEp4zIAkdKJ66ZoKxQqGaxcB6QQ0o7bVjVIQl7Kov7w
+    3liDXc6ZdSr6hUqPCQIDAQAB
+    -----END PUBLIC KEY-----
+    """;
+
+const OTHER_KEY_ENCRYPTED: String = """
+    -----BEGIN ENCRYPTED PRIVATE KEY-----
+    MIIC5TBfBgkqhkiG9w0BBQ0wUjAxBgkqhkiG9w0BBQwwJAQQTmojAMCLcb2GtYtP
+    R8ilkwICCAAwDAYIKoZIhvcNAgkFADAdBglghkgBZQMEASoEEJNnT+KB8B5wpUMH
+    3T4B5lIEggKACj2J/bP6dbL0TMcE/88pnXH61py2DwQXDtzU/I124SK5wuCwZLBb
+    qt+DU2B5vpWrSCTEIQ5gvjNgPRR8a5VB7X5dN4gklYULx0CCCrz3GobXF0m4Px1F
+    pU0x6rZL27qDkt4HrZoKgeNksjjS+SNeoJ9cs8rFxwzqHANHEBXpcY1Uk39b38DV
+    EKOcySed0FvGj7TpOkJ1NLsNC9o6Bf4mB9AZuRT8JSk3e6di3lvKxAdfjpHS1mUc
+    cL2cJP3fkeZ6wjT5zwEFgF8c8Ut7rfuhsWQcLzs/G6wKDT/Xhj//6zzAIWuhI8S/
+    UaLUkfrfn4pFvkk9Ds0ZKBLl5/5xOd0qL/IgMS9sPh27yQPWplIzKn6c/kn9X5Ja
+    iaw4Fo/j1YXrodJhQdhNfmFAdWKDCNhDoOU7oH2EPKhiepHnI+DWH/EtTtqnfNMJ
+    HIxR4U1Hvb84tS27Sp9SUQzFNfuHAdopjElcaVmG+nApjRIyiuyhpM99Nk7345tf
+    6yaVQhmqZMNXhjRbJIIKCpqUk3ZvbSjQadBYGf3ZjRxh96vbPCJ1lfjjLENWtlXZ
+    L5+lEMgdMombnnBYslPh/DQyRVUOMNtYDJj8h7yhcwlASAy87tieBDqY5SiWq+hS
+    iPoBAdzLHu+8xE9mWFTpUs00m9tPSwxxnSzJKXVwq/8U6Ak41YcTYPlb4aDkX3xN
+    2JjF5TDrcLClQRZbP4oAbWdnXraURdwDo76OJZFS5Wi7gQ6WimQ/UUNS2hqLL0a5
+    sK0mZwpCyHu/RdlpDdDG/NNnlDu1VQjjhJE4C8BVIHO27+gZWbwHGWgh1RZuf7Q8
+    PZJGwj3yaamlqZb+1fqYQ9KP0NgQbwYXLQ==
+    -----END ENCRYPTED PRIVATE KEY-----
+    """;
+
+// A throwaway P-256 key: a PEM private key that is not RSA.
+const EC_KEY: String = """
+    -----BEGIN PRIVATE KEY-----
+    MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg2T6x6w/wI1R8JlAR
+    dD8OCY4EZpYopTSGyGFoBQhVpU+hRANCAASdd8YvC5mjzkT8PmVTlUwP2gHL92fG
+    ygLQreWuBxZ9vgmfTUil1NfIcOoM3Err+x/7SQJFVDGWxRl9DnbVFpxC
+    -----END PRIVATE KEY-----
+    """;
+
+const MESSAGE: String = "hale rsa-pss fixture message";
+
+// OpenSSL's PSS signature of MESSAGE by the test key, salt length 32 ...
+const OPENSSL_SIGNATURE: String = "35010daca74f36813cd596d09693fe3293d5eb398ee23af6d56c6962ff54940a7bf2d5b00818d4a76b7e54b9976645a0f23dbbebb0546f0e60c012f76f871fa7fbc169d323746b79c0a851e082ec8e6c3d8fdf9bb562e4e0e0c8ebe2ba741e04aaa9b799d5671ca459398a6f47277d0a99467342b8925134bf576d7b71f449ab4e85cebf55f6a6156b98172b728c58095aa4358ae6e2fecf0b5cc2e4908d2890432641918589e2a8cfef9a2f75c3ff35345bfb407ec81a85bbbba3c1bd39c66ff999a98380bd22a1165ca40590e21055f96c410ec0104e3a0c1a9a4f58546222d33b309d3b700f545d04ac5dad7485ac4802fda09dd7bb37f233fe0d9867477c";
+
+// ... with salt length 20, which verification with a 32-byte salt refuses ...
+const OPENSSL_SIGNATURE_SALT_20: String = "79ce13a57a45a51174bfbe0f9993cf9ffbfbcda5c6307a8b7a37fde2afc0e3ac8e24b823cf50c7e47c4e200f00bc1e022361d8265050ce2e8669b8e94bc00d74a1a084b1009e30f4a1c58dbb2e7e8ea8928d93d2152f11313398e0fdc2e5ba9b8f863440dc61cf001523534ff122dabc5c2216521c5f0968312dc82c8a861b3c21245a7404a2f178f84322e2ea0a8e3eec473c0f20897365bc1c2308adedbf4f6df9369205ae225664f26e6ca481a7c9edba53a9dbae35e19ca9caa992aeb58b9341184b7b5b011800f1c84a40314033bba9aae66e2aca8e928992482330d8240742d06a21c172eccce4e91c09c6df029b10bdbf80626bd4c49b79b77056ef89";
+
+// ... and PKCS#1 v1.5 (`openssl dgst -sha256 -sign`), not PSS at all.
+const OPENSSL_SIGNATURE_V15: String = "6453a540e9064f4d8b5264f3e1e82f7acbfdfe4ba058ff7ad080e6ce94e30f532063838a2c461514836c6a1ed15f1681c0ecff89fdb67e94c015ea0962c50a2eddbaf3fbddd922854386d051a772e047cbb4ea75e08d6ec6fed46bdf506e598440fcee91cfec93949868c8e80916333a2b84060742a89d077eb70a44ad350c4ceeaf5c7869726a05701aa9390d4e7618d49720f74c5ce50a1fa7ff70d6f4d260429e40c631841c8f70d52b531f65b06ea82e8612dedec674c6142048fcc4a4f94cafefd7cf6ba287e4d6910946ca848cb5b359689d6290e1b78af9626b4d20131c5486952048b3f9b5d9d0533ced7ba671f93be67633bda96303eb7db8087dc6";
+
+fn hex(s: String) -> Bytes {
+    return std::hex::decode(s) or b"";
+}
+
+fn pem(s: String) -> Bytes {
+    return std::bytes::from_string(s);
+}
+
+/// Signing with `key` refuses, with the CryptoError's kind and a detail
+/// that spells nothing of the key.
+fn refuses(name: String, key: String) {
+    let mut kind = "";
+    let mut detail = "";
+    let sig = std::crypto::rsa_pss_sha256_sign(pem(key), pem(MESSAGE)) or {
+        kind = err.kind;
+        detail = err.detail;
+        b""
+    };
+    std::test::assert_eq_str(kind, "rsa_pss_sha256_sign", name + ": refused");
+    std::test::assert(!std::str::contains(detail, "BEGIN"), name + ": the detail names no key");
+    std::test::assert_eq_int(len(sig), 0, name + ": nothing signed");
+}
+
+fn main() {
+    let public = pem(TEST_PUBLIC);
+    let message = pem(MESSAGE);
+
+    // OpenSSL's signature verifies; another salt length, PKCS#1 v1.5, a
+    // changed message and another key do not.
+    let theirs = hex(OPENSSL_SIGNATURE);
+    std::test::assert_eq_int(len(theirs), 256, "the fixture is a 2048-bit signature");
+    std::test::assert(
+        std::crypto::rsa_pss_sha256_verify(public, message, theirs),
+        "OpenSSL's PSS signature verifies",
+    );
+    std::test::assert(
+        !std::crypto::rsa_pss_sha256_verify(public, message, hex(OPENSSL_SIGNATURE_SALT_20)),
+        "a 20-byte salt does not",
+    );
+    std::test::assert(
+        !std::crypto::rsa_pss_sha256_verify(public, message, hex(OPENSSL_SIGNATURE_V15)),
+        "a PKCS#1 v1.5 signature does not",
+    );
+    std::test::assert(
+        !std::crypto::rsa_pss_sha256_verify(public, std::bytes::concat(message, b"."), theirs),
+        "a changed message does not",
+    );
+    std::test::assert(
+        !std::crypto::rsa_pss_sha256_verify(pem(OTHER_PUBLIC), message, theirs),
+        "another key does not",
+    );
+
+    // Signing round-trips, from the PKCS#8 and the PKCS#1 form of the key;
+    // the salt is fresh each time, so two signatures differ.
+    let a = std::crypto::rsa_pss_sha256_sign(pem(TEST_KEY_PKCS8), message) or b"";
+    let b = std::crypto::rsa_pss_sha256_sign(pem(TEST_KEY_PKCS1), message) or b"";
+    std::test::assert_eq_int(len(a), 256, "PKCS#8: a signature as long as the modulus");
+    std::test::assert_eq_int(len(b), 256, "PKCS#1: a signature as long as the modulus");
+    std::test::assert(
+        std::crypto::rsa_pss_sha256_verify(public, message, a),
+        "PKCS#8: it verifies",
+    );
+    std::test::assert(
+        std::crypto::rsa_pss_sha256_verify(public, message, b),
+        "PKCS#1: it verifies",
+    );
+    std::test::assert(
+        std::hex::encode(a) != std::hex::encode(b),
+        "two signatures differ (the salt)",
+    );
+    std::test::assert(
+        !std::crypto::rsa_pss_sha256_verify(public, b"another message", a),
+        "and verify nothing else",
+    );
+    let empty = std::crypto::rsa_pss_sha256_sign(pem(TEST_KEY_PKCS8), b"") or b"";
+    std::test::assert(std::crypto::rsa_pss_sha256_verify(public, b"", empty), "the empty message");
+
+    // Verification takes no truncated signature, and no public key it
+    // cannot read.
+    std::test::assert(
+        !std::crypto::rsa_pss_sha256_verify(public, message, std::bytes::slice(theirs, 0, 255)),
+        "a truncated signature does not verify",
+    );
+    std::test::assert(
+        !std::crypto::rsa_pss_sha256_verify(b"not a key", message, theirs),
+        "nor a non-key",
+    );
+    std::test::assert(
+        !std::crypto::rsa_pss_sha256_verify(pem(TEST_KEY_PKCS8), message, theirs),
+        "nor a private key",
+    );
+
+    // The refusals: not a PEM key, an encrypted one (refused, never a
+    // passphrase prompt), and a key that is not RSA.
+    refuses("not a key", "-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----\n");
+    refuses("the empty key", "");
+    refuses("an encrypted key", OTHER_KEY_ENCRYPTED);
+    refuses("an EC key", EC_KEY);
+}

@@ -1732,7 +1732,7 @@ crates/hale-stdlib/hl/api_client.hl 36ae064bec55aa33
 crates/hale-stdlib/hl/api_rpc.hl 270ac11bbd8f2f55
 crates/hale-stdlib/hl/cli.hl 7d556f7676875798
 crates/hale-stdlib/hl/core.hl 5bd71359097e00e6
-crates/hale-stdlib/hl/crypto.hl 21b957bbaa986ffd
+crates/hale-stdlib/hl/crypto.hl 13559839fa62968e
 crates/hale-stdlib/hl/crypto_sha256.hl b68948b7c74811dd
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/hex.hl eb377492db5d27b1

@@ -41,6 +41,10 @@
 #include <openssl/ecdsa.h>
 #include <openssl/bn.h>
 #include <openssl/bio.h>
+#include <openssl/hmac.h>
+#include <openssl/rsa.h>
+#include <openssl/rand.h>
+#include <openssl/obj_mac.h>
 
 #include <pthread.h>
 #include <stdio.h>
@@ -1193,4 +1197,449 @@ int64_t lotus_crypto_ecdsa_p256_verify(
     ECDSA_SIG_free(sig);
     EVP_PKEY_free(pkey);
     return result;
+}
+
+/* A PEM passphrase callback that supplies none: an encrypted key fails to
+ * parse instead of OpenSSL's default callback prompting on the terminal. */
+static int lotus_pem_no_passphrase(char *buf, int size, int rwflag, void *u) {
+    (void)buf; (void)size; (void)rwflag; (void)u;
+    return 0;
+}
+
+/* ----------------------------------------------------------------
+ * RSA-PSS with SHA-256 (PS256) — downstream handoff (GH #1929): HTTP
+ * APIs that sign each request with an RSA private key in PSS mode.
+ *
+ * EMSA-PSS (RFC 8017 § 9.1) over SHA-256, MGF1 with SHA-256, the salt
+ * as long as the hash (32 bytes) — the parameters JWS's PS256 and
+ * `openssl dgst -sha256 -sigopt rsa_padding_mode:pss -sigopt
+ * rsa_pss_saltlen:32` use. The signature is as long as the modulus.
+ * PSS is randomized (a fresh salt per signature), so two signatures of
+ * one message differ and both verify. Verification demands the same
+ * 32-byte salt. Failures say nothing about the key: no error text is
+ * built here and OpenSSL's error queue is cleared, never printed.
+ * ---------------------------------------------------------------- */
+
+static int lotus_pkey_is_rsa(EVP_PKEY *pkey) {
+    int id = EVP_PKEY_base_id(pkey);
+    return id == EVP_PKEY_RSA || id == EVP_PKEY_RSA_PSS;
+}
+
+/* Sets PSS / MGF1-SHA256 / 32-byte salt on a DigestSign/Verify context. */
+static int lotus_rsa_pss_sha256_params(EVP_PKEY_CTX *pctx) {
+    return EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING) > 0
+        && EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, EVP_sha256()) > 0
+        && EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, 32) > 0;
+}
+
+/* rsa_pss_sha256_sign(key: Bytes (PEM, PKCS#8 or PKCS#1), message: Bytes)
+ * -> the signature, or NULL on any failure (unparseable or encrypted PEM,
+ * a key that is not RSA, a modulus too small for the encoding). */
+void *lotus_crypto_rsa_pss_sha256_sign_or_null(const void *key_b, const void *msg_b) {
+    if (!key_b || !msg_b) return NULL;
+    int64_t key_len = lotus_bytes_len(key_b);
+    const unsigned char *key_d = (const unsigned char *)key_b + sizeof(int64_t);
+    int64_t msg_len = lotus_bytes_len(msg_b);
+    const unsigned char *msg_d = (const unsigned char *)msg_b + sizeof(int64_t);
+    if (key_len <= 0 || key_len > INT_MAX) return NULL;
+
+    BIO *bio = BIO_new_mem_buf(key_d, (int)key_len);
+    if (!bio) return NULL;
+    EVP_PKEY *pkey = PEM_read_bio_PrivateKey(bio, NULL, lotus_pem_no_passphrase, NULL);
+    BIO_free(bio);
+    if (!pkey || !lotus_pkey_is_rsa(pkey)) {
+        EVP_PKEY_free(pkey);
+        ERR_clear_error();
+        return NULL;
+    }
+
+    void *blob = NULL;
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    EVP_PKEY_CTX *pctx = NULL;
+    size_t sig_len = 0;
+    if (ctx
+        && EVP_DigestSignInit(ctx, &pctx, EVP_sha256(), NULL, pkey) == 1
+        && lotus_rsa_pss_sha256_params(pctx)
+        && EVP_DigestSign(ctx, NULL, &sig_len, msg_d, (size_t)msg_len) == 1
+        && sig_len > 0) {
+        unsigned char *sig = (unsigned char *)malloc(sig_len);
+        if (sig && EVP_DigestSign(ctx, sig, &sig_len, msg_d, (size_t)msg_len) == 1) {
+            blob = lotus_caller_or_global_bytes_create((int64_t)sig_len);
+            if (blob) memcpy(lotus_bytes_data(blob), sig, sig_len);
+        }
+        free(sig);
+    }
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    if (!blob) ERR_clear_error();
+    return blob;
+}
+
+/* rsa_pss_sha256_verify(public: Bytes (PEM SPKI), message: Bytes,
+ * signature: Bytes) -> 1 when the signature is the key's PSS / SHA-256 /
+ * 32-byte-salt signature of the message, else 0. */
+int64_t lotus_crypto_rsa_pss_sha256_verify(const void *pub_b, const void *msg_b, const void *sig_b) {
+    if (!pub_b || !msg_b || !sig_b) return 0;
+    int64_t pub_len = lotus_bytes_len(pub_b);
+    const unsigned char *pub_d = (const unsigned char *)pub_b + sizeof(int64_t);
+    int64_t msg_len = lotus_bytes_len(msg_b);
+    const unsigned char *msg_d = (const unsigned char *)msg_b + sizeof(int64_t);
+    int64_t sig_len = lotus_bytes_len(sig_b);
+    const unsigned char *sig_d = (const unsigned char *)sig_b + sizeof(int64_t);
+    if (pub_len <= 0 || pub_len > INT_MAX || sig_len <= 0) return 0;
+
+    BIO *bio = BIO_new_mem_buf(pub_d, (int)pub_len);
+    if (!bio) return 0;
+    EVP_PKEY *pkey = PEM_read_bio_PUBKEY(bio, NULL, lotus_pem_no_passphrase, NULL);
+    BIO_free(bio);
+    if (!pkey || !lotus_pkey_is_rsa(pkey)) {
+        EVP_PKEY_free(pkey);
+        ERR_clear_error();
+        return 0;
+    }
+    int64_t result = 0;
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    EVP_PKEY_CTX *pctx = NULL;
+    if (ctx
+        && EVP_DigestVerifyInit(ctx, &pctx, EVP_sha256(), NULL, pkey) == 1
+        && lotus_rsa_pss_sha256_params(pctx)) {
+        result = EVP_DigestVerify(ctx, sig_d, (size_t)sig_len, msg_d, (size_t)msg_len) == 1 ? 1 : 0;
+    }
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    ERR_clear_error();
+    return result;
+}
+
+/* ----------------------------------------------------------------
+ * secp256k1 ECDSA over a 32-byte digest — downstream handoff (GH #1929):
+ * the signatures EVM transactions and messages carry.
+ *
+ * The curve's arithmetic is OpenSSL's (EC_GROUP / EC_POINT / BIGNUM on
+ * NID_secp256k1); the protocol around it is here, because no OpenSSL
+ * call answers what an EVM signature needs:
+ *   - the nonce is RFC 6979's deterministic one (HMAC-SHA256), which
+ *     OpenSSL offers only from 3.2, and the runtime builds against 1.1.1
+ *     and later;
+ *   - the recovery id is the parity of R's y, plus 2 when R's x was not
+ *     below n (r = x mod n overflowed), and OpenSSL's ECDSA never
+ *     exposes R;
+ *   - s is normalized to the low half (EIP-2 / BIP 62), and the
+ *     recovery id flipped with it, since -s signs with -R.
+ * The nonce's multiplication is OpenSSL's constant-time ladder (k
+ * flagged BN_FLG_CONSTTIME), its inversion a constant-time Fermat
+ * exponentiation, and the private key enters s only blinded by a random
+ * factor that cancels — the signature stays deterministic.
+ *
+ * The raw functions answer the result, or a one-byte Bytes naming the
+ * failure (LOTUS_K1_*), which `crypto.hl`'s bodies turn into a
+ * CryptoError. Nothing derived from a key reaches an error or a log.
+ * ---------------------------------------------------------------- */
+
+#define LOTUS_K1_BAD_KEY 1      /* the secret key is not a scalar in [1, n-1] */
+#define LOTUS_K1_BAD_SIG 2      /* r, s or the recovery id name no point */
+#define LOTUS_K1_UNAVAILABLE 3  /* the linked OpenSSL has no secp256k1, or ran out */
+
+static EC_GROUP *g_lotus_k1_group = NULL;
+static pthread_once_t g_lotus_k1_once = PTHREAD_ONCE_INIT;
+
+static void lotus_k1_group_init(void) {
+    g_lotus_k1_group = EC_GROUP_new_by_curve_name(NID_secp256k1);
+}
+
+/* The curve, built once and shared read-only; NULL when this OpenSSL was
+ * built without it. */
+static const EC_GROUP *lotus_k1_group(void) {
+    pthread_once(&g_lotus_k1_once, lotus_k1_group_init);
+    return g_lotus_k1_group;
+}
+
+static void *lotus_k1_code(int code) {
+    ERR_clear_error();
+    void *blob = lotus_caller_or_global_bytes_create(1);
+    if (blob) ((unsigned char *)lotus_bytes_data(blob))[0] = (unsigned char)code;
+    return blob;
+}
+
+static const unsigned char *lotus_k1_bytes(const void *b, int64_t want) {
+    if (!b || lotus_bytes_len(b) != want) return NULL;
+    return (const unsigned char *)b + sizeof(int64_t);
+}
+
+/* HMAC-SHA256 of the concatenation `a || [sep] || b || c` (sep < 0 for
+ * none), keyed by the 32-byte `key`: RFC 6979's K and V updates. */
+static int lotus_k1_hmac(const unsigned char key[32], const unsigned char v[32], int sep,
+                         const unsigned char *x, const unsigned char *h, unsigned char out[32]) {
+    unsigned char buf[32 + 1 + 32 + 32];
+    size_t n = 0;
+    memcpy(buf, v, 32);
+    n = 32;
+    if (sep >= 0) buf[n++] = (unsigned char)sep;
+    if (x) { memcpy(buf + n, x, 32); n += 32; }
+    if (h) { memcpy(buf + n, h, 32); n += 32; }
+    unsigned int out_len = 0;
+    int ok = HMAC(EVP_sha256(), key, 32, buf, n, out, &out_len) != NULL && out_len == 32;
+    OPENSSL_cleanse(buf, sizeof buf);
+    return ok;
+}
+
+/* `d` from the 32 big-endian bytes `sk`, refused unless 1 <= d < n. */
+static int lotus_k1_secret(const EC_GROUP *group, const unsigned char *sk, BIGNUM *d) {
+    if (!BN_bin2bn(sk, 32, d)) return 0;
+    BN_set_flags(d, BN_FLG_CONSTTIME);
+    return !BN_is_zero(d) && BN_cmp(d, EC_GROUP_get0_order(group)) < 0;
+}
+
+/* The 65-byte uncompressed encoding 04 || X || Y of `p` into a new Bytes. */
+static void *lotus_k1_point_bytes(const EC_GROUP *group, const EC_POINT *p, BN_CTX *ctx) {
+    unsigned char out[65];
+    if (EC_POINT_point2oct(group, p, POINT_CONVERSION_UNCOMPRESSED, out, sizeof out, ctx) != 65) {
+        return NULL;
+    }
+    void *blob = lotus_caller_or_global_bytes_create(65);
+    if (blob) memcpy(lotus_bytes_data(blob), out, 65);
+    return blob;
+}
+
+/* `__secp256k1_public_key(secret)`: the 65-byte uncompressed public key
+ * d·G, or a one-byte failure code. */
+void *lotus_crypto_secp256k1_public_key(const void *sk_b) {
+    const EC_GROUP *group = lotus_k1_group();
+    if (!group) return lotus_k1_code(LOTUS_K1_UNAVAILABLE);
+    const unsigned char *sk = lotus_k1_bytes(sk_b, 32);
+    if (!sk) return lotus_k1_code(LOTUS_K1_BAD_KEY);
+    BN_CTX *ctx = BN_CTX_new();
+    BIGNUM *d = BN_new();
+    EC_POINT *q = EC_POINT_new(group);
+    void *out = NULL;
+    int code = LOTUS_K1_UNAVAILABLE;
+    if (ctx && d && q) {
+        if (!lotus_k1_secret(group, sk, d)) {
+            code = LOTUS_K1_BAD_KEY;
+        } else if (EC_POINT_mul(group, q, d, NULL, NULL, ctx) == 1) {
+            out = lotus_k1_point_bytes(group, q, ctx);
+        }
+    }
+    EC_POINT_free(q);
+    BN_clear_free(d);
+    BN_CTX_free(ctx);
+    return out ? out : lotus_k1_code(code);
+}
+
+/* `__secp256k1_sign(secret, digest)`: r (32) || s (32) || recovery id (1),
+ * s in the low half, the nonce RFC 6979's; or a one-byte failure code. */
+void *lotus_crypto_secp256k1_sign(const void *sk_b, const void *digest_b) {
+    const EC_GROUP *group = lotus_k1_group();
+    if (!group) return lotus_k1_code(LOTUS_K1_UNAVAILABLE);
+    const unsigned char *sk = lotus_k1_bytes(sk_b, 32);
+    const unsigned char *h = lotus_k1_bytes(digest_b, 32);
+    if (!sk) return lotus_k1_code(LOTUS_K1_BAD_KEY);
+    if (!h) return lotus_k1_code(LOTUS_K1_BAD_SIG);
+    const BIGNUM *n = EC_GROUP_get0_order(group);
+
+    BN_CTX *ctx = BN_CTX_new();
+    EC_POINT *big_r = EC_POINT_new(group);
+    BIGNUM *d = BN_new(), *z = BN_new(), *k = BN_new(), *kinv = BN_new();
+    BIGNUM *x = BN_new(), *y = BN_new(), *r = BN_new(), *s = BN_new();
+    BIGNUM *b = BN_new(), *binv = BN_new(), *t = BN_new(), *u = BN_new();
+    BIGNUM *n2 = BN_new(), *half = BN_new();
+    void *out = NULL;
+    int code = LOTUS_K1_UNAVAILABLE;
+    unsigned char kk[32], vv[32], hb[32];
+    memset(kk, 0x00, 32);
+    memset(vv, 0x01, 32);
+
+    if (!(ctx && big_r && d && z && k && kinv && x && y && r && s && b && binv && t && u && n2 && half)) {
+        goto done;
+    }
+    if (!lotus_k1_secret(group, sk, d)) { code = LOTUS_K1_BAD_KEY; goto done; }
+    BN_set_flags(k, BN_FLG_CONSTTIME);
+    BN_set_flags(kinv, BN_FLG_CONSTTIME);
+    /* z is the digest as an integer (n is 256 bits, so bits2int keeps all
+     * of it); bits2octets(h) is z mod n. */
+    if (!BN_bin2bn(h, 32, z) || !BN_nnmod(t, z, n, ctx) || BN_bn2binpad(t, hb, 32) != 32) goto done;
+    if (!BN_sub(n2, n, BN_value_one()) || !BN_sub(n2, n2, BN_value_one())) goto done;
+    if (!BN_rshift1(half, n)) goto done;
+
+    /* RFC 6979 § 3.2 steps d-g. */
+    if (!lotus_k1_hmac(kk, vv, 0x00, sk, hb, kk) || !lotus_k1_hmac(kk, vv, -1, NULL, NULL, vv)) goto done;
+    if (!lotus_k1_hmac(kk, vv, 0x01, sk, hb, kk) || !lotus_k1_hmac(kk, vv, -1, NULL, NULL, vv)) goto done;
+    /* Step h, bounded: a candidate fails with probability about 2^-128. */
+    for (int attempt = 0; attempt < 64 && !out; attempt++) {
+        if (attempt > 0) {
+            if (!lotus_k1_hmac(kk, vv, 0x00, NULL, NULL, kk) || !lotus_k1_hmac(kk, vv, -1, NULL, NULL, vv)) {
+                goto done;
+            }
+        }
+        if (!lotus_k1_hmac(kk, vv, -1, NULL, NULL, vv)) goto done;
+        if (!BN_bin2bn(vv, 32, k)) goto done;
+        if (BN_is_zero(k) || BN_cmp(k, n) >= 0) continue;
+        if (EC_POINT_mul(group, big_r, k, NULL, NULL, ctx) != 1
+            || EC_POINT_get_affine_coordinates(group, big_r, x, y, ctx) != 1
+            || !BN_nnmod(r, x, n, ctx)) {
+            goto done;
+        }
+        if (BN_is_zero(r)) continue;
+        int recid = (BN_is_odd(y) ? 1 : 0) | (BN_cmp(x, n) >= 0 ? 2 : 0);
+        /* kinv = k^(n-2) mod n; s = kinv * (z + r*d), with d entering
+         * only as b*d for a random b, divided out at the end. */
+        if (!BN_mod_exp_mont_consttime(kinv, k, n2, n, ctx, NULL)) goto done;
+        do {
+            if (!BN_rand_range(b, n)) goto done;
+        } while (BN_is_zero(b));
+        if (!BN_mod_exp_mont_consttime(binv, b, n2, n, ctx, NULL)
+            || !BN_mod_mul(t, b, d, n, ctx)        /* b*d */
+            || !BN_mod_mul(t, t, r, n, ctx)        /* b*r*d */
+            || !BN_mod_mul(u, b, z, n, ctx)        /* b*z */
+            || !BN_mod_add(t, t, u, n, ctx)        /* b*(z + r*d) */
+            || !BN_mod_mul(t, t, kinv, n, ctx)
+            || !BN_mod_mul(s, t, binv, n, ctx)) {
+            goto done;
+        }
+        if (BN_is_zero(s)) continue;
+        if (BN_cmp(s, half) > 0) {
+            if (!BN_sub(s, n, s)) goto done;
+            recid ^= 1;
+        }
+        unsigned char sig[65];
+        if (BN_bn2binpad(r, sig, 32) != 32 || BN_bn2binpad(s, sig + 32, 32) != 32) goto done;
+        sig[64] = (unsigned char)recid;
+        out = lotus_caller_or_global_bytes_create(65);
+        if (!out) goto done;
+        memcpy(lotus_bytes_data(out), sig, 65);
+    }
+
+done:
+    OPENSSL_cleanse(kk, sizeof kk);
+    OPENSSL_cleanse(vv, sizeof vv);
+    EC_POINT_free(big_r);
+    BN_clear_free(d);
+    BN_free(z);
+    BN_clear_free(k);
+    BN_clear_free(kinv);
+    BN_free(x);
+    BN_free(y);
+    BN_free(r);
+    BN_free(s);
+    BN_clear_free(b);
+    BN_clear_free(binv);
+    BN_clear_free(t);
+    BN_clear_free(u);
+    BN_free(n2);
+    BN_free(half);
+    BN_CTX_free(ctx);
+    return out ? out : lotus_k1_code(code);
+}
+
+/* `__secp256k1_recover(digest, r, s, recovery_id)`: the 65-byte
+ * uncompressed public key that signed `digest` with (r, s), or a one-byte
+ * failure code. R's x is r (plus n when the id's bit 1 is set), its y the
+ * root of that parity (bit 0); Q = r^-1 (s·R - z·G). A high s is
+ * accepted, as Ethereum's ecrecover accepts it: recovery names the
+ * signer, the low-s rule is the verifier's. */
+void *lotus_crypto_secp256k1_recover(const void *digest_b, const void *r_b, const void *s_b, int64_t recid) {
+    const EC_GROUP *group = lotus_k1_group();
+    if (!group) return lotus_k1_code(LOTUS_K1_UNAVAILABLE);
+    const unsigned char *h = lotus_k1_bytes(digest_b, 32);
+    const unsigned char *rb = lotus_k1_bytes(r_b, 32);
+    const unsigned char *sb = lotus_k1_bytes(s_b, 32);
+    if (!h || !rb || !sb || recid < 0 || recid > 3) return lotus_k1_code(LOTUS_K1_BAD_SIG);
+    const BIGNUM *n = EC_GROUP_get0_order(group);
+
+    BN_CTX *ctx = BN_CTX_new();
+    EC_POINT *big_r = EC_POINT_new(group), *q = EC_POINT_new(group);
+    BIGNUM *r = BN_new(), *s = BN_new(), *z = BN_new(), *x = BN_new(), *p = BN_new();
+    BIGNUM *rinv = BN_new(), *u1 = BN_new(), *u2 = BN_new();
+    void *out = NULL;
+    int code = LOTUS_K1_UNAVAILABLE;
+    if (!(ctx && big_r && q && r && s && z && x && p && rinv && u1 && u2)) goto done;
+    if (!BN_bin2bn(rb, 32, r) || !BN_bin2bn(sb, 32, s) || !BN_bin2bn(h, 32, z)) goto done;
+    if (!EC_GROUP_get_curve(group, p, NULL, NULL, ctx)) goto done;
+    code = LOTUS_K1_BAD_SIG;
+    if (BN_is_zero(r) || BN_cmp(r, n) >= 0 || BN_is_zero(s) || BN_cmp(s, n) >= 0) goto done;
+    if (!BN_copy(x, r) || ((recid & 2) && !BN_add(x, x, n))) goto done;
+    if (BN_cmp(x, p) >= 0) goto done;
+    if (EC_POINT_set_compressed_coordinates(group, big_r, x, (int)(recid & 1), ctx) != 1) goto done;
+    if (!BN_mod_inverse(rinv, r, n, ctx)
+        || !BN_mod_mul(u1, z, rinv, n, ctx)
+        || (!BN_is_zero(u1) && !BN_sub(u1, n, u1))   /* -z/r */
+        || !BN_mod_mul(u2, s, rinv, n, ctx)          /* s/r */
+        || EC_POINT_mul(group, q, u1, big_r, u2, ctx) != 1
+        || EC_POINT_is_at_infinity(group, q)) {
+        goto done;
+    }
+    out = lotus_k1_point_bytes(group, q, ctx);
+    if (!out) code = LOTUS_K1_UNAVAILABLE;
+
+done:
+    EC_POINT_free(big_r);
+    EC_POINT_free(q);
+    BN_free(r);
+    BN_free(s);
+    BN_free(z);
+    BN_free(x);
+    BN_free(p);
+    BN_free(rinv);
+    BN_free(u1);
+    BN_free(u2);
+    BN_CTX_free(ctx);
+    return out ? out : lotus_k1_code(code);
+}
+
+/* `secp256k1_verify(public, digest, signature)`: 1 when `signature` (64
+ * bytes, r || s) is the key's signature of the 32-byte `digest` with s in
+ * the low half, else 0. `public` is the 65-byte uncompressed or 33-byte
+ * compressed SEC 1 encoding, checked to be on the curve. A high-s
+ * signature is refused, as libsecp256k1 refuses it: its twin (r, n - s)
+ * verifies the same digest, so accepting both would make a signature
+ * malleable. */
+int64_t lotus_crypto_secp256k1_verify(const void *pub_b, const void *digest_b, const void *sig_b) {
+    const EC_GROUP *group = lotus_k1_group();
+    if (!group || !pub_b) return 0;
+    int64_t pub_len = lotus_bytes_len(pub_b);
+    if (pub_len != 65 && pub_len != 33) return 0;
+    const unsigned char *pub = (const unsigned char *)pub_b + sizeof(int64_t);
+    const unsigned char *h = lotus_k1_bytes(digest_b, 32);
+    const unsigned char *sig = lotus_k1_bytes(sig_b, 64);
+    if (!h || !sig) return 0;
+    const BIGNUM *n = EC_GROUP_get0_order(group);
+
+    BN_CTX *ctx = BN_CTX_new();
+    EC_POINT *q = EC_POINT_new(group), *big_x = EC_POINT_new(group);
+    BIGNUM *r = BN_new(), *s = BN_new(), *z = BN_new(), *half = BN_new();
+    BIGNUM *w = BN_new(), *u1 = BN_new(), *u2 = BN_new(), *x = BN_new();
+    int64_t ok = 0;
+    if (!(ctx && q && big_x && r && s && z && half && w && u1 && u2 && x)) goto done;
+    if (EC_POINT_oct2point(group, q, pub, (size_t)pub_len, ctx) != 1 || EC_POINT_is_at_infinity(group, q)) {
+        goto done;
+    }
+    if (!BN_bin2bn(sig, 32, r) || !BN_bin2bn(sig + 32, 32, s) || !BN_bin2bn(h, 32, z) || !BN_rshift1(half, n)) {
+        goto done;
+    }
+    if (BN_is_zero(r) || BN_cmp(r, n) >= 0 || BN_is_zero(s) || BN_cmp(s, half) > 0) goto done;
+    if (!BN_mod_inverse(w, s, n, ctx)
+        || !BN_mod_mul(u1, z, w, n, ctx)
+        || !BN_mod_mul(u2, r, w, n, ctx)
+        || EC_POINT_mul(group, big_x, u1, q, u2, ctx) != 1
+        || EC_POINT_is_at_infinity(group, big_x)
+        || EC_POINT_get_affine_coordinates(group, big_x, x, NULL, ctx) != 1
+        || !BN_nnmod(x, x, n, ctx)) {
+        goto done;
+    }
+    ok = BN_cmp(x, r) == 0 ? 1 : 0;
+
+done:
+    EC_POINT_free(q);
+    EC_POINT_free(big_x);
+    BN_free(r);
+    BN_free(s);
+    BN_free(z);
+    BN_free(half);
+    BN_free(w);
+    BN_free(u1);
+    BN_free(u2);
+    BN_free(x);
+    BN_CTX_free(ctx);
+    ERR_clear_error();
+    return ok;
 }
