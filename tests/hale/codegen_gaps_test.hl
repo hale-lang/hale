@@ -17,14 +17,14 @@
 fn dbl(n: Int) -> Int { return n * 2; }
 fn tri(n: Int) -> Int { return n * 3; }
 
-fn pick(big: Bool) -> fn(Int) -> Int {
+fn pick(big: Bool) -> fn (Int) -> Int {
     if big { return tri; }
     return dbl;
 }
 
 locus Picker {
     params { big: Bool = false; }
-    fn get() -> fn(Int) -> Int { return pick(self.big); }
+    fn get() -> fn (Int) -> Int { return pick(self.big); }
 }
 
 fn count_of(xs: [Int; 0]) -> Int { return len(xs); }
@@ -82,7 +82,11 @@ fn main() {
     let pair = (tri, 1);
     std::test::assert_eq_int(pair.0(4), 12, "a tuple part is called");
     let c = false;
-    std::test::assert_eq_int((if c { dbl } else { tri })(5), 15, "an `if` that picks a fn is called");
+    std::test::assert_eq_int(
+        (if c { dbl } else { tri })(5),
+        15,
+        "an `if` that picks a fn is called",
+    );
     pick(true)(1);
 
     // zero-length arrays
@@ -102,7 +106,7 @@ fn main() {
     std::test::assert_eq_str(through_interface(h), "abc", "a StringView through an interface");
     let b = std::bytes::BytesBuilder { };
     b.append_str("xyz");
-    let f: fn(std::bytes::BytesBuilder) -> StringView = view_of;
+    let f: fn (std::bytes::BytesBuilder) -> StringView = view_of;
     std::test::assert_eq_int(len(f(b)), 3, "a StringView through a fn value");
     let w = Watcher { };
     std::test::assert_eq_int(w.size(), 0, "a StringView through a perspective");
