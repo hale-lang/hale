@@ -1,0 +1,15 @@
+// refused at line 9: payload type mismatch
+// A type in a refusal is named as the program spells it (`IoError`), not
+// as the compiler's representation (`TypeRef("IoError")`).
+type Oops { why: String; }
+type Other { code: Int; }
+
+fn read() -> Int fallible(Oops) { fail Oops { why: "no" }; }
+fn outer() -> Int fallible(Other) {
+    let v = read() or raise;
+    return v;
+}
+
+fn main() {
+    print(outer() or 0);
+}

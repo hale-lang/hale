@@ -52,7 +52,7 @@ impl<'ctx, 'p> TermStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(fd_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::term::is_tty: fd must be Int, got {:?}",
+                "std::term::is_tty: fd must be Int, got {}",
                 fd_ty
             )));
         }
@@ -103,7 +103,7 @@ impl<'ctx, 'p> TermStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::stdout::write_bytes: s must be String, got {:?}",
+                "std::io::stdout::write_bytes: s must be String, got {}",
                 s_ty
             )));
         }
@@ -198,7 +198,7 @@ impl<'ctx, 'p> TermStdlib<'ctx> for Cx<'ctx, 'p> {
         let (t_val, t_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(t_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::stdin::read_byte: timeout_ms must be Int, got {:?}",
+                "std::io::stdin::read_byte: timeout_ms must be Int, got {}",
                 t_ty
             )));
         }

@@ -1,0 +1,14 @@
+// refused at line 6: mode `bulk` of `Box` can reach the end of its body without returning a value
+// A mode's backstop, placed at the mode.
+locus Box {
+    params { k: Int; }
+
+    mode bulk() -> String {
+        print("bulk");
+    }
+}
+
+fn main() {
+    let b = Box { k: 1 };
+    print(b.bulk());
+}

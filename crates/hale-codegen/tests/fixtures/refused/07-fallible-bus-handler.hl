@@ -1,0 +1,13 @@
+// refused at line 8: bus handler `L.on_tick` is fallible, and a bus handler cannot be
+// A refusal raised while synthesizing the handler's wrapper, outside any
+// body: placed at the handler.
+type Tick { n: Int; }
+type E { code: Int; }
+locus L {
+    bus { subscribe "tick" as on_tick of type Tick; }
+    fn on_tick(t: Tick) -> Int fallible(E) { return 1; }
+}
+
+fn main() {
+    L { };
+}

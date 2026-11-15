@@ -88,7 +88,7 @@ impl<'ctx, 'p> EnvStdlib<'ctx> for Cx<'ctx, 'p> {
         let (i_val, i_ty) = self.lower_expr(&args[0], scope)?;
         if i_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::env::arg: index must be Int, got {:?}",
+                "std::env::arg: index must be Int, got {}",
                 i_ty
             )));
         }
@@ -134,14 +134,14 @@ impl<'ctx, 'p> EnvStdlib<'ctx> for Cx<'ctx, 'p> {
         let (i_val, i_ty) = self.lower_expr(&args[0], scope)?;
         if i_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::env::arg_or: index must be Int, got {:?}",
+                "std::env::arg_or: index must be Int, got {}",
                 i_ty
             )));
         }
         let (d_val, d_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(d_ty, CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
-                "std::env::arg_or: default must be String, got {:?}",
+                "std::env::arg_or: default must be String, got {}",
                 d_ty
             )));
         }
@@ -210,7 +210,7 @@ impl<'ctx, 'p> EnvStdlib<'ctx> for Cx<'ctx, 'p> {
         let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(name_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::env::var: name must be String, got {:?}",
+                "std::env::var: name must be String, got {}",
                 name_ty
             )));
         }
@@ -245,7 +245,7 @@ impl<'ctx, 'p> EnvStdlib<'ctx> for Cx<'ctx, 'p> {
         let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(name_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::env::var_exists: name must be String, got {:?}",
+                "std::env::var_exists: name must be String, got {}",
                 name_ty
             )));
         }

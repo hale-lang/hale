@@ -1,0 +1,9 @@
+// refused at line 4: generic type `Box` expects 1 args, got 2
+// A refusal raised while instantiating a generic, before any body:
+// placed at the template.
+type Box<T> { v: T; }
+
+fn main() {
+    let b: Box<Int, Int> = Box { v: 1 };
+    print(b.v);
+}

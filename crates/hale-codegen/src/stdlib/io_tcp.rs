@@ -141,7 +141,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::listen_socket: host must be String, got {:?}",
+                "std::io::tcp::listen_socket: host must be String, got {}",
                 host_ty
             )));
         }
@@ -149,7 +149,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::listen_socket: port must be Int, got {:?}",
+                "std::io::tcp::listen_socket: port must be Int, got {}",
                 port_ty
             )));
         }
@@ -258,7 +258,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::accept_one: listen_fd must be Int, got {:?}",
+                "std::io::tcp::accept_one: listen_fd must be Int, got {}",
                 fd_ty
             )));
         }
@@ -330,7 +330,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__listen_socket: host must be String, got {:?}",
+                "std::io::tcp::__listen_socket: host must be String, got {}",
                 host_ty
             )));
         }
@@ -338,7 +338,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__listen_socket: port must be Int, got {:?}",
+                "std::io::tcp::__listen_socket: port must be Int, got {}",
                 port_ty
             )));
         }
@@ -384,7 +384,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__connect: host must be String, got {:?}",
+                "std::io::tcp::__connect: host must be String, got {}",
                 host_ty
             )));
         }
@@ -392,7 +392,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__connect: port must be Int, got {:?}",
+                "std::io::tcp::__connect: port must be Int, got {}",
                 port_ty
             )));
         }
@@ -438,7 +438,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__accept_one: listen_fd must be Int, got {:?}",
+                "std::io::tcp::__accept_one: listen_fd must be Int, got {}",
                 fd_ty
             )));
         }
@@ -487,14 +487,14 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__send_bytes: fd must be Int, got {:?}",
+                "std::io::tcp::__send_bytes: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__send_bytes: bytes must be Bytes, got {:?}",
+                "std::io::tcp::__send_bytes: bytes must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -552,14 +552,14 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__send: fd must be Int, got {:?}",
+                "std::io::tcp::__send: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(msg_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__send: msg must be String, got {:?}",
+                "std::io::tcp::__send: msg must be String, got {}",
                 msg_ty
             )));
         }
@@ -608,14 +608,14 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__recv: fd must be Int, got {:?}",
+                "std::io::tcp::__recv: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (max_val, max_ty) = self.lower_expr(&args[1], scope)?;
         if max_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__recv: max_bytes must be Int, got {:?}",
+                "std::io::tcp::__recv: max_bytes must be Int, got {}",
                 max_ty
             )));
         }
@@ -662,14 +662,14 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__recv_bytes: fd must be Int, got {:?}",
+                "std::io::tcp::__recv_bytes: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (max_val, max_ty) = self.lower_expr(&args[1], scope)?;
         if max_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__recv_bytes: max_bytes must be Int, got {:?}",
+                "std::io::tcp::__recv_bytes: max_bytes must be Int, got {}",
                 max_ty
             )));
         }
@@ -798,7 +798,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(name_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::{label}: name must be String, got {name_ty:?}"
+                "std::io::tcp::{label}: name must be String, got {name_ty}"
             )));
         }
         let name_val = self.unpack_view_if_needed(name_val, &name_ty)?;
@@ -807,7 +807,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
             let (fd_val, fd_ty) = self.lower_expr(&args[1], scope)?;
             if fd_ty != CodegenTy::Int {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::io::tcp::{label}: fd must be Int, got {fd_ty:?}"
+                    "std::io::tcp::{label}: fd must be Int, got {fd_ty}"
                 )));
             }
             call_args.push(fd_val.into());
@@ -839,7 +839,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__local_port: fd must be Int, got {fd_ty:?}"
+                "std::io::tcp::__local_port: fd must be Int, got {fd_ty}"
             )));
         }
         let f = self.module.get_function("lotus_tcp_local_port").expect("lotus_tcp_local_port declared");
@@ -873,7 +873,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (e_val, e_ty) = self.lower_expr(&args[0], scope)?;
         if e_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__io_error_kind: errno must be Int, got {:?}",
+                "std::io::tcp::__io_error_kind: errno must be Int, got {}",
                 e_ty
             )));
         }
@@ -909,7 +909,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (e_val, e_ty) = self.lower_expr(&args[0], scope)?;
         if e_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__io_error_detail: errno must be Int, got {:?}",
+                "std::io::tcp::__io_error_detail: errno must be Int, got {}",
                 e_ty
             )));
         }
@@ -945,7 +945,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::__close_fd: fd must be Int, got {:?}",
+                "std::io::tcp::__close_fd: fd must be Int, got {}",
                 fd_ty
             )));
         }
@@ -995,7 +995,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__set_recv_timeout_ns: fd must be Int, \
-                 got {:?}",
+                 got {}",
                 fd_ty
             )));
         }
@@ -1003,7 +1003,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         if ns_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__set_recv_timeout_ns: ns must be Int, \
-                 got {:?}",
+                 got {}",
                 ns_ty
             )));
         }
@@ -1061,7 +1061,7 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::__shutdown_listen_socket: fd must \
-                 be Int, got {:?}",
+                 be Int, got {}",
                 fd_ty
             )));
         }
@@ -1130,7 +1130,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::connect: host must be String, got {:?}",
+                "std::io::tcp::connect: host must be String, got {}",
                 host_ty
             )));
         }
@@ -1138,7 +1138,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::connect: port must be Int, got {:?}",
+                "std::io::tcp::connect: port must be Int, got {}",
                 port_ty
             )));
         }
@@ -1146,7 +1146,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (w, wt) = self.lower_expr(&args[2], scope)?;
             if wt != CodegenTy::Duration {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::io::tcp::{}: {} must be a Duration, got {:?}",
+                    "std::io::tcp::{}: {} must be a Duration, got {}",
                     name,
                     if dial == TcpDial::Within { "timeout" } else { "wait" },
                     wt

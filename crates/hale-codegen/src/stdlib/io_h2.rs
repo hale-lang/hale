@@ -70,7 +70,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 _ => {
                     return Err(CodegenError::Unsupported(format!(
-                        "{surface}: an argument must be {}, got {:?}",
+                        "{surface}: an argument must be {}, got {}",
                         if *want == Arg::Int { "Int" } else { "Bytes" },
                         ty
                     )))

@@ -863,7 +863,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 Ok(())
             }
             other => Err(CodegenError::Unsupported(format!(
-                "bus payload array `{}: [{:?}; {}]` — array element type \
+                "bus payload array `{}: [{}; {}]` — array element type \
                  not supported in m70 wire format. Supported elements: \
                  primitives (Int, Float, Decimal, Bool, Duration, Time) \
                  and user-struct TypeRefs. Strings, Bytes, and nested \
@@ -1080,7 +1080,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 Ok(())
             }
             other => Err(CodegenError::Unsupported(format!(
-                "bus payload array `{}: [{:?}; {}]` — array element type \
+                "bus payload array `{}: [{}; {}]` — array element type \
                  not supported in m70 wire format on the deserialize side.",
                 fname, other, n
             ))),
@@ -1322,7 +1322,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 CodegenTy::Bounded(belem, bn) => {
                     if Self::bounded_elem_is_ptr(belem) {
                         return Err(CodegenError::Unsupported(format!(
-                            "bus payload field `{}: bounded[{:?}; {}]` — \
+                            "bus payload field `{}: bounded[{}; {}]` — \
                              pointer-element bounded cross-process is \
                              post-v1 polish; scalar-element bounded \
                              travels as flat bytes",
@@ -1363,7 +1363,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
-                        "bus payload field `{}: {:?}` — m70 wire format \
+                        "bus payload field `{}: {}` — m70 wire format \
                          supports primitives, String, Bytes, fixed-size \
                          arrays of primitives or TypeRefs, and nested \
                          structs (whose leaves are primitives/String/Bytes); \
@@ -1761,7 +1761,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 CodegenTy::Bounded(belem, bn) => {
                     if Self::bounded_elem_is_ptr(belem) {
                         return Err(CodegenError::Unsupported(format!(
-                            "bus payload field `{}: bounded[{:?}; {}]` — \
+                            "bus payload field `{}: bounded[{}; {}]` — \
                              pointer-element bounded cross-process is \
                              post-v1 polish",
                             fname, belem, bn
@@ -1794,7 +1794,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
-                        "bus payload field `{}: {:?}` — m70 wire format \
+                        "bus payload field `{}: {}` — m70 wire format \
                          supports primitives, String, Bytes, fixed-size \
                          arrays of primitives or TypeRefs, and nested \
                          structs",

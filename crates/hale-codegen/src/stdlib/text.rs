@@ -65,7 +65,7 @@ impl<'ctx, 'p> TextStdlib<'ctx> for Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::text::{}: arg must be Int (byte value), got {:?}",
+                "std::text::{}: arg must be Int (byte value), got {}",
                 which, ty
             )));
         }
@@ -190,7 +190,7 @@ impl<'ctx, 'p> TextStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::text::base64::encode: b must be Bytes, got {:?}",
+                "std::text::base64::encode: b must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -229,7 +229,7 @@ impl<'ctx, 'p> TextStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::text::base64::url_encode: b must be Bytes, got {:?}",
+                "std::text::base64::url_encode: b must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -269,7 +269,7 @@ impl<'ctx, 'p> TextStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::text::base64::decode: s must be String, got {:?}",
+                "std::text::base64::decode: s must be String, got {}",
                 s_ty
             )));
         }
