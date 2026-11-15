@@ -36977,3 +36977,228 @@ void lotus_lc_run_shutdown(void *self, const char *cause, int admitted) {
     if (admitted) lotus_lc_emit("Cancellation", "Completed", s, "PoolRun");
 }
 #endif /* LOTUS_LIFECYCLE_TRACE */
+
+/*
+ * GH #1934: `U256` and `I256`. A value is an LLVM i256; codegen stores
+ * it into a 32-byte slot and hands the slot here, read as four
+ * little-endian 64-bit words (word 0 the lowest), which is how an i256
+ * lies in memory on every little-endian target the runtime builds for.
+ * The arithmetic below works on eight 32-bit limbs with only 64-bit
+ * multiplies and divides, so no target needs an `__int128` libcall
+ * (the wasm32 runtime has none).
+ */
+static void lotus_wide_load(const uint64_t *in, uint32_t w[8]) {
+    for (int i = 0; i < 4; i++) {
+        w[2 * i] = (uint32_t)(in[i] & 0xffffffffu);
+        w[2 * i + 1] = (uint32_t)(in[i] >> 32);
+    }
+}
+
+static void lotus_wide_store(const uint32_t w[8], uint64_t *out) {
+    for (int i = 0; i < 4; i++) {
+        out[i] = (uint64_t)w[2 * i] | ((uint64_t)w[2 * i + 1] << 32);
+    }
+}
+
+static int lotus_wide_is_zero(const uint32_t w[8]) {
+    for (int i = 0; i < 8; i++) {
+        if (w[i]) return 0;
+    }
+    return 1;
+}
+
+/* w = w / d in place; returns w % d. */
+static uint32_t lotus_wide_divmod_small(uint32_t w[8], uint32_t d) {
+    uint64_t rem = 0;
+    for (int i = 7; i >= 0; i--) {
+        uint64_t cur = (rem << 32) | w[i];
+        w[i] = (uint32_t)(cur / d);
+        rem = cur % d;
+    }
+    return (uint32_t)rem;
+}
+
+/* w = w * m + add in place; returns 1 when the result needs a 257th bit. */
+static int lotus_wide_mul_add_small(uint32_t w[8], uint32_t m, uint32_t add) {
+    uint64_t carry = add;
+    for (int i = 0; i < 8; i++) {
+        uint64_t cur = (uint64_t)w[i] * m + carry;
+        w[i] = (uint32_t)cur;
+        carry = cur >> 32;
+    }
+    return carry != 0;
+}
+
+/* Two's complement negation in place. */
+static void lotus_wide_negate(uint32_t w[8]) {
+    uint64_t carry = 1;
+    for (int i = 0; i < 8; i++) {
+        uint64_t cur = (uint64_t)(uint32_t)~w[i] + carry;
+        w[i] = (uint32_t)cur;
+        carry = cur >> 32;
+    }
+}
+
+/* An arithmetic result outside the type's range, a division by zero, a
+ * negative `Int` made a `U256`, or a negative shift count: a violation
+ * where it happens, never a wrapped value (spec/types.md § U256 and
+ * I256). */
+__attribute__((noreturn, cold))
+void lotus_wide_violation(int32_t what, int32_t is_signed) {
+    const char *ty = is_signed ? "I256" : "U256";
+    const char *range = is_signed ? "-2^255 through 2^255 - 1" : "0 through 2^256 - 1";
+    switch (what) {
+    case 0: case 1: case 2: case 3: case 4: case 6: {
+        static const char *ops[] = {"+", "-", "*", "/", "%", "", "unary -"};
+        static const char *checked[] = {"checked_add", "checked_sub", "checked_mul", "checked_div",
+                                        "checked_div", "", "checked_sub"};
+        fprintf(stderr,
+                "violation: %s `%s` overflows: the result is outside %s's range, %s "
+                "(%s::%s fails instead of stopping)\n",
+                ty, ops[what], ty, range, ty, checked[what]);
+        break;
+    }
+    case 5:
+        fprintf(stderr, "violation: %s division by zero (%s::checked_div fails instead of stopping)\n", ty, ty);
+        break;
+    case 7:
+        fprintf(stderr, "violation: %s::from_int of a negative Int: a U256 is 0 through 2^256 - 1\n", ty);
+        break;
+    case 8:
+        fprintf(stderr, "violation: %s shift by a negative count\n", ty);
+        break;
+    default:
+        fprintf(stderr, "violation: %s arithmetic\n", ty);
+        break;
+    }
+    fflush(stderr);
+    exit(1);
+}
+
+/* The decimal text of `v`: digits only, a leading `-` for a negative
+ * I256. At most 78 digits and a sign. */
+char *lotus_wide_to_string(lotus_arena_t *a, const uint64_t *v, int32_t is_signed) {
+    uint32_t w[8];
+    lotus_wide_load(v, w);
+    int neg = is_signed && (w[7] & 0x80000000u);
+    if (neg) lotus_wide_negate(w);
+    char digits[96];
+    int n = 0;
+    do {
+        uint32_t chunk = lotus_wide_divmod_small(w, 1000000000u);
+        int more = !lotus_wide_is_zero(w);
+        for (int k = 0; k < 9 && (more || chunk); k++) {
+            digits[n++] = (char)('0' + chunk % 10);
+            chunk /= 10;
+        }
+        if (!more) break;
+    } while (1);
+    if (n == 0) digits[n++] = '0';
+    char *out = (char *)lotus_arena_alloc(a, (size_t)n + 2, 1);
+    if (!out) return NULL;
+    int p = 0;
+    if (neg) out[p++] = '-';
+    while (n > 0) out[p++] = digits[--n];
+    out[p] = '\0';
+    return out;
+}
+
+/* `0x` and the lowercase hex digits of `v`, no leading zeros (`0x0` for
+ * zero); a negative I256 is `-0x` and its magnitude's digits. */
+char *lotus_wide_to_hex(lotus_arena_t *a, const uint64_t *v, int32_t is_signed) {
+    uint32_t w[8];
+    lotus_wide_load(v, w);
+    int neg = is_signed && (w[7] & 0x80000000u);
+    if (neg) lotus_wide_negate(w);
+    char *out = (char *)lotus_arena_alloc(a, 64 + 4, 1);
+    if (!out) return NULL;
+    static const char hex[] = "0123456789abcdef";
+    int p = 0;
+    if (neg) out[p++] = '-';
+    out[p++] = '0';
+    out[p++] = 'x';
+    int started = 0;
+    for (int i = 7; i >= 0; i--) {
+        for (int s = 28; s >= 0; s -= 4) {
+            int d = (int)((w[i] >> s) & 0xf);
+            if (d || started) {
+                out[p++] = hex[d];
+                started = 1;
+            }
+        }
+    }
+    if (!started) out[p++] = '0';
+    out[p] = '\0';
+    return out;
+}
+
+/* The 32 big-endian bytes of `v` (an I256 as its two's complement). */
+void *lotus_wide_to_be_bytes(lotus_arena_t *a, const uint64_t *v) {
+    void *blob = lotus_bytes_create(a, 32);
+    if (!blob) return NULL;
+    unsigned char *b = (unsigned char *)lotus_bytes_data(blob);
+    for (int i = 0; i < 32; i++) {
+        int word = 3 - i / 8;
+        int shift = 56 - 8 * (i % 8);
+        b[i] = (unsigned char)((v[word] >> shift) & 0xff);
+    }
+    return blob;
+}
+
+/* `s` read as a U256 (or, `is_signed`, an I256) into `out`: decimal
+ * digits, or `0x` / `0X` and hex digits of either case, an I256's with
+ * an optional leading `-`; nothing else (no `+`, space, `_`, or empty
+ * digits). An I256's hex is its magnitude, never a two's complement.
+ * 0 when it reads and fits, 1 otherwise (`out` untouched). */
+int64_t lotus_wide_parse(const char *s, int32_t is_signed, uint64_t *out) {
+    if (!s) return 1;
+    int neg = 0;
+    if (is_signed && *s == '-') {
+        neg = 1;
+        s++;
+    }
+    uint32_t base = 10;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        base = 16;
+        s += 2;
+    }
+    if (!*s) return 1;
+    uint32_t w[8] = {0};
+    for (; *s; s++) {
+        char c = *s;
+        uint32_t d;
+        if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
+        else if (base == 16 && c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
+        else if (base == 16 && c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
+        else return 1;
+        if (lotus_wide_mul_add_small(w, base, d)) return 1;
+    }
+    if (is_signed) {
+        if (w[7] & 0x80000000u) {
+            /* only -2^255 has its top bit set and still fits */
+            int min = neg && w[7] == 0x80000000u;
+            for (int i = 0; i < 7 && min; i++) {
+                if (w[i]) min = 0;
+            }
+            if (!min) return 1;
+        }
+        if (neg) lotus_wide_negate(w);
+    }
+    lotus_wide_store(w, out);
+    return 0;
+}
+
+/* The Bytes blob `b`, exactly 32 bytes, read big-endian into `out`.
+ * 0 when it is 32 bytes long, 1 otherwise (`out` untouched). */
+int64_t lotus_wide_from_be_bytes(void *b, uint64_t *out) {
+    if (!b || lotus_bytes_len(b) != 32) return 1;
+    const unsigned char *p = (const unsigned char *)lotus_bytes_data(b);
+    for (int word = 0; word < 4; word++) {
+        uint64_t x = 0;
+        for (int k = 0; k < 8; k++) {
+            x = (x << 8) | p[(3 - word) * 8 + k];
+        }
+        out[word] = x;
+    }
+    return 0;
+}

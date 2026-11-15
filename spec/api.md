@@ -2426,9 +2426,10 @@ the subscriptions admitted and not ended, over every connection;
 
 A request, a response and an error cross under the exposure's codec
 (F.36). The JSON codec is generated from the type, as the GH #1106
-binding's was: `Int`, `Float`, `Bool`, `String`, `Decimal<S>` and nested
-structs of the same, with a `json:"key"` tag renaming a key (the tag's
-text after a comma is its options: `json:"price,string"`, below); a plain alias
+binding's was: `Int`, `Float`, `Bool`, `String`, `Decimal<S>`, `U256`,
+`I256` and nested structs of the same, with a `json:"key"` tag renaming a
+key (the tag's text after a comma is its options: `json:"price,string"`
+and `json:"gasUsed,hex"`, below); a plain alias
 (`type Count = Int;`) is what its chain ends at, and a builtin record
 (`IndexError`) its fields as the description gives them; an identity, a range
 and a quantity are their integer (`spec/units.md` § Layout and the
@@ -2498,6 +2499,44 @@ i128, no number — is the call's `Lost` outcome naming the parse's
 kind and input, as a reply the codec refuses is, never `0d`;
 2026-11-07, downstream handoff), and
 the TypeScript and JavaScript clients hold it as a `number`.
+
+**A `U256` or an `I256`** (GH #1934) crosses JSON as a string: the
+encoder writes its decimal digits in a JSON string (`"1000000000000000000"`,
+`"-12"`), a field, a list's element, an enum's value and a map's value
+alike, or, where the field's tag says `hex` (`amount: U256
+`json:",hex"`;`), `0x` and its lowercase hex digits, none leading
+(`"0xde0b6b3a7640000"`, `"0x0"`; a negative `I256` `"-0x10"`). The
+decoder reads, whatever the tag says, a JSON string holding decimal
+digits or `0x` / `0X` and hex digits of either case (an `I256`'s with a
+leading `-`, its hex the magnitude), as `U256::parse` reads them, and a
+JSON number that is an integer and fits (`255`); a fraction or an
+exponent (`1.5`, `1e3`), a negative `U256`, a value outside the range,
+a string holding anything else (a space, a `+`, an escape, nothing) and
+a bool or an object are `wrong_type` for the field, in `api_decode` and
+`from_json` alike. Its schema is `{"type": "string", "x-hale-type":
+"U256"}` (or `"I256"`), so a reader that keeps every digit knows to;
+protobuf carries it as its digits in a `string` (hex under the tag;
+proto3 has no 256-bit integer), and the generated Hale client declares
+the field `U256` / `I256`, the TypeScript and JavaScript clients a
+`string`.
+
+**`json:",hex"` on an `Int`** (GH #1934, JSON-RPC's hex quantities,
+`"gasUsed":"0x4dc"`): the decoder reads, besides the JSON number any
+`Int` field reads, a JSON string of `0x` (or `0X`) and one or more hex
+digits of either case; no prefix, no digits, a sign, a space or a value
+past `Int`'s range (`"0x8000000000000000"`) is `wrong_type` for the
+field. The encoder writes `0x` and the lowercase hex digits, none
+leading, in a JSON string (`"0x4dc"`, `"0x0"`). Hex text has no sign,
+and the type of a plain `Int` cannot rule a negative value out, so the
+encoder writes a negative `Int` as the JSON number it is (`-5`), which
+the decoder reads back. On a list of `Int`s the option applies to each
+element, and on a map of values' value field to each value. Its schema
+is `{"type": "string", "x-hale-type": "Int"}`, as a quoted Decimal's
+names its scalar; protobuf carries it as the `int64` it is (the option
+is the JSON codec's), and the generated Hale client declares the field
+`Int` with the same tag. The options are `string` and `hex`; `hex` on a
+field that is no `Int`, `U256` or `I256` (or a list of them) is refused
+at the field, as is any other option.
 
 **A positional record** (2026-11-14, downstream handoff) is a record
 marked `@positional`: `@positional type Candle { t: Int; open: Decimal<2>;

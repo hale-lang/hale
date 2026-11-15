@@ -180,28 +180,51 @@ pub fn json_tag_laws(programs: &[&Program]) -> Vec<Diag> {
                     }
                 }
                 for opt in hale_syntax::json_gen::json_tag_options(Some(tag)) {
-                    if opt != "string" {
-                        diags.push(Diag::ty(
-                            f.span,
-                            format!(
-                                "{at}: `json:` tag option `{opt}` is not one: the one option is `string`, a Decimal \
-                                 written as a JSON string (`json:\"price,string\"`)"
-                            ),
-                        ));
-                        continue;
-                    }
+                    use hale_syntax::ast::PrimType;
                     let ty = shapes.dealias(&f.ty);
                     let elem = hale_syntax::json_gen::wire_list(&ty).map(|(e, _, _)| shapes.dealias(e));
-                    let decimal = |te: &TypeExpr| matches!(te, TypeExpr::Primitive(hale_syntax::ast::PrimType::Decimal(_), _));
-                    if !(decimal(&ty) || elem.as_ref().is_some_and(decimal)) {
-                        diags.push(Diag::ty(
-                            f.span,
-                            format!(
-                                "{at}: `json:` tag option `string` writes a Decimal as a JSON string, and the field is \
-                                 `{}`: it is for a `Decimal<S>` field or a list of them",
-                                crate::surfaces::type_text(&f.ty)
-                            ),
-                        ));
+                    let of = |pick: &dyn Fn(&TypeExpr) -> bool| pick(&ty) || elem.as_ref().is_some_and(|e| pick(e));
+                    match opt.as_str() {
+                        "string" => {
+                            let decimal = |te: &TypeExpr| matches!(te, TypeExpr::Primitive(PrimType::Decimal(_), _));
+                            if !of(&decimal) {
+                                diags.push(Diag::ty(
+                                    f.span,
+                                    format!(
+                                        "{at}: `json:` tag option `string` writes a Decimal as a JSON string, and the field \
+                                         is `{}`: it is for a `Decimal<S>` field or a list of them",
+                                        crate::surfaces::type_text(&f.ty)
+                                    ),
+                                ));
+                            }
+                        }
+                        // GH #1934: `0x` hex text, for JSON-RPC's quantities
+                        // and chain values
+                        "hex" => {
+                            let integer = |te: &TypeExpr| {
+                                matches!(te, TypeExpr::Primitive(PrimType::Int | PrimType::U256 | PrimType::I256, _))
+                            };
+                            if !of(&integer) {
+                                diags.push(Diag::ty(
+                                    f.span,
+                                    format!(
+                                        "{at}: `json:` tag option `hex` writes an integer as `0x` hex text, and the field \
+                                         is `{}`: it is for an `Int`, `U256` or `I256` field or a list of them",
+                                        crate::surfaces::type_text(&f.ty)
+                                    ),
+                                ));
+                            }
+                        }
+                        _ => {
+                            diags.push(Diag::ty(
+                                f.span,
+                                format!(
+                                    "{at}: `json:` tag option `{opt}` is not one: the options are `string`, a Decimal \
+                                     written as a JSON string (`json:\"price,string\"`), and `hex`, an `Int`, `U256` \
+                                     or `I256` written as `0x` hex text (`json:\"gasUsed,hex\"`)"
+                                ),
+                            ));
+                        }
                     }
                 }
             }

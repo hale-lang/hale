@@ -24,6 +24,7 @@ Hale provides eight built-in scalar types and two inline sequence types. `Decima
 | `Int` | 64-bit signed integer | `0`, `42`, `1_000_000`, `0xFF`, `0b1010` | Default type for integer literals |
 | `Float` | 64-bit IEEE-754 float | `3.14`, `1.0e-3`, `2.5` | Default type for fractional literals |
 | `Decimal` | Exact fixed-point number (`Decimal<9>`) | `1.50d`, `0.00d` | `d` suffix; parameterized as `Decimal<S>` (`S` in `0..=18`) |
+| `U256`, `I256` | 256-bit unsigned / signed integer | `U256::from_int(5)`, `U256::parse("0xff") or ...` | No literal; checked arithmetic (see [Numbers, Money & Time](./math.md)) |
 | `Bool` | Boolean truth value | `true`, `false` | Supports `==`, `!=`, `&&`, `\|\|`, `!` |
 | `String` | UTF-8 text | `"hello"`, `f"val={x}"`, `"""..."""` | Immutable UTF-8 byte sequence |
 | `Bytes` | Raw binary data | `b"\x00\x01\xff"`, `b"raw"` | Arbitrary octets, including null bytes |

@@ -39,3 +39,5 @@ mod unit_quantity_lowering;
 mod unit_dialect_unsupported;
 #[path = "unit_fallible.rs"]
 mod unit_fallible;
+#[path = "wide_int_violation.rs"]
+mod wide_int_violation;

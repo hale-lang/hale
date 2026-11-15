@@ -1,0 +1,206 @@
+// std::u256 / std::i256 (GH #1934): what a 256-bit integer's calls do
+// that can fail. The operators stop the process on an overflow or a
+// division by zero (a violation, never a wrapped value); these are the
+// forms that fail instead, with an `ArithError { kind, op }` (`kind`
+// `overflow` or `division_by_zero`) or, for text and bytes that do not
+// read, a `ParseError`. Each is a short body over the `__` intrinsics,
+// which cannot fail.
+
+/// `s` as a U256: decimal digits, or `0x` / `0X` and hex digits of
+/// either case. Anything else (a sign, a space, `_`, no digits) or a
+/// value past 2^256 - 1 is `ParseError { kind: "u256", input: s }`.
+fn __std_u256_parse(s: String) -> U256 fallible(ParseError) {
+    if !std::u256::__parses(s) {
+        fail ParseError { kind: "u256", input: s };
+    }
+    return std::u256::__parse(s);
+}
+
+/// `s` as an I256: a U256's spellings with an optional leading `-`; the
+/// hex digits are the magnitude, never a two's complement. Outside
+/// -2^255 through 2^255 - 1 is `ParseError { kind: "i256", input: s }`.
+fn __std_i256_parse(s: String) -> I256 fallible(ParseError) {
+    if !std::i256::__parses(s) {
+        fail ParseError { kind: "i256", input: s };
+    }
+    return std::i256::__parse(s);
+}
+
+/// The U256 the 32 big-endian bytes `b` spell. Any other length is
+/// `ParseError { kind: "u256_bytes", input: <b in hex> }`.
+fn __std_u256_from_be_bytes(b: Bytes) -> U256 fallible(ParseError) {
+    if len(b) != 32 {
+        fail ParseError { kind: "u256_bytes", input: std::hex::encode(b) };
+    }
+    return std::u256::__from_be_bytes(b);
+}
+
+/// The I256 the 32 big-endian two's complement bytes `b` spell. Any
+/// other length is `ParseError { kind: "i256_bytes", input: <b in hex> }`.
+fn __std_i256_from_be_bytes(b: Bytes) -> I256 fallible(ParseError) {
+    if len(b) != 32 {
+        fail ParseError { kind: "i256_bytes", input: std::hex::encode(b) };
+    }
+    return std::i256::__from_be_bytes(b);
+}
+
+/// `x` as an Int, when it is at most 2^63 - 1.
+fn __std_u256_to_int(x: U256) -> Int fallible(ArithError) {
+    if x > std::u256::from_int(9223372036854775807) {
+        fail ArithError { kind: "overflow", op: "U256::to_int" };
+    }
+    return std::u256::__low(x);
+}
+
+/// `x` as an Int, when it is within Int's range.
+fn __std_i256_to_int(x: I256) -> Int fallible(ArithError) {
+    let lo = std::i256::from_int(-9223372036854775807 - 1);
+    if x < lo || x > std::i256::from_int(9223372036854775807) {
+        fail ArithError { kind: "overflow", op: "I256::to_int" };
+    }
+    return std::i256::__low(x);
+}
+
+/// `x` as a U256, when it is not negative.
+fn __std_u256_from_i256(x: I256) -> U256 fallible(ArithError) {
+    if x < std::i256::from_int(0) {
+        fail ArithError { kind: "overflow", op: "U256::from_i256" };
+    }
+    return std::u256::__from_bits(x);
+}
+
+/// `x` as an I256, when it is at most 2^255 - 1.
+fn __std_i256_from_u256(x: U256) -> I256 fallible(ArithError) {
+    let v = std::i256::__from_bits(x);
+    if v < std::i256::from_int(0) {
+        fail ArithError { kind: "overflow", op: "I256::from_u256" };
+    }
+    return v;
+}
+
+fn __std_u256_checked_add(a: U256, b: U256) -> U256 fallible(ArithError) {
+    if std::u256::__add_overflows(a, b) {
+        fail ArithError { kind: "overflow", op: "U256::checked_add" };
+    }
+    return a + b;
+}
+
+fn __std_u256_checked_sub(a: U256, b: U256) -> U256 fallible(ArithError) {
+    if std::u256::__sub_overflows(a, b) {
+        fail ArithError { kind: "overflow", op: "U256::checked_sub" };
+    }
+    return a - b;
+}
+
+fn __std_u256_checked_mul(a: U256, b: U256) -> U256 fallible(ArithError) {
+    if std::u256::__mul_overflows(a, b) {
+        fail ArithError { kind: "overflow", op: "U256::checked_mul" };
+    }
+    return a * b;
+}
+
+fn __std_u256_checked_div(a: U256, b: U256) -> U256 fallible(ArithError) {
+    if b == std::u256::from_int(0) {
+        fail ArithError { kind: "division_by_zero", op: "U256::checked_div" };
+    }
+    return a / b;
+}
+
+/// `a * b / c`, the product exact in 512 bits and the quotient rounded
+/// down; `c` zero, or a quotient past 2^256 - 1, fails.
+fn __std_u256_mul_div(a: U256, b: U256, c: U256) -> U256 fallible(ArithError) {
+    if c == std::u256::from_int(0) {
+        fail ArithError { kind: "division_by_zero", op: "U256::mul_div" };
+    }
+    if std::u256::__mul_div_overflows(a, b, c) {
+        fail ArithError { kind: "overflow", op: "U256::mul_div" };
+    }
+    return std::u256::__mul_div(a, b, c);
+}
+
+fn __std_i256_checked_add(a: I256, b: I256) -> I256 fallible(ArithError) {
+    if std::i256::__add_overflows(a, b) {
+        fail ArithError { kind: "overflow", op: "I256::checked_add" };
+    }
+    return a + b;
+}
+
+fn __std_i256_checked_sub(a: I256, b: I256) -> I256 fallible(ArithError) {
+    if std::i256::__sub_overflows(a, b) {
+        fail ArithError { kind: "overflow", op: "I256::checked_sub" };
+    }
+    return a - b;
+}
+
+fn __std_i256_checked_mul(a: I256, b: I256) -> I256 fallible(ArithError) {
+    if std::i256::__mul_overflows(a, b) {
+        fail ArithError { kind: "overflow", op: "I256::checked_mul" };
+    }
+    return a * b;
+}
+
+/// `a / b` toward zero, as `/` divides; a zero `b`, or `I256::min() / -1`,
+/// fails.
+fn __std_i256_checked_div(a: I256, b: I256) -> I256 fallible(ArithError) {
+    if b == std::i256::from_int(0) {
+        fail ArithError { kind: "division_by_zero", op: "I256::checked_div" };
+    }
+    if b == std::i256::from_int(-1) && a == std::i256::min() {
+        fail ArithError { kind: "overflow", op: "I256::checked_div" };
+    }
+    return a / b;
+}
+
+/// `a * b / c`, the product exact in 512 bits and the quotient rounded
+/// toward zero, as `/` rounds; `c` zero, or a quotient outside I256's
+/// range, fails.
+fn __std_i256_mul_div(a: I256, b: I256, c: I256) -> I256 fallible(ArithError) {
+    if c == std::i256::from_int(0) {
+        fail ArithError { kind: "division_by_zero", op: "I256::mul_div" };
+    }
+    if std::i256::__mul_div_overflows(a, b, c) {
+        fail ArithError { kind: "overflow", op: "I256::mul_div" };
+    }
+    return std::i256::__mul_div(a, b, c);
+}
+
+// The JSON codecs' `json:",hex"` on an `Int` (GH #1934): JSON-RPC sends
+// its quantities as quoted hex (`"gasUsed":"0x4dc"`).
+
+/// The `Int` the text `s[lo..hi]` spells as `0x` (or `0X`) and one or more
+/// hex digits of either case. No prefix, no digits, any other byte (a
+/// sign, a space) or a value past 2^63 - 1 is a
+/// `ParseError { kind: "hex_int", input: s[lo..hi] }`.
+fn __json_hex_int(s: String, lo: Int, hi: Int) -> Int fallible(ParseError) {
+    if hi - lo < 3 || std::str::byte_at_unchecked(s, lo) != 48 {
+        fail ParseError { kind: "hex_int", input: s[lo..hi] };
+    }
+    let x = std::str::byte_at_unchecked(s, lo + 1);
+    if x != 120 && x != 88 {
+        fail ParseError { kind: "hex_int", input: s[lo..hi] };
+    }
+    let mut v = 0;
+    let mut i = lo + 2;
+    while i < hi {
+        let d = std::hex::digit(std::str::byte_at_unchecked(s, i));
+        // 576460752303423487 is (2^63 - 1) >> 4: one more digit past it
+        // leaves Int's range
+        if d < 0 || v > 576460752303423487 {
+            fail ParseError { kind: "hex_int", input: s[lo..hi] };
+        }
+        v = v * 16 + d;
+        i = i + 1;
+    }
+    return v;
+}
+
+/// The JSON text of the `json:",hex"` `Int` `v`: `"0x"` and its lowercase
+/// hex digits, none leading (`"0x0"` for zero). Hex text has no sign, so a
+/// negative `v` is written as the JSON number it is, which the decoder
+/// reads back.
+fn __json_int_hex_text(v: Int) -> String {
+    if v < 0 {
+        return to_string(v);
+    }
+    return "\"" + std::u256::to_hex(std::u256::from_int(v)) + "\"";
+}

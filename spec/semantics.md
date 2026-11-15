@@ -281,6 +281,7 @@ into a `Float`, F.23):
 | `Int` (an identity's and a range's are the unit dialect's, spec/units.md) | `+ - * / %`, `& \| ^ << >>`, unary `-` `~`, every comparison |
 | `Float` | `+ - * /`, unary `-`, every comparison |
 | `Decimal<S>` | `+ - * / %`, unary `-`, every comparison (one scale) |
+| `U256`, `I256` | `+ - * / %` (checked: an overflow or a division by zero is a violation), `& \| ^ ~`, `<< >>` by an `Int` count, unary `-` (an `I256`'s only), every comparison; never mixed with another type (spec/types.md § U256 and I256) |
 | `Duration`, `Time`, a quantity, a point | the unit dialect's algebra (spec/units.md) |
 | `Bool` | `==` `!=`, `&&` `\|\|`, unary `!` |
 | `String` | `+` (concatenation; `String + <printable>` renders the other side), every comparison |
@@ -2792,7 +2793,9 @@ payload picks the consumer mode:
   the `std::json` object cursor), dispatching each key to the matching
   field and reading the value by the field's declared type. A field is
   what the api surface's JSON codec carries of one (spec/api.md §
-  Codecs): a scalar (`Int` / `Float` / `Bool` / `String` / `Decimal<S>`),
+  Codecs): a scalar (`Int` / `Float` / `Bool` / `String` / `Decimal<S>`
+  / `U256` / `I256`, a 256-bit integer as a JSON string of its decimal
+  digits or `0x` hex, or an integer number that fits),
   a scalar of the unit dialect as its `Int`, a `Time` as its RFC 3339
   text, a `Duration` as its nanoseconds, a `std::json::Value` as its
   text, an enum (a payload-free variant as its name in a JSON string,
@@ -2815,10 +2818,15 @@ payload picks the consumer mode:
   zero (spec/types.md § Decimal<S>, spec/api.md § Codecs). The key is
   the tag value before its first comma (so a key holds no comma), else
   the field name (a tag of options alone, `json:",string"`, keeps the
-  name); the one option is
+  name); the options are
   `string`, on a `Decimal<S>` field or a list of them, which `to_json`
-  writes as a JSON string of the digits (`"97000.5"`), and any other
-  option, or `string` on another field, is refused at the field.
+  writes as a JSON string of the digits (`"97000.5"`), and `hex` (GH
+  #1934), on an `Int`, `U256` or `I256` field or a list of them, which
+  `to_json` writes as `0x` and lowercase hex digits in a JSON string
+  (`"0x4dc"`; a negative `Int` as its JSON number) and with which an
+  `Int` field also reads `0x` hex text (a 256-bit field reads decimal or
+  hex text either way); any other option, or an option on a field it is
+  not for, is refused at the field.
   Unmatched keys (and nested objects/arrays under them)
   are skipped. A record marked `@positional` (`@positional type Candle
   { t: Int; close: Decimal<2>; }`) has the codec without a tag and

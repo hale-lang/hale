@@ -43,6 +43,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         | CodegenTy::Float
                         | CodegenTy::Bool
                         | CodegenTy::Decimal(_)
+                        | CodegenTy::U256
+                        | CodegenTy::I256
                         | CodegenTy::Duration
                         | CodegenTy::Time
                         | CodegenTy::String
@@ -66,6 +68,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 PrimType::String => Ok(CodegenTy::String),
                 PrimType::Duration => Ok(CodegenTy::Duration),
                 PrimType::Decimal(s) => Ok(CodegenTy::Decimal(*s)),
+                PrimType::U256 => Ok(CodegenTy::U256),
+                PrimType::I256 => Ok(CodegenTy::I256),
                 PrimType::Time => Ok(CodegenTy::Time),
                 PrimType::Bytes => Ok(CodegenTy::Bytes),
                 PrimType::BytesView => Ok(CodegenTy::BytesView),
@@ -735,6 +739,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // adjustment in mul/div, not f64.
                 self.context.i128_type().into()
             }
+            // GH #1934: an i256, 32 bytes at the target's i256 alignment.
+            CodegenTy::U256 | CodegenTy::I256 => self.context.custom_width_int_type(256).into(),
             CodegenTy::Bool => self.context.bool_type().into(),
             CodegenTy::Enum(name) => {
                 // m47 + payloads: no-payload enums stay as i32
@@ -807,6 +813,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     CodegenTy::Float => Some(PrimType::Float),
                     CodegenTy::Bool => Some(PrimType::Bool),
                     CodegenTy::Decimal(s) => Some(PrimType::Decimal(*s)),
+                    CodegenTy::U256 => Some(PrimType::U256),
+                    CodegenTy::I256 => Some(PrimType::I256),
                     CodegenTy::Duration => Some(PrimType::Duration),
                     CodegenTy::Time => Some(PrimType::Time),
                     CodegenTy::String => Some(PrimType::String),
@@ -1315,6 +1323,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
+            | CodegenTy::U256
+            | CodegenTy::I256
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }

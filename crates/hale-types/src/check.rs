@@ -331,11 +331,38 @@ enum Operator {
 }
 
 /// What an operand is to the operators (`operand_class`).
+/// GH #1934: the conversion a 256-bit place's mismatch names, appended
+/// to the message (empty when neither side is a 256-bit integer). An
+/// `Int` never converts implicitly, in either direction.
+fn wide_conversion_hint(want: &Ty, got: &Ty) -> String {
+    let wide = |t: &Ty| matches!(t, Ty::Prim(PrimType::U256 | PrimType::I256));
+    match (want, got) {
+        (w, Ty::Prim(PrimType::Int)) if wide(w) => {
+            let n = w.display();
+            format!(": a 256-bit integer never converts implicitly; write `{n}::from_int(n)`")
+        }
+        (Ty::Prim(PrimType::Int), g) if wide(g) => {
+            let n = g.display();
+            format!(": a 256-bit integer never converts implicitly; write `{n}::to_int(x) or ...`")
+        }
+        (w, g) if wide(w) && wide(g) => {
+            format!(
+                ": a 256-bit integer never converts implicitly; write `{}::from_{}(x) or ...`",
+                w.display(),
+                g.display().to_lowercase()
+            )
+        }
+        _ => String::new(),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum OperandClass {
     Int,
     Float,
     Decimal,
+    /// GH #1934: `U256` (false) or `I256` (true).
+    Wide(bool),
     Bool,
     String,
     Enum,
@@ -8213,7 +8240,7 @@ impl<'a> StoreDecls<'a> {
             TypeExpr::Primitive(p, _) => matches!(
                 p,
                 PrimType::Int | PrimType::Uint | PrimType::Float | PrimType::Decimal(_) | PrimType::Bool
-                    | PrimType::Time | PrimType::Duration
+                    | PrimType::U256 | PrimType::I256 | PrimType::Time | PrimType::Duration
             ),
             TypeExpr::Named { .. } => match self.named(t).and_then(|n| self.types.get(n)).map(|d| &d.body) {
                 Some(TypeDeclBody::Alias(a)) => self.inline_scalar(a, depth + 1),
@@ -11003,7 +11030,7 @@ fn topic_payload_not_carried(
             return Some(format!(
                 "topic `{topic}` declares `payload: {}`, {field}, which the wire format does not \
                  carry: a delivery serializes each field, and carries scalars (`Int`, `Float`, \
-                 `Bool`, `Decimal`, `Duration`, `Time`, a unit type), payload-free enums, `String`, \
+                 `Bool`, `Decimal`, `U256`, `I256`, `Duration`, `Time`, a unit type), payload-free enums, `String`, \
                  `Bytes`, structs of those, `bounded` buffers of scalars, and arrays of scalars or structs. Carry it as \
                  a value the wire takes (a payload-free enum's tag, a tuple as a struct).",
                 ty.display()
@@ -11042,7 +11069,14 @@ fn struct_field_not_carried(ty: &Ty, top: &TopScope, depth: u32) -> Option<Strin
     // A scalar, or a payload-free enum's tag: fixed bytes on the wire.
     let scalar = |t: &Ty| match t {
         Ty::Prim(
-            PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::Decimal(_) | PrimType::Duration | PrimType::Time,
+            PrimType::Int
+            | PrimType::Float
+            | PrimType::Bool
+            | PrimType::Decimal(_)
+            | PrimType::U256
+            | PrimType::I256
+            | PrimType::Duration
+            | PrimType::Time,
         ) => true,
         Ty::Named(m) => match top.symbols.get(m) {
             Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Scalar(_), .. })) => true,
@@ -16768,10 +16802,11 @@ impl<'a> Checker<'a> {
                             self.diags.push(Diag::ty(
                                 value.span(),
                                 format!(
-                                    "let `{}`: expected `{}`, got `{}`",
+                                    "let `{}`: expected `{}`, got `{}`{}",
                                     name.name,
                                     want.display(),
-                                    got.display()
+                                    got.display(),
+                                    wide_conversion_hint(&want, &got)
                                 ),
                             ));
                         }
@@ -17084,9 +17119,10 @@ impl<'a> Checker<'a> {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
-                                    "return: expected `{}`, got `{}`",
+                                    "return: expected `{}`, got `{}`{}",
                                     expected_ret.display(),
-                                    got.display()
+                                    got.display(),
+                                    wide_conversion_hint(expected_ret, &got)
                                 ),
                             ));
                         }
@@ -17113,9 +17149,10 @@ impl<'a> Checker<'a> {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
-                                    "return: expected `{}`, got `{}`",
+                                    "return: expected `{}`, got `{}`{}",
                                     expected_ret.display(),
-                                    got.display()
+                                    got.display(),
+                                    wide_conversion_hint(expected_ret, &got)
                                 ),
                             ));
                         }
@@ -20755,7 +20792,9 @@ impl<'a> Checker<'a> {
             return None;
         }
         match t {
-            Ty::Prim(P::Int | P::Float | P::Bool | P::Decimal(_) | P::Duration | P::Time | P::String | P::Bytes) => None,
+            Ty::Prim(
+                P::Int | P::Float | P::Bool | P::Decimal(_) | P::U256 | P::I256 | P::Duration | P::Time | P::String | P::Bytes,
+            ) => None,
             Ty::Prim(p) => Some(format!("`{}` is not an element type", crate::ty::prim_name(*p))),
             Ty::Tuple(_) => Some("a tuple".into()),
             Ty::Array(..) => Some("an array".into()),
@@ -22983,6 +23022,8 @@ impl<'a> Checker<'a> {
                                                     | PrimType::Float
                                                     | PrimType::Duration
                                                     | PrimType::Decimal(_)
+                                                    | PrimType::U256
+                                                    | PrimType::I256
                                             ) | Ty::Unknown
                                         );
                                         if !numeric {
@@ -22990,7 +23031,7 @@ impl<'a> Checker<'a> {
                                                 a.span(),
                                                 format!(
                                                     "`{}` takes numeric operands (Int / Float / \
-                                                     Duration / Decimal), got `{}`",
+                                                     Duration / Decimal / U256 / I256), got `{}`",
                                                     id.name,
                                                     at.display()
                                                 ),
@@ -25328,6 +25369,62 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #1934: a binary operator with a `U256` or `I256` operand, when
+    /// the general rule would not answer it: a shift's count is an
+    /// `Int`, and any other mix of a 256-bit integer with a different
+    /// type is refused naming the conversion. `None` leaves the operator
+    /// to the general rule (two operands of one 256-bit type).
+    fn wide_binop(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span) -> Option<Ty> {
+        use BinOp::*;
+        let wide = |t: &Ty| matches!(t, Ty::Prim(PrimType::U256 | PrimType::I256));
+        if !wide(lt) && !wide(rt) {
+            return None;
+        }
+        if matches!(op, Shl | Shr) && wide(lt) {
+            if !matches!(rt, Ty::Prim(PrimType::Int) | Ty::Unknown) {
+                self.diags.push(Diag::ty(
+                    span,
+                    format!(
+                        "`{}`: a `{}` shifts by an `Int` count, not a `{}`",
+                        crate::unit_quantities::op_symbol(op),
+                        lt.display(),
+                        rt.display()
+                    ),
+                ));
+            }
+            return Some(lt.clone());
+        }
+        if lt == rt || matches!(lt, Ty::Unknown) || matches!(rt, Ty::Unknown) {
+            return None;
+        }
+        if matches!(op, And | Or) {
+            return None;
+        }
+        let (w, other) = if wide(lt) { (lt, rt) } else { (rt, lt) };
+        let name = w.display();
+        let hint = match other {
+            Ty::Prim(PrimType::Int) => format!("make the `Int` a `{name}` with `{name}::from_int(n)`"),
+            Ty::Prim(PrimType::U256 | PrimType::I256) => {
+                let o = other.display();
+                format!("convert one explicitly (`{name}::from_{}(x) or ...`)", o.to_lowercase())
+            }
+            Ty::Prim(PrimType::String) if matches!(op, Add) => {
+                return None;
+            }
+            _ => format!("convert the other operand to a `{name}` explicitly"),
+        };
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "binary op: `{}` and `{}` do not mix: a 256-bit integer never converts implicitly; {hint}",
+                lt.display(),
+                rt.display()
+            ),
+        ));
+        let compared = matches!(op, Eq | NotEq | Lt | Gt | LtEq | GtEq);
+        Some(if compared { Ty::Prim(PrimType::Bool) } else { Ty::Unknown })
+    }
+
     fn binop_ty(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span, operands: (&Expr, &Expr)) -> Ty {
         use BinOp::*;
         // Ergonomics arc: `String + <printable>` and the symmetric
@@ -25345,6 +25442,12 @@ impl<'a> Checker<'a> {
                 self.record_printed(operands.1, rt);
                 return Ty::Prim(PrimType::String);
             }
+        }
+        // GH #1934: a 256-bit integer shifts by an `Int` count, and mixes
+        // with nothing else: no `Int`, `Decimal` or `Float` operand
+        // converts implicitly, in either direction.
+        if let Some(t) = self.wide_binop(op, lt, rt, span) {
+            return t;
         }
         // `Decimal<S>`: two scales never mix; a scale-less operand (a
         // literal, a parse) takes the other's scale.
@@ -25611,6 +25714,8 @@ impl<'a> Checker<'a> {
             Ty::Prim(PrimType::Int) => OperandClass::Int,
             Ty::Prim(PrimType::Float) => OperandClass::Float,
             Ty::Prim(PrimType::Decimal(_)) => OperandClass::Decimal,
+            Ty::Prim(PrimType::U256) => OperandClass::Wide(false),
+            Ty::Prim(PrimType::I256) => OperandClass::Wide(true),
             Ty::Prim(PrimType::Bool) => OperandClass::Bool,
             Ty::Prim(PrimType::String) => OperandClass::String,
             Ty::Prim(PrimType::Bytes) => OperandClass::Opaque("a byte string"),
@@ -25722,6 +25827,14 @@ impl<'a> Checker<'a> {
         let class = self.operand_class(t, 0)?;
         let applies = match (op, class) {
             (_, OperandClass::Int) => !matches!(op, Operator::Binary(And | Or) | Operator::Unary(UnaryOp::Not)),
+            // GH #1934: an Int's operators, unary `-` only where there is
+            // a sign.
+            (Operator::Binary(b), OperandClass::Wide(_)) => !matches!(b, And | Or),
+            (Operator::Unary(u), OperandClass::Wide(signed)) => match u {
+                UnaryOp::Neg => signed,
+                UnaryOp::BitNot => true,
+                UnaryOp::Not => false,
+            },
             (Operator::Binary(b), OperandClass::Float | OperandClass::Decimal) => {
                 matches!(b, Add | Sub | Mul | Div | Eq | NotEq | Lt | Gt | LtEq | GtEq)
                     || (matches!(b, Mod) && matches!(class, OperandClass::Decimal))
@@ -25760,6 +25873,11 @@ impl<'a> Checker<'a> {
             OperandClass::Int => "`&&`, `||` and `!` take `Bool`s",
             OperandClass::Float => "a `Float` has `+ - * /`, unary `-`, and the comparisons",
             OperandClass::Decimal => "a `Decimal` has `+ - * / %`, unary `-`, and the comparisons",
+            OperandClass::Wide(false) => {
+                "a `U256` has `+ - * / %`, `& | ^ ~`, `<<` and `>>` by an `Int` count, and the comparisons; \
+                 it has no sign to negate (`I256` does)"
+            }
+            OperandClass::Wide(true) => "an `I256` has `+ - * / %`, unary `-`, `& | ^ ~`, `<< >>`, and the comparisons",
             OperandClass::Bool => "a `Bool` has `==`, `!=`, `&&`, `||` and `!`",
             OperandClass::String => "a `String` has `+` (concatenation) and the comparisons",
             OperandClass::Enum => "an enum has `==` and `!=`",

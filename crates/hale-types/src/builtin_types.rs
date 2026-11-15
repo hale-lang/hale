@@ -42,6 +42,11 @@ use PrimType::{Int, String as Str};
 
 /// Every builtin type, by name.
 pub const BUILTIN_TYPES: &[BuiltinType] = &[
+    // GH #1934: the 256-bit integers' calls that fail where an operator
+    // would stop the process (`U256::checked_add`, `mul_div`, `to_int`,
+    // ...): `kind` is `overflow` or `division_by_zero`, `op` the call
+    // (`U256::checked_add`).
+    BuiltinType { name: "ArithError", fields: &[("kind", Str), ("op", Str)], injected: Injected::Always },
     // Routing keys v0.2: the payload of an `on_unmatched: fail` publish
     // no subscriber's key matched. `key_lo` / `key_hi` are the low and
     // high 64 bits of the key (`key_hi` is 0 for an Int key).

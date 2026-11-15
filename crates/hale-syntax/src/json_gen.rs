@@ -53,6 +53,11 @@ enum ScalarTy {
     Str,
     /// `Decimal<S>`, by its scale.
     Decimal(u8),
+    /// GH #1934: `U256` and `I256`, read from a JSON string of decimal
+    /// digits or `0x` hex (or a JSON integer that fits) and written as a
+    /// JSON string, decimal or, under `json:",hex"`, `0x` hex.
+    U256,
+    I256,
 }
 
 impl ScalarTy {
@@ -63,6 +68,16 @@ impl ScalarTy {
             ScalarTy::Bool => "Bool".into(),
             ScalarTy::Str => "String".into(),
             ScalarTy::Decimal(s) => format!("Decimal<{s}>"),
+            ScalarTy::U256 => "U256".into(),
+            ScalarTy::I256 => "I256".into(),
+        }
+    }
+    /// The `std` namespace of a 256-bit integer's functions.
+    fn wide_ns(self) -> Option<&'static str> {
+        match self {
+            ScalarTy::U256 => Some("u256"),
+            ScalarTy::I256 => Some("i256"),
+            _ => None,
         }
     }
     fn zero(self) -> &'static str {
@@ -72,6 +87,8 @@ impl ScalarTy {
             ScalarTy::Bool => "false",
             ScalarTy::Str => "\"\"",
             ScalarTy::Decimal(_) => "0d",
+            ScalarTy::U256 => "std::u256::from_int(0)",
+            ScalarTy::I256 => "std::i256::from_int(0)",
         }
     }
 }
@@ -169,6 +186,9 @@ struct MapValue {
     /// The value field's `json:"...,string"`: a Decimal value written as a
     /// JSON string, as the record writes the field.
     quoted: bool,
+    /// The value field's `json:"...,hex"`: an `Int` value read from and
+    /// written as `0x` hex text, a 256-bit one written as it.
+    hex: bool,
 }
 
 /// What the value `field` of the records `record` of a map of values
@@ -195,7 +215,14 @@ fn map_value(
     if matches!(elem, Elem::Enum { unit_only: false, .. }) {
         return Err("its value is an enum with payloads");
     }
-    Ok(MapValue { field: field.to_string(), elem, elem_ty, key_inits: String::new(), quoted: tag_quoted(&vf.tag) })
+    Ok(MapValue {
+        field: field.to_string(),
+        elem,
+        elem_ty,
+        key_inits: String::new(),
+        quoted: tag_quoted(&vf.tag),
+        hex: tag_hex(&vf.tag),
+    })
 }
 
 /// The maps of values whose value the codec cannot carry, read as the
@@ -302,6 +329,12 @@ struct JsonField {
     /// (`"97000.5"`), as an API that quotes its prices expects. The decoder
     /// reads a Decimal from a number or a string whatever the tag says.
     quoted: bool,
+    /// GH #1934: `json:"key,hex"` on an `Int`, `U256` or `I256` field (or a
+    /// list of them): the encoder writes `0x` and lowercase hex digits in a
+    /// JSON string (`"0x4dc"`, `"0x0"` for zero); an `Int` field reads that
+    /// text as well as a JSON number (JSON-RPC hex quantities). A 256-bit
+    /// field reads decimal or hex text whatever the tag says.
+    hex: bool,
 }
 
 /// The call a generated codec makes where field `field` of `record` takes
@@ -531,6 +564,8 @@ fn scalar_of(te: &TypeExpr) -> Option<ScalarTy> {
         TypeExpr::Primitive(PrimType::Bool, _) => Some(ScalarTy::Bool),
         TypeExpr::Primitive(PrimType::String, _) => Some(ScalarTy::Str),
         TypeExpr::Primitive(PrimType::Decimal(s), _) => Some(ScalarTy::Decimal(*s)),
+        TypeExpr::Primitive(PrimType::U256, _) => Some(ScalarTy::U256),
+        TypeExpr::Primitive(PrimType::I256, _) => Some(ScalarTy::I256),
         _ => None,
     }
 }
@@ -581,9 +616,10 @@ pub fn json_tag_key(tag: Option<&str>) -> Option<String> {
 }
 
 /// The options a field's `json:` tag gives after its key, in order
-/// (`json:"px,string"` gives `["string"]`). The one option is `string`
-/// (a `Decimal<S>` written as a JSON string); the check refuses any other,
-/// and `string` on a field that is no Decimal (`json_codec_laws`).
+/// (`json:"px,string"` gives `["string"]`). The options are `string` (a
+/// `Decimal<S>` written as a JSON string) and `hex` (an `Int`, `U256` or
+/// `I256` as `0x` hex text, GH #1934); the check refuses any other, and
+/// either on a field of a type it is not for (`json_codec_laws`).
 pub fn json_tag_options(tag: Option<&str>) -> Vec<String> {
     let Some(v) = tag.and_then(|t| crate::desugar::tag_value(t, "json")) else { return Vec::new() };
     v.split(',').skip(1).map(|o| o.trim().to_string()).collect()
@@ -596,6 +632,12 @@ fn tag_json_key(tag: &Option<String>) -> Option<String> {
 /// Whether a field's `json:` tag asks for its Decimals as JSON strings.
 fn tag_quoted(tag: &Option<String>) -> bool {
     json_tag_options(tag.as_deref()).iter().any(|o| o == "string")
+}
+
+/// Whether a field's `json:` tag asks for its integers as `0x` hex text
+/// (GH #1934).
+fn tag_hex(tag: &Option<String>) -> bool {
+    json_tag_options(tag.as_deref()).iter().any(|o| o == "hex")
 }
 
 /// A single-segment named type (`Inner`, not `mod::Inner` or `Box<T>`).
@@ -815,7 +857,46 @@ fn scalar_value_expr(s: ScalarTy) -> &'static str {
         ScalarTy::Str => "std::json::unescape_string(__s[(__vs + 1)..(__ve - 1)])",
         // Read strictly in either mode (`strict_scalar_value_expr`).
         ScalarTy::Decimal(_) => "std::str::range_parse_decimal(__s, __vs, __ve) or 0d",
+        // Read by `wide_read` in either mode; never reached.
+        ScalarTy::U256 => "std::u256::from_int(0)",
+        ScalarTy::I256 => "std::i256::from_int(0)",
     }
+}
+
+/// GH #1934: the statements that read the 256-bit integer at `[lo, hi)` of
+/// `src` into `into` (`__f_x =`, or `let __ev: U256 =`): a JSON string
+/// holding decimal digits or `0x` hex (an I256's with an optional `-`),
+/// or a JSON number that is an integer and fits. Anything else (a
+/// fraction, an exponent, a space or an escape in the string, a value
+/// outside the type) is the field's `wrong_type`, in either mode.
+fn wide_read(ns: &str, src: &str, lo: &str, hi: &str, key: &str, into: &str, ind: &str) -> String {
+    let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}");
+    format!(
+        "{ind}let __wq = {lo} < {hi} && std::str::byte_at_unchecked({src}, {lo}) == 34;\n\
+         {ind}let __wl = if __wq {{ {lo} + 1 }} else {{ {lo} }};\n\
+         {ind}let __wh = if __wq {{ {hi} - 1 }} else {{ {hi} }};\n\
+         {ind}if (__wq && ({hi} - {lo} < 2 || std::str::byte_at_unchecked({src}, {hi} - 1) != 34)) || (!__wq && std::json::number_end({src}, __wl, __wh) != __wh) {{ {wrong}; }}\n\
+         {ind}let __wt = {src}[__wl..__wh];\n\
+         {ind}if !std::{ns}::__parses(__wt) {{ {wrong}; }}\n\
+         {ind}{into} std::{ns}::__parse(__wt);\n"
+    )
+}
+
+/// GH #1934: the statements that read the `json:",hex"` `Int` at `[lo, hi)`
+/// of `src` into `into`: a JSON number, as any `Int` field reads one, or a
+/// JSON string of `0x` (or `0X`) and one or more hex digits of either case
+/// (`"0x4dc"`, JSON-RPC's hex quantities). No prefix, no digits, a sign, a
+/// space or a value past `Int`'s range is the field's `wrong_type`.
+fn int_hex_read(src: &str, lo: &str, hi: &str, key: &str, into: &str, ind: &str) -> String {
+    let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}");
+    format!(
+        "{ind}if {lo} < {hi} && std::str::byte_at_unchecked({src}, {lo}) == 34 {{\n\
+         {ind}    if {hi} - {lo} < 2 || std::str::byte_at_unchecked({src}, {hi} - 1) != 34 {{ {wrong}; }}\n\
+         {ind}    {into} __json_hex_int({src}, {lo} + 1, {hi} - 1) or {wrong};\n\
+         {ind}}} else {{\n\
+         {ind}    {into} std::str::range_parse_int({src}, {lo}, {hi}) or {wrong};\n\
+         {ind}}}\n"
+    )
 }
 
 /// The statements that read the Decimal at `[lo, hi)` of `src` into
@@ -921,6 +1002,7 @@ fn strict_scalar_value_expr(s: ScalarTy, key: &str) -> String {
         ),
         // Handled as a statement by the caller; never reached.
         ScalarTy::Bool => format!("std::str::range_eq(__s, __vs, __ve, \"true\") /* {} */", key),
+        ScalarTy::U256 | ScalarTy::I256 => scalar_value_expr(s).to_string(),
         ScalarTy::Str => "std::json::unescape_string(__s[(__vs + 1)..(__ve - 1)])".to_string(),
     }
 }
@@ -1125,6 +1207,9 @@ fn field_read(t: &JsonType, f: &JsonField, prefix: &str, strict: bool, rows: &Ro
     if strict {
         let want = match &f.kind {
             FieldKind::Scalar(ScalarTy::Str) => "__c0 == 34",
+            // a number, or (GH #1934) a string of digits or hex
+            FieldKind::Scalar(ScalarTy::Int) if f.hex => "__c0 == 45 || (__c0 >= 48 && __c0 <= 57) || __c0 == 34",
+            FieldKind::Scalar(ScalarTy::U256 | ScalarTy::I256) => "__c0 == 45 || (__c0 >= 48 && __c0 <= 57) || __c0 == 34",
             FieldKind::Scalar(ScalarTy::Int) | FieldKind::Scalar(ScalarTy::Float) => {
                 "__c0 == 45 || (__c0 >= 48 && __c0 <= 57)"
             }
@@ -1172,6 +1257,25 @@ fn field_read(t: &JsonType, f: &JsonField, prefix: &str, strict: bool, rows: &Ro
         // `1.` and `01` are no number) with no nonzero digit past its
         // field's scale: refused in either mode, never read as zero.
         FieldKind::Scalar(ScalarTy::Decimal(_)) => b.push_str(&decimal_read(
+            "__s",
+            "__vs",
+            "__ve",
+            &f.key,
+            &format!("__f_{} =", f.name),
+            "                    ",
+        )),
+        // GH #1934: a 256-bit integer from a string (decimal or hex) or an
+        // integer number; an `Int` under `json:",hex"` from `0x` text too
+        FieldKind::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256)) => b.push_str(&wide_read(
+            w.wide_ns().expect("a 256-bit integer"),
+            "__s",
+            "__vs",
+            "__ve",
+            &f.key,
+            &format!("__f_{} =", f.name),
+            "                    ",
+        )),
+        FieldKind::Scalar(ScalarTy::Int) if f.hex => b.push_str(&int_hex_read(
             "__s",
             "__vs",
             "__ve",
@@ -1507,11 +1611,14 @@ fn construct_src(t: &JsonType, json: bool) -> String {
 /// The statements that read one JSON element whose text is `[{src}[__es..__ee])`
 /// as `elem`, binding `__ev`; a value of the wrong kind is `wrong_type`
 /// for the list's `key`.
-fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str, rows: &Rows) -> String {
+fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str, rows: &Rows, hex: bool) -> String {
     let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}");
     let mut b = format!("{ind}let __e0 = std::str::byte_at_unchecked({src}, __es);\n");
     let want = match elem {
         Elem::Scalar(ScalarTy::Str, _) => "__e0 == 34",
+        // a number, or (GH #1934) a string of digits or hex
+        Elem::Scalar(ScalarTy::Int, _) if hex => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57) || __e0 == 34",
+        Elem::Scalar(ScalarTy::U256 | ScalarTy::I256, _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57) || __e0 == 34",
         Elem::Scalar(ScalarTy::Int, _) | Elem::Scalar(ScalarTy::Float, _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57)",
         // a number, or a string holding one
         Elem::Scalar(ScalarTy::Decimal(_), _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57) || __e0 == 34",
@@ -1533,8 +1640,17 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str, ro
         Elem::Scalar(ScalarTy::Str, _) => {
             b.push_str(&format!("{ind}let __ev = std::json::unescape_string({src}[(__es + 1)..(__ee - 1)]);\n"));
         }
+        Elem::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256), _) => {
+            let ns = w.wide_ns().expect("a 256-bit integer");
+            b.push_str(&wide_read(ns, src, "__es", "__ee", key, &format!("let __ev: {} =", w.type_name()), ind));
+        }
         Elem::Scalar(ScalarTy::Int, conv) => {
-            b.push_str(&format!("{ind}let __ei = std::str::range_parse_int({src}, __es, __ee) or {wrong};\n"));
+            if hex {
+                b.push_str(&format!("{ind}let mut __ei = 0;\n"));
+                b.push_str(&int_hex_read(src, "__es", "__ee", key, "__ei =", ind));
+            } else {
+                b.push_str(&format!("{ind}let __ei = std::str::range_parse_int({src}, __es, __ee) or {wrong};\n"));
+            }
             match conv {
                 Some(c) => b.push_str(&format!("{ind}let __ev = {};\n", c.from_int("__ei", key))),
                 None => b.push_str(&format!("{ind}let __ev = __ei;\n")),
@@ -1622,7 +1738,7 @@ fn json_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, prefix: &
     b.push_str(&format!("{inner}for __mx in __h_{}.b {{ if __mx.{k} == __mk {{ {dup}; }} }}\n", f.name));
     b.push_str(&format!("{inner}let __es = __mi.val_start;\n"));
     b.push_str(&format!("{inner}let __ee = __mi.val_end;\n"));
-    b.push_str(&json_elem_read(&v.elem, "__ma", &f.key, prefix, &inner, rows));
+    b.push_str(&json_elem_read(&v.elem, "__ma", &f.key, prefix, &inner, rows, v.hex));
     b.push_str(&format!(
         "{inner}push(__h_{}.b, {tn} {{ {k}: __mk, {}: __ev{} }}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
         f.name, v.field, v.key_inits, f.key
@@ -1754,7 +1870,7 @@ fn json_list_read(f: &JsonField, elem: &Elem, prefix: &str, rows: &Rows) -> Stri
         "{ind}        if __et == 32 || __et == 9 || __et == 10 || __et == 13 {{ __ee = __ee - 1; }} else {{ break; }}\n"
     ));
     b.push_str(&format!("{ind}    }}\n"));
-    b.push_str(&json_elem_read(elem, "__la", &f.key, prefix, &format!("{ind}    "), rows));
+    b.push_str(&json_elem_read(elem, "__la", &f.key, prefix, &format!("{ind}    "), rows, f.hex));
     b.push_str(&format!(
         "{ind}    push(__h_{}.b, {}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
         f.name,
@@ -1827,6 +1943,14 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             FieldKind::Scalar(ScalarTy::Float) if f.conv.is_none() => format!("{FLOAT_TEXT}(__v.{})", f.name),
             // `json:"...,string"`: a Decimal's digits in a JSON string
             FieldKind::Scalar(ScalarTy::Decimal(_)) if f.quoted => quoted_text(&format!("to_string(__v.{})", f.name)),
+            // GH #1934: a 256-bit integer is a JSON string, its decimal
+            // digits or (`json:",hex"`) its `0x` hex; an `Int` under
+            // `json:",hex"` its `0x` hex (a negative one a JSON number)
+            FieldKind::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256)) => wide_text(*w, &format!("__v.{}", f.name), f.hex),
+            FieldKind::Scalar(ScalarTy::Int) if f.hex => match &f.conv {
+                Some(c) => format!("__json_int_hex_text({})", c.to_int(&format!("__v.{}", f.name))),
+                None => format!("__json_int_hex_text(__v.{})", f.name),
+            },
             FieldKind::Scalar(_) => match &f.conv {
                 Some(c) => format!("to_string({})", c.to_int(&format!("__v.{}", f.name))),
                 None => format!("to_string(__v.{})", f.name),
@@ -1847,7 +1971,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 let member = match value {
                     Some(v) => {
                         b.push_str(&format!("        let __xe: {} = __x.{};\n", v.elem_ty, v.field));
-                        json_elem_write_q(&v.elem, "__xe", fn_prefix, v.quoted)
+                        json_elem_write_q(&v.elem, "__xe", fn_prefix, v.quoted, v.hex)
                     }
                     None => format!("{fn_prefix}{tn}__by_{k}(__x)"),
                 };
@@ -1868,7 +1992,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 b.push_str(&format!("    for __x in __v.{} {{\n", f.name));
                 b.push_str(&elem_bind(elem, elem_ty, "        "));
                 b.push_str(&format!("        if __n_{} > 0 {{ std::str::builder_append(__b, \",\"); }}\n", f.name));
-                b.push_str(&format!("        std::str::builder_append(__b, {});\n", json_elem_write_q(elem, "__xe", fn_prefix, f.quoted)));
+                b.push_str(&format!("        std::str::builder_append(__b, {});\n", json_elem_write_q(elem, "__xe", fn_prefix, f.quoted, f.hex)));
                 b.push_str(&format!("        __n_{n} = __n_{n} + 1;\n    }}\n", n = f.name));
                 b.push_str("    std::str::builder_append(__b, \"]\");\n");
                 if dynamic {
@@ -1908,7 +2032,9 @@ fn close_tracked(t: &JsonType, f: &JsonField, prefix: &str) -> String {
 /// annotated binding does.
 fn elem_bind(elem: &Elem, elem_ty: &str, ind: &str) -> String {
     match elem {
-        Elem::Scalar(_, Some(_)) | Elem::Scalar(ScalarTy::Decimal(_), _) | Elem::Time => {
+        Elem::Scalar(_, Some(_))
+        | Elem::Scalar(ScalarTy::Decimal(_) | ScalarTy::U256 | ScalarTy::I256, _)
+        | Elem::Time => {
             format!("{ind}let __xe: {elem_ty} = __x;\n")
         }
         _ => format!("{ind}let __xe = __x;\n"),
@@ -1926,11 +2052,26 @@ fn quoted_text(text: &str) -> String {
     format!("\"\\\"\" + {text} + \"\\\"\"")
 }
 
+/// GH #1934: the JSON text of the 256-bit integer `v`: a JSON string of its
+/// decimal digits, or of its `0x` hex where the tag says `hex`.
+fn wide_text(w: ScalarTy, v: &str, hex: bool) -> String {
+    let ns = w.wide_ns().expect("a 256-bit integer");
+    if hex {
+        quoted_text(&format!("std::{ns}::to_hex({v})"))
+    } else {
+        quoted_text(&format!("to_string({v})"))
+    }
+}
+
 /// [`json_elem_write`], a Decimal element as a JSON string where its
-/// field's tag says `string` (`quoted`).
-fn json_elem_write_q(elem: &Elem, v: &str, fn_prefix: &str, quoted: bool) -> String {
+/// field's tag says `string` (`quoted`), an integer as `0x` hex where it
+/// says `hex`.
+fn json_elem_write_q(elem: &Elem, v: &str, fn_prefix: &str, quoted: bool, hex: bool) -> String {
     match elem {
         Elem::Scalar(ScalarTy::Decimal(_), None) if quoted => quoted_text(&format!("to_string({v})")),
+        Elem::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256), _) => wide_text(*w, v, hex),
+        Elem::Scalar(ScalarTy::Int, Some(c)) if hex => format!("__json_int_hex_text({})", c.to_int(v)),
+        Elem::Scalar(ScalarTy::Int, None) if hex => format!("__json_int_hex_text({v})"),
         _ => json_elem_write(elem, v, fn_prefix),
     }
 }
@@ -1938,6 +2079,7 @@ fn json_elem_write_q(elem: &Elem, v: &str, fn_prefix: &str, quoted: bool) -> Str
 fn json_elem_write(elem: &Elem, v: &str, fn_prefix: &str) -> String {
     match elem {
         Elem::Scalar(ScalarTy::Str, _) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
+        Elem::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256), _) => wide_text(*w, v, false),
         Elem::Scalar(_, Some(c)) => format!("to_string({})", c.to_int(v)),
         Elem::Scalar(ScalarTy::Float, None) => format!("{FLOAT_TEXT}({v})"),
         Elem::Scalar(_, None) => format!("to_string({v})"),
@@ -2024,6 +2166,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
             FieldKind::Scalar(ScalarTy::Float) => (1, "f64"),
             FieldKind::Scalar(ScalarTy::Str)
             | FieldKind::Scalar(ScalarTy::Decimal(_))
+            | FieldKind::Scalar(ScalarTy::U256 | ScalarTy::I256)
             | FieldKind::Nested(_)
             | FieldKind::Raw
             | FieldKind::Enum { unit_only: false, .. } => (2, "len"),
@@ -2065,6 +2208,14 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                             b.push_str(&format!(
                                 "            __f_{} = std::str::parse_decimal(__s) or fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }};\n",
                                 f.name, f.key
+                            ));
+                        } else if let FieldKind::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256)) = f.kind {
+                            // GH #1934: a 256-bit integer is its text, decimal
+                            // or hex (proto3 has no 256-bit integer).
+                            let ns = w.wide_ns().expect("a 256-bit integer");
+                            b.push_str(&format!(
+                                "            if !std::{ns}::__parses(__s) {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n            __f_{} = std::{ns}::__parse(__s);\n",
+                                f.key, f.name
                             ));
                         } else {
                             b.push_str(&format!("            __f_{} = __s;\n", f.name));
@@ -2165,6 +2316,7 @@ fn pb_elem_wire(elem: &Elem) -> u32 {
         // a Decimal is its digits in a string, as a field's is
         Elem::Scalar(ScalarTy::Str, _)
         | Elem::Scalar(ScalarTy::Decimal(_), _)
+        | Elem::Scalar(ScalarTy::U256 | ScalarTy::I256, _)
         | Elem::Nested(_)
         | Elem::Raw
         | Elem::Enum { unit_only: false, .. } => 2,
@@ -2185,6 +2337,7 @@ fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> Stri
         }
         Elem::Scalar(ScalarTy::Str, _)
         | Elem::Scalar(ScalarTy::Decimal(_), _)
+        | Elem::Scalar(ScalarTy::U256 | ScalarTy::I256, _)
         | Elem::Nested(_)
         | Elem::Raw
         | Elem::Enum { unit_only: false, .. } => {
@@ -2218,6 +2371,14 @@ fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> Stri
                     ));
                     b.push_str(&format!("{ind}if len(__ed) != __el {{ {wrong}; }}\n"));
                     b.push_str(&format!("{ind}let __ev: {} = std::str::parse_decimal(__ed) or {wrong};\n", d.type_name()));
+                }
+                Elem::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256), _) => {
+                    let ns = w.wide_ns().expect("a 256-bit integer");
+                    b.push_str(&format!(
+                        "{ind}let __ed = std::str::from_bytes(std::bytes::slice(__b, __ee, __ee + __el));\n"
+                    ));
+                    b.push_str(&format!("{ind}if len(__ed) != __el || !std::{ns}::__parses(__ed) {{ {wrong}; }}\n"));
+                    b.push_str(&format!("{ind}let __ev: {} = std::{ns}::__parse(__ed);\n", w.type_name()));
                 }
                 _ => {
                     b.push_str(&format!(
@@ -2307,6 +2468,9 @@ fn generate_pb_emit_src(t: &JsonType) -> String {
             FieldKind::Scalar(ScalarTy::Float) => format!("__api_pb_put_f64({}, {v})", f.pb_no),
             FieldKind::Scalar(ScalarTy::Bool) => format!("__api_pb_put_bool({}, {v})", f.pb_no),
             FieldKind::Scalar(ScalarTy::Decimal(_)) => format!("__api_pb_put_str({}, to_string({v}))", f.pb_no),
+            FieldKind::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256)) => {
+                format!("__api_pb_put_str({}, {})", f.pb_no, wide_pb_text(*w, &v, f.hex))
+            }
             FieldKind::Scalar(ScalarTy::Int) => match &f.conv {
                 Some(c) => format!("__api_pb_put_int({}, {})", f.pb_no, c.to_int(&v)),
                 None => format!("__api_pb_put_int({}, {v})", f.pb_no),
@@ -2358,6 +2522,17 @@ fn generate_pb_emit_src(t: &JsonType) -> String {
     b
 }
 
+/// GH #1934: a 256-bit integer as protobuf carries it, a `string` of its
+/// decimal digits (its `0x` hex under `json:",hex"`).
+fn wide_pb_text(w: ScalarTy, v: &str, hex: bool) -> String {
+    let ns = w.wide_ns().expect("a 256-bit integer");
+    if hex {
+        format!("std::{ns}::to_hex({v})")
+    } else {
+        format!("to_string({v})")
+    }
+}
+
 /// The field occurrence `no` that writes the list element `v`.
 fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
     match elem {
@@ -2367,6 +2542,7 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
         Elem::Scalar(ScalarTy::Int, Some(c)) => format!("__api_pb_put_int({no}, {})", c.to_int(v)),
         Elem::Scalar(ScalarTy::Int, None) => format!("__api_pb_put_int({no}, {v})"),
         Elem::Scalar(ScalarTy::Decimal(_), _) => format!("__api_pb_put_str({no}, to_string({v}))"),
+        Elem::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256), _) => format!("__api_pb_put_str({no}, {})", wide_pb_text(*w, v, false)),
         Elem::Time => format!("__api_pb_put_int({no}, std::time::nanos({v}))"),
         Elem::Raw => format!("__api_pb_put_str({no}, {})", json_value_text(v)),
         Elem::Nested(tn) => format!("__api_pb_put_msg({no}, __api_pb_encode_{tn}({v}))"),
@@ -3011,6 +3187,7 @@ fn generate_codecs(
                     presence: Presence::No,
                     default_expr: None,
                     quoted: false,
+                    hex: false,
                 })
             })
             .collect();
@@ -3329,7 +3506,7 @@ fn generate_enum_json_src(e: &JsonEnum, p: Prefixes, rows: &Rows) -> String {
             b.push_str("        if __tc == 32 || __tc == 9 || __tc == 10 || __tc == 13 { __ee = __ee - 1; } else { break; }\n");
             b.push_str("    }\n");
             b.push_str(&format!("    if __ee <= __es {{ {wrong} }}\n"));
-            b.push_str(&json_elem_read(elem, "__src", RUNTIME_KEY, p.decode, "    ", rows));
+            b.push_str(&json_elem_read(elem, "__src", RUNTIME_KEY, p.decode, "    ", rows, false));
             b.push_str("    return __ev;\n}\n");
         }
     }
@@ -3593,6 +3770,7 @@ fn map_entry_type(rec: &str, v: &MapValue) -> JsonType {
         presence: Presence::No,
         default_expr: None,
         quoted: false,
+        hex: false,
     };
     let value = JsonField {
         name: "value".into(),
@@ -3604,6 +3782,7 @@ fn map_entry_type(rec: &str, v: &MapValue) -> JsonType {
         presence: Presence::No,
         default_expr: None,
         quoted: false,
+        hex: false,
     };
     JsonType { name: rec.to_string(), fields: vec![key, value], lifted: None, lifted_flag: None, lifted_clear: None, positional: None }
 }
@@ -3648,6 +3827,7 @@ fn variant_records(e: &JsonEnum) -> Vec<(String, JsonType)> {
                     presence: Presence::No,
                     default_expr: None,
                     quoted: false,
+                    hex: false,
                 }
             })
             .collect();
@@ -3808,6 +3988,7 @@ fn field_codec_shape(
         presence: Presence::No,
         default_expr,
         quoted: tag_quoted(&f.tag),
+        hex: tag_hex(&f.tag),
     })
 }
 

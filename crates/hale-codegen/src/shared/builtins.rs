@@ -1828,6 +1828,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_decimal_from_float", dec_from_float_ty, None);
 
+        // GH #1934: U256 / I256. A value crosses as a pointer to a
+        // 32-byte slot (four little-endian words).
+        // declare void @lotus_wide_violation(i32 what, i32 signed) noreturn
+        let wide_violation = self.module.add_function(
+            "lotus_wide_violation",
+            self.context.void_type().fn_type(&[i32_t_local.into(), i32_t_local.into()], false),
+            None,
+        );
+        wide_violation.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.context.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id("noreturn"), 0),
+        );
+        wide_violation.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.context.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id("cold"), 0),
+        );
+        // declare ptr @lotus_wide_to_string(ptr arena, ptr v, i32 signed)
+        // declare ptr @lotus_wide_to_hex(ptr arena, ptr v, i32 signed)
+        let wide_text_ty = ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i32_t_local.into()], false);
+        self.module.add_function("lotus_wide_to_string", wide_text_ty, None);
+        self.module.add_function("lotus_wide_to_hex", wide_text_ty, None);
+        // declare ptr @lotus_wide_to_be_bytes(ptr arena, ptr v)
+        self.module
+            .add_function("lotus_wide_to_be_bytes", ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
+        // declare i64 @lotus_wide_parse(ptr s, i32 signed, ptr out)
+        self.module.add_function(
+            "lotus_wide_parse",
+            i64_t.fn_type(&[ptr_t.into(), i32_t_local.into(), ptr_t.into()], false),
+            None,
+        );
+        // declare i64 @lotus_wide_from_be_bytes(ptr bytes, ptr out)
+        self.module
+            .add_function("lotus_wide_from_be_bytes", i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
+
         // GH #230 item 2: fixed-places decimal formatting.
         // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 scale, i64 places)
         let dec_format_ty = ptr_t.fn_type(

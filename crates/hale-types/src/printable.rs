@@ -29,6 +29,8 @@ pub const PRINTABLE_PRIMS: &[PrimType] = &[
     PrimType::Bool,
     PrimType::Float,
     PrimType::DECIMAL,
+    PrimType::U256,
+    PrimType::I256,
     PrimType::Duration,
     PrimType::Time,
     PrimType::StringView,

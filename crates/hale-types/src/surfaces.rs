@@ -1378,7 +1378,19 @@ fn json_refusal(
     use crate::topic_identity::TypeClass;
     use hale_syntax::ast::PrimType;
     // a `Decimal<S>` is a JSON number at its scale (spec/api.md § Codecs)
-    let carried = |p: PrimType| matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::String | PrimType::Decimal(_));
+    // a `U256` / `I256` is a JSON string of its digits (GH #1934)
+    let carried = |p: PrimType| {
+        matches!(
+            p,
+            PrimType::Int
+                | PrimType::Float
+                | PrimType::Bool
+                | PrimType::String
+                | PrimType::Decimal(_)
+                | PrimType::U256
+                | PrimType::I256
+        )
+    };
     // A list is a field's: `bounded[T; N]` or `[T; N]` (spec/api.md § Codecs),
     // its element carried as a field of its type would be, and never itself a
     // list. A row's whole request or response is never a list (law 5 names it).
@@ -2928,19 +2940,30 @@ pub enum FieldSchema {
 /// the encoder writes (spec/api.md § Codecs). The decoder reads a Decimal
 /// from either form.
 fn tagged_schema(tag: Option<&str>, schema: FieldSchema) -> FieldSchema {
-    if !hale_syntax::json_gen::json_tag_options(tag).iter().any(|o| o == "string") {
+    let options = hale_syntax::json_gen::json_tag_options(tag);
+    let string = options.iter().any(|o| o == "string");
+    // GH #1934: `json:",hex"` on an `Int` writes `0x` hex text, so its
+    // schema is a string naming the scalar, as a quoted Decimal's is (a
+    // `U256` / `I256` is a string either way)
+    let hex = options.iter().any(|o| o == "hex");
+    if !string && !hex {
         return schema;
     }
-    fn quote(f: FieldSchema) -> FieldSchema {
+    fn quote(f: FieldSchema, string: bool, hex: bool) -> FieldSchema {
         match f {
-            FieldSchema::Scalar { hale_type: Some(t), unit, .. } if t.starts_with("Decimal<") => {
+            FieldSchema::Scalar { hale_type: Some(t), unit, .. } if string && t.starts_with("Decimal<") => {
                 FieldSchema::Scalar { json: "string", hale_type: Some(t), unit }
             }
-            FieldSchema::List { items, max, exact } => FieldSchema::List { items: Box::new(quote(*items)), max, exact },
+            FieldSchema::Scalar { json: "integer", hale_type: None, unit: None } if hex => {
+                FieldSchema::Scalar { json: "string", hale_type: Some("Int".to_string()), unit: None }
+            }
+            FieldSchema::List { items, max, exact } => {
+                FieldSchema::List { items: Box::new(quote(*items, string, hex)), max, exact }
+            }
             f => f,
         }
     }
-    quote(schema)
+    quote(schema, string, hex)
 }
 
 /// A struct's schema: its properties in declaration order, each its
@@ -3019,6 +3042,11 @@ impl<'a> Schemas<'a> {
             // digits wants to know how many there are
             TypeClass::Prim(PrimType::Decimal(scale)) => {
                 FieldSchema::Scalar { json: "number", hale_type: Some(format!("Decimal<{scale}>")), unit: None }
+            }
+            // GH #1934: a 256-bit integer is a JSON string of its digits
+            // (decimal, or `0x` hex), named so a reader keeps every digit
+            TypeClass::Prim(p @ (PrimType::U256 | PrimType::I256)) => {
+                FieldSchema::Scalar { json: "string", hale_type: Some(crate::ty::prim_name(p).to_string()), unit: None }
             }
             TypeClass::Prim(p) => {
                 json(p).map_or(FieldSchema::Unformed, |j| FieldSchema::Scalar { json: j, hale_type: None, unit: None })

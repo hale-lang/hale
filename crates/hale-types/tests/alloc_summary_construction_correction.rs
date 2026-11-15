@@ -331,11 +331,14 @@ fn own_scope_let_block_scope_test() {
             // at dissolve (the observe backends themselves join only a
             // program that holds one); 491 since std::crypto's secp256k1
             // bodies came (`secp256k1_public_key`, `secp256k1_sign`,
-            // `secp256k1_recover` and their failure-code helper, GH #1929)
+            // `secp256k1_recover` and their failure-code helper, GH #1929);
+            // 511 since `wide.hl` came (GH #1934: `std::u256` /
+            // `std::i256`'s fallible calls and the JSON codecs' hex
+            // helpers, 20 fns)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 491 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 491 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 511 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 511 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -734,8 +737,11 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/json_enum_field_test.hl`, whose JSON codecs decode (and
     // the enum's writes) the same way; 17: `tests/hale/api_decimal_string_test.hl`
     // and 18: `tests/hale/api_positional_test.hl`, whose codecs (a Decimal
-    // read from a string, a positional record's rows) decode the same way.
-    assert_eq!(moved, 18, "the run-to-exit programs among the targets that lose a site");
+    // read from a string, a positional record's rows) decode the same way;
+    // 19: `tests/hale/u256_arith_test.hl`, whose loop over refused texts
+    // builds its messages, and 20: `tests/hale/u256_codec_test.hl`, whose
+    // codecs of 256-bit integers decode the same way (GH #1934).
+    assert_eq!(moved, 20, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1010,6 +1016,52 @@ fn own_entries_run_to_exit_programs() {
             // the property test's copy of the per-byte escaper as it was:
             // its `\u00XX` digits were a concatenation per control byte
             "tests/hale/json_escape_runs_test.hl: old_hex_byte StringConcat @7937..7972 InvokedUnboundedly",
+            // `tests/hale/u256_arith_test.hl`: the parse refusals it loops over
+            // build their assertion messages in the loop (GH #1934)
+            "tests/hale/u256_arith_test.hl: conversions StringConcat @9516..9542 InUnboundedLoop",
+            "tests/hale/u256_arith_test.hl: conversions StringConcat @9516..9530 InUnboundedLoop",
+            "tests/hale/u256_arith_test.hl: conversions StringConcat @9560..9573 InUnboundedLoop",
+            "tests/hale/u256_arith_test.hl: conversions StringConcat @9591..9615 InUnboundedLoop",
+            "tests/hale/u256_arith_test.hl: conversions StringConcat @9591..9609 InUnboundedLoop",
+            "tests/hale/u256_arith_test.hl: conversions StringConcat @9697..9729 InUnboundedLoop",
+            "tests/hale/u256_arith_test.hl: conversions StringConcat @9697..9723 InUnboundedLoop",
+            // `tests/hale/u256_codec_test.hl`: its codecs of 256-bit integers and
+            // `json:",hex"` Ints, the decoders' refusals and the encoders'
+            // per-element pieces (GH #1934)
+            "tests/hale/u256_codec_test.hl: __api_decode_Account StructLit(\"JsonError\") @1610671683..1610671731 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Account StructLit(\"Holding\") @1610673861..1610673898 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Account StructLit(\"JsonError\") @1610673908..1610673957 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Receipt StructLit(\"JsonError\") @1610651096..1610651146 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Receipt StructLit(\"JsonError\") @1610651267..1610651317 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Receipt StructLit(\"JsonError\") @1610652213..1610652267 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Receipt StructLit(\"JsonError\") @1610652392..1610652446 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Receipt StructLit(\"JsonError\") @1610654236..1610654289 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Receipt StructLit(\"JsonError\") @1610654411..1610654464 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Receipt StructLit(\"JsonError\") @1610654595..1610654646 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Receipt StructLit(\"JsonError\") @1610655257..1610655306 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_decode_Tick StructLit(\"JsonError\") @1610677705..1610677755 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_encode_Account StringConcat @1610675637..1610675674 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_encode_Account StringConcat @1610675637..1610675667 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_encode_Account StringConcat @1610676024..1610676074 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_encode_Account StringConcat @1610676024..1610676066 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_encode_Account StringConcat @1610676115..1610676152 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __api_encode_Account StringConcat @1610676115..1610676145 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_parse_Account StructLit(\"JsonError\") @1610621170..1610621218 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_parse_Account StructLit(\"Holding\") @1610623147..1610623184 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_parse_Account StructLit(\"JsonError\") @1610623194..1610623243 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_parse_Receipt StructLit(\"JsonError\") @1610634343..1610634393 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_parse_Receipt StructLit(\"JsonError\") @1610634514..1610634564 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_parse_Receipt StructLit(\"JsonError\") @1610635213..1610635267 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_parse_Receipt StructLit(\"JsonError\") @1610635392..1610635446 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_parse_Receipt StructLit(\"JsonError\") @1610637034..1610637087 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_parse_Receipt StructLit(\"JsonError\") @1610637209..1610637262 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_parse_Receipt StructLit(\"JsonError\") @1610637393..1610637444 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610624927..1610624964 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610624927..1610624957 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625314..1610625364 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625314..1610625356 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625405..1610625442 InUnboundedLoop",
+            "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625405..1610625435 InUnboundedLoop",
         ]
     );
 }
@@ -1082,7 +1134,7 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
             sharing += 1;
         }
     }
-    assert_eq!(sharing, 32, "the stdlib source files that share a name with the copy");
+    assert_eq!(sharing, 33, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the

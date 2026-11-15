@@ -132,6 +132,55 @@ ns std::decimal open_prefixes=[]
   from_float pure
   from_int pure
   to_float pure
+ns std::i256 open_prefixes=[]
+  __add_overflows pure
+  __from_be_bytes pure
+  __from_bits pure
+  __low pure
+  __mul_div pure
+  __mul_div_overflows pure
+  __mul_overflows pure
+  __parse pure
+  __parses pure
+  __sub_overflows pure
+  checked_add pure
+  checked_div pure
+  checked_mul pure
+  checked_sub pure
+  from_be_bytes pure
+  from_int pure
+  from_u256 pure
+  max pure
+  min pure
+  mul_div pure
+  parse pure
+  to_be_bytes pure
+  to_hex pure
+  to_int pure
+ns std::u256 open_prefixes=[]
+  __add_overflows pure
+  __from_be_bytes pure
+  __from_bits pure
+  __low pure
+  __mul_div pure
+  __mul_div_overflows pure
+  __mul_overflows pure
+  __parse pure
+  __parses pure
+  __sub_overflows pure
+  checked_add pure
+  checked_div pure
+  checked_mul pure
+  checked_sub pure
+  from_be_bytes pure
+  from_i256 pure
+  from_int pure
+  max pure
+  mul_div pure
+  parse pure
+  to_be_bytes pure
+  to_hex pure
+  to_int pure
 ns std::diag open_prefixes=[]
   heap_alloc_count syscall
   syscall_count syscall
@@ -768,6 +817,30 @@ std::http::post | lookup=http@2 | locus=false | effects=syscall|block | sig=- | 
 std::http::query_param | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=query_param
 std::http::request | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=true | holds=true | unknown=- | suggest=request
 std::http::write_response | lookup=http@2 | locus=false | effects=syscall|block | sig=(Named(__StdIoTcpStream), Named(__StdHttpResponse)) -> Unit | ret_ty=() | or=- | parks=false | holds=true | unknown=- | suggest=write_response
+std::i256::__add_overflows | lookup=i256@2 | locus=false | effects=pure | sig=(I256, I256) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__add_overflows
+std::i256::__from_be_bytes | lookup=i256@2 | locus=false | effects=pure | sig=(Bytes) -> I256 | ret_ty=I256 | or=- | parks=false | holds=false | unknown=- | suggest=__from_be_bytes
+std::i256::__from_bits | lookup=i256@2 | locus=false | effects=pure | sig=(U256) -> I256 | ret_ty=I256 | or=- | parks=false | holds=false | unknown=- | suggest=__from_bits
+std::i256::__low | lookup=i256@2 | locus=false | effects=pure | sig=(I256) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__low
+std::i256::__mul_div | lookup=i256@2 | locus=false | effects=pure | sig=(I256, I256, I256) -> I256 | ret_ty=I256 | or=- | parks=false | holds=false | unknown=- | suggest=__mul_div
+std::i256::__mul_div_overflows | lookup=i256@2 | locus=false | effects=pure | sig=(I256, I256, I256) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__mul_div_overflows
+std::i256::__mul_overflows | lookup=i256@2 | locus=false | effects=pure | sig=(I256, I256) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__mul_overflows
+std::i256::__parse | lookup=i256@2 | locus=false | effects=pure | sig=(Str) -> I256 | ret_ty=I256 | or=- | parks=false | holds=false | unknown=- | suggest=__parse
+std::i256::__parses | lookup=i256@2 | locus=false | effects=pure | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__parses
+std::i256::__sub_overflows | lookup=i256@2 | locus=false | effects=pure | sig=(I256, I256) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__sub_overflows
+std::i256::checked_add | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_add
+std::i256::checked_div | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_div
+std::i256::checked_mul | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_mul
+std::i256::checked_sub | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_sub
+std::i256::from_be_bytes | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=from_be_bytes
+std::i256::from_int | lookup=i256@2 | locus=false | effects=pure | sig=(Int) -> I256 | ret_ty=I256 | or=- | parks=false | holds=false | unknown=- | suggest=from_int
+std::i256::from_u256 | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=from_u256
+std::i256::max | lookup=i256@2 | locus=false | effects=pure | sig=() -> I256 | ret_ty=I256 | or=- | parks=false | holds=false | unknown=- | suggest=-
+std::i256::min | lookup=i256@2 | locus=false | effects=pure | sig=() -> I256 | ret_ty=I256 | or=- | parks=false | holds=false | unknown=- | suggest=-
+std::i256::mul_div | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=mul_div
+std::i256::parse | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=parse
+std::i256::to_be_bytes | lookup=i256@2 | locus=false | effects=pure | sig=(I256) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=to_be_bytes
+std::i256::to_hex | lookup=i256@2 | locus=false | effects=pure | sig=(I256) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=to_hex
+std::i256::to_int | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=to_int
 std::io | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std`
 std::io::MirrorRing | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::io::file::File | lookup=io::file@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -1247,6 +1320,29 @@ std::ts::node_start_byte | lookup=ts@2 | locus=false | effects=pure | sig=(Int) 
 std::ts::node_text | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=node_text
 std::ts::parse_go | lookup=ts@2 | locus=false | effects=alloc | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=parse_go
 std::ts::root_node | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=root_node
+std::u256::__add_overflows | lookup=u256@2 | locus=false | effects=pure | sig=(U256, U256) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__add_overflows
+std::u256::__from_be_bytes | lookup=u256@2 | locus=false | effects=pure | sig=(Bytes) -> U256 | ret_ty=U256 | or=- | parks=false | holds=false | unknown=- | suggest=__from_be_bytes
+std::u256::__from_bits | lookup=u256@2 | locus=false | effects=pure | sig=(I256) -> U256 | ret_ty=U256 | or=- | parks=false | holds=false | unknown=- | suggest=__from_bits
+std::u256::__low | lookup=u256@2 | locus=false | effects=pure | sig=(U256) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__low
+std::u256::__mul_div | lookup=u256@2 | locus=false | effects=pure | sig=(U256, U256, U256) -> U256 | ret_ty=U256 | or=- | parks=false | holds=false | unknown=- | suggest=__mul_div
+std::u256::__mul_div_overflows | lookup=u256@2 | locus=false | effects=pure | sig=(U256, U256, U256) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__mul_div_overflows
+std::u256::__mul_overflows | lookup=u256@2 | locus=false | effects=pure | sig=(U256, U256) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__mul_overflows
+std::u256::__parse | lookup=u256@2 | locus=false | effects=pure | sig=(Str) -> U256 | ret_ty=U256 | or=- | parks=false | holds=false | unknown=- | suggest=__parse
+std::u256::__parses | lookup=u256@2 | locus=false | effects=pure | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__parses
+std::u256::__sub_overflows | lookup=u256@2 | locus=false | effects=pure | sig=(U256, U256) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__sub_overflows
+std::u256::checked_add | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_add
+std::u256::checked_div | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_div
+std::u256::checked_mul | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_mul
+std::u256::checked_sub | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_sub
+std::u256::from_be_bytes | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=from_be_bytes
+std::u256::from_i256 | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=from_i256
+std::u256::from_int | lookup=u256@2 | locus=false | effects=pure | sig=(Int) -> U256 | ret_ty=U256 | or=- | parks=false | holds=false | unknown=- | suggest=from_int
+std::u256::max | lookup=u256@2 | locus=false | effects=pure | sig=() -> U256 | ret_ty=U256 | or=- | parks=false | holds=false | unknown=- | suggest=-
+std::u256::mul_div | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=mul_div
+std::u256::parse | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=parse
+std::u256::to_be_bytes | lookup=u256@2 | locus=false | effects=pure | sig=(U256) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=to_be_bytes
+std::u256::to_hex | lookup=u256@2 | locus=false | effects=pure | sig=(U256) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=to_hex
+std::u256::to_int | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=to_int
 std::url::decode | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=decode
 std::url::decode_query | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=decode_query
 std::url::encode | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=encode

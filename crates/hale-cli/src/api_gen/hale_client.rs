@@ -26,6 +26,11 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         // a `Decimal<S>` is a number named with its scale (`x-hale-type`),
         // and the client holds it at that scale, every digit kept
         FieldSchema::Scalar { hale_type: Some(t), .. } if t.starts_with("Decimal<") => Ok(t.clone()),
+        // GH #1934: a 256-bit integer, and an `Int` written as `0x` hex
+        // (`json:",hex"`), are JSON strings naming their scalar
+        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if matches!(t.as_str(), "U256" | "I256" | "Int") => {
+            Ok(t.clone())
+        }
         FieldSchema::Scalar { json, .. } => Ok(match *json {
             "integer" => "Int",
             "number" => "Float",
@@ -52,6 +57,10 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
 /// The JSON of `value`, a Hale expression of the schema's type.
 fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
     match f {
+        // GH #1934: a 256-bit integer is a JSON string of its digits
+        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if t == "U256" || t == "I256" => {
+            Ok(format!("api_str(to_string({value}))"))
+        }
         FieldSchema::Scalar { json, .. } => Ok(match *json {
             "integer" | "number" => format!("to_string({value})"),
             "boolean" => format!("(if {value} {{ \"true\" }} else {{ \"false\" }})"),
@@ -84,6 +93,13 @@ fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &dyn Fn(&str) -> St
         FieldSchema::Scalar { hale_type: Some(t), .. } if t.starts_with("Decimal<") => {
             format!(
                 "let {var}: {t} = std::str::parse_decimal(std::str::trim({json})) or {{ {} }};\n",
+                fail("err.kind + \": \" + err.input")
+            )
+        }
+        // GH #1934: a 256-bit integer from its text, decimal or hex
+        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if t == "U256" || t == "I256" => {
+            format!(
+                "let {var} = {t}::parse(api_scalar_str({json})) or {{ {} }};\n",
                 fail("err.kind + \": \" + err.input")
             )
         }
@@ -186,6 +202,10 @@ fn buildable_empty(model: &ClientModel, name: &str, seen: &mut BTreeSet<String>)
 fn default_of(model: &ClientModel, f: &FieldSchema) -> Option<String> {
     match f {
         FieldSchema::Scalar { hale_type: Some(t), .. } if t.starts_with("Decimal<") => Some("0d".to_string()),
+        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if t == "U256" || t == "I256" => {
+            Some(format!("{t}::from_int(0)"))
+        }
+        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if t == "Int" => Some("0".to_string()),
         FieldSchema::Scalar { json, .. } => Some(
             match *json {
                 "integer" => "0",
@@ -234,9 +254,22 @@ fn struct_decl(model: &ClientModel, name: &str, t: &TypeSchema) -> Result<String
             }
             quoted(f)
         };
-        let tag = if (field != key || quoted) && !matches!(f, FieldSchema::Presence { .. }) {
+        // GH #1934: an `Int` the server writes as `0x` hex (`json:",hex"`)
+        // is read and written so by the client too
+        let hex = {
+            fn hex(f: &FieldSchema) -> bool {
+                match f {
+                    FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } => t == "Int",
+                    FieldSchema::List { items, .. } | FieldSchema::Nullable { inner: items, .. } => hex(items),
+                    _ => false,
+                }
+            }
+            hex(f)
+        };
+        let tag = if (field != key || quoted || hex) && !matches!(f, FieldSchema::Presence { .. }) {
             let named = if field != key { key.replace('\\', "\\\\").replace('"', "\\\"") } else { String::new() };
-            format!(" `json:\"{named}{}\"`", if quoted { ",string" } else { "" })
+            let opt = if quoted { ",string" } else if hex { ",hex" } else { "" };
+            format!(" `json:\"{named}{opt}\"`")
         } else {
             String::new()
         };

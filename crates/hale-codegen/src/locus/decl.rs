@@ -64,6 +64,8 @@ fn apply_noalias_self_if_provable<'ctx>(
                     | hale_syntax::ast::PrimType::Float
                     | hale_syntax::ast::PrimType::Bool
                     | hale_syntax::ast::PrimType::Decimal(_)
+                    | hale_syntax::ast::PrimType::U256
+                    | hale_syntax::ast::PrimType::I256
                     | hale_syntax::ast::PrimType::Duration,
                 _,
             )
@@ -1869,6 +1871,10 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     .context
                                     .i128_type()
                                     .fn_type(&llvm_param_tys, false),
+                                CodegenTy::U256 | CodegenTy::I256 => self
+                                    .context
+                                    .custom_width_int_type(256)
+                                    .fn_type(&llvm_param_tys, false),
                                 CodegenTy::Bool => self
                                     .context
                                     .bool_type()
@@ -2036,6 +2042,10 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 CodegenTy::Decimal(_) => self
                                     .context
                                     .i128_type()
+                                    .fn_type(&llvm_param_tys, false),
+                                CodegenTy::U256 | CodegenTy::I256 => self
+                                    .context
+                                    .custom_width_int_type(256)
                                     .fn_type(&llvm_param_tys, false),
                                 CodegenTy::Bool => self
                                     .context

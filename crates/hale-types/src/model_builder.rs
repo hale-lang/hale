@@ -113,6 +113,8 @@ fn type_descriptor(ty: &TypeExpr) -> String {
             P::Float => "Float",
             P::Bool => "Bool",
             P::Decimal(s) => crate::ty::decimal_name(*s),
+            P::U256 => "U256",
+            P::I256 => "I256",
             P::Time => "Time",
             P::Duration => "Duration",
             P::String => "String",

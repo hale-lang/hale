@@ -348,9 +348,15 @@ parse error.
 
 ```
 Int             Uint            Float           Decimal
-String          Bool            Time            Duration
-Bytes           BytesView       StringView      BytesMut
+U256            I256            String          Bool
+Time            Duration        Bytes           BytesView
+StringView      BytesMut
 ```
+
+`U256` / `I256` (GH #1934) are the 256-bit integers; in expression
+position `U256::f` and `I256::f` name the functions of `std::u256` and
+`std::i256` (`U256::from_int(5)`, `U256::parse(s) or ...`), and they
+have no literal of their own (spec/types.md § U256 and I256).
 
 `BytesView` / `StringView` (F.30) are non-owning views over a
 `BytesBuilder`'s buffer; `BytesMut` (#3) is a raw `{ptr, len}`

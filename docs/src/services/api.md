@@ -176,6 +176,8 @@ Every type reachable from an `rpc` row is encoded and decoded strictly. Unknown 
 |---|---|---|---|
 | `Int`, `Float`, `Bool`, `String` | Standard JSON primitives | `optional int64`, `double`, `bool`, `string` | `wrong_type`, `missing_field` (if no default) |
 | `Decimal<S>` | JSON number at scale `S`, every digit kept (`12.34`; schema `{"type": "number", "x-hale-type": "Decimal<2>"}`); a string holding a number (`"12.34"`) reads the same; tagged `` `json:"price,string"` `` it is written as that string (schema `"type": "string"`) | `optional string` (its digits; `// Hale: Decimal<2>`) | A nonzero digit past `S`, or a string holding no JSON number (`wrong_type`), never a truncation |
+| `U256`, `I256` | JSON string of its decimal digits (`"1000000000000000000"`), or `0x` hex tagged `` `json:",hex"` ``; reads either, or an integer number that fits (schema `{"type": "string", "x-hale-type": "U256"}`) | `optional string` (its digits; `// Hale: U256`) | A fraction, an exponent, a value out of range, or other text (`wrong_type`) |
+| `Int` tagged `` `json:",hex"` `` | `0x` hex in a JSON string (`"0x4dc"`), a negative value as its number; reads hex text or a number (schema `{"type": "string", "x-hale-type": "Int"}`) | `optional int64` | No `0x`, no digits, a sign, a space, past `Int`'s range (`wrong_type`) |
 | `distinct T` / `quantity Int in u` | Underlying scalar value (`Int` count for quantities) | Underlying scalar (`// Hale: Type, q(u)`) | `wrong_type` |
 | `Time` | UTC RFC 3339 string ending in `Z` (`"2026-10-12T03:04:05.123456789Z"`) | `optional int64` (nanoseconds) | Non-UTC offset, missing `Z`, or past year 2262 (`wrong_type`) |
 | `Duration` | Integer nanoseconds (`1500000000` = `1.5s`) | `optional int64` (nanoseconds) | `wrong_type` |

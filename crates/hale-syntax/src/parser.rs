@@ -8842,7 +8842,18 @@ impl Parser {
                         Expr::Prod(Box::new(inner), sp)
                     });
                 }
-                let qn = self.parse_qualified_name()?;
+                let mut qn = self.parse_qualified_name()?;
+                // GH #1934: `U256::f` and `I256::f` name the functions of
+                // `std::u256` and `std::i256` (`U256::from_int(n)`,
+                // `U256::parse(s)`): the type's own name is the spelling,
+                // the namespace the table the checker and lowering read.
+                if qn.segments.len() == 2 {
+                    if let Some(ns) = wide_namespace(&qn.segments[0].name) {
+                        let at = qn.segments[0].span;
+                        qn.segments[0] = Ident::new(ns.to_string(), at);
+                        qn.segments.insert(0, Ident::new("std".to_string(), at));
+                    }
+                }
                 // Struct literal: NAME { fields }
                 // We must distinguish from block expressions; treat
                 // `IDENT {` followed by struct-init shape as struct.
@@ -9480,9 +9491,18 @@ fn starts_type_expr(k: &TokenKind) -> bool {
 /// Canonical primitive type names. Recognized in type position;
 /// unreserved elsewhere.
 pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
-    "Int", "Uint", "Float", "Decimal", "String", "Bool", "Time",
+    "Int", "Uint", "Float", "Decimal", "U256", "I256", "String", "Bool", "Time",
     "Duration", "Bytes", "BytesView", "StringView", "BytesMut",
 ];
+
+/// GH #1934: the `std` namespace a `U256::f` / `I256::f` path names.
+pub fn wide_namespace(type_name: &str) -> Option<&'static str> {
+    match type_name {
+        "U256" => Some("u256"),
+        "I256" => Some("i256"),
+        _ => None,
+    }
+}
 
 /// The primitive a type position spelling `name` is (`Duration`,
 /// `Int`), the parser's one table of them.
@@ -9492,6 +9512,8 @@ pub fn primitive_from_name(name: &str) -> Option<PrimType> {
         "Uint" => PrimType::Uint,
         "Float" => PrimType::Float,
         "Decimal" => PrimType::DECIMAL,
+        "U256" => PrimType::U256,
+        "I256" => PrimType::I256,
         "String" => PrimType::String,
         "Bool" => PrimType::Bool,
         "Time" => PrimType::Time,

@@ -69,6 +69,8 @@ fn sig_ty(t: &SigTy) -> String {
         SigTy::Bytes => "Bytes".into(),
         SigTy::BytesMut => "BytesMut".into(),
         SigTy::Decimal => "Decimal".into(),
+        SigTy::U256 => "U256".into(),
+        SigTy::I256 => "I256".into(),
         SigTy::Duration => "Duration".into(),
         SigTy::Time => "Time".into(),
         SigTy::Unit => "Unit".into(),

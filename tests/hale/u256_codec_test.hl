@@ -1,0 +1,201 @@
+// tests/hale/u256_codec_test.hl — the typed JSON codecs over `U256` and
+// `I256`, and the `json:",hex"` tag option (GH #1934; spec/api.md §
+// Codecs). A 256-bit integer reads from a JSON string of decimal digits
+// or `0x` hex, or from a JSON integer that fits, and writes as a JSON
+// string of its digits (`0x` hex under `,hex`). An `Int` under `,hex`
+// reads JSON-RPC's hex quantities (`"gasUsed":"0x4dc"`) as well as a
+// number, and writes `0x` hex; a negative one is written as the JSON
+// number it is, since hex text has no sign. Both codecs (`api_decode` /
+// `api_encode`, `from_json` / `to_json`) and every place a value sits: a
+// field, a list's element, a map's value, an enum's value, a positional
+// record's column. Downstream handoff: chain API clients kept these as
+// strings and converted them by hand.
+
+type Receipt {
+    gas_used: Int `json:"gasUsed,hex"`;
+    block_number: Int `json:"blockNumber,hex"`;
+    log_indexes: bounded[Int; 4] `json:"logIndexes,hex"`;
+    status: Int = 1;
+}
+
+type Holding { token: String; amount: U256 `json:",hex"`; }
+
+type Side = enum { Flat, Long(U256), Short(I256) };
+
+type Account {
+    balance: U256;
+    raw: U256 `json:"rawBalance,hex"`;
+    pnl: I256;
+    side: Side = Side::Flat;
+    history: bounded[U256; 3] `json:",hex"`;
+    holdings: bounded[Holding; 2] indexed_by token -> amount;
+}
+
+@positional
+type Tick { at: Int; price: U256; size: I256; }
+
+const MAX: String = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+const MAX_HEX: String = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
+fn receipt_refused(text: String, field: String, what: String) {
+    let r = Receipt::api_decode(text) or {
+        std::test::assert_eq_str(err.kind, "wrong_type", what + ": the kind");
+        std::test::assert_eq_str(err.field, field, what + ": the field");
+        return;
+    };
+    std::test::assert(false, what + ": decoded " + Receipt::api_encode(r));
+}
+
+fn account_refused(text: String, field: String, what: String) {
+    let a = Account::api_decode(text) or {
+        std::test::assert_eq_str(err.kind + " " + err.field, "wrong_type " + field, what);
+        return;
+    };
+    std::test::assert(false, what + ": decoded " + Account::api_encode(a));
+}
+
+fn receipts() {
+    let text = "{\"gasUsed\":\"0x4dc\",\"blockNumber\":\"0X1B4\",\"logIndexes\":[\"0x0\",\"0xa\",7]}";
+    let r = Receipt::api_decode(text) or raise;
+    std::test::assert_eq_int(r.gas_used, 1244, "gasUsed from quoted hex");
+    std::test::assert_eq_int(r.block_number, 436, "blockNumber, 0X and upper-case digits");
+    std::test::assert_eq_int(count(r.log_indexes), 3, "three log indexes");
+    let l1 = at(r.log_indexes, 1) or - 1;
+    let l2 = at(r.log_indexes, 2) or - 1;
+    std::test::assert(l1 == 10 && l2 == 7, "a list's hex elements, and a plain number beside them");
+    std::test::assert_eq_str(
+        Receipt::api_encode(r),
+        "{\"gasUsed\":\"0x4dc\",\"blockNumber\":\"0x1b4\",\"logIndexes\":[\"0x0\",\"0xa\",\"0x7\"],\"status\":1}",
+        "written back as lowercase minimal hex, an untagged Int as a number",
+    );
+    let j = Receipt::from_json(text) or raise;
+    std::test::assert_eq_str(
+        Receipt::to_json(j),
+        Receipt::api_encode(r),
+        "from_json / to_json agree",
+    );
+    let n = Receipt::api_decode(
+        "{\"gasUsed\":21000,\"blockNumber\":\"0x7fffffffffffffff\"}",
+    ) or raise;
+    std::test::assert(
+        n.gas_used == 21000 && n.block_number == 9223372036854775807,
+        "a number still reads; Int's max in hex",
+    );
+    // hex text has no sign: a negative Int is written as its number
+    let neg = Receipt { gas_used: -5, block_number: 0 };
+    std::test::assert_eq_str(
+        Receipt::api_encode(neg),
+        "{\"gasUsed\":-5,\"blockNumber\":\"0x0\",\"logIndexes\":[],\"status\":1}",
+        "a negative Int",
+    );
+    let back = Receipt::api_decode(Receipt::api_encode(neg)) or raise;
+    std::test::assert_eq_int(back.gas_used, -5, "which reads back");
+
+    receipt_refused("{\"gasUsed\":\"4dc\",\"blockNumber\":0}", "gasUsed", "no 0x prefix");
+    receipt_refused("{\"gasUsed\":\"0x\",\"blockNumber\":0}", "gasUsed", "no digits");
+    receipt_refused("{\"gasUsed\":\"-0x1\",\"blockNumber\":0}", "gasUsed", "a sign");
+    receipt_refused("{\"gasUsed\":\" 0x1\",\"blockNumber\":0}", "gasUsed", "a space");
+    receipt_refused("{\"gasUsed\":\"0x1 \",\"blockNumber\":0}", "gasUsed", "a trailing space");
+    receipt_refused(
+        "{\"gasUsed\":\"0x8000000000000000\",\"blockNumber\":0}",
+        "gasUsed",
+        "past Int's range",
+    );
+    receipt_refused("{\"gasUsed\":\"0xzz\",\"blockNumber\":0}", "gasUsed", "not hex");
+    receipt_refused(
+        "{\"gasUsed\":1,\"blockNumber\":0,\"logIndexes\":[\"12\"]}",
+        "logIndexes",
+        "a list element without 0x",
+    );
+}
+
+fn accounts() {
+    let text = "{\"balance\":\"" + MAX
+        + "\",\"rawBalance\":\"0xFF\",\"pnl\":\"-12\",\"side\":{\"Short\":\"-0x10\"},"
+        + "\"history\":[\"1\",\"0x10\",255],\"holdings\":{\"a\":\"0x1\",\"b\":\"20\"}}";
+    let a = Account::api_decode(text) or raise;
+    std::test::assert(a.balance == U256::max(), "decimal text at max");
+    std::test::assert(a.raw == U256::from_int(255), "hex text of either case");
+    std::test::assert(a.pnl == I256::from_int(-12), "a negative I256");
+    match a.side {
+        Side::Short(v) -> std::test::assert(
+            v == I256::from_int(-16),
+            "an enum's I256 value, signed hex",
+        ),
+        _ -> std::test::assert(false, "the Short variant"),
+    }
+    std::test::assert_eq_int(count(a.history), 3, "three history entries");
+    let h2 = at(a.history, 2) or U256::from_int(0);
+    std::test::assert(h2 == U256::from_int(255), "an integer number in a list");
+    std::test::assert_eq_int(count(a.holdings), 2, "a map of values");
+    std::test::assert_eq_str(
+        Account::api_encode(a),
+        "{\"balance\":\"" + MAX
+            + "\",\"rawBalance\":\"0xff\",\"pnl\":\"-12\",\"side\":{\"Short\":\"-16\"},"
+            + "\"history\":[\"0x1\",\"0x10\",\"0xff\"],\"holdings\":{\"a\":\"0x1\",\"b\":\"0x14\"}}",
+        "decimal strings, and hex where the tag says so",
+    );
+    let j = Account::from_json(Account::to_json(a)) or raise;
+    std::test::assert(
+        j.balance == U256::max() && j.raw == U256::from_int(255),
+        "a to_json / from_json round trip",
+    );
+    let hexmax = Account::api_decode(
+        "{\"balance\":\"" + MAX_HEX + "\",\"rawBalance\":\"0\",\"pnl\":0}",
+    ) or raise;
+    std::test::assert(hexmax.balance == U256::max(), "max in hex, an untagged field reads hex too");
+
+    account_refused(
+        "{\"balance\":\"-1\",\"rawBalance\":\"0\",\"pnl\":0}",
+        "balance",
+        "a negative U256",
+    );
+    account_refused("{\"balance\":1.5,\"rawBalance\":\"0\",\"pnl\":0}", "balance", "a fraction");
+    account_refused("{\"balance\":1e3,\"rawBalance\":\"0\",\"pnl\":0}", "balance", "an exponent");
+    account_refused(
+        "{\"balance\":\"" + MAX + "0\",\"rawBalance\":\"0\",\"pnl\":0}",
+        "balance",
+        "past 2^256 - 1",
+    );
+    account_refused(
+        "{\"balance\":\"0x1" + std::str::repeat("0", 64) + "\",\"rawBalance\":\"0\",\"pnl\":0}",
+        "balance",
+        "65 hex digits",
+    );
+    account_refused("{\"balance\":\" 1\",\"rawBalance\":\"0\",\"pnl\":0}", "balance", "a space");
+    account_refused(
+        "{\"balance\":\"\",\"rawBalance\":\"0\",\"pnl\":0}",
+        "balance",
+        "an empty string",
+    );
+    account_refused(
+        "{\"balance\":\"\\u0031\",\"rawBalance\":\"0\",\"pnl\":0}",
+        "balance",
+        "an escape",
+    );
+    account_refused("{\"balance\":true,\"rawBalance\":\"0\",\"pnl\":0}", "balance", "a bool");
+    account_refused(
+        "{\"balance\":1,\"rawBalance\":\"0\",\"pnl\":\"0x8" + std::str::repeat("0", 63) + "\"}",
+        "pnl",
+        "2^255 is past I256",
+    );
+}
+
+fn ticks() {
+    let t = Tick::api_decode("[7,\"" + MAX + "\",\"-3\"]") or raise;
+    std::test::assert(
+        t.at == 7 && t.price == U256::max() && t.size == I256::from_int(-3),
+        "a positional record's columns",
+    );
+    std::test::assert_eq_str(
+        Tick::api_encode(t),
+        "[7,\"" + MAX + "\",\"-3\"]",
+        "written back as an array",
+    );
+}
+
+fn main() {
+    receipts();
+    accounts();
+    ticks();
+}

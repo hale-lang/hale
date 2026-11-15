@@ -1758,6 +1758,7 @@ crates/hale-stdlib/hl/term.hl f643d32e6ab5d1e6
 crates/hale-stdlib/hl/text.hl 0a99f394c6a2a791
 crates/hale-stdlib/hl/ts.hl aa155fcbc8a60980
 crates/hale-stdlib/hl/url.hl 72f955933d48d5c7
+crates/hale-stdlib/hl/wide.hl 4e6a96dd9523f9f0
 crates/hale-syntax/tests/intra_locus_pool_safety.rs#0 fff19ea63ba880b9
 crates/hale-syntax/tests/wrap_main.rs#0 f21fbc665a9c2254
 crates/hale-syntax/tests/wrap_main.rs#1 3a729ef1706bcbd6

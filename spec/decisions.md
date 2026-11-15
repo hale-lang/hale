@@ -3826,6 +3826,28 @@ seed*: two inputs drift, and every consumer pays for both. *Binary
 attestation*: a fleet seed names no binaries; what a host runs is the
 build of the seed, observed at runtime.
 
+### F.46 — A 256-bit integer's arithmetic never wraps
+
+**Problem.** `U256` and `I256` (GH #1934) carry chain values: balances,
+token amounts, fixed-point prices. `Int` arithmetic wraps on overflow,
+and a wrapped balance is a wrong balance, silently.
+
+**Decision.** `+`, `-`, `*`, `/`, `%` and unary `-` over a `U256` or an
+`I256` are checked: an overflow, a division or remainder by zero,
+`I256::min() / -1` and `-I256::min()` are a runtime violation where
+they happen (printed, exit 1), as `Time`'s range is. `checked_add`,
+`checked_sub`, `checked_mul`, `checked_div` and `mul_div` are the forms
+that fail into an `or` (`ArithError`). Shifts are bit operations and
+drop what they shift out. A 256-bit integer never converts implicitly,
+to or from `Int` or the other width; the check names the conversion.
+
+**Considered and rejected.** *Wrapping, as `Int` does*: it is the
+failure the type exists to prevent. *Fallible operators*: every
+expression would need an `or`, and the arithmetic of a price formula
+would drown in them; the checked calls cover the sites that expect a
+failure. *Literal suffixes (`5u256`)*: a unit may be named `u256`, so a
+suffix collides with the unit dialect's literals.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

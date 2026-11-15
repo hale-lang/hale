@@ -1,0 +1,32 @@
+// Build-only call fixture (F.40 phase 4, S0): the raw `std::u256` /
+// `std::i256` rows the stdlib's wide.hl bodies sit on, at expression
+// position. Programs reach them only through those bodies, which the
+// shadow set does not walk. Never run; `stdlib_call_fixtures` builds it
+// to IR.
+
+fn main() {
+    let s = "12";
+    let b = std::bytes::from_string("");
+    let u = std::u256::from_int(3);
+    let i = std::i256::from_int(3);
+    let up = std::u256::__parses(s);
+    let ip = std::i256::__parses(s);
+    let uv = std::u256::__parse(s);
+    let iv = std::i256::__parse(s);
+    let ub = std::u256::__from_be_bytes(b);
+    let ib = std::i256::__from_be_bytes(b);
+    let ul = std::u256::__low(u);
+    let il = std::i256::__low(i);
+    let uf = std::u256::__from_bits(i);
+    let if_ = std::i256::__from_bits(u);
+    let ua = std::u256::__add_overflows(u, u);
+    let us = std::u256::__sub_overflows(u, u);
+    let um = std::u256::__mul_overflows(u, u);
+    let ud = std::u256::__mul_div_overflows(u, u, u);
+    let uq = std::u256::__mul_div(u, u, u);
+    let ia = std::i256::__add_overflows(i, i);
+    let is_ = std::i256::__sub_overflows(i, i);
+    let im = std::i256::__mul_overflows(i, i);
+    let id = std::i256::__mul_div_overflows(i, i, i);
+    let iq = std::i256::__mul_div(i, i, i);
+}

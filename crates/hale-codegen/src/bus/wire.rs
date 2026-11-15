@@ -759,7 +759,9 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             | CodegenTy::Bool
             | CodegenTy::Time
             | CodegenTy::Duration
-            | CodegenTy::Decimal(_) => {
+            | CodegenTy::Decimal(_)
+            | CodegenTy::U256
+            | CodegenTy::I256 => {
                 let elem_bytes =
                     codegen_ty_size_bytes(self.context, elem_ty);
                 let total_bytes = n * elem_bytes;
@@ -948,7 +950,9 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             | CodegenTy::Bool
             | CodegenTy::Time
             | CodegenTy::Duration
-            | CodegenTy::Decimal(_) => {
+            | CodegenTy::Decimal(_)
+            | CodegenTy::U256
+            | CodegenTy::I256 => {
                 let elem_bytes =
                     codegen_ty_size_bytes(self.context, elem_ty);
                 let total_bytes = n * elem_bytes;
@@ -1195,6 +1199,8 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 | CodegenTy::Time
                 | CodegenTy::Duration
                 | CodegenTy::Decimal(_)
+                | CodegenTy::U256
+                | CodegenTy::I256
                 | CodegenTy::Enum(_)
                     if self.wire_fixed_field(&field_ty) =>
                 {
@@ -1571,6 +1577,8 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 | CodegenTy::Time
                 | CodegenTy::Duration
                 | CodegenTy::Decimal(_)
+                | CodegenTy::U256
+                | CodegenTy::I256
                 | CodegenTy::Enum(_)
                     if self.wire_fixed_field(&field_ty) =>
                 {
@@ -1869,6 +1877,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
+            | CodegenTy::U256
+            | CodegenTy::I256
             | CodegenTy::Duration => true,
             // No-payload enum is a plain i32 tag (value semantics); a
             // payload-carrying enum is a pointer to its storage struct.

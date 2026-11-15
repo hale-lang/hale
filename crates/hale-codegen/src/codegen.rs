@@ -85,6 +85,12 @@ pub(crate) enum CodegenTy {
     /// scale decides what `*`, `/`, printing, parsing and a literal
     /// mean. Plain `Decimal` is `Decimal(9)`.
     Decimal(u8),
+    /// `U256` (GH #1934): an LLVM `i256`, 32 bytes at the target's i256
+    /// alignment (16 on x86-64 and aarch64). Arithmetic is checked: an
+    /// overflow or a division by zero calls `lotus_wide_violation`.
+    U256,
+    /// `I256` (GH #1934): the signed twin of [`CodegenTy::U256`].
+    I256,
     /// Wall-clock instant. v0 codegen stores this as a pointer to
     /// the literal's source-spelling string (same hack the
     /// interpreter uses). Real `time_t` / `i64`-since-epoch
@@ -14396,6 +14402,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(CodegenTy::Decimal(_)) => {
                     self.context.i128_type().fn_type(&llvm_param_tys, false)
                 }
+                Some(CodegenTy::U256 | CodegenTy::I256) => {
+                    self.context.custom_width_int_type(256).fn_type(&llvm_param_tys, false)
+                }
                 Some(CodegenTy::Bool) => {
                     self.context.bool_type().fn_type(&llvm_param_tys, false)
                 }
@@ -15087,6 +15096,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Cell(_, _)
             | CodegenTy::FnPtr { .. }
             | CodegenTy::Drain(_)
+            | CodegenTy::U256
+            | CodegenTy::I256
             | CodegenTy::Decimal(_) => Err(CodegenError::Unsupported(format!(
                 "@ffi fn `{}` parameter `{}`: type {:?} is not yet wired \
                  for FFI codegen at Stage 1. See spec/ffi.md.",
@@ -15743,6 +15754,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
+            | CodegenTy::U256
+            | CodegenTy::I256
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }
@@ -15970,6 +15983,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Decimal(_)
+                | CodegenTy::U256
+                | CodegenTy::I256
                 | CodegenTy::Time
                 | CodegenTy::Duration
                 | CodegenTy::FnPtr { .. }
@@ -17179,6 +17194,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::String => "String".to_string(),
             CodegenTy::Bytes => "Bytes".to_string(),
             CodegenTy::Decimal(s) => hale_types::ty::decimal_name(*s).to_string(),
+            CodegenTy::U256 => "U256".to_string(),
+            CodegenTy::I256 => "I256".to_string(),
             CodegenTy::Time => "Time".to_string(),
             CodegenTy::Duration => "Duration".to_string(),
             other => format!("{:?}", other),
@@ -20676,6 +20693,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         match at {
+            CodegenTy::U256 | CodegenTy::I256 => {
+                let signed = matches!(at, CodegenTy::I256);
+                let pred = match (name, signed) {
+                    ("min", true) => inkwell::IntPredicate::SLT,
+                    ("min", false) => inkwell::IntPredicate::ULT,
+                    (_, true) => inkwell::IntPredicate::SGT,
+                    (_, false) => inkwell::IntPredicate::UGT,
+                };
+                let cmp = self
+                    .builder
+                    .build_int_compare(pred, av.into_int_value(), bv.into_int_value(), &format!("{}.cmp", name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let v = self
+                    .builder
+                    .build_select(cmp, av, bv, &format!("{}.sel", name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((v, Self::builtin_result(sig, &at)))
+            }
             CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Decimal(_) => {
                 let pred = match name {
                     "min" => inkwell::IntPredicate::SLT,
@@ -20730,6 +20765,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ty: &CodegenTy,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match ty {
+            CodegenTy::U256 | CodegenTy::I256 => self.lower_wide_abs(v.into_int_value(), ty),
             CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
                 // m48: Decimal lives in i128 so the int-abs path
                 // works for it directly — same neg + select shape
@@ -20858,6 +20894,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Bool => PrintShape::Prim(PrimType::Bool),
             CodegenTy::Float => PrintShape::Prim(PrimType::Float),
             CodegenTy::Decimal(s) => PrintShape::Prim(PrimType::Decimal(*s)),
+            CodegenTy::U256 => PrintShape::Prim(PrimType::U256),
+            CodegenTy::I256 => PrintShape::Prim(PrimType::I256),
             CodegenTy::Duration => PrintShape::Prim(PrimType::Duration),
             CodegenTy::Time => PrintShape::Prim(PrimType::Time),
             CodegenTy::Bytes => PrintShape::Prim(PrimType::Bytes),
@@ -21021,6 +21059,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_str_from_float returns ptr");
                 Ok(res)
             }
+            CodegenTy::U256 | CodegenTy::I256 => self.wide_to_string(v.into_int_value(), matches!(ty, CodegenTy::I256)),
             CodegenTy::Decimal(dec_scale) => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let i128_v = v.into_int_value();
@@ -21421,6 +21460,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::Int
                     | CodegenTy::Float
                     | CodegenTy::Decimal(_)
+                    | CodegenTy::U256
+                    | CodegenTy::I256
                     | CodegenTy::Duration
             ) || spec.kind != SpecKind::Display;
             let align = spec.align.unwrap_or(if numeric {
@@ -23173,7 +23214,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // directly (single pool ⇒ no concurrent writers; mutation
         // during iteration is contractually unsupported either
         // way). Synced maps copy values out under their lock.
-        let ptr_mode = slot.sync_mode == SyncMode::None;
+        //
+        // A cell's value sits in the map's packed slot at `1 +
+        // key_size` (offset 9), so no field in it is at an alignment
+        // past 1. A cell holding a 16-aligned field (a `Decimal`'s
+        // i128, a `U256` / `I256`'s i256, GH #1934) is copied out
+        // into the batch buffer, which has the cell's alignment,
+        // instead: read in place, the field's natural-alignment load
+        // is free to become an aligned vector move on x86-64, which
+        // faults on the slot (aarch64 tolerates it).
+        let over_aligned = cell_info.fields.values().any(|(_, t)| {
+            let wide = |t: &CodegenTy| matches!(t, CodegenTy::Decimal(_) | CodegenTy::U256 | CodegenTy::I256);
+            match t {
+                CodegenTy::Array(e, _) | CodegenTy::Bounded(e, _) => wide(e),
+                t => wide(t),
+            }
+        });
+        let ptr_mode = slot.sync_mode == SyncMode::None && !over_aligned;
         let ptr_t_buf = self.context.ptr_type(AddressSpace::default());
         let buf_ty: inkwell::types::ArrayType = if ptr_mode {
             ptr_t_buf.array_type(BATCH as u32)
@@ -24463,6 +24520,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             CodegenTy::Float => self.context.f64_type().into(),
             CodegenTy::Decimal(_) => self.context.i128_type().into(),
+            CodegenTy::U256 | CodegenTy::I256 => self.context.custom_width_int_type(256).into(),
             CodegenTy::Bool => self.context.bool_type().into(),
             CodegenTy::Enum(en) => {
                 let payload = self
@@ -24563,6 +24621,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | CodegenTy::Bool
                 | CodegenTy::Duration
                 | CodegenTy::Decimal(_)
+                | CodegenTy::U256
+                | CodegenTy::I256
                 | CodegenTy::Enum(_)
         )
     }
@@ -25971,6 +26031,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     return self.lower_binop(*op, lv, rv, &CodegenTy::Int);
                 }
+                // GH #1934: a 256-bit integer shifts by an `Int` count.
+                if matches!(op, BinOp::Shl | BinOp::Shr) && matches!(lt, CodegenTy::U256 | CodegenTy::I256) {
+                    return self.lower_wide_shift(*op, lv.into_int_value(), rv.into_int_value(), &lt);
+                }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
                         "binary op operands of mixed types {:?} and {:?}",
@@ -27081,6 +27145,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         use inkwell::IntPredicate as IP;
         use inkwell::FloatPredicate as FP;
         let ty_owned = ty.clone();
+        // GH #1934: the 256-bit integers' checked operators.
+        if matches!(ty, CodegenTy::U256 | CodegenTy::I256) && !matches!(op, BinOp::Shl | BinOp::Shr) {
+            return self.lower_wide_binop(op, lv.into_int_value(), rv.into_int_value(), ty);
+        }
         match (op, ty_owned) {
             (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, CodegenTy::Int) => {
                 let l = lv.into_int_value();
@@ -27525,6 +27593,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((r.into(), CodegenTy::Float))
             }
+            // GH #1934: `-I256::min()` is a violation; `~` flips the bits.
+            (UnaryOp::Neg, t @ CodegenTy::I256) => self.lower_wide_neg(v.into_int_value(), &t),
+            (UnaryOp::BitNot, t @ (CodegenTy::U256 | CodegenTy::I256)) => {
+                self.lower_wide_bitnot(v.into_int_value(), &t)
+            }
             (UnaryOp::Neg, t @ CodegenTy::Decimal(_)) => {
                 // m48: Decimal lives in i128; negate via subtract
                 // from i128 zero, mirroring Int's neg lowering.
@@ -27633,9 +27706,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         format.push_str(&escape_format(&unit));
                     }
                 }
-                CodegenTy::Float => {
+                CodegenTy::Float | CodegenTy::U256 | CodegenTy::I256 => {
                     // the text `to_string` gives, the shortest that reads
-                    // back as the same double (`lotus_fmt_float_shortest`)
+                    // back as the same double (`lotus_fmt_float_shortest`);
+                    // a 256-bit integer's decimal digits (GH #1934)
                     let rendered = self.value_to_string(val, &ty)?;
                     format.push_str("%s");
                     printf_args.push(BasicMetadataValueEnum::PointerValue(rendered.into_pointer_value()));
@@ -28656,6 +28730,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
             },
             Id::DecimalToFloat => self.lower_std_decimal_to_float(args, scope),
+            // GH #1934: the 256-bit integers' native functions.
+            Id::I256AddOverflowsRaw
+            | Id::I256FromBeBytesRaw
+            | Id::I256FromBitsRaw
+            | Id::I256LowRaw
+            | Id::I256MulDivRaw
+            | Id::I256MulDivOverflowsRaw
+            | Id::I256MulOverflowsRaw
+            | Id::I256ParseRaw
+            | Id::I256ParsesRaw
+            | Id::I256SubOverflowsRaw
+            | Id::I256FromInt
+            | Id::I256Max
+            | Id::I256Min
+            | Id::I256ToBeBytes
+            | Id::I256ToHex
+            | Id::U256AddOverflowsRaw
+            | Id::U256FromBeBytesRaw
+            | Id::U256FromBitsRaw
+            | Id::U256LowRaw
+            | Id::U256MulDivRaw
+            | Id::U256MulDivOverflowsRaw
+            | Id::U256MulOverflowsRaw
+            | Id::U256ParseRaw
+            | Id::U256ParsesRaw
+            | Id::U256SubOverflowsRaw
+            | Id::U256FromInt
+            | Id::U256Max
+            | Id::U256ToBeBytes
+            | Id::U256ToHex => self.lower_std_wide(id, args, scope),
             Id::DecimalFormat => self.lower_std_decimal_format(args, scope),
             Id::DecimalFromInt => self.lower_std_decimal_from_int(args, scope),
             // 2026-06-13 — test-time gate counters (#7): read-only
@@ -30016,6 +30120,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::DecimalFormat
             | Id::DecimalFromInt
             | Id::DecimalToFloat
+            | Id::I256AddOverflowsRaw
+            | Id::I256FromBeBytesRaw
+            | Id::I256FromBitsRaw
+            | Id::I256LowRaw
+            | Id::I256MulDivRaw
+            | Id::I256MulDivOverflowsRaw
+            | Id::I256MulOverflowsRaw
+            | Id::I256ParseRaw
+            | Id::I256ParsesRaw
+            | Id::I256SubOverflowsRaw
+            | Id::I256FromInt
+            | Id::I256Max
+            | Id::I256Min
+            | Id::I256ToBeBytes
+            | Id::I256ToHex
+            | Id::U256AddOverflowsRaw
+            | Id::U256FromBeBytesRaw
+            | Id::U256FromBitsRaw
+            | Id::U256LowRaw
+            | Id::U256MulDivRaw
+            | Id::U256MulDivOverflowsRaw
+            | Id::U256MulOverflowsRaw
+            | Id::U256ParseRaw
+            | Id::U256ParsesRaw
+            | Id::U256SubOverflowsRaw
+            | Id::U256FromInt
+            | Id::U256Max
+            | Id::U256ToBeBytes
+            | Id::U256ToHex
             | Id::DiagHeapAllocCount
             | Id::DiagSyscallCount
             | Id::EnvArg
@@ -32151,6 +32284,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::String => "String".to_string(),
             CodegenTy::Bytes => "Bytes".to_string(),
             CodegenTy::Decimal(s) => hale_types::ty::decimal_mangle_token(*s).to_string(),
+            CodegenTy::U256 => "U256".to_string(),
+            CodegenTy::I256 => "I256".to_string(),
             CodegenTy::Duration => "Duration".to_string(),
             CodegenTy::Time => "Time".to_string(),
             CodegenTy::TypeRef(name) => format!("type_{}", name),
@@ -37695,7 +37830,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // and is let through, as the checker lets it through
         let scalar = match &slot_ty {
             CodegenTy::Int | CodegenTy::Float | CodegenTy::Bool | CodegenTy::Duration | CodegenTy::Time => true,
-            CodegenTy::Decimal(_) => true,
+            CodegenTy::Decimal(_) | CodegenTy::U256 | CodegenTy::I256 => true,
             CodegenTy::Enum(_) => !self.self_field_type_retires(&slot_ty),
             _ => false,
         };
@@ -38947,6 +39082,7 @@ pub(crate) fn codegen_ty_size_bytes<'ctx>(
 ) -> u64 {
     match t {
         CodegenTy::Decimal(_) => 16,
+        CodegenTy::U256 | CodegenTy::I256 => 32,
         _ => 8,
     }
 }

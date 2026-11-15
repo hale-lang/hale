@@ -128,7 +128,7 @@ fn a_tag_option_other_than_string_or_on_no_decimal_is_refused() {
     );
     let want = [
         "`Quote.n`: `json:` tag option `string` writes a Decimal as a JSON string, and the field is `Int`: it is for a `Decimal<S>` field or a list of them",
-        "`Quote.at`: `json:` tag option `omitempty` is not one: the one option is `string`, a Decimal written as a JSON string (`json:\"price,string\"`)",
+        "`Quote.at`: `json:` tag option `omitempty` is not one: the options are `string`, a Decimal written as a JSON string (`json:\"price,string\"`), and `hex`, an `Int`, `U256` or `I256` written as `0x` hex text (`json:\"gasUsed,hex\"`)",
     ];
     for w in want {
         assert!(msgs.iter().any(|m| m == w), "want {w}; got: {msgs:?}");

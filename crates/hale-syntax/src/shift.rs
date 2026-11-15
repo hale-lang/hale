@@ -726,6 +726,8 @@ impl Shift for PrimType {
             | PrimType::Uint
             | PrimType::Float
             | PrimType::Decimal(_)
+            | PrimType::U256
+            | PrimType::I256
             | PrimType::String
             | PrimType::Bool
             | PrimType::Time

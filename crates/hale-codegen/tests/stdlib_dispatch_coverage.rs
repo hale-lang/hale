@@ -1534,6 +1534,8 @@ fn signature_text(path: &str) -> String {
         SigTy::Bytes => "Bytes".to_string(),
         SigTy::BytesMut => "BytesMut".to_string(),
         SigTy::Decimal => "Decimal".to_string(),
+        SigTy::U256 => "U256".to_string(),
+        SigTy::I256 => "I256".to_string(),
         SigTy::Duration => "Duration".to_string(),
         SigTy::Time => "Time".to_string(),
         SigTy::Unit => "()".to_string(),

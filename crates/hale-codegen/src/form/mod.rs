@@ -46,7 +46,9 @@ pub(crate) fn cell_tree_has_heap_leaves(
         | CodegenTy::Float
         | CodegenTy::Bool
         | CodegenTy::Duration
-        | CodegenTy::Decimal(_) => false,
+        | CodegenTy::Decimal(_)
+        | CodegenTy::U256
+        | CodegenTy::I256 => false,
         CodegenTy::TypeRef(name) if depth == 0 => match user_types.get(name) {
             Some(info) => info.fields.values().any(|(_, fty)| {
                 cell_tree_has_heap_leaves(fty, user_types, depth + 1)

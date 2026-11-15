@@ -1,0 +1,166 @@
+// tests/hale/u256_storage_test.hl — `U256` and `I256` (GH #1934) where a
+// value is stored: a record field, a locus param written from a method, a
+// `bounded` buffer, a fixed array, an enum payload (its body follows the
+// enum's i32 tag, at offset 4, so the payload is read and written at
+// align 1: an i256's natural alignment of 16 would fault on x86-64), a
+// hashmap cell, a generic record's field, and a bus payload. Each at the
+// edge of its range, so a slot too narrow or a copy too short shows.
+
+type Pool {
+    reserve0: U256;
+    reserve1: U256;
+    fee: I256;
+    name: String;
+}
+
+type Amount = enum { Nothing, Exact(U256), Signed(I256, Int), Pair(Int, U256) };
+type Tagged { label: String; amount: Amount = Amount::Nothing; }
+type Bag { items: bounded[U256; 4]; signed: bounded[I256; 2]; }
+type Words { w: [U256; 3]; }
+type Box<T> { value: T; }
+type Bal { who: String = ""; amount: U256 = U256::from_int(0); }
+
+@form(hashmap)
+locus Balances {
+    capacity { pool rows of Bal indexed_by who; }
+}
+
+locus Holder {
+    params { total: U256 = U256::from_int(0); }
+    fn add(x: U256) {
+        self.total = self.total + x;
+    }
+}
+
+type Transfer {
+    from: String = "";
+    amount: U256 = U256::from_int(0);
+    delta: I256 = I256::from_int(0);
+    batch: bounded[U256; 2];
+}
+topic Transfers { payload: Transfer; }
+
+locus Sink {
+    params { got: String = ""; }
+    bus { subscribe Transfers as h; }
+    fn h(t: Transfer) {
+        let first = at(t.batch, 0) or U256::from_int(0);
+        self.got = t.from + " " + to_string(t.amount) + " " + to_string(t.delta) + " "
+            + to_string(first);
+    }
+}
+
+locus Source {
+    bus { publish Transfers; }
+    birth() {
+        let t = Transfer { from: "a", amount: U256::max(), delta: I256::min() };
+        push(t.batch, U256::max() - U256::from_int(1)) or raise;
+        Transfers <- t;
+    }
+}
+
+const MAX: String = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+const MIN: String = "-57896044618658097711785492504343953926634992332820282019728792003956564819968";
+
+fn exact_of(a: Amount) -> U256 {
+    return match a {
+        Amount::Exact(v) -> v,
+        Amount::Pair(_, v) -> v,
+        _ -> U256::from_int(0),
+    };
+}
+
+fn make(label: String, v: U256) -> Tagged {
+    return Tagged { label: label, amount: Amount::Exact(v) };
+}
+
+fn main() {
+    let p = Pool {
+        reserve0: U256::max(),
+        reserve1: U256::from_int(3),
+        fee: I256::min(),
+        name: "x",
+    };
+    std::test::assert_eq_str(to_string(p.reserve0), MAX, "a record field at max");
+    std::test::assert_eq_str(to_string(p.fee), MIN, "beside it, I256::min()");
+    std::test::assert_eq_str(p.name, "x", "the field after them");
+    let q = p;
+    std::test::assert(
+        q.reserve0 == p.reserve0 && q.reserve1 == U256::from_int(3),
+        "a copied record",
+    );
+    std::test::assert_eq_str(
+        "" + p,
+        "Pool { reserve0: " + MAX + ", reserve1: 3, fee: " + MIN + ", name: \"x\" }",
+        "a record prints its 256-bit fields",
+    );
+
+    // enum payloads, at offset 4
+    std::test::assert(
+        exact_of(Amount::Exact(U256::max())) == U256::max(),
+        "an enum payload at max",
+    );
+    std::test::assert(
+        exact_of(Amount::Pair(7, U256::max() - U256::from_int(2))) == U256::max()
+            - U256::from_int(2),
+        "a payload after an Int",
+    );
+    match Amount::Signed(I256::min(), 9) {
+        Amount::Signed(v, n) -> {
+            std::test::assert(v == I256::min(), "an I256 payload");
+            std::test::assert_eq_int(n, 9, "the Int after it");
+        },
+        _ -> std::test::assert(false, "the Signed variant"),
+    }
+    let t = make("t", U256::max());
+    std::test::assert(exact_of(t.amount) == U256::max(), "a payload through a returned record");
+
+    // a bounded buffer and a fixed array
+    let bag = Bag { };
+    push(bag.items, U256::from_int(1)) or raise;
+    push(bag.items, U256::max()) or raise;
+    push(bag.items, U256::from_int(3)) or raise;
+    push(bag.signed, I256::min()) or raise;
+    std::test::assert_eq_int(count(bag.items), 3, "three pushed");
+    let mut sum = U256::from_int(0);
+    for x in bag.items {
+        sum = sum + x % U256::from_int(1000);
+    }
+    std::test::assert(sum == U256::from_int(939), "each element read back (max % 1000 is 935)");
+    let s0 = at(bag.signed, 0) or I256::from_int(0);
+    std::test::assert(s0 == I256::min(), "a signed element");
+    let w = Words { w: [U256::from_int(1), U256::max(), U256::from_int(2)] };
+    std::test::assert(
+        w.w[1] == U256::max() && w.w[2] == U256::from_int(2),
+        "a fixed array, inline",
+    );
+
+    // a generic record, a locus param, a hashmap cell
+    let bx: Box<I256> = Box { value: I256::max() };
+    std::test::assert(bx.value == I256::max(), "Box<I256>");
+    let h = Holder { };
+    h.add(U256::max() - U256::from_int(5));
+    h.add(U256::from_int(5));
+    std::test::assert(h.total == U256::max(), "a locus param written from a method");
+    let bal = Balances { };
+    bal.set(Bal { who: "a", amount: U256::max() });
+    bal.set(Bal { who: "b", amount: U256::from_int(2) });
+    let got = bal.get("a") or Bal { };
+    std::test::assert(got.amount == U256::max(), "a hashmap cell");
+    // iterating copies a cell with a 16-aligned field out of its packed
+    // slot rather than reading it in place
+    let mut total = U256::from_int(0);
+    for c in bal.entries {
+        total = total + c.amount % U256::from_int(1000);
+    }
+    std::test::assert(total == U256::from_int(937), "each cell iterated (935 + 2)");
+
+    // a bus payload
+    let sink = Sink { };
+    Source { };
+    std::test::assert_eq_str(
+        sink.got,
+        "a " + MAX + " " + MIN + " " + to_string(U256::max() - U256::from_int(1)),
+        "a bus payload's 256-bit fields and buffer",
+    );
+}

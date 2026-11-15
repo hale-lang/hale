@@ -1155,6 +1155,10 @@ primitive_type    = "Int"
                                     (* Decimal<S>: the scale, 0..=18, is
                                        part of the type; plain Decimal
                                        is Decimal<9> (spec/types.md) *)
+                  | "U256"          (* GH #1934: 256-bit unsigned integer *)
+                  | "I256"          (* GH #1934: 256-bit signed integer; U256::f / I256::f
+                                       in expression position name std::u256::f /
+                                       std::i256::f (spec/types.md) *)
                   | "String"
                   | "Bool"
                   | "Time"

@@ -90,6 +90,8 @@ Reserved at Stage 1 (typecheck rejects with a clear diagnostic):
   Hale side; the wrapper handles the scale.
 - `Uint` — Hale-internal type; declare as `Int` at the FFI
   signature.
+- `U256` / `I256` (GH #1934) — an i256 has no portable C mapping;
+  pass its 32 big-endian bytes (`U256::to_be_bytes`) as `Bytes`.
 - Projections / fixed-size arrays / tuples — no portable C struct
   layout for these v0 shapes.
 - `fallible(E)` — internal channel; see Restrictions above.
