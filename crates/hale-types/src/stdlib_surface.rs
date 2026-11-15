@@ -714,7 +714,28 @@ pub const SURFACES: &[NsSurface] = &[
             row!("ed25519_sign", PURE, [Bytes, Bytes] -> Bytes ! "CryptoError", Intrinsic(CryptoEd25519Sign)),
             row!("ed25519_verify", PURE, [Bytes, Bytes, Bytes] -> Bool, Intrinsic(CryptoEd25519Verify)),
             row!("hmac_sha256", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha256)),
+            row!("hmac_sha384", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha384)),
             row!("hmac_sha512", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha512)),
+            // Keccak-256 with Keccak's own 0x01 padding (Ethereum's
+            // keccak256), not SHA3-256; hand-rolled in lotus_arena.c.
+            row!("keccak256", PURE, [Bytes] -> Bytes, Intrinsic(CryptoKeccak256)),
+            // RSA-PSS over SHA-256, MGF1-SHA256, a 32-byte salt (GH #1929;
+            // OpenSSL, lotus_tls.c): signing refuses a key it cannot read.
+            row!("rsa_pss_sha256_sign", PURE, [Bytes, Bytes] -> Bytes ! "CryptoError", Intrinsic(CryptoRsaPssSha256Sign)),
+            row!("rsa_pss_sha256_verify", PURE, [Bytes, Bytes, Bytes] -> Bool, Intrinsic(CryptoRsaPssSha256Verify)),
+            // secp256k1 ECDSA over a 32-byte digest (GH #1929; OpenSSL's
+            // curve arithmetic, RFC 6979 nonces and the recovery id in
+            // lotus_tls.c). The raw primitives answer the result or a
+            // one-byte failure code, which the Hale bodies (`crypto.hl`)
+            // turn into a CryptoError; a signature is a tuple no row's
+            // signature states.
+            row!("__secp256k1_public_key", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSecp256k1PublicKeyRaw)),
+            row!("__secp256k1_recover", PURE, [Bytes, Bytes, Bytes, Int] -> Bytes, Intrinsic(CryptoSecp256k1RecoverRaw)),
+            row!("__secp256k1_sign", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoSecp256k1SignRaw)),
+            row!("secp256k1_public_key", PURE, _, Renamed),
+            row!("secp256k1_recover", PURE, _, Renamed),
+            row!("secp256k1_sign", PURE, _, Renamed),
+            row!("secp256k1_verify", PURE, [Bytes, Bytes, Bytes] -> Bool, Intrinsic(CryptoSecp256k1Verify)),
             row!("sha1", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha1)),
             row!("sha256", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha256)),
             // SHA-256 without the whole input in memory: the file read in
@@ -1729,7 +1750,15 @@ pub enum IntrinsicId {
     CryptoEd25519Sign,
     CryptoEd25519Verify,
     CryptoHmacSha256,
+    CryptoHmacSha384,
     CryptoHmacSha512,
+    CryptoKeccak256,
+    CryptoRsaPssSha256Sign,
+    CryptoRsaPssSha256Verify,
+    CryptoSecp256k1PublicKeyRaw,
+    CryptoSecp256k1RecoverRaw,
+    CryptoSecp256k1SignRaw,
+    CryptoSecp256k1Verify,
     CryptoSha1,
     CryptoSha256,
     CryptoSha256File,

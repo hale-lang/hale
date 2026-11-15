@@ -1,6 +1,6 @@
 # Hashing, encoding & randomness
 
-Hale provides cryptographic digests, HMAC authentication, digital signatures (ECDSA P-256 and Ed25519), hex and Base64 codecs, and random number generation across `std::crypto`, `std::hex`, `std::text::base64`, `std::os`, and `std::rand`.
+Hale provides cryptographic digests, HMAC authentication, digital signatures (ECDSA P-256, RSA-PSS, Ed25519 and secp256k1), hex and Base64 codecs, and random number generation across `std::crypto`, `std::hex`, `std::text::base64`, `std::os`, and `std::rand`.
 
 ```hale
 fn main() {
@@ -27,13 +27,21 @@ fn main() {
 | `std::crypto::sha512` | `fn(Bytes) -> Bytes` | 64-byte SHA-512 digest (built-in, no OpenSSL dependency) |
 | `std::crypto::sha1` | `fn(Bytes) -> Bytes` | 20-byte SHA-1 digest for legacy protocol interop (built-in) |
 | `std::crypto::hmac_sha256` | `fn(Bytes, Bytes) -> Bytes` | 32-byte HMAC-SHA256 authentication tag (`(key, data)`) |
+| `std::crypto::hmac_sha384` | `fn(Bytes, Bytes) -> Bytes` | 48-byte HMAC-SHA384 authentication tag (`(key, data)`) |
 | `std::crypto::hmac_sha512` | `fn(Bytes, Bytes) -> Bytes` | 64-byte HMAC-SHA512 authentication tag (`(key, data)`) |
+| `std::crypto::keccak256` | `fn(Bytes) -> Bytes` | 32-byte Keccak-256 digest, Ethereum's (Keccak padding, not SHA3-256) |
 | `std::crypto::crc32` | `fn(Bytes) -> Int` | IEEE 802.3 / zlib CRC-32 checksum |
 | `std::crypto::ecdsa_p256_sign` | `fn(Bytes, Bytes) -> Bytes fallible(CryptoError)` | Signs `(pem_key, message)` using ECDSA P-256 + SHA-256 (`ES256`, 64-byte `r \|\| s`, OpenSSL) |
 | `std::crypto::ecdsa_p256_verify` | `fn(Bytes, Bytes, Bytes) -> Bool` | Verifies `(pem_pubkey, message, sig)` for a 64-byte `ES256` signature |
 | `std::crypto::ed25519_keypair` | `fn(Bytes) -> (Bytes, Bytes) fallible(CryptoError)` | Derives `(public: 32B, secret: 64B)` from a 32-byte seed (Monocypher, `wasm32`-compatible) |
 | `std::crypto::ed25519_sign` | `fn(Bytes, Bytes) -> Bytes fallible(CryptoError)` | Deterministically signs `(secret_or_seed, message)` -> 64-byte Ed25519 signature |
 | `std::crypto::ed25519_verify` | `fn(Bytes, Bytes, Bytes) -> Bool` | Verifies `(public, message, sig)` for a 64-byte Ed25519 signature |
+| `std::crypto::rsa_pss_sha256_sign` | `fn(Bytes, Bytes) -> Bytes fallible(CryptoError)` | Signs `(pem_key, message)` with RSA-PSS, SHA-256, MGF1-SHA256, 32-byte salt (`PS256`, OpenSSL) |
+| `std::crypto::rsa_pss_sha256_verify` | `fn(Bytes, Bytes, Bytes) -> Bool` | Verifies `(pem_pubkey, message, sig)` for an `rsa_pss_sha256_sign` signature |
+| `std::crypto::secp256k1_public_key` | `fn(Bytes) -> Bytes fallible(CryptoError)` | The 65-byte uncompressed public key of a 32-byte secret key |
+| `std::crypto::secp256k1_sign` | `fn(Bytes, Bytes) -> (Bytes, Bytes, Int) fallible(CryptoError)` | Signs `(secret, digest32)` -> `(r, s, recovery_id)`: RFC 6979 nonce, low `s` |
+| `std::crypto::secp256k1_verify` | `fn(Bytes, Bytes, Bytes) -> Bool` | Verifies `(public, digest32, r \|\| s)`; a high `s` is `false` |
+| `std::crypto::secp256k1_recover` | `fn(Bytes, Bytes, Bytes, Int) -> Bytes fallible(CryptoError)` | The 65-byte public key that signed `(digest32, r, s, recovery_id)` (`ecrecover`) |
 | `std::hex::encode` | `fn(Bytes) -> String` | Encodes bytes as lowercase hexadecimal (`2` chars per byte) |
 | `std::hex::decode` | `fn(String) -> Bytes fallible(ParseError)` | Strictly decodes hex string (case-insensitive, no `0x` or whitespace) |
 | `std::hex::digit` | `fn(Int) -> Int` | Converts an ASCII hex byte to `0..15`, or `-1` if not a hex digit |
@@ -60,9 +68,13 @@ let sum       = std::crypto::crc32(data);             // Int (IEEE 802.3 / zlib)
 
 let digest512 = std::crypto::sha512(data);            // 64 bytes
 let tag512    = std::crypto::hmac_sha512(key, data);  // 64 bytes
+let tag384    = std::crypto::hmac_sha384(key, data);  // 48 bytes
+let eth_hash  = std::crypto::keccak256(data);         // 32 bytes
 ```
 
-Use `sha256` / `hmac_sha256` (or `sha512` / `hmac_sha512` for APIs requiring 512-bit tags) for new code. `std::crypto::sha1` (20 bytes) is provided for legacy protocol interoperability.
+Use `sha256` / `hmac_sha256` (or `sha512` / `hmac_sha512`, `hmac_sha384` for APIs requiring those tags) for new code. `std::crypto::sha1` (20 bytes) is provided for legacy protocol interoperability.
+
+`keccak256` is the original Keccak-256, the hash Ethereum uses for transaction hashes, addresses and `eth_sign`. It is **not** SHA3-256: FIPS 202 changed the padding byte from `0x01` to `0x06`, so the two answer differently for every input (`keccak256(b"")` is `c5d24601…5d85a470`, SHA3-256's is `a7ffc6f8…80f8434a`).
 
 ### Hashing a stream or a large file
 
@@ -129,6 +141,22 @@ let ok = std::crypto::ecdsa_p256_verify(pubkey, message, sig);
 
 `ecdsa_p256_sign` is `fallible(CryptoError)` and fails with a structured `CryptoError { kind, detail }` if the PEM key cannot be parsed or uses a curve other than P-256.
 
+### RSA-PSS / `PS256` (`std::crypto::rsa_pss_sha256_*`)
+
+Some HTTP APIs sign each request with an RSA private key in PSS mode. `rsa_pss_sha256_sign` is RSASSA-PSS over SHA-256 with MGF1-SHA256 and a 32-byte salt, the parameters of JWS `PS256` and of `openssl dgst -sha256 -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:32`:
+
+```hale,fragment
+// key: PEM RSA private key, PKCS#8 ("BEGIN PRIVATE KEY") or PKCS#1 ("BEGIN RSA PRIVATE KEY")
+let sig = std::crypto::rsa_pss_sha256_sign(key, message) or raise;   // as long as the modulus
+
+// pubkey: PEM SPKI ("BEGIN PUBLIC KEY")
+let ok = std::crypto::rsa_pss_sha256_verify(pubkey, message, sig);
+```
+
+- PSS draws a fresh salt for every signature, so signing the same message twice gives two different signatures, and both verify.
+- Signing fails with `CryptoError { kind: "rsa_pss_sha256_sign" }` for a PEM it cannot read, an encrypted key (it never prompts for a passphrase), a key that is not RSA, or a modulus too small for the encoding. The detail never quotes the key.
+- Verification demands the same parameters, the 32-byte salt included, and is `false` for anything it cannot read.
+
 ### Ed25519 (`std::crypto::ed25519_*`)
 
 Ed25519 (RFC 8032) is used by NATS NKeys, SSH keys, and modern JWT/webhook schemes. The implementation uses Monocypher compiled directly into the runtime (no system library dependency, and supported on `--target wasm32`):
@@ -144,6 +172,29 @@ let ok  = std::crypto::ed25519_verify(public, message, sig);     // Bool
 - **Key formats**: `public` is 32 bytes. `secret` is 64 bytes (`seed || public`), matching the key layout used by libsodium and Go's `crypto/ed25519`.
 - **Signing**: `ed25519_sign` accepts either the 64-byte `secret` or the 32-byte `seed` directly, and is deterministic (the same key and message always produce the same 64-byte signature). Passing any other length—or a 64-byte key whose second half does not match the seed's derived public key—raises `CryptoError`.
 - **Verification**: `ed25519_verify` returns `false` if the signature, message, public key, or byte lengths are invalid.
+
+### secp256k1 (`std::crypto::secp256k1_*`)
+
+secp256k1 ECDSA is what signs an EVM transaction or message. It signs a 32-byte **digest**, so hash first: an Ethereum transaction hashes its RLP signing payload with `keccak256`.
+
+```hale,fragment
+// secret: the 32-byte private key (big-endian), from the vault (std::secret)
+let digest = std::crypto::keccak256(signing_payload);
+let (r, s, recovery_id) = std::crypto::secp256k1_sign(secret, digest) or raise;
+
+let public = std::crypto::secp256k1_public_key(secret) or raise;              // 65 bytes, 04 || X || Y
+let ok     = std::crypto::secp256k1_verify(public, digest, std::bytes::concat(r, s));
+let signer = std::crypto::secp256k1_recover(digest, r, s, recovery_id) or raise;  // == public
+
+// An Ethereum address: the last 20 bytes of keccak256 of the key without its 04 byte.
+let address = std::bytes::slice(std::crypto::keccak256(std::bytes::slice(public, 1, 65)), 12, 32);
+```
+
+- **Deterministic**: the nonce is RFC 6979's, so the same key and digest always give the same `(r, s)`; no entropy is read for it.
+- **Low `s`**: `s` is always in the lower half of the curve order (EIP-2), and `recovery_id` (0 or 1) is flipped with it, so it always names the signer. Write `27 + recovery_id` for a legacy `v`, `chain_id * 2 + 35 + recovery_id` for an EIP-155 one, and the id itself as a typed transaction's `y_parity`.
+- **Verification** takes the 65-byte uncompressed or 33-byte compressed public key and a 64-byte `r || s`, and returns `false` for a high `s` (its twin `(r, n - s)` signs the same digest, so accepting both makes signatures malleable).
+- **Recovery** is Ethereum's `ecrecover`: it accepts ids 0 to 3 (subtract 27 from a legacy `v` first) and, like `ecrecover`, a high `s`.
+- **Refusals**: a secret key that is not 32 bytes, is zero or is not below the curve order, a digest that is not 32 bytes, or an `r`, `s` or id that names no point is a `CryptoError` whose `kind` is the function's name. No error detail ever contains key material.
 
 ---
 

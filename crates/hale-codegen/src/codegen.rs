@@ -29333,6 +29333,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::CryptoHmacSha512 => {
                 self.lower_std_crypto_hmac_sha512(args, scope)
             }
+            // GH #1929: HMAC-SHA384, Keccak-256 and the secp256k1
+            // primitives, Bytes in and Bytes out.
+            Id::CryptoHmacSha384
+            | Id::CryptoKeccak256
+            | Id::CryptoSecp256k1PublicKeyRaw
+            | Id::CryptoSecp256k1SignRaw => self.lower_std_crypto_bytes_to_bytes(id, args, scope),
+            Id::CryptoSecp256k1RecoverRaw => self.lower_std_crypto_secp256k1_recover_raw(args, scope),
+            Id::CryptoRsaPssSha256Verify | Id::CryptoSecp256k1Verify => {
+                self.lower_std_crypto_verify(id, args, scope)
+            }
             Id::CryptoCrc32 => {
                 self.lower_std_crypto_crc32(args, scope)
             }
@@ -29642,6 +29652,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CompressUnzstd
             | Id::CompressZstd
             | Id::CryptoEcdsaP256Sign
+            | Id::CryptoRsaPssSha256Sign
             | Id::CryptoSha256File
             | Id::CryptoEd25519Sign
             | Id::DecimalFromFloat
@@ -29890,6 +29901,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Ed25519 (RFC 8032) → fallible(CryptoError) on a malformed
             // secret key.
             Id::CryptoEd25519Sign => self.lower_std_crypto_ed25519_sign_fallible(args, scope),
+            // RSA-PSS SHA-256 (GH #1929) → fallible(CryptoError) on a key
+            // it cannot read.
+            Id::CryptoRsaPssSha256Sign => self.lower_std_crypto_rsa_pss_sha256_sign_fallible(args, scope),
             // A file's SHA-256 read in blocks; open / read failures are
             // its IoError, the path in the detail.
             Id::CryptoSha256File => self.lower_std_crypto_sha256_file_fallible(args, scope),
@@ -30088,7 +30102,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CryptoEd25519PublicKeyRaw
             | Id::CryptoEd25519Verify
             | Id::CryptoHmacSha256
+            | Id::CryptoHmacSha384
             | Id::CryptoHmacSha512
+            | Id::CryptoKeccak256
+            | Id::CryptoRsaPssSha256Verify
+            | Id::CryptoSecp256k1PublicKeyRaw
+            | Id::CryptoSecp256k1RecoverRaw
+            | Id::CryptoSecp256k1SignRaw
+            | Id::CryptoSecp256k1Verify
             | Id::CryptoSha1
             | Id::CryptoSha256
             | Id::CryptoSha256FinishRaw

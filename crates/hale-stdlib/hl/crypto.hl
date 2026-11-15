@@ -1,12 +1,14 @@
-// std::crypto's Hale half: the Ed25519 key pair (RFC 8032). The
-// incremental SHA-256's locus is `crypto_sha256.hl`, appended only to a
-// program that names it.
+// std::crypto's Hale half: the Ed25519 key pair (RFC 8032) and the
+// secp256k1 key, signature and recovery (GH #1929). The incremental
+// SHA-256's locus is `crypto_sha256.hl`, appended only to a program that
+// names it.
 //
 // The rest of std::crypto is native (rows of the stdlib table lowered
-// to C: the hashes, HMAC, CRC-32, ECDSA P-256, and Ed25519's signing and
-// verification over Monocypher). A key pair is two values, a tuple no
-// row's signature states, so it is this body over the native public-key
-// primitive.
+// to C: the hashes, HMAC, CRC-32, Keccak-256, ECDSA P-256, RSA-PSS,
+// Ed25519's signing and verification over Monocypher, and secp256k1's
+// verification). A key pair and a signature with its recovery id are
+// several values, a tuple no row's signature states, and a refusal names
+// what was wrong, so they are these bodies over native primitives.
 
 /// The Ed25519 key pair of a 32-byte seed (RFC 8032 § 5.1.5): `(public,
 /// secret)`, the 32-byte public key and the 64-byte secret key — the seed
@@ -21,4 +23,99 @@ fn __std_crypto_ed25519_keypair(seed: Bytes) -> (Bytes, Bytes) fallible(CryptoEr
         fail CryptoError { kind: "ed25519_keypair", detail: "the seed is not 32 bytes" };
     }
     return (public, std::bytes::concat(seed, public));
+}
+
+/// The words for a secp256k1 primitive's one-byte failure code
+/// (`lotus_tls.c`'s LOTUS_K1_*). None of them names the key.
+fn __std_crypto_secp256k1_failure(code: Bytes) -> String {
+    let c = std::bytes::at(code, 0) or 0;
+    if c == 1 {
+        return "the secret key is not a scalar in [1, n-1] (zero, or not below the curve order)";
+    }
+    if c == 2 {
+        return "r, s and the recovery id name no point (r or s not in [1, n-1], or no curve point at r)";
+    }
+    return "secp256k1 is unavailable in the linked OpenSSL";
+}
+
+/// The secp256k1 public key of a 32-byte secret key: the 65-byte
+/// uncompressed SEC 1 encoding `04 || X || Y`. A secret key of another
+/// length, zero, or not below the curve order n is `CryptoError { kind:
+/// "secp256k1_public_key", detail }`. An Ethereum address is the last 20
+/// bytes of `keccak256` of the key without its `04` byte.
+fn __std_crypto_secp256k1_public_key(secret: Bytes) -> Bytes fallible(CryptoError) {
+    if len(secret) != 32 {
+        fail CryptoError { kind: "secp256k1_public_key", detail: "the secret key is not 32 bytes" };
+    }
+    let public = std::crypto::__secp256k1_public_key(secret);
+    if len(public) != 65 {
+        fail CryptoError {
+            kind: "secp256k1_public_key",
+            detail: __std_crypto_secp256k1_failure(public),
+        };
+    }
+    return public;
+}
+
+/// ECDSA over secp256k1 of a 32-byte digest (the message already hashed,
+/// as an EVM signer hashes with `keccak256`): `(r, s, recovery_id)`, `r`
+/// and `s` 32 bytes each, big-endian, and `recovery_id` 0 or 1 (2 or 3 in
+/// the ~2^-128 case of R's x past n). The nonce is RFC 6979's, so one key
+/// and digest always give one signature, and `s` is in the low half
+/// (EIP-2), the recovery id flipped with it. A legacy Ethereum `v` is
+/// `27 + recovery_id`, an EIP-155 one `chain_id * 2 + 35 + recovery_id`,
+/// a typed transaction's `y_parity` the id itself. A secret key that is
+/// not 32 bytes, zero, or not below n, or a digest that is not 32 bytes,
+/// is `CryptoError { kind: "secp256k1_sign", detail }`.
+fn __std_crypto_secp256k1_sign(
+    secret: Bytes,
+    digest: Bytes
+) -> (Bytes, Bytes, Int) fallible(CryptoError) {
+    if len(secret) != 32 {
+        fail CryptoError { kind: "secp256k1_sign", detail: "the secret key is not 32 bytes" };
+    }
+    if len(digest) != 32 {
+        fail CryptoError { kind: "secp256k1_sign", detail: "the digest is not 32 bytes" };
+    }
+    let sig = std::crypto::__secp256k1_sign(secret, digest);
+    if len(sig) != 65 {
+        fail CryptoError { kind: "secp256k1_sign", detail: __std_crypto_secp256k1_failure(sig) };
+    }
+    let recovery_id = std::bytes::at(sig, 64) or 0;
+    return (std::bytes::slice(sig, 0, 32), std::bytes::slice(sig, 32, 64), recovery_id);
+}
+
+/// The secp256k1 public key that signed a 32-byte digest with `(r, s,
+/// recovery_id)`, 65 bytes uncompressed — what Ethereum's `ecrecover`
+/// answers. `recovery_id` is 0..3 (subtract 27 from a legacy `v`). A high
+/// `s` is accepted here, as `ecrecover` accepts it; `secp256k1_verify`
+/// is the one that refuses it. Lengths other than 32, `r` or `s` outside
+/// [1, n-1], an id outside 0..3, or an `r` that is no point's x is
+/// `CryptoError { kind: "secp256k1_recover", detail }`.
+fn __std_crypto_secp256k1_recover(
+    digest: Bytes,
+    r: Bytes,
+    s: Bytes,
+    recovery_id: Int
+) -> Bytes fallible(CryptoError) {
+    if len(digest) != 32 {
+        fail CryptoError { kind: "secp256k1_recover", detail: "the digest is not 32 bytes" };
+    }
+    if len(r) != 32 || len(s) != 32 {
+        fail CryptoError { kind: "secp256k1_recover", detail: "r and s are not 32 bytes each" };
+    }
+    if recovery_id < 0 || recovery_id > 3 {
+        fail CryptoError {
+            kind: "secp256k1_recover",
+            detail: "the recovery id is not 0, 1, 2 or 3",
+        };
+    }
+    let public = std::crypto::__secp256k1_recover(digest, r, s, recovery_id);
+    if len(public) != 65 {
+        fail CryptoError {
+            kind: "secp256k1_recover",
+            detail: __std_crypto_secp256k1_failure(public),
+        };
+    }
+    return public;
 }

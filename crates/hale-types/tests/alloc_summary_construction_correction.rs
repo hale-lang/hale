@@ -329,13 +329,16 @@ fn own_scope_let_block_scope_test() {
             // (`__metrics_render_series`); 486, and two more entry points,
             // since a `std::metrics::Registry` registers at birth and leaves
             // at dissolve (the observe backends themselves join only a
-            // program that holds one); 507 since `wide.hl` came (GH
-            // #1934: `std::u256` / `std::i256`'s fallible calls and the
-            // JSON codecs' hex helpers, 20 fns)
+            // program that holds one); 491 since std::crypto's secp256k1
+            // bodies came (`secp256k1_public_key`, `secp256k1_sign`,
+            // `secp256k1_recover` and their failure-code helper, GH #1929);
+            // 511 since `wide.hl` came (GH #1934: `std::u256` /
+            // `std::i256`'s fallible calls and the JSON codecs' hex
+            // helpers, 20 fns)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 507 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 507 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 511 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 511 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
