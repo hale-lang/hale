@@ -1270,6 +1270,7 @@ fn walk_bundle(
         current_locus: None,
         in_lifecycle: false,
         in_closure: false,
+        empty_array_typed: false,
         in_on_failure: false,
         fallible_ctx: None,
         return_ctx: None,
@@ -11035,6 +11036,10 @@ fn struct_field_not_carried(ty: &Ty, top: &TopScope, depth: u32) -> Option<Strin
         Ty::Named(m) => matches!(top.symbols.get(m), Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_), .. }))),
         _ => false,
     };
+    let is_enum = |t: &Ty| match t {
+        Ty::Named(m) => matches!(top.symbols.get(m), Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. }))),
+        _ => false,
+    };
     for f in fields {
         let shown = f.ty.display();
         let bad = match &f.ty {
@@ -11053,7 +11058,11 @@ fn struct_field_not_carried(ty: &Ty, top: &TopScope, depth: u32) -> Option<Strin
             },
             Ty::Tuple(_) => Some("a tuple"),
             Ty::Bounded(e, _) if !scalar(e) => Some("a `bounded` buffer of other than scalars"),
-            Ty::Array(e, Some(_)) if !scalar(e) && !is_struct(e) => Some("an array of other than scalars or structs"),
+            // An array's elements are fixed bytes or structs: a payload-free
+            // enum's tag travels alone, not as an array element (GH #1942).
+            Ty::Array(e, Some(_)) if !(scalar(e) && !is_enum(e)) && !is_struct(e) => {
+                Some("an array of other than scalars or structs")
+            }
             _ => None,
         };
         if let Some(what) = bad {
@@ -11105,6 +11114,23 @@ fn check_bus_payload_carriable(
             continue;
         }
         let Some(topic) = top.topics.named(&row.topic) else { continue };
+        // GH #1942: the native ring's slot is a fixed-size struct; an enum
+        // payload (one with payloads is carried on the bus otherwise) has
+        // none, and the build refused the entry with no place.
+        if let Ty::Named(n) = resolve_type_expr(&topic.payload, known) {
+            if let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. })) = top.lookup(&n) {
+                diags.push(Diag::ty(
+                    row.span,
+                    format!(
+                        "`{t}: shm_ring(...)`: topic `{t}` carries the enum `{n}`, and hale can't put an enum in a \
+                         native ring yet: a ring slot is a fixed-size struct. Wrap the enum in a `type` and give \
+                         the topic that payload",
+                        t = row.topic
+                    ),
+                ));
+                continue;
+            }
+        }
         if matches!(resolve_type_expr(&topic.payload, known), Ty::Prim(PrimType::BytesView)) {
             diags.push(Diag::ty(
                 row.span,
@@ -11119,6 +11145,70 @@ fn check_bus_payload_carriable(
                 ),
             ));
         }
+    }
+    // GH #1942: a struct named by a literal subject's `of type` clause is
+    // serialized field by field like a topic's payload, each field one the
+    // wire format carries (`struct_field_not_carried`, which judges a
+    // topic's at each delivery); the build refused any other, with no
+    // place. Said once per payload type, at the first clause naming it.
+    let mut wire_reported: BTreeSet<String> = BTreeSet::new();
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
+            for m in &l.members {
+                let LocusMember::Bus(bb) = m else { continue };
+                for bm in &bb.members {
+                    let (verb, subject, written) = match bm {
+                        BusMember::Subscribe { subject, ty, .. } => ("subscribe", subject, ty),
+                        BusMember::Publish { subject, ty, .. } => ("publish", subject, ty),
+                    };
+                    // A `layout:`-bound ring hands its subscriber one record
+                    // at a time; a `Drain<T>` batch handler on one checked
+                    // clean and the build refused it.
+                    if let (BusMember::Subscribe { handler, span, .. }, BusSubject::Topic(t)) = (bm, subject) {
+                        let layout_bound = bindings.rows.iter().filter(|r| !r.imported && r.topic == t.name).any(|r| {
+                            r.entry(bundle).is_some_and(|e| matches!(e.transport, TransportSpec::ShmRing { layout: Some(_), .. }))
+                        });
+                        let batch = l.members.iter().any(|m| match m {
+                            LocusMember::Fn(f) if f.name.name == handler.name => f.params.first().is_some_and(|p| {
+                                matches!(&p.ty, TypeExpr::Named { path, .. }
+                                    if path.segments.last().is_some_and(|s| s.name == "Drain"))
+                            }),
+                            _ => false,
+                        });
+                        if layout_bound && batch {
+                            diags.push(Diag::ty(
+                                *span,
+                                format!(
+                                    "subscribe `{}`: the topic is bound to a `layout:` ring, which hands its subscriber \
+                                     one record at a time, and hale can't compile a `Drain<T>` batch handler on one yet: \
+                                     take one record per call (`fn {}(v: T)`)",
+                                    t.name, handler.name
+                                ),
+                            ));
+                        }
+                    }
+                    let (BusSubject::Literal { .. }, Some(te)) = (subject, written) else { continue };
+                    let ty = resolve_type_expr(te, known);
+                    let Some(field) = struct_field_not_carried(&ty, top, 0) else { continue };
+                    if !wire_reported.insert(ty.display()) {
+                        continue;
+                    }
+                    diags.push(Diag::ty(
+                        te.span(),
+                        format!(
+                            "{verb} `{}`: the payload `{}`, {field}, which hale can't carry on the bus yet: a delivery \
+                             serializes each field, and carries scalars (`Int`, `Float`, `Bool`, `Decimal`, `U256`, \
+                             `I256`, `Duration`, `Time`, a unit type), payload-free enums, `String`, `Bytes`, structs of \
+                             those, `bounded` buffers of scalars, and arrays of scalars or structs. Carry it as a value \
+                             the wire takes (a payload-free enum's tag, a tuple as a struct)",
+                            subject.canonical(),
+                            ty.display()
+                        ),
+                    ));
+                }
+            }
+        });
     }
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
@@ -11256,6 +11346,10 @@ struct Checker<'a> {
     current_locus: Option<&'a LocusInfo>,
     in_lifecycle: bool,
     in_closure: bool,
+    /// GH #1942: the expression being walked is `[]` as the value of a
+    /// `let` that declares its type, the one place lowering knows the
+    /// element type of an empty array literal.
+    empty_array_typed: bool,
     /// v1.x-VIOLATE (F.27): true while typechecking an
     /// `on_failure` body. Gates the rejection of `violate`
     /// inside `on_failure` (use `bubble(err)` instead).
@@ -14250,6 +14344,30 @@ impl<'a> Checker<'a> {
                     .to_string(),
             ));
         }
+        // GH #1942: the cache hashes its key as an `Int` or a `String`, as
+        // a hashmap does (an identity, a range or a quantity is its
+        // `Int`); any other key field checked clean and the build refused
+        // the locus.
+        let key_ok = match &key_ty {
+            Ty::Prim(PrimType::Int | PrimType::String) | Ty::Unknown => true,
+            Ty::Named(n) => !matches!(
+                self.top.lookup(n),
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_) | TypeKind::Enum(_), .. }))
+            ),
+            _ => false,
+        };
+        if !key_ok {
+            self.diags.push(Diag::ty(
+                field_ident.span,
+                format!(
+                    "@form(lru_cache) key `{}.{}` is a `{}`: a cache's key is an `Int` or a `String` (an \
+                     identity, a range or a quantity is its `Int`); key the cell by one of those",
+                    cell_name,
+                    field_ident.name,
+                    key_ty.display()
+                ),
+            ));
+        }
         // The eviction hook (friction sweep 2026-10-12): a method
         // `on_evict(k: K, v: S)` the cache calls with each entry it
         // evicts over `cap`, before it reclaims the cell.
@@ -15603,7 +15721,46 @@ impl<'a> Checker<'a> {
                             ),
                         ));
                     }
-                    let _ = self.check_expr(&assertion.tolerance);
+                    let tt = self.check_expr(&assertion.tolerance);
+                    // GH #1942: the band is computed in one type, so an
+                    // `Int` beside a `Float` (`mean(self.n) ~~ 1`, `mean` is
+                    // a `Float`) checked clean as a widening and the build
+                    // refused the closure. Refused at the `Int` side.
+                    let num = |this: &Self, t: &Ty| this.through_aliases(this.scalars.representation(&this.through_aliases(t.clone())));
+                    // `mean(…)` is a `Float` whatever it samples (the
+                    // accumulator's row), though the walk types the call as
+                    // no builtin's.
+                    let is_mean = |e: &Expr| {
+                        matches!(e, Expr::Call { callee, args, .. }
+                            if args.len() == 1 && matches!(callee.as_ref(), Expr::Ident(i) if i.name == "mean"))
+                    };
+                    let float_ty = Ty::Prim(PrimType::Float);
+                    let side = |this: &Self, e: &Expr, t: &Ty| if is_mean(e) { float_ty.clone() } else { num(this, t) };
+                    let (ln, rn, tn) =
+                        (side(self, &assertion.left, &lt), side(self, &assertion.right, &rt), num(self, &tt));
+                    let int = Ty::Prim(PrimType::Int);
+                    let float = Ty::Prim(PrimType::Float);
+                    let band = if ln == float || rn == float { Some(&float) } else { None };
+                    if let Some(float) = band {
+                        for (side, t, what) in [
+                            (&assertion.left, &ln, "left side"),
+                            (&assertion.right, &rn, "right side"),
+                            (&assertion.tolerance, &tn, "tolerance"),
+                        ] {
+                            if *t == int {
+                                self.diags.push(Diag::ty(
+                                    side.span(),
+                                    format!(
+                                        "closure `{}`: the band is a `{}` (the other side is one), and its {what} \
+                                         is an `Int`; a closure compares in one type, so write it as a `Float` \
+                                         (`1.0`, or `Float(x)`)",
+                                        cd.name.name,
+                                        float.display()
+                                    ),
+                                ));
+                            }
+                        }
+                    }
                     let seen = self.expr_types.take().unwrap_or_default();
                     self.record_accumulators(assertion, &seen);
                 }
@@ -15906,6 +16063,25 @@ impl<'a> Checker<'a> {
         self.generic_params
             .extend(decl.generics.iter().map(|g| g.name.name.clone()));
         self.check_generic_bound_names("fn", &decl.name.name, &decl.generics);
+        // GH #1942: a locus method is declared once, on the locus, and
+        // hale can't compile one specialized per call yet; the build
+        // refused it, with no place.
+        if let (Some(l), false) = (locus, decl.generics.is_empty()) {
+            let params: Vec<&str> = decl.generics.iter().map(|g| g.name.name.as_str()).collect();
+            self.diags.push(Diag::ty(
+                decl.name.span,
+                format!(
+                    "locus `{}` method `{}` is generic (`<{}>`), and hale can't compile a generic locus method \
+                     yet: declare it as a free generic fn that takes what it needs from the locus \
+                     (`fn {}<{}>(...)`), or give the method concrete types",
+                    l.name,
+                    decl.name.name,
+                    params.join(", "),
+                    decl.name.name,
+                    params.join(", ")
+                ),
+            ));
+        }
         for p in &decl.params {
             self.check_type_annotation(&p.ty);
         }
@@ -16008,7 +16184,8 @@ impl<'a> Checker<'a> {
             };
             for p in &decl.params {
                 let ty = self.resolve_te(&p.ty);
-                if let Some(reason) = cell(self, &ty) {
+                let reason = cell(self, &ty).map(str::to_string).or_else(|| self.ffi_named_refusal(&ty, 0));
+                if let Some(reason) = reason {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
                         format!(
@@ -16020,10 +16197,25 @@ impl<'a> Checker<'a> {
                         ),
                     ));
                 }
+                // GH #1942: a C function has a fixed arity, so a default
+                // has nothing to fill in at the boundary; the build
+                // refused it.
+                if let Some(d) = &p.default {
+                    self.diags.push(Diag::ty(
+                        d.span(),
+                        format!(
+                            "`@ffi` fn `{}`: parameter `{}` has a default, and a C function has a fixed \
+                             arity, so nothing fills it in at the boundary. Drop the default, and wrap the \
+                             import in a Hale fn that supplies it (`fn {}_or(…) {{ return {}(…, value); }}`)",
+                            decl.name.name, p.name.name, decl.name.name, decl.name.name
+                        ),
+                    ));
+                }
             }
             if let Some(ret_te) = &decl.ret {
                 let ret_ty = self.resolve_te(ret_te);
-                if let Some(reason) = cell(self, &ret_ty) {
+                let reason = cell(self, &ret_ty).map(str::to_string).or_else(|| self.ffi_named_refusal(&ret_ty, 0));
+                if let Some(reason) = reason {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
                         format!(
@@ -16711,7 +16903,10 @@ impl<'a> Checker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
+                self.empty_array_typed =
+                    matches!((ty, value), (Some(TypeExpr::Array { .. }), Expr::Array(parts, _)) if parts.is_empty());
                 let got = self.check_expr(value);
+                self.empty_array_typed = false;
                 self.refuse_unit_value(&got, value, &format!("let `{}`", name.name));
                 let bound = match ty {
                     Some(te) => {
@@ -19199,6 +19394,71 @@ impl<'a> Checker<'a> {
     }
 
     /// `t` with its `type` aliases followed (a bounded number of times).
+    /// GH #1942: a `@form(vec)`'s `sort()` orders its cells by the
+    /// default ordering of an `Int`, a `Float` or a `String` (an identity,
+    /// a range or a quantity is its `Int`); a vec of any other cell has
+    /// none, and the build refused the call. Refused here, at the method.
+    fn refuse_unordered_vec_sort(&mut self, callee: &Expr) {
+        let Expr::Field { receiver, name, span } = callee else { return };
+        if name.name != "sort" {
+            return;
+        }
+        let rt = match self.view_expr_ty(receiver) {
+            Ty::Projection(_, inner) => *inner,
+            t => t,
+        };
+        let Ty::Named(owner) = &rt else { return };
+        let Some(decl) = self.locus_decls.get(owner.as_str()).copied() else { return };
+        if decl.form.as_ref().is_none_or(|f| f.name.name != "vec")
+            || decl.members.iter().any(|m| matches!(m, LocusMember::Fn(f) if f.name.name == "sort"))
+        {
+            return;
+        }
+        let Some(cell) = decl.members.iter().find_map(|m| match m {
+            LocusMember::Capacity(cb) => cb.slots.first().map(|s| &s.elem_ty),
+            _ => None,
+        }) else {
+            return;
+        };
+        let cell_ty = self.resolve_te(cell);
+        let repr = self.through_aliases(self.scalars.representation(&self.through_aliases(cell_ty.clone())));
+        if matches!(repr, Ty::Prim(PrimType::Int | PrimType::Float | PrimType::String) | Ty::Unknown) {
+            return;
+        }
+        let recv = Self::spell_receiver(receiver);
+        self.diags.push(Diag::ty(
+            *span,
+            format!(
+                "`{recv}.sort()`: `{owner}` holds `{}` cells, which have no default ordering (a vec sorts an \
+                 `Int`, a `Float` or a `String` by itself); sort with a comparator, \
+                 `{recv}.sort_by(less_than)` where `fn less_than(a: {}, b: {}) -> Bool` says whether `a` comes \
+                 first",
+                cell_ty.display(),
+                cell_ty.display(),
+                cell_ty.display()
+            ),
+        ));
+    }
+
+    /// GH #1942: an accumulator inside a closure assertion samples one
+    /// field each epoch (`sum(self.x)`, `mean(self.x)`); a wider expression
+    /// checked clean and the build refused the closure.
+    fn refuse_accumulated_non_field(&mut self, what: &str, inner: &Expr) {
+        if let Expr::Field { receiver, .. } = inner {
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                return;
+            }
+        }
+        self.diags.push(Diag::ty(
+            inner.span(),
+            format!(
+                "`{what}(…)` accumulates one field of the locus (`{what}(self.x)`), and hale can't compile an \
+                 accumulator over a wider expression yet: keep the value in a field the locus updates \
+                 (`self.total = self.a + self.b;`), and accumulate that"
+            ),
+        ));
+    }
+
     fn through_aliases(&self, mut t: Ty) -> Ty {
         for _ in 0..16 {
             let Ty::Named(n) = &t else { break };
@@ -20667,6 +20927,7 @@ impl<'a> Checker<'a> {
         // multi-file seed reads as well as the whole bundle does.
         self.check_generic_arity(te);
         self.check_bounded_element(te);
+        self.check_array_size(te);
         self.check_bare_perspective_type(te);
         if !self.strict_idents {
             return;
@@ -20769,6 +21030,67 @@ impl<'a> Checker<'a> {
                      without payloads, `String`, `Bytes` or structs; wrap the element in a struct"
                 ),
             ));
+        }
+    }
+
+    /// GH #1942: why a named type does not cross an `@ffi` boundary,
+    /// beyond the matrix's `Named` cell (which admits a user struct, its
+    /// C struct kept layout-compatible by the library author): an enum,
+    /// a locus, an interface or a perspective has no C layout at Stage 1,
+    /// and the build refused it. `None` for a struct, an identity, a
+    /// range or a quantity (its `Int`), and a name this bundle cannot
+    /// resolve.
+    fn ffi_named_refusal(&self, t: &Ty, depth: u32) -> Option<String> {
+        let Ty::Named(n) = t else { return None };
+        if depth > 8 {
+            return None;
+        }
+        match self.top.lookup(n) {
+            Some(TopSymbol::Type(info)) => match &info.kind {
+                TypeKind::Enum(_) => Some(format!(
+                    "`{n}` is an enum, which has no C layout at Stage 1; pass its variant as an `Int` you \
+                     map on each side, or a struct that carries it"
+                )),
+                TypeKind::Alias(inner) => self.ffi_named_refusal(inner, depth + 1),
+                TypeKind::Struct(_) | TypeKind::Scalar(_) => None,
+            },
+            Some(TopSymbol::Locus(_)) => Some(format!(
+                "`{n}` is a locus, which does not cross the C ABI; pass the values the foreign side needs"
+            )),
+            Some(TopSymbol::Interface(_)) | Some(TopSymbol::Perspective(_)) => Some(format!(
+                "`{n}` dispatches to a locus, which does not cross the C ABI; pass the values the foreign \
+                 side needs"
+            )),
+            _ => None,
+        }
+    }
+
+    /// GH #1942: an array's type carries its length, an integer literal
+    /// (`[Int; 3]`, `[Int; 0]`). An unsized `[T]`, or a length spelled by
+    /// a name (`[Int; N]`), checked clean in a signature or a field and
+    /// the build refused it; refused here, at the annotation. Nested
+    /// annotations are walked by their own `check_type_annotation`.
+    fn check_array_size(&mut self, te: &TypeExpr) {
+        let TypeExpr::Array { elem, size, span } = te else { return };
+        let shown = type_expr_text(elem);
+        match size {
+            None => self.diags.push(Diag::ty(
+                *span,
+                format!(
+                    "`[{shown}]` has no length, and hale can't compile an unsized array yet: an array's type \
+                     carries its length, `[{shown}; N]` with `N` an integer literal. Size it, or hold a varying \
+                     number of elements in a `bounded[{shown}; N]` (a fixed capacity with a live count) or a \
+                     `@form(vec)` locus"
+                ),
+            )),
+            Some(Expr::Literal(Literal::Int(n), _)) if *n >= 0 => {}
+            Some(e) => self.diags.push(Diag::ty(
+                e.span(),
+                format!(
+                    "`[{shown}; …]`: an array's length is an integer literal (`[{shown}; 3]`), and hale can't \
+                     compile a length spelled by an expression yet; write the number"
+                ),
+            )),
         }
     }
 
@@ -22981,6 +23303,25 @@ impl<'a> Checker<'a> {
                                 self.check_fmt_builtin(args, callee);
                                 return Ty::Prim(PrimType::String);
                             }
+                            // GH #1942: `count()` and `mean(x)` are a closure
+                            // assertion's accumulators, read once per epoch;
+                            // anywhere else they named nothing the build
+                            // could call. (`count(x)` of a `bounded` is its
+                            // intrinsic, below.)
+                            "mean" if self.in_closure && args.len() == 1 && self.locals.lookup("mean").is_none() => {
+                                self.refuse_accumulated_non_field("mean", &args[0]);
+                            }
+                            "count" | "mean"
+                                if !self.in_closure
+                                    && args.len() == usize::from(id.name == "mean")
+                                    && self.locals.lookup(&id.name).is_none()
+                                    && !self.generic_fns.contains_key(id.name.as_str()) =>
+                            {
+                                self.diags.push(Diag::ty(
+                                    expr.span(),
+                                    accumulator_outside_closure(&format!("{}(…)", id.name)),
+                                ));
+                            }
                             // `Int(x)` and `Float(x)` take an `Int` or a `Float`
                             // (spec/types.md § Explicit numeric conversions); a
                             // `Decimal<S>` is neither, and it has no `Int`: its
@@ -23009,7 +23350,41 @@ impl<'a> Checker<'a> {
                                                 out
                                             ),
                                         ));
+                                        continue;
                                     }
+                                    // GH #1942: any other operand that is
+                                    // not a number (an identity, a range or
+                                    // a quantity is its `Int`) checked clean
+                                    // and the build refused the cast.
+                                    let repr = self.through_aliases(
+                                        self.scalars.representation(&self.through_aliases(at.clone())),
+                                    );
+                                    if matches!(repr, Ty::Prim(PrimType::Int | PrimType::Float) | Ty::Unknown) {
+                                        continue;
+                                    }
+                                    let way = match &repr {
+                                        Ty::Prim(PrimType::Bool) => "a `Bool` is no number: write \
+                                             `if b { 1 } else { 0 }`"
+                                            .to_string(),
+                                        Ty::Prim(PrimType::String) => format!(
+                                            "a `String` is parsed, not cast: `std::str::parse_{}(s)`, \
+                                             which is fallible (`or <fallback>`)",
+                                            if id.name == "Int" { "int" } else { "float" }
+                                        ),
+                                        Ty::Prim(PrimType::Duration) => "a `Duration`'s count in a unit is a \
+                                             quotient, `Float(d / 1ms)`"
+                                            .to_string(),
+                                        _ => "convert it through an `Int` or a `Float` field of it".to_string(),
+                                    };
+                                    self.diags.push(Diag::ty(
+                                        a.span(),
+                                        format!(
+                                            "`{}(…)` takes an `Int` or a `Float`, and `{}` is neither: {}",
+                                            id.name,
+                                            at.display(),
+                                            way
+                                        ),
+                                    ));
                                 }
                             }
                             "abs" | "min" | "max" => {
@@ -23432,6 +23807,29 @@ impl<'a> Checker<'a> {
                                     bound.display()
                                 ),
                             ));
+                        }
+                        // GH #1942: a specialization is declared under a
+                        // name its type arguments spell (`id_Int`), and an
+                        // array, a tuple or a fn type spells none, so the
+                        // build refused the call. Refused here, at the call.
+                        for g in &template.generics {
+                            let Some(bound) = bindings.get(&g.name.name) else { continue };
+                            if let Some(what) = unnameable_generic_arg(bound) {
+                                self.diags.push(Diag::ty(
+                                    callee.span(),
+                                    format!(
+                                        "generic fn `{}`: this call makes `{}` `{}`, {what}, and hale can't compile a \
+                                         generic fn specialized at one yet: a generic argument is a primitive or a \
+                                         declared type (a struct, an enum, an alias, a locus or an interface). Wrap \
+                                         the value in a declared type (`type Wrapped {{ v: {}; }}`), or write the fn \
+                                         over the concrete type",
+                                        id.name,
+                                        g.name.name,
+                                        bound.display(),
+                                        bound.display()
+                                    ),
+                                ));
+                            }
                         }
                         // Every generic must be pinned — UNLESS an
                         // arg typed Unknown could have pinned it
@@ -24054,6 +24452,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                self.refuse_unordered_vec_sort(callee);
                 let base_ret = match callee_ty {
                     Ty::Function { ret, .. } => *ret,
                     _ => Ty::Unknown,
@@ -24100,6 +24499,7 @@ impl<'a> Checker<'a> {
                             // (spec/types.md § Value builtins). The
                             // build refused it with no file or line
                             // until 2026-11-06 (downstream handoff).
+                            let mut said = matches!(t, Ty::Bounded(..));
                             if let Ty::Named(n) = &t {
                                 if let Some(form) = self.locus_decls.get(n.as_str()).and_then(|d| d.form.as_ref()) {
                                     let recv = Self::spell_receiver(&args[0]);
@@ -24112,7 +24512,25 @@ impl<'a> Checker<'a> {
                                             recv
                                         ),
                                     ));
+                                    said = true;
                                 }
+                            }
+                            // GH #1942: anything else `len`'s row admits
+                            // no length of (an `Int`, a tuple, an enum, a
+                            // record) checked clean and the build refused
+                            // it.
+                            let lengthed = crate::builtin_sigs::bare_builtin_sig("len")
+                                .is_some_and(|sig| sig.result(std::slice::from_ref(&t), |_| false).is_some());
+                            if !said && !lengthed {
+                                self.diags.push(Diag::ty(
+                                    expr.span(),
+                                    format!(
+                                        "`len` does not apply to a value of type `{}`: it is the length of a `String`, a \
+                                         `Bytes`, a view of either, or a fixed-size array (`[T; N]`) (spec/types.md § Calls \
+                                         to bare names)",
+                                        t.display()
+                                    ),
+                                ));
                             }
                         }
                         // GH #1076: `min` / `max` of two values of one
@@ -24531,6 +24949,38 @@ impl<'a> Checker<'a> {
             Expr::Index { receiver, index, span } => {
                 let rt = self.check_expr(receiver);
                 let _ = self.check_expr(index);
+                // GH #1942: a range index slices a `String` (`s[1..3]`,
+                // `s[1..=3]`); on anything else it checked clean, typed as
+                // one element, and the build refused it.
+                if let Expr::Range { .. } = index.as_ref() {
+                    let base = self.through_aliases(rt.clone());
+                    if matches!(base, Ty::Prim(PrimType::String) | Ty::Unknown) {
+                        return rt;
+                    }
+                    let recv = Self::spell_receiver(receiver);
+                    let way = match &base {
+                        Ty::Array(..) => format!(
+                            "copy the elements you want into an array of their own (`[{recv}[1], {recv}[2]]`), or \
+                             walk the range (`for i in 1..3 {{ … {recv}[i] … }}`)"
+                        ),
+                        Ty::Prim(PrimType::Bytes | PrimType::BytesView) => {
+                            format!("`std::bytes::slice({recv}, lo, hi)` copies a range of bytes")
+                        }
+                        Ty::Prim(PrimType::StringView) => {
+                            format!("slice a `String` copy of the view (`std::str::clone({recv})[lo..hi]`)")
+                        }
+                        _ => format!("index one element at a time (`{recv}[i]`)"),
+                    };
+                    self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "`{recv}[lo..hi]`: a range index slices a `String`, and hale can't compile a slice of a \
+                             `{}` yet; {way}",
+                            rt.display()
+                        ),
+                    ));
+                    return Ty::Unknown;
+                }
                 match self.through_aliases(rt.clone()) {
                     Ty::Array(elem, _) => *elem,
                     Ty::Bounded(elem, _) => {
@@ -24547,7 +24997,19 @@ impl<'a> Checker<'a> {
                 }
                 Ty::Tuple(tys)
             }
-            Expr::Array(parts, _) => {
+            Expr::Array(parts, span) => {
+                // GH #1942: `[]` names no element type; lowering takes it
+                // from the declared type of the `let` it is the value of,
+                // and nowhere else.
+                if parts.is_empty() && !std::mem::take(&mut self.empty_array_typed) {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        "an empty array literal `[]` names no element type, and hale can't compile one here yet: \
+                         write it as the value of a `let` that declares its type (`let xs: [Int; 0] = [];`), \
+                         or write `[x; 0]`, whose element is `x`'s type"
+                            .to_string(),
+                    ));
+                }
                 let tys: Vec<Ty> = parts.iter().map(|e| self.check_expr_local(e)).collect();
                 for (e, t) in parts.iter().zip(&tys) {
                     self.refuse_unit_value(t, e, "an array element");
@@ -24569,7 +25031,27 @@ impl<'a> Checker<'a> {
             // Gap C (2026-07-17): match in expression position types
             // as the join of its arm-body types.
             Expr::Match(m) => self.check_match_core(m, true),
-            Expr::Sum(inner, _) | Expr::Prod(inner, _) => self.check_expr(inner),
+            // GH #1942: `sum(x)` is a closure assertion's accumulator over
+            // a field (`sum(self.x)`), and hale has no lowering of `prod(x)`
+            // at all; each checked clean anywhere and the build refused it.
+            Expr::Sum(inner, span) => {
+                if !self.in_closure {
+                    self.diags.push(Diag::ty(*span, accumulator_outside_closure("sum(…)")));
+                } else {
+                    self.refuse_accumulated_non_field("sum", inner);
+                }
+                self.check_expr(inner)
+            }
+            Expr::Prod(inner, span) => {
+                self.diags.push(Diag::ty(
+                    *span,
+                    "hale can't compile the `prod(…)` accumulator yet: a closure assertion accumulates \
+                     `sum(self.x)`, `mean(self.x)` and `count()`. Keep the running product in a field the \
+                     locus updates, and assert on the field"
+                        .to_string(),
+                ));
+                self.check_expr(inner)
+            }
             Expr::Approx { left, right, tolerance, span } => {
                 if !self.in_closure {
                     self.diags.push(Diag::ty(
@@ -25772,6 +26254,19 @@ impl<'a> Checker<'a> {
                 }
             }
             Pattern::Tuple(subs, _) => {
+                // GH #1942: each part of a tuple pattern is a binding, `_` or
+                // a literal, as each value of a variant's is: lowering
+                // matched nothing nested there and refused the arm.
+                for p in subs {
+                    if let Pattern::Tuple(_, sp) | Pattern::Constructor { span: sp, .. } = p {
+                        self.diags.push(Diag::ty(
+                            *sp,
+                            "a tuple pattern takes a binding, `_` or a literal for each of its parts, and hale \
+                             can't compile a nested pattern there yet: bind the part, and match the binding in the arm"
+                                .to_string(),
+                        ));
+                    }
+                }
                 if let Ty::Tuple(ts) = scrut {
                     if ts.len() == subs.len() {
                         for (p, t) in subs.iter().zip(ts.clone()) {
@@ -27320,6 +27815,32 @@ fn locus_has_unsynchronized_state(
 /// calling every name below.
 ///
 /// Grouped by the codegen dispatch site that answers each name.
+/// GH #1942: an accumulator (`sum(…)`, `count()`, `mean(…)`) read outside
+/// a closure assertion.
+fn accumulator_outside_closure(what: &str) -> String {
+    format!(
+        "`{what}` is a closure assertion's accumulator (`closure c {{ sum(self.x) ~~ 0 within 10; epoch tick; }}`), \
+         and is compiled only there. To add up an array, walk it (`for x in xs {{ total = total + x; }}`) or chain \
+         it (`xs.map(it).sum()`)"
+    )
+}
+
+/// What a generic fn's inferred type argument is when no specialization
+/// can be named for it (GH #1942): an array, a tuple, a fn type, a
+/// `bounded` buffer, or a primitive with no mangle token. `None` for a
+/// nameable argument, and for `Unknown` (the check stays permissive where
+/// inference was).
+fn unnameable_generic_arg(t: &Ty) -> Option<&'static str> {
+    match t {
+        Ty::Array(..) => Some("an array"),
+        Ty::Tuple(_) => Some("a tuple"),
+        Ty::Function { .. } => Some("a fn type"),
+        Ty::Bounded(..) => Some("a `bounded` buffer"),
+        Ty::Prim(p) if crate::ty::generic_arg_mangle_token(*p).is_none() => Some("a primitive with no generic form"),
+        _ => None,
+    }
+}
+
 pub const BARE_BUILTIN_CALLEES: &[&str] = &[
     // lower_expr's `Expr::Call` arms (hale-codegen `codegen.rs`).
     // `Int` and `Float` are the two numeric casts of

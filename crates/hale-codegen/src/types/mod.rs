@@ -310,10 +310,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             TypeExpr::Array { elem, size, .. } => {
                 let elem_ty = self.type_expr_to_codegen_ty(elem)?;
                 let n = match size {
-                    Some(Expr::Literal(Literal::Int(n), _)) if *n > 0 => *n as u64,
+                    // A zero-length `[T; 0]` is an array too (GH #1942).
+                    Some(Expr::Literal(Literal::Int(n), _)) if *n >= 0 => *n as u64,
                     Some(_) => {
                         return Err(CodegenError::Unsupported(
-                            "array size must be a positive integer literal in v0"
+                            "array size must be a non-negative integer literal"
                                 .into(),
                         ));
                     }

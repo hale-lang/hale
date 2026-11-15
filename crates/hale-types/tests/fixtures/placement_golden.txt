@@ -8518,6 +8518,20 @@ row	App@literal1.bars	Bars	main	default
 shared	App@literal1.r	Ring #711a93c5
 shared	App@literal1.s	Sup #20139bc1
 
+== tests/hale/codegen_gaps_test.hl
+row	Counter@main5	Counter	main	default
+row	Dog@main6	Dog	main	default
+row	Ladder@main7	Ladder	main	default
+row	Picker@main1	Picker	main	default
+row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
+-- Holder@main2	Holder
+row	~	Holder	main	default
+row	~.b	__StdBytesBytesBuilder	main	inherited
+-- Watcher@main4	Watcher
+row	~	Watcher	main	default
+row	~.v	Holder	main	inherited
+row	~.v.b	__StdBytesBytesBuilder	main	inherited
+
 == tests/hale/contextual_keywords_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
