@@ -1,0 +1,12 @@
+// refused at line 5: declares a return type
+// A refusal of a member's signature, raised while declaring the locus's
+// methods: placed at the member.
+locus Probe {
+    birth() -> Int {
+        print("born");
+    }
+}
+
+fn main() {
+    Probe { };
+}

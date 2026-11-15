@@ -181,7 +181,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             CodegenTy::Float => phi_v.into_float_value(),
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "k_max requires param `phi` of type Float, got {:?}",
+                    "k_max requires param `phi` of type Float, got {}",
                     other
                 )));
             }
@@ -1251,7 +1251,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         let (cond_v, cond_ty) = self.lower_expr(&bc.cond, scope)?;
         if cond_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
-                "birth_check cond must be Bool, got {:?}",
+                "birth_check cond must be Bool, got {}",
                 cond_ty
             )));
         }

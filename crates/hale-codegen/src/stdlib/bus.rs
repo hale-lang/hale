@@ -51,7 +51,7 @@ impl<'ctx, 'p> BusStdlib<'ctx> for Cx<'ctx, 'p> {
         let (subj_val, subj_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(subj_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bus::__local_dispatch: subject must be String, got {:?}",
+                "std::bus::__local_dispatch: subject must be String, got {}",
                 subj_ty
             )));
         }
@@ -59,7 +59,7 @@ impl<'ctx, 'p> BusStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bus::__local_dispatch: bytes must be Bytes, got {:?}",
+                "std::bus::__local_dispatch: bytes must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -132,7 +132,7 @@ impl<'ctx, 'p> BusStdlib<'ctx> for Cx<'ctx, 'p> {
         for (name, ty) in [("subject", &subj_ty), ("path", &path_ty)] {
             if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::bus::__transport_realize: {} must be String, got {:?}",
+                    "std::bus::__transport_realize: {} must be String, got {}",
                     name, ty
                 )));
             }
@@ -142,7 +142,7 @@ impl<'ctx, 'p> BusStdlib<'ctx> for Cx<'ctx, 'p> {
         let (role_val, role_ty) = self.lower_expr(&args[2], scope)?;
         if !matches!(role_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bus::__transport_realize: role must be Int, got {:?}",
+                "std::bus::__transport_realize: role must be Int, got {}",
                 role_ty
             )));
         }
@@ -182,7 +182,7 @@ impl<'ctx, 'p> BusStdlib<'ctx> for Cx<'ctx, 'p> {
         let (h_val, h_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(h_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
-                "{}: handle must be Int, got {:?}",
+                "{}: handle must be Int, got {}",
                 c_fn, h_ty
             )));
         }
@@ -225,7 +225,7 @@ impl<'ctx, 'p> BusStdlib<'ctx> for Cx<'ctx, 'p> {
         for (name, ty) in [("subject", &subj_ty), ("url", &url_ty)] {
             if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::bus::__binding_fail: {} must be String, got {:?}",
+                    "std::bus::__binding_fail: {} must be String, got {}",
                     name, ty
                 )));
             }

@@ -1,0 +1,15 @@
+// refused at line 7: method `Reader.next` can reach the end of its body without a `return` or a `fail`
+// A fallible method's backstop, placed at the method.
+type Oops { why: String; }
+
+locus Reader {
+    params { n: Int; }
+    fn next() -> Int fallible(Oops) {
+        if self.n > 0 { return self.n; }
+    }
+}
+
+fn main() {
+    let r = Reader { n: 1 };
+    print(r.next() or 0);
+}

@@ -1639,3 +1639,116 @@ pub fn desugar_omitted_run(program: &mut Program) {
     }
     walk(&mut program.items);
 }
+
+/// GH #1940: the statement that ends a body with a declared return type
+/// is the body's value.
+///
+/// A block's tail is its value, and a fn body's tail is its return
+/// (spec/semantics.md § "Expressions — `if` and block tails"). The
+/// parser keeps a trailing `match`, a trailing `{ … }` and a trailing
+/// `if` some arm of which has no tail as statements (a side-effect
+/// `match` ends many bodies), so in a body that returns a value those
+/// shapes ended in a statement whose values were discarded: the check
+/// passed them and the build refused the body as falling through. Here
+/// the **result position** of a body with a declared return type (a fn,
+/// a locus method or a mode with `-> T`) is made explicit: the body's
+/// last statement, when it is a `match`, an `if` or a block, carries the
+/// value down to its leaves, each leaf a `return`:
+///
+/// - a `match` arm's expression is `{ return <arm>; }`;
+/// - a nested block's tail is `return <tail>;` (the body's own tail is
+///   already its return and stays as written);
+/// - an `if`'s arms, each `else if` and a block are result positions in
+///   turn; a leaf that already leaves (`return`, `fail`, …) is unchanged.
+///
+/// The check then types each leaf against the return type as the
+/// `return` it is, judges whether the body can still reach its end
+/// without a value (`definite_return`), and lowering lowers the returns
+/// it already lowers. Each synthesized `return` carries its value's span
+/// (how the check tells it from a written one), and the arm block its
+/// arm expression's. Idempotent: a body already shaped has no tail and
+/// no arm expression left in its result position.
+pub fn desugar_tail_returns(program: &mut Program) {
+    fn walk(items: &mut [TopDecl]) {
+        for item in items.iter_mut() {
+            match item {
+                TopDecl::Fn(f) => fn_body(f),
+                TopDecl::Locus(l) => {
+                    for m in &mut l.members {
+                        match m {
+                            LocusMember::Fn(f) => fn_body(f),
+                            LocusMember::Mode(md) if md.ret.is_some() => body(&mut md.body),
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Perspective(p) => {
+                    for m in &mut p.members {
+                        if let PerspectiveMember::Fn(f) = m {
+                            fn_body(f);
+                        }
+                    }
+                }
+                TopDecl::Module(m) => walk(&mut m.items),
+                _ => {}
+            }
+        }
+    }
+    fn fn_body(f: &mut FnDecl) {
+        if f.ret.is_some() && f.ffi.is_none() {
+            body(&mut f.body);
+        }
+    }
+    // The body itself: its tail is its return already.
+    fn body(b: &mut Block) {
+        if b.tail.is_none() {
+            if let Some(last) = b.stmts.last_mut() {
+                result_stmt(last);
+            }
+        }
+    }
+    // A block in result position inside the body: its tail is a value
+    // the enclosing statement would discard, so it is the return.
+    fn result_block(b: &mut Block) {
+        if let Some(tail) = b.tail.take() {
+            let span = tail.span();
+            b.stmts.push(Stmt::Return(Some(*tail), span));
+            return;
+        }
+        if let Some(last) = b.stmts.last_mut() {
+            result_stmt(last);
+        }
+    }
+    fn result_if(i: &mut IfStmt) {
+        result_block(&mut i.then_block);
+        match i.else_block.as_deref_mut() {
+            Some(ElseBranch::Else(b)) => result_block(b),
+            Some(ElseBranch::ElseIf(n)) => result_if(n),
+            None => {}
+        }
+    }
+    fn result_stmt(s: &mut Stmt) {
+        match s {
+            Stmt::Match(m) => {
+                for arm in &mut m.arms {
+                    match &mut arm.body {
+                        MatchArmBody::Block(b) => result_block(b),
+                        MatchArmBody::Expr(e) => {
+                            let span = e.span();
+                            let value = std::mem::replace(e, Expr::Literal(Literal::Nil, span));
+                            arm.body = MatchArmBody::Block(Block {
+                                stmts: vec![Stmt::Return(Some(value), span)],
+                                tail: None,
+                                span,
+                            });
+                        }
+                    }
+                }
+            }
+            Stmt::If(i) => result_if(i),
+            Stmt::Block(b) => result_block(b),
+            _ => {}
+        }
+    }
+    walk(&mut program.items);
+}

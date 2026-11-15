@@ -154,7 +154,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::__bind: host must be String, got {:?}",
+                "std::io::udp::__bind: host must be String, got {}",
                 host_ty
             )));
         }
@@ -162,7 +162,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::__bind: port must be Int, got {:?}",
+                "std::io::udp::__bind: port must be Int, got {}",
                 port_ty
             )));
         }
@@ -225,26 +225,26 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::__send: fd must be Int, got {:?}", fd_ty
+                "std::io::udp::__send: fd must be Int, got {}", fd_ty
             )));
         }
         let (host_val, host_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::__send: host must be String, got {:?}", host_ty
+                "std::io::udp::__send: host must be String, got {}", host_ty
             )));
         }
         let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
         let (port_val, port_ty) = self.lower_expr(&args[2], scope)?;
         if port_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::__send: port must be Int, got {:?}", port_ty
+                "std::io::udp::__send: port must be Int, got {}", port_ty
             )));
         }
         let (msg_val, msg_ty) = self.lower_expr(&args[3], scope)?;
         if !matches!(msg_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::__send: msg must be String, got {:?}", msg_ty
+                "std::io::udp::__send: msg must be String, got {}", msg_ty
             )));
         }
         let msg_val = self.unpack_view_if_needed(msg_val, &msg_ty)?;
@@ -302,13 +302,13 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::__recv: fd must be Int, got {:?}", fd_ty
+                "std::io::udp::__recv: fd must be Int, got {}", fd_ty
             )));
         }
         let (cap_val, cap_ty) = self.lower_expr(&args[1], scope)?;
         if cap_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::__recv: max_bytes must be Int, got {:?}", cap_ty
+                "std::io::udp::__recv: max_bytes must be Int, got {}", cap_ty
             )));
         }
         let i32_t = self.context.i32_type();
@@ -383,14 +383,14 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::recv_with_source: fd must be Int, got {:?}",
+                "std::io::udp::recv_with_source: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (max_val, max_ty) = self.lower_expr(&args[1], scope)?;
         if max_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::recv_with_source: max_bytes must be Int, got {:?}",
+                "std::io::udp::recv_with_source: max_bytes must be Int, got {}",
                 max_ty
             )));
         }
@@ -456,14 +456,14 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::{}: fd must be Int, got {:?}",
+                "std::io::udp::{}: fd must be Int, got {}",
                 label, fd_ty
             )));
         }
         let (d_val, d_ty) = self.lower_expr(&args[1], scope)?;
         if d_ty != CodegenTy::Duration {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::{}: d must be Duration, got {:?}",
+                "std::io::udp::{}: d must be Duration, got {}",
                 label, d_ty
             )));
         }
@@ -557,14 +557,14 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::{}: fd must be Int, got {:?}",
+                "std::io::tcp::{}: fd must be Int, got {}",
                 label, fd_ty
             )));
         }
         let (on_val, on_ty) = self.lower_expr(&args[1], scope)?;
         if on_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::tcp::{}: on must be Bool, got {:?}",
+                "std::io::tcp::{}: on must be Bool, got {}",
                 label, on_ty
             )));
         }
@@ -711,7 +711,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::{}: fd must be Int, got {:?}",
+                "std::io::udp::{}: fd must be Int, got {}",
                 label, fd_ty
             )));
         }
@@ -723,7 +723,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (group_val, group_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(group_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::{}: group must be String, got {:?}",
+                "std::io::udp::{}: group must be String, got {}",
                 label, group_ty
             )));
         }
@@ -731,7 +731,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (iface_val, iface_ty) = self.lower_expr(&args[2], scope)?;
         if !matches!(iface_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::{}: iface must be String, got {:?}",
+                "std::io::udp::{}: iface must be String, got {}",
                 label, iface_ty
             )));
         }
@@ -819,7 +819,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::{}: fd must be Int, got {:?}",
+                "std::io::udp::{}: fd must be Int, got {}",
                 label, fd_ty
             )));
         }
@@ -844,7 +844,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::io::udp::{}: value must be Int or Bool, got {:?}",
+                    "std::io::udp::{}: value must be Int or Bool, got {}",
                     label, other
                 )));
             }
@@ -902,7 +902,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::set_multicast_iface: fd must be Int, got {:?}",
+                "std::io::udp::set_multicast_iface: fd must be Int, got {}",
                 fd_ty
             )));
         }
@@ -914,7 +914,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (addr_val, addr_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(addr_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::set_multicast_iface: addr must be String, got {:?}",
+                "std::io::udp::set_multicast_iface: addr must be String, got {}",
                 addr_ty
             )));
         }
@@ -1004,21 +1004,21 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::{}: fd must be Int, got {:?}",
+                "std::io::udp::{}: fd must be Int, got {}",
                 label, fd_ty
             )));
         }
         let (level_val, level_ty) = self.lower_expr(&args[1], scope)?;
         if level_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::{}: level must be Int, got {:?}",
+                "std::io::udp::{}: level must be Int, got {}",
                 label, level_ty
             )));
         }
         let (name_val, name_ty) = self.lower_expr(&args[2], scope)?;
         if name_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::{}: name must be Int, got {:?}",
+                "std::io::udp::{}: name must be Int, got {}",
                 label, name_ty
             )));
         }
@@ -1030,7 +1030,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         };
         if val_ty != expected_val_ty {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::{}: value must be {:?}, got {:?}",
+                "std::io::udp::{}: value must be {}, got {}",
                 label, expected_val_ty, val_ty
             )));
         }
@@ -1117,21 +1117,21 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::get_option_int: fd must be Int, got {:?}",
+                "std::io::udp::get_option_int: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (level_val, level_ty) = self.lower_expr(&args[1], scope)?;
         if level_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::get_option_int: level must be Int, got {:?}",
+                "std::io::udp::get_option_int: level must be Int, got {}",
                 level_ty
             )));
         }
         let (name_val, name_ty) = self.lower_expr(&args[2], scope)?;
         if name_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::get_option_int: name must be Int, got {:?}",
+                "std::io::udp::get_option_int: name must be Int, got {}",
                 name_ty
             )));
         }
@@ -1224,7 +1224,7 @@ impl<'ctx, 'p> IoUdpStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::udp::__close: fd must be Int, got {:?}",
+                "std::io::udp::__close: fd must be Int, got {}",
                 fd_ty
             )));
         }

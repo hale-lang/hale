@@ -134,7 +134,11 @@ fn build(program: &Program, src: &str, target: CompileTarget, link: &[&str], nam
 /// A codegen refusal's own text: what a cell's wording is held to.
 fn refusal_text(e: &CodegenError) -> String {
     match e {
-        CodegenError::Unsupported(s) | CodegenError::UnsupportedAt(s, _) | CodegenError::Link(s) => s.clone(),
+        CodegenError::Unsupported(s)
+        | CodegenError::UnsupportedAt(s, _)
+        | CodegenError::UnsupportedInStdlib(s, _)
+        | CodegenError::Refused(s, _)
+        | CodegenError::Link(s) => s.clone(),
         other => other.to_string(),
     }
 }

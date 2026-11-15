@@ -150,6 +150,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("locus declared in pass A");
         for (member_idx, member) in l.members.iter().enumerate() {
             if let LocusMember::Lifecycle(lc) = member {
+                self.member_site = Some(lc.span);
                 let kind: &'static str = match lc.kind {
                     LifecycleKind::Birth => "birth",
                     LifecycleKind::Run => "run",
@@ -318,6 +319,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             _ => None,
         });
         for failure_decl in failure_decls {
+            self.member_site = Some(failure_decl.span);
             let row = self
                 .handlers
                 .handlers_of_instance(info.decl, &l.name.name)
@@ -443,6 +445,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // passed a non-null handler. Pass paths flow through
         // silently. Same body shape per epoch — only the closure
         // subset differs — so we use a small helper closure.
+        // the closures' evaluators are the locus's own, placed at it
+        self.member_site = None;
         for epoch in [
             EpochSpec::Birth,
             EpochSpec::Dissolve,
@@ -827,6 +831,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // return type tracked.
         for (member_idx, member) in l.members.iter().enumerate() {
             if let LocusMember::Fn(fd) = member {
+                self.member_site = Some(fd.name.span);
                 // Open-question #24 MVP: fallible locus methods
                 // take a separate body-lowering path that wires
                 // a unified exit block + sret epilogue, parallel
@@ -850,6 +855,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // synthetic method name (bulk / harmonic / resolution).
         for (member_idx, member) in l.members.iter().enumerate() {
             if let LocusMember::Mode(md) = member {
+                self.member_site = Some(md.span);
                 let mode_name = match md.kind {
                     ModeKind::Bulk => "bulk",
                     ModeKind::Harmonic => "harmonic",
@@ -926,11 +932,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                         }
                         Some(_) => {
-                            return Err(CodegenError::Unsupported(format!(
-                                "locus `{}` mode `{}` falls through without \
-                                 returning a value",
-                                l.name.name, mode_name
-                            )));
+                            return Err(CodegenError::Refused(
+                                format!(
+                                    "mode `{}` of `{}` can reach the end of its body without returning a \
+                                     value: return one on every path",
+                                    mode_name, l.name.name
+                                ),
+                                md.span,
+                            ));
                         }
                     }
                 } else {
@@ -1267,11 +1276,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 Some(_) => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "locus `{}` method `{}` falls through without \
-                         returning a value",
-                        l.name.name, fd.name.name
-                    )));
+                    return Err(CodegenError::Refused(
+                        format!(
+                            "method `{}.{}` can reach the end of its body without returning a value: \
+                             return one on every path",
+                            l.name.name, fd.name.name
+                        ),
+                        fd.name.span,
+                    ));
                 }
             }
         } else {

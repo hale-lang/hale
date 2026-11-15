@@ -45,7 +45,7 @@ impl<'ctx, 'p> RingStdlib<'ctx> for Cx<'ctx, 'p> {
             if ty != CodegenTy::Int {
                 return Err(CodegenError::Unsupported(format!(
                     "std::ring::{}: arg {} must be Int \
-                     (addresses/words/counts), got {:?}",
+                     (addresses/words/counts), got {}",
                     c_fn,
                     i + 1,
                     ty

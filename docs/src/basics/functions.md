@@ -33,6 +33,27 @@ fn double(n: Int) -> Int {
 }
 ```
 
+The last statement of a body that returns a value is its value too when it is a `match`, an `if … else` or a block: each arm's value is returned, whatever the type (an `Int`, a `String`, a record, an enum, a `Decimal`):
+
+```hale
+fn word(n: Int) -> String {
+    match n { 1 -> "one", 2 -> "two", _ -> "many" }
+}
+
+fn sign(n: Int) -> Int {
+    if n > 0 { return 1; } else if n < 0 { -1 } else { 0 }
+}
+```
+
+- **Every path returns:** a body that returns a value must return one on every path that reaches its end. `hale check` refuses one that can fall off the end, at the function's name, and points at the path: an `if` with no `else`, a `while` loop that can finish, the `break` that leaves a `while true`, an arm whose last statement is not a value. A `while true` loop with no `break` never reaches the end, and neither does a path that ends in `return` or `fail`:
+
+```text
+main.hl:1:4: type error: fn `sign` returns `Int`, and its body can reach its end
+without a value: this `if` has no `else`, so when its condition is false the body
+ends after it. Return a value on that path, or end the body with its value (…)
+    note: the path that reaches the end without a value at main.hl:2:5
+```
+
 ## Default Parameter Values
 
 Parameters may declare default values using `= expr`, allowing callers to omit trailing arguments:

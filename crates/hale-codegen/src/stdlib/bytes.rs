@@ -182,7 +182,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
         if i_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::at: i must be Int, got {:?}",
+                "std::bytes::at: i must be Int, got {}",
                 i_ty
             )));
         }
@@ -202,7 +202,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             }
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::bytes::at: b must be Bytes, got {:?}. To read \
+                    "std::bytes::at: b must be Bytes, got {}. To read \
                      a byte from a String, convert first via \
                      `std::bytes::from_string(s)`.",
                     b_ty
@@ -367,7 +367,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (off_val, off_ty) = self.lower_expr(&args[1], scope)?;
         if off_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::{}: offset must be Int, got {:?}",
+                "std::bytes::{}: offset must be Int, got {}",
                 name, off_ty
             )));
         }
@@ -394,7 +394,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
             }
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::bytes::{}: first arg must be Bytes, got {:?}",
+                    "std::bytes::{}: first arg must be Bytes, got {}",
                     name, b_ty
                 )))
             }
@@ -574,7 +574,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         if w_ty != CodegenTy::BytesMut {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::{}: first arg must be a BytesMut (from a \
-                 `Topic.write(...)` block), got {:?}",
+                 `Topic.write(...)` block), got {}",
                 name, w_ty
             )));
         }
@@ -593,7 +593,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (off_val, off_ty) = self.lower_expr(&args[1], scope)?;
         if off_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::{}: offset must be Int, got {:?}",
+                "std::bytes::{}: offset must be Int, got {}",
                 name, off_ty
             )));
         }
@@ -606,7 +606,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let val_bits = if !is_float {
             if val_ty != CodegenTy::Int {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::bytes::{}: value must be Int, got {:?}",
+                    "std::bytes::{}: value must be Int, got {}",
                     name, val_ty
                 )));
             }
@@ -729,7 +729,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (cap_val, cap_ty) = self.lower_expr(&args[0], scope)?;
         if cap_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder::__new: initial_cap must be Int, got {:?}",
+                "std::bytes::builder::__new: initial_cap must be Int, got {}",
                 cap_ty
             )));
         }
@@ -776,7 +776,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         if h_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "{}: handle must be Int (the BytesBuilder locus's \
-                 internal handle field), got {:?}",
+                 internal handle field), got {}",
                 diag_name, h_ty
             )));
         }
@@ -808,7 +808,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (value, v_ty) = self.lower_expr(&args[1], scope)?;
         if v_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "__append_scalar: value must be Int, got {:?}",
+                "__append_scalar: value must be Int, got {}",
                 v_ty
             )));
         }
@@ -862,7 +862,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (value, v_ty) = self.lower_expr(&args[1], scope)?;
         if v_ty != CodegenTy::Float {
             return Err(CodegenError::Unsupported(format!(
-                "__append_float: value must be Float, got {:?}",
+                "__append_float: value must be Float, got {}",
                 v_ty
             )));
         }
@@ -944,7 +944,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (to_align, ta_ty) = self.lower_expr(&args[1], scope)?;
         if ta_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "__append_pad: to_align must be Int, got {:?}",
+                "__append_pad: to_align must be Int, got {}",
                 ta_ty
             )));
         }
@@ -992,7 +992,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         if !matches!(chunk_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::builder::__append: chunk must be Bytes, got \
-                 {:?} (use `std::bytes::from_string(s)` to convert)",
+                 {} (use `std::bytes::from_string(s)` to convert)",
                 chunk_ty
             )));
         }
@@ -1047,7 +1047,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         if !matches!(s_ty, CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::builder::__append_str: s must be String (not \
-                 StringView — it isn't NUL-terminated; materialize it first), got {:?}",
+                 StringView — it isn't NUL-terminated; materialize it first), got {}",
                 s_ty
             )));
         }
@@ -1164,7 +1164,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (n_val, n_ty) = self.lower_expr(&args[1], scope)?;
         if n_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder::__shift_front: n must be Int, got {:?}",
+                "std::bytes::builder::__shift_front: n must be Int, got {}",
                 n_ty
             )));
         }
@@ -1383,7 +1383,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         if !matches!(src_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::builder::__append_slice: src must be Bytes, \
-                 got {:?}",
+                 got {}",
                 src_ty
             )));
         }
@@ -1392,7 +1392,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         if lo_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::builder::__append_slice: lo must be Int, \
-                 got {:?}",
+                 got {}",
                 lo_ty
             )));
         }
@@ -1400,7 +1400,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         if hi_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "std::bytes::builder::__append_slice: hi must be Int, \
-                 got {:?}",
+                 got {}",
                 hi_ty
             )));
         }
@@ -1450,7 +1450,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::__is_alloc_fail: b must be Bytes, got {:?}",
+                "std::bytes::__is_alloc_fail: b must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -1492,7 +1492,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (v_val, v_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(v_ty, CodegenTy::BytesView | CodegenTy::Bytes) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::clone: arg must be BytesView or Bytes, got {:?}",
+                "std::bytes::clone: arg must be BytesView or Bytes, got {}",
                 v_ty
             )));
         }
@@ -1535,7 +1535,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::from_string: s must be String, got {:?}",
+                "std::bytes::from_string: s must be String, got {}",
                 s_ty
             )));
         }
@@ -1593,14 +1593,14 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (off_val, off_ty) = self.lower_expr(&args[1], scope)?;
         if off_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::find_byte: off must be Int, got {:?}",
+                "std::bytes::find_byte: off must be Int, got {}",
                 off_ty
             )));
         }
         let (needle_val, needle_ty) = self.lower_expr(&args[2], scope)?;
         if needle_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::find_byte: needle must be Int, got {:?}",
+                "std::bytes::find_byte: needle must be Int, got {}",
                 needle_ty
             )));
         }
@@ -1625,7 +1625,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         }
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::find_byte: b must be Bytes, got {:?}",
+                "std::bytes::find_byte: b must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -1673,7 +1673,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (src_val, src_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(src_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder::__xor_mask_into: src must be Bytes, got {:?}",
+                "std::bytes::builder::__xor_mask_into: src must be Bytes, got {}",
                 src_ty
             )));
         }
@@ -1681,7 +1681,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (key_val, key_ty) = self.lower_expr(&args[2], scope)?;
         if key_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::builder::__xor_mask_into: key must be Int, got {:?}",
+                "std::bytes::builder::__xor_mask_into: key must be Int, got {}",
                 key_ty
             )));
         }
@@ -1727,7 +1727,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::slice: b must be Bytes, got {:?} \
+                "std::bytes::slice: b must be Bytes, got {} \
                  (use `std::bytes::from_string(s)` to convert from String)",
                 b_ty
             )));
@@ -1736,14 +1736,14 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (lo_val, lo_ty) = self.lower_expr(&args[1], scope)?;
         if lo_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::slice: lo must be Int, got {:?}",
+                "std::bytes::slice: lo must be Int, got {}",
                 lo_ty
             )));
         }
         let (hi_val, hi_ty) = self.lower_expr(&args[2], scope)?;
         if hi_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::slice: hi must be Int, got {:?}",
+                "std::bytes::slice: hi must be Int, got {}",
                 hi_ty
             )));
         }
@@ -1788,7 +1788,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (v_val, v_ty) = self.lower_expr(&args[0], scope)?;
         if v_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::from_int: v must be Int, got {:?}",
+                "std::bytes::from_int: v must be Int, got {}",
                 v_ty
             )));
         }
@@ -1829,7 +1829,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (a_val, a_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(a_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::concat: a must be Bytes, got {:?}",
+                "std::bytes::concat: a must be Bytes, got {}",
                 a_ty
             )));
         }
@@ -1837,7 +1837,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::bytes::concat: b must be Bytes, got {:?}",
+                "std::bytes::concat: b must be Bytes, got {}",
                 b_ty
             )));
         }

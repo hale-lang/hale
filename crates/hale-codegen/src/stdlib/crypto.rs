@@ -139,7 +139,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (v, ty) = self.lower_expr(arg, scope)?;
             if !matches!(ty, CodegenTy::Bytes | CodegenTy::BytesView) {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::crypto::{surface}: {name} must be Bytes, got {ty:?}"
+                    "std::crypto::{surface}: {name} must be Bytes, got {ty}"
                 )));
             }
             vals.push(self.unpack_view_if_needed(v, &ty)?);
@@ -188,7 +188,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::sha1: b must be Bytes, got {:?}",
+                "std::crypto::sha1: b must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -228,7 +228,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::sha256: b must be Bytes, got {:?}",
+                "std::crypto::sha256: b must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -285,7 +285,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
             let (h, ty) = self.lower_expr(&args[0], scope)?;
             if ty != CodegenTy::Int {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::crypto::{surface}: handle must be Int, got {ty:?}"
+                    "std::crypto::{surface}: handle must be Int, got {ty}"
                 )));
             }
             call_args.push(h.into());
@@ -294,7 +294,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
             let (b, ty) = self.lower_expr(&args[1], scope)?;
             if !matches!(ty, CodegenTy::Bytes | CodegenTy::BytesView) {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::crypto::{surface}: b must be Bytes, got {ty:?}"
+                    "std::crypto::{surface}: b must be Bytes, got {ty}"
                 )));
             }
             call_args.push(self.unpack_view_if_needed(b, &ty)?.into());
@@ -336,7 +336,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::sha256_file: path must be String, got {path_ty:?}"
+                "std::crypto::sha256_file: path must be String, got {path_ty}"
             )));
         }
         let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
@@ -382,7 +382,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(key_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::hmac_sha256: key must be Bytes, got {:?}",
+                "std::crypto::hmac_sha256: key must be Bytes, got {}",
                 key_ty
             )));
         }
@@ -390,7 +390,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(msg_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::hmac_sha256: msg must be Bytes, got {:?}",
+                "std::crypto::hmac_sha256: msg must be Bytes, got {}",
                 msg_ty
             )));
         }
@@ -431,7 +431,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::sha512: b must be Bytes, got {:?}",
+                "std::crypto::sha512: b must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -469,7 +469,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(key_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::hmac_sha512: key must be Bytes, got {:?}",
+                "std::crypto::hmac_sha512: key must be Bytes, got {}",
                 key_ty
             )));
         }
@@ -477,7 +477,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(msg_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::hmac_sha512: msg must be Bytes, got {:?}",
+                "std::crypto::hmac_sha512: msg must be Bytes, got {}",
                 msg_ty
             )));
         }
@@ -522,7 +522,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(b_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::crc32: b must be Bytes, got {:?}",
+                "std::crypto::crc32: b must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -567,14 +567,14 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(key_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::ecdsa_p256_sign: key must be Bytes, got {:?}",
+                "std::crypto::ecdsa_p256_sign: key must be Bytes, got {}",
                 key_ty
             )));
         }
         let (msg_val, msg_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(msg_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::ecdsa_p256_sign: message must be Bytes, got {:?}",
+                "std::crypto::ecdsa_p256_sign: message must be Bytes, got {}",
                 msg_ty
             )));
         }
@@ -635,7 +635,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
             let (v, ty) = self.lower_expr(&args[i], scope)?;
             if !matches!(ty, CodegenTy::Bytes | CodegenTy::BytesView) {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::crypto::ecdsa_p256_verify: {} must be Bytes, got {:?}",
+                    "std::crypto::ecdsa_p256_verify: {} must be Bytes, got {}",
                     name, ty
                 )));
             }
@@ -865,7 +865,7 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
         let (id, ty) = self.lower_expr(&args[3], scope)?;
         if ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::crypto::__secp256k1_recover: recovery_id must be Int, got {ty:?}"
+                "std::crypto::__secp256k1_recover: recovery_id must be Int, got {ty}"
             )));
         }
         vals.push(id.into());

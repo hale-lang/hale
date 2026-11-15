@@ -1,0 +1,16 @@
+// refused at line 6: method `Gauge.reading` can reach the end of its body without returning a value
+// The locus method's backstop, placed at the method.
+locus Gauge {
+    params { level: Int; }
+
+    fn reading() -> Int {
+        while self.level > 0 {
+            return self.level;
+        }
+    }
+}
+
+fn main() {
+    let g = Gauge { level: 1 };
+    print(g.reading());
+}
