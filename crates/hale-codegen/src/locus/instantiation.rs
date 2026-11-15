@@ -86,6 +86,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::String
             | CodegenTy::Duration
             | CodegenTy::Decimal(_)
+            | CodegenTy::U256
+            | CodegenTy::I256
             | CodegenTy::Time
             | CodegenTy::Bytes
             | CodegenTy::BytesView

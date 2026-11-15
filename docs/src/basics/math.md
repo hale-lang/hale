@@ -17,12 +17,12 @@ fn main() {
 
 | Category | Operators | Supported Types | Behavior & Notes |
 |---|---|---|---|
-| Arithmetic | `+`, `-`, `*`, `/` | `Int`, `Float`, `Decimal`, `Duration` (restricted) | Integer `/` truncates toward zero; `String` also supports `+` |
-| Remainder | `%` | `Int`, `Decimal` | Not defined on `Float` |
-| Equality | `==`, `!=` | `Int`, `Float`, `Decimal`, `Bool`, `String`, `Duration`, `Time`, `enum`, `distinct Int` | Not defined on structs, tuples, or arrays (compare field by field) |
-| Ordering | `<`, `<=`, `>`, `>=` | `Int`, `Float`, `Decimal`, `String`, `Duration`, `Time` | Does not chain; write `a < b && b < c` |
+| Arithmetic | `+`, `-`, `*`, `/` | `Int`, `Float`, `Decimal`, `U256`, `I256`, `Duration` (restricted) | Integer `/` truncates toward zero; `String` also supports `+`; a 256-bit integer's overflow stops the process |
+| Remainder | `%` | `Int`, `Decimal`, `U256`, `I256` | Not defined on `Float` |
+| Equality | `==`, `!=` | `Int`, `Float`, `Decimal`, `U256`, `I256`, `Bool`, `String`, `Duration`, `Time`, `enum`, `distinct Int` | Not defined on structs, tuples, or arrays (compare field by field) |
+| Ordering | `<`, `<=`, `>`, `>=` | `Int`, `Float`, `Decimal`, `U256`, `I256`, `String`, `Duration`, `Time` | Does not chain; write `a < b && b < c` |
 | Logical | `&&`, `\|\|`, `!` | `Bool` | `&&` and `\|\|` short-circuit |
-| Bitwise | `&`, `\|`, `^`, `<<`, `>>`, `~` | `Int` | Bitwise AND, OR, XOR, shifts, and NOT |
+| Bitwise | `&`, `\|`, `^`, `<<`, `>>`, `~` | `Int`, `U256`, `I256` | Bitwise AND, OR, XOR, shifts (by an `Int` count), and NOT |
 
 ```hale,fragment
 let a = 7 + 3;                         // 10
@@ -45,6 +45,7 @@ let masked = (a << 2) & 0xFF;          // bitwise operations on Int
 | `Float` | 64-bit IEEE-754 double (`f64`) | None | Scientific math, ratios, physical measurements |
 | `Decimal` (`Decimal<9>`) | 128-bit fixed-point, 9 fractional places | Widens to `Decimal<S>` where `S > 9` via `.rescale(S)` | General exact decimal arithmetic |
 | `Decimal<S>` (`S` in `0..=18`) | 128-bit fixed-point, `S` fractional places | None (distinct per scale `S`) | Currency (`Decimal<2>`), high-precision tokens (`Decimal<18>`) |
+| `U256` / `I256` | 256-bit unsigned / two's complement signed integer | None (`U256::from_int(n)`) | Chain values: balances, token amounts, ABI words, fixed-point prices |
 
 ## `Int` and `Float` Conversions and Math
 
@@ -128,6 +129,34 @@ Printing a `Decimal<S>` trims trailing fractional zeros (`12.50d` prints as `12.
 | `std::decimal::from_int(n)` | `(Int) -> Decimal<9>` | Exact conversion from `Int` (chain `.rescale(S)` for other scales) |
 | `std::decimal::from_float(x)` | `(Float) -> Decimal<9> fallible(...)` | Converts `Float` rounded half-away-from-zero at the 9th place; fails on `NaN`, `Inf`, or `\|x\| > ~1.7e29` |
 | `std::decimal::to_float(d)` | `(Decimal<S>) -> Float` | Converts `Decimal` to closest IEEE-754 `Float` |
+
+## 256-bit Integers (`U256` and `I256`)
+
+`U256` (0 through 2^256 - 1) and `I256` (-2^255 through 2^255 - 1) carry the values chain APIs speak in: balances, token amounts, ABI words, and the fixed-point numbers of AMM price math, all past the range of `Decimal`'s 128-bit mantissa. They have no literal; `U256::` and `I256::` functions make and take them:
+
+```hale
+fn quote(amount_in: U256, reserve_in: U256, reserve_out: U256) -> U256 fallible(ArithError) {
+    // a * b / c with the product exact in 512 bits: no overflow in between
+    return U256::mul_div(amount_in, reserve_out, reserve_in) or raise;
+}
+
+fn main() {
+    let wei = U256::parse("1000000000000000000") or raise;   // decimal or 0x hex
+    let fee = U256::from_int(3);
+    let out = quote(wei, U256::from_int(5000), U256::from_int(7000)) or raise;
+    println(out, " ", U256::to_hex(wei * fee));               // 1400000000000000000 0x29a2241af62c0000
+    let bytes = U256::to_be_bytes(wei);                       // 32 big-endian bytes
+    let back = U256::from_be_bytes(bytes) or raise;
+    let small = U256::to_int(back / U256::from_int(1000000000)) or raise;   // 1000000000
+}
+```
+
+- **Arithmetic never wraps.** `+ - * / %` (and an `I256`'s unary `-`) stop the process with a violation on an overflow or a division by zero, where an `Int` would wrap. `U256::checked_add`, `checked_sub`, `checked_mul`, `checked_div` and `mul_div` return `fallible(ArithError)` instead, so the failure goes through an `or` (`ArithError { kind, op }`, `kind` `overflow` or `division_by_zero`).
+- **Division** rounds as `Int`'s does: `/` toward zero, `%` taking the dividend's sign.
+- **Bits.** `& | ^ ~` are bitwise; `x << n` and `x >> n` shift by an `Int` count, dropping the bits shifted out (an `I256`'s `>>` keeps the sign).
+- **No mixing.** A 256-bit integer never mixes with an `Int`, a `Decimal` or the other width: write `U256::from_int(n)`, `U256::to_int(x) or ...`, `I256::from_u256(x) or ...`. The check names the conversion.
+- **Text and bytes.** `to_string(x)` (and `println`, f-strings, `+` with a `String`) is decimal; `U256::to_hex(x)` is `0x` and lowercase digits; `U256::parse` reads either; `to_be_bytes` / `from_be_bytes` are the 32-byte big-endian word.
+- **Where they go.** Record and locus fields, `bounded` lists, fixed arrays, enum payloads, hashmap cells, bus payloads, and the JSON codecs, which write a JSON string (see [JSON Encoding & Decoding](../everyday/json.md)).
 
 ## `Duration` and `Time`
 

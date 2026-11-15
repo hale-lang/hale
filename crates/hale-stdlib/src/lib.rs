@@ -283,6 +283,11 @@ pub const AP_SOURCE: &str = concat!(
     // std::observe::Probes (GH #1477): a locus over one native
     // primitive; order is free.
     include_str!("../hl/probes.hl"),
+    "\n",
+    // std::u256 / std::i256 (GH #1934): the calls of the 256-bit
+    // integers that can fail, over native primitives. Last, so no other
+    // file's spans move.
+    include_str!("../hl/wide.hl"),
 );
 
 /// `std::law`: the standard constitutions, loaded only when a program
@@ -336,6 +341,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("rand.hl", include_str!("../hl/rand.hl")),
     ("crypto.hl", include_str!("../hl/crypto.hl")),
     ("probes.hl", include_str!("../hl/probes.hl")),
+    ("wide.hl", include_str!("../hl/wide.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -468,6 +474,25 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "hex", "digit"], "__std_hex_digit"),
     (&["std", "hex", "encode"], "__std_hex_encode"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
+    // std::u256 / std::i256 (wide.hl, GH #1934): the calls that fail.
+    (&["std", "u256", "checked_add"], "__std_u256_checked_add"),
+    (&["std", "u256", "checked_div"], "__std_u256_checked_div"),
+    (&["std", "u256", "checked_mul"], "__std_u256_checked_mul"),
+    (&["std", "u256", "checked_sub"], "__std_u256_checked_sub"),
+    (&["std", "u256", "from_be_bytes"], "__std_u256_from_be_bytes"),
+    (&["std", "u256", "from_i256"], "__std_u256_from_i256"),
+    (&["std", "u256", "mul_div"], "__std_u256_mul_div"),
+    (&["std", "u256", "parse"], "__std_u256_parse"),
+    (&["std", "u256", "to_int"], "__std_u256_to_int"),
+    (&["std", "i256", "checked_add"], "__std_i256_checked_add"),
+    (&["std", "i256", "checked_div"], "__std_i256_checked_div"),
+    (&["std", "i256", "checked_mul"], "__std_i256_checked_mul"),
+    (&["std", "i256", "checked_sub"], "__std_i256_checked_sub"),
+    (&["std", "i256", "from_be_bytes"], "__std_i256_from_be_bytes"),
+    (&["std", "i256", "from_u256"], "__std_i256_from_u256"),
+    (&["std", "i256", "mul_div"], "__std_i256_mul_div"),
+    (&["std", "i256", "parse"], "__std_i256_parse"),
+    (&["std", "i256", "to_int"], "__std_i256_to_int"),
     // std::rand::Rng (rand.hl): the seeded generator.
     (&["std", "rand", "Rng"], "__StdRandRng"),
     // std::url (url.hl): percent-encoding.

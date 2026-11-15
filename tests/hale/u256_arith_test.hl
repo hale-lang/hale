@@ -1,0 +1,268 @@
+// tests/hale/u256_arith_test.hl — `U256` and `I256` (GH #1934): the
+// 256-bit integers chain values need (balances, token amounts, ABI words,
+// fixed-point AMM price math). Arithmetic at the edges of both ranges,
+// the forms that fail instead of stopping (`checked_*`, `mul_div`,
+// `to_int`), `mul_div` over a product past 256 bits, `I256` division and
+// remainder rounding as `Int`'s do (toward zero, the remainder taking the
+// dividend's sign), shifts, bitwise operators, comparisons, `min` / `max`
+// / `abs`, and the text and bytes round trips (decimal, `0x` hex, 32
+// big-endian bytes). Downstream handoff: chain API clients carried these
+// as hex strings and did no arithmetic on them.
+
+const U256_MAX_TEXT: String = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+const I256_MIN_TEXT: String = "-57896044618658097711785492504343953926634992332820282019728792003956564819968";
+const I256_MAX_TEXT: String = "57896044618658097711785492504343953926634992332820282019728792003956564819967";
+
+fn u(n: Int) -> U256 {
+    return U256::from_int(n);
+}
+
+fn i(n: Int) -> I256 {
+    return I256::from_int(n);
+}
+
+fn arith_kind(e: ArithError) -> String {
+    return e.kind + " " + e.op;
+}
+
+fn edges() {
+    let m = U256::max();
+    std::test::assert_eq_str(to_string(m), U256_MAX_TEXT, "U256::max() is 2^256 - 1");
+    std::test::assert_eq_str("" + (m - u(1) + u(1)), U256_MAX_TEXT, "max - 1 + 1 stays in range");
+    std::test::assert_eq_str(to_string(u(0)), "0", "zero prints as 0");
+    std::test::assert_eq_str(to_string(I256::min()), I256_MIN_TEXT, "I256::min() is -2^255");
+    std::test::assert_eq_str(to_string(I256::max()), I256_MAX_TEXT, "I256::max() is 2^255 - 1");
+    std::test::assert(I256::min() < I256::max(), "signed order");
+    std::test::assert(
+        u(1) < m && m > u(0) && m >= m && u(0) <= u(0),
+        "unsigned order: max is the largest",
+    );
+    std::test::assert(i(-1) < i(0), "a negative I256 orders below zero");
+    std::test::assert(u(7) != u(8) && u(7) == u(7), "equality");
+    // 2^128 * 2^127 = 2^255 fits; its double is 2^256, past max
+    let two128 = u(1) << 128;
+    std::test::assert_eq_str(
+        U256::to_hex(two128 * (u(1) << 127)),
+        "0x8" + "000000000000000000000000000000000000000000000000000000000000000",
+        "2^128 * 2^127",
+    );
+}
+
+fn checked() {
+    let m = U256::max();
+    let over = U256::checked_add(m, u(1)) or {
+        std::test::assert_eq_str(arith_kind(err), "overflow U256::checked_add", "max + 1 fails");
+        u(0)
+    };
+    std::test::assert(over == u(0), "the fallback");
+    let under = U256::checked_sub(u(0), u(1)) or {
+        std::test::assert_eq_str(arith_kind(err), "overflow U256::checked_sub", "0 - 1 fails");
+        u(42)
+    };
+    std::test::assert(under == u(42), "a U256 has no negative");
+    let big = U256::checked_mul(u(1) << 128, u(1) << 128) or {
+        std::test::assert_eq_str(err.kind, "overflow", "2^128 * 2^128 fails");
+        u(0)
+    };
+    std::test::assert(big == u(0), "the product past 256 bits");
+    let ok = U256::checked_mul(u(1) << 128, u(1) << 127) or u(0);
+    std::test::assert(ok == u(1) << 255, "2^255 is a product that fits");
+    let div0 = U256::checked_div(u(5), u(0)) or {
+        std::test::assert_eq_str(err.kind, "division_by_zero", "x / 0 fails");
+        u(9)
+    };
+    std::test::assert(div0 == u(9), "the fallback after a division by zero");
+    let fine = U256::checked_add(u(2), u(3)) or u(0);
+    std::test::assert(fine == u(5), "a sum that fits");
+
+    let smin = I256::checked_sub(I256::min(), i(1)) or {
+        std::test::assert_eq_str(err.kind, "overflow", "min - 1 fails");
+        i(0)
+    };
+    std::test::assert(smin == i(0), "I256 has a floor");
+    let smax = I256::checked_add(I256::max(), i(1)) or {
+        std::test::assert_eq_str(err.kind, "overflow", "max + 1 fails");
+        i(0)
+    };
+    std::test::assert(smax == i(0), "I256 has a ceiling");
+    let mneg = I256::checked_div(I256::min(), i(-1)) or {
+        std::test::assert_eq_str(err.op, "I256::checked_div", "min / -1 fails");
+        i(1)
+    };
+    std::test::assert(mneg == i(1), "-(-2^255) is past the range");
+    let smul = I256::checked_mul(I256::min(), i(-1)) or {
+        std::test::assert_eq_str(err.kind, "overflow", "min * -1 fails");
+        i(2)
+    };
+    std::test::assert(smul == i(2), "the signed product past the range");
+    let nmul = I256::checked_mul(i(-3), i(4)) or i(0);
+    std::test::assert(nmul == i(-12), "a signed product that fits");
+}
+
+fn signed_rounding() {
+    // `/` rounds toward zero and `%` takes the dividend's sign, as Int's do
+    std::test::assert_eq_str("" + (i(-7) / i(2)), "" + (-7 / 2), "-7 / 2 as Int");
+    std::test::assert_eq_str("" + (i(-7) % i(2)), "" + (-7 % 2), "-7 % 2 as Int");
+    std::test::assert_eq_str("" + (i(7) / i(-2)), "" + (7 / -2), "7 / -2 as Int");
+    std::test::assert_eq_str("" + (i(7) % i(-2)), "" + (7 % -2), "7 % -2 as Int");
+    std::test::assert_eq_str("" + (i(-7) % i(-2)), "" + (-7 % -2), "-7 % -2 as Int");
+    std::test::assert(I256::min() % i(-1) == i(0), "min % -1 is 0, which fits");
+    std::test::assert(-i(5) == i(-5) && -(-i(5)) == i(5), "unary minus");
+    std::test::assert(abs(i(-8)) == i(8) && abs(I256::max()) == I256::max(), "abs");
+    std::test::assert(
+        min(i(-3), i(-4)) == i(-4) && max(u(3), U256::max()) == U256::max(),
+        "min / max",
+    );
+    std::test::assert(u(17) / u(5) == u(3) && u(17) % u(5) == u(2), "unsigned division");
+}
+
+fn mul_div() {
+    let m = U256::max();
+    // the product is about 2^512, the quotient back in range
+    let same = U256::mul_div(m, m, m) or u(0);
+    std::test::assert(same == m, "max * max / max is max, through 512 bits");
+    // fixed-point price math: amount * reserve_out / reserve_in, a product past 2^256
+    let amount = U256::parse("340282366920938463463374607431768211456") or raise;
+    let reserve_out = U256::parse("1000000000000000000000000000000000000000000") or raise;
+    let reserve_in = U256::parse("3000000000000000000000000000000000000000000") or raise;
+    let out = U256::mul_div(amount, reserve_out, reserve_in) or u(0);
+    std::test::assert_eq_str(
+        to_string(out),
+        "113427455640312821154458202477256070485",
+        "floor(a * b / c) of a product past 256 bits",
+    );
+    let rounded = U256::mul_div(u(10), u(10), u(3)) or u(0);
+    std::test::assert(rounded == u(33), "rounded down");
+    let zero = U256::mul_div(m, m, u(0)) or {
+        std::test::assert_eq_str(arith_kind(err), "division_by_zero U256::mul_div", "c == 0 fails");
+        u(1)
+    };
+    std::test::assert(zero == u(1), "the fallback");
+    let past = U256::mul_div(m, m, u(1)) or {
+        std::test::assert_eq_str(err.kind, "overflow", "a quotient past max fails");
+        u(2)
+    };
+    std::test::assert(past == u(2), "the fallback after a quotient too large");
+    let sm = I256::mul_div(I256::min(), i(-1), i(2)) or i(0);
+    std::test::assert(sm == i(1) << 254, "2^255 / 2, through an intermediate past I256");
+    let sneg = I256::mul_div(i(-10), i(10), i(3)) or i(0);
+    std::test::assert(sneg == i(-33), "a negative quotient rounds toward zero, as `/` does");
+    let spast = I256::mul_div(I256::min(), i(-1), i(1)) or {
+        std::test::assert_eq_str(err.op, "I256::mul_div", "2^255 does not fit");
+        i(5)
+    };
+    std::test::assert(spast == i(5), "the fallback");
+}
+
+fn bits() {
+    let m = U256::max();
+    std::test::assert(u(1) << 255 > u(0), "the top bit");
+    std::test::assert((u(1) << 256) == u(0), "a count of 256 shifts every bit out");
+    std::test::assert(m >> 255 == u(1) && m >> 300 == u(0), "a logical right shift");
+    std::test::assert(
+        i(-8) >> 1 == i(-4) && I256::min() >> 255 == i(-1) && i(-1) >> 999 == i(-1),
+        "I256 `>>` keeps the sign",
+    );
+    std::test::assert(
+        (u(12) & u(10)) == u(8) && (u(12) | u(10)) == u(14) && (u(12) ^ u(10)) == u(6),
+        "and / or / xor",
+    );
+    std::test::assert(~u(0) == m && ~i(0) == i(-1), "not");
+}
+
+fn conversions() {
+    let m = U256::max();
+    std::test::assert_eq_str(U256::to_hex(m), "0x" + std::str::repeat("f", 64), "max in hex");
+    std::test::assert_eq_str(U256::to_hex(u(0)), "0x0", "zero in hex");
+    std::test::assert_eq_str(U256::to_hex(u(255)), "0xff", "lowercase, no leading zeros");
+    std::test::assert_eq_str(I256::to_hex(i(-255)), "-0xff", "a negative I256's magnitude");
+    let h = U256::parse("0xFFff") or raise;
+    std::test::assert(h == u(65535), "hex of either case");
+    let back = U256::parse(U256_MAX_TEXT) or raise;
+    std::test::assert(back == m, "decimal round trip at max");
+    let hx = U256::parse(U256::to_hex(m)) or raise;
+    std::test::assert(hx == m, "hex round trip at max");
+    let smin = I256::parse(I256_MIN_TEXT) or raise;
+    std::test::assert(smin == I256::min(), "I256::min() round trip");
+    let sneg = I256::parse("-0x10") or raise;
+    std::test::assert(sneg == i(-16), "a signed hex magnitude");
+    let lead = U256::parse(
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+    ) or raise;
+    std::test::assert(lead == u(1), "a 32-byte hex word with leading zeros");
+    for bad in [
+        "",
+        "0x",
+        "-1",
+        "+1",
+        " 1",
+        "1 ",
+        "1_000",
+        "0xg",
+        "12a",
+        U256_MAX_TEXT + "0",
+        "0x1" + std::str::repeat("0", 64)
+    ] {
+        let r = U256::parse(bad) or {
+            std::test::assert_eq_str(
+                err.kind + ":" + err.input,
+                "u256:" + bad,
+                "refused: `" + bad + "`",
+            );
+            u(7)
+        };
+        std::test::assert(r == u(7), "the fallback for `" + bad + "`");
+    }
+    let past_min = I256::parse(
+        "-57896044618658097711785492504343953926634992332820282019728792003956564819969",
+    ) or i(3);
+    std::test::assert(past_min == i(3), "below I256::min() is refused");
+    let past_max = I256::parse("0x8" + std::str::repeat("0", 63)) or i(4);
+    std::test::assert(past_max == i(4), "2^255 is past I256::max()");
+
+    let b = U256::to_be_bytes(u(258));
+    std::test::assert_eq_int(len(b), 32, "32 bytes");
+    std::test::assert_eq_str(std::hex::encode(b), std::str::repeat("0", 60) + "0102", "big-endian");
+    let rb = U256::from_be_bytes(U256::to_be_bytes(m)) or raise;
+    std::test::assert(rb == m, "a bytes round trip at max");
+    std::test::assert_eq_str(
+        std::hex::encode(I256::to_be_bytes(i(-1))),
+        std::str::repeat("f", 64),
+        "an I256 is its two's complement",
+    );
+    let neg = I256::from_be_bytes(I256::to_be_bytes(I256::min())) or raise;
+    std::test::assert(neg == I256::min(), "I256 bytes round trip");
+    let short = U256::from_be_bytes(std::hex::decode("0102") or raise) or {
+        std::test::assert_eq_str(err.kind + ":" + err.input, "u256_bytes:0102", "not 32 bytes");
+        u(1)
+    };
+    std::test::assert(short == u(1), "the fallback");
+
+    let n = U256::to_int(u(123)) or - 1;
+    std::test::assert_eq_int(n, 123, "to_int that fits");
+    let big = U256::to_int(u(1) << 63) or {
+        std::test::assert_eq_str(arith_kind(err), "overflow U256::to_int", "2^63 is past Int");
+            -2
+    };
+    std::test::assert_eq_int(big, -2, "the fallback");
+    let lo = I256::to_int(i(-9223372036854775807 - 1)) or 0;
+    std::test::assert_eq_int(lo, -9223372036854775807 - 1, "Int's minimum fits");
+    let below = I256::to_int(i(-9223372036854775807 - 1) - i(1)) or 5;
+    std::test::assert_eq_int(below, 5, "one below does not");
+    let s = I256::from_u256(u(5)) or i(0);
+    std::test::assert(s == i(5), "U256 to I256");
+    let s2 = I256::from_u256(m) or i(-7);
+    std::test::assert(s2 == i(-7), "max is past I256");
+    let u2 = U256::from_i256(i(-1)) or u(8);
+    std::test::assert(u2 == u(8), "a negative is past U256");
+    std::test::assert_eq_str(f"{u(42)} and {i(-42)}", "42 and -42", "f-strings");
+}
+
+fn main() {
+    edges();
+    checked();
+    signed_rounding();
+    mul_div();
+    bits();
+    conversions();
+}

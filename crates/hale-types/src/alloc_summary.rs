@@ -389,6 +389,8 @@ fn retirable_field_ty(ty: &TypeExpr, retirable: &BTreeSet<String>) -> bool {
             | PrimType::Uint
             | PrimType::Float
             | PrimType::Decimal(_)
+            | PrimType::U256
+            | PrimType::I256
             | PrimType::String
             | PrimType::Bytes
             | PrimType::Bool
@@ -4965,6 +4967,8 @@ fn locus_inline_array_fields(l: &LocusDecl) -> BTreeSet<String> {
                                 | PrimType::Float
                                 | PrimType::Bool
                                 | PrimType::Decimal(_)
+                                | PrimType::U256
+                                | PrimType::I256
                                 | PrimType::Duration,
                             _,
                         )
@@ -6156,6 +6160,8 @@ impl<'a> Walker<'a> {
                     | PrimType::Uint
                     | PrimType::Float
                     | PrimType::Decimal(_)
+                    | PrimType::U256
+                    | PrimType::I256
                     | PrimType::Bool
                     | PrimType::Time
                     | PrimType::Duration,

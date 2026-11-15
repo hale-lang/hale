@@ -134,7 +134,16 @@ impl Ty {
 /// field by (`view_bindings`: a write into an inline array copies
 /// nothing).
 pub fn inline_array_scalar(p: PrimType) -> bool {
-    matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::Decimal(_) | PrimType::Duration)
+    matches!(
+        p,
+        PrimType::Int
+            | PrimType::Float
+            | PrimType::Bool
+            | PrimType::Decimal(_)
+            | PrimType::U256
+            | PrimType::I256
+            | PrimType::Duration
+    )
 }
 
 pub fn prim_name(p: PrimType) -> &'static str {
@@ -143,6 +152,8 @@ pub fn prim_name(p: PrimType) -> &'static str {
         PrimType::Uint => "Uint",
         PrimType::Float => "Float",
         PrimType::Decimal(scale) => decimal_name(scale),
+        PrimType::U256 => "U256",
+        PrimType::I256 => "I256",
         PrimType::String => "String",
         PrimType::Bool => "Bool",
         PrimType::Time => "Time",
@@ -236,6 +247,8 @@ pub const GENERIC_ARG_PRIMS: &[PrimType] = &[
     PrimType::String,
     PrimType::Duration,
     PrimType::DECIMAL,
+    PrimType::U256,
+    PrimType::I256,
     PrimType::Time,
     PrimType::Bytes,
     PrimType::BytesView,
@@ -260,7 +273,9 @@ pub fn generic_arg_mangle_token(p: PrimType) -> Option<&'static str> {
         | PrimType::Bytes
         | PrimType::BytesView
         | PrimType::BytesMut
-        | PrimType::StringView => Some(prim_name(p)),
+        | PrimType::StringView
+        | PrimType::U256
+        | PrimType::I256 => Some(prim_name(p)),
         // Every scale is its own monomorph (`Box<Decimal<18>>` is
         // `Box_Decimal18`); the default scale keeps the name it had.
         PrimType::Decimal(scale) => Some(decimal_mangle_token(scale)),
@@ -334,6 +349,8 @@ fn is_flat_shapeable_inner(
             | PrimType::Uint
             | PrimType::Float
             | PrimType::Decimal(_)
+            | PrimType::U256
+            | PrimType::I256
             | PrimType::Bool
             | PrimType::Time
             | PrimType::Duration => true,
@@ -355,6 +372,8 @@ fn is_flat_shapeable_inner(
                     | PrimType::Float
                     | PrimType::Bool
                     | PrimType::Decimal(_)
+                    | PrimType::U256
+                    | PrimType::I256
                     | PrimType::Duration
             )
         ),
@@ -376,6 +395,8 @@ fn is_flat_shapeable_inner(
                     | PrimType::Float
                     | PrimType::Bool
                     | PrimType::Decimal(_)
+                    | PrimType::U256
+                    | PrimType::I256
                     | PrimType::Duration
             )
         ),

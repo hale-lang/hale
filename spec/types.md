@@ -13,6 +13,7 @@ document tells you what's *meaningfully* valid.
 | `Uint` | i64 | Unsigned at the type level; codegen lowers as i64. Parser-recognized; full lowering pending a workload that exercises the unsigned-arithmetic distinction. |
 | `Float` | f64 | IEEE 754 double; default for float literals |
 | `Decimal<S>`, `Decimal` | i128 | Fixed point: an i128 mantissa at the scale `S` (`mantissa × 10^-S`), `S` an integer literal from 0 to 18 that is **part of the type**; plain `Decimal` is `Decimal<9>`, the same type (2026-10-12, [§ Decimal<S>](#decimals--the-scale-is-part-of-the-type)). Every scale is the one 16-byte, 16-aligned layout. Distinct from `Float` at the type level; suffix `d` on literals (`1.50d`). A literal holds no more places than the scale of the place it flows into (a check error at the literal otherwise, never a truncation); `+ - %` are exact, `*` and `/` truncate toward zero at the scale; two scales never mix, and `d.rescale(T)` converts. Real arbitrary-precision deferred. |
+| `U256`, `I256` | i256 | The 256-bit integers (GH #1934), unsigned and two's complement signed: 32 bytes at the target's i256 alignment (16 on x86-64 and aarch64). No literal: `U256::from_int(n)`, `U256::parse(s) or ...` (decimal or `0x` hex), `U256::from_be_bytes(b) or ...` (32 bytes) make one. `+ - * / %` never wrap: an overflow or a division by zero is a runtime violation, and `U256::checked_*` / `mul_div` fail instead. Never mixes with `Int` or another type implicitly ([§ U256 and I256](#u256-and-i256--256-bit-integers)). |
 | `String` | ptr (NUL-terminated) | UTF-8 bytes, C-style NUL-terminated. Single-pointer ABI to fit return-by-value through the m49 calling convention. Embedded NUL truncates — use `Bytes` for binary content. Allocated in the caller's arena (or the lazy global payload arena for stdlib returns whose lifetime needs to outlive the call). |
 | `Bool` | i1 | `true` / `false` |
 | `Time` | i64 | Nanoseconds since the Unix epoch, UTC (GH #607, 2026-09-14). A literal is ISO-8601 between backticks — `` `2026-05-08T12:00:00Z` ``, an optional fraction of one to nine digits, an optional `Z`; an offset such as `+01:00` is a compile error, never read as UTC, and so is a day past its month's length (`2099-02-30`, `2100-02-29`), never rolled into the next month — and is parsed at check time. Declared by the stdlib (`type Time = point Duration;`, GH #1076 U4, spec/units.md § The stdlib's time catalogue): a point over `Duration` with no `origin:`, so the unit dialect's algebra of points is its arithmetic: `Time ± Duration → Time`, `Duration + Time → Time`, `Time − Time → Duration`; anything else with a `Time` operand is refused, naming both. Orders and compares as an instant. `to_string` / `println` render ISO-8601, the fraction only when it is not zero. Before the epoch is negative, not an error. It holds `1677-09-21T00:12:43.145224192Z` through `2262-04-11T23:47:16.854775807Z`: a literal past either end is a check error at the literal, `parse_time` of one is its `ParseError`, and `time_from_unix` or `Time ± Duration` past either end is a runtime violation (spec/stdlib.md `std::time`), never a wrapped instant. On the wire and in a struct it is the same 8 bytes as `Int`; over FFI it is `i64`. `std::time::current()` reads the wall clock as one; `iso8601`, `parse_time`, `unix`, `nanos`, `from_nanos`, `time_from_unix` convert. Was a string-shaped placeholder until v0.20.0. |
@@ -38,8 +39,10 @@ type set above carries an additional axis of distinction at the
 `@ffi("c")` boundary: which types have a stable C-ABI mapping.
 `Int` / `Float` / `Bool` / `Duration` / `Time` / `String` /
 `Bytes` / `BytesView` / `StringView` may appear in `@ffi`
-parameter and return positions; `Decimal` (any scale) / `Uint` are
-typecheck-rejected (platform-variable ABI or Hale-internal).
+parameter and return positions; `Decimal` (any scale) / `Uint` /
+`U256` / `I256` are typecheck-rejected (platform-variable ABI or
+Hale-internal; a 256-bit integer crosses as its 32 big-endian bytes,
+`U256::to_be_bytes`).
 See [`spec/ffi.md`](./ffi.md) for the full marshalling table and
 the lifetime contract.
 
@@ -231,6 +234,84 @@ its digits in a string.
 keeps the token `Decimal`), and a literal in a field of a type
 parameter bound to `Decimal<S>` (`let b: Box<Decimal<18>> = Box {
 value: 0.5d };`) takes `S`.
+
+## U256 and I256 — 256-bit integers
+
+`U256` is an unsigned 256-bit integer, `0` through `2^256 - 1`; `I256`
+is a signed one in two's complement, `-2^255` through `2^255 - 1`
+(GH #1934; downstream handoff: chain APIs carry 256-bit balances,
+token amounts, ABI words and fixed-point AMM prices, past `Decimal`'s
+i128). Each is a primitive, lowered to an LLVM `i256`: 32 bytes at the
+target's i256 alignment (16 on x86-64 and aarch64, the arena's
+alignment, so a record, a locus, a `bounded` slot or a fixed array
+holds one aligned), read and written at align 1 in an enum's payload
+(which follows the tag at offset 4) and copied byte for byte on the
+bus wire.
+
+**No literal.** A 256-bit integer has no literal of its own (a suffix
+would collide with a unit's name, `5u256`); `U256::f` and `I256::f` in
+expression position name the functions of `std::u256` and `std::i256`
+(spec/stdlib.md), which make and take one:
+
+| Call | Type | What |
+|---|---|---|
+| `U256::from_int(n)`, `I256::from_int(n)` | `U256` / `I256` | an `Int`, exactly; a negative `n` made a `U256` is a violation |
+| `U256::max()`, `I256::min()`, `I256::max()` | | the ends of the range |
+| `U256::parse(s) or ...`, `I256::parse(s) or ...` | `fallible(ParseError)` | decimal digits, or `0x` / `0X` and hex digits of either case; an `I256`'s with an optional leading `-`, its hex the magnitude (never a two's complement). No `+`, space, `_`, empty digits, or a value outside the range: `ParseError { kind: "u256" / "i256", input: s }`. Leading zeros are accepted (a 32-byte word's `0x000…01`) |
+| `U256::from_be_bytes(b) or ...`, `I256::from_be_bytes(b) or ...` | `fallible(ParseError)` | exactly 32 big-endian bytes (an `I256`'s two's complement); any other length is `ParseError { kind: "u256_bytes" / "i256_bytes", input: <b in hex> }` |
+| `to_string(x)`, `println`, `f"{x}"`, `+` with a `String` | `String` | decimal digits, `-` before a negative `I256` |
+| `U256::to_hex(x)`, `I256::to_hex(x)` | `String` | `0x` and the lowercase hex digits, none leading (`0x0` for zero); a negative `I256` is `-0x` and its magnitude's |
+| `U256::to_be_bytes(x)`, `I256::to_be_bytes(x)` | `Bytes` | 32 big-endian bytes, an `I256`'s two's complement |
+| `U256::to_int(x) or ...`, `I256::to_int(x) or ...` | `fallible(ArithError)` | the `Int`, when it fits |
+| `I256::from_u256(x) or ...`, `U256::from_i256(x) or ...` | `fallible(ArithError)` | the other width, when it fits |
+| `U256::checked_add / checked_sub / checked_mul / checked_div(a, b) or ...` (and `I256::`) | `fallible(ArithError)` | the operator, failing where it would stop the process |
+| `U256::mul_div(a, b, c) or ...`, `I256::mul_div(a, b, c) or ...` | `fallible(ArithError)` | `a * b / c` with the product exact in 512 bits and the quotient rounded as `/` rounds (down for a `U256`, toward zero for an `I256`); `c` zero, or a quotient outside the range, fails |
+
+`ArithError { kind, op }` is a builtin type in every program: `kind`
+is `overflow` or `division_by_zero`, `op` the call
+(`U256::checked_add`).
+
+**Arithmetic never wraps.** `Int` arithmetic wraps on overflow
+(two's complement, as `Decimal`'s i128 does past its range), but a 256-bit integer
+holds money-like quantities, where a wrapped value is a wrong
+balance, so `+`, `-`, `*`, `/`, `%` and unary `-` stop instead: a
+result outside the range, a division or remainder by zero,
+`I256::min() / -1` and `-I256::min()` are each a runtime violation
+where they happen, the process printing what happened (`violation:
+U256 `+` overflows: the result is outside U256's range, 0 through
+2^256 - 1 (U256::checked_add fails instead of stopping)`) and exiting
+1, the shape of `Time`'s range violation. `I256::min() % -1` is `0`,
+which fits. The `checked_*` calls and `mul_div` are the forms that
+fail into an `or` instead. Division and remainder round as `Int`'s
+do: `/` toward zero, and `%` takes the dividend's sign (`I256` `-7 /
+2` is `-3`, `-7 % 2` is `-1`). The comparisons order the values
+(unsigned for `U256`, signed for `I256`); `min`, `max` and `abs` take
+them (`abs(I256::min())` is a violation).
+
+**Bits.** `&`, `|`, `^` and `~` are bitwise. `x << n` and `x >> n`
+shift by an `Int` count `n` and are bit operations, not arithmetic:
+bits shifted past either end are dropped (`*` is the checked
+multiply), a count of 256 or more shifts every bit out, and an
+`I256`'s `>>` fills with its sign, so `x >> n` is `floor(x / 2^n)` (an
+`Int`'s `>>` is logical). A negative count is a violation.
+
+**No implicit mixing.** A `U256` and an `I256` mix with nothing else:
+an operator over a 256-bit integer and an `Int` (or a `Decimal`, a
+`Float`, the other 256-bit type) is refused naming the conversion
+("binary op: `U256` and `Int` do not mix: a 256-bit integer never
+converts implicitly; make the `Int` a `U256` with `U256::from_int(n)`"),
+and so is a binding, an argument or a return of the wrong one ("let
+`c`: expected `U256`, got `Int`: a 256-bit integer never converts
+implicitly; write `U256::from_int(n)`"). A `U256` has no unary `-`.
+
+**Where it goes.** A record or locus field, a `bounded[U256; N]`
+buffer, a fixed array (inline, as a `Decimal`'s), an enum's payload, a
+hashmap cell's field, a generic argument (`Box<U256>`), a bus payload
+(its 32 bytes; a topic's contract shape tags it `u256` / `i256`,
+spec/model.md § The shape of a type), the JSON and protobuf codecs
+(spec/api.md § Codecs: a JSON string of its digits, decimal or `0x`
+hex). It is no `Numeric` generic bound's argument, no routing key and
+no `@ffi` parameter.
 
 ## Scalar types (GH #1076)
 

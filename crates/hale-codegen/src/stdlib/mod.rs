@@ -35,3 +35,4 @@ pub(crate) mod str;
 pub(crate) mod term;
 pub(crate) mod text;
 pub(crate) mod time;
+pub(crate) mod wide;

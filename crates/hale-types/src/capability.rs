@@ -242,6 +242,8 @@ pub enum FfiTypeClass {
     Duration,
     Decimal,
     Uint,
+    /// `U256` / `I256` (GH #1934).
+    Wide,
     Unit,
     /// A named user type: its C struct, kept layout-compatible by the
     /// library author.
@@ -257,7 +259,7 @@ pub enum FfiTypeClass {
 }
 
 impl FfiTypeClass {
-    pub const ALL: [FfiTypeClass; 21] = [
+    pub const ALL: [FfiTypeClass; 22] = [
         FfiTypeClass::Int,
         FfiTypeClass::Float,
         FfiTypeClass::Bool,
@@ -270,6 +272,7 @@ impl FfiTypeClass {
         FfiTypeClass::Duration,
         FfiTypeClass::Decimal,
         FfiTypeClass::Uint,
+        FfiTypeClass::Wide,
         FfiTypeClass::Unit,
         FfiTypeClass::Named,
         FfiTypeClass::Bounded,
@@ -295,6 +298,7 @@ impl FfiTypeClass {
             FfiTypeClass::Duration => "Duration",
             FfiTypeClass::Decimal => "Decimal",
             FfiTypeClass::Uint => "Uint",
+            FfiTypeClass::Wide => "Wide",
             FfiTypeClass::Unit => "Unit",
             FfiTypeClass::Named => "Named",
             FfiTypeClass::Bounded => "Bounded",
@@ -323,6 +327,7 @@ impl FfiTypeClass {
                 PrimType::Duration => FfiTypeClass::Duration,
                 PrimType::Decimal(_) => FfiTypeClass::Decimal,
                 PrimType::Uint => FfiTypeClass::Uint,
+                PrimType::U256 | PrimType::I256 => FfiTypeClass::Wide,
             },
             Ty::Unit => FfiTypeClass::Unit,
             Ty::Named(_) => FfiTypeClass::Named,
@@ -1130,6 +1135,10 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     std_ns("text::base64", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("time", STD_NATIVE, STD_NATIVE, WASM_TIME),
     std_ns("ts", STD_NATIVE, STD_NATIVE, WASM_TS),
+    // GH #1934: the 256-bit integers (`U256::f` / `I256::f`); the
+    // runtime's `lotus_wide_*` use no 128-bit libcall, so wasm32 too
+    std_ns("u256", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("i256", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("url", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("yaml", STD_NATIVE, STD_NATIVE, STD_WASM),
     // ---- link, exports, entry
@@ -1289,6 +1298,8 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     ffi_row(FfiTypeClass::Decimal, Abi::Js, FFI_DECIMAL),
     ffi_row(FfiTypeClass::Uint, Abi::C, FFI_UINT),
     ffi_row(FfiTypeClass::Uint, Abi::Js, FFI_UINT),
+    ffi_row(FfiTypeClass::Wide, Abi::C, FFI_WIDE),
+    ffi_row(FfiTypeClass::Wide, Abi::Js, FFI_WIDE),
     ffi_row(FfiTypeClass::Unit, Abi::C, FFI_UNIT),
     ffi_row(FfiTypeClass::Unit, Abi::Js, FFI_UNIT),
     ffi_row(FfiTypeClass::Named, Abi::C, FFI_NAMED),
@@ -1556,6 +1567,10 @@ const FFI_DECIMAL: Behaviour = ffi_reject(
 const FFI_UINT: Behaviour = ffi_reject(
     "Uint is Hale-internal; declare as Int in the @ffi \
      signature",
+);
+const FFI_WIDE: Behaviour = ffi_reject(
+    "U256 / I256 (i256) has no portable C mapping; pass its 32 \
+     big-endian bytes (`U256::to_be_bytes`) as Bytes instead",
 );
 const FFI_UNIT: Behaviour = ffi_reject("() (unit) is not a meaningful FFI parameter type");
 const FFI_BOUNDED: Behaviour = ffi_reject(

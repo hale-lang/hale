@@ -44,6 +44,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
+            | CodegenTy::U256
+            | CodegenTy::I256
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }
@@ -418,6 +420,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
+            | CodegenTy::U256
+            | CodegenTy::I256
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::BytesMut
@@ -1153,6 +1157,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
+            | CodegenTy::U256
+            | CodegenTy::I256
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }

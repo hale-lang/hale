@@ -114,7 +114,15 @@ impl BuiltinSig {
             (Operands::Printable, t) => printable(t),
             (Operands::IntOrFloat, Ty::Prim(p)) => matches!(p, PrimType::Int | PrimType::Float),
             (Operands::Numeric, Ty::Prim(p)) => {
-                matches!(p, PrimType::Int | PrimType::Float | PrimType::Duration | PrimType::Decimal(_))
+                matches!(
+                    p,
+                    PrimType::Int
+                        | PrimType::Float
+                        | PrimType::Duration
+                        | PrimType::Decimal(_)
+                        | PrimType::U256
+                        | PrimType::I256
+                )
             }
             (Operands::Strings, Ty::Prim(PrimType::String)) => true,
             _ => false,

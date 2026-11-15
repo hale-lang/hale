@@ -624,6 +624,10 @@ impl<'a> Shapes<'a> {
                         return Some(format!("d{s}"));
                     }
                     PrimType::Decimal(_) => "d",
+                    // GH #1934: a 256-bit integer is its own contract,
+                    // never an `Int`'s `i`.
+                    PrimType::U256 => "u256",
+                    PrimType::I256 => "i256",
                     PrimType::Time => "t",
                     PrimType::Duration => "u",
                     PrimType::String | PrimType::StringView => "s",

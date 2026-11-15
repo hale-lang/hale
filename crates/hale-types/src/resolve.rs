@@ -2812,6 +2812,7 @@ fn check_stdlib_error_shadowing<'u, 's: 'u>(
         ("KeyError", Some("std::form::hashmap::KeyError")),
         ("EmptyError", Some("std::form::ring_buffer::EmptyError")),
         ("CryptoError", Some("std::crypto::CryptoError")),
+        ("ArithError", None),
         // A `bounded` push's and an `on_failure` handler's: no path
         // names the builtin, so the repair is the rename.
         ("CapacityError", None),
@@ -2888,6 +2889,8 @@ fn prim_display(p: PrimType) -> &'static str {
         PrimType::Uint => "Uint",
         PrimType::Float => "Float",
         PrimType::Decimal(s) => crate::ty::decimal_name(s),
+        PrimType::U256 => "U256",
+        PrimType::I256 => "I256",
         PrimType::Bool => "Bool",
         PrimType::String => "String",
         PrimType::Time => "Time",

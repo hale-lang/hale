@@ -227,6 +227,15 @@ fn scalar_for(json: &str, hale_type: &Option<String>) -> Option<Scalar> {
     if is_decimal(hale_type) {
         return Some(Scalar::String);
     }
+    // GH #1934: a `U256` / `I256` is its digits in a `string`; an `Int`
+    // a JSON field writes as `0x` hex (`json:",hex"`, a JSON string in the
+    // description) is still an `int64` on the protobuf wire, where the
+    // option does not apply
+    match hale_type.as_deref() {
+        Some("U256" | "I256") => return Some(Scalar::String),
+        Some("Int") => return Some(Scalar::Int64),
+        _ => {}
+    }
     scalar_of(json)
 }
 

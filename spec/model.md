@@ -323,6 +323,7 @@ Both forms tag a field the same way when its type is flat:
 | `Bool` | `b` |
 | `Decimal` (`Decimal<9>`) | `d` |
 | `Decimal<S>`, `S` other than 9 | `d<S>` (`Decimal<18>` is `d18`: the scale is part of the contract) |
+| `U256`, `I256` | `u256`, `i256` (GH #1934: a 256-bit integer is its own contract, never an `Int`'s `i`) |
 | `Time` | `t` |
 | `Duration` | `u` |
 | `String`, `StringView` | `s` |

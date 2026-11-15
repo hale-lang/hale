@@ -2193,6 +2193,8 @@ pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> String {
         Bytes => "Bytes".to_string(),
         BytesMut => "Bytes".to_string(),
         Decimal => "Decimal".to_string(),
+        U256 => "U256".to_string(),
+        I256 => "I256".to_string(),
         Duration => "Duration".to_string(),
         Time => "Time".to_string(),
         Unit => "()".to_string(),

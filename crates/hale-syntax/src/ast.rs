@@ -3160,6 +3160,15 @@ pub enum PrimType {
     /// part of the type: two scales never unify. Plain `Decimal` is
     /// `Decimal<9>` (`decimal_literal::DEFAULT_SCALE`), the same type.
     Decimal(u8),
+    /// `U256` (GH #1934): a 256-bit unsigned integer, an LLVM `i256`
+    /// (32 bytes, the target's i256 alignment). No literal of its own;
+    /// `U256::from_int(n)`, `U256::parse(s)` and `U256::from_be_bytes(b)`
+    /// make one. Arithmetic never wraps: overflow and division by zero
+    /// are a runtime violation, and `U256::checked_*` fail instead.
+    U256,
+    /// `I256` (GH #1934): the 256-bit signed (two's complement) twin of
+    /// [`PrimType::U256`].
+    I256,
     String,
     Bool,
     Time,

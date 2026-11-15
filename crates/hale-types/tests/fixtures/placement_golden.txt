@@ -733,6 +733,9 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/url.hl#a4efffbc
 
+== crates/hale-stdlib/hl/wide.hl#87243d8d
+dynamic	<hole>	on unknown (no caller)|unresolved declaration `ArithError`|unresolved declaration `ParseError`	in the seed
+
 == crates/hale-cli/tests/api_client_binding.rs#da1c8079
 root	App	the entry
 row	App@literal1	App	main	default
@@ -9115,6 +9118,12 @@ row	Holder@main3	Holder	main	default
 row	Holder@main4	Holder	main	default
 row	Store@main2	Store	main	default
 dynamic	<hole>	on main|unresolved declaration `Pair_Int`	in the seed
+
+== tests/hale/u256_storage_test.hl
+row	Balances@main2	Balances	main	default
+row	Holder@main1	Holder	main	default
+row	Sink@main3	Sink	main	default
+row	Source@main4	Source	main	default
 
 == tests/hale/unit_return_annotation_test.hl
 row	Counter@main1	Counter	main	default
