@@ -9,16 +9,17 @@
   <script src="/cytoscape.min.js"></script>
   <script type="module" src="/app.js"></script>
 </head>
-<body>
-  <header class="top">
+<body class="shell">
+  <aside class="rail">
     <nav class="horizon" aria-label="Horizon" id="horizon"></nav>
     <nav class="tabs" aria-label="Workspace">
       <a href="#/org" data-tab="org">Organization</a>
       <a href="#/board" data-tab="board">Board</a>
       <a href="#/knowledge" data-tab="knowledge">Knowledge</a>
     </nav>
+    <label class="theme">theme <select id="theme" aria-label="Theme"></select></label>
     <div class="who" id="who"></div>
-  </header>
+  </aside>
   <main id="main" tabindex="-1"></main>
   <footer class="evidence" id="evidence"></footer>
 </body>
