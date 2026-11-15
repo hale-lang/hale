@@ -249,6 +249,16 @@ fn an_indexed_by_field_of_a_json_tagged_record_checks_and_builds() {
     let ((ok, out), (built, bout)) = check_and_build(src, "indexed_by_json_tag");
     assert!(ok && !out.contains("__json_") && !out.contains("hot-path"), "check: {out}");
     assert!(built && !bout.contains("hot-path"), "build: {bout}");
+    // And with the hot-path advisory asked for (opt-in since GH #1948):
+    // still nothing inside the generated codec.
+    let d: PathBuf = std::env::temp_dir().join(format!("hale_check_build_refusals_{}_indexed_by_warn", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join("main.hl");
+    std::fs::write(&f, src).unwrap();
+    let (ok, out) = hale(&["check", "--warn-hot-path", &f.to_string_lossy()]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(ok && !out.contains("hot-path"), "check --warn-hot-path: {out}");
 }
 
 /// GH #1946: an exposure's receivers are slots of its runtime, numbered

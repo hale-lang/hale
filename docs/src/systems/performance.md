@@ -140,9 +140,9 @@ Hale enforces memory and hot-path discipline through a five-stage opt-in ladder:
 
 | Stage | Mechanism | Severity | What It Enforces |
 |---|---|---|---|
-| 1. Default survey | `hale check` / `hale build` | Advisory warning | Flags values escaping to `self` in unbounded loops, growing `@form(vec)`/`@form(hashmap)` inserts, `let`-bound loci/builders/factories in loops or handlers, allocating `recv` in loops, and `accept` without `release` on daemons. |
+| 1. Default survey | `hale check` / `hale build` | Advisory warning | Flags values escaping to `self` in unbounded loops, growing `@form(vec)`/`@form(hashmap)` inserts, and `accept` without `release` on daemons. With `hale check --warn-hot-path` (and always under `hale verify`), also `let`-bound loci/builders/factories in loops or handlers and allocating `recv` in loops. |
 | 2. Bound annotations | `@bounded_by(<name>)` / `@unbounded` | Silences warning | Documents that an accumulation is intentionally bounded by an external input (`@bounded_by(open_requests)`) or operator-sized (`@unbounded`). |
-| 3. Hot-path mode | `@hot` | Compile error | Promotes all Stage 1 advisories in the function to hard errors, and rejects `.snapshot()`/`.finish()` in loops and whole-struct `self` field replacements. |
+| 3. Hot-path mode | `@hot` | Compile error | Promotes the hot-path lint's findings in the function to hard errors, and rejects `.snapshot()`/`.finish()` in loops and whole-struct `self` field replacements. |
 | 4. Allocation budget | `@budget(alloc_per_call = N)` | Compile error | Statically verifies that the function performs at most `N` heap/arena allocations per invocation. |
 | 5. Effect contracts | `@effects(none: { ... })` / `@no_block` / `@no_syscall` / `@deterministic` / `@no_recursion` | Compile error | Proves transitively across the call graph that the function cannot block, invoke syscalls, read non-deterministic sources, or recurse. |
 
@@ -153,9 +153,11 @@ By default, `hale check` analyzes all long-lived programs (any binary with a `ru
 The default survey warns on:
 - **Unbounded escapes into `self`**: Allocations inside a runtime-bounded loop that accumulate in `self` without retirement.
 - **Unbounded collection growth**: Calling `.push(x)` on `@form(vec)` or `.set(x)` on `@form(hashmap)` in an unbounded loop or handler (where the receiver has a declared type). Replace with capacity-bounded `@form(ring_buffer)` or `@form(lru_cache)`.
+- **Missing `release` on daemon parents**: Declaring `accept(c: C)` without `release(c: C)` on a locus whose `run()` loops indefinitely.
+
+The **hot-path lint** is asked for, not default: `hale check --warn-hot-path` shows it, `hale verify` always reports it, and inside a `@hot` fn its findings are errors. An ordinary loop in `fn main` or a child born in a handler is not a path anyone certified hot, so a first program is not buried in these. When asked, it warns on:
 - **Per-iteration / per-message heavy allocations**: Instantiating a `let`-bound locus literal, calling a factory function that returns a locus (`let m = zeros(r, c)` or `mat::zeros(r, c)`), or creating a `std::bytes::BytesBuilder` inside a loop or bus handler. (Unbound statement-level calls reclaim immediately and do not warn.)
 - **Allocating socket reads in loops**: Calling `recv`, `recv_bytes`, or `recv_with_source` inside a loop. Use `recv_into` with a hoisted `BytesBuilder` instead.
-- **Missing `release` on daemon parents**: Declaring `accept(c: C)` without `release(c: C)` on a locus whose `run()` loops indefinitely.
 
 > [!NOTE]
 > `module { ... }` blocks are purely namespace boundaries; functions and locus methods inside modules undergo the exact same escape and `@hot` analysis as top-level declarations.
@@ -210,6 +212,21 @@ By default, `hale build` and every other verb compile native binaries at `-O3` t
 | `--target-cpu portable` | Targets the portable baseline: `x86-64-v3` (AVX2 + BMI2 + FMA) on x86-64, generic on aarch64. `baseline` and `x86-64-v3` are accepted spellings. | A published image or any artifact whose machine is unknown: it then runs on any machine of its architecture that meets the floor. |
 | `--target-cpu <cpu>` | One CPU by LLVM's name (`znver4`, `neoverse-v2`, `apple-m3`, `x86-64-v4`). A name the compiler's LLVM does not know is refused before codegen, listing the CPUs it knows. | A binary built here for a known machine elsewhere. |
 | `LOTUS_LTO=1` | Enables full Link-Time Optimization across generated code and the C runtime (requires `lld` on `PATH`; links ~3–4x slower). | Release and benchmark builds (`LOTUS_LTO=1 hale build myservice/`). |
+
+### Building a container image
+
+An image runs on whatever machine pulls it, so build the binary it holds with `--target-cpu portable`. A host-tuned build inside a container build or on CI prints a `warning:` saying so, because the runner's CPU is rarely the one the image lands on, and a binary that uses an extension that CPU lacks dies with `SIGILL`:
+
+```dockerfile
+FROM ubuntu:24.04 AS build
+# … install the hale toolchain …
+COPY . /src
+RUN hale build /src -o /out/app --target-cpu portable
+
+FROM ubuntu:24.04
+COPY --from=build /out/app /app
+ENTRYPOINT ["/app"]
+```
 
 ## Runtime Performance Profile
 

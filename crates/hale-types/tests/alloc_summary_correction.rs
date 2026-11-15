@@ -236,7 +236,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 38 targets below are the only ones the correction changes.
+/// The 39 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -247,7 +247,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 29] = [
+const CALL_LINES_ONLY: [(&str, usize); 30] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -274,6 +274,9 @@ const CALL_LINES_ONLY: [(&str, usize); 29] = [
     // 4: the new test (S6) calls the writers and the readers, whose
     // stdlib bodies only the renames name.
     ("tests/hale/bytes_writer_offset_test.hl", 4),
+    // GH #1942's test of the shapes now compiled: the BytesBuilder's
+    // stdlib methods only the renames name
+    ("tests/hale/codegen_gaps_test.hl", 10),
     // the incremental SHA-256's test: the `Sha256` locus is appended to
     // the program that names it, so only the two native calls of its
     // `std::crypto::sha256` comparisons are the renames'

@@ -13853,21 +13853,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         use hale_types::ty::Ty;
         let span = hale_syntax::span::Span::new(0, 0);
         match t {
-            Ty::Prim(
-                p @ (PrimType::Int
-                | PrimType::Float
-                | PrimType::Bool
-                | PrimType::String
-                | PrimType::Duration
-                | PrimType::Decimal(_)
-                | PrimType::Time),
-            ) => Ok(TypeExpr::Primitive(*p, span)),
+            // Every primitive a monomorph can be named for (the checker's
+            // and the mangler's one table, `GENERIC_ARG_PRIMS`).
+            Ty::Prim(p) if hale_types::ty::generic_arg_mangle_token(*p).is_some() => {
+                Ok(TypeExpr::Primitive(*p, span))
+            }
             // An identity, a range or a quantity (GH #1076) is a name
             // the alias table lowers as its `Int`.
+            // A locus or an interface is a name too (GH #1942): the
+            // specialization takes and hands back the handle, as a fn
+            // declared over the locus or interface by name does.
             Ty::Named(n)
                 if self.user_types.contains_key(n)
                     || self.user_enums.contains_key(n)
-                    || self.user_type_aliases.contains_key(n) =>
+                    || self.user_type_aliases.contains_key(n)
+                    || self.user_loci.contains_key(n)
+                    || self.pending_locus_names.contains(n)
+                    || self.user_interfaces.contains(n) =>
             {
                 Ok(TypeExpr::Named {
                     path: QualifiedName { segments: vec![Ident::new(n.clone(), span)], span },
@@ -13875,9 +13877,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     span,
                 })
             }
+            // The check refuses a generic call whose argument names no
+            // monomorph (an array, a tuple, a fn type), at the call
+            // (`refuse_unnameable_generic_args`); this is that rule for a
+            // caller that skips the check.
             other => Err(CodegenError::Unsupported(format!(
-                "generic type argument `{}` not supported (m62 v0.1 limits \
-                 inference to primitives + named types as generic args)",
+                "a generic fn specialized at `{}`: a generic argument is a primitive or a declared type",
                 other.display()
             ))),
         }
@@ -16582,11 +16587,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     p
                 )
             }
-            Expr::Call { .. } => {
-                "callee is itself a call expression (calling the result of \
-                 another call is not yet supported in codegen v0 — bind the \
-                 inner call's result to a `let` and call the binding)".to_string()
-            }
             Expr::Field { name, .. } => format!(
                 "call to method `.{}`: receiver shape not supported in \
                  expression position",
@@ -18857,7 +18857,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // A call through a value the callee evaluates to (a
                     // fn value bound in scope that shadows a fn of its
                     // name, `crate::shadowed_callees` in hale-types).
-                    Expr::Block(_) => {
+                    Expr::Block(_)
+                    | Expr::Call { .. }
+                    | Expr::Index { .. }
+                    | Expr::If(_)
+                    | Expr::Match(_) => {
                         let _ = self.lower_computed_fn_call(callee, args, scope)?;
                     }
                     _ => {
@@ -19442,7 +19446,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // copy-out / mutate-locally / write-back the
                     // entire fixed-cap array per single-slot
                     // update — quadratic on ladder size.
-                    if target.tail.len() == 2 {
+                    //
+                    // A compound `self.xs[i] += v` (GH #1942) reads the
+                    // slot before it writes it, which the general walker
+                    // below does for every deeper self place.
+                    if target.tail.len() == 2 && matches!(op, AssignOp::Eq) {
                         if let (
                             LValueSeg::Field(fname_ident),
                             LValueSeg::Index(idx_expr),
@@ -19555,14 +19563,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     "type mismatch in `self.{}[idx] = ...`: \
                                      slot {} vs rhs {}",
                                     fname_ident.name, elem_ty, rhs_ty
-                                )));
-                            }
-                            if !matches!(op, AssignOp::Eq) {
-                                return Err(CodegenError::Unsupported(format!(
-                                    "compound assignment `{}` on \
-                                     `self.{}[idx]` is not supported; \
-                                     use `=` only",
-                                    assign_op_text(*op), fname_ident.name
                                 )));
                             }
                             // `[T; N]` of a heap type stores POINTERS
@@ -26626,11 +26626,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     })
                 }
-                Expr::Block(_) => self.lower_computed_fn_call(callee, args, scope)?.ok_or_else(|| {
-                    CodegenError::Unsupported(
-                        "a fn value that returns no value is used in expression position".to_string(),
-                    )
-                }),
+                // A call through the fn value any other callee evaluates
+                // to (GH #1942): a block (the desugar of a binding that
+                // shadows a fn of its name), a call that returns a fn
+                // (`pick()(2)`), an element of an array of fns
+                // (`fs[0](4)`), a branch that picks one.
+                Expr::Block(_) | Expr::Call { .. } | Expr::Index { .. } | Expr::If(_) | Expr::Match(_) => {
+                    self.lower_computed_fn_call(callee, args, scope)?.ok_or_else(|| {
+                        CodegenError::Unsupported(
+                            "a fn value that returns no value is used in expression position".to_string(),
+                        )
+                    })
+                }
                 _ => Err(CodegenError::Unsupported(
                     self.diagnose_unresolved_callee(callee, scope),
                 )),
@@ -26756,10 +26763,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // first dictates the type. Empty arrays would need
                 // an ascription to know the element type — reject
                 // them in v0.
+                // `[]` names no element type. It lowers as the value of a
+                // `let` that declares one (`lower_expr_into`); anywhere
+                // else the check refuses it (`refuse_untyped_empty_array`),
+                // and this is that rule for a caller that skips the check.
                 if parts.is_empty() {
-                    return Err(CodegenError::Unsupported(
-                        "empty array literal needs a type ascription \
-                         (not yet supported in v0)"
+                    return Err(CodegenError::Invalid(
+                        "an empty array literal `[]` names no element type: write it as the value of a `let` \
+                         that declares one (`let xs: [Int; 0] = [];`), or use `[x; 0]`"
                             .into(),
                     ));
                 }
@@ -26819,14 +26830,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // single source value broadcast across the slots.
                 // Parser already enforced `count` is a non-negative
                 // Int literal.
+                // `[val; 0]` (GH #1942) is a zero-length array of `val`'s
+                // type: `val` is still evaluated once, for its effects, and
+                // the storage holds no slot.
                 let n = *count;
-                if n == 0 {
-                    return Err(CodegenError::Unsupported(
-                        "array-repeat with zero count is not yet \
-                         supported in v0 (empty arrays need a type \
-                         ascription mechanism)".into(),
-                    ));
-                }
                 // GH #767: the OUTERMOST repeat consumes the `let`'s
                 // one-shot stack-slot signal, before `val` is lowered —
                 // a nested `[[0; 4]; 8]` must not take it instead.
@@ -27088,9 +27095,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(CodegenTy::Array(elem_hint, want_n)),
                 Expr::Array(parts, _),
             ) if parts.len() as u64 == *want_n => {
-                if parts.is_empty() {
-                    return self.lower_expr(e, scope);
-                }
+                // `let xs: [T; 0] = [];` (GH #1942): the ascription names
+                // the element type the literal cannot, and the storage is
+                // a zero-length `[0 x T]`; the loop below stores nothing.
                 // GH #883: an ARRAY is not any one of its elements
                 // — whatever owns it owns the storage, never an
                 // element in it. The table said so when it walked the
@@ -31651,26 +31658,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .void_type()
                         .fn_type(&llvm_param_tys, false),
                     Some(rt) => {
-                        let lr = self.llvm_basic_type(rt);
-                        match lr {
-                            inkwell::types::BasicTypeEnum::IntType(t) => {
-                                t.fn_type(&llvm_param_tys, false)
-                            }
-                            inkwell::types::BasicTypeEnum::FloatType(t) => {
-                                t.fn_type(&llvm_param_tys, false)
-                            }
-                            inkwell::types::BasicTypeEnum::PointerType(t) => {
-                                t.fn_type(&llvm_param_tys, false)
-                            }
-                            _ => {
-                                return Err(CodegenError::Unsupported(
-                                    format!(
-                                        "fn-pointer return type {} not yet supported",
-                                        rt
-                                    ),
-                                ));
-                            }
-                        }
+                        // Any value type: a view returns by value as the `{ptr, i64}`
+                        // struct the callee was declared with (GH #1942).
+                        self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false)
                     }
                 };
                 let call = self
@@ -31968,24 +31958,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .void_type()
                 .fn_type(&llvm_param_tys, false),
             Some(rt) => {
-                let lr = self.llvm_basic_type(rt);
-                match lr {
-                    inkwell::types::BasicTypeEnum::IntType(t) => {
-                        t.fn_type(&llvm_param_tys, false)
-                    }
-                    inkwell::types::BasicTypeEnum::FloatType(t) => {
-                        t.fn_type(&llvm_param_tys, false)
-                    }
-                    inkwell::types::BasicTypeEnum::PointerType(t) => {
-                        t.fn_type(&llvm_param_tys, false)
-                    }
-                    _ => {
-                        return Err(CodegenError::Unsupported(format!(
-                            "fn-pointer return type {} not yet supported",
-                            rt
-                        )));
-                    }
-                }
+                // Any value type: a view returns by value as the `{ptr, i64}`
+                // struct the callee was declared with (GH #1942).
+                self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false)
             }
         };
         let call = self
@@ -32149,6 +32124,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             &format!("{}.{}", type_name, method_name),
                         );
                     }
+                }
+            }
+        }
+        // GH #1942: `t.0(x)` calls the fn value a tuple holds at that
+        // position, as `h.f(x)` calls a record's fn field above.
+        if let CodegenTy::Tuple(elems) = &recv_ty {
+            if let Ok(i) = method_name.parse::<usize>() {
+                if let Some(CodegenTy::FnPtr { args: fn_args, ret: fn_ret }) = elems.get(i).cloned() {
+                    let storage_ty = self.llvm_tuple_storage_type(elems);
+                    let i32_t = self.context.i32_type();
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                recv_val.into_pointer_value(),
+                                &[i32_t.const_int(0, false), i32_t.const_int(i as u64, false)],
+                                &format!("tup.{i}.fn.ptr"),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let fn_value_ptr = self
+                        .builder
+                        .build_load(self.context.ptr_type(AddressSpace::default()), slot, &format!("tup.{i}.fn"))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    return self.emit_fnptr_indirect_call(
+                        fn_value_ptr,
+                        &fn_args,
+                        fn_ret.as_deref(),
+                        args,
+                        scope,
+                        &format!("tuple.{i}"),
+                    );
                 }
             }
         }
@@ -33157,24 +33165,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let fn_ty = match &ret_codegen_ty {
             None => self.context.void_type().fn_type(&llvm_param_tys, false),
-            Some(rt) => match self.llvm_basic_type(rt) {
-                inkwell::types::BasicTypeEnum::IntType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::FloatType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::PointerType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                other => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "interface method return type {} not yet supported \
-                         by Phase B dispatch",
-                        other
-                    )));
-                }
-            },
+            // Any value type, a view's `{ptr, i64}` struct included (GH #1942).
+            Some(rt) => self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false),
         };
         // Bus-arena reclaim (2026-05-21): publish caller arena
         // via TLS for the same reason as the direct-method-call
@@ -33343,24 +33335,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let fn_ty = match &ret_codegen_ty {
             None => self.context.void_type().fn_type(&llvm_param_tys, false),
-            Some(rt) => match self.llvm_basic_type(rt) {
-                inkwell::types::BasicTypeEnum::IntType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::FloatType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::PointerType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                other => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "perspective method return type {} not yet \
-                         supported by dispatch",
-                        other
-                    )));
-                }
-            },
+            // Any value type, a view's `{ptr, i64}` struct included (GH #1942).
+            Some(rt) => self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false),
         };
         self.emit_set_caller_arena_for(args, scope)?;
         let call = self

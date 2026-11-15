@@ -726,8 +726,9 @@ annotations are not in v1.
   part of the value, as written, with no indentation stripped and
   the escapes still read (the DNA's own sources do this for short
   fixtures). Multi-line text that is itself a program, a query or a
-  document is a **block string** (below). There is no `r"..."` raw
-  form: the block string is the one raw string.
+  document is a **block string** (below); a short text whose
+  backslashes are its own (a regex, a Windows path) is a **raw
+  string** (below).
 - F-strings (v1.x-10): `f"hello {name}"` — interpolates Hale
   expressions inside `{...}`, each rendered via the same
   formatter `println` uses. `{{` and `}}` are literal braces.
@@ -787,6 +788,29 @@ annotations are not in v1.
   happens to also be a local is unusual, not illegal. `{{`
   anywhere in the literal suppresses it, since that spelling
   signals the author knows the syntax.
+
+### Raw strings
+
+A raw string (GH #1948, 2026-11-15) is `r` before the opening quote:
+`r"C:\temp\new"`, `r"^\d+\.\d+$"`. Nothing in it is an escape — a
+`\` is a backslash — and `{` is text, so it reads exactly as written.
+It ends at the first `"`. A text that holds a `"` puts one or more `#`
+between the `r` and the quote and closes with a `"` followed by as
+many: `r#"say "hi""#`, and `r##"a "# inside"##` for a body holding
+`"#`. This is Rust's spelling, also Python's `r"…"` for the
+no-`#` form.
+
+- The value is a `String`, the same token as a `"..."` literal
+  (`STRING_LIT`): it goes wherever a string literal does.
+- It may span lines; a line break inside it is part of the value, as
+  written, with no indentation stripped. Multi-line text that indents
+  with the code is a block string.
+- There is no `fr"` or `br"` form. A `r` followed by anything but `"`
+  or `#…"` is the identifier `r`.
+- A raw string nothing closes is a lex error that names the closing
+  quote it looks for.
+
+`hale fmt` keeps it as written, like every other token.
 
 ### Block strings
 
@@ -851,7 +875,8 @@ section listed `r"..."` and `"""..."""` aspirationally. A raw block
 answers the text it exists for: embedded Hale, SQL and JSON carry
 escapes of their own (`\n` inside a Hale string, `\"` inside JSON), so
 a block that processed escapes would double every backslash in them,
-and a raw `r"..."` on one line would still be one line. The fence is
+and a raw `r"..."` on one line would still be one line (it was added
+later, GH #1948, for the one-line case: a regex or a path). The fence is
 the string's own quote, so the literal reads as a string; its length
 grows instead of a `#` count (Rust's `r#"`), so a body holding the
 form itself needs no other punctuation; and the indentation is the

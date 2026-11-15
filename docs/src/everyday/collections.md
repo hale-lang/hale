@@ -34,9 +34,11 @@ Each `@form` locus manages a single collection (one `@form` per locus). Use `@fo
 | **`@form(lru_cache, cap = N)`** (Bounded LRU cache) | `capacity { pool entries of T indexed_by k; }` | `put(v)`, `get(k)`*, `contains(k) -> Bool`, `remove(k)`*, `len()`, optional `fn on_evict(k, v)` | Evicts least-recently-used entry when exceeding `N` |
 | **`@form(heap)`** (Priority queue) | `capacity { heap jobs of T ordered_by min\|max f; }` | `push(v)`, `pop()`*, `peek()`*, `len()`, `is_empty()`, `clear()` | Drain with `while !q.is_empty() { let x = q.pop() or ...; }` |
 | **`bounded[T; N]`** (Inline bounded list) | `tags: bounded[String; 32];` (field on `type`) | `push(f, x)`*, `at(f, i)`*, `set(f, i, x)`*, `count(f)`, `clear(f)`, `truncate(f, n)` | `for x in f { ... }`; starts empty (`count = 0`) |
-| **`[T; N]`** (Fixed array) | `let xs: [Int; 4] = [0; 4];` | `xs[i]`, `len(xs)` | `for x in xs { ... }`; fixed size `N` |
+| **`[T; N]`** (Fixed array) | `let xs: [Int; 4] = [0; 4];` | `xs[i]`, `len(xs)` | `for x in xs { ... }`; fixed size `N`, an integer literal (`0` included: `[x; 0]`, or `let xs: [Int; 0] = [];`) |
 
 *\*Operations marked with `*` are `fallible` (out-of-bounds, missing key, empty, or at capacity) and require an `or` clause.*
+
+A vec's `sort()` orders `Int`, `Float` and `String` cells by themselves; a vec of any other cell (a `Bool`, a record) has no default ordering, and `hale check` refuses `v.sort()` there, pointing at `v.sort_by(less_than)` with a comparator `fn less_than(a: T, b: T) -> Bool`.
 
 A `bounded` is not indexed with `[i]`: read an element with `at(f, i) or …` and write one with `set(f, i, x) or …`, each fallible past the live count (`hale check` refuses `f[i]` and names both).
 
@@ -112,7 +114,7 @@ fn main() {
 
 ### `@form(lru_cache, cap = N)`
 
-`@form(lru_cache, cap = N)` is a fixed-capacity keyed table that automatically evicts the least-recently-used entry when `put` exceeds `cap`:
+`@form(lru_cache, cap = N)` is a fixed-capacity keyed table that automatically evicts the least-recently-used entry when `put` exceeds `cap`. Its key, like a hashmap's, is an `Int` or a `String` field (an identity, range or quantity counts as its `Int`); `hale check` refuses any other key at the `indexed_by` name:
 
 ```hale
 type Entry { key: String; fd: Int; }
@@ -213,6 +215,7 @@ fn main() {
 | `truncate(b, n)` | `(bounded[T; N], Int) -> ()` | Shrinks live count to `n` (never grows) |
 
 - **Supported element types:** Scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, unit types), payload-free enums, `String`, `Bytes`, and structs. Wrap tuples, fixed arrays, or payload-carrying enums in a struct to store them in a `bounded`.
+- **No literal:** a `bounded` is built empty inside its record and filled with `push`; `let x = bounded[String; 4] { };` is refused with a message naming that shape (`type Names { items: bounded[String; 4]; }`, `let mut n = Names {};`, `push(n.items, x) or …`).
 - **Copying and returning:** Assigning `row.tags = msg.tags;` between two `bounded[T; N]` fields of the exact same type copies all live elements and the count. A function cannot return a bare `bounded[T; N]` directly; wrap it in a `type` record and return the record.
 - **Memory:** A `bounded` a locus holds owns its `String`, `Bytes` and struct elements. Whatever stops being an element is reclaimed: the element `set` overwrites, the ones `clear` and `truncate` drop, and every element of a record you replace whole (`self.row = fresh;`). So a locus that keeps rewriting such a field stays the same size. `at(b, i)` gives you the element itself, and a local you keep across a call that rewrites the field gets its own copy automatically.
 - **Value semantics:** Every `bounded`, a local record's too, holds its own elements. After `push(l.items, item)`, writing `item.k = 2` does not change the element, and writing a copy read with `at` and `set` back does not change `item`. `push` and `set` keep the value without copying it when nothing else names it: a literal, a call's result, a local you do not use after the store, or an element read with `at` and set back to its own slot (`let mut x = at(l.items, i) or …; x.k = 2; set(l.items, i, x) or …;`). Otherwise they store a copy, which `hale verify` reports on a hot path.

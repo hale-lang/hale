@@ -12,6 +12,70 @@
 mod entries;
 use hale_syntax::parse_source;
 use entries::check_program;
+use hale_frontend::snapshot::Config;
+
+/// GH #1948: the advisory is asked for, never the default. `hale check`'s
+/// config (and `build`'s, and the editor's) reports none of it, so a
+/// first program's ordinary loop and handler come out clean; `hale
+/// verify` and `--warn-hot-path` set `hot_path_advisory`, which the
+/// helpers above stand in for. A `@hot` fn's findings stay errors.
+fn default_check(src: &str) -> Vec<(bool, String)> {
+    let snap = entries::load_files(&[("main.hl", src)], Config::check(true, false));
+    entries::checked(&snap)
+        .into_iter()
+        .filter(|d| d.message.contains("hot-path"))
+        .map(|d| (d.is_error(), d.message))
+        .collect()
+}
+
+#[test]
+fn by_default_an_ordinary_loop_and_handler_report_nothing() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic T { payload: Msg; subject: "t"; }
+locus Acc { params { n: Int = 0; } }
+locus Sink {
+    bus { subscribe T as on_msg; }
+    fn on_msg(m: Msg) {
+        let a = Acc { n: m.n };
+        println(a.n);
+    }
+}
+fn main() {
+    let mut i = 0;
+    while i < 3 {
+        let a = Acc { n: i };
+        println(a.n);
+        i = i + 1;
+    }
+}
+"#;
+    assert_eq!(default_check(src), Vec::<(bool, String)>::new());
+    // The same program with the advisory asked for reports both.
+    let asked = warnings(src);
+    assert!(asked.iter().any(|m| m.contains("inside a loop")), "{asked:?}");
+    assert!(asked.iter().any(|m| m.contains("inside a bus handler")), "{asked:?}");
+}
+
+#[test]
+fn by_default_a_hot_fn_still_errors() {
+    let src = r#"
+locus Acc { params { n: Int = 0; } }
+@hot fn spin(x: Int) {
+    let mut i = 0;
+    while i < x {
+        let a = Acc { n: i };
+        i = i + 1;
+    }
+}
+fn main() { spin(3); }
+"#;
+    let found = default_check(src);
+    assert!(
+        found.iter().any(|(err, m)| *err && m.starts_with("@hot: hot-path allocation")),
+        "{found:?}"
+    );
+}
 
 fn warnings(src: &str) -> Vec<String> {
     let prog = parse_source(src).expect("parse failed");

@@ -335,11 +335,13 @@ fn own_scope_let_block_scope_test() {
             // 511 since `wide.hl` came (GH #1934: `std::u256` /
             // `std::i256`'s fallible calls and the JSON codecs' hex
             // helpers, 20 fns); 513 since `std::json::Builder` writes
-            // JSON as given in `raw_field` and `raw_value` (GH #1943)
+            // JSON as given in `raw_field` and `raw_value` (GH #1943);
+            // 515 since `time_rfc3339.hl` came (GH #1948:
+            // `std::time::parse_rfc3339` and its digit helper)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 513 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 513 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 515 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 515 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -449,7 +451,7 @@ fn unreached(target: &str, stdlib: &BTreeSet<FnKey>) -> Option<Unreached> {
     })
 }
 
-/// The six targets pinned below are the only ones whose own fns or leak
+/// The seven targets pinned below are the only ones whose own fns or leak
 /// sites the reached correction moves.
 #[test]
 fn reached_no_other_target_changes() {
@@ -468,6 +470,7 @@ fn reached_no_other_target_changes() {
             "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
             "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
             "dna/oidc",
+            "tests/hale/codegen_gaps_test.hl",
             "tests/hale/is_route_test.hl",
             "tests/hale/perspective_ctor_override_test.hl",
         ]
@@ -1172,7 +1175,8 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
             sharing += 1;
         }
     }
-    assert_eq!(sharing, 33, "the stdlib source files that share a name with the copy");
+    // 34 since `time_rfc3339.hl` came (GH #1948: `std::time::parse_rfc3339`).
+    assert_eq!(sharing, 34, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the
@@ -1517,5 +1521,19 @@ fn startable_only_the_verb_program_runs_to_exit() {
                 "the stdlib's copy: 1",
             ])
         )]
+    );
+}
+
+/// GH #1942's test of the shapes now compiled starts no loop, so, as in
+/// the perspective fixtures, the appended HTTP dispatch's fallback site is
+/// no longer counted as invoked without bound.
+#[test]
+fn reached_codegen_gaps_test() {
+    pinned_unreached(
+        "tests/hale/codegen_gaps_test.hl",
+        (131, 0),
+        &[],
+        &["__http_fn_unset StructLit(\"std::http::Response\") @53535..53594 InvokedUnboundedly"],
+        &[],
     );
 }

@@ -30,7 +30,7 @@ Hale provides eight built-in scalar types and two inline sequence types. `Decima
 | `Bytes` | Raw binary data | `b"\x00\x01\xff"`, `b"raw"` | Arbitrary octets, including null bytes |
 | `Duration` | Nanosecond time span | `100ns`, `50us`, `16ms`, `5s`, `90min`, `8h`, `7day` | `quantity Int in ns` |
 | `Time` | UTC wall-clock instant | `` `2026-05-08T12:00:00Z` `` | `point Duration` (nanoseconds since Unix epoch) |
-| `[T; N]` | Fixed-length array | `[1, 2, 3]`, `[0; 8]` | Inline fixed capacity `N` |
+| `[T; N]` | Fixed-length array | `[1, 2, 3]`, `[0; 8]`, `[0; 0]` | `N` is an integer literal, `0` included. There is no unsized `[T]`; an empty `[]` needs its type written: `let xs: [Int; 0] = [];` |
 | `bounded[T; N]` | Fixed-capacity dynamic list | `tags: bounded[String; 32];` | Inline in `type` structs; starts empty (`count = 0`) |
 
 Numeric literals accept underscores (`1_000_000`) as visual separators. Integer literals default to `Int`, fractional literals default to `Float`, and the `d` suffix produces an exact `Decimal` (covered in [Math, Money & Time](./math.md)).
@@ -117,6 +117,7 @@ fn main() {
 
 - `println` and `print` accept any number of arguments and concatenate their output without format strings.
 - Structs, tuples, and arrays of printable elements format recursively. Two types deliberately do not print directly: **loci** (which represent stateful components rather than values) and **`Bytes`** (which must be explicitly formatted as hex, length, or decoded text; see [Strings & Text](./strings.md#printing-whole-values)).
+- `len(x)` is the length of a `String`, `Bytes`, a view of either, or a fixed-size array; `Int(x)` and `Float(x)` convert between `Int` and `Float` only (parse a `String` with `std::str::parse_int(s)`, divide a `Duration` by a unit, `d / 1ms`). `hale check` refuses any other operand at the call.
 - Builtins use function call syntax (`len(s)`, `abs(x)`), not method call syntax (`s.len()`) or stdlib paths (`std::str::len(s)`, `std::math::abs(x)`, `std::io::println(x)`). If you write one of those forms, `hale check` points directly to the builtin.
 
 ## Compiler Rules and Identifier Resolution

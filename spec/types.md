@@ -340,7 +340,7 @@ stdlib, which keep their own representation class (the table above).
 
 | Construct | Form | Notes |
 |---|---|---|
-| Slice / array | `[T]` or `[T; N]` | Dynamic or fixed-size |
+| Array | `[T; N]` | Fixed-size: `N` is an integer literal, `0` included (`[x; 0]`, a `[T; 0]` parameter). An unsized `[T]`, or a length spelled by a name (`[T; N]` with `N` a `const`), is refused by `hale check` at the annotation (see § "What the compiler cannot compile yet"). |
 | Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
 | Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time, the default evaluated where the literal that leaves it is written. A default reads only its constants and the module's items, never the literal's scope (§ Locus params). |
@@ -560,7 +560,8 @@ Each copy is a site of the allocation survey (`place-copy (<reason>)`:
 place is passed to a call that may write through its parameter`, `copy:
 what the local was read from is written while it is live`), so it
 counts toward `@budget(alloc_per_call = N)` and the `alloc` effect, and
-the hot-path lint reports one in a loop, a bus handler or a `@hot` fn.
+the hot-path lint reports one in a loop or a bus handler (when asked for:
+`hale verify`, `hale check --warn-hot-path`) and in a `@hot` fn.
 A store's own copy is one too: `copy: a place's value stored into a
 part of a parameter` (`h.arr = r.arr`), and `copy: a value stored into
 a locus's field from outside its methods` (§ A store into a locus's
@@ -1202,7 +1203,11 @@ for the narrowing direction (LLVM `fptosi` / `sitofp`):
   form. `Int(f)` narrows a `Float` to an `Int` (truncates toward
   zero); the cast is opt-in, so there is no silent `Float → Int`.
   `Float(i)` widens an `Int` to a `Float` (`sitofp`). Each is the
-  identity on its own type, and rejects any other argument type.
+  identity on its own type, and `hale check` rejects any other argument
+  type at the argument (an identity, a range or a quantity is its
+  `Int`): a `Bool` is no number (`if b { 1 } else { 0 }`), a `String` is
+  parsed, not cast (`std::str::parse_int(s)`, `std::str::parse_float(s)`),
+  a `Duration`'s count in a unit is a quotient (`Float(d / 1ms)`).
   They are the only two numeric casts: there is no `String(x)`,
   `Bool(x)`, `Bytes(x)` or `Decimal(x)` — those names are types; a
   Decimal changes scale by `d.rescale(T)` (§ Decimal<S>), and has no
@@ -1394,7 +1399,13 @@ was refused too.
 
 Semantics:
 - Fields auto-initialize EMPTY. Literal init is rejected — the
-  intrinsics build a bounded value. Whole-STRUCT copies carry
+  intrinsics build a bounded value. There is no `bounded` value
+  literal either: `let x = bounded[String; 4] { };` is a parse error
+  at `bounded[String;` that says `bounded[T; N]` is a type, not a
+  value, and names the shape to write — a record field (`type Names {
+  items: bounded[String; 4]; }`), the record built (`Names {}`) and
+  `push` into its field (GH #1948; it was a bare "expected ], got
+  Semi"). Whether a `bounded` becomes a value is GH #1951. Whole-STRUCT copies carry
   elements + count by construction (the storage is inline).
 - A fn, a locus method or an interface method does not return a
   `bounded` (written, or through an alias): the check refuses the
@@ -1640,10 +1651,15 @@ the template spelling.
 Generic params are declared with angle brackets:
 
 ```
-fn map<T, U>(xs: [T], f: fn(T) -> U) -> [U] { ... }
-type Stack<T> { items: [T]; }
+fn apply<T, U>(x: T, f: fn(T) -> U) -> U { ... }
+type Box<T> { value: T; }
 locus Cache<K, V> { params { cap: Int = 1; } }
 ```
+
+A locus's method is not generic itself: `fn twice<T>(...)` inside a
+locus is refused by `hale check` at the method's name (hale can't
+compile a generic locus method yet); declare it as a free generic fn,
+or make the locus the template.
 
 ### Generic bounds
 
@@ -1677,7 +1693,7 @@ is lowered as `Box_Int` — so each argument must contribute a token
 to that name. The primitive vocabulary is:
 
 ```
-Int  Float  Bool  String  Duration  Decimal  Time
+Int  Float  Bool  String  Duration  Decimal  U256  I256  Time
 Bytes  BytesView  BytesMut  StringView
 ```
 
@@ -1707,12 +1723,55 @@ type, and a generic body names `T`, so it would print and convert as
 the bare count. A generic fn call that would bind one is refused at
 the callee ("generic fn \`id\`: \`T\` would be \`Money\`, a quantity,
 and a generic body has no unit to print or convert one by"); the
-stdlib's `Duration` and `Time` are primitives and bind. An array, tuple, `bounded[T; N]` or function type as
-an argument is refused at lowering; a qualified path is rewritten
-to a single segment by the import renames before the mangler sees
-it, which is why the checker's rule above is confined to
-primitives — the only argument form whose answer is the same in
-both layers.
+stdlib's `Duration` and `Time` are primitives and bind. A locus or an
+interface binds too: the specialization takes and hands back the
+handle, as a fn declared over the locus or interface by name does
+(`let c = id(Counter { n: 3 });`).
+
+An array, a tuple, a `bounded[T; N]` or a function type names no
+monomorph, so a generic fn call whose arguments would bind one is
+refused by `hale check` at the callee (GH #1942):
+
+```
+main.hl:2:21: type error: generic fn `id`: this call makes `T` `[Int; 2]`,
+an array, and hale can't compile a generic fn specialized at one yet: a
+generic argument is a primitive or a declared type (a struct, an enum,
+an alias, a locus or an interface). Wrap the value in a declared type
+(`type Wrapped { v: [Int; 2]; }`), or write the fn over the concrete type
+```
+
+A qualified path is rewritten to a single segment by the import
+renames before the mangler sees it.
+
+### What the compiler cannot compile yet
+
+A construct `hale check` accepts is a construct `hale build` compiles
+(GH #1942). The few the compiler has no lowering for yet are refused by
+the check, at the construct, with the words "hale can't compile …
+yet" and a way forward, never by the build after a passing check:
+
+| construct | refused at | way forward |
+|---|---|---|
+| an unsized array type `[T]`, or a length that is not an integer literal (`[T; N]`) | the annotation | size it with a literal, or hold a varying count in `bounded[T; N]` or a `@form(vec)` |
+| a generic fn call that binds a parameter to an array, a tuple, a `bounded` or a fn type | the callee | wrap the value in a declared type |
+| a generic locus method (`fn f<T>(…)` inside a locus) | the method's name | a free generic fn, or a generic locus |
+| an empty array literal `[]` anywhere but the value of a `let` that declares its type | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
+| a nested pattern inside a tuple pattern (`((1, 2), 3) ->`, `(E::A, 3) ->`) | the nested pattern | bind the part and match the binding (the rule a variant's pattern follows) |
+| a range index on anything but a `String` (`a[1..3]` of an array) | the index | copy the elements, `std::bytes::slice` for bytes |
+| `sum(…)`, `count()`, `mean(…)` outside a closure assertion; an accumulator over anything but one field (`sum(self.a + self.b)`); `prod(…)` anywhere | the accumulator | spec/semantics.md § Closure tests |
+| a closure band that mixes `Int` and `Float` (`mean(self.n) ~~ 1 within 2`) | the `Int` side | write it as a `Float` |
+
+`len`, `Int(…)` and `Float(…)` refuse an operand outside their rows
+(§ Calls to bare names, § Explicit numeric conversions) for the same reason.
+The boundaries refuse theirs where they are declared: an `@ffi`
+parameter with a default, or of an enum, a locus or an interface type
+(spec/ffi.md); a bus payload field the wire format has no form for, an
+enum in a native `shm_ring`, a `Drain<T>` handler on a `layout:` ring
+(spec/semantics.md § The bus wire format); a cross-pool child whose
+params the spawn cannot marshal or which keeps work the far side would
+schedule (spec/semantics.md § Accept bubbling); `sort()` of a
+`@form(vec)` whose cell has no default ordering and a `@form(lru_cache)`
+key that is no `Int` or `String` (spec/forms.md).
 
 ## Type inference
 
@@ -1868,7 +1927,7 @@ write needs a value of the type being built. The check refuses the
 declaration at the field that closes the ring, naming each field on it:
 
 ```text
-main.hl:1:57: type error: a record cannot contain itself by value: `Cfg.child: Cfg` puts a whole `Cfg` inside every `Cfg`, so none can be built. Hold the `Cfg` values a `Cfg` may have in a `bounded[Cfg; N]` (it starts empty), or in an enum variant beside one that holds none (`type Child = enum { Nothing, One(Cfg) }`), or keep them elsewhere and hold a key
+main.hl:1:57: type error: a record cannot contain itself by value: `Cfg.child: Cfg` puts a whole `Cfg` inside every `Cfg`, so none can be built. Hold the `Cfg` values a `Cfg` may have in a `bounded[Cfg; N]` (it starts empty), or in an enum variant beside one that holds none (`type Child = enum { Nothing, One(Cfg) };`), or keep them elsewhere and hold a key
 ```
 
 A generic record is followed with its type arguments substituted (`b:
@@ -1902,6 +1961,15 @@ just not bound to a value at declaration time.
 
 Functions are first-class values. `fn(A, B) -> C` is a type;
 function literals can be assigned, passed, returned.
+
+A call's callee is any expression that evaluates to a fn value: a
+name, a record's fn field (`h.f(x)`), and, as of GH #1942, a call that
+returns one (`pick()(2)`, `a.get()(4)`), an array element (`fs[0](4)`),
+a tuple part (`t.0(4)`), or an `if` or `match` that picks one (`(if c {
+dbl } else { tri })(5)`). The callee is evaluated once, before the
+arguments. A fn value returns any value type, a view's included: a
+`StringView` comes back through a fn value, an interface method or a
+perspective method as through a direct call.
 
 A locus's `fn` member can be a method (takes `self`) or a free
 function within the locus's scope. Lifecycle methods (`birth`,
@@ -2017,7 +2085,12 @@ organization's gate runs) or on one file, every command that compiles
 exactly what they bundle) and `hale lsp` — any other bare callee is a
 type error — `call to X: no free fn, generic fn or fn-pointer binding
 with that name is in scope`, with a did-you-mean over the program's
-fns. The rule holds wherever the call stands: a statement, an operand,
+fns, or, when a stdlib fn has exactly that name, its path (`substring`
+→ `std::str::substring`: a stdlib fn is called by its path, GH
+#1948). A `std::` type path that names nothing (`std::str::Builder`)
+likewise names the stdlib type meant: a tabled move
+(`std::bytes::BytesBuilder`, which builds text too) or the one stdlib
+type of that name in another namespace. The rule holds wherever the call stands: a statement, an operand,
 a condition, a fn or method body, a lifecycle hook, a bus handler, a
 `params` default, a `const` initializer. Only a partial program a
 library caller assembles (a styleguide snippet, a test harness's
@@ -2115,6 +2188,13 @@ N]) and a form locus (its length is the form's synthesized `len()`
 method: "\`len\` does not apply to a \`V\`: a \`@form(vec)\`'s length
 is \`v.len()\`", [forms.md](forms.md) § Synthesized methods), where
 the build refused the form case with no file or line until 2026-11-06.
+Every other operand of a known type outside `len`'s row (an `Int`, a
+tuple, an enum, a record) is refused at the call ("\`len\` does not
+apply to a value of type \`(Int, Int)\`: it is the length of a
+\`String\`, a \`Bytes\`, a view of either, or a fixed-size array"), and
+so is an `Int(…)` or `Float(…)` operand outside theirs (§ Explicit
+numeric conversions); the build refused each with no rule of its own
+(GH #1942).
 
 ### Bare identifiers
 

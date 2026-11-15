@@ -595,6 +595,7 @@ ns std::time open_prefixes=[]
   current time
   iso8601 pure
   parse_time pure
+  parse_rfc3339 pure
   unix pure
   nanos pure
   from_nanos pure
@@ -1308,6 +1309,7 @@ std::time::monotonic_ns | lookup=time@2 | locus=false | effects=time | sig=() ->
 std::time::nanos | lookup=time@2 | locus=false | effects=pure | sig=(Time) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=nanos
 std::time::now | lookup=time@2 | locus=false | effects=time | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::time::parse_iso8601 | lookup=time@2 | locus=false | effects=pure | sig=(Str) -> Int ! ParseError | ret_ty=? | or=(Int, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_iso8601
+std::time::parse_rfc3339 | lookup=time@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=parse_rfc3339
 std::time::parse_time | lookup=time@2 | locus=false | effects=pure | sig=(Str) -> Time ! ParseError | ret_ty=? | or=(Time, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_time
 std::time::sleep | lookup=time@2 | locus=false | effects=syscall|block|time | sig=(Duration) -> Unit | ret_ty=() | or=- | parks=true | holds=false | unknown=- | suggest=sleep
 std::time::slep | lookup=time@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::time::slep` — did you mean `std::time::sleep`? | suggest=sleep

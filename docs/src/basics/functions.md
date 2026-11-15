@@ -100,6 +100,8 @@ fn main() {
 
 `Numeric` is the only type parameter bound in Hale; there is no user-defined trait bound syntax (declarations like `<T: Eq>` are rejected).
 
+A type argument is a primitive or a declared type: a record, an enum, an alias, a locus or an interface (`id(Counter { n: 3 })` specializes `id` at the locus). Each specialization is compiled under a name its arguments spell, and an array, a tuple or a fn type spells none yet, so `hale check` refuses a call like `id([1, 2])` at the callee; wrap the value in a record (`type Pair { v: [Int; 2]; }`). A locus method cannot be generic itself (`fn twice<T>(…)` inside a locus is refused at its name): declare it as a free generic fn.
+
 When a generic locus (such as `Holder<T>`) calls a generic function with `self.value` (or a local bound from `self.value`), the compiler monomorphizes the call for each concrete instantiation (`Holder<Int>`, `Holder<String>`). Default expressions in `params` use the declaring locus's type arguments.
 
 ## Function Pointers (`fn(T) -> U`)
@@ -117,6 +119,8 @@ fn main() {
     println(apply_twice(inc, 10));    // 12
 }
 ```
+
+Any expression that evaluates to a fn value can be called directly: a call that returns one (`pick()(2)`), an array element (`handlers[i](req)`), a tuple part (`pair.0(x)`), or an `if` that picks one (`(if fast { dbl } else { tri })(5)`). A fn value can return any type, a `StringView` included, and so can an interface or perspective method.
 
 ### Function Value Capabilities and Restrictions
 
