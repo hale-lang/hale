@@ -25,7 +25,8 @@ By convention, prefix FFI function names with the target library's name (`raylib
 
 An `@ffi("c")` declaration must adhere to the C ABI boundary rules:
 - **No `fallible(E)` channel**: C functions cannot raise directly on Hale's error channel. Return an integer or sentinel value from the C shim and wrap it in a regular Hale function that returns `fallible(E)` (see [Fallible Functions](../basics/fallible.md)).
-- **No default parameter values or generics**: Every parameter must be explicitly typed and passed at each call site.
+- **No default parameter values or generics**: Every parameter must be explicitly typed and passed at each call site. `hale check` refuses a defaulted `@ffi` parameter at its default; wrap the import in a Hale fn that supplies the value.
+- **No enums, loci or interfaces**: a named type crosses only as a user struct (passed by pointer) or an identity, range or quantity (its `Int`). An enum has no C layout at Stage 1, so `hale check` refuses an enum parameter or return type at the annotation; pass the variant as an `Int` you map on each side, or wrap it in a struct.
 
 ## Type Mapping Across the C Boundary
 

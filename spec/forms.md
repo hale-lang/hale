@@ -558,8 +558,13 @@ fn sort() -> ()
 ```
 
 Sorts the vec in place in ascending order. The cell type T MUST
-be one of `Int`, `Float`, or `String`; any other T (struct, enum,
-bytes, etc.) is a typecheck error suggesting `sort_by(cmp)`.
+be one of `Int`, `Float`, or `String` (an identity, a range or a
+quantity is its `Int`); any other T (a `Bool`, a struct, an enum,
+bytes, etc.) is a typecheck error at the `.sort`, naming the
+comparator to write: "\`f.sort()\`: \`Flags\` holds \`Bool\` cells,
+which have no default ordering …; sort with a comparator,
+\`f.sort_by(less_than)\`". (The check passed it and the build refused
+it until GH #1942.)
 String comparison is lexicographic on the underlying byte
 sequence (i.e., the C `strcmp` ordering); Float comparison
 treats `NaN` as equal-to-anything to keep the ordering total
@@ -1782,8 +1787,12 @@ Rules verified at typecheck:
   slot, or a `heap` slot is rejected.
 - The slot MUST declare `indexed_by <fieldname>`; the named field
   must exist on the cell struct and becomes the cache key type
-  `K` (Int or String at v1). The cell struct is the value type
-  `S`.
+  `K`: an `Int` or a `String` (an identity, a range or a quantity
+  is its `Int`), as a hashmap's key. Any other key field is refused
+  at the `indexed_by` name ("@form(lru_cache) key \`R.k\` is a
+  \`Float\`: a cache's key is an \`Int\` or a \`String\` …"); the
+  build refused it after a passing check until GH #1942. The cell
+  struct is the value type `S`.
 - `cap = N` is required and must be a positive integer literal.
   v1 doesn't const-evaluate expressions for form args.
 - The slot MUST NOT declare `as_parent_for` — form-lowered slots
