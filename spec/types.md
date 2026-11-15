@@ -597,7 +597,8 @@ members may not share the last segment of their names (`a::Book` and
 `b::Book`), since a pattern names a member by that alone.
 
 A member's value is the set's wherever a set is expected: a return from
-a fn returning the set, an argument to a parameter of it, a `let` of its
+a fn returning the set (a `return`, or the body's tail, which is its
+return), an argument to a parameter of it, a `let` of its
 type, an assignment to a place of it and a field of it. Two sets may
 share a member; the place's type says which set the value becomes. The
 arms of an `if` or a `match` whose values are different members are not
@@ -620,6 +621,16 @@ not a member of the set `Inbound`, whose members are Book, Trade,
 Unknown"), and the match is exhaustive as an enum's is: every member, or
 a `_` arm. `Name(_)` matches a member without binding it; a bare `Name`
 is a binding, as everywhere.
+
+The bare name is a set's alone. A pattern on an enum names its enum,
+`E::A(x)`; `A(x)` against an enum is refused at the pattern (until
+2026-11-15 the check passed it and the build refused it):
+
+```
+main.hl:5:9: type error: `A(…)` names a variant of the enum `E` without
+its enum: a pattern on an enum names it, `E::A(…)` (only a set's member
+is named by its type alone)
+```
 
 Underneath, a set is an enum whose variants are its members, each named
 for its type and holding one value of it, and it costs what that enum
@@ -2116,6 +2127,20 @@ from a field or a call), would read as the callee and is not: the check
 refuses the call, and the binding is given its type, or renamed. A call
 through a value that is no fn (`let x = 3; x(2)`) is refused at the
 callee.
+
+A call through a fn value (a local, a parameter, or a locus's or a
+record's field of a `fn(..)` type) is held to the value's type as a
+direct call is held to the fn's parameters: each argument flows into
+its parameter's type, an `Int` widening to a `Float` parameter as at a
+direct call, and the count is the type's. A fn type has no defaults, so
+every argument is passed; a short call is refused at the callee (until
+2026-11-15 the check passed it and the build refused it with no place):
+
+```
+main.hl:7:13: type error: `add2` is a fn value of type `fn(Int, Int) ->
+Int`, which takes 2 arguments, got 1: a fn type has no defaults, so
+every argument is passed
+```
 
 A call the compiler writes into the user's scope (an f-string's
 `to_string` and `__fmt`, a `from_json`'s parser) is the compiler's,
