@@ -14,6 +14,23 @@ The [design direction](DESIGN.md) describes the intended instrument and its
 visual acceptance requirements; the [API contract](CONTRACT.md) is the
 browser/service boundary it proposed.
 
+The face is drawn on the **hale UI kit**: voice's `ui/packages/tokens`
+(seven themes, every token defined by each: carbon, paper, high contrast
+and its light pair, blueprint, VFD, ledger) copied unchanged into the top of
+`web/styles.css` with the voice revision it came from, and the rest of the
+stylesheet a plain-CSS mirror of voice's components (the shell's rail,
+canvas, inspector and evidence strip; cut-corner panels; tables; forms;
+status words) under the same class names, so the two apps are one
+instrument. The rail's theme picker keeps the choice under
+`hale.face.theme` in the kit's shape (follow the system between a light
+and a dark theme, or one by name); it is applied at the top of `app.js`
+before the first paint, since the face's CSP allows no inline script. To
+take a new revision of the tokens, rebuild them in voice (`node
+build.mjs` in that package) and paste the result over the block; the
+browser test `tokens.spec.mjs` refuses a colour literal anywhere else.
+Fonts (IBM Plex) wait on a binary asset path in the head; the stacks fall
+back to Inter and the system until then.
+
 ## Three screens
 
 - **Organization** is the org chart as the graph states it, read from

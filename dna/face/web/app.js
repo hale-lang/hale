@@ -97,6 +97,50 @@ function el(tag, attrs, ...children) {
   }
   return n;
 }
+// ---- theme (the hale UI kit's themes; voice ui/packages/tokens/theme.js) --
+//
+// Seven themes, every token defined by each, in styles.css. The choice is
+// kept under `hale.face.theme` in voice's shape ({v: 1, theme, follow,
+// light, dark}): following the system picks between a light and a dark
+// theme by `prefers-color-scheme`, else the named one. Applied here, at
+// the top of the module in <head>, so the first paint is in the chosen
+// theme (an inline script would be, but the face's CSP allows none).
+const THEMES = [{"name": "carbon", "label": "Carbon", "scheme": "dark", "pair": "paper"}, {"name": "paper", "label": "Paper", "scheme": "light", "pair": "carbon"}, {"name": "contrast", "label": "High contrast", "scheme": "dark", "pair": "contrast-light"}, {"name": "contrast-light", "label": "High contrast light", "scheme": "light", "pair": "contrast"}, {"name": "blueprint", "label": "Blueprint", "scheme": "dark", "pair": null}, {"name": "vfd", "label": "VFD", "scheme": "dark", "pair": null}, {"name": "ledger", "label": "Ledger", "scheme": "light", "pair": null}];
+const THEME_KEY = "hale.face.theme";
+function themeNamed(n) { return THEMES.find(t => t.name === n) || THEMES[0]; }
+function readThemeChoice() {
+  try {
+    const s = JSON.parse(localStorage.getItem(THEME_KEY) || "null");
+    if (!s || s.v !== 1) return { theme: THEMES[0].name, follow: true };
+    return { theme: themeNamed(s.theme).name, follow: s.follow === true };
+  } catch (e) { return { theme: THEMES[0].name, follow: true }; }
+}
+function followPair(choice) {
+  const from = themeNamed(choice.theme), other = themeNamed(from.pair);
+  return from.scheme === "light" ? { light: from.name, dark: other.name } : { light: other.name, dark: from.name };
+}
+function resolveTheme(choice) {
+  if (!choice.follow) return themeNamed(choice.theme).name;
+  const light = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+  const p = followPair(choice);
+  return light ? p.light : p.dark;
+}
+function applyTheme() {
+  const choice = readThemeChoice();
+  document.documentElement.setAttribute("data-theme", resolveTheme(choice));
+  return choice;
+}
+function writeThemeChoice(choice) {
+  try {
+    const p = followPair(choice);
+    localStorage.setItem(THEME_KEY, JSON.stringify({ v: 1, theme: choice.theme, follow: choice.follow, light: p.light, dark: p.dark }));
+  } catch (e) { /* no storage: the choice lasts the page */ }
+  applyTheme();
+  if (S.cy) render();
+}
+applyTheme();
+if (window.matchMedia) window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { applyTheme(); if (S.cy) render(); });
+
 const $ = id => document.getElementById(id);
 
 function stateCard(cls, text) { return el("div", { class: "state " + cls, role: "status" }, text); }
@@ -564,7 +608,8 @@ function renderBoard(main) {
   if (review) insp.append(reviewInspector(review));
   else if (task) insp.append(taskInspector(task));
   else insp.append(el("h2", {}, "Select a card"), el("p", { class: "note" }, "A card is a Task a person holds, or a Review the Board decides. Nothing here is a leg's attempt; that is work in flight, read elsewhere."));
-  main.append(el("div", { class: "split" }, board, insp));
+  // the lanes take the width; the selected card opens beneath them
+  main.append(el("div", { class: "board-screen" }, el("div", { class: "board-wrap" }, board), insp));
 }
 
 // What a Review is about, when its row carries no question: the
@@ -830,6 +875,15 @@ function renderShell() {
   if (idx.organisms && parseList(idx.organisms).length) horizon.append(el("span", { class: "note" }, `habitat · ${parseList(idx.organisms).length} grafted`));
   const who = $("who");
   who.replaceChildren(S.principal ? el("span", {}, el("b", {}, S.principal.name), " · ", S.principal.mode) : "");
+  const picker = $("theme");
+  if (picker && !picker.options.length) {
+    picker.append(el("option", { value: "follow" }, "follow the system"), ...THEMES.map(t => el("option", { value: t.name }, t.label)));
+    picker.addEventListener("change", () => {
+      const v = picker.value;
+      writeThemeChoice(v === "follow" ? { theme: readThemeChoice().theme, follow: true } : { theme: v, follow: false });
+    });
+  }
+  if (picker) { const c = readThemeChoice(); picker.value = c.follow ? "follow" : c.theme; }
   for (const a of document.querySelectorAll(".tabs a")) a.setAttribute("aria-current", a.dataset.tab === S.route.tab ? "page" : "false");
   const ev = $("evidence");
   ev.replaceChildren(
