@@ -39,6 +39,10 @@ pub(super) struct Placement {
     pub target: String,
     /// whether it holds (its latest row is `habitat.placed`)
     pub placed: bool,
+    /// the organism's revision it was installed at, and that tree's digest:
+    /// both "" for a row recorded before placements named them
+    pub revision: String,
+    pub digest: String,
 }
 
 impl Placement {
@@ -54,6 +58,8 @@ impl Placement {
             toolchain: s("toolchain"),
             target: s("target"),
             placed: body["state"] != "unplaced",
+            revision: s("revision"),
+            digest: s("digest"),
         }
     }
 
@@ -144,14 +150,16 @@ pub(super) fn plan_line(host: &str, manifest: &str, name: &str, install: bool) -
 
 /// The placement recorded through the habitat's head once its command ran
 /// there: `habitat.placed` (and its readings registered) after `place`,
-/// `habitat.unplaced` after `unplace`.
+/// naming the organism's revision it installed (`at`: the revision and its
+/// tree's digest), `habitat.unplaced` after `unplace`. A head older than
+/// the revision's field drops it, and the placement's revision is unknown.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn record(organism: &str, command: &str, host: &str, id: &str, service: &str, platform: &str, manifest: &str, toolchain: &str, install: bool) -> Result<(), String> {
+pub(super) fn record(organism: &str, command: &str, host: &str, id: &str, service: &str, platform: &str, manifest: &str, toolchain: &str, at: (&str, &str), install: bool) -> Result<(), String> {
     let member = if install { "Commands::record_placed" } else { "Commands::record_unplaced" };
     let readings = if install { readings_port(manifest, command).unwrap_or(0) } else { 0 };
     let v = super::sapling::head_call(
         member,
-        json!({ "organism": organism, "command": command, "host": host, "id": id, "service": service, "platform": platform, "readings": readings, "toolchain": toolchain }),
+        json!({ "organism": organism, "command": command, "host": host, "id": id, "service": service, "platform": platform, "readings": readings, "toolchain": toolchain, "revision": at.0, "digest": at.1 }),
     )
     .map_err(|why| format!("it ran on {host}, and the habitat did not record it: {why}"))?;
     if !install && v["code"] == "not_found" {
@@ -214,8 +222,37 @@ pub(super) fn parse_rows(v: &Value) -> (Vec<Placement>, Vec<Placement>) {
     (list("placements"), list("history"))
 }
 
-/// `hale habitat status`'s placements, under their hosts.
-pub(super) fn status_lines(current: &[Placement]) -> Vec<String> {
+/// Whether `p` was installed at the tree `revision` (its digest `digest`)
+/// names: by the digests when both are known (a revision renamed onto
+/// another tree is another tree), else by the revisions; `None` when its
+/// row names neither (recorded before placements named their revision) or
+/// the tree is not known.
+pub(super) fn installed_at(p: &Placement, revision: &str, digest: &str) -> Option<bool> {
+    if !p.digest.is_empty() && !digest.is_empty() {
+        return Some(p.digest == digest);
+    }
+    if !p.revision.is_empty() && !revision.is_empty() {
+        return Some(p.revision == revision);
+    }
+    None
+}
+
+/// What a status line says of `p`'s revision against its organism's
+/// (`organisms`: each organism's name to its revision and digest): its own
+/// when it differs, "" when it is the organism's or is not known.
+pub(super) fn revision_note(p: &Placement, organisms: &std::collections::BTreeMap<String, (String, String)>) -> String {
+    match organisms.get(&p.organism) {
+        Some((rev, digest)) if installed_at(p, rev, digest) == Some(false) => {
+            let own = if p.revision == *rev { format!("{} ({})", p.revision, p.digest) } else { p.revision.clone() };
+            format!("  at {own}, not {}'s {rev}: `hale habitat organism upgrade {}` re-places it", p.organism, p.organism)
+        }
+        _ => String::new(),
+    }
+}
+
+/// `hale habitat status`'s placements, under their hosts; one installed at
+/// another revision than its organism is at (`organisms`) says its own.
+pub(super) fn status_lines(current: &[Placement], organisms: &std::collections::BTreeMap<String, (String, String)>) -> Vec<String> {
     let mut out = vec!["placements, as the habitat's record:".to_string()];
     if current.is_empty() {
         out.push("placements: none (`hale habitat organism place` places an organism's host command)".to_string());
@@ -226,7 +263,7 @@ pub(super) fn status_lines(current: &[Placement]) -> Vec<String> {
         out.push(format!("host {h}"));
         for p in current.iter().filter(|p| p.host == h) {
             let service = if p.service.is_empty() { "no service named".to_string() } else { format!("{} ({})", p.service, kind(&p.platform)) };
-            out.push(format!("  {}'s {} {}  {service} on {h}  {}", p.organism, p.command, p.id, p.readings()));
+            out.push(format!("  {}'s {} {}  {service} on {h}  {}{}", p.organism, p.command, p.id, p.readings(), revision_note(p, organisms)));
         }
     }
     out
@@ -442,10 +479,11 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert!(history.iter().any(|p| p.host == "mac-1" && !p.placed));
         assert_eq!(current[0].unplace_command(), "hale habitat organism unplace voice node --host gpu-1 --id gpu-1");
-        let lines = status_lines(&current);
+        let none = std::collections::BTreeMap::new();
+        let lines = status_lines(&current, &none);
         assert_eq!(lines[1], "host gpu-1");
         assert_eq!(lines[2], "  voice's node gpu-1  voice-node-gpu-1 (systemd) on gpu-1  http://gpu-1.lan:9464/metrics");
-        assert!(status_lines(&[]).iter().any(|l| l.starts_with("placements: none")));
+        assert!(status_lines(&[], &none).iter().any(|l| l.starts_with("placements: none")));
         let mut mac = body("voice", "mac-1", "mac-1", "v0.30.1", "");
         mac["platform"] = json!("macos");
         assert!(Placement::of(&mac).line().contains("(launchd)") && Placement::of(&mac).line().ends_with("no readings"));

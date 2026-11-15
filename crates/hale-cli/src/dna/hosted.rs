@@ -46,7 +46,9 @@
 //! which every run is handed, and
 //! the entries are removed however it ends. A value never reaches a command
 //! line, this machine's disk or the head. A command that needs root runs
-//! under the person's sudo, which asks at their terminal.
+//! under the person's sudo: asked first whether it needs a password, which
+//! is asked for here and handed over the run's stdin when it does
+//! (`sudo.rs`), refused at once off a terminal.
 
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
@@ -194,7 +196,7 @@ fn tree(organism: &str) -> String {
 pub(super) fn facts_script() -> String {
     format!(
         r#"PATH="$PATH:/usr/local/bin:/opt/homebrew/bin"
-echo "home $HOME"; echo "os $(uname -s)"; echo "arch $(uname -m)"
+echo "home $HOME"; echo "user $(id -un)"; echo "os $(uname -s)"; echo "arch $(uname -m)"
 for c in git curl tar; do command -v $c >/dev/null 2>&1 && echo "have $c"; done
 case "$(uname -s)" in
 Darwin)
@@ -232,6 +234,8 @@ const TOOLCHAINS: &str = ".local/share/hale/toolchains";
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Facts {
     pub home: String,
+    /// the login's user name there, as its sudo asks for its password
+    pub user: String,
     pub os: String,
     pub arch: String,
     /// git, curl, tar, clang, openssl, zlib: what is there of what a toolchain builds with
@@ -253,6 +257,7 @@ pub(super) fn facts(out: &str) -> Facts {
         let v = v.trim().to_string();
         match k {
             "home" => f.home = v,
+            "user" => f.user = v,
             "os" => f.os = v,
             "arch" => f.arch = v,
             "have" if !f.have.contains(&v) => f.have.push(v),
@@ -885,6 +890,150 @@ impl Target {
             Err(err.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("it failed and said nothing").to_string())
         }
     }
+
+    /// `script`, which runs a command under the login's sudo (`auth.sudo()`
+    /// in it), run there as `auth` says: with no password needed, as `run`
+    /// runs it (at a terminal, over `ssh -tt`); with one, the password
+    /// handed as the first line of its stdin, which `sudo::FED` reads
+    /// whole and no further, with no remote terminal to echo it back; its
+    /// output shown as it comes, and what is typed here after it forwarded
+    /// to the script's own stdin.
+    fn run_as_root(&self, script: &str, auth: &Auth, terminal: bool) -> Result<String, String> {
+        match auth {
+            Auth::AsEver => self.run(script, None, terminal),
+            Auth::Fed(pw) => self.fed(script, pw, true).map(|_| String::new()),
+        }
+    }
+
+    /// Whether `pw` is the login's sudo password there (`sudo::CHECK`, which
+    /// leaves no ticket): `false` for a wrong one, an error for any other
+    /// refusal.
+    fn check_password(&self, pw: &super::sudo::Password) -> Result<bool, String> {
+        match self.fed(super::sudo::CHECK, pw, false) {
+            Ok(_) => Ok(true),
+            Err(said) if super::sudo::wrong_password(&said) => Ok(false),
+            Err(said) => Err(said.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("sudo refused and said nothing").to_string()),
+        }
+    }
+
+    /// `script` run there with `pw` as the first line of its stdin: its
+    /// output shown and this terminal's input forwarded after the password
+    /// (`shown`), else read back. Its output, or what it said failing (all
+    /// of its error output when it was read back).
+    fn fed(&self, script: &str, pw: &super::sudo::Password, shown: bool) -> Result<String, String> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (prog, at) = match self {
+            Target::Ssh { host, .. } => ("ssh", format!("on {host}")),
+            Target::Here => ("sh", "here".to_string()),
+        };
+        let mut c = self.command(script, false);
+        c.stdin(Stdio::piped());
+        if shown {
+            c.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        } else {
+            c.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
+        let mut child = c.spawn().map_err(|e| format!("{prog}: {e}"))?;
+        let mut w = child.stdin.take().ok_or_else(|| format!("{prog}: no stdin"))?;
+        pw.feed(&mut w).map_err(|e| format!("{prog}: {e}"))?;
+        if !shown {
+            drop(w);
+            let out = child.wait_with_output().map_err(|e| format!("{prog}: {e}"))?;
+            return if out.status.success() {
+                Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+            } else if out.status.code() == Some(255) && prog == "ssh" {
+                Err(format!("ssh did not connect {at}: {}", String::from_utf8_lossy(&out.stderr).trim()))
+            } else {
+                Err(String::from_utf8_lossy(&out.stderr).into_owned())
+            };
+        }
+        // what is typed here goes on to the script, until it ends
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let forwarding = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                while !stop.load(Ordering::Relaxed) {
+                    let mut pfd = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
+                    // SAFETY: one valid pollfd
+                    let n = unsafe { libc::poll(&mut pfd, 1, 200) };
+                    if n < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                        break;
+                    }
+                    if n <= 0 || stop.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    // SAFETY: `buf` is valid for its length
+                    let r = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
+                    if r <= 0 || std::io::Write::write_all(&mut w, &buf[..r as usize]).is_err() {
+                        break;
+                    }
+                }
+            })
+        };
+        let st = child.wait().map_err(|e| format!("{prog}: {e}"));
+        stop.store(true, Ordering::Relaxed);
+        let _ = forwarding.join();
+        let st = st?;
+        if st.success() {
+            Ok(String::new())
+        } else {
+            Err(format!("it failed {at} (exit {})", st.code().unwrap_or(-1)))
+        }
+    }
+}
+
+/// How a script that needs the login's sudo gets it there.
+pub(super) enum Auth {
+    /// sudo needs no password there: the script's `sudo` runs as ever
+    AsEver,
+    /// the person's password, asked for here and handed over the run's stdin
+    Fed(super::sudo::Password),
+}
+
+impl Auth {
+    /// The sudo the script runs its command under.
+    pub(super) fn sudo(&self) -> &'static str {
+        match self {
+            Auth::AsEver => "sudo",
+            Auth::Fed(_) => super::sudo::FED,
+        }
+    }
+}
+
+/// `script` (which runs under `sudo`) made one command under that sudo:
+/// a script that calls sudo more than once (apt-get's update, then its
+/// install) is handed one password line, which one sudo reads.
+pub(super) fn under_one_sudo(sudo: &str, script: impl Fn(&str) -> String) -> String {
+    if sudo == super::sudo::FED {
+        format!("{sudo} sh -c {}", sq(&script("")))
+    } else {
+        script(sudo)
+    }
+}
+
+/// The login's sudo on `shown` (reached by `at`), settled before a script
+/// that needs it runs there: asked whether it needs a password, over the
+/// same login; at a terminal the password asked for here, naming `login`
+/// (`user@host`), and checked (a wrong one asked again, `sudo::TRIES`
+/// times); off a terminal a password needed is refused at once.
+fn sudo_for(at: &Target, login: &str, shown: &str, tty: bool) -> Result<Auth, String> {
+    use super::sudo::{decide, needs, Decision};
+    let said = at.run(super::sudo::PROBE, None, false).map_err(|w| format!("asking {shown} whether its sudo needs a password: {w}"))?;
+    match decide(needs(&said), tty, login, shown) {
+        Decision::AsEver => Ok(Auth::AsEver),
+        Decision::Refuse(why) => Err(why),
+        Decision::Ask => {
+            for _ in 0..super::sudo::TRIES {
+                let pw = super::sudo::ask(&format!("sudo password for {login}: "))?;
+                if at.check_password(&pw).map_err(|w| format!("sudo on {shown} refused {login}: {w}"))? {
+                    return Ok(Auth::Fed(pw));
+                }
+                eprintln!("that is not {login}'s sudo password");
+            }
+            Err(format!("sudo on {shown} refused {login}'s password {} times: nothing was run there", super::sudo::TRIES))
+        }
+    }
 }
 
 /// `hale habitat organism place|unplace <organism> <command> --host <h> [--id <id>] [--plan]`.
@@ -943,6 +1092,9 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
     let key = organisms.iter().find(|o| o["name"] == organism).and_then(|o| o["key"].as_str()).map(|k| k[..12.min(k.len())].to_string()).ok_or_else(|| format!("the habitat grafted no organism `{organism}`"))?;
     let sapling = rows("Commands::saplings", "saplings")?.into_iter().find(|s| s["name"] == organism).ok_or_else(|| format!("`{organism}` was not grafted from a sapling the habitat pins: a host command runs the organism's source at its sapling's pinned revision"))?;
     let (repo, revision) = (sapling["repo"].as_str().unwrap_or("").to_string(), sapling["revision"].as_str().unwrap_or("").to_string());
+    // the tree that revision is, recorded with the placement: an upgrade
+    // re-places what was placed at another
+    let digest = sapling["digest"].as_str().unwrap_or("").to_string();
     // where its scripts run: the habitat's own machine (`local`) here or
     // over the pointer's login, any other host over the login to it
     // the habitat's own machine by any name it answers to is `local`
@@ -962,6 +1114,10 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
         return Err(format!("{shown} named no home for your login"));
     }
     let release = release_target(&f.os, &f.arch).ok_or_else(|| format!("{shown} is {} {}, for which hale builds no release", f.os, f.arch))?;
+    // the login, as its sudo asks for its password
+    let login = if f.user.is_empty() { format!("your login on {shown}") } else { format!("{}@{shown}", f.user) };
+    // the login's sudo, settled once, when it is first needed
+    let mut auth: Option<Auth> = None;
 
     // what any toolchain builds with: installed first, since the source needs git
     let (missing, packages) = missing_packages(&f).map_err(|w| format!("{shown}: {w}"))?;
@@ -978,12 +1134,15 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
                 return Ok(());
             }
             line
-        } else {
-            if pkg != "brew" && !tty {
-                return Err(format!("{shown} lacks {}, and installing them needs your sudo, which asks at a terminal: run it at one", missing.join(", ")));
-            }
+        } else if pkg == "brew" {
             super::progress(&format!("installing {} on {shown} with {via}", packages.join(" ")));
-            at.run(&packages_script(&pkg, &path, &packages, "sudo"), None, tty && pkg != "brew")?;
+            at.run(&packages_script(&pkg, &path, &packages, "sudo"), None, false)?;
+            format!("{:<8}{} installed on {shown} with {via}", "builds", packages.join(" "))
+        } else {
+            let a = sudo_for(&at, &login, &shown, tty).map_err(|why| format!("{shown} lacks {}, which installing needs your sudo for: {why}", missing.join(", ")))?;
+            super::progress(&format!("installing {} on {shown} with {via}", packages.join(" ")));
+            at.run_as_root(&under_one_sudo(a.sudo(), |sudo| packages_script(&pkg, &path, &packages, sudo)), &a, tty)?;
+            auth = Some(a);
             format!("{:<8}{} installed on {shown} with {via}", "builds", packages.join(" "))
         }
     };
@@ -1086,8 +1245,8 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
     if plan {
         return Ok(());
     }
-    if cmd.root && !tty {
-        return Err("it needs root, and sudo asks at a terminal: run it at one".to_string());
+    if cmd.root && auth.is_none() {
+        auth = Some(sudo_for(&at, &login, &shown, tty)?);
     }
     if !have_toolchain {
         super::progress(&format!("installing hale {tag} on {shown}"));
@@ -1109,9 +1268,14 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
             }
         }
     }
-    super::progress(&format!("running {organism}'s `{name}` on {shown}"));
-    let script = run_script(&dir, &argv, &hale, cmd.root, "sudo", &habitat_name(), &revision, reserved_total(own, organisms, f.vm_memory), &vault, &secrets);
-    at.run(&script, None, tty)?;
+    // said whatever the terminal: a build that runs for minutes is not a hang
+    eprintln!("... {} {organism}'s `{name}` {} {shown} (its {} may build for a few minutes)", if install { "placing" } else { "taking" }, if install { "on" } else { "off" }, if install { "install" } else { "uninstall" });
+    let sudo = auth.as_ref().map(Auth::sudo).unwrap_or("sudo");
+    let script = run_script(&dir, &argv, &hale, cmd.root, sudo, &habitat_name(), &revision, reserved_total(own, organisms, f.vm_memory), &vault, &secrets);
+    match (&auth, cmd.root) {
+        (Some(a), true) => at.run_as_root(&script, a, tty)?,
+        _ => at.run(&script, None, tty)?,
+    };
     println!("{:<8}{organism}'s `{name}` {} on {shown}", "done", if install { "placed" } else { "taken off" });
     if !service.is_empty() {
         // what the command says it leaves running, as the host's own service manager sees it
@@ -1122,7 +1286,7 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
         }
         println!("{:<8}{service} on {shown}: {state}", "service");
     }
-    super::placements::record(organism, name, host, &id, &service, platform, &manifest, &tag, install)?;
+    super::placements::record(organism, name, host, &id, &service, platform, &manifest, &tag, (&revision, &digest), install)?;
     Ok(())
 }
 
@@ -1458,6 +1622,28 @@ readers = ["api"]
         assert!(args.ends_with(&["-p".into(), "2222".into(), "-l".into(), "op".into(), "habitat-box.lan".into(), "exec /bin/sh -c 'true'".into()]), "{args:?}");
         let here = Target::Here.command("true", false);
         assert_eq!((here.get_program().to_string_lossy().into_owned(), here.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>()), ("sh".to_string(), vec!["-c".to_string(), "true".to_string()]));
+    }
+
+    /// A password reaches sudo as the first line of the run's stdin and
+    /// nowhere else; a script that calls sudo twice is made one sudo, so
+    /// one line serves it; without a password the scripts are as ever.
+    #[test]
+    fn a_password_is_handed_to_one_sudo_on_its_stdin() {
+        let pw = super::super::sudo::Password::of("s3cr3t");
+        let out = Target::Here.fed(r#"IFS= read -r p; [ "$p" = s3cr3t ] && echo handed; cat"#, &pw, false).unwrap();
+        assert_eq!(out, "handed\n", "the password is the first line, and nothing follows it");
+        let fed = super::super::sudo::FED;
+        let apt = |sudo: &str| packages_script("apt-get", "/usr/bin/apt-get", &["clang", "zlib1g-dev"], sudo);
+        let once = under_one_sudo(fed, apt);
+        assert!(once.starts_with("sudo -k -S -p '' sh -c 'set -e; ") && once.matches("sudo").count() == 1, "{once}");
+        assert_eq!(under_one_sudo("sudo", apt), apt("sudo"), "no password: as ever");
+        let run = run_script("/d", &["x".into()], "/h", true, fed, "", "", 0, "/v", &[]);
+        assert_eq!(run, "cd '/d' || exit 1; sudo -k -S -p '' env 'HALE_DNA_HOST_RESERVED_BYTES=0' 'x'");
+        for script in [once, run] {
+            assert!(Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
+        }
+        assert_eq!((Auth::AsEver.sudo(), Auth::Fed(pw).sudo()), ("sudo", fed));
+        assert_eq!(facts("home /home/op\nuser op\n").user, "op");
     }
 
     /// A script run here is the same script, its output read back, its

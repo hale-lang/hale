@@ -8,9 +8,10 @@
 //! and its allocations:
 //!
 //! 1. where it stands: the revision its graft row names, or the latest
-//!    `habitat.organism.upgraded` row's; refused when that is the pinned
-//!    tree already (a newer revision only proposed is named, with the
-//!    ratify that pins it);
+//!    `habitat.organism.upgraded` row's; at the pinned tree already nothing
+//!    moves, and only its placements behind it are re-placed (step 5, an
+//!    upgrade that stopped part way resumed), else it is refused (a newer
+//!    revision only proposed is named, with the ratify that pins it);
 //! 2. the pinned revision fetched into the habitat's sapling store
 //!    (`<habitat>/saplings/<name>`, the organism's own directory) and its
 //!    digest checked as graft checks it: a mismatch refuses, nothing moves;
@@ -22,9 +23,19 @@
 //! 4. its heart migrations run at the new revision, its services
 //!    allocation re-applied through its provider (which builds its images
 //!    from the new tree), and a `habitat.organism.upgraded` row recorded;
-//! 5. each host command placed for it (`organism place`) re-run at the new
-//!    revision, over the person's SSH logins: at a terminal, or listed as the
-//!    `place` lines left to run.
+//! 5. each host command placed for it (`organism place`) that is behind
+//!    the pinned revision re-run at it, over the person's SSH logins (a
+//!    placement records the revision it installed, once its install
+//!    succeeded, so one an interrupted upgrade did not reach stays behind
+//!    and the next upgrade re-places it); one whose sudo needs a password
+//!    off a terminal fails at once, naming its host, and is listed with the
+//!    `place` line left to run.
+//!
+//! A placement recorded before placements named their revision is not
+//! known to be behind: an upgrade that moves the organism re-places it with
+//! the rest, as every placement was re-placed before; one that finds the
+//! organism at the pin already names it, with the `place` that re-places
+//! it, and does not run it unasked.
 //!
 //! Through a pointer (`up --host`), steps 1 to 4 run on the habitat's
 //! machine (`--no-placements`) and step 5 from this one, as `place` does.
@@ -124,23 +135,63 @@ pub(super) struct Move {
     pub to: Rev,
 }
 
+/// Why an organism at its sapling's pin `to` has nothing to move to: a
+/// newer revision `proposed` and not ratified is named, with the ratify
+/// that pins it.
+pub(super) fn already_at(organism: &str, sapling: &str, to: &Rev, proposed: Option<&str>) -> String {
+    let waiting = match proposed {
+        Some(p) => format!("; {p} is proposed and not ratified: `hale habitat nursery ratify {sapling}` (the Board's) pins it, and the upgrade moves to it then"),
+        // nothing newer is known: the nursery is only read when refreshed
+        None => format!("; `hale habitat nursery refresh` reads the nursery for a newer revision, and `hale habitat nursery ratify {sapling}` pins it"),
+    };
+    format!("`{organism}` is already at {}, the revision the habitat pins for `{sapling}`{waiting}", to.said())
+}
+
+/// The sapling's pinned revision, when the standing has one.
+pub(super) fn pinned(s: &Standing) -> Option<Rev> {
+    s.pin.as_ref().map(|p| Rev::of(p, "revision"))
+}
+
 /// The move the standing asks for, or why there is none: the habitat pins
 /// the sapling no longer, or the organism is at the pinned tree already (a
 /// newer revision only proposed is named, with the ratify that pins it).
 pub(super) fn decide(s: &Standing) -> Result<Move, String> {
-    let Some(pin) = &s.pin else {
+    let Some(to) = pinned(s) else {
         return Err(format!("the habitat pins no sapling `{}` any more: there is no revision to upgrade `{}` to", s.sapling, s.organism));
     };
-    let to = Rev::of(pin, "revision");
     if to.digest == s.at.digest {
-        let waiting = match &s.proposed {
-            Some(p) => format!("; {} is proposed and not ratified: `hale habitat nursery ratify {}` (the Board's) pins it, and the upgrade moves to it then", p.revision, s.sapling),
-            // nothing newer is known: the nursery is only read when refreshed
-            None => format!("; `hale habitat nursery refresh` reads the nursery for a newer revision, and `hale habitat nursery ratify {}` pins it", s.sapling),
-        };
-        return Err(format!("`{}` is already at {}, the revision the habitat pins for `{}`{waiting}", s.organism, to.said(), s.sapling));
+        return Err(already_at(&s.organism, &s.sapling, &to, s.proposed.as_ref().map(|p| p.revision.as_str())));
     }
     Ok(Move { from: s.at.clone(), to })
+}
+
+/// Each organism grafted from a sapling, by its name, at the revision it
+/// is at and that tree's digest: its graft's, or its latest upgrade's (as
+/// `standing` reads it). `hale habitat status` says a placement's own
+/// revision when it is another.
+pub(super) fn organism_revisions(rows: &[Value]) -> std::collections::BTreeMap<String, (String, String)> {
+    let mut grafts: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    let mut upgraded: std::collections::BTreeMap<String, Rev> = std::collections::BTreeMap::new();
+    for r in rows {
+        let Some(key) = r["entity"].as_str() else { continue };
+        match r["kind"].as_str() {
+            Some("habitat.grafted") => {
+                grafts.insert(key.to_string(), body_of(r));
+            }
+            Some("habitat.organism.upgraded") => {
+                upgraded.insert(key.to_string(), Rev::of(&body_of(r), "to"));
+            }
+            _ => {}
+        }
+    }
+    grafts
+        .into_iter()
+        .filter(|(_, g)| g["state"].as_str() != Some("removed") && g["sapling"].as_str().is_some_and(|s| !s.is_empty()))
+        .map(|(key, g)| {
+            let at = upgraded.remove(&key).unwrap_or_else(|| Rev::of(&g, "revision"));
+            (g["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(&key).to_string(), (at.revision, at.digest))
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------
@@ -188,21 +239,44 @@ pub(super) fn cmd(args: &[String]) -> ExitCode {
     // through a pointer: the habitat-side part on the habitat's machine,
     // the placements from here, where the person's SSH logins are
     if let Some(p) = remote::pointer() {
+        let organism = named(&a.organism);
+        // where it stood and the pin, as the head answers them: at the pin
+        // already, nothing moves there and only placements behind it run
+        let pin = pin_from_head(&organism);
+        let already = match (&pin, revision_from_head(&organism)) {
+            (Some((to, sapling, proposed)), Some(at)) if at.digest == to.digest => Some(already_at(&organism, sapling, to, proposed.as_deref())),
+            _ => None,
+        };
         let mut there: Vec<&str> = vec!["organism", "upgrade", a.organism.as_str(), "--no-placements"];
         if a.plan {
             there.push("--plan");
         }
         let code = remote::run_there(&p, "organism", &there);
-        if code != ExitCode::SUCCESS || a.no_placements {
+        // at the pin a habitat's toolchain older than this one refuses what
+        // this one's says is nothing to do there: its placements go on here
+        if a.no_placements || (code != ExitCode::SUCCESS && already.is_none()) {
             return code;
         }
-        return placements_part(&named(&a.organism), None, a.plan);
+        return placements_part(&organism, None, a.plan, pin.map(|(to, _, _)| to), already);
     }
     let rows = rows_of(&genome_dir());
     let s = match standing(&rows, &a.organism) {
         Ok(s) => s,
         Err(why) => return fail(why),
     };
+    let pin = pinned(&s);
+    if pin.as_ref().is_some_and(|to| to.digest == s.at.digest) {
+        // at the pin already: nothing moves, and the placements an upgrade
+        // that stopped part way did not reach are re-placed
+        let why = decide(&s).err().unwrap_or_default();
+        if a.no_placements {
+            println!("{:<8}`{}` is at {} already: the habitat's side has nothing to do", "upgrade", s.organism, s.at.said());
+            return ExitCode::SUCCESS;
+        }
+        let store = PathBuf::from(local_habitat_dir()).join("saplings").join(&s.sapling);
+        let manifest = crate::dna::organism_root(&store).ok().and_then(|root| std::fs::read_to_string(root.join("hale.toml")).ok());
+        return placements_part(&s.organism, manifest.as_deref(), a.plan, pin, Some(why));
+    }
     let m = match decide(&s) {
         Ok(m) => m,
         Err(why) => return fail(why),
@@ -214,7 +288,30 @@ pub(super) fn cmd(args: &[String]) -> ExitCode {
     if a.no_placements {
         return ExitCode::SUCCESS;
     }
-    placements_part(&s.organism, Some(&manifest), a.plan)
+    placements_part(&s.organism, Some(&manifest), a.plan, pin, None)
+}
+
+/// The pin of `organism`'s sapling as the habitat's head answers it (a
+/// placement's sapling is the one named as the organism is, as `place`
+/// finds it): the revision and its digest, the sapling's name, and a newer
+/// revision proposed and not ratified.
+fn pin_from_head(organism: &str) -> Option<(Rev, String, Option<String>)> {
+    let v = sapling::head_call("Commands::saplings", json!({ "limit": 500 })).ok()?;
+    let rows: Vec<Value> = v["saplings"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+    let row = rows.into_iter().find(|r| r["name"] == organism)?;
+    let to = Rev::of(&row, "revision");
+    let proposed = row["proposed"].as_str().filter(|p| !p.is_empty()).map(str::to_string);
+    (!to.digest.is_empty()).then(|| (to, row["name"].as_str().unwrap_or(organism).to_string(), proposed))
+}
+
+/// The revision `organism` is at as the habitat's head's index answers it
+/// (`None` from a head that does not say).
+fn revision_from_head(organism: &str) -> Option<Rev> {
+    let index = sapling::head_call("Commands::index", json!({ "limit": 500 })).ok()?;
+    let organisms: Vec<Value> = index["organisms"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+    let o = organisms.into_iter().find(|o| o["name"] == organism)?;
+    let at = Rev::of(&o, "revision");
+    (!at.digest.is_empty()).then_some(at)
 }
 
 // ---------------------------------------------------------------
@@ -570,19 +667,45 @@ fn habitat_side(s: &Standing, m: &Move, plan: bool) -> Result<String, String> {
 // the placements: from the person's machine
 // ---------------------------------------------------------------
 
-/// A placement to re-run at the new revision, and whether its command runs
-/// as root (`None`: not known here, through a pointer).
+/// A placement to re-run at the pinned revision, and whether its command
+/// runs as root (`None`: not known here, through a pointer).
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Rerun {
     pub placement: placements::Placement,
     pub root: Option<bool>,
 }
 
-/// The placements of `organism` that hold, each with whether its command
-/// runs as root at the new revision, as `manifest` declares it.
-pub(super) fn reruns(current: &[placements::Placement], organism: &str, manifest: Option<&str>) -> Vec<Rerun> {
+/// The placements of `organism` that hold, sorted against the pinned
+/// revision `pin`: those to re-place (behind it; with no pin known, every
+/// one), and those recorded before placements named their revision, which
+/// are re-placed with the rest when the organism `moved` and otherwise only
+/// named. A placement at the pin already is neither.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Sorted {
+    pub behind: Vec<placements::Placement>,
+    pub unknown: Vec<placements::Placement>,
+    /// how many of its placements hold
+    pub held: usize,
+}
+
+pub(super) fn sort(current: &[placements::Placement], organism: &str, pin: Option<&Rev>, moved: bool) -> Sorted {
+    let mut out = Sorted::default();
+    for p in current.iter().filter(|p| p.organism == organism && p.placed) {
+        out.held += 1;
+        match pin.map(|to| placements::installed_at(p, &to.revision, &to.digest)) {
+            Some(Some(true)) => {}
+            Some(None) if !moved => out.unknown.push(p.clone()),
+            _ => out.behind.push(p.clone()),
+        }
+    }
+    out
+}
+
+/// `list`, each with whether its command runs as root at the pinned
+/// revision, as `manifest` declares it.
+pub(super) fn reruns(list: &[placements::Placement], manifest: Option<&str>) -> Vec<Rerun> {
     let declared = manifest.and_then(|m| hosted::host_commands(m).ok());
-    current.iter().filter(|p| p.organism == organism && p.placed).map(|p| Rerun { placement: p.clone(), root: declared.as_ref().map(|d| d.get(&p.command).is_some_and(|c| c.root)) }).collect()
+    list.iter().map(|p| Rerun { placement: p.clone(), root: declared.as_ref().map(|d| d.get(&p.command).is_some_and(|c| c.root)) }).collect()
 }
 
 /// The `place` that re-runs `p`'s install.
@@ -590,21 +713,31 @@ pub(super) fn place_command(p: &placements::Placement) -> String {
     format!("hale habitat organism place {} {} --host {} --id {}", p.organism, p.command, p.host, p.id)
 }
 
-/// Whether `r` can run here: at a terminal anything can (sudo asks there),
-/// off one only a command known not to run as root.
-pub(super) fn runs_here(r: &Rerun, tty: bool) -> bool {
-    tty || r.root == Some(false)
-}
-
 /// The plan's line for re-running `r`.
 pub(super) fn rerun_line(r: &Rerun) -> String {
     let p = &r.placement;
     let how = match r.root {
-        Some(true) => "as root, through your sudo: it needs your terminal",
+        Some(true) => "as root, through your sudo: its password asked for here when it needs one, refused off a terminal",
         Some(false) => "as your login",
-        None => "a command that runs as root asks for your sudo at a terminal",
+        None => "a command that runs as root asks here for your sudo's password when it needs one",
     };
-    format!("{:<8}{}'s `{}` {} on {}: its install re-run at the new revision, over your SSH login ({how})", "place", p.organism, p.command, p.id, p.host)
+    let from = if p.revision.is_empty() { "a revision it did not record".to_string() } else { p.revision.clone() };
+    format!("{:<8}{}'s `{}` {} on {}: its install re-run at the pinned revision (it is at {from}), over your SSH login ({how})", "place", p.organism, p.command, p.id, p.host)
+}
+
+/// The line naming `p`, a placement recorded before placements named
+/// their revision, which an upgrade that moved nothing does not re-place.
+pub(super) fn unknown_line(p: &placements::Placement, pin: &Rev) -> String {
+    format!(
+        "{:<8}{}'s `{}` {} on {}: placed before placements recorded their revision, so not known to be behind {}; `{}` re-places it there",
+        "unknown",
+        p.organism,
+        p.command,
+        p.id,
+        p.host,
+        pin.revision,
+        place_command(p)
+    )
 }
 
 /// The name of the organism named or keyed `organism`, as the habitat's
@@ -621,21 +754,55 @@ fn named(organism: &str) -> String {
         .to_string()
 }
 
-/// Each host command placed for `organism` re-run at the revision now
-/// pinned (or, with `plan`, listed): at a terminal, each; off one, those
-/// that need none, and the `place` lines left to run.
-fn placements_part(organism: &str, manifest: Option<&str>, plan: bool) -> ExitCode {
+/// Each host command placed for `organism` that is behind the pinned
+/// revision `pin` re-run at it (or, with `plan`, listed), each placement
+/// recorded at it once its own install succeeded. `already` is why the
+/// organism moved nothing (at the pin already): with no placement behind
+/// either, that refusal is the outcome. One that fails (its host does not
+/// answer, its sudo needs a password and there is no terminal) is said,
+/// and the rest go on; what is left is listed, and the upgrade run again
+/// re-places it.
+fn placements_part(organism: &str, manifest: Option<&str>, plan: bool, pin: Option<Rev>, already: Option<String>) -> ExitCode {
+    let refuse = |why: String| {
+        eprintln!("hale habitat organism upgrade {organism}: {why}");
+        ExitCode::from(1)
+    };
     let current = match placements::from_head() {
         Ok((c, _)) => c,
         Err(why) => {
-            eprintln!("hale habitat organism upgrade {organism}: its placements were not read: {why}");
-            return ExitCode::from(1);
+            return refuse(match &already {
+                Some(a) => format!("{a}; its placements were not read: {why}"),
+                None => format!("its placements were not read: {why}"),
+            })
         }
     };
-    let list = reruns(&current, organism, manifest);
+    let sorted = sort(&current, organism, pin.as_ref(), already.is_none());
+    if let Some(to) = &pin {
+        for p in &sorted.unknown {
+            println!("{}", unknown_line(p, to));
+        }
+    }
+    let list = reruns(&sorted.behind, manifest);
     if list.is_empty() {
-        println!("{:<8}none: no host command of {organism}'s is placed (`hale habitat organism place`)", "place");
+        if let Some(why) = already {
+            return refuse(why);
+        }
+        match (&pin, sorted.held) {
+            (_, 0) => println!("{:<8}none: no host command of {organism}'s is placed (`hale habitat organism place`)", "place"),
+            (Some(to), _) => println!("{:<8}none behind: each of {organism}'s placements is at {}", "place", to.revision),
+            (None, _) => {}
+        }
         return ExitCode::SUCCESS;
+    }
+    if let (Some(to), Some(_)) = (&pin, &already) {
+        let n = list.len();
+        println!(
+            "{:<8}`{organism}` is at {} already, and {n} of its placements {} behind it (an upgrade that stopped part way): {}",
+            "upgrade",
+            to.said(),
+            if n == 1 { "is" } else { "are" },
+            if plan { "the upgrade re-places them" } else { "re-placing them" }
+        );
     }
     if plan {
         for r in &list {
@@ -643,32 +810,22 @@ fn placements_part(organism: &str, manifest: Option<&str>, plan: bool) -> ExitCo
         }
         return ExitCode::SUCCESS;
     }
-    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
     let mut left = Vec::new();
-    let mut failed = false;
     for r in &list {
         let p = &r.placement;
-        if !runs_here(r, tty) {
-            left.push(place_command(p));
-            continue;
-        }
         if let Err(why) = hosted::place_lines(&p.organism, &p.command, &p.host, Some(&p.id), false, true) {
             println!("{:<8}{}'s `{}` {} on {}: {why}", "left", p.organism, p.command, p.id, p.host);
             left.push(place_command(p));
-            failed = true;
         }
     }
-    if !left.is_empty() {
-        println!("{:<8}what is left to run, at a terminal (sudo asks there for a command that runs as root):", "place");
-        for l in &left {
-            println!("  {l}");
-        }
+    if left.is_empty() {
+        return ExitCode::SUCCESS;
     }
-    if failed {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
+    println!("{:<8}what is left behind the pinned revision: `hale habitat organism upgrade {organism}` again re-places it, or each of these:", "place");
+    for l in &left {
+        println!("  {l}");
     }
+    ExitCode::from(1)
 }
 
 #[cfg(test)]
@@ -777,23 +934,76 @@ mod tests {
         assert_eq!(carried_lines("", "/vendor/\n", ""), "/vendor/\n");
     }
 
+    fn placement(org: &str, cmd: &str, host: &str, placed: bool, at: &str) -> placements::Placement {
+        let digest = if at.is_empty() { String::new() } else { format!("sha256:{}", &at[1..]) };
+        placements::Placement { organism: org.into(), command: cmd.into(), host: host.into(), id: host.into(), placed, revision: at.into(), digest, ..Default::default() }
+    }
+
     /// The placements of the organism that hold are re-run, each by the
-    /// `place` that placed it; off a terminal only one known not to need root.
+    /// `place` that placed it, with whether it runs as root.
     #[test]
     fn the_placements_to_rerun() {
-        let p = |org: &str, cmd: &str, host: &str, placed: bool| placements::Placement { organism: org.into(), command: cmd.into(), host: host.into(), id: host.into(), placed, ..Default::default() };
+        let p = |org: &str, cmd: &str, host: &str, placed: bool| placement(org, cmd, host, placed, "v1");
         let current = vec![p("voice", "node", "gpu-1", true), p("voice", "relay", "mac-1", true), p("tts", "node", "gpu-1", true), p("voice", "node", "old-1", false)];
         let manifest = "[dna.host.node]\nroot = true\ninstall = [\"i\"]\nuninstall = [\"u\"]\n\n[dna.host.relay]\ninstall = [\"i\"]\nuninstall = [\"u\"]\n";
-        let r = reruns(&current, "voice", Some(manifest));
+        let v2 = Rev { revision: "v2".into(), digest: "sha256:2".into() };
+        let sorted = sort(&current, "voice", Some(&v2), true);
+        assert_eq!(sorted.held, 2);
+        let r = reruns(&sorted.behind, Some(manifest));
         assert_eq!(r.iter().map(|r| (r.placement.host.as_str(), r.root)).collect::<Vec<_>>(), vec![("gpu-1", Some(true)), ("mac-1", Some(false))]);
         assert_eq!(place_command(&r[0].placement), "hale habitat organism place voice node --host gpu-1 --id gpu-1");
-        assert!(runs_here(&r[0], true) && !runs_here(&r[0], false), "root needs the terminal");
-        assert!(runs_here(&r[1], false), "a login's own command runs off one");
-        assert!(rerun_line(&r[0]).contains("it needs your terminal"));
-        // through a pointer the declaration is not here: a terminal is asked for
-        let blind = reruns(&current, "voice", None);
-        assert!(blind.iter().all(|r| r.root.is_none() && !runs_here(r, false)));
-        assert!(reruns(&current, "shop", Some(manifest)).is_empty());
+        assert!(rerun_line(&r[0]).contains("as root, through your sudo") && rerun_line(&r[0]).contains("(it is at v1)"), "{}", rerun_line(&r[0]));
+        // through a pointer the declaration is not here
+        let blind = reruns(&sorted.behind, None);
+        assert!(blind.iter().all(|r| r.root.is_none()));
+        assert!(sort(&current, "shop", Some(&v2), true).behind.is_empty());
+    }
+
+    /// Only the placements behind the pin are re-placed: one an upgrade
+    /// that stopped part way never reached, while those it did are left;
+    /// with the organism at the pin already, the same. A row with no
+    /// revision is re-placed when the organism moves, named otherwise.
+    #[test]
+    fn an_upgrade_resumes_the_placements_behind() {
+        let v2 = Rev { revision: "v2".into(), digest: "sha256:2".into() };
+        // the upgrade to v2 reached gpu-1, and stopped before gpu-2
+        let current = vec![placement("voice", "node", "gpu-1", true, "v2"), placement("voice", "node", "gpu-2", true, "v1"), placement("voice", "node", "gpu-3", true, "")];
+        for moved in [true, false] {
+            let s = sort(&current, "voice", Some(&v2), moved);
+            let behind: Vec<&str> = s.behind.iter().map(|p| p.host.as_str()).collect();
+            let unknown: Vec<&str> = s.unknown.iter().map(|p| p.host.as_str()).collect();
+            if moved {
+                assert_eq!((behind, unknown), (vec!["gpu-2", "gpu-3"], vec![]), "a move re-places every placement not at the pin");
+            } else {
+                assert_eq!((behind, unknown), (vec!["gpu-2"], vec!["gpu-3"]), "at the pin: behind re-placed, unknown named");
+            }
+        }
+        assert!(unknown_line(&current[2], &v2).contains("not known to be behind v2; `hale habitat organism place voice node --host gpu-3 --id gpu-3` re-places it"));
+        // all at the pin: nothing behind
+        let done = vec![placement("voice", "node", "gpu-1", true, "v2")];
+        assert_eq!(sort(&done, "voice", Some(&v2), false), Sorted { held: 1, ..Default::default() });
+        // a revision renamed onto another tree is behind, by its digest
+        let renamed = Rev { revision: "v2".into(), digest: "sha256:2b".into() };
+        assert_eq!(sort(&done, "voice", Some(&renamed), false).behind.len(), 1);
+        // no pin known (through a pointer, a head that does not say): every one, as before
+        assert_eq!(sort(&current, "voice", None, true).behind.len(), 3);
+    }
+
+    /// The revision each organism is at, by its name, for the status: its
+    /// graft's, then its upgrades'; a directory grafted, or one removed, has none.
+    #[test]
+    fn each_organisms_revision() {
+        let mut rows = vec![grafted(), row("habitat.grafted", "aaaaaaaaaaaa", json!({ "child": "aaaaaaaaaaaa00", "name": "shop", "needs": [] }))];
+        assert_eq!(organism_revisions(&rows).into_iter().collect::<Vec<_>>(), vec![("sprout".to_string(), ("v1".to_string(), "sha256:1".to_string()))]);
+        rows.push(row("habitat.organism.upgraded", &CHILD[..12], json!({ "organism": "sprout", "from": "v1", "to": "v2", "digest": "sha256:2" })));
+        assert_eq!(organism_revisions(&rows)["sprout"], ("v2".to_string(), "sha256:2".to_string()));
+        let revs = organism_revisions(&rows);
+        let behind = placement("sprout", "node", "gpu-2", true, "v1");
+        assert!(placements::revision_note(&behind, &revs).contains("at v1, not sprout's v2"), "{}", placements::revision_note(&behind, &revs));
+        assert_eq!(placements::revision_note(&placement("sprout", "node", "gpu-1", true, "v2"), &revs), "");
+        assert_eq!(placements::revision_note(&placement("sprout", "node", "gpu-3", true, ""), &revs), "", "not known: not said");
+        rows.push(row("habitat.grafted", &CHILD[..12], json!({ "child": CHILD, "name": "sprout", "state": "removed" })));
+        assert!(organism_revisions(&rows).is_empty());
     }
 
     fn git(d: &Path, args: &[&str]) -> String {

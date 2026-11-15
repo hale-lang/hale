@@ -751,11 +751,14 @@ one its Board ratified, keeping its record, its data and its allocations
 (a removal and a new graft would drop them):
 
 - **Where it stands.** The revision its `habitat.grafted` row names, or the
-  latest `habitat.organism.upgraded` row's `to`. It is refused when that is
-  the pinned tree already (the digests agree), saying so; a newer revision
-  filed and not ratified is named there, with the `nursery ratify` that pins
-  it. An organism grafted from a directory, or whose sapling the habitat
-  pins no longer, is refused by name.
+  latest `habitat.organism.upgraded` row's `to`. When that is the pinned
+  tree already (the digests agree) nothing moves, and only its placements
+  behind the pin are re-placed (its host commands, below): an upgrade that
+  stopped part way is resumed by running it again. With none behind it is
+  refused, saying so; a newer revision filed and not ratified is named
+  there, with the `nursery ratify` that pins it. An organism grafted from a
+  directory, or whose sapling the habitat pins no longer, is refused by
+  name.
 - **The revision fetched and checked**, as a graft fetches and checks it:
   into the sapling's store, `<habitat>/saplings/<name>`, which is the
   organism's own directory; its digest computed from the revision's tree
@@ -791,15 +794,28 @@ one its Board ratified, keeping its record, its data and its allocations
   sapling, from, from_digest, to, digest, commit}`, written into the
   habitat's record as the graft's row is.
 - **Its host commands**: each placement of the organism that holds
-  (`organism place`, § Host commands: an organism's own, on a host) runs its `install` again at the new
-  revision, as `place` runs it, over the person's SSH logins. At a terminal
-  each one runs (sudo asks there for a command with `root = true`); off a
-  terminal only one known not to need root does, and the rest are printed
-  as the `hale habitat organism place …` lines left to run.
+  (`organism place`, § Host commands: an organism's own, on a host) and is
+  behind the pinned revision runs its `install` again at it, as `place`
+  runs it, over the person's SSH logins, in the record's order. A
+  placement names the revision it installed (its row's `revision` and
+  `digest`), recorded only once its own install succeeded, so one an
+  interrupted upgrade did not reach stays behind, and is told by its digest
+  (a revision renamed onto another tree is behind). A row recorded before
+  placements named their revision is not known to be behind: an upgrade
+  that moves the organism re-places it with the rest, and one that finds
+  the organism at the pin already names it, with the `place` that
+  re-places it, rather than re-running every such install unasked. A
+  placement whose sudo needs a password off a terminal fails at once,
+  naming its host (§ Host commands, Who runs it); one that fails is said,
+  the rest go on, and what is left is printed as the `hale habitat
+  organism place …` lines that re-place it, which the upgrade run again
+  also does (it then exits 1).
 
 `--plan` prints each step (from and to, the tree, the migrations, the
-services re-applied, the row, the placements re-run and which need a
-terminal) and moves nothing; it fetches the revision into the store's
+services re-applied, the row, the placements behind the pin it re-runs,
+with the revision each is at and whether it runs as root, and those it
+does not know to be behind) and moves nothing; at the pin it lists only
+the placements behind; it fetches the revision into the store's
 objects to read it. Through a pointer (§ A habitat on another machine)
 everything but the placements runs on the habitat's machine, in its
 toolchain image (`--no-placements`), and the placements from this one,
@@ -1220,7 +1236,7 @@ socket), so the habitat's head must be up.
 | `host join <name>` | Run on the machine joining, a habitat on another machine (a pointer): records this machine as a `joined` host by `name`, a name the habitat's machine reaches it at, which must resolve to this machine here (refused otherwise, and for the habitat's own machine). The habitat never logs in there: no key, no account, no probe (`host probe` is refused, `joined`); it reaches the machine on its services' ports alone, its exporters (installed here) scraped by `name`, and its GPUs' among them when `nvidia-smi -L` lists one here (the one offer a joining machine states, `nvidia-gpu`; any other it names is not taken). `--host local` on it places here; from anywhere else a placement there is refused. `host remove` drops its entry; what is placed there is taken off there, and its exporters only when run there. |
 | `host probe <name>` | Probes the host again over SSH: a `pending-key` host whose key is now authorized is `ready`, with what it offers. One still waiting on its key has its setup finished the way `host add` does it (the habitat's account made, or the key appended, over the person's own login), then probed again; when that login does not reach the machine, what to do there is printed. A host that answers with another host key is refused (`host_key_changed`). |
 | `organism remove <name> [--plan]` | Removes an organism the habitat grafted, planned first and confirmed by its name typed back at a terminal (above). |
-| `organism upgrade <name> [--plan]` | Moves an organism grafted from a sapling to the revision the habitat pins now, keeping its record, data and allocations: the revision fetched and its digest checked, its tree moved with its graft's changes carried, its migrations run, its services re-applied, a `habitat.organism.upgraded` row recorded and its placed host commands re-run (§ Nurseries and saplings). |
+| `organism upgrade <name> [--plan]` | Moves an organism grafted from a sapling to the revision the habitat pins now, keeping its record, data and allocations: the revision fetched and its digest checked, its tree moved with its graft's changes carried, its migrations run, its services re-applied, a `habitat.organism.upgraded` row recorded and its placed host commands behind the pin re-run; at the pin already, only those placements behind it, so an interrupted upgrade run again resumes (§ Nurseries and saplings). |
 | `host remove <name> [--plan]` | Removes the host, a `habitat.host` row in state `removed`, planned first: with allocations on it, the plan (each allocation and what stops or is deleted on that host) is executed only once the host's name is typed back at a terminal; `--plan` prints the plan and exits (above). `local` is not removed. |
 | `graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, its application placed on the host `--host` names (the habitat's own machine without one, as `--host local` there) and each body part filled as planned (below). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; a git nursery's source may name a revision (`<url>#<tag-or-commit>`), and adding a repository the Board trusts at another revision re-pins it: the earlier source is retired (`state: removed`, `repinned` naming the new one), so the nursery is read at the revision named last; `refresh`: every nursery read again; through a pointer, a nursery that is a directory here is staged here and shipped to the habitat's machine first, by `add` and by each `refresh` (§ Nurseries and saplings); `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
@@ -1730,8 +1746,8 @@ grafted organism that came from a sapling the habitat pins, and a
   curl, tar, clang, and OpenSSL's and zlib's headers (Homebrew's
   `openssl@3` on macOS, where clang and zlib are the Command Line Tools').
   What the host lacks is installed first, with its package manager: under
-  the person's sudo for apt-get and dnf, so only at a terminal, and as the
-  login for Homebrew. A host with no package manager the habitat knows, or
+  the person's sudo for apt-get and dnf (Who runs it, below: one password
+  for both of apt-get's steps), and as the login for Homebrew. A host with no package manager the habitat knows, or
   a Mac without the Command Line Tools, is refused, naming what it lacks.
 - **Its toolchain.** The hale release the organism declares (`[dna]
   toolchain = "<version>"` in its manifest, as a codebase's `toolchain` is),
@@ -1818,7 +1834,23 @@ grafted organism that came from a sapling the habitat pins, and a
 - **Who runs it.** Everything goes over the person's own SSH logins, as
   `host add` makes the habitat's account (on the habitat's own machine,
   here or over the pointer's login, as above); `root = true` runs it under the
-  person's sudo, so only at a terminal. `--plan` prints what would run,
+  person's sudo. Before a script that needs sudo runs, the login is asked
+  over the same way whether its sudo needs a password (`sudo -n true`).
+  None needed (a `NOPASSWD` rule, a cached ticket): it runs as ever, over
+  `ssh -tt` at a terminal. One needed at a terminal: the password is asked
+  for here, on the terminal itself (`/dev/tty`, whatever the verb's output
+  is redirected to), not echoed, as `sudo password for <user>@<host>: `,
+  checked with a `sudo -k -S true` of its own (a wrong one asked again, three
+  tries), and handed to the run's `sudo -k -S -p ''` as the first line of its
+  stdin, with no remote terminal to echo it: never on a command line, in
+  a variable, a file or a log, and zeroed in memory after. sudo reads that
+  line alone, so what follows on the stdin (what is typed here) is the
+  command's own; its output is shown as it comes. One needed off a terminal:
+  refused at once, before anything runs, naming the host and that a
+  `NOPASSWD` rule or a run at a terminal lets it run. A login with no sudo
+  is refused the same way. Before the command runs, a line says it is
+  placing (or taking off) the command on that host and that its install may
+  build for a few minutes, terminal or not. `--plan` prints what would run,
   where, and with what (the packages it would install, the toolchain and
   whether it is there), and touches nothing on the host but the checkout;
   a host without git stops the plan at installing it, since the
@@ -1840,7 +1872,9 @@ grafted organism that came from a sapling the habitat pins, and a
 - **Its record.** Once `place` ran and its service runs, the CLI records
   the placement through the habitat's head, as every habitat act is a row:
   `Commands::record_placed` (`{organism, command, host, id, service,
-  platform, readings, toolchain}`, the Board's) appends a `habitat.placed`
+  platform, readings, toolchain, revision, digest}`, the Board's: the last
+  two the organism's revision it installed, as the sapling's pin named it,
+  and that tree's digest) appends a `habitat.placed`
   row keyed `<organism>/<command>/<host>/<id>`, with the scrape target its
   readings are registered at; after `unplace`, `Commands::record_unplaced`
   (`{organism, command, host, id}`) appends `habitat.unplaced`, keeping
@@ -1855,18 +1889,22 @@ grafted organism that came from a sapling the habitat pins, and a
   is not a word of letters, digits, `.`, `_` and `-`) fails the verb after
   the command ran, saying so. `hale habitat status` lists the placements
   under their hosts, one line each: the organism's command and id, its
-  service and kind, the host, and its readings endpoint or `no readings`.
+  service and kind, the host, and its readings endpoint or `no readings`;
+  a placement installed at another revision than its organism is at says
+  its own (`at <revision>, not <organism>'s <revision>`), with the
+  `organism upgrade` that re-places it (one whose row names no revision
+  says nothing).
 - **Taken off with the host or the habitat.** `host remove`, `organism
   remove` and `down --forget` run each placement they remove's own
   `uninstall` first, as `unplace` does (over the person's login, or on the
-  habitat's own machine as `place` reaches it, under their sudo at a
-  terminal), then remove what placing installed on that
+  habitat's own machine as `place` reaches it, under their sudo as Who runs
+  it says), then remove what placing installed on that
   host: the checkout `~/.local/share/hale/hosted/<organism>` and the
   toolchain directory, each only when no placement left there uses it
   (from every placement the record names there, unplaced ones included),
   and the habitat's directories there left empty (§ Destroying). A
-  placement that cannot be taken off (its host does not answer, sudo has
-  no terminal, its uninstall fails) is said, with the exact `unplace`
+  placement that cannot be taken off (its host does not answer, its sudo
+  needs a password and there is no terminal, its uninstall fails) is said, with the exact `unplace`
   that takes it off, and the rest goes on: it fails nothing else.
 
 Not yet: the infrastructure screen does not show the placements, and a

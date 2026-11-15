@@ -27,7 +27,10 @@ import "../core" as dna;
 
 // A placement as the CLI records it: what ran where, the service it left
 // running, the platform it ran on, the port its readings are served on
-// (0 for none) and the toolchain it ran with.
+// (0 for none), the toolchain it ran with, and the organism's revision it
+// installed with that tree's digest (both "" from a CLI older than them,
+// and on the rows recorded before them): `organism upgrade` re-places a
+// placement behind the revision the habitat pins.
 type PlacementRecord {
     organism: String = "";
     command: String = "";
@@ -37,6 +40,8 @@ type PlacementRecord {
     platform: String = "";
     readings: Int = 0;
     toolchain: String = "";
+    revision: String = "";
+    digest: String = "";
 }
 
 type PlacementReply {
@@ -130,6 +135,8 @@ fn placement_body(p: PlacementRecord, state: String, target: String) -> String {
     b.string_field("platform", p.platform);
     b.int_field("readings", p.readings);
     b.string_field("toolchain", p.toolchain);
+    b.string_field("revision", p.revision);
+    b.string_field("digest", p.digest);
     b.string_field("target", target);
     b.string_field("state", state);
     b.end_object();
@@ -146,6 +153,8 @@ fn placement_of_row(body: String) -> PlacementRecord {
         platform: std::json::find_string_field(body, "platform"),
         readings: std::json::find_int_field(body, "readings"),
         toolchain: std::json::find_string_field(body, "toolchain"),
+        revision: std::json::find_string_field(body, "revision"),
+        digest: std::json::find_string_field(body, "digest"),
     };
 }
 

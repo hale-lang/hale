@@ -7048,7 +7048,9 @@ and the address of its head, its declared `purpose` (the `PURPOSE` of its
 the providers of its allocations observe now, each where it was last
 applied: `down` over `degraded` over `up`, `""` when none is observed; its
 forge and identity, the habitat's services it is given, are observed with
-the allocations and are not its pulse). No manifest table, record family or row kind
+the allocations and are not its pulse), and the `revision` it is at with
+that tree's `digest` (its latest `habitat.organism.upgraded` row's `to`,
+else its graft's; `""` for one grafted from a directory). No manifest table, record family or row kind
 is added: the addresses are fields of the existing `habitat.grafted` row
 (`name`, `face`, `head`), taken at the graft. An organism's address is a
 block of `HEAD_BLOCK` (8) consecutive loopback ports, found free from a
@@ -7150,8 +7152,9 @@ pinned at the revision its proposal filed), each answering `{ok, code,
 why}`, each row written in the name of the person the caller maps to.
 The services an organism's host command placed on a host
 (`spec/habitat.md`, Host commands) are three rows: `Commands::record_placed`
-(`{organism, command, host, id, service, platform, readings, toolchain}`,
-the Board's, answering `{ok, code, why, readings}`: a `habitat.placed` row
+(`{organism, command, host, id, service, platform, readings, toolchain,
+revision, digest}`, the last two the organism's revision it installed and
+that tree's digest, `""` when the caller names none; the Board's, answering `{ok, code, why, readings}`: a `habitat.placed` row
 keyed `<organism>/<command>/<host>/<id>`, and `readings` the endpoint it
 registered with the habitat's senses, `""` for none),
 `Commands::record_unplaced` (`{organism, command, host, id}`, the Board's:
