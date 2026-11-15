@@ -1,0 +1,137 @@
+// GH #1940: the statement that ends a body with a declared return type
+// is the body's value. A trailing `match`, an `if … else` and a block
+// carry it to their leaves, so each of these returns what its last
+// statement yields, for every kind of result: `Int`, `String`, a
+// record, an enum, a `Decimal<S>`; in a free fn, a locus method, a
+// fallible fn and a mode. `while true` with no `break` never reaches
+// the end. Each of these passed `hale check` and was refused by
+// `hale build` as falling through, with no file or line.
+
+type Point { x: Int; y: Int; }
+
+type Shape = enum { Dot, Line(Int), Square(Int) };
+
+type Oops { why: String; }
+
+fn word(n: Int) -> String {
+    match n { 1 -> "one", 2 -> "two", _ -> "many" }
+}
+
+fn sign(n: Int) -> Int {
+    if n > 0 { 1 } else if n < 0 { -1 } else { 0 }
+}
+
+fn sign_early(n: Int) -> Int {
+    if n > 0 { return 1; } else if n < 0 { -1 } else { 0 }
+}
+
+fn point(n: Int) -> Point {
+    match n {
+        0 -> Point { x: 0, y: 0 },
+        _ -> {
+            let d = n * 2;
+            Point { x: n, y: d }
+        },
+    }
+}
+
+fn shape(n: Int) -> Shape {
+    match n { 0 -> Shape::Dot, 1 -> Shape::Line(n), _ -> Shape::Square(n * n) }
+}
+
+fn area(s: Shape) -> Int {
+    match s { Shape::Dot -> 0, Shape::Line(l) -> l, Shape::Square(a) -> a }
+}
+
+fn price(n: Int) -> Decimal<2> {
+    match n { 1 -> 1.25d, 2 -> { 2.5d }, _ -> -0.75d }
+}
+
+fn greeting(name: String) -> String {
+    let hello = "hello, ";
+    { hello + name }
+}
+
+fn first_over(limit: Int) -> Int {
+    let mut i = 0;
+    while true {
+        if i > limit { return i; }
+        i = i + 1;
+    }
+}
+
+fn nested(n: Int) -> String {
+    if n > 10 {
+        match n % 2 { 0 -> "big even", _ -> "big odd" }
+    } else {
+        "small"
+    }
+}
+
+fn checked(n: Int) -> Int fallible(Oops) {
+    match n {
+        0 -> { fail Oops { why: "zero" }; },
+        _ -> n * 10,
+    }
+}
+
+locus Namer {
+    params { base: Int; }
+
+    fn label(n: Int) -> String {
+        match n + self.base { 1 -> "one", _ -> "other" }
+    }
+
+    fn twice(n: Int) -> Int {
+        if n > 0 { n * 2 } else { return 0; }
+    }
+
+    fn pt(n: Int) -> Point {
+        { Point { x: n, y: self.base } }
+    }
+}
+
+locus Box {
+    params { k: Int; }
+
+    mode bulk() -> String {
+        match self.k { 0 -> "empty", _ -> "full" }
+    }
+}
+
+fn main() {
+    std::test::assert_eq_str(word(1), "one", "a tail match yields a String");
+    std::test::assert_eq_str(word(7), "many", "its wildcard arm too");
+    std::test::assert_eq_int(sign(5), 1, "a tail if/else-if chain");
+    std::test::assert_eq_int(sign(-3), -1, "its else-if arm");
+    std::test::assert_eq_int(sign(0), 0, "its else arm");
+    std::test::assert_eq_int(sign_early(4), 1, "a returning arm beside valued ones");
+    std::test::assert_eq_int(sign_early(-4), -1, "and the valued arm");
+    std::test::assert_eq_int(point(3).y, 6, "a record from a block arm's tail");
+    std::test::assert_eq_int(point(0).x, 0, "a record from an expression arm");
+    std::test::assert_eq_int(area(shape(1)), 1, "an enum from a tail match");
+    std::test::assert_eq_int(area(shape(4)), 16, "an enum with a payload");
+    std::test::assert_eq_int(area(shape(0)), 0, "a payload-less variant");
+    std::test::assert_eq_str("" + price(1), "1.25", "a Decimal<2> arm");
+    std::test::assert_eq_str("" + price(2), "2.5", "a Decimal<2> block arm");
+    std::test::assert_eq_str("" + price(9), "-0.75", "a negated Decimal arm");
+    std::test::assert_eq_str(greeting("you"), "hello, you", "a trailing block's tail");
+    std::test::assert_eq_int(first_over(3), 4, "while true with no break never falls through");
+    std::test::assert_eq_str(nested(12), "big even", "a match inside an if arm");
+    std::test::assert_eq_str(nested(13), "big odd", "its other arm");
+    std::test::assert_eq_str(nested(2), "small", "the else arm");
+    std::test::assert_eq_int(checked(3) or - 1, 30, "a fallible fn's valued arm");
+    std::test::assert_eq_int(checked(0) or - 1, -1, "its failing arm");
+
+    let n = Namer { base: 0 };
+    std::test::assert_eq_str(n.label(1), "one", "a locus method's tail match");
+    std::test::assert_eq_str(n.label(2), "other", "its wildcard arm");
+    std::test::assert_eq_int(n.twice(4), 8, "a locus method's tail if/else");
+    std::test::assert_eq_int(n.twice(-4), 0, "its returning arm");
+    std::test::assert_eq_int(n.pt(5).x, 5, "a locus method's trailing block of a record");
+
+    let full = Box { k: 1 };
+    std::test::assert_eq_str(full.bulk(), "full", "a mode's tail match");
+    let empty = Box { k: 0 };
+    std::test::assert_eq_str(empty.bulk(), "empty", "its other arm");
+}

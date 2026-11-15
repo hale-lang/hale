@@ -432,11 +432,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // For typed-return methods the user owes us an
             // explicit `return`.
             if ret_ty.is_some() {
-                return Err(CodegenError::Unsupported(format!(
-                    "locus `{}` method `{}`: fallible body falls through \
-                     without `return` or `fail`",
-                    l.name.name, fd.name.name
-                )));
+                return Err(CodegenError::Refused(
+                    format!(
+                        "method `{}.{}` can reach the end of its body without a `return` or a `fail`: \
+                         end every path in one",
+                        l.name.name, fd.name.name
+                    ),
+                    fd.name.span,
+                ));
             }
             self.builder
                 .build_unconditional_branch(exit_bb)
@@ -1091,10 +1094,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             (sub_v, sub_ty)
                         };
                         if !value_discarded && sub_ty != call.success_ty {
-                            return Err(CodegenError::Unsupported(format!(
+                            return Err(CodegenError::Invalid(format!(
                                 "`or` substitute type mismatch: expected \
-                                 {:?}, got {:?}",
-                                call.success_ty, sub_ty
+                                 {}, got {}",
+                                crate::codegen::ty_or_nothing(call.success_ty.as_ref()), crate::codegen::ty_or_nothing(sub_ty.as_ref())
                             )));
                         }
                         // The rhs lowering may have created intermediate
@@ -1268,8 +1271,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Expr::Call { callee, args, .. } => (callee.as_ref(), args),
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "`or` requires a fallible call expression; got {:?}",
-                    std::mem::discriminant(inner)
+                    "`or` requires a fallible call expression; got {}",
+                    crate::codegen::expr_form(inner)
                 )));
             }
         };
@@ -1332,8 +1335,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "`or` callee shape not yet supported: {:?}",
-                    std::mem::discriminant(callee)
+                    "`or` callee shape not yet supported: {}",
+                    crate::codegen::expr_form(callee)
                 )));
             }
         };
@@ -1431,8 +1434,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.unpack_view_if_needed(v, &ty)?
             } else if ty != sig.params[i] {
                 return Err(CodegenError::Unsupported(format!(
-                    "fallible fn `{}` arg {} type mismatch: expected {:?}, \
-                     got {:?}",
+                    "fallible fn `{}` arg {} type mismatch: expected {}, \
+                     got {}",
                     resolved_name, i, sig.params[i], ty
                 )));
             } else {
@@ -1935,7 +1938,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
         let enclosing = self.current_user_fn_fallible.clone().ok_or_else(|| {
-            CodegenError::Unsupported(
+            CodegenError::Invalid(
                 "`or fail X` outside a fallible(E) fn (use `or raise` \
                  if you want to propagate the inner call's payload, or \
                  `or <fallback>` to substitute a value)".into(),
@@ -1973,7 +1976,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if got_ty != payload_ty {
             return Err(CodegenError::Unsupported(format!(
                 "`or fail` payload type mismatch: enclosing fn declared \
-                 fallible({:?}), got {:?}",
+                 fallible({}), got {}",
                 payload_ty, got_ty
             )));
         }
@@ -2000,9 +2003,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match self.current_user_fn_fallible.clone() {
             Some(enclosing) => {
                 if call.payload_ty != enclosing.payload_ty {
-                    return Err(CodegenError::Unsupported(format!(
-                        "`or raise` payload type mismatch: inner is {:?}, \
-                         enclosing fn declared fallible({:?})",
+                    return Err(CodegenError::Invalid(format!(
+                        "`or raise` payload type mismatch: inner is {}, \
+                         enclosing fn declared fallible({})",
                         call.payload_ty, enclosing.payload_ty
                     )));
                 }
@@ -2132,7 +2135,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     other => {
                         return Err(CodegenError::Unsupported(format!(
                             "fallible method call on non-locus value of \
-                             type {:?}",
+                             type {}",
                             other
                         )));
                     }
@@ -2432,8 +2435,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;
         if got_ty != payload_ty {
             return Err(CodegenError::Unsupported(format!(
-                "`fail` payload type mismatch: fallible declared {:?}, \
-                 got {:?}",
+                "`fail` payload type mismatch: fallible declared {}, \
+                 got {}",
                 payload_ty, got_ty
             )));
         }

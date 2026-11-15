@@ -62,7 +62,7 @@ impl<'ctx, 'p> RandStdlib<'ctx> for Cx<'ctx, 'p> {
         let (max_val, max_ty) = self.lower_expr(&args[0], scope)?;
         if max_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::rand::next_int: max must be Int, got {:?}",
+                "std::rand::next_int: max must be Int, got {}",
                 max_ty
             )));
         }

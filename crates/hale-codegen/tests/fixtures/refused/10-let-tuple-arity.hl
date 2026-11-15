@@ -1,0 +1,8 @@
+// refused at line 6: let-tuple destructure: expected 3 elements, got 2
+// A refusal the statement raises outside any expression: placed at the
+// statement.
+fn main() {
+    let pair = (1, 2);
+    let (a, b, c) = pair;
+    print(a + b + c);
+}

@@ -110,7 +110,7 @@ fn a_renamed_body_that_returns_nothing_is_called_as_a_statement() {
     );
     assert_eq!(
         text,
-        "unsupported in codegen v0: stdlib path `std::process::adopt` returns no value but is used in \
+        "hale can't compile this yet: stdlib path `std::process::adopt` returns no value but is used in \
          expression position"
     );
 }
@@ -138,7 +138,7 @@ fn a_hale_body_row_that_returns_unit_is_called_as_a_statement() {
     let (text, _) = lowering_error(&value, "value_unit_hale_body");
     assert_eq!(
         text,
-        "unsupported in codegen v0: stdlib path `std::api::run_until_stopped` returns no value but is used in \
+        "hale can't compile this yet: stdlib path `std::api::run_until_stopped` returns no value but is used in \
          expression position"
     );
 }
@@ -188,7 +188,7 @@ fn which_stdlib_calls_lowering_refuses_is_read_from_the_row() {
         assert_eq!(
             text,
             format!(
-                "unsupported in codegen v0: internal error: a bare call of `{path}` reached lowering at {pos} \
+                "hale can't compile this yet: internal error: a bare call of `{path}` reached lowering at {pos} \
                  position, but its row says it can fail ({err}), and `hale check` refuses that \
                  call (GH #738): this build skipped the check"
             ),
@@ -206,7 +206,7 @@ fn which_stdlib_calls_lowering_refuses_is_read_from_the_row() {
         assert_eq!(
             text,
             format!(
-                "unsupported in codegen v0: internal error: an `or` over `{path}` reached lowering, but its row \
+                "hale can't compile this yet: internal error: an `or` over `{path}` reached lowering, but its row \
                  says it cannot fail, and `hale check` refuses that `or`: this build skipped the check"
             ),
         );
@@ -240,7 +240,7 @@ fn the_fallible_rows_dead_bare_arms_are_gone() {
         assert_eq!(
             text,
             format!(
-                "unsupported in codegen v0: internal error: a bare call of `{path}` reached lowering \
+                "hale can't compile this yet: internal error: a bare call of `{path}` reached lowering \
                  at value position, but its row says it can fail ({err}), and `hale check` refuses \
                  that call (GH #738): this build skipped the check"
             ),

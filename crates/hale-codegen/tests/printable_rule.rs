@@ -92,7 +92,7 @@ fn a_record_with_a_field_that_does_not_print_is_refused_by_lowering() {
     let _ = std::fs::remove_file(&bin);
     assert_eq!(
         err.to_string(),
-        "unsupported in codegen v0: println of a type value (TypeRef `Labels`) — one of its fields is not \
+        "hale can't compile this yet: println of a value of type `Labels` — one of its fields is not \
          printable; print the printable fields individually"
     );
 }

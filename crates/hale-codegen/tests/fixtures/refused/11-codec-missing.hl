@@ -1,0 +1,15 @@
+// refused at line 9: codec locus `NoSuchCodec` not declared
+// A refusal raised while synthesizing a binding's codec thunks, outside
+// any body: placed at the codec's name.
+type Tick { sym: String = ""; price: Int = 0; }
+topic TickTopic { payload: Tick; subject: "ticks"; }
+
+main locus App {
+    bindings {
+        TickTopic: unix("/tmp/hale-refused-ticks.sock") codec(NoSuchCodec { });
+    }
+}
+
+fn main() {
+    App { };
+}

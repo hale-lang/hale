@@ -372,15 +372,32 @@ backend does not support, a missing toolchain component the program
 needs — is a located diagnostic like any other whenever it carries a
 span: `path:line:col: codegen error: message`, with the offending
 source line and a caret, from `build`, `run`, `test`, `bench` and
-`replay` alike, byte for byte the same line from each. A codegen
-refusal with no span to point at prints `codegen error: message` and
-nothing else, from all of them. A refusal raised while an expression of
-the program's own source is being lowered carries that expression's
-span, the innermost one, even where the code that raised it had none to
-give (2026-11-14: `block used as expression has no trailing expression`
-was a bare `codegen error:` line); one raised inside a stdlib body or a
-synthesized helper, whose spans are no position in the program's files,
-stays unlocated. These commands have no
+`replay` alike, byte for byte the same line from each. Every refusal
+lowering hands a program carries a place (GH #1941): one raised with
+none of its own is placed at the nearest enclosing site lowering was
+crossing when it was raised — the innermost expression, else the
+statement, else the locus member (a method, hook, mode or handler), else
+the declaration (a fn, a type, a locus) or `fn main` — so a refusal of a
+`let`'s annotation, a signature or a locus's layout names a line as an
+expression's always did (2026-11-14: `block used as expression has no
+trailing expression` was a bare `codegen error:` line). One raised
+inside a stdlib body is placed in the stdlib, whose spans are no
+position in the program's files: it prints `codegen error: message (in
+the standard library, <file>:<line>:<col>)`. The message says what is
+wrong in the program's terms: a construct the compiler cannot lower yet
+is introduced as `hale can't compile this yet: …` where it has no
+location line to stand beside (the old `unsupported in codegen v0: …`
+read as an internal stage's limit), a program error lowering finds
+(`fn \`sign\` can reach the end of its body without returning a
+value`) is the message alone, and a type is named as the checker names
+it, never as the compiler's Rust representation (the `or raise` payload
+mismatch printed `TypeRef("IoError")`). `refusals_are_located.rs`
+(hale-codegen) holds every refusal of a fixture set of refused programs
+to its line, and, beside the check/build agreement sweep in CI's
+sanitizer job, every refusal any corpus program reaches to a place. A
+codegen error with no span to point at (a toolchain component that is
+missing, a link that fails) prints `codegen error: message` and nothing
+else, from all of them. These commands have no
 machine-readable channel, so this is a text contract only; `check`
 never reaches codegen and is unaffected (2026-09-20, GH #848; before
 it only `build` used the span, and the rest printed the error's Rust

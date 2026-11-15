@@ -3848,6 +3848,38 @@ would drown in them; the checked calls cover the sites that expect a
 failure. *Literal suffixes (`5u256`)*: a unit may be named `u256`, so a
 suffix collides with the unit dialect's literals.
 
+### F.47 — A body that returns a value ends in one, and its last statement is its value
+
+**Problem.** `hale check` had no definite-return analysis (GH #1940).
+`fn sign(n: Int) -> Int { if n > 0 { return 1; } }` checked clean and
+the build refused it, with no file or line, as falling through; so did
+`fn g(x: Int) -> String { match x { 1 -> "one", _ -> "other" } }`,
+which is correct code: the parser keeps a trailing `match` a statement,
+and its arms' values were discarded.
+
+**Decision.** In a body with a declared return type, the last
+statement's arms and tails are the body's **result position**: a
+trailing `match`, `if` or block carries the value to its leaves, each
+the `return` it means (`desugar_tail_returns`, in the one desugar
+sequence before the check), so the check types each leaf against the
+return type and lowering lowers the returns it already lowers. The check
+then refuses a body that can still reach its end without a value, at the
+declaration's name, the falling-through path as a related location
+(`definite_return`). The judgment is structural: a path leaves through
+`return`, `fail`, `break`, `continue`, `terminate`, `violate`, an
+`if … else` / exhaustive `match` / block every branch of which leaves,
+or a `while true` no `break` of its own leaves; nothing about values.
+spec/semantics.md § "Definite return".
+
+**Considered and rejected.** *Make a trailing `match` an expression in
+the grammar*, as a value-producing trailing `if` is: a side-effect
+`match` ends many bodies that return nothing, and the parser cannot know
+the return type. *Judge only in lowering, with a span*: the check is
+where a program's shape is judged, and a library seed is checked
+without being built. *Treat a diverging call (`std::process::exit`) as
+leaving*: the language has no `Never` type; a call completes, and a
+body that ends in one says what it returns after it.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

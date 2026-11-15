@@ -604,6 +604,10 @@ fn per_target_moves() {
 /// `api_positional_test` (2026-11-14) moves two of its codec's verdicts,
 /// as the other programs that call the api codec themselves do
 /// (`api_codec_call_test`, `api_decimal_field_test`, ...).
+///
+/// `tail_value_returns_test` (GH #1940) is a new target: four fns hand a
+/// record or a String back through a tail `match`, `if` or block, whose
+/// tags the dump moves into the caller's arena as every returned value's.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -662,4 +666,5 @@ const PINNED: &[&str] = &[
     "tests/hale/sigterm_no_live_drain_reader_test.hl: 0 go, 0 appear; dump 3 tags, 13 reclaim, 0 verdicts",
     "tests/hale/sigterm_runs_drain_hook_test.hl: 0 go, 0 appear; dump 1 tags, 15 reclaim, 0 verdicts",
     "tests/hale/str_index_of_from_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/tail_value_returns_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
 ];

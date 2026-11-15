@@ -1488,6 +1488,9 @@ pub fn check_bundle_rules(
     diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
     diags.extend(mixed_owner_diags(inputs.alloc_summary));
     diags.extend(bounded_return_diags(bundle, top));
+    // GH #1940: a body with a declared return type that can reach its end
+    // without a value (`definite_return`).
+    diags.extend(crate::definite_return::definite_return_diags(bundle));
     diags.extend(literal_default_missing_field_diags(bundle, top));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
@@ -17069,9 +17072,17 @@ impl<'a> Checker<'a> {
                 }
                 self.check_block(body);
             }
-            Stmt::Return(expr, _) => {
+            Stmt::Return(expr, ret_span) => {
                 if let Some(e) = expr {
                     let got = self.check_expr(e);
+                    // GH #1940: a `return` the tail-return desugar wrote for a
+                    // value in the body's result position carries the value's
+                    // own span; one the author wrote spans its keyword.
+                    let said = if *ret_span == e.span() {
+                        "this is the body's value (its last statement's arm or tail): expected"
+                    } else {
+                        "return: expected"
+                    };
                     // A handler returns nothing: `return;` ends it
                     // early (lowered as its fall-through exit), and a
                     // value has nowhere to go.
@@ -17119,7 +17130,7 @@ impl<'a> Checker<'a> {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
-                                    "return: expected `{}`, got `{}`{}",
+                                    "{said} `{}`, got `{}`{}",
                                     expected_ret.display(),
                                     got.display(),
                                     wide_conversion_hint(expected_ret, &got)
@@ -17149,7 +17160,7 @@ impl<'a> Checker<'a> {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
-                                    "return: expected `{}`, got `{}`{}",
+                                    "{said} `{}`, got `{}`{}",
                                     expected_ret.display(),
                                     got.display(),
                                     wide_conversion_hint(expected_ret, &got)

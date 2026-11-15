@@ -254,7 +254,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(recv, scope)?;
         if !matches!(ty, CodegenTy::Bounded(_, _)) {
             return Err(CodegenError::Unsupported(format!(
-                "bounded intrinsic receiver lowered to {:?}, expected \
+                "bounded intrinsic receiver lowered to {}, expected \
                  bounded[T; N]",
                 ty
             )));
@@ -407,7 +407,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (nv, nty) = self.lower_expr(&args[1], scope)?;
         if nty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "truncate(f, n): n must be Int, got {:?}",
+                "truncate(f, n): n must be Int, got {}",
                 nty
             )));
         }
@@ -507,7 +507,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (iv, ity) = self.lower_expr(&args[0], scope)?;
         if ity != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "get(i) on an array: index must be Int, got {:?}",
+                "get(i) on an array: index must be Int, got {}",
                 ity
             )));
         }
@@ -762,7 +762,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (iv, ity) = self.lower_expr(&args[1], scope)?;
                 if ity != CodegenTy::Int {
                     return Err(CodegenError::Unsupported(format!(
-                        "at(f, i): index must be Int, got {:?}",
+                        "at(f, i): index must be Int, got {}",
                         ity
                     )));
                 }
@@ -853,7 +853,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (iv, ity) = self.lower_expr(&args[1], scope)?;
                 if ity != CodegenTy::Int {
                     return Err(CodegenError::Unsupported(format!(
-                        "set(f, i, x): index must be Int, got {:?}",
+                        "set(f, i, x): index must be Int, got {}",
                         ity
                     )));
                 }

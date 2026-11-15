@@ -102,7 +102,7 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
         if lt != rt {
             self.accumulator_ctx = None;
             return Err(CodegenError::Unsupported(format!(
-                "closure `{}` on `{}`: left/right types differ ({:?} vs {:?})",
+                "closure `{}` on `{}`: left/right types differ ({} vs {})",
                 closure_name, locus_name, lt, rt
             )));
         }
@@ -110,7 +110,7 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
         if tt != lt {
             self.accumulator_ctx = None;
             return Err(CodegenError::Unsupported(format!(
-                "closure `{}` on `{}`: tolerance type differs ({:?} vs operand {:?})",
+                "closure `{}` on `{}`: tolerance type differs ({} vs operand {})",
                 closure_name, locus_name, tt, lt
             )));
         }
@@ -210,7 +210,7 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
             }
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "closure `{}` on `{}`: ~~ not defined for {:?}",
+                    "closure `{}` on `{}`: ~~ not defined for {}",
                     closure_name, locus_name, other
                 )));
             }

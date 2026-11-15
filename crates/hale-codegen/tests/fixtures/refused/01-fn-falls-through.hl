@@ -1,0 +1,10 @@
+// refused at line 4: fn `sign` can reach the end of its body without returning a value
+// `hale check` refuses this body (definite return); a build that lowers
+// without the check meets lowering's own refusal, at the fn.
+fn sign(n: Int) -> Int {
+    if n > 0 { return 1; }
+}
+
+fn main() {
+    print(sign(3));
+}

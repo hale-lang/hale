@@ -529,7 +529,7 @@ fn main() { App { }; }
     let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("the build refuses it");
     let _ = std::fs::remove_file(&bin);
     assert!(
-        err.to_string().contains("fallible method call on non-locus value of type Perspective(\"Router\")"),
+        err.to_string().contains("fallible method call on non-locus value of type perspective(Router)"),
         "{err}"
     );
 }
