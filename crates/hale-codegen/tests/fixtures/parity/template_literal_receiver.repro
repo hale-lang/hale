@@ -1,0 +1,10 @@
+// A generic template's literal read as a receiver, where nothing supplies its type arguments.
+// == main/main.hl ==
+type Box<T> {
+    v: T;
+}
+
+fn main() {
+    let x = Box { v: 3 }.v;
+    println(x);
+}

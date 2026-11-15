@@ -1,0 +1,13 @@
+// A generic fn at an interface type, handed a locus behind the interface.
+// == main/main.hl ==
+interface Job { fn w() -> Int; }
+locus Big { params { v: Int = 2; } fn w() -> Int { return self.v; } run() { } }
+locus Pool {
+    params { n: Int = 0; }
+    accept(c: Job) { }
+    release (c: Job) { self.n = self.n + __pg_id(c).w(); }
+}
+fn main() { Pool { }; }
+fn __pg_id<T>(x: T) -> T {
+    return x;
+}

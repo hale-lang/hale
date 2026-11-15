@@ -1,0 +1,5 @@
+// An `or` substitute of another type than the call's success type.
+// == main/main.hl ==
+fn main() {
+    let out = std::process::run("true") or false;
+}

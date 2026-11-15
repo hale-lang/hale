@@ -1,0 +1,12 @@
+// `return` of a call with no value in a fn returning `()`.
+// == main/main.hl ==
+fn touch() -> () fallible(String) {
+}
+
+fn fwd() -> () fallible(String) {
+    return touch() or fail err;
+}
+
+fn main() {
+    fwd() or discard;
+}

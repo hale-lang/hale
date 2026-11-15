@@ -1,0 +1,12 @@
+// A stdlib method call with no value as a generic fn's argument.
+// == main/main.hl ==
+fn id<T>(x: T) -> T {
+    return x;
+}
+
+fn render(s: std::text::Sink) {
+    id(s.line("hello"));
+}
+
+fn main() {
+}
