@@ -425,8 +425,10 @@ run targeted tests locally and let the PR run the rest.
   parse (`crates/hale-syntax/tests/docs_snippets.rs`); `spec/styleguide.md`
   snippets must typecheck (`crates/hale-types/tests/styleguide_snippets.rs`).
 - User-visible changes get a CHANGELOG fragment,
-  `unreleased/<pr-number>.md`, added once the PR has a number
-  (CLAUDE.md § "CHANGELOG entries are fragments"); a closed deferred
+  `unreleased/<pr-number>.md`, added once the PR has a number, that
+  declares its breaking changes (`Breaking: none` or a `### Breaking`
+  section; CLAUDE.md § "CHANGELOG entries are fragments", STABILITY.md);
+  a closed deferred
   question is resolved in `notes/open-questions.md`.
 
 ## Performance
