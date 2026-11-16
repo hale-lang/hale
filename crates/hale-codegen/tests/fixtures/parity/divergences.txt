@@ -5,19 +5,5 @@
 // lines. A divergence whose signature is not here fails the gate; so does
 // a listed reproducer that builds (or that the check refuses) again.
 // Delete a line, and its reproducer, with the fix that closes it.
-#1963 | capacity_slot_generic_arg.repro | hale can't compile this yet: no field `_` on locus self
-#1963 | generic_unpinned_arg.repro | hale can't compile this yet: generic fn `_`: no argument of this call pins `_`
-#1963 | unit_generic_arg.repro | hale can't compile this yet: call to `_`: no free fn / generic fn / fn-pointer binding with that name is in scope
-#1963 | unit_method_generic_arg.repro | hale can't compile this yet: method `_` returns no value but is used in expression position
-#1963 | unresolved_path_generic_arg.repro | hale can't compile this yet: path call `_` is unresolved
-#1964 | imported_generic_call.repro | hale can't compile this yet: path call `_` in expression position
-#1964 | imported_generic_call_stmt.repro | hale can't compile this yet: path call `_`
-#1964 | imported_generic_literal.repro | hale can't compile this yet: stdlib path `_` (mangled `_`) not found in user_loci or user_types
-#1964 | imported_type_generic_arg.repro | hale can't compile this yet: a named type as a generic argument (v# supports primitives and named types)
-#1965 | template_literal_receiver.repro | hale can't compile this yet: expression form a record or locus literal
-#1966 | or_generic_fallible.repro | hale can't compile this yet: `_` over call to unknown fn `_`
-#1966 | or_on_field_read.repro | hale can't compile this yet: `_` requires a fallible call expression; got a field read
-#1966 | or_substitute_type.repro | `_` substitute type mismatch: expected T, got T
-#1974 | generic_perspective_arg.repro | hale can't compile this yet: a generic fn specialized at `_`: a generic argument is a primitive or a declared type
-#1975 | generic_interface_locus_arg.repro | hale can't compile this yet: generic fn `_` arg # type mismatch after monomorphization: expected T, got T
-#1976 | generic_fn_as_value.repro | hale can't compile this yet: unknown identifier `_`
+#1978 | generic_return_decimal_scale.repro | hale can't compile this yet: binary op operands of mixed types T<#> and T
+#1978 | generic_return_fstring.repro | hale can't compile this yet: `_` not supported for type T

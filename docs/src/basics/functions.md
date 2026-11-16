@@ -104,7 +104,9 @@ fn main() {
 
 `Numeric` is the only type parameter bound in Hale; there is no user-defined trait bound syntax (declarations like `<T: Eq>` are rejected).
 
-A type argument is a primitive or a declared type: a record, an enum, an alias, a locus or an interface (`id(Counter { n: 3 })` specializes `id` at the locus). Each specialization is compiled under a name its arguments spell, and an array, a tuple or a fn type spells none yet, so `hale check` refuses a call like `id([1, 2])` at the callee; wrap the value in a record (`type Pair { v: [Int; 2]; }`). A locus method cannot be generic itself (`fn twice<T>(…)` inside a locus is refused at its name): declare it as a free generic fn.
+A type argument is a primitive or a declared type: a record, an enum, an alias, a locus, an interface or a perspective (`id(Counter { n: 3 })` specializes `id` at the locus). Each specialization is compiled under a name its arguments spell, and an array, a tuple or a fn type spells none yet, so `hale check` refuses a call like `id([1, 2])` at the callee; wrap the value in a record (`type Pair { v: [Int; 2]; }`). A locus method cannot be generic itself (`fn twice<T>(…)` inside a locus is refused at its name): declare it as a free generic fn.
+
+A call takes each type argument from the argument in the position that names it. A generic fn from an imported seed is called through its alias (`lib::id(3)`), and a generic `fallible(E)` fn is addressed with `or` like any fallible call (`parse(s) or 0`). An argument whose type the compiler can't name pins nothing, so `hale check` refuses `id(self.slot)` (a capacity slot is used through its operations) and `id(println("x"))` (no value) at the argument. A generic fn has no single type, so its name is not a value: `let g = id;` is refused; call it, or pass a fn written over the concrete types that calls it.
 
 When a generic locus (such as `Holder<T>`) calls a generic function with `self.value` (or a local bound from `self.value`), the compiler monomorphizes the call for each concrete instantiation (`Holder<Int>`, `Holder<String>`). Default expressions in `params` use the declaring locus's type arguments.
 

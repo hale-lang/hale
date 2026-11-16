@@ -5993,6 +5993,13 @@ today, not part of the rule:
 non-error value, that value is the expression's value
 (disposition is a no-op). If the result is `FallibleErr(p)`:
 
+`<expr>` is the fallible call itself (a fn's, a generic fn's, a
+method's, a stdlib path's) or a narrowing conversion. Anything else
+in that place — a field read of a record whose field holds a fallible
+call (`Box { v: f() }.v or 0`), an element, a name — has no failure
+of its own, and the `or` is a type error at it (GH #1966): the `or`
+goes on the call where it is written.
+
 - **`or raise`** — propagate the error one frame up the
   static call stack. Inside a fallible(E) fn, this writes `p`
   into the enclosing fn's error sret slot and exits via the

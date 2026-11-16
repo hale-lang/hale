@@ -149,6 +149,8 @@ When neither applies, translate the error where it is raised with `or fail E { �
 
 ## Chaining and Fallible Recovery Handlers
 
+An `or` goes on the fallible call itself (a fn's, a generic fn's, a method's or a stdlib path's). Written after something that only holds a call's result — `R { v: parse(s) }.v or 0`, an element, a name — it has no failure to address, and `hale check` refuses it there; put it where the call is written: `R { v: parse(s) or 0 }.v`.
+
 `or` clauses associate right-to-left, allowing you to chain fallback attempts before a final default or `raise`:
 
 ```hale,fragment

@@ -1,0 +1,12 @@
+// A generic fn returning a generic type, its value's Decimal<4> field beside a scale-less literal.
+// == main/main.hl ==
+type Quote { fills: bounded[Decimal<4>; 4]; }
+fn main() {
+    let q = Quote { };
+    push(q.fills, 0.001d) or raise;
+    let __pg_b = __pg_box(at(q.fills, 0) or raise);
+    let f3 = __pg_b.v;
+    std::test::assert(f3 == 0.001d, "x");
+}
+type __PgBox<T> { v: T; }
+fn __pg_box<T>(x: T) -> __PgBox<T> { return __PgBox { v: x }; }

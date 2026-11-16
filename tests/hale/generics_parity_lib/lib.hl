@@ -1,0 +1,20 @@
+// The seed `generics_parity_test.hl` imports: a generic fn, a generic
+// fallible fn, a generic record and an alias, each used across the seed
+// boundary.
+
+fn id<T>(x: T) -> T {
+    return x;
+}
+
+fn first_of<T>(x: T, n: Int) -> T fallible(String) {
+    if n < 0 {
+        fail "negative";
+    }
+    return x;
+}
+
+type Box<T> {
+    v: T;
+}
+
+type Scalar = Int;

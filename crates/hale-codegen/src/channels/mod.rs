@@ -1114,6 +1114,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         } else {
                             (sub_v, sub_ty)
                         };
+                        // A bare `0` is every quantity's zero (spec/units.md),
+                        // so the check admits `1day / 4 or 0`: a Duration (or
+                        // a Time's count) is the integer it holds.
+                        let sub_ty = match (&sub_ty, &call.success_ty) {
+                            (Some(CodegenTy::Int), Some(want @ (CodegenTy::Duration | CodegenTy::Time)))
+                                if hale_types::unit_values::int_literal(rhs) == Some(0) =>
+                            {
+                                Some(want.clone())
+                            }
+                            _ => sub_ty,
+                        };
                         if !value_discarded && sub_ty != call.success_ty {
                             return Err(CodegenError::Invalid(format!(
                                 "`or` substitute type mismatch: expected \
@@ -1324,7 +1335,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     return Ok(result);
                 }
-                id.name.clone()
+                // GH #1966: a generic fallible fn, specialized as a
+                // plain call to it is, and called through the fallible
+                // ABI like any other fallible fn.
+                if self.generic_fn_templates.contains_key(&id.name) && !self.user_fns.contains_key(&id.name) {
+                    self.generic_fn_instance(&id.name, call_id, id.span, args.len())?
+                } else {
+                    id.name.clone()
+                }
             }
             Expr::Field { receiver, name, .. } => {
                 return self.lower_fallible_method_call(
@@ -1342,15 +1360,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     return Ok(result);
                 }
-                // Otherwise the path is either an imported-lib free
-                // fn (mangled name lives in `user_fns`) or unknown.
-                match self.mangled_for_path(&segs) {
-                    Some(mangled) => mangled,
-                    None => {
-                        return Err(CodegenError::Unsupported(format!(
-                            "`or` over unknown path call `{}`",
-                            segs.join("::")
-                        )));
+                // GH #1964 / #1966: an imported seed's generic
+                // fallible fn.
+                if let Some(name) = self.imported_generic_template(qn) {
+                    let call_id = match inner {
+                        Expr::Call { id, .. } => *id,
+                        _ => hale_syntax::ast::NodeId::NONE,
+                    };
+                    self.generic_fn_instance(&name, call_id, qn.span, args.len())?
+                } else {
+                    // Otherwise the path is either an imported-lib free
+                    // fn (mangled name lives in `user_fns`) or unknown.
+                    match self.mangled_for_path(&segs) {
+                        Some(mangled) => mangled,
+                        None => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "`or` over unknown path call `{}`",
+                                segs.join("::")
+                            )));
+                        }
                     }
                 }
             }

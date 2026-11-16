@@ -121,6 +121,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     None => self.call_returned_ty(callee, scope),
                 }
             }
+            // A generic fn's call (GH #1966: `push(id(r).xs, 1) or …`):
+            // its specialization's return type, from the type arguments
+            // the call's row binds, as lowering specializes it.
+            Expr::Call { callee, id, .. }
+                if self.generic_template_of_callee(callee).is_some() =>
+            {
+                let name = self.generic_template_of_callee(callee)?;
+                let (type_args, _, _) = self.generic_call_instance(&name, *id, callee.span()).ok()?;
+                let template = self.generic_fn_templates.get(&name)?;
+                let subst: std::collections::BTreeMap<String, hale_syntax::ast::TypeExpr> =
+                    template.generics.iter().map(|g| g.name.name.clone()).zip(type_args).collect();
+                let ret = Self::substitute_type_expr(template.ret.as_ref()?, &subst);
+                self.type_expr_to_codegen_ty(&ret).ok()
+            }
             // A call's success type: a locus method on a receiver the
             // walk types, else a free fn, a fn-pointer local or a
             // qualified path (`call_returned_ty`).
