@@ -2754,11 +2754,12 @@ string only when it names no variant, or compare the two through the
 wire. A lossless catch-all makes the enum one with payloads, with the
 restrictions an enum with payloads has today: it is not a list's element
 the codec carries (a `bounded` holds one, but the codec has no form for
-the list, above), a map of values' value, a route's path or query
-parameter, or a bus topic's payload field (GH #1951 plans a bus wire that
-carries one); a lossy one keeps the enum payload-free. A set's
-member takes no tag, its type being its discriminant: a tag after one is
-a parse error.
+the list, above), a map of values' value, or a route's path or query
+parameter; a lossy one keeps the enum payload-free. The bus carries
+either as it carries any enum, by its variant's tag and values
+(spec/semantics.md § Payload type), so the renames do not reach it. A
+set's member takes no tag, its type being its discriminant: a tag after
+one is a parse error.
 
 The description lists the wire names: a payload-free enum's `enum` holds
 them, an object variant's property is keyed by its wire name, and an

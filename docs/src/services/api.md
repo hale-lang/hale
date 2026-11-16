@@ -281,7 +281,7 @@ type Kind = enum { Limit `json:"limit"`, Market `json:"market"`, Unknown `json:"
 - Only strings are caught: an object with an unknown key is still `wrong_type`.
 - The check refuses two variants with one wire name, a second catch-all, a catch-all holding anything but one `String`, and a name on a lossless catch-all. A set's member takes no tag.
 
-The description lists the wire names (`"enum": ["spot", "margin"]`) and adds `x-hale-variants` (each variant's wire name) and `x-hale-other` (the catch-all). The tags are part of the contract digest. The TypeScript client types `Venue` as `"spot" | "margin" | (string & {})`, and the Hale client declares the same tags. Protobuf ignores the renames and keeps `Venue_Spot`-style identifiers; a lossy catch-all also takes an enum number no variant has. A lossless catch-all makes the enum one with payloads, so the codecs cannot yet carry a list of it, and it cannot be a map value, a route parameter or a bus payload field.
+The description lists the wire names (`"enum": ["spot", "margin"]`) and adds `x-hale-variants` (each variant's wire name) and `x-hale-other` (the catch-all). The tags are part of the contract digest. The TypeScript client types `Venue` as `"spot" | "margin" | (string & {})`, and the Hale client declares the same tags. Protobuf ignores the renames and keeps `Venue_Spot`-style identifiers; a lossy catch-all also takes an enum number no variant has. A lossless catch-all makes the enum one with payloads, so the codecs cannot yet carry a list of it, and it cannot be a map value or a route parameter. The bus carries such an enum as any other, by its variant's tag and values, so the renames do not reach it.
 
 ### Error Classes
 
