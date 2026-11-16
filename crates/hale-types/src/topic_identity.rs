@@ -647,7 +647,8 @@ impl<'a> Shapes<'a> {
 
     /// The contract shape of a type a row names: a struct's fields as
     /// `<field>:<tag>` joined by `;`, an enum as `=enum(<variants>)` (a
-    /// variant's declared error class after it, `Missing@not_found`), any
+    /// variant's declared error class after it, `Missing@not_found`, then a
+    /// `json:` rename, `Sell="sell"`, and the catch-all mark, `Other(s)!other`), any
     /// other type as `=` and its tag. `stack` holds the named types being
     /// rendered, outermost first.
     fn contract_top(&self, te: &TypeExpr, stack: &mut Vec<String>) -> String {
@@ -695,6 +696,17 @@ impl<'a> Shapes<'a> {
                     if let Some(c) = &v.class {
                         out.push('@');
                         out.push_str(&c.name);
+                    }
+                    // GH #1951 item 5: a variant's JSON wire is contract too:
+                    // a `json:` rename as `="<wire>"` (`Sell="sell"`), the
+                    // catch-all as `!other`; an untagged variant renders as
+                    // it always has, so no existing hash moves
+                    if hale_syntax::json_gen::json_tag_key(v.tag.as_deref()).is_some() {
+                        let wire = hale_syntax::json_gen::variant_wire_name(v);
+                        out.push_str(&format!("=\"{}\"", wire.replace('\\', "\\\\").replace('"', "\\\"")));
+                    }
+                    if hale_syntax::json_gen::variant_is_other(v) {
+                        out.push_str("!other");
                     }
                     out
                 })
@@ -1038,6 +1050,30 @@ mod tests {
         let (_, plain, unclassed) = forms("type E = enum { Missing, Taken(String) };", "E");
         assert_eq!(plain, "=enum(Missing|Taken(s))");
         assert_ne!(h, unclassed);
+    }
+
+    /// GH #1951 item 5: a variant's `json:` rename and the catch-all mark
+    /// are in the shape after it, so retagging moves the hash; an enum whose
+    /// variants carry no tag (or a tag with no `json:` key) is unchanged.
+    #[test]
+    fn a_wire_name_and_the_catch_all_are_in_the_shape() {
+        let (_, contract, h) = forms(
+            "type Side = enum { Buy `json:\"buy\"`, Sell(Int, String) `json:\"sell\"`, Other(String) `json:\",other\"` };",
+            "Side",
+        );
+        assert_eq!(contract, "=enum(Buy=\"buy\"|Sell(i,s)=\"sell\"|Other(s)!other)");
+        let (_, renamed, moved) = forms(
+            "type Side = enum { Buy `json:\"BUY\"`, Sell(Int, String) `json:\"sell\"`, Other(String) `json:\",other\"` };",
+            "Side",
+        );
+        assert_eq!(renamed, "=enum(Buy=\"BUY\"|Sell(i,s)=\"sell\"|Other(s)!other)");
+        assert_ne!(moved, h, "a wire name changed moves the hash");
+        let (_, lossy, _) = forms("type K = enum { @not_found Gone `json:\"gone,other\"`, Here };", "K");
+        assert_eq!(lossy, "=enum(Gone@not_found=\"gone\"!other|Here)");
+        // no `json:` key: the shape the enum always had
+        let (_, plain, untagged) = forms("type Side = enum { Buy `wire:\"x\"`, Sell(Int, String) };", "Side");
+        assert_eq!(plain, "=enum(Buy|Sell(i,s))");
+        assert_eq!(untagged, "64470fcdf9853aeb", "the hash an untagged `Side` has");
     }
 
     /// Arrays, bounded arrays and tuples are their element tags, and an

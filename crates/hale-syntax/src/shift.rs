@@ -633,7 +633,7 @@ impl Shift for FieldOptional {
         }
     }
 }
-shift_struct!(EnumVariant { name, fields, class, span, member });
+shift_struct!(EnumVariant { name, fields, class, span, member, tag });
 shift_struct!(ConstDecl { name, ty, value, span, id });
 
 // Effects and fn contracts.
