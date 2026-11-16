@@ -25197,11 +25197,33 @@ impl<'a> Checker<'a> {
             }
             Expr::Index { receiver, index, span } => {
                 let rt = self.check_expr(receiver);
-                let _ = self.check_expr(index);
                 // GH #1942: a range index slices a `String` (`s[1..3]`,
-                // `s[1..=3]`); on anything else it checked clean, typed as
-                // one element, and the build refused it.
-                if let Expr::Range { .. } = index.as_ref() {
+                // `s[1..=3]`, and the open forms `s[1..]` / `s[..3]` the
+                // parser closes, GH #1995); on anything else it checked
+                // clean, typed as one element, and the build refused it.
+                if let Expr::Range { lo, hi, .. } = index.as_ref() {
+                    // The bounds are `Int`s. A bound of another known
+                    // type checked clean and the build refused it
+                    // ("string slice bounds must be Int").
+                    for b in [lo, hi] {
+                        let bt = self.check_expr(b);
+                        if let Ty::Prim(p) = self.through_aliases(bt.clone()) {
+                            if p != PrimType::Int {
+                                self.diags.push(Diag::ty(
+                                    b.span(),
+                                    format!(
+                                        "a slice's bounds are `Int` byte offsets, and this one is a `{}` \
+                                         (spec/semantics.md § String slicing)",
+                                        bt.display()
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    // the range itself, typed as `check_expr` types one
+                    if let Some(seen) = &mut self.expr_types {
+                        seen.push((index.as_ref() as *const Expr, Ty::Unknown));
+                    }
                     let base = self.through_aliases(rt.clone());
                     if matches!(base, Ty::Prim(PrimType::String) | Ty::Unknown) {
                         return rt;
@@ -25230,6 +25252,7 @@ impl<'a> Checker<'a> {
                     ));
                     return Ty::Unknown;
                 }
+                let _ = self.check_expr(index);
                 match self.through_aliases(rt.clone()) {
                     Ty::Array(elem, _) => *elem,
                     Ty::Bounded(elem, _) => {
