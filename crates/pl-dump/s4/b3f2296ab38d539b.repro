@@ -1,0 +1,30 @@
+// this program uses `_`, which needs the tree-sitter shim staticlib `_`; it was not found next to the `_` binary, under `_`, or in the workspace target dir. Build the whole workspace (`_`) — `_` does not produce it
+// seed: crates/hale-codegen/tests/stdlib_ts.rs#3
+// mutations: element_probe(bounded_field, Decimal<2>)
+// == main/main.hl ==
+
+        fn main() {
+    __pg_probe();
+            let src = "package main\n";
+            let t = std::ts::parse_go(src);
+            let r = std::ts::root_node(t);
+            let nope = std::ts::node_named_child(r, 999);
+            println("oob=", nope);
+            println("kind=[", std::ts::node_kind(nope), "]");
+        }
+
+type __PgBag {
+    items: bounded[Decimal<2>; 4];
+    n: Int;
+}
+
+fn __pg_probe() {
+    let mut b = __PgBag { n: 0 };
+    push(b.items, 2.50d) or discard;
+    push(b.items, 2.50d) or discard;
+    let first = at(b.items, 0) or 2.50d;
+    for x in b.items {
+        b.n = b.n + 1;
+    }
+    println(count(b.items), " ", b.n);
+}

@@ -1,0 +1,21 @@
+// this program uses `_`, which needs the tree-sitter shim staticlib `_`; it was not found next to the `_` binary, under `_`, or in the workspace target dir. Build the whole workspace (`_`) — `_` does not produce it
+// seed: crates/hale-codegen/tests/stdlib_ts.rs#0
+// mutations: generic_box(`0`, bound)
+// == main/main.hl ==
+
+        fn main() {
+            let src = "package main\n";
+            let t = std::ts::parse_go(src);
+            let __pg_b = __pg_box(0);
+    if t == __pg_b.v { println("FAIL parse"); return; }
+            let r = std::ts::root_node(t);
+            println("kind=", std::ts::node_kind(r));
+        }
+
+type __PgBox<T> {
+    v: T;
+}
+
+fn __pg_box<T>(x: T) -> __PgBox<T> {
+    return __PgBox { v: x };
+}

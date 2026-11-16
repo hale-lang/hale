@@ -1,0 +1,29 @@
+// this program uses `_`, which needs the tree-sitter shim staticlib `_`; it was not found next to the `_` binary, under `_`, or in the workspace target dir. Build the whole workspace (`_`) — `_` does not produce it
+// seed: crates/hale-codegen/tests/stdlib_ts.rs#0
+// mutations: element_probe(bounded_param, I256)
+// == main/main.hl ==
+
+        fn main() {
+    __pg_probe();
+            let src = "package main\n";
+            let t = std::ts::parse_go(src);
+            if t == 0 { println("FAIL parse"); return; }
+            let r = std::ts::root_node(t);
+            println("kind=", std::ts::node_kind(r));
+        }
+
+type __PgBag {
+    items: bounded[I256; 4];
+}
+
+fn __pg_fill(b: __PgBag, x: I256) -> __PgBag {
+    let mut c = b;
+    push(c.items, x) or discard;
+    return c;
+}
+
+fn __pg_probe() {
+    let b = __pg_fill(__PgBag { }, I256::from_int(-7));
+    let c = __pg_fill(b, I256::from_int(-7));
+    println(count(c.items));
+}

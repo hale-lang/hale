@@ -1,0 +1,34 @@
+// hale can't compile this yet: fn `_` arg # type mismatch: expected T, got T
+// seed: docs/src/basics/fallible.md:52
+// mutations: fallible_wrap(default_port, or default_port(err))
+// == main/main.hl ==
+type AppErr { msg: String; }
+
+fn default_port(e: ParseError) -> Int {
+    eprintln("bad port (", e.input, "), defaulting to 8080");
+    return 8080;
+}
+
+fn read_port(raw: String) -> Int fallible(AppErr) {
+    return std::str::parse_int(raw) or fail AppErr { msg: err.kind };
+}
+
+fn main() {
+    let p1 = std::str::parse_int("9000") or 8080;
+    let p2 = std::str::parse_int("bad") or (__pg_try(err) or default_port(err));
+    let p3 = read_port("3000") or {
+        eprintln("fatal: ", err.msg);
+        return;
+    };
+    std::io::fs::mkdir("tmp_cache") or discard;
+    println(p1, " ", p2, " ", p3);
+}
+
+const __PG_NEVER: Bool = false;
+
+fn __pg_try(e: ParseError) -> Int fallible(String) {
+    if __PG_NEVER {
+        fail "never";
+    }
+    return default_port(e);
+}

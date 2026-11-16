@@ -1,0 +1,30 @@
+// this program uses `_`, which needs the tree-sitter shim staticlib `_`; it was not found next to the `_` binary, under `_`, or in the workspace target dir. Build the whole workspace (`_`) — `_` does not produce it
+// seed: crates/hale-codegen/tests/missing_ts_shim.rs#1
+// mutations: element_probe(map_form, Int)
+// == main/main.hl ==
+
+fn main() {
+    __pg_probe();
+    let t = std::ts::parse_go("package main\n");
+    println("t=", t);
+}
+
+type __PgCell {
+    k: String = "";
+    v: Int;
+}
+
+@form(hashmap)
+locus __PgMap {
+    capacity {
+        pool rows of __PgCell indexed_by k;
+    }
+}
+
+fn __pg_probe() {
+    let m = __PgMap { };
+    m.set(__PgCell { k: "a", v: 7 });
+    m.set(__PgCell { k: "b", v: 7 });
+    let c = m.get("a") or __PgCell { k: "z", v: 7 };
+    println(m.len());
+}

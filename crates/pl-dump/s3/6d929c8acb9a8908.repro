@@ -1,0 +1,19 @@
+// this program uses `_`, which needs the tree-sitter shim staticlib `_`; it was not found next to the `_` binary, under `_`, or in the workspace target dir. Build the whole workspace (`_`) — `_` does not produce it
+// seed: crates/hale-codegen/tests/stdlib_ts.rs#1
+// mutations: generic_identity(`std::ts::node_named_child(r, 1)`)
+// == main/main.hl ==
+
+        fn main() {
+            let src = "package main\nfunc foo() {}\n";
+            let t = std::ts::parse_go(src);
+            let r = std::ts::root_node(t);
+            println("n=", std::ts::node_named_child_count(r));
+            let c0 = std::ts::node_named_child(r, 0);
+            let c1 = __pg_id(std::ts::node_named_child(r, 1));
+            println("c0=", std::ts::node_kind(c0));
+            println("c1=", std::ts::node_kind(c1));
+        }
+
+fn __pg_id<T>(x: T) -> T {
+    return x;
+}
