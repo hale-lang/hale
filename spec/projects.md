@@ -158,6 +158,7 @@ alias.
 
 ```
 import "<path>" as <alias>;
+import "<path>" as <alias> { <Name>, <Name> as <Local>, ... };
 ```
 
 - **`<path>`** is a string literal naming the library to import.
@@ -166,6 +167,10 @@ import "<path>" as <alias>;
   import site. It is **required** — bare `import "<path>";` is
   a parse error. Cross-seed references in the importing seed
   read as `<alias>::Name`.
+- **`{ ... }`**, the optional **import list**, names top-level
+  declarations of the imported seed that the importing seed spells
+  bare, and re-exports them through its alias. See "Import lists"
+  below.
 
 The alias-required rule is the same forcing-function discipline
 v1.x-3 enforces for `: projection recognition` (no default
@@ -192,6 +197,52 @@ fn main() {
     let h = helpers::Formatter { };
 }
 ```
+
+### Import lists
+
+An import list brings named declarations of the imported seed in
+by their bare names (GH #1951 item 6, F.51):
+
+```hale
+import "../store" as st { ModelRow, Names as StoreNames };
+
+fn first(rows: [ModelRow; 2]) -> ModelRow { return rows[0]; }
+fn tally(n: StoreNames) -> Int { return st::count(n); }
+```
+
+- **An item names a top-level declaration of the imported seed**: a
+  `type` (records, enums and aliases), `locus`, `fn`, `const`,
+  `topic`, `interface` or `perspective`, declared at the top level
+  or in a `module { }` — or a name the imported seed's own import
+  lists bring in (below). Any other name is refused, located at the
+  item, with what the library provides. There are no globs: every
+  name is spelled.
+- **A listed name is bare in the whole importing seed**, every file
+  of it, as the import itself is: `ModelRow { ... }`, `ModelRow` in
+  a signature, `Side::Buy`, `subscribe Ticks` and `Box<Int>` all
+  name the imported declaration. `<alias>::<Name>` keeps working
+  beside it. `as` renames: `Names as StoreNames` binds `StoreNames`
+  and leaves `Names` unbound.
+- **Locals shadow a listed name** as they shadow any top-level name.
+- **A bare name names one declaration.** A listed name that is also
+  a declaration of the importing seed, or that another import's list
+  binds to a different declaration, is refused at the item, naming
+  both and suggesting a rename. The same declaration listed twice
+  (two files of a seed importing one library) is one name.
+- **A list re-exports.** A listed name is reachable through the
+  importing seed's alias by the seed's own importers: when `api`
+  imports `"../store" as st { ModelRow }`, an importer of `api` may
+  write `api::ModelRow`, or list it (`import "../api" as api {
+  ModelRow };`). It is the **same declaration** — one mangled symbol
+  — as `st::ModelRow`, so a value made under one spelling is passed,
+  returned, compared and published under the other with no
+  conversion. Only listed names re-export; `api`'s alias `st` stays
+  `api`'s alone ("Scoped imports (A4)" below). The alias form `type
+  ModelRow = st::ModelRow;` keeps working, as a type alias does.
+
+An import list is the one way a name crosses into a seed bare; the
+seed's own files share their names without one, and importing a file
+of the seed itself is refused (below).
 
 ### Resolution order
 
@@ -559,8 +610,11 @@ expression position`, `unknown qualified name b::Nope`,
 `qualified type zz::T not in stdlib path-renames table` — late,
 from another layer, and with no source location.)
 
-**No re-exports.** B's decls are not visible to A's importers
-unless they declare their own dependency on B. The `<lib_id>`
+**No re-exports but listed names.** B's decls are not visible to
+A's importers unless they declare their own dependency on B, or A
+lists them on its import of B ("Import lists" above: a listed name
+is reachable through A's alias, as the declaration B's alias names).
+The `<lib_id>`
 in B's mangled prefix is derived from B's canonical path, NOT
 from any importer's alias — so a util library reached through
 two different importers gets ONE shared identity in the merged
@@ -630,7 +684,9 @@ it always has; the compiler does not (yet) reject that shape.
 
 Every top-level decl in an imported seed is exported. There is
 no visibility modifier in v1. The whole imported seed becomes
-available under the alias.
+available under the alias. An import list is not a visibility
+modifier either: it chooses what the importing seed spells bare
+(and so re-exports), not what the imported seed hides.
 
 Adding `pub` doubles the design surface (every decl picks a
 visibility; users author the modifier; the typechecker enforces
@@ -779,7 +835,7 @@ demonstrates the need.
   reached through two different importers gets ONE shared identity
   — its `<lib_id>` is derived from its canonical path and
   deduplicated in the resolver's visited set (the 2026-05-22
-  change; see § "No re-exports" above), so the same source yields
+  change; see § "No re-exports but listed names" above), so the same source yields
   the same symbols across consumers. What's *not* done is
   content-level unification: two libraries vendored at different
   paths are distinct symbols even if byte-identical.
