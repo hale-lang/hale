@@ -521,7 +521,7 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 
 ## Where the language stands
 
-Hale is at **v0.32.13** (2026-11-12) and pre-1.0. What a release may
+Hale is at **v0.33.0** (2026-11-16) and pre-1.0. What a release may
 change is written down in [`STABILITY.md`](./STABILITY.md): a patch
 release fixes bugs and changes nothing a correct program means; a
 minor release may break programs, and every release's CHANGELOG opens
