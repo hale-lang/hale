@@ -411,6 +411,28 @@ fn import_lists_and_re_exports_name_instances_and_topics() {
         "the instance is built from the seed that declares its main:\n{out}"
     );
 
+    // The reach-through every fleet seed has written (a DNA-generated one
+    // among them): a binding's adapter spelled through an alias only an
+    // instance's seed imports (`relay::Relay`, `relay` being the desk's
+    // import), never the fleet's own. The fleet never resolves an
+    // adapter, and the compiler's alias scoping does not judge one, so
+    // it checks beside an import list, whose names still resolve.
+    std::fs::create_dir_all(d.join("relay")).unwrap();
+    std::fs::write(d.join("relay/relay.hl"), "locus Relay { params { n: Int = 0; } }\n").unwrap();
+    let desk = std::fs::read_to_string(d.join("desk/main.hl")).unwrap();
+    std::fs::write(d.join("desk/main.hl"), desk.replace("import \"../shared\" as t;", "import \"../shared\" as t;\nimport \"../relay\" as relay;")).unwrap();
+    variant(
+        &d,
+        "reach",
+        &[
+            ("import \"../desk\" as desk;", "import \"../desk\" as desk { Orders };"),
+            ("orders: desk::Orders;", "orders: Orders;"),
+            ("t::OrderRequest: unix(\"/tmp/hale-fleet-locus-orders.sock\");", "t::OrderRequest: relay::Relay { };"),
+        ],
+    );
+    let (ok, out) = hale(&["check", "reach"], &d);
+    assert!(ok && out.contains("ok: fleet `Prod` checked — 2 instance param(s), 1 binding(s)"), "{out}");
+
     variant(&d, "unlisted", &[("import \"../desk\" as desk;", "import \"../desk\" as desk { Nowhere };")]);
     let (ok, out) = hale(&["check", "unlisted"], &d);
     assert!(

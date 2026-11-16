@@ -195,21 +195,109 @@ pub fn check_fleet_seed(
             }
         }
     }
+    // What each alias's seed declares itself, read from its own files:
+    // the resolution every fleet seed has had, and the one a name falls
+    // back to when the compiler's rows have no answer for it.
+    let mut declared: BTreeMap<String, BTreeMap<String, Imported>> = BTreeMap::new();
+    for (alias, seed) in &direct {
+        let mut names: BTreeMap<String, Imported> = BTreeMap::new();
+        match hale_frontend::frontend::parse_checkable(seed, &disk) {
+            Ok((_, _, theirs, _, _, _)) => {
+                // the seed's entry, as every consumer reads it: the entry row
+                let progs: Vec<&hale_syntax::ast::Program> = theirs.values().collect();
+                let row = hale_types::entry::entry_row_in(&progs);
+                let main = row.entry().map(|m| m.name.clone());
+                for p in theirs.values() {
+                    for d in hale_syntax::ast::flat_decls(&p.items) {
+                        match d {
+                            TopDecl::Locus(l) => {
+                                let kind = if main.as_deref() == Some(l.name.name.as_str()) {
+                                    Imported::Main { seed: seed.display().to_string() }
+                                } else {
+                                    Imported::Locus
+                                };
+                                names.insert(l.name.name.clone(), kind);
+                            }
+                            TopDecl::Topic(t) => {
+                                names.insert(t.name.name.clone(), Imported::Topic { subject: t.subject.clone() });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Err(f) => errs.extend(render_failure(f)),
+        }
+        declared.insert(alias.clone(), names);
+    }
     if !errs.is_empty() {
         return Err(errs);
     }
-    // The compiler's rows: the seed linked as `hale check` links one.
-    let (linked, _, linked_bases, renames, _, _) = hale_frontend::frontend::link_checkable(
+    // The compiler's rows: the seed's imports linked as `hale check`
+    // links them. The fleet itself stays out of the link: it is no
+    // program, and its bindings may spell an adapter through an alias
+    // only an instance's seed declares (`nats::NatsAdapter`), which the
+    // fleet never resolves and the link's alias scoping would refuse. A
+    // link that fails anyway leaves the rows empty, and every name then
+    // resolves as it always has.
+    let unfleeted: BTreeMap<PathBuf, hale_syntax::ast::Program> = programs
+        .iter()
+        .map(|(k, p)| {
+            let mut p = p.clone();
+            p.items.retain(|d| !matches!(d, TopDecl::Fleet(_)));
+            (k.clone(), p)
+        })
+        .collect();
+    // (the alias scoping reads the text too: the fleet's is blanked,
+    // its offsets kept)
+    let mut unfleeted_sources = sources.clone();
+    for (file, p) in &programs {
+        let Some(text) = unfleeted_sources.get_mut(file) else { continue };
+        let Some((base, _, _)) = file_bases.iter().find(|(_, f, _)| f == file) else { continue };
+        for d in p.items.iter().filter(|d| matches!(d, TopDecl::Fleet(_))) {
+            let (lo, hi) = (d.span().start.0.saturating_sub(*base) as usize, d.span().end.0.saturating_sub(*base) as usize);
+            if lo < hi && hi <= text.len() && text.is_char_boundary(lo) && text.is_char_boundary(hi) {
+                let blank: String = text[lo..hi].chars().map(|c| if c == '\n' { '\n' } else { ' ' }).collect();
+                text.replace_range(lo..hi, &blank);
+            }
+        }
+    }
+    let link = hale_frontend::frontend::link_checkable(
         path,
         &files,
         own_files,
-        programs.clone(),
-        sources.clone(),
+        unfleeted,
+        unfleeted_sources,
         file_bases.clone(),
         effects,
         &disk,
-    )
-    .map_err(render_failure)?;
+    );
+    // An import list's own refusals (an item the library does not
+    // declare, a listed name that collides) are the fleet's: import lists
+    // are new (F.51), so no fleet that checked before writes one. Every
+    // other refusal of the link only empties the rows.
+    let link = match link {
+        Ok(l) => Some(l),
+        Err(f) => {
+            let listed: Vec<String> = f
+                .diags
+                .iter()
+                .filter(|d| {
+                    d.message.contains("is not a top-level name of the library imported as")
+                        || d.message.contains("is listed on the import of")
+                })
+                .map(|d| render(d, &f.file_bases, &f.sources))
+                .collect();
+            if !listed.is_empty() {
+                return Err(listed);
+            }
+            None
+        }
+    };
+    let (linked, linked_bases, renames) = match link {
+        Some((linked, _, bases, renames, _, _)) => (linked, bases, renames),
+        None => (BTreeMap::new(), Vec::new(), Vec::new()),
+    };
     let merged: Vec<&TopDecl> =
         linked.values().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)).collect();
     // The seed a merged declaration is in: the alias's own when the file
@@ -255,7 +343,7 @@ pub fn check_fleet_seed(
         .flat_map(|(a, i)| i.items.iter().map(move |it| (it.local().name.clone(), (a.clone(), it.name.name.clone()))))
         .collect();
     let seeds: std::cell::RefCell<BTreeMap<String, PathBuf>> = std::cell::RefCell::new(BTreeMap::new());
-    let resolve = |segs: &[&str]| -> Option<Imported> {
+    let by_rows = |segs: &[&str]| -> Option<Imported> {
         let mangled = match segs {
             [name] => {
                 let (alias, theirs) = listed.get(*name)?;
@@ -299,6 +387,20 @@ pub fn check_fleet_seed(
             }
             _ => None,
         }
+    };
+    // The compiler's rows first, then what the alias's seed declares
+    // itself (GH #1987): nothing a fleet resolved before is refused.
+    let resolve = |segs: &[&str]| -> Option<Imported> {
+        let found = by_rows(segs);
+        if found.is_some() {
+            return found;
+        }
+        let [alias, name] = segs else { return None };
+        let imported = declared.get(*alias)?.get(*name)?.clone();
+        if let Imported::Main { seed } = &imported {
+            seeds.borrow_mut().insert(seed.clone(), PathBuf::from(seed));
+        }
+        Some(imported)
     };
     let own: Vec<&hale_syntax::ast::Program> = programs.values().collect();
     let (source, diags) = hale_types::fleet::fleet_source(&own, &resolve);

@@ -1424,7 +1424,13 @@ fleet check` checks each instance's seed as it cuts its artifact.
   Req }` then `Req: unix(…)`), and a name an imported seed re-exports
   from its own import list (`api::Gateway`, where `api` lists `Gateway`
   from `venue`), whose instance is built from the seed that declares
-  it (`venue`).
+  it (`venue`). A name the rows do not answer resolves against what
+  the alias's own seed declares, as before the rows; the fleet's own
+  declaration stays out of the link, so a binding's adapter spelled
+  through an alias only an instance's seed imports
+  (`nats::NatsAdapter`) is still the instances' concern. Only an
+  import list's own refusals (an item the library does not declare, a
+  listed name that collides) are the fleet's.
 - **placement** is a default per param: `host("<name>")`, one instance
   on each of several hosts (`host("a"), host("b")`), or `replicas(<n>)`
   (n ≥ 1) on no named host. A host is one name of letters, digits,
