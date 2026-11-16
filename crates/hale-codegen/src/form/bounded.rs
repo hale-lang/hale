@@ -140,10 +140,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // qualified path (`call_returned_ty`).
             Expr::Call { callee, .. } => {
                 if let Expr::Field { receiver, name, .. } = callee.as_ref() {
-                    if let Some(CodegenTy::LocusRef(locus)) =
-                        self.static_expr_codegen_ty(receiver, scope)
-                    {
-                        return self.static_locus_method_ret(&locus, &name.name);
+                    match self.static_expr_codegen_ty(receiver, scope) {
+                        Some(CodegenTy::LocusRef(locus)) => {
+                            return self.static_locus_method_ret(&locus, &name.name);
+                        }
+                        // A method through an interface: its declared
+                        // return (`count(s.names())`, GH #1951).
+                        Some(CodegenTy::Interface(iface)) => {
+                            return self
+                                .iface_method_sig(&iface, &name.name)
+                                .and_then(|m| m.ret)
+                                .and_then(|t| self.type_expr_to_codegen_ty(&t).ok());
+                        }
+                        _ => {}
                     }
                 }
                 self.call_returned_ty(callee, scope)
@@ -253,6 +262,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )
     }
 
+    /// GH #1951: before an intrinsic that writes the bounded local
+    /// `recv` (`push(xs, …)`, `clear(xs)`), a local bound from a place
+    /// takes its own copy, unless its flag says the frame owns it already
+    /// (`OwnedViews::cow_write`, keyed by the receiver's identifier): the
+    /// write never reaches the place it was read from (spec/types.md § A
+    /// local bound from a place is yours). Any other receiver, and a read
+    /// (`count`, `at`), has no row and emits nothing.
+    pub(crate) fn bounded_receiver_cow(&mut self, recv: &Expr, scope: &Scope<'ctx>) -> Result<(), CodegenError> {
+        if let Expr::Ident(i) = recv {
+            if self.owned_views.cow_write(i.id).is_some() {
+                self.emit_local_cow(&i.name, scope)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Lower args[0] to the storage pointer (SSA of a bounded value
     /// IS the storage address) and return (len_ptr, data_base_ptr).
     fn bounded_storage_ptrs(
@@ -265,6 +290,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         (PointerValue<'ctx>, PointerValue<'ctx>, PointerValue<'ctx>),
         CodegenError,
     > {
+        self.bounded_receiver_cow(recv, scope)?;
         let (v, ty) = self.lower_expr(recv, scope)?;
         if !matches!(ty, CodegenTy::Bounded(_, _)) {
             return Err(CodegenError::Unsupported(format!(
@@ -1280,10 +1306,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let elem_llvm = self.llvm_basic_type(elem);
 
-        let i_slot = self
-            .builder
-            .build_alloca(i64_t, &format!("{}.i", site))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // In the entry block: a copy inside a loop (a bounded local
+        // bound, or returned, once per iteration) reuses one slot.
+        let i_slot = self.alloca_in_entry(i64_t.into(), &format!("{}.i", site))?;
         self.builder
             .build_store(i_slot, i64_t.const_int(0, false))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

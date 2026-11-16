@@ -1045,6 +1045,25 @@ impl<'a> Bodies<'a> {
         self.classify(ty) == Class::Inline && !matches!(ty, Ty::Bounded(..))
     }
 
+    /// Is `ty` a `bounded[T; N]`, written or through an alias?
+    fn resolves_bounded(&self, ty: &Ty) -> bool {
+        let mut cur = ty;
+        for _ in 0..16 {
+            match cur {
+                Ty::Bounded(..) => return true,
+                Ty::Named(n) => match self.top.lookup(n) {
+                    Some(TopSymbol::Type(t)) => match &t.kind {
+                        TypeKind::Alias(a) => cur = a,
+                        _ => return false,
+                    },
+                    _ => return false,
+                },
+                _ => return false,
+            }
+        }
+        false
+    }
+
     /// The type of a site the checker typed nothing at.
     fn unknown(&self) -> &'static Ty {
         static UNKNOWN: Ty = Ty::Unknown;
@@ -2063,6 +2082,12 @@ struct Walk<'p, 'a> {
     /// anything below it may be written too (a call that may write
     /// through it) or only a slot of the block itself (an assignment).
     root_writes: Vec<(String, u32, bool)>,
+    /// A bounded intrinsic's write into a list in place (`push(l.xs, v)`,
+    /// `clear(xs)`), the list spelled as the markers spell it, and where
+    /// (GH #1951): it changes the list's count and slots, so a bounded
+    /// local viewing the list sees it; an element read from the list
+    /// keeps the block it holds, so it is no write for that binding.
+    list_writes: Vec<(String, u32)>,
     /// On the summary pass: the parameters the body writes through
     /// itself (`Summaries::param_masks`), and each parameter it hands to
     /// a callee (the callee, the argument's position, the parameter's).
@@ -2193,6 +2218,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             stored_reads: BTreeSet::new(),
             stored_ats: BTreeSet::new(),
             root_writes: Vec::new(),
+            list_writes: Vec::new(),
             param_mask: 0,
             param_passes: Vec::new(),
             param_index: params.iter().enumerate().map(|(i, prm)| (prm.name.name.clone(), i)).collect(),
@@ -2270,7 +2296,9 @@ impl<'p, 'a> Walk<'p, 'a> {
         self.record_hint.push(class == Class::Record);
         self.handle_only.push(class.surely_handle());
         self.scalar_hint.push(class == Class::Scalar);
-        self.compound_hint.push(class == Class::Value);
+        // A bounded local holds a block of its own (GH #1951), as an
+        // array does: a write into it is in place.
+        self.compound_hint.push(class == Class::Value || self.p.resolves_bounded(&ty));
         self.var_ty.push(ty);
         self.scopes.last_mut().expect("a scope").insert(name.to_string(), Some(v));
         v
@@ -2936,6 +2964,12 @@ impl<'p, 'a> Walk<'p, 'a> {
                 // The binding's type, as the checker bound it (its
                 // declared type, or the value's).
                 let ty = self.views.binding(&name).clone();
+                // A bounded list built from an array literal holds its own
+                // copy of each element that is not fresh (GH #1951):
+                // it views no place.
+                if self.p.resolves_bounded(&ty) && matches!(value, Expr::Array(..)) {
+                    keys = real(&keys);
+                }
                 let class = self.p.classify(&ty);
                 // A primitive (or a handle) holds no block a write could
                 // reach: it carries no place marker (the local-place rule),
@@ -4124,6 +4158,44 @@ impl<'p, 'a> Walk<'p, 'a> {
         span: Span,
     ) -> Option<usize> {
         let (Expr::Ident(op), Some(list)) = (callee, args.first()) else { return None };
+        // GH #1951: an intrinsic that writes its list writes it in place.
+        // Under a bounded local (`push(xs, v)`) that is a write into the
+        // local, which the local-place rule copies first when the local
+        // was bound from a place (keyed by the receiver's identifier);
+        // under a local's or a parameter's value (`push(l.xs, v)`) it is
+        // an in-place write a binding of that place made before would see.
+        // A self field's list is the replaced-view rule's (`Target::Bounded`).
+        if matches!(op.name.as_str(), "push" | "set" | "clear" | "truncate") {
+            match list {
+                Expr::Ident(lid) => {
+                    if let Some(Some(v)) = self.lookup(&lid.name) {
+                        if self.p.resolves_bounded(&self.var_ty[v]) {
+                            let at = self.tick();
+                            self.list_writes.push((format!("@{v}"), at));
+                            if self.from_param[v] {
+                                self.writes_params = true;
+                            }
+                            self.assigns.push(AssignWrite {
+                                var: v,
+                                first: None,
+                                inline_first: false,
+                                depth: 1,
+                                id: lid.id.0,
+                                span,
+                                at,
+                                blocks: self.block_stack.clone(),
+                            });
+                        }
+                    }
+                }
+                other => {
+                    if let Some(place) = self.place_of(other).filter(|p| !p.starts_with("self")) {
+                        let at = self.tick();
+                        self.list_writes.push((place, at));
+                    }
+                }
+            }
+        }
         let at = (span.start.0, span.end.0);
         if let Some((root, _)) = self.root_local(list) {
             // The list is the first operand: the local's first read after
@@ -4717,6 +4789,32 @@ impl<'p, 'a> Walk<'p, 'a> {
                 own_place(&mut o, i, reasons::PLACE_SOURCE_WRITTEN, found);
             }
         }
+        // A bounded list written in place by an intrinsic: a bounded local
+        // viewing it (its marker the list, or a value holding it) and used
+        // after the write is bound as a copy.
+        for (written, at) in &self.list_writes {
+            let mut hit = Vec::new();
+            for (i, inst) in self.insts.iter().enumerate() {
+                let v = inst.var;
+                if !self.p.resolves_bounded(&self.var_ty[v]) || !open(o.owned, i) {
+                    continue;
+                }
+                let sees = at_places(&inst.keys)
+                    .any(|q| q == "?" || q == written || written.strip_prefix(q).is_some_and(|r| r.starts_with('.')));
+                if !sees {
+                    continue;
+                }
+                if written.strip_prefix('@').and_then(|r| r.split('.').next()).and_then(|n| n.parse::<usize>().ok()) == Some(v) {
+                    continue;
+                }
+                if self.reaches(v, inst.at, at + 1, *at, false) {
+                    hit.push(i);
+                }
+            }
+            for i in hit {
+                own_place(&mut o, i, reasons::PLACE_SOURCE_WRITTEN, found);
+            }
+        }
         // A local handed to a call that may write through what it is
         // handed: whole, or a literal's part it is handed (or every part,
         // the literal handed whole).
@@ -4946,6 +5044,12 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// the write is what the place would have held.
     fn store_back_keeps(&self, w: &AssignWrite, shared: &[usize]) -> bool {
         let v = w.var;
+        // A bounded local is copied at its first write (GH #1951): a
+        // `push` through it stores an element in this frame, which a
+        // store back into a locus's field would retire there.
+        if self.p.resolves_bounded(&self.var_ty[v]) {
+            return false;
+        }
         let mut kind: Option<(&str, Option<&SlotIndex>)> = None;
         for &i in &self.vars[v] {
             let inst = &self.insts[i];
@@ -5917,6 +6021,32 @@ mod tests {
             fn body(p: R, cb: fn(Int) -> Int) { BODY }
         }
     "#;
+
+    /// GH #1951, decisions F.49: a bounded local bound from a place is a
+    /// copy. An intrinsic that writes it copies it first (on write); a
+    /// local only read stays the place's storage; one live across an
+    /// intrinsic's write of its place is bound as a copy; one bound from a
+    /// literal is the frame's own.
+    #[test]
+    fn a_bounded_local_bound_from_a_place_copies_on_write() {
+        use reasons::*;
+        let written = place_copies("let mut v = self.r.items; push(v, In { }) or discard;");
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert!(written[0].0.starts_with("push(v") && written[0].1 == PLACE_WRITTEN, "{written:?}");
+        let cleared = place_copies("let mut v = p.items; clear(v);");
+        assert!(cleared.len() == 1 && cleared[0].1 == PLACE_WRITTEN, "{cleared:?}");
+        assert!(place_copies("let v = self.r.items; for x in v { println(x.k); } println(count(v));").is_empty());
+        assert!(place_copies("let mut v: bounded[In; 4] = []; push(v, In { }) or discard;").is_empty());
+        assert!(place_copies("let mut v: bounded[In; 4] = [In { k: 1 }]; set(v, 0, In { }) or discard;").is_empty());
+        let held = place_copies("let mut l = L { }; let v = l.list; push(l.list, In { }) or discard; println(count(v));");
+        assert_eq!(held, [("let v = l.list;".to_string(), PLACE_SOURCE_WRITTEN)], "{held:?}");
+        // An element read from the list keeps its block: a push into the
+        // list is no write for it.
+        assert!(place_copies(
+            "let mut l = L { }; let z = at(l.list, 0) or In { }; push(l.list, In { }) or discard; println(z.k);"
+        )
+        .is_empty());
+    }
 
     #[test]
     fn a_write_into_a_local_bound_from_a_place_copies_on_write() {

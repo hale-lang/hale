@@ -3932,6 +3932,48 @@ without being built. *Treat a diverging call (`std::process::exit`) as
 leaving*: the language has no `Never` type; a call completes, and a
 body that ends in one says what it returns after it.
 
+### F.49 — A `bounded` local bound from a place is a copy
+
+**Problem.** The ruling of 2026-10-13 (spec/types.md § A local bound
+from a place is yours, GH #713) made every local bound from a place the
+frame's own value: a struct, a String, an array, a tuple, a payload. A
+`bounded[T; N]` local was left out. It lowered to the place's own inline
+storage, so `let mut mine = self.row.tags; push(mine, x)` wrote the
+field, a later `push(self.row.tags, y)` showed through `mine`, and the
+element pushed through the local had to be anchored where the field
+lived. A `bounded` could not be returned, built from a literal or
+assigned whole as a local, because a local had no storage of its own to
+hold one (GH #1951). Changing this after 1.0 would change what running
+programs compute.
+
+**Decision.** A `bounded` local bound from a place is a copy, by the
+same rule as the other value types. Writing the local never changes the
+place, and writing the place never changes the local. The ownership pass
+keeps reads free, as it does for the others: the local stays the
+place's storage until a write into it (a `push`, `set`, `clear` or
+`truncate` naming it), which copies the list into the frame first, its
+storage and its live pointer-shaped elements, behind the local's
+copy-on-write flag; a local bound across an in-place write of its place,
+or handed to a call that may write through its parameter, is bound as a
+copy. With a local that holds a list of its own, a `bounded` is a value:
+an array literal at a declared `bounded[T; N]` site is that list (a
+literal longer than `N` is a check error), a local bound from a literal
+or a call is owned, a `let mut` one is assigned whole, and a fn returns
+one by value through the record return path, copied into the caller's
+arena. An intrinsic that writes a local declared with `let` is refused,
+so a program written against the view is told where it stopped writing
+the place.
+
+**Considered and rejected.** *Keep the view and add a separate owned
+local.* Two kinds of bounded local would read the same and behave
+differently, and the view kept the arena-anchoring rule (an element
+pushed through it went to the place's owner) that every other value type
+had shed. *Copy at every binding.* A `for` over `self.row.tags` through a
+local would copy the list for nothing; the copy on write costs only
+where a write happens. *Return through a caller-supplied place.* A
+record already returns through the caller's arena; a list returned the
+same way needs no second convention.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

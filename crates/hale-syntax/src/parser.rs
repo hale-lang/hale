@@ -8669,12 +8669,11 @@ impl Parser {
                     {
                         return Err(Diag::parse(
                             expr.span().merge(self.peek_token().span),
-                            "`bounded[T; N]` is a type, not a value: there is no \
-                             `bounded` literal. A bounded list lives in a record's \
-                             field or a locus param and starts empty: declare \
-                             `type Names { items: bounded[String; 4]; }`, build \
-                             `let mut n = Names {};`, and add to it with \
-                             `push(n.items, x) or …` (spec/types.md § bounded[T; N])",
+                            "`bounded[T; N]` is a type, not a value: write the \
+                             list as an array literal where its type is declared, \
+                             `let mut xs: bounded[String; 4] = [];` (or `= [\"a\", \"b\"]`), \
+                             and add to it with `push(xs, x) or …` \
+                             (spec/types.md § bounded[T; N])",
                         ));
                     }
                     let rb = self.expect(TokenKind::RBracket, "]")?;

@@ -192,7 +192,7 @@ type Message {
 }
 
 fn main() {
-    let msg = Message { id: "msg1" };   // `tags` starts empty (cannot be set in literal)
+    let msg = Message { id: "msg1" };   // `tags` left out: it starts empty
     push(msg.tags, "urgent") or raise;
     push(msg.tags, "billing") or raise;
 
@@ -202,6 +202,29 @@ fn main() {
     println(count(msg.tags));           // 2
 }
 ```
+
+A `bounded` is a value. An array literal written where a `bounded[T; N]` is declared (a `let` with that type, a `return` from a fn returning one, an argument, an assignment, a record literal's field) is that list, its count the literal's length; `[]` is empty. A literal longer than `N` is a check error where you wrote it. A function returns one by value, and the caller owns what it gets back:
+
+```hale
+type Doc { title: String; tags: bounded[String; 8]; }
+
+fn hashtags(d: Doc) -> bounded[String; 8] {
+    let mut out: bounded[String; 8] = [];
+    for t in d.tags {
+        push(out, "#" + t) or raise;
+    }
+    return out;
+}
+
+fn main() {
+    let ids: bounded[Int; 4] = [1, 2, 3];          // count 3
+    let d = Doc { title: "notes", tags: ["a", "b"] };
+    let tags = hashtags(d);
+    println(count(ids), " ", count(tags), " ", count(hashtags(d)));   // 3 2 2
+}
+```
+
+A local bound from a place is a copy, as a record or a string is: `let mut mine = self.row.tags; push(mine, "x") or raise;` leaves `self.row.tags` as it was, and a later write to `self.row.tags` does not reach `mine`. To change the place, name it (`push(self.row.tags, "x")`), or store the local back whole (`self.row.tags = mine;`). Writing a local with an intrinsic needs `let mut`.
 
 ### `bounded[T; N]` Intrinsics and Rules
 
@@ -215,8 +238,7 @@ fn main() {
 | `truncate(b, n)` | `(bounded[T; N], Int) -> ()` | Shrinks live count to `n` (never grows) |
 
 - **Supported element types:** Scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, unit types), payload-free enums, `String`, `Bytes`, and structs. Wrap tuples, fixed arrays, or payload-carrying enums in a struct to store them in a `bounded`.
-- **No literal:** a `bounded` is built empty inside its record and filled with `push`; `let x = bounded[String; 4] { };` is refused with a message naming that shape (`type Names { items: bounded[String; 4]; }`, `let mut n = Names {};`, `push(n.items, x) or …`).
-- **Copying and returning:** Assigning `row.tags = msg.tags;` between two `bounded[T; N]` fields of the exact same type copies all live elements and the count. A function cannot return a bare `bounded[T; N]` directly; wrap it in a `type` record and return the record.
+- **Copying and returning:** Assigning `row.tags = msg.tags;` between two `bounded[T; N]` of the exact same type, fields or locals, copies all live elements and the count; so does binding a local from a field. A function, a locus method and an interface method return a `bounded[T; N]` by value, its elements copied into the caller's arena. A call's result is a temporary: `count(make())` reads it, and `push(make(), x)` is refused (bind it with `let mut` first). A field takes no default: it starts empty, and a record literal that wants elements spells them (`Doc { tags: ["a"] }`).
 - **Memory:** A `bounded` a locus holds owns its `String`, `Bytes` and struct elements. Whatever stops being an element is reclaimed: the element `set` overwrites, the ones `clear` and `truncate` drop, and every element of a record you replace whole (`self.row = fresh;`). So a locus that keeps rewriting such a field stays the same size. `at(b, i)` gives you the element itself, and a local you keep across a call that rewrites the field gets its own copy automatically.
 - **Value semantics:** Every `bounded`, a local record's too, holds its own elements. After `push(l.items, item)`, writing `item.k = 2` does not change the element, and writing a copy read with `at` and `set` back does not change `item`. `push` and `set` keep the value without copying it when nothing else names it: a literal, a call's result, a local you do not use after the store, or an element read with `at` and set back to its own slot (`let mut x = at(l.items, i) or …; x.k = 2; set(l.items, i, x) or …;`). Otherwise they store a copy, which `hale verify` reports on a hot path.
 - **Populating via helper functions:** A helper function `fn fill(r: Row)` that pushes `String`, `Bytes`, or structs into `r` allocates those elements in the caller's frame. Passing a locus field directly (`fill(self.row)`) is rejected because those frame-allocated elements would be freed when the caller returns; instead, populate a local record and assign it whole (`let mut mine = Row { }; fill(mine); self.row = mine;`), which copies the elements into the locus's arena.
