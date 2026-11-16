@@ -3,8 +3,9 @@
 //! (spec/api.md § Imported surfaces).
 //!
 //! The mapping is the smallest one the api codec makes honest. A JSON
-//! Schema object with properties is a record, a string enum whose values
-//! are all names is an enum, `integer`, `number`, `boolean` and `string`
+//! Schema object with properties is a record, a string enum is an enum (its
+//! values the variants when all are names, PascalCase variants tagged with
+//! the values otherwise), `integer`, `number`, `boolean` and `string`
 //! are `Int`, `Float`, `Bool` and `String`, an array with a `maxItems` is
 //! a `bounded` list, and a property the schema does not require (or allows
 //! to be null) is a presence pair. Everything else the codec cannot carry
@@ -308,14 +309,43 @@ impl<'d> Mapper<'d> {
         };
         let names: Vec<&str> = values.iter().filter_map(Value::as_str).collect();
         let mut seen = BTreeSet::new();
-        if names.is_empty() || names.len() != values.len() || !names.iter().all(|n| is_name(n) && seen.insert(*n)) {
+        if names.is_empty() || names.len() != values.len() || !names.iter().all(|n| seen.insert(*n)) {
             return Ty::Str;
         }
+        let variants = if names.iter().all(|n| is_name(n)) {
+            // every value is a name: the variants are the values
+            names.iter().map(|s| s.to_string()).collect()
+        } else {
+            // GH #1951 item 5: a value no identifier spells (`stop-limit`,
+            // `1m`) makes every variant a PascalCase name with the value in
+            // its `json:` tag where the two differ; a value a tag cannot
+            // hold (empty, or with a quote, a backtick or a comma) keeps
+            // the field a `String`
+            if names.iter().any(|n| n.is_empty() || n.contains(['"', '`', ',', '\\'])) {
+                return Ty::Str;
+            }
+            let mut taken = BTreeSet::new();
+            names
+                .iter()
+                .map(|n| {
+                    let mut v = camel(n);
+                    if !v.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                        v.insert(0, 'V');
+                    }
+                    if !is_name(&v) {
+                        v.push('_');
+                    }
+                    let v = fresh(v, &mut taken, "_");
+                    if v == *n {
+                        v
+                    } else {
+                        format!("{v} `json:{}`", quote_tag(n))
+                    }
+                })
+                .collect()
+        };
         let name = self.type_name(hint);
-        self.decls.push(Decl::Enum {
-            name: name.clone(),
-            variants: names.iter().map(|s| s.to_string()).collect(),
-        });
+        self.decls.push(Decl::Enum { name: name.clone(), variants });
         Ty::Named(name)
     }
 

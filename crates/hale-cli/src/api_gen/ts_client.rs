@@ -184,13 +184,19 @@ fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
 }
 
 /// An enum's type, and its codec's two functions: a payload-free variant is
-/// its name, one with values an object keyed by the variant (one value
-/// itself, several a tuple), as the wire is (spec/api.md § Codecs). In
-/// JavaScript (`js`) the type is a JSDoc typedef and the casts JSDoc ones.
-pub(super) fn enum_decl(name: &str, variants: &super::ClientEnum, js: bool) -> Result<String, String> {
+/// its wire name, one with values an object keyed by it (one value itself,
+/// several a tuple), as the wire is (spec/api.md § Codecs); an enum with a
+/// catch-all (`json:",other"`, GH #1951 item 5) takes any other string too,
+/// `(string & {})`, which keeps the names an editor offers. In JavaScript
+/// (`js`) the type is a JSDoc typedef and the casts JSDoc ones.
+pub(super) fn enum_decl(name: &str, e: &super::ClientEnum, js: bool) -> Result<String, String> {
     let ident = type_ident(name);
+    // the variants with a wire name: all but a lossless catch-all, which is
+    // the string it holds
+    let variants: Vec<(&str, &Vec<hale_types::surfaces::FieldSchema>)> =
+        e.variants.iter().filter(|(v, _)| !e.wire.is_lossless_other(v)).map(|(v, values)| (e.wire.name(v), values)).collect();
     let mut arms = Vec::new();
-    for (v, values) in variants {
+    for &(v, values) in &variants {
         let what = format!("{name}::{v}");
         arms.push(match values.as_slice() {
             [] => json_quote(v),
@@ -201,6 +207,9 @@ pub(super) fn enum_decl(name: &str, variants: &super::ClientEnum, js: bool) -> R
                 many.iter().map(|f| type_in(f, &what, js)).collect::<Result<Vec<_>, _>>()?.join(", ")
             ),
         });
+    }
+    if e.wire.other.is_some() {
+        arms.push(if js { "string".to_string() } else { "(string & {})".to_string() });
     }
     let union = arms.join(" | ");
     let cast = |ty: &str, e: &str| {
@@ -230,7 +239,7 @@ export function encode_{ident}(v: {ident}): unknown {{
     if payloads {
         out.push_str("  if (typeof v === \"string\") return v;\n");
     }
-    for (v, values) in variants.iter().filter(|(_, values)| !values.is_empty()) {
+    for &(v, values) in variants.iter().filter(|(_, values)| !values.is_empty()) {
         let what = format!("{name}::{v}");
         let at = access("v", v);
         let value = match values.as_slice() {
@@ -255,7 +264,7 @@ export function encode_{ident}(v: {ident}): unknown {{
             cast(if js { "globalThis.Record<string, unknown>" } else { "__Record<string, unknown>" }, "json ?? {}")
         ));
     }
-    for (v, values) in variants.iter().filter(|(_, values)| !values.is_empty()) {
+    for &(v, values) in variants.iter().filter(|(_, values)| !values.is_empty()) {
         let what = format!("{name}::{v}");
         let at = format!("o[{}]", json_quote(v));
         let value = match values.as_slice() {

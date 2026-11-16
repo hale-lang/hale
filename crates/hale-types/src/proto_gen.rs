@@ -274,7 +274,7 @@ fn carried(
         FieldSchema::Ref(name) => Ok(message_name(name, surface)),
         // an enum with payloads is its message; a payload-free one is the
         // one-field message of a scalar row, its `value` the enum
-        FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
+        FieldSchema::Enum { name, variants, wire, .. } => match enum_ty(name, variants, wire, surface, extra)? {
             Ty::Message(m) => Ok(m),
             ty => {
                 let wrapper = wrapper_name(member, what);
@@ -486,7 +486,7 @@ fn value_ty(f: &FieldSchema, surface: &str, what: &str, extra: &mut Extra) -> Re
         }
         FieldSchema::Time => Ok(Ty::Scalar(Scalar::Int64)),
         FieldSchema::Ref(n) => Ok(Ty::Message(message_name(n, surface))),
-        FieldSchema::Enum { name, variants, .. } => enum_ty(name, variants, surface, extra),
+        FieldSchema::Enum { name, variants, wire, .. } => enum_ty(name, variants, wire, surface, extra),
         _ => Err(format!("{what}: a shape an enum's value cannot be has no proto3 encoding; no approximation is made")),
     }
 }
@@ -497,12 +497,25 @@ fn value_ty(f: &FieldSchema, surface: &str, what: &str, extra: &mut Extra) -> Re
 /// numbered from 1 (a payload-free variant a `bool`, a variant of one value
 /// that value, one of several the message `<Enum>_<Variant>` of fields `v0`,
 /// `v1`, ...), as the protobuf codec writes it (spec/api.md § Codecs).
-fn enum_ty(display: &str, variants: &[(String, Vec<FieldSchema>)], surface: &str, extra: &mut Extra) -> Result<Ty, String> {
+/// An enum's proto3 type. Its values and members keep the variants'
+/// identifiers whatever their `json:` tags rename on the JSON wire (GH #1951
+/// item 5); a payload-free catch-all is noted, since a number no value has
+/// decodes to it.
+fn enum_ty(
+    display: &str,
+    variants: &[(String, Vec<FieldSchema>)],
+    wire: &crate::surfaces::EnumWire,
+    surface: &str,
+    extra: &mut Extra,
+) -> Result<Ty, String> {
     let name = message_name(display, surface);
     if !is_ident(&name) {
         return Err(format!("the type `{display}` is not a proto3 enum or message name"));
     }
-    let comment = if display != name { vec![format!("Hale: {display}")] } else { Vec::new() };
+    let mut comment = if display != name { vec![format!("Hale: {display}")] } else { Vec::new() };
+    if let Some((other, false)) = &wire.other {
+        comment.push(format!("Hale: a number no value has reads as {}", crate::api_names::proto_variant(&name, other)));
+    }
     if variants.iter().all(|(_, v)| v.is_empty()) {
         if !extra.enums.iter().any(|e| e.name == name) {
             let values = variants.iter().enumerate().map(|(i, (v, _))| (crate::api_names::proto_variant(&name, v), i as u32)).collect();
@@ -612,7 +625,7 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
             }
             // a payload-free enum has presence as a scalar does; one with
             // payloads is a message
-            FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
+            FieldSchema::Enum { name, variants, wire, .. } => match enum_ty(name, variants, wire, surface, extra)? {
                 ty @ Ty::Enum(_) => field(key, number, ty, Label::Optional),
                 ty => field(key, number, ty, Label::Plain),
             },
@@ -637,7 +650,7 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
                     }
                     FieldSchema::Time => Ty::Scalar(Scalar::Int64),
                     FieldSchema::Any => Ty::Scalar(Scalar::String),
-                    FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
+                    FieldSchema::Enum { name, variants, wire, .. } => match enum_ty(name, variants, wire, surface, extra)? {
                         ty @ Ty::Enum(_) => ty,
                         _ => return Err(format!("{display}.{key}: a map's value `{name}` has payloads, which no map value carries")),
                     },
@@ -672,8 +685,8 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
                         p.comment = Some(JSON_TEXT.to_string());
                         p
                     }
-                    FieldSchema::Enum { name, variants, .. } => {
-                        field(key, number, enum_ty(name, variants, surface, extra)?, Label::Repeated)
+                    FieldSchema::Enum { name, variants, wire, .. } => {
+                        field(key, number, enum_ty(name, variants, wire, surface, extra)?, Label::Repeated)
                     }
                     FieldSchema::Time => {
                         let mut p = field(key, number, Ty::Scalar(Scalar::Int64), Label::Repeated);

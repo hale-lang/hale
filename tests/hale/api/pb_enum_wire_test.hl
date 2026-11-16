@@ -1,0 +1,111 @@
+// An enum variant's `json:` tag under the protobuf codec (GH #1951 item 5,
+// spec/api.md § Codecs, § gRPC).
+//
+// A rename is the JSON wire's alone: protobuf keeps the variants' numbers
+// (and the `.proto` their `<Enum>_<Variant>` identifiers), so a value
+// renamed on the JSON wire crosses protobuf as it did before the tag. A
+// payload-free catch-all makes a number no variant has decode to it, as an
+// unknown name does on the JSON wire; with no catch-all such a number stays
+// `wrong_type`. A lossless catch-all (`Other(String)`) makes the enum one
+// with payloads, a message of one `oneof`, the catch-all its `string`
+// member. This program names no port: the serve site binds port 0 and
+// nothing calls it, which is all the compiler needs to write the codecs.
+
+type Side = enum { Buy `json:"buy"`, Sell `json:"sell"` };
+type Kind = enum { Limit `json:"limit"`, Market `json:"market"`, Unknown `json:",other"` };
+type Venue = enum { Spot `json:"spot"`, Other(String) `json:",other"` };
+type Holder { side: Side; kind: Kind; venue: Venue; }
+
+api PbWire {
+    rpc Probe::holder;
+}
+
+locus Probe {
+    fn holder(h: Holder) -> Holder { return h; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(
+            PbWire,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
+    }
+
+    // JSON in, protobuf through, JSON out: the same text.
+    fn round(json: String, what: String) {
+        let v = __api_decode_Holder(json) or {
+            std::test::assert(false, what + ": the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        let back = __api_pb_decode_Holder(__api_pb_encode_Holder(v)) or {
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Holder(back), json, what);
+    }
+
+    run() {
+        // a rename keeps the variant's number
+        std::test::assert_eq_int(
+            __api_pb_enum_no_Side(Side::Sell),
+            1,
+            "a renamed variant keeps its number",
+        );
+        let sell = __api_pb_enum_Side(1, "side") or {
+            std::test::assert(false, "number 1: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Side(sell), "\"sell\"", "and its number reads as it");
+        // an unknown number with no catch-all stays refused
+        let none = __api_pb_enum_Side(7, "side") or {
+            std::test::assert_eq_str(
+                err.kind + ": " + err.field,
+                "wrong_type: side",
+                "no catch-all: refused",
+            );
+            Side::Buy
+        };
+        std::test::assert_eq_str(__api_encode_Side(none), "\"buy\"", "refused, the substitute");
+        // a payload-free catch-all takes an unknown number
+        let unknown = __api_pb_enum_Kind(7, "kind") or {
+            std::test::assert(false, "an unknown number: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(
+            __api_encode_Kind(unknown),
+            "\"Unknown\"",
+            "an unknown number is the lossy catch-all",
+        );
+        let market = __api_pb_enum_Kind(1, "kind") or {
+            std::test::assert(false, "number 1: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Kind(market), "\"market\"", "a known number");
+        // through a record: the lossless catch-all crosses as its string member
+        self.round("{\"side\":\"sell\",\"kind\":\"limit\",\"venue\":\"spot\"}", "renamed variants");
+        self.round(
+            "{\"side\":\"buy\",\"kind\":\"Unknown\",\"venue\":\"dark pool\"}",
+            "both catch-alls",
+        );
+    }
+}
+
+fn main() { Desk { }; }
