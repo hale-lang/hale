@@ -8813,6 +8813,9 @@ row	App@literal1	App	main	default
 row	App@literal1.w	Worker	main	default
 dynamic	Probe	on main	in the seed
 
+== tests/hale/open_slices_test.hl
+row	Lines@main1	Lines	main	default
+
 == tests/hale/optional_field_test.hl
 row	Desk@main1	Desk	main	default
 

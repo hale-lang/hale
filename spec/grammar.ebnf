@@ -1514,9 +1514,11 @@ expression        = range_expr ;
 
 (* Range is the lowest-precedence expression form, non-associative
    (one `..` / `..=` per chain). It parses in ANY expression
-   position; v1 restricts its *use* to `for x in lo..hi` at
-   typecheck / codegen, so a range elsewhere is a typecheck error,
-   NOT a parse error. `..` is exclusive, `..=` inclusive. *)
+   position; v1 restricts its *use* to `for x in lo..hi` and a
+   `String` slice's index at typecheck / codegen, so a range
+   elsewhere is a typecheck error, NOT a parse error. `..` is
+   exclusive, `..=` inclusive. Only an index may leave a bound out
+   (`index_expr`). *)
 range_expr        = assignment_expr , [ ( ".." | "..=" ) , assignment_expr ] ;
 
 assignment_expr   = or_disposition_expr , [ assign_op , assignment_expr ] ;
@@ -1596,8 +1598,19 @@ postfix_expr      = primary_expr , { postfix_op } ;
 postfix_op        = "." , member_name
                   | "::" , member_name
                   | "(" , [ argument_list ] , ")"
-                  | "[" , expression , "]"
+                  | "[" , index_expr , "]"
                   ;
+
+(* GH #1995 S1: inside an index's brackets a range may leave a bound
+   out — `s[lo..]` (to the end), `s[..hi]` / `s[..=hi]` (from 0),
+   `s[..]` (the whole string). It is the closed slice it reads as,
+   with the receiver evaluated once (spec/semantics.md § String
+   slicing). `..=` needs its end, and a range missing a bound is a
+   parse error anywhere but here: a bare `3..` does not parse. *)
+index_expr        = expression
+                  | assignment_expr , ".."
+                  | ( ".." | "..=" ) , assignment_expr
+                  | ".." ;
 
 (* GH #1417 — a call of the path `api::serve` takes, after its
    surface and its transport instance, the named arguments of a serve

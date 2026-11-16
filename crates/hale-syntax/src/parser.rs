@@ -8467,26 +8467,91 @@ impl Parser {
         let lhs = self.parse_expr_bp(0)?;
         // Range operator binds at the lowest precedence: `for i in
         // 0 .. n + 1` should parse as `0 .. (n + 1)`. v0 only
-        // surfaces ranges in for-loop iterator position; the
-        // typechecker / codegen rejects them elsewhere.
+        // surfaces ranges in for-loop iterator position and as a
+        // String slice's index; the typechecker / codegen rejects
+        // them elsewhere. With no range, the v1.x-FORM-1
+        // `or`-disposition postfix (right-associative, so `a() or
+        // b() or raise` chains correctly).
+        self.parse_expr_tail(lhs)
+    }
+
+    /// The expression inside an index's `[ ]`. Everything `parse_expr`
+    /// takes, plus a range with an end left out (GH #1995 S1):
+    /// `s[a..]`, `s[..b]`, `s[..=b]`, `s[..]`. An open range parses
+    /// here and nowhere else, so a bare `3..` stays a parse error.
+    ///
+    /// It desugars at once to the closed form, so every later pass
+    /// sees an ordinary `Expr::Range`: a missing start is the literal
+    /// `0`, a missing end the literal `i64::MAX`, which the slice clamps
+    /// to the receiver's length (`lotus_str_slice`, spec/semantics.md §
+    /// String slicing). Spelling the end as `len(recv)` would evaluate
+    /// the receiver twice; the clamp gives the same bytes with the
+    /// receiver evaluated once. The synthesized literals carry
+    /// zero-width spans at the `..`, and `hale fmt` (a token-stream
+    /// formatter) never sees them, so the source round-trips as written.
+    fn parse_index_expr(&mut self) -> Result<Expr, Diag> {
+        let open_lo = matches!(self.peek(), TokenKind::DotDot | TokenKind::DotDotEq);
+        if !open_lo {
+            let lhs = self.parse_expr_bp(0)?;
+            let ends_open = matches!(self.peek(), TokenKind::DotDot | TokenKind::DotDotEq)
+                && matches!(self.peek_at(1), TokenKind::RBracket);
+            if !ends_open {
+                return self.parse_expr_tail(lhs);
+            }
+            let op = self.bump();
+            let inclusive = matches!(op.kind, TokenKind::DotDotEq);
+            if inclusive {
+                return Err(Self::open_inclusive_range(op.span));
+            }
+            let hi = Self::open_range_end(op.span);
+            let span = lhs.span().merge(op.span);
+            return Ok(Expr::Range { lo: Box::new(lhs), hi: Box::new(hi), inclusive: false, span });
+        }
+        let op = self.bump();
+        let inclusive = matches!(op.kind, TokenKind::DotDotEq);
+        let lo = Expr::Literal(
+            Literal::Int(0),
+            Span { start: op.span.start, end: op.span.start },
+        );
+        if self.at(&TokenKind::RBracket) {
+            if inclusive {
+                return Err(Self::open_inclusive_range(op.span));
+            }
+            let hi = Self::open_range_end(op.span);
+            return Ok(Expr::Range { lo: Box::new(lo), hi: Box::new(hi), inclusive: false, span: op.span });
+        }
+        let hi = self.parse_expr_bp(0)?;
+        let span = op.span.merge(hi.span());
+        Ok(Expr::Range { lo: Box::new(lo), hi: Box::new(hi), inclusive, span })
+    }
+
+    /// The end of `s[a..]`: a zero-width `i64::MAX` just past the `..`,
+    /// which the slice clamps to the receiver's length.
+    fn open_range_end(op: Span) -> Expr {
+        Expr::Literal(Literal::Int(i64::MAX), Span { start: op.end, end: op.end })
+    }
+
+    fn open_inclusive_range(op: Span) -> Diag {
+        Diag::parse(
+            op,
+            "`..=` needs an end to include: write `s[a..]` for the rest of the \
+             string, or `s[a..=b]` with the last index (spec/semantics.md § \
+             String slicing)",
+        )
+    }
+
+    /// `parse_expr` past its left operand: a range, or an `or` tail.
+    fn parse_expr_tail(&mut self, lhs: Expr) -> Result<Expr, Diag> {
         let inclusive = if self.eat(&TokenKind::DotDot) {
             false
         } else if self.eat(&TokenKind::DotDotEq) {
             true
         } else {
-            // No range; check for the v1.x-FORM-1 `or`-disposition
-            // postfix instead. Right-associative so
-            // `a() or b() or raise` chains correctly.
             return self.parse_or_disposition_tail(lhs);
         };
         let rhs = self.parse_expr_bp(0)?;
         let span = lhs.span().merge(rhs.span());
-        Ok(Expr::Range {
-            lo: Box::new(lhs),
-            hi: Box::new(rhs),
-            inclusive,
-            span,
-        })
+        Ok(Expr::Range { lo: Box::new(lhs), hi: Box::new(rhs), inclusive, span })
     }
 
     /// v1.x-FORM-1: `<expr> or <disposition>` postfix. Addresses
@@ -8794,7 +8859,7 @@ impl Parser {
                 }
                 TokenKind::LBracket => {
                     let lb = self.bump();
-                    let index = self.parse_expr()?;
+                    let index = self.parse_index_expr()?;
                     // GH #1948: `bounded[String; 4] { }` in value position
                     // reads as an index of a name `bounded` and stopped at
                     // the `;` with "expected ]". Say what it is instead.
