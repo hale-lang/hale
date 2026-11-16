@@ -8,6 +8,215 @@ behavior.
 
 ## Unreleased
 
+## v0.33.0 — what you check is what builds (2026-11-16)
+
+This is the first release under [`STABILITY.md`](./STABILITY.md), and its theme is the language settling toward 1.0. What `hale check` accepts, `hale build` now compiles, and a generator keeps it that way. Strings and `bounded` lists behave as values at a value's cost. What a release may change from here is written down, and every break below comes with its migration.
+
+**What you check is what builds.** This release sets out to end the program the check passed and the build then refused, often with no file or line. An adversarial parity gate now mutates the corpus (tail shapes, generic wraps, a declaration moved across a seed boundary, element types, call shapes, `or` plumbing) and builds every program the check accepts (#1973). On `main` it found ten gaps (GH #1963 through #1972). This release closes all of them and the ones found after, so the gate's ratchet ships empty: zero known divergences (#1977, #1979, #1989). A body with a declared return type must return a value on every path (definite return, #1955), and a trailing `match`, `if … else` or block is the body's value. Every construct the compiler cannot lower yet is refused by the check, at the construct, with a way forward (#1962). Shapes the check accepted and the build refused now compile where they can: calls through any fn value, zero-length arrays, generics across a seed boundary and at a locus or a perspective, qualified stdlib error types (#1930, #1954, #1962, #1977, #1979, #1989). A record that holds its own kind through a `bounded` list or an enum builds, where the compiler overflowed its stack (#1931). A refusal the build still raises names its place, in the stdlib or in your code (#1955).
+
+**A written stability policy.** `STABILITY.md` replaces the rule that nothing was promised before 1.0 (#1953). A patch release fixes bugs and changes nothing a correct program means. A minor release may break programs, and opens its CHANGELOG section with a `### Breaking` heading, `None.` when there is nothing. A stable-tier form that is removed or changed warns `deprecated:` for at least one minor release before it is refused. `spec/stability.toml` puts every stdlib namespace and spec file in the stable or the experimental tier. The keyword list is frozen in `spec/keywords.txt`, and changing it takes an RFC. Every CHANGELOG fragment now declares its breaking changes, and CI checks it. The first deprecation runs under the new rule: `std::json::Builder`'s `field` and `value` warn now and quote their argument in v0.34 (#1954, #1959). 1.0 waits on the exit gates the page lists.
+
+**Strings and lists are values, at a value's cost.** Building a String by appending is linear (#1960). `s = s + …`, `s += …` and `s = f"{s}…"` on a local or a field of `self` grow a buffer in place, where every append used to copy the whole String: a 350 KB result built in 8000 appends peaked at 4.5 GB and now peaks at 4 MB. `bounded[T; N]` lists are values (#1961, decision F.49): an array literal is a list at a typed site, a fn returns one by value, and a local bound from a place is a copy. A `bounded` list may hold an enum with payloads, and owns what each variant carries (#1983).
+
+**The shapes v1 needs.** A record field can be optional: `x?: T` declares the field with a real presence flag, byte-identical on the wire to the hand-written `has_x` pair (#1988, F.52). `or raise` converts the call's error into the enclosing fn's, into a set type that holds it or through a `@raise fn` conversion (#1981). An import list makes an imported seed's declarations bare and re-exports them (#1985, F.51). Raw string literals read no escapes, `r"^\d+$"` (#1958).
+
+**Codecs, the bus and the stdlib.** The JSON codecs read a Decimal from a quoted number and write one as a string (`json:",string"`), carry `@positional` records as arrays, and read JSON-RPC's hex quantities (`json:",hex"`) (#1932, #1936). A wire map never decodes input it cannot represent as an empty value (#1954). Every `type` crosses the bus: lists, enums with payloads, tuples and `std::json::Value` in a payload, in process and over `unix://` and `udp://`. A topic whose whole payload is an enum holding a `Bytes`, a record or a list now carries the value, where it used to copy a pointer onto the wire (#1990). An enum holding a `Decimal` no longer faults on x86-64 (#1932, #1936). New: `std::crypto`'s `hmac_sha384`, `keccak256`, RSA-PSS and secp256k1 ECDSA (#1935); `U256` and `I256`, experimental tier (#1936); `std::time::parse_rfc3339` (#1958). The hot-path allocation lint is asked for (`hale verify`, `hale check --warn-hot-path`), not shown by every build (#1958).
+
+**DNA and the habitat.** The face is drawn on the hale UI kit, with seven themes, and draws the org chart as a graph (#1921, #1933). A signed-in visitor follows the habitat's org chart into a grafted organism's face (#1924). Ingest reads Kubernetes manifests, gives each process its facets and its program, and reads a Go repository's units of code; `hale dna draft` plans the chart from them within a line budget (#1922, #1925, #1926, #1928). A nursery added from a local directory works for a habitat on another machine (#1927).
+
+### Breaking
+
+Measured against v0.32.13. The first group changes what a program that built does; the second refuses programs that built; the third moves refusals `hale build` already made into `hale check`, so a program that built is unaffected; the last is a deprecation.
+
+*Programs that built and now behave differently*
+
+- **A `bounded[T; N]` local bound from a place is a copy** (#1961, F.49). `let mut mine = self.row.tags; push(mine, x) or …;` used to write `self.row.tags`, and a later write to `self.row.tags` showed through `mine`. Now `mine` is a list of its own, as a record, String or array local already is. Migration: write the place itself (`push(self.row.tags, x) or …;`), or store the local back whole (`self.row.tags = mine;`).
+- **The JSON encoder leaves out an optional `std::json::Value` field that holds `null`** (#1988). A `Value` field with its `has_` flag set and holding `null` used to be written as `"x": null`; the key is now left out, for hand-written pairs too. Migration: a peer that told a written `null` apart from a missing key reads a missing key as `null`, which is what decoding it in Hale always did.
+- **`hale api import` writes an optional property as `name?: T;`** (#1988). It used to write `has_name` before `name`; the flag now follows the field, so a record re-imported with this version has a different field order, and a different shape hash, than one imported earlier. Migration: re-pin any shape hash recorded from an earlier import, or keep the earlier generated file. Hand-written `x` then `has_x` pairs are unaffected.
+
+*Programs that built and are now refused*
+
+- **A seed that imports its own file or its own directory** (#1930). `import "util" as util;` in a directory seed holding `util.hl` used to resolve and bind nothing, so a program that never used the alias built. It is now refused at the import. Migration: delete the import and call the declarations by their bare names.
+- **A `json:` tag with a comma in its key** (#1932). `json:"a,b"` used to read and write the key `a,b`. Text after the comma is now the tag's options (`string`, `hex`), and any other option is refused by the check. Migration: name the key without a comma.
+- **A `bounded` intrinsic that writes a `let` local, and a `bounded` field default** (#1961). `push`, `set`, `clear` or `truncate` on a local declared with `let` used to write through to the place it viewed; it is now refused at the check. A `bounded` field default, which lowering silently ignored, is refused too. Migration: declare the local `let mut` and store it back, or write the place; delete the field default (the list starts empty, as it always did).
+- **A non-exhaustive `match` over an imported enum's qualified variant or a generic fn's generic result** (#1989). A value built as `lib::E::V(…)`, or returned by `fn f<T>(…) -> Box<T>`, had no type at the check, so a `match` over it that missed a variant, or an assignment of it to another type, passed. Both are now refused. Migration: add the missing arms (or `_`), or fix the mismatched annotation.
+- **A topic whose whole payload is an enum that contains itself** (#1990). `type Tree = enum { Leaf(Int), Fork(Tree) };` as a topic's payload used to build and copy its inner cells' pointers onto the wire. It is now refused by `hale check` where the topic is delivered. Migration: carry ids instead of the nested values.
+- **An unlowerable construct inside a generic fn or generic locus that nothing instantiates** (#1962, #1977, #1979). Such a template was never compiled, so it built; the check now refuses the constructs listed in the next group wherever they are written. Migration: rewrite the construct as the diagnostic says, or delete the unused template.
+
+*Refused by `hale check` instead of `hale build` (a program that built is unaffected)*
+
+- **Definite return** (#1955). A fn, locus method or mode with a declared return type whose body can reach its end without a value used to pass the check and fail the build with no file or line. The check now refuses it at the declaration's name and names the path that falls through (an `if` with no `else`, a loop that can finish, the `break` that leaves a `while true`, an arm whose last statement is not a value). Migration: return a value on that path.
+- **An `or raise` whose call fails with another error type** (#1954, #1981). It used to pass the check and fail the build. It now converts when the enclosing fn's error is a set type holding the call's error, or when a `@raise fn` conversion is declared for the pair; anything else is refused at the `or raise`, naming both types. Migration: translate with `or fail E { … }` (the call's error is `err`), declare a `@raise` conversion, or declare the fn `fallible` with the call's error type.
+- **Constructs the compiler cannot lower yet** (#1962): an unsized `[T]` or a non-literal array length; a generic fn call that binds an array, tuple, `bounded` or fn type; a generic locus method; `[]` outside a typed `let`; a nested pattern inside a tuple pattern; a range index on anything but a `String`; `len`, `Int(…)` and `Float(…)` operands outside their rows; `sum(…)`, `count()` and `mean(…)` outside a closure assertion or over more than one field; `prod(…)`; a closure band that mixes `Int` and `Float`; an `@ffi` parameter with a default or of an enum, locus or interface type; `sort()` of a `@form(vec)` whose cell has no default ordering; a `@form(lru_cache)` key that is not an `Int` or `String`; a literal subject's payload field the wire cannot carry; an enum in a native `shm_ring`; a `Drain<T>` handler on a `layout:` ring; and a cross-pool child whose params the spawn cannot marshal, or which keeps a `run()`, subscriptions, closures, capacity slots or an `accept`. Migration: rewrite the construct as the diagnostic says.
+- **Four call and match shapes** (#1977): a call through a fn value with fewer arguments than its type takes (a fn type has no defaults); `return <a call with no value>;` in a `() fallible(E)` fn; a body's tail whose type is not the return type; and a `match` arm naming an enum's variant without its enum (`A(x)` for `E::A(x)`; the bare name is a set member's spelling only). Migration: write the shape as the diagnostic says.
+- **Generic shapes** (#1979): a generic fn argument whose type the check cannot name (a capacity slot such as `id(self.slot)`, a call with no value such as `id(println("x"))`, a stdlib path written without `std::`); a literal spelled with a generic template's name where no declared type supplies its arguments (`Box { v: 3 }.v`, `id(Box { v: 3 })`); an `or` after something that is not a call (`Box { v: f() }.v or 0`); a generic fn named as a value (`let g = id;`); and a generic `type` instantiated at a locus (`Box<L>`). Migration: write the shape as the diagnostic says.
+- **A `@raise` conversion's effects and allocations count against the raising fn** (#1989). A fn whose converting `or raise` reaches an effect class its `@effects(none: …)` forbids, or allocations its `@budget(alloc_per_call = N)` does not cover, is refused. `@raise` is new in this release, so only code written against it on `main` meets this. Migration: allow the effect or raise the budget, or move the work out of the conversion.
+
+*Deprecated*
+
+- Deprecated: **`std::json::Builder`'s `field(name, value)` and `value(v)`** (#1954, #1959). They write their argument raw, so `b.field("name", "alice")` writes `"name": alice`, which is not JSON. This release still writes the same bytes, and each call warns `deprecated:`. v0.34 makes them quote their argument as a string. Migration: hand encoded JSON to `raw_field(name, json)` / `raw_value(json)`, and a string to `string_field` / `string_value`.
+
+The item-level notes follow.
+
+### Changed
+- The face's Organization screen draws the org chart as a graph (Cytoscape.js, vendored as `dna/face/web/cytoscape.min.js`): one node per position, code part and child organization, an edge to what each sits under; the chips under it list the same nodes. The head serves the library beside the three assets when the webroot has it.
+
+### Changed
+- Ingest gives every compose process its facets (`origin` built or pulled, `shape` the build it is one placement of, `runs` whether it runs the repository's code; a pulled image says so with the label `dna.runs=repository`), and `hale dna draft` seats only what runs the repository's code, one set of positions per shape.
+
+### Added
+- The face's launcher serves the browser assets from `HALE_FACE_WEBROOT`, else the habitat directory's `face-web/` when it holds an `index.html`, instead of the embedded ones: a dev override for working on the face against a running habitat, said on the face's log; removing the directory returns the embedded assets at the next restart.
+
+### Fixed
+- The habitat's org chart hands a signed-in visitor into a grafted organism's face: the head's `GET /organisms/<name>/face` redirects to that face with its own launch token (read from the habitat's directory), instead of a bare link that landed on the face's launch-token gate.
+
+### Added
+- Ingest reads the repository's Kubernetes manifests (`k8s/`, `kubernetes/`, `manifests/`, `deploy/`): each Deployment, StatefulSet, DaemonSet, Job and CronJob is a process run by the `kubernetes` deployment, with the same facets a compose service carries.
+
+### Added
+- Every process in the graph names its `program` (the command's program, through a shell's `exec` or a launcher script), and ingest reads a Go repository's units of code: package directories with their sizes, the programs among them and what each reaches.
+
+### Fixed
+
+- A nursery added from a local directory works for a habitat on another machine (a pointer made by `hale habitat up --host`). `hale habitat nursery add <dir>` stages the nursery and a mirror of its sapling repositories on this machine as before, then ships them over the pointer's SSH login into the habitat's directory there, under the same keys, before the Board trusts it. `hale habitat nursery refresh` ships every trusted directory nursery again first, so a new commit is filed for the Board, and graft and `organism upgrade` there fetch from the shipped mirror instead of failing on a path that only exists on the admin machine. Saplings are still pinned at the directory's committed `HEAD`, never its working tree.
+
+### Changed
+- `hale dna draft` plans the chart from the code's units when the repository is a Go module, by one knob (`--budget <lines>`, 8,000 by default): a program over budget gets its own architect, dev and qa, smaller programs of a deployment are packed into sets within the budget, shared code gets an expert per group, and every mandate names what it covers and its size.
+
+### Fixed
+- `hale check` refuses a `bounded[T; N]` intrinsic (`count`, `push`, `at`, `set`, `clear`, `truncate`) called on an argument that is not a `bounded`, when no `fn` of that name is declared for it, and points at the record's `bounded` field (`count(b.items)`). `count(record)` used to pass the check and fail the build as a call to an unknown free fn, with no file or line.
+- `hale check` refuses a record field default that produces no value, such as `meta: Meta = { };` (an empty block, not a record literal), and spells out the literal `Meta { }`. The build used to fail with "block used as expression has no trailing expression" and no file or line.
+- A codegen refusal raised while lowering an expression of the program's own source now carries that expression's file, line and column.
+- The build lowers a `bounded` intrinsic whose receiver is reached through an array element (`count(xs[0].inner.items)`), a record literal (`count(lib::Outer { }.inner.items)`) or an `at(...)` result (`count((at(m.outs, 0) or d).inner.items)`). Each used to check clean and fail the build as a call to an unknown fn.
+- Importing one of the seed's own files (`import "util" as util;` in a directory seed that holds `util.hl`), or the seed's own directory, is refused at the import: those declarations are already in scope by their bare names. The import used to resolve silently and bind nothing, so every `util::f(...)` failed as "not an import or a type of this seed".
+
+### Fixed
+- `hale check` refuses a record that contains itself by value, directly (`type Cfg { child: Cfg = Cfg { }; }`) or through a ring of records, a tuple, a fixed array or a generic record. It reports at the field that closes the ring, names each field on it, and suggests a `bounded[Cfg; N]`, an enum variant beside one that holds none, or a key. Such a program used to pass the check and then crash the compiler with "thread 'main' has overflowed its stack".
+- A record that holds records of its own kind through a `bounded[T; N]` or an enum variant now builds and runs. A push, return, copy or store of one used to overflow the compiler's stack.
+
+### Added
+- A `Decimal<S>` field, list element, enum value or map value decodes from a JSON string holding a number (`{"price": "97000.50"}`) as well as from a number, through `T::api_decode` and `T::from_json`. The string's text is held to the JSON number grammar and read exactly at the scale, with no float on the way. A digit past the scale, or a string holding anything but a number, is the field's `wrong_type`.
+- `json:"price,string"` (or `json:",string"`) writes a Decimal field, or each Decimal of a list, as a JSON string of its digits. `string` is the only `json:` tag option, and it applies only to a Decimal: the check refuses any other option.
+- `@positional type Row { ... }`: a record the JSON codecs carry as an array of its fields in declaration order, for the candle and order-book rows APIs send as arrays of arrays (`bids: bounded[Level; 50]` reads `[["3000.40", "0.5", 1], ...]`). Each element is read as its field would be. Elements past the last field are skipped. A row that ends early leaves the remaining fields at their defaults, or is `missing_field` named `<Type>.<field>`. A served surface does not carry a positional record (law 5).
+
+### Fixed
+- An enum whose payload holds a `Decimal` crashed on x86-64 when a value was built, matched or copied (a record returned from a fn copies its enum fields). The payload sits four bytes into the enum, but it was read and written as if 16-byte aligned, which x86-64 turns into an instruction that faults on that address. aarch64 tolerates the unaligned access, so it passed there. Every payload access now assumes no alignment.
+
+### Changed
+- The face is drawn on the hale UI kit: voice's tokens with their seven themes (a theme picker in the rail, following the system or by name), voice's shell shape (rail, canvas, inspector, evidence strip) and cut-corner panels; the board's five lanes take the full width and the selected card opens beneath them.
+
+### Added
+- `std::crypto` gains request- and transaction-signing primitives (downstream handoff): `hmac_sha384` (RFC 4231); `keccak256`, Ethereum's Keccak-256 (Keccak padding, not SHA3-256), native and wasm32; `rsa_pss_sha256_sign` / `rsa_pss_sha256_verify` (RSA-PSS, SHA-256, MGF1-SHA256, 32-byte salt; PKCS#8 or PKCS#1 PEM, an encrypted key refused rather than prompted for); and secp256k1 ECDSA over a 32-byte digest: `secp256k1_public_key`, `secp256k1_sign` answering `(r, s, recovery_id)` with an RFC 6979 deterministic nonce and low-s (EIP-2), `secp256k1_verify` (refuses a high s) and `secp256k1_recover` (`ecrecover`). Invalid keys are a `CryptoError` whose detail never names key material.
+
+### Added
+- `U256` and `I256`, 256-bit unsigned and signed integers, for chain values: balances, token amounts, ABI words and fixed-point AMM prices. There is no literal: `U256::from_int(n)`, `U256::parse(s) or ...` (decimal, or `0x` hex) and `U256::from_be_bytes(b) or ...` (32 bytes) make one, and `to_string`, `U256::to_hex`, `U256::to_be_bytes` and `U256::to_int(x) or ...` take one apart. `+ - * / %`, comparisons, `& | ^ ~` and `<< >>` (by an `Int` count) work as for `Int`, but arithmetic never wraps. An overflow or a division by zero stops the process with a violation. `U256::checked_add`, `checked_sub`, `checked_mul`, `checked_div` and `mul_div(a, b, c)` (`a * b / c` with the product exact in 512 bits) fail with an `ArithError` instead. A 256-bit integer never mixes implicitly with an `Int`, a `Decimal` or the other width, and the check names the conversion to write. Both types go in records, locus params, `bounded` lists, fixed arrays, enum payloads, hashmap cells and bus payloads.
+- The JSON codecs carry `U256` / `I256` as a JSON string of decimal digits. Decoding also reads `0x` hex text, or a JSON integer that fits. A new `json:",hex"` tag option writes `0x` hex instead.
+- `json:",hex"` on an `Int` field (or a list of them) reads JSON-RPC's quoted hex quantities (`"gasUsed":"0x4dc"`) as well as a plain number, and writes `"0x4dc"`. A negative `Int` is written as its number. No `0x`, no digits, a sign, a space, or a value past `Int`'s range is the field's `wrong_type`. `string` and `hex` are the `json:` tag options.
+
+### Fixed
+- Iterating a hashmap whose cell holds a `Decimal` could fault on x86-64. The loop read the cell where it sits in the map, at an address that is not 16-byte aligned. Such a cell is now copied out first.
+
+### Added
+- `STABILITY.md`, a written compatibility policy (GH #1950). A patch release fixes bugs and changes nothing a correct program means. A minor release may break programs, and lists every break under a `### Breaking` heading that opens its CHANGELOG section (`None.` when there are none). A stable-tier form that is removed or changed warns with a `deprecated:` warning for at least one minor release before it is refused. 1.0 will promise source compatibility for the stable tier across 1.x, without editions. The page also states the v1 exit gates.
+- Stability tiers: `spec/stability.toml` marks every stdlib namespace and every spec file `stable` or `experimental`, and the book's new *Stability & Compatibility* chapter shows the table. Experimental in the first assignment: `std::u256`, `std::i256`, `std::io::h2`, `std::observe`, `std::metrics`, `std::api`, the internal transport namespaces, the DNA-facing namespaces (`std::secret`, `std::tar`, `std::ts`), the unit dialect, the api binding, the canonical model, packages, DNA and the habitat. A test refuses a new namespace or spec file without a tier.
+- The keyword list is frozen in `spec/keywords.txt`, and a test fails on any change to it. Changing a keyword is an RFC. F.47 in `spec/decisions.md` proposes unreserving `trait`, `impl`, `async`, `await` and `macro` before 1.0. It is not implemented, and the words stay reserved until it is confirmed.
+- Every CHANGELOG fragment declares its breaking changes: a line `Breaking: none`, or a `### Breaking` section. `scripts/changelog-check.sh` checks this in CI, and `scripts/changelog-fold.sh` gathers the Breaking bullets at the top of each release.
+
+### Fixed
+- A wire map (`bounded[T; N] indexed_by k`) never decodes input it cannot represent as an empty value (GH #1944). A member that is not the record's JSON, such as an array where an object belongs, is `wrong_type` naming the field, and so is a map sent as anything but an object. Before, `{"bars":{"AAPL":[…]}}` decoded as `AAPL` with no rows. A `json:`-tagged or `@positional` record with an `indexed_by` field now has a working `from_json` / `to_json`. Before, it was refused with the names of generated helpers and no location. The hot-path lint no longer warns inside compiler-generated codecs.
+- Qualified stdlib error types (`fallible(std::crypto::CryptoError)`, `std::io::IoError`, `std::index::IndexError`, `std::form::hashmap::KeyError`, `std::form::ring_buffer::EmptyError`) build wherever the bare names do (GH #1945). Before, the check passed them and the build failed with no location.
+- `api::serve` no longer fails the build at 17 receiver types (GH #1946). One exposure now dispatches to up to 100 receiver types, and a serve site past that is refused by `hale check` at its `receivers:`. Before, a 17th receiver passed the check, also skipped the check's validation of the call, and failed the build.
+
+### Fixed
+- In a body that returns a value, a trailing `match`, `if … else` or block is the body's value (GH #1940). `fn g(x: Int) -> String { match x { 1 -> "one", _ -> "other" } }` builds and runs, for every result type (`Int`, `String`, records, enums, `Decimal<S>`) in free fns, methods, fallible fns and modes. Each arm is checked against the return type, and a `while true` with no `break` never reaches the end.
+- Every refusal the build hands a program names its place (GH #1941): a refusal raised with no location of its own is placed at the nearest expression, statement, locus member or declaration lowering was crossing, and one raised inside a standard-library body ends `(in the standard library, <file>:<line>:<col>)`. A construct the compiler cannot lower yet now reads `hale can't compile this yet: …` instead of `unsupported in codegen v0: …`. A program error the build finds is the message alone, and types are named the way the checker names them: the `or raise` payload mismatch used to print `TypeRef("IoError")`, and a refusal of an expression used to print `expression form Discriminant(12)`.
+
+### Fixed
+
+- `LOTUS_ASAN=1 hale run` links on macOS again after a developer-tools
+  update. Cached sanitizer and LTO runtime objects are now keyed by the
+  host `clang`'s release, so an object built by the `clang` an update
+  replaced is rebuilt rather than failing the link on
+  `___asan_version_mismatch_check_apple_clang_<N>` (GH #1952).
+- The ownership matrix holds the two unreduced 2026-09 crash shapes as
+  positions under all four oracles: a nested temporary literal used as
+  a method receiver, and an inline literal passed to an interface
+  parameter whose callee writes its fields (GH #1952).
+
+- `idle_body_cpu_test` judges an idle body by the quietest of three 5 s windows, not one 10 s window, so a shared CI runner's stolen cycles no longer fail unrelated PRs.
+
+### Added
+- Raw string literals: `r"C:\temp\new"` and `r"^\d+$"` read no escape (a `\` is a backslash, `{` is text), and `r#"say "hi""#` carries a `"`, with more `#` for a body holding `"#` (spec/tokens.md § Raw strings, GH #1948).
+- `std::time::parse_rfc3339(s) -> Time fallible(ParseError)`: an RFC 3339 timestamp with `Z` or a `+hh:mm` / `-hh:mm` offset, the offset applied (`2026-11-15T10:00:00+02:00` is `08:00:00Z`), never dropped. `parse_time` still refuses an offset.
+- `hale check --warn-hot-path` shows the hot-path allocation lint's warnings.
+
+### Changed
+- The hot-path allocation lint's warnings (a locus or builder made per loop iteration or per bus message, a factory's result bound there, an allocating `recv` in a loop) are asked for, not default: `hale verify` reports them and `hale check --warn-hot-path` shows them; `hale check`, `build`, `run`, `test` and the editor no longer do. A `@hot` fn's findings are still errors.
+- `hale build` adds a `warning:` line when it builds a host-tuned binary in a container build or on CI (`CI` set): such a binary can die with SIGILL on a machine with another CPU, so build what you ship with `--target-cpu portable`. The default stays host-tuned. `hale init`'s next steps, the Kubernetes manifests `hale deploy render` writes, and the book's image example use `--target-cpu portable`.
+- Diagnostics: an `or` on a `@form(vec)` `push` names the method and says why it cannot fail (the vec grows; a `bounded[T; N]`'s `push(f, x)` is the fallible one); `let x = bounded[String; 4] { };` is a located error saying `bounded[T; N]` is a type and naming the record-field shape to write; a field tag written before its default says to write the default first; the self-containing-record suggestion ends in its `;`; a bare call to a stdlib fn's name (`substring(…)`) names its path (`std::str::substring`), and `std::str::Builder` names `std::bytes::BytesBuilder`.
+
+- The `std::json::Builder` `field`/`value` deprecation warning now names v0.34, the first minor after the one that introduces it, as the release where they start quoting.
+
+### Fixed
+- Building a String by appending is linear in time and memory (GH #1947). An appending assignment (`s = s + …`, `s += …`, `s = f"{s}…"`) on a `let mut` local grows a buffer the local owns, and on a `String` field of `self` grows the field's block through its size classes, where each append used to copy the whole String and the frame kept every copy until it returned: a 350 KB result built in 8000 appends peaked at 4.5 GB and now peaks at 4 MB. A chain `a + b + c` is one allocation. Strings are still values: a read that may keep the local (passed to a program fn, bound, stored, returned) gives the buffer up, and the next append copies it; reading it with `+`, a comparison, a slice or a `std::` reader that returns a number or a `Bool` (`len`, `std::str::contains`, `index_of`) keeps it (spec/stdlib.md § "Building a String").
+- The hot-path allocation lint reports an append that still copies the whole String on every iteration: in a loop that also hands the local to a call that may keep it (it names that read; a read followed by a fresh assignment or a `return` is not one), or to a place other than a local or a field of `self`. The DNA programs that grew Strings this way now grow them in place. `hale verify` fails on it.
+
+### Added
+- `bounded[T; N]` lists are values (GH #1951). An array literal at a declared `bounded[T; N]` site (a `let` with that type, a `return`, an argument, an assignment, a record literal's field) is that list, its count the literal's length; `[]` is empty, and a literal longer than `N` is a check error where it is written. A local bound from a literal or a call is owned, and a `let mut` one is assigned whole. Free fns, locus methods, modes and interface methods may return `bounded[T; N]` by value, with its String and record elements copied into the caller's arena; `count(make())` reads the result, and `push(make(), x)` is refused.
+
+### Fixed
+- Shapes `hale check` accepted and `hale build` refused now compile (GH #1942): a call through the fn value any callee expression evaluates to (`pick()(2)`, `a.get()(4)`, `fs[0](4)`, `t.0(4)`, `(if c { f } else { g })(5)`); zero-length arrays (`[x; 0]`, a `[T; 0]` parameter, `let xs: [Int; 0] = [];`); any value type returned through an interface, a perspective or a fn value, a `StringView` included; a generic fn specialized at a locus, an interface, `U256`, `I256`, `Bytes` or a view type; and a compound assignment to an element of a locus's array field (`self.xs[i] += n`). `hale fmt` writes a call through a tuple's part tight, `t.0(4)`.
+
+### Changed
+- An adversarial check/build parity gate (`crates/hale-codegen/tests/parity_gate.rs`, GH #1949) generates programs by mutating the corpus (fn tail shapes, generic wraps, a declaration moved across a seed boundary, element types in bounded, array, form and enum-payload shapes, call shapes, `or` plumbing) and builds every one `hale check` accepts. A fixed sample runs in the ordinary codegen suite; the whole draw runs in CI's sanitizer job. A ratchet (`tests/fixtures/parity/divergences.txt`, each entry an issue and a minimized reproducer) fails on a new divergence and on a listed one that builds again. On main it found the gaps filed as #1963 through #1972.
+
+### Fixed
+- Shapes `hale check` accepted and `hale build` refused now compile (GH #1967, #1968, #1970): an `Int` argument to a `Float` parameter through a fn value (a local, a parameter, a fn-typed field) widens as at a direct call; a fallible locus method whose body ends in a tail expression returns it; and a fn returning a set type returns a member's value as its tail. A return in a fallible body takes the `Int` to `Float` widening lowering already applied.
+- `hale check` refuses a locus literal used as a value where its enclosing locus runs both on the owner's thread and off it, with the words and place `hale build` used (GH #1972).
+- A refusal in a program's own `__`-named declaration is placed at the program's line, not rendered as a line of the stdlib.
+
+### Fixed
+- Generic shapes `hale check` accepted and `hale build` refused now compile (GH #1964, #1966, #1974, #1975): an imported seed's generic fn called through its alias, for its value, as a statement, or under `or`; an imported type as a generic argument (`Box<lib::Scalar>`) and an imported generic record under a declared type (`let b: lib::Box<String> = lib::Box { .. }`); `or` over a generic fallible fn; a generic fn at a perspective (`id(self.router)` with `router: perspective(R)`) and at an interface handed the locus behind it in a `release`; and a bounded intrinsic over a generic fn's result (`count(id(r).xs)`).
+- `std::process::run`'s success is typed `ProcessOutput` by the check, so its fields pin a generic argument and an `or` substitute of another type is refused at the clause (GH #1963, #1966).
+- A literal spelled with a generic template's name as a fn's or mode's body tail is supplied its arguments by the declared return type, as at a `return`.
+- A bare `0` substituted for a Duration (`1day / 4 or 0`) builds, as the check admits it.
+- A generic fn first specialized inside a locus method's `return` of a record no longer allocates through the method's return arena (a malformed module, or a crash where the verifier does not run).
+
+- The UDP wire-decoder-table test waits for a live subscription before sending its short frame, so a loaded CI runner no longer fails it.
+
+### Added
+- `or raise` converts the call's error into the enclosing `fallible(E)` fn's when the two differ (GH #1951). If `E` is a set type holding the call's error, the error becomes the set's member; the same holds for `fail`, `or fail err` and a fallible handler's failure. Otherwise `@raise fn conv(e: P) -> E { … }` declares the conversion an `or raise` applies. It takes one parameter, is neither generic nor fallible, may not make a syscall, publish, spawn or block, and is declared in the seed of `P` or of `E`. Two conversions for one pair are refused at the `or raise`, and conversions never chain. An `or raise` nothing converts is refused, naming both types and the three ways forward.
+
+### Added
+- A `bounded[T; N]` may hold an enum with payloads (GH #1951): `bounded[Status; 8]` with `type Status = enum { Ok, Other(String) };`. The list owns each cell and what its variant carries (a `String`, `Bytes`, record or nested enum), as it owns a struct element: `push`, `set`, a literal, a whole copy and a return by value store its own copy, and the element `set` overwrites, the ones `clear` and `truncate` drop and a list replaced whole are reclaimed, so a locus that keeps rewriting such a field stays the same size. `hale check` used to refuse the element type.
+
+### Fixed
+- A locus method that returned an enum built from its own locals (`let t = …; return E::A(t);`) handed the caller a payload in memory the method's return had freed. The payload is now copied out with the cell.
+
+### Added
+- Import lists: `import "../store" as st { ModelRow, Names as StoreNames };` makes the listed declarations of the imported seed bare in every file of the importing seed (`as` renames; locals shadow them). A list re-exports: an importer of that seed reaches a listed name as `api::ModelRow`, or lists it again, and it is the same declaration as `st::ModelRow`, so values pass between the spellings with no conversion (F.51). An unknown item, or a listed name that collides with a declaration of the seed or with another list's name for a different declaration, is refused at the item. No globs. Go-to-definition in the language server follows a bare listed name and a re-exported `api::Name`.
+
+### Added
+
+- Optional record fields (GH #1951 item 3): `x?: T` in a `type` declares `x` and a real presence flag `has_x: Bool = false` right after it, and `x?: T clearable` a `clear_x: Bool = false` too: the presence pair and triple the api codecs read, so the JSON and protobuf wires, a surface's description and its contract digest are byte-identical to the hand-written pair, and converting one changes no shape hash. A write of `x` (a literal that spells it, an assignment through any path or into a part of it, a `push` or `set` into an optional list) sets `has_x` and clears `clear_x`; a literal that leaves `x` out builds it absent, at its default or its type's zero (a type with no zero is refused at the field, asking for a default). Declaring the synthesized flag beside the mark is a duplicate field. Optionality is a property of a record field, never a type (F.52): `?` on a parameter, a locus param or a local, `T?` after any type, and `?` on a `@positional` record's field are parse errors. `clearable` joins the contextual keywords, a word only after an optional field's type, so no program that built before stops building. Hand-written pairs keep working as before.
+
+### Fixed
+- A generic fn whose result applies a generic type to its parameter (`fn box_of<T>(x: T) -> Box<T>`) is typed at each call as the instantiation its arguments name (`Box<Blob>`), so its value and its fields are checked as they are built: a record no f-string renders, read out of the result, is refused by `hale check`, and a scale-less Decimal literal compared with a `Decimal<4>` field of it takes the scale instead of failing the build (GH #1978).
+- `or raise` through a `@raise` conversion is a call of the conversion for the raising fn's analyses: what the conversion allocates counts against the raising fn's `@budget(alloc_per_call = N)`, and an effect class it reaches (`time`, a program's own `effect`) is the raising fn's, with the conversion on the witness path (GH #1982).
+- An element chain over a `bounded` or array field walks it by its type, whatever the field is named and however it is reached (a record local or param, a locus param, a path of fields): a field named `items` or `entries` no longer fails with "no field `get`", and the chain's element cursor is the collection's own `at` for the effect and allocation analyses, so a chain over any `bounded` or array value holds under `@no_syscall` and `@budget(alloc_per_call = 0)` instead of being refused as a call on an untyped receiver (GH #1984).
+- An imported seed's generic type and enum named through the alias (`lib::Box<Int, String>`, `lib::E::V(…)`) are checked against their declarations as the bare names are: the template's argument count, the variant's value count and each value's type, a scale-less Decimal literal taking the payload's scale. Each passed `hale check` and failed the build (GH #1986).
+- `hale build` no longer crashes in LLVM's debug-info pass on a generic fn whose name starts with `__`.
+- A fleet seed names its instances and topics through import lists and re-exports, as any seed names an import's declarations: `orders: Orders;` after `import "../desk" as desk { Orders };`, and `api::Gateway` where `api` re-exports `Gateway` from another seed, whose instance is built from the seed that declares it (GH #1987).
+
+### Added
+- Every `type` crosses the bus (GH #1951): a payload record may hold a `bounded` list of strings, bytes, records or enums with payloads, a fixed array of strings, bytes or enums, an enum with payloads (at any depth, or as a topic's whole payload, with `String`, `Bytes`, record, list or tuple values), a tuple, and a `std::json::Value`. In process and over `unix://` and `udp://` they arrive as they were sent. A list travels as its count and that many elements, an enum as its `u32` tag and the variant's values, a tuple as a record of its elements, a `Value` as its text. Frames the wire carried before are unchanged. A frame whose list count is negative or past the list's capacity, or whose enum tag is past the last variant, is dropped and counted as `dropped_decode`, like a short one. `hale check` used to refuse each of these fields, and the build refused a top-level enum with a `String` value.
+- `hale check` names what the wire carries from one table, the table the serializer encodes from. What stays refused is what no frame can hold: a fn value, a locus handle, a view, a projection, and a type that contains itself (`type Node { kids: bounded[Node; 4]; }`).
+
+### Fixed
+- A topic whose whole payload was an enum with a `Bytes`, record or list value used to copy that value's pointer onto the wire instead of the value, so a remote subscriber read another process's address. It is now carried as its tag and values.
+
+- The wasm agreement test gets a 15-minute CI limit while its build time is looked at (#1993).
+
 ## v0.32.13 — a bounded list holds values, wherever it lives (2026-11-12)
 
 **A bounded list holds values, wherever it lives.** `push` and `set` on a local's `bounded[T; N]` list stored the very value they were handed, so `push(l.list, y); y.k = 2` changed `l.list[0]`, and a write through the element showed in `y` (#1918). Every bounded list now owns its elements, as a list a locus holds already did: a fresh value, or one nothing reads again, goes in as it is; anything another name still reaches is copied.
