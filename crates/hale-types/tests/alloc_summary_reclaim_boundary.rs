@@ -614,13 +614,13 @@ fn per_target_moves() {
 /// target, the same shape: one tag of a value it hands back to its caller
 /// moves into the caller's arena; no leak site goes or appears.
 ///
-/// `bus_wire_type_set_test` (GH #1951 item 4) is a new target, the same
-/// shape: one tag of a value one of its fns hands back moves into the
-/// caller's arena; no leak site goes or appears.
-///
 /// `ends_with_own_fn_test` (GH #1995 S3) is a new target, the same
 /// shape: one tag moves into the caller's arena; no leak site goes or
 /// appears.
+///
+/// `bus_wire_type_set_test` (GH #1951 item 4) is a new target, the same
+/// shape: one tag of a value one of its fns hands back moves into the
+/// caller's arena; no leak site goes or appears.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
