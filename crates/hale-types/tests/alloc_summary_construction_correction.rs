@@ -750,8 +750,10 @@ fn own_entries_run_to_exit_programs() {
     // fns build a returned bounded list's elements in their loops (GH #1951);
     // 23: `tests/hale/bounded_payload_enum_test.hl`, whose `fill` builds a
     // payload String per pushed element, as `bounded_whole_assign_test.hl`'s
-    // does (GH #1951 item 4).
-    assert_eq!(moved, 23, "the run-to-exit programs among the targets that lose a site");
+    // does (GH #1951 item 4);
+    // 24: `tests/hale/optional_field_test.hl`, whose codec of optional fields
+    // decodes the same way (GH #1951 item 3).
+    assert_eq!(moved, 24, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1074,6 +1076,17 @@ fn own_entries_run_to_exit_programs() {
             // the property test's copy of the per-byte escaper as it was:
             // its `\u00XX` digits were a concatenation per control byte
             "tests/hale/json_escape_runs_test.hl: old_hex_byte StringConcat @7937..7972 InvokedUnboundedly",
+            // `tests/hale/optional_field_test.hl`: its codec of optional fields
+            // (GH #1951 item 3), decoding and writing the same way as a
+            // hand-written presence pair's
+            "tests/hale/optional_field_test.hl: __api_decode_Inner StructLit(\"JsonError\") @1610617065..1610617109 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610623675..1610623722 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610624423..1610624469 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610625356..1610625409 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610626640..1610626688 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610628672..1610628717 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat @1610631493..1610631537 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat @1610631493..1610631530 InUnboundedLoop",
             // `tests/hale/u256_arith_test.hl`: the parse refusals it loops over
             // build their assertion messages in the loop (GH #1934)
             "tests/hale/u256_arith_test.hl: conversions StringConcat @9516..9542 InUnboundedLoop",

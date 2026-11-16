@@ -39,6 +39,9 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     // statement words that introduce syntax in one position each and are
     // names everywhere else (spec/tokens.md § Reserved words).
     "params", "contract", "bus", "capacity", "as_parent_for", "indexed_by",
+    // GH #1951 item 3 (F.52): `x?: T clearable`, after an optional
+    // field's type only.
+    "clearable",
     "birth", "accept", "release", "run", "drain", "dissolve", "on_failure",
     "bulk", "harmonic", "resolution",
     "projection", "rich", "chunked", "recognition", "tier",

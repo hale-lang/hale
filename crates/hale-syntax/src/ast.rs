@@ -2706,7 +2706,53 @@ pub struct StructField {
     /// `name` (`{"db": "ok"}`), the element a record of the key and that
     /// one value (spec/api.md § Codecs).
     pub map_value: Option<Ident>,
+    /// GH #1951 item 3 (F.52): the field's part in a declared optional,
+    /// `x?: T` (spec/types.md § Optional fields).
+    pub optional: FieldOptional,
     pub span: Span,
+}
+
+/// How a record field takes part in a declared optional field (GH #1951
+/// item 3, F.52). Optionality is a property of a record field, never a
+/// type: `x?: T` declares `x` and a real `has_x: Bool` beside it, and
+/// `x?: T clearable` a `clear_x: Bool` as well, the presence pair and
+/// triple a record could always spell by hand (spec/api.md § Codecs). The
+/// parser synthesizes the flags as ordinary fields right after `x`, so
+/// every reader of a record's fields (the codecs, the description, the
+/// digest, protobuf, the bus wire) sees the hand-written shape; what the
+/// mark adds is that a write of `x` sets `has_x` (and clears `clear_x`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FieldOptional {
+    /// An ordinary field (a hand-written flag included).
+    #[default]
+    No,
+    /// `x?: T`, and `x?: T clearable` with `clearable`.
+    Declared { clearable: bool },
+    /// The `has_x` synthesized for `x?`.
+    Presence,
+    /// The `clear_x` synthesized for `x?: T clearable`.
+    Clear,
+}
+
+impl FieldOptional {
+    /// The flag field the parser synthesized for a declared optional.
+    pub fn is_synthesized(self) -> bool {
+        matches!(self, FieldOptional::Presence | FieldOptional::Clear)
+    }
+}
+
+/// The flags a write of the declared optional field `name` of `fields`
+/// sets and clears: its `has_<name>`, and its `clear_<name>` when it is
+/// `clearable`. `None` for any other field, a hand-written pair's
+/// included (writing its `x` leaves its `has_x` alone).
+pub fn optional_flags(fields: &[StructField], name: &str) -> Option<(String, Option<String>)> {
+    let f = fields.iter().find(|f| f.name.name == name)?;
+    match f.optional {
+        FieldOptional::Declared { clearable } => {
+            Some((format!("has_{name}"), clearable.then(|| format!("clear_{name}"))))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

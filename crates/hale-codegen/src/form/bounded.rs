@@ -631,7 +631,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if self.user_fn_shadows_bounded_intrinsic(name, args, scope) {
             return Ok(None);
         }
-        self.lower_bounded_fallible_intrinsic(name, args, scope, call)
+        let r = self.lower_bounded_fallible_intrinsic(name, args, scope, call)?;
+        // GH #1951 item 3 (F.52): a `push` or `set` into a declared
+        // optional list (`tags?: bounded[T; N]`) writes it, so its record's
+        // `has_tags` is set (and `clear_tags` cleared) where the call joins,
+        // after the receiver's copy-on-write.
+        if r.is_some() && matches!(name, "push" | "set") {
+            if let Some(place) = Self::expr_place_lvalue(&args[0]) {
+                self.mark_optional_written(&place, scope)?;
+            }
+        }
+        Ok(r)
     }
 
     /// The intrinsic itself, with no shadow check.

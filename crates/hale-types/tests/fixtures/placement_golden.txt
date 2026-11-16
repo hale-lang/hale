@@ -8786,6 +8786,9 @@ row	App@literal1	App	main	default
 row	App@literal1.w	Worker	main	default
 dynamic	Probe	on main	in the seed
 
+== tests/hale/optional_field_test.hl
+row	Desk@main1	Desk	main	default
+
 == tests/hale/or_discard_value_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

@@ -9831,6 +9831,15 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
                         fields.iter().map(|f| (f.name.name.clone(), f.name.span)),
                         diags,
                     );
+                    // F.52: an optional field with no default and no zero
+                    // (`optional_fields::fill_optional_zeros`)
+                    for f in fields {
+                        if let Some(d) =
+                            crate::optional_fields::missing_zero_diag(&t.name.name, f, &type_expr_text(&f.ty))
+                        {
+                            diags.push(d);
+                        }
+                    }
                 }
                 // a set's members are judged by `check_set_members`
                 TypeDeclBody::Enum(_) if t.is_set() => {}
