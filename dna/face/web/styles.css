@@ -538,6 +538,14 @@ form.act textarea { min-height: 72px; }
 
 /* ---- knowledge ------------------------------------------------------- */
 .kn { display: grid; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); gap: var(--space-4); align-items: start; }
+.kn-main { display: grid; gap: var(--space-4); min-width: 0; }
+.kgraph { height: 420px; }
+.legend { margin: var(--space-2) 0 0; }
+.new-task { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.new-task input[name="outcome"] { flex: 3 1 320px; }
+.new-task input[name="to"] { flex: 1 1 160px; }
+.history { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); font-size: var(--size-sm); }
+.history li { border-top: var(--line-hair) solid var(--color-rule); padding-top: var(--space-1); }
 @media (max-width: 900px) { .kn { grid-template-columns: minmax(0, 1fr); } }
 .kn .list { background: var(--color-bg-1); border: var(--line-hair) solid var(--color-rule); }
 .kn .list input { width: 100%; border: 0; border-bottom: var(--line-hair) solid var(--color-rule-strong); padding: var(--space-2) var(--space-3); background: transparent; }
