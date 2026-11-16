@@ -26,7 +26,7 @@ This is the first release under [`STABILITY.md`](./STABILITY.md), and its theme 
 
 ### Breaking
 
-Measured against v0.32.13. The first group changes what a program that built does; the second refuses programs that built; the third moves refusals `hale build` already made into `hale check`, so a program that built is unaffected; the last is a deprecation.
+Measured against v0.32.13. The first group changes what a program that built does; the second refuses programs that built; the third moves refusals `hale build` already made into `hale check`, so a program that built is unaffected; the last is a deprecation. STABILITY.md arrives in this release, so its one-minor deprecation window binds changes made after v0.33.0; the two behavior changes in the first group landed before it and take effect now.
 
 *Programs that built and now behave differently*
 
