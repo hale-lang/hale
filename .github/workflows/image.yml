@@ -74,7 +74,9 @@ jobs:
       - name: Pin Ubuntu's archive
         id: archive
         run: |
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "ip=${ip:-185.125.190.81}" >> "$GITHUB_OUTPUT"
 
       - name: Build + push by digest
