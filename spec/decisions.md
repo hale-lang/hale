@@ -3974,6 +3974,53 @@ where a write happens. *Return through a caller-supplied place.* A
 record already returns through the caller's arena; a list returned the
 same way needs no second convention.
 
+### F.50 — `or raise` converts: set members on the error channel, and `@raise` conversion fns
+
+**Problem.** `or raise` hands the call's error on as the enclosing
+`fallible(E)` fn's own, so the two had to be one type (GH #1945 made a
+mismatch a located check error). A fn calling into several layers fails
+with an error of its own, and every raise across a layer had to be
+spelled `or fail E { … }`, copying fields by hand at each site; a set
+type of the layers' errors could not be raised into at all, though
+`fail m;` already made a member the set's (GH #1951, item 2).
+
+**Decision.** An error `P` raised inside a `fallible(E)` fn, `P` not
+`E`, is converted, tried in this order:
+
+1. **R2, a set member.** `E` a set holding `P`: the error is the set's
+   member. One relation decides `fail`, `or fail <expr>`, `or raise` and
+   a fallible handler's failure (its implicit `or raise`).
+2. **R3, a conversion.** `@raise fn conv(e: P) -> E { … }` declares one;
+   the raise is `or fail conv(err)`. A `@raise` fn takes one parameter,
+   is neither generic nor `fallible`, returns another type, and implies
+   `@effects(none: {syscall, publish, spawn, block})` (it may allocate).
+   **Orphan rule:** it is declared in the seed of `P` or of `E`; a
+   builtin error type belongs to no seed. **Coherence:** every conversion
+   for a pair is then in one of those two seeds, which are what an `or
+   raise` reaches; two for one pair are refused at the `or raise`,
+   naming both. **No chaining.**
+
+Nothing else converts: the `or raise` is refused, naming both types and
+the three ways forward (a `@raise` fn, a set holding `P`, `or fail E {
+… }`). The check records each conversion at its `raise` (a typed-body
+row), and lowering writes the raise as the `or fail` it stands for.
+spec/semantics.md § "Converting a raised error".
+
+**Considered and rejected.** *Reach as "this seed and the seeds it
+imports directly"*: the checker's bundle carries no import graph (the
+merged program keeps only the rename table), and under the orphan rule
+the candidates are already exactly the two seeds that declare `P` and
+`E`. *Chaining conversions* (`P` to `Q` to `E`): a path search whose
+answer moves when an unrelated seed adds a conversion. *A conversion
+applied wherever a value of `P` meets an `E`* (an argument, a `let`):
+the error channel is where translation is asked for; elsewhere it would
+hide a call. *Letting a conversion fail or do I/O*: it runs where an
+error is already being handed on, and a second failure has nowhere to
+go. *Refusing a duplicate at its declaration*: two seeds may each
+declare one for a pair without either being wrong alone; the conflict
+exists where an `or raise` would have to choose.
+
+
 ## Deferred & future work
 
 ### semantics — What's deferred
