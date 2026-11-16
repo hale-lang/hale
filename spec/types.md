@@ -622,9 +622,12 @@ Unknown"), and the match is exhaustive as an enum's is: every member, or
 a `_` arm. `Name(_)` matches a member without binding it; a bare `Name`
 is a binding, as everywhere.
 
-The bare name is a set's alone. A pattern on an enum names its enum,
-`E::A(x)`; `A(x)` against an enum is refused at the pattern (until
-2026-11-15 the check passed it and the build refused it):
+The bare name is a set's alone, against a value the check knows to be
+of the set. A pattern on an enum names its enum, `E::A(x)`; `A(x)`
+against anything but a set (an enum, a generic fn's type parameter, a
+value whose type the check cannot name, a type that is no enum) is
+refused at the pattern (until 2026-11-15 the check passed it and the
+build refused it):
 
 ```
 main.hl:5:9: type error: `A(…)` names a variant of the enum `E` without

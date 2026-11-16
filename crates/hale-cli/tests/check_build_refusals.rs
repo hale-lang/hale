@@ -374,6 +374,26 @@ fn a_bare_variant_pattern_on_an_enum_is_refused_at_the_pattern() {
         "5:9",
         "`A(…)` names a variant of the enum `E` without its enum: a pattern on an enum names it, `E::A(…)`",
     );
+    // Structural, whatever the scrutinee is: under a type parameter the
+    // check cannot see a set, and lowering refused it unlocated.
+    refused(
+        "type Opt = enum { Has(Int), Empty };\nfn unwrap<T>(o: T, d: Int) -> Int {\n    return match o {\n        Has(x) -> x,\n    };\n}\nfn main() {\n    let o = Opt::Has(7);\n    println(unwrap(o, 7));\n}\n",
+        "bare_variant_generic",
+        "4:9",
+        "`Has(…)` names a variant without its enum, against a value whose type is not known here",
+    );
+    // A value that is no enum or set.
+    refused(
+        "fn f(n: Int) -> Int {\n    return match n {\n        Has(x) -> x,\n        _ -> 0,\n    };\n}\nfn main() { println(f(1)); }\n",
+        "bare_variant_int",
+        "3:9",
+        "`Has(…)` is a constructor pattern without its enum against a value of `Int`, which is no enum or set",
+    );
+    // A set's member keeps its bare name, an imported set's included.
+    let set = "type Book { id: Int; }\ntype Trade { qty: Int; }\ntype Inbound = Book | Trade;\nfn d(m: Inbound) -> Int {\n    return match m {\n        Book(b) -> b.id,\n        Trade(t) -> t.qty,\n    };\n}\nfn main() { println(d(Trade { qty: 4 })); }\n";
+    let ((ok, out), (built, bout)) = check_and_build(set, "bare_set_member");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
 }
 
 /// GH #1970: a body's tail is its return, checked as one: a member of

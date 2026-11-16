@@ -19965,28 +19965,53 @@ impl<'a> Checker<'a> {
     fn check_bare_variant_pattern(&mut self, pat: &Pattern, scrut: &Ty) {
         let Pattern::Constructor { path, span, .. } = pat else { return };
         let [variant] = path.segments.as_slice() else { return };
-        let Ty::Named(enum_name) = scrut else { return };
-        let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) = self.top.symbols.get(enum_name) else {
-            return;
-        };
-        if !vs.is_empty() && vs.iter().all(|v| v.member) {
-            return;
-        }
+        let v = &variant.name;
         let shown = scrut.display();
-        let what = if vs.iter().any(|v| v.name == variant.name) {
-            format!(
-                "`{v}(…)` names a variant of the enum `{shown}` without its enum: a pattern on an enum names it, \
-                 `{shown}::{v}(…)` (only a set's member is named by its type alone)",
-                v = variant.name
-            )
-        } else {
-            let names: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();
-            format!(
-                "`{v}(…)` is no variant of the enum `{shown}`, whose variants are {}; a pattern on an enum names \
-                 its enum, `{shown}::Variant(…)`",
-                names.join(", "),
-                v = variant.name
-            )
+        // Structural: lowering lowers a one-segment constructor pattern
+        // against a set only, so anything else the scrutinee is (an enum,
+        // a generic parameter, a type the check cannot name) is refused
+        // here, where lowering refused it unlocated.
+        let what = match scrut {
+            Ty::Named(n) if self.generic_params.iter().any(|g| g == n) => format!(
+                "`{v}(…)` names a variant without its enum, and the scrutinee is of the type parameter `{shown}`: \
+                 a pattern names its enum, `Enum::{v}(…)` (only a set's member is named by its type alone, \
+                 against a value of the set's own type)"
+            ),
+            Ty::Named(n) => match self.top.symbols.get(n) {
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                    if !vs.is_empty() && vs.iter().all(|x| x.member) {
+                        return;
+                    }
+                    if vs.iter().any(|x| x.name == *v) {
+                        format!(
+                            "`{v}(…)` names a variant of the enum `{shown}` without its enum: a pattern on an enum \
+                             names it, `{shown}::{v}(…)` (only a set's member is named by its type alone)"
+                        )
+                    } else {
+                        let names: Vec<&str> = vs.iter().map(|x| x.name.as_str()).collect();
+                        format!(
+                            "`{v}(…)` is no variant of the enum `{shown}`, whose variants are {}; a pattern on an \
+                             enum names its enum, `{shown}::Variant(…)`",
+                            names.join(", ")
+                        )
+                    }
+                }
+                _ => format!(
+                    "`{v}(…)` is a constructor pattern without its enum against a value of `{shown}`, which is no \
+                     enum or set: a pattern names its enum, `Enum::{v}(…)`, and only a set's member is named by \
+                     its type alone"
+                ),
+            },
+            Ty::Unknown => format!(
+                "`{v}(…)` names a variant without its enum, against a value whose type is not known here: a \
+                 pattern names its enum, `Enum::{v}(…)` (only a set's member is named by its type alone, against \
+                 a value known to be of the set)"
+            ),
+            _ => format!(
+                "`{v}(…)` is a constructor pattern without its enum against a value of `{shown}`, which is no \
+                 enum or set: a pattern names its enum, `Enum::{v}(…)`, and only a set's member is named by its \
+                 type alone"
+            ),
         };
         self.diags.push(Diag::ty(*span, what));
     }
