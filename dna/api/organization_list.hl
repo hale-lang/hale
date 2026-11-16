@@ -45,13 +45,14 @@ fn organizations_proof(token: String) -> String {
     );
 }
 
-// Whether `proof` is that of the launch token of the face of an organism
-// the habitat of record `j` holds, its faces' state under `habitat_dir`.
+// The key of the organism of the habitat of record `j` whose face's
+// launch token `proof` is the proof of, its faces' state under
+// `habitat_dir`: "" when it is no kept face's.
 @bounded_by(j)
-fn organizations_proof_held(j: dna::Journal, habitat_dir: String, proof: String) -> Bool {
-    if len(proof) != 64 || len(habitat_dir) == 0 { return false; }
+fn organizations_proof_key(j: dna::Journal, habitat_dir: String, proof: String) -> String {
+    if len(proof) != 64 || len(habitat_dir) == 0 { return ""; }
     let grafted = dna::habitat_latest(j, "habitat.grafted");
-    let mut found = false;
+    let mut found = "";
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
@@ -68,8 +69,11 @@ fn organizations_proof_held(j: dna::Journal, habitat_dir: String, proof: String)
                 or "",
             );
             // every candidate is compared, so the answer's time names none
-            if len(token) > 0 && token_matches(proof, organizations_proof(token)) {
-                found = true;
+            if len(token) > 0
+                && token_matches(proof, organizations_proof(token))
+                && len(found) == 0
+            {
+                found = e.entity;
             }
         }
         i = i + 1;
@@ -79,10 +83,11 @@ fn organizations_proof_held(j: dna::Journal, habitat_dir: String, proof: String)
 
 // The habitat's answer to the list: its name, and each organism it holds
 // by the name a person knows it by, `up` while its face answers, else
-// `grafted` (as the index lists them, `index_organisms`):
-// `{"name": <habitat>, "organisms": [{"name", "state"}]}`.
+// `grafted` (as the index lists them, `index_organisms`), the one keyed
+// `current` (the asking face's own organism) marked `"current": true`:
+// `{"name": <habitat>, "organisms": [{"name", "state"[, "current"]}]}`.
 @bounded_by(j)
-fn habitat_organization_list(j: dna::Journal, cap: Int) -> String {
+fn habitat_organization_list(j: dna::Journal, cap: Int, current: String) -> String {
     let mut habitat = "";
     let mut i = 0;
     while i < j.revision() {
@@ -111,6 +116,7 @@ fn habitat_organization_list(j: dna::Journal, cap: Int) -> String {
                 "state",
                 if len(face) > 0 && index_answers(face) { "up" } else { "grafted" },
             );
+            if len(current) > 0 && e.entity == current { out.bool_field("current", true); }
             out.end_object();
             n = n + 1;
         }
@@ -138,8 +144,9 @@ fn organization_name_ok(name: String) -> Bool {
 // habitat head's `answer` (`habitat_organization_list`): the habitat first
 // (`up`, it answered; its link `<face>/organization`), then each organism,
 // its link the habitat face's hand-in, `<face>/organisms/<name>/face`, as
-// `[{"name", "state", "face_link"}]`. "[]" when the habitat is unknown or
-// the answer is not one.
+// `[{"name", "state", "face_link"}]`; the one the habitat marked the asking
+// face's own (at most one) carries `"current": true` after them. "[]" when
+// the habitat is unknown or the answer is not one.
 fn organizations_for(habitat: OrganizationHabitat, answer: String) -> String {
     if len(habitat.name) == 0 || len(habitat.face) == 0 { return "[]"; }
     if !std::str::starts_with(std::str::trim(answer), "{") { return "[]"; }
@@ -153,6 +160,7 @@ fn organizations_for(habitat: OrganizationHabitat, answer: String) -> String {
     out.string_field("face_link", habitat.face + "/organization");
     out.end_object();
     let mut seen = "\n" + habitat.name + "\n";
+    let mut marked = false;
     let mut n = 0;
     let mut it = std::json::array_first(organisms);
     while !it.done && n < ORGANIZATIONS_CAP {
@@ -166,6 +174,10 @@ fn organizations_for(habitat: OrganizationHabitat, answer: String) -> String {
                 "face_link",
                 habitat.face + "/organisms/" + dna::url_encode(name) + "/face",
             );
+            if !marked && std::json::find_bool_field(it.element, "current") {
+                out.bool_field("current", true);
+                marked = true;
+            }
             out.end_object();
             seen = seen + name + "\n";
             n = n + 1;

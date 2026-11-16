@@ -61,19 +61,30 @@ fn main() {
     // the answer: names and states, nothing else of a graft (no key, no
     // face, no head); a face that answers no dial is `grafted`
     std::test::assert_eq_str(
-        api::habitat_organization_list(j, 200),
+        api::habitat_organization_list(j, 200, ""),
         "{\"name\": \"home\", \"organisms\": [{\"name\": \"voice\", \"state\": \"grafted\"}, {\"name\": \"9f8e7d6c5b4a\", \"state\": \"grafted\"}]}",
         "the habitat's answer",
     );
     std::test::assert_eq_str(
-        api::habitat_organization_list(j, 1),
+        api::habitat_organization_list(j, 1, ""),
         "{\"name\": \"home\", \"organisms\": [{\"name\": \"voice\", \"state\": \"grafted\"}]}",
         "at most `cap` organisms",
+    );
+    // the asking face's own organism, by its key, is marked; no other is
+    std::test::assert_eq_str(
+        api::habitat_organization_list(j, 200, "9f8e7d6c5b4a"),
+        "{\"name\": \"home\", \"organisms\": [{\"name\": \"voice\", \"state\": \"grafted\"}, {\"name\": \"9f8e7d6c5b4a\", \"state\": \"grafted\", \"current\": true}]}",
+        "the asking face's own organism is current",
+    );
+    std::test::assert_eq_str(
+        api::habitat_organization_list(j, 200, "5e5e5e5e5e5e"),
+        api::habitat_organization_list(j, 200, ""),
+        "a removed organism is no one's current",
     );
     let unnamed = dna::MemJournal { };
     add(unnamed, "habitat.profile", "local", "{\"profile\": \"local\"}");
     std::test::assert_eq_str(
-        api::habitat_organization_list(unnamed, 200),
+        api::habitat_organization_list(unnamed, 200, ""),
         "{\"name\": \"local\", \"organisms\": []}",
         "a habitat born with no name is `local`",
     );
@@ -93,25 +104,30 @@ fn main() {
         dir + "/allocations/5e5e5e5e5e5e/face-state/head.token",
         removed + "\n",
     ) or discard;
-    std::test::assert(
-        api::organizations_proof_held(j, dir, api::organizations_proof(token)),
-        "a kept face's proof opens the list",
+    std::test::assert_eq_str(
+        api::organizations_proof_key(j, dir, api::organizations_proof(token)),
+        "0a1b2c3d4e5f",
+        "a kept face's proof opens the list, naming its organism",
     );
-    std::test::assert(
-        !api::organizations_proof_held(j, dir, token),
+    std::test::assert_eq_str(
+        api::organizations_proof_key(j, dir, token),
+        "",
         "the token itself does not",
     );
-    std::test::assert(
-        !api::organizations_proof_held(j, dir, api::organizations_proof(removed)),
+    std::test::assert_eq_str(
+        api::organizations_proof_key(j, dir, api::organizations_proof(removed)),
+        "",
         "nor the face of an organism the habitat removed",
     );
-    std::test::assert(
-        !api::organizations_proof_held(j, dir, api::organizations_proof("not-a-token")),
+    std::test::assert_eq_str(
+        api::organizations_proof_key(j, dir, api::organizations_proof("not-a-token")),
+        "",
         "nor a proof of anything else",
     );
-    std::test::assert(!api::organizations_proof_held(j, dir, ""), "nor nothing");
-    std::test::assert(
-        !api::organizations_proof_held(j, "", api::organizations_proof(token)),
+    std::test::assert_eq_str(api::organizations_proof_key(j, dir, ""), "", "nor nothing");
+    std::test::assert_eq_str(
+        api::organizations_proof_key(j, "", api::organizations_proof(token)),
+        "",
         "nor anything where no habitat's directory is known",
     );
     dna::scratch_done(dir);
@@ -137,6 +153,19 @@ fn main() {
             + "/organization\"}, {\"name\": \"voice\", \"state\": \"grafted\", \"face_link\": \""
             + FACE + "/organisms/voice/face\"}]",
         "a sanitized list",
+    );
+    // the entry the habitat marked current carries `"current": true`, the
+    // others nothing more; a second mark is not taken
+    let marked = "{\"organisms\":[{\"name\":\"voice\",\"state\":\"up\"},{\"name\":\"shop\",\"state\":\"up\",\"current\":true},{\"name\":\"dormant\",\"state\":\"grafted\",\"current\":true}]}";
+    std::test::assert_eq_str(
+        api::organizations_for(habitat(), marked),
+        "[{\"name\": \"home\", \"state\": \"up\", \"face_link\": \"" + FACE
+            + "/organization\"}, {\"name\": \"voice\", \"state\": \"up\", \"face_link\": \"" + FACE
+            + "/organisms/voice/face\"}, {\"name\": \"shop\", \"state\": \"up\", \"face_link\": \""
+            + FACE
+            + "/organisms/shop/face\", \"current\": true}, {\"name\": \"dormant\", \"state\": \"grafted\", \"face_link\": \""
+            + FACE + "/organisms/dormant/face\"}]",
+        "the asking face's own entry is current",
     );
     std::test::assert_eq_str(
         api::organizations_for(habitat(), "{\"why\":\"forbidden\"}"),

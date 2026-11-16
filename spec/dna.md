@@ -7004,7 +7004,9 @@ while its face accepts connections, `grafted` otherwise); `face_link` is
 the absolute address that reaches it on the habitat's face:
 `<face>/organization` for the habitat, the hand-in
 `<face>/organisms/<name>/face` for an organism (`spec/habitat.md`, A
-sapling's body). The head knows them, not the record: it asks the
+sapling's body). The head's own organism's entry carries one more field,
+`"current": true`, and no other entry has it: the habitat marks the
+organism whose face asked, so the head needs no name of its own. The head knows them, not the record: it asks the
 habitat's head (`GET /api/hale/v1/head/organizations` on the habitat
 face's origin it was handed, through `HALE_DNA_LOOPBACK_HOST` when that
 names the loopback) at most once every 30 s and keeps the answer between.

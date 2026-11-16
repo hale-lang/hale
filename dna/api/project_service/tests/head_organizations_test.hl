@@ -10,7 +10,7 @@
 // habitat's list opens to the proof of that token alone, and answers names
 // and states; the organism's Index read, as the face's relay answers it,
 // carries the habitat first and then each organism, each linked on the
-// habitat's face; it keeps the list it read while the habitat is gone; and
+// habitat's face, its own marked current; it keeps the list it read while the habitat is gone; and
 // a head whose habitat never answers still answers the read, its list empty.
 
 import "./fixture" as fixture;
@@ -131,15 +131,15 @@ fn main() {
     std::test::assert_eq_int(listed.status, 200, "a kept face's proof reads it: " + listed.body);
     std::test::assert_eq_str(
         listed.body,
-        "{\"name\": \"home\", \"organisms\": [{\"name\": \"shop\", \"state\": \"up\"}, {\"name\": \"dormant\", \"state\": \"grafted\"}]}",
-        "names and states, nothing else of a graft",
+        "{\"name\": \"home\", \"organisms\": [{\"name\": \"shop\", \"state\": \"up\", \"current\": true}, {\"name\": \"dormant\", \"state\": \"grafted\"}]}",
+        "names and states, nothing else of a graft, the asking face's own current",
     );
 
     // ---- the organism's Index read carries every organization, the
     // habitat first, each linked on the habitat's face
     let expected = "[{\"name\": \"home\", \"state\": \"up\", \"face_link\": \"" + face
         + "/organization\"}, {\"name\": \"shop\", \"state\": \"up\", \"face_link\": \"" + face
-        + "/organisms/shop/face\"}, {\"name\": \"dormant\", \"state\": \"grafted\", \"face_link\": \""
+        + "/organisms/shop/face\", \"current\": true}, {\"name\": \"dormant\", \"state\": \"grafted\", \"face_link\": \""
         + face + "/organisms/dormant/face\"}]";
     let read = index_read(child);
     std::test::assert_eq_str(organizations_of(read), expected, "the list on the read: " + read);

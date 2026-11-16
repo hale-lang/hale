@@ -984,7 +984,9 @@ proof is refused alike (401). The habitat answers before its sign-in's
 gate, with `{name, organisms: [{name, state}]}`: its name, and each
 organism it holds by the name it was grafted under, `up` while its face
 accepts connections, else `grafted`; no key, address or anything else of
-a graft. The links are the organism's own to make, on the origin it was
+a graft. The organism whose face's token the proof matched is marked
+`"current": true`, the asking organization's own entry, which its face
+shows as the one it is on. The links are the organism's own to make, on the origin it was
 handed.
 
 **The body stays on the habitat's machine**, wherever the organism's
