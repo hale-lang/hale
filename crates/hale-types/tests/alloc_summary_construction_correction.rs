@@ -748,9 +748,12 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/api_map_wrong_kind_test.hl`, whose wire maps decode the
     // same way (GH #1944); 22: `tests/hale/bounded_values_test.hl`, whose
     // fns build a returned bounded list's elements in their loops (GH #1951);
-    // 23: `tests/hale/optional_field_test.hl`, whose codec of optional fields
+    // 23: `tests/hale/bounded_payload_enum_test.hl`, whose `fill` builds a
+    // payload String per pushed element, as `bounded_whole_assign_test.hl`'s
+    // does (GH #1951 item 4);
+    // 24: `tests/hale/optional_field_test.hl`, whose codec of optional fields
     // decodes the same way (GH #1951 item 3).
-    assert_eq!(moved, 23, "the run-to-exit programs among the targets that lose a site");
+    assert_eq!(moved, 24, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1021,6 +1024,14 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2197 InUnboundedLoop",
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2186 InUnboundedLoop",
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2180 InUnboundedLoop",
+            // `tests/hale/bounded_payload_enum_test.hl`: the text its `show` and
+            // `tags` build for every element they are handed (GH #1951)
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1716..1728 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1760..1792 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1821..1848 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1875..1913 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @2023..2034 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: tags StringConcat @5672..5910 InUnboundedLoop",
             // `tests/hale/bounded_values_test.hl`: fns that build a returned
             // bounded list's record and String elements per pass (GH #1951)
             "tests/hale/bounded_values_test.hl: items_of StructLit(\"Item\") @1253..1282 InUnboundedLoop",

@@ -1476,15 +1476,31 @@ namespace.
 The element type is one a slot holds inline or by a pointer it
 anchors: a scalar (`Int`, `Float`, `Bool`, `Decimal<S>`, `Duration`,
 `Time`, an identity, a range or a quantity), an enum without payloads
-(its tag), `String`, `Bytes` or a struct. `hale check` refuses any
+(its tag), `String`, `Bytes`, a struct, or an enum with payloads (a
+pointer to its cell, `{ i32 tag, body }`). `hale check` refuses any
 other at the annotation, naming it: a tuple, an array, another
-`bounded`, an enum with payloads (a pointer to its cell, which the
-slots' anchoring does not walk) or an interface ("\`bounded[Shape;
-N]\`: \`Shape\` is an enum with payloads, which a bounded buffer cannot
-hold inline … wrap the element in a struct"). Until 2026-10-13 the
-check admitted them and the build refused the element type with no
-file or line, and a payload-free enum, which lowers as a `Bool` does,
-was refused too.
+`bounded` or an interface ("\`bounded[(Int, Int); N]\`: a tuple, which
+a bounded buffer cannot hold inline … wrap the element in a struct").
+Until 2026-10-13 the check admitted them and the build refused the
+element type with no file or line, and a payload-free enum, which
+lowers as a `Bool` does, was refused too.
+
+An enum element with payloads is owned as a struct element is (GH
+#1951): a `push`, a `set`, an array literal, a whole copy of the list,
+a list returned by value and a list built into a locus store the
+place's own copy of the cell and of what its variant carries (a
+`String`, a `Bytes`, a record, a nested enum's cell), and an element
+that stops being one — the one `set` overwrites, the ones `clear` and
+`truncate` drop, every element of a list replaced whole or dissolved
+with its owner — is retired with everything under it, by the variant
+its tag names. `at`, a `for` element and a `match` on either read the
+place's cell; a value kept past a write to the place is the reader's
+own copy, as a struct element's is (§ Any binding of a place keeps its
+value). Until 2026-11-15 the check refused the element type ("an enum
+with payloads, which a bounded buffer cannot hold inline"). A bus
+payload does not carry a `bounded` of them (it carries no `bounded` of
+pointers, spec/semantics.md § The bus wire format), and an API codec
+carries no list of them (spec/api.md § Codecs).
 
 Semantics:
 - **An array literal at a declared site is a bounded** (GH #1951). Where

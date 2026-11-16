@@ -1399,8 +1399,10 @@ fn json_refusal(
         if path.is_empty() || hale_syntax::json_gen::wire_list(&elem).is_some() {
             return Some((path.clone(), type_text(te)));
         }
-        // an enum with payloads is no list's element (a `bounded` cannot
-        // hold one, spec/types.md § bounded[T; N]); a payload-free one is
+        // an enum with payloads is no list's element the codec carries (a
+        // `bounded` holds one, spec/types.md § bounded[T; N], but the
+        // codec has no form for the list, spec/api.md § Codecs); a
+        // payload-free one is
         if matches!(shapes.classify(&elem), TypeClass::Enum { variants, .. } if variants.iter().any(|v| !v.fields.is_empty())) {
             return Some((path.clone(), type_text(te)));
         }

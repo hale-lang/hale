@@ -2677,8 +2677,9 @@ field of its type is (a scalar, an identity, a range or a quantity by its
 count, a `Time`, a record, a payload-free enum); a list, and an enum with
 payloads of its own, are not a variant's value, and law 5 refuses the
 row naming the variant. An enum may be a field, a list's element when it
-is payload-free (a `bounded` holds no enum with payloads, `spec/types.md`),
-a row's whole request or response, and its error type. Decoding is
+is payload-free (a `bounded` of an enum with payloads, which
+`spec/types.md` admits, is no list the codec carries), a row's whole
+request or response, and its error type. Decoding is
 strict, and every refusal is `wrong_type` for the field the enum is read
 for (`payload` for a row's whole value): an unknown variant, a payload
 variant sent as a bare name, a payload-free one sent as an object, an
