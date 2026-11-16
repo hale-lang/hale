@@ -2769,6 +2769,14 @@ pub struct EnumVariant {
     /// step 1): the variant is named for its one field's type, which is
     /// the discriminant. A set is an enum whose every variant is one.
     pub member: bool,
+    /// GH #1951 item 5: the variant's metadata tag, the raw text of a
+    /// backtick string after its values, as a struct field's
+    /// ([`StructField::tag`]). The codecs read its `json:` key: a name
+    /// renames the variant on the JSON wire (``Sell `json:"sell"` ``) and
+    /// the option `other` makes it the enum's catch-all
+    /// (``Other(String) `json:",other"` ``, spec/api.md § Codecs). A set's
+    /// member has none.
+    pub tag: Option<String>,
 }
 
 impl TypeDecl {

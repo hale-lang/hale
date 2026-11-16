@@ -9,8 +9,12 @@ pub(crate) mod hale_client;
 pub(crate) mod js_client;
 pub(crate) mod ts_client;
 
-/// An enum a client declares: its variants, each with its values' schemas.
-pub(crate) type ClientEnum = Vec<(String, Vec<hale_types::surfaces::FieldSchema>)>;
+/// An enum a client declares: its variants, each with its values' schemas,
+/// and what their `json:` tags say of the wire (GH #1951 item 5).
+pub(crate) struct ClientEnum {
+    pub variants: Vec<(String, Vec<hale_types::surfaces::FieldSchema>)>,
+    pub wire: hale_types::surfaces::EnumWire,
+}
 
 /// Every enum the model's shapes name, by name: a client declares each once,
 /// beside the records (an enum is inline in the description, so the model's
@@ -31,9 +35,9 @@ fn model_shapes(model: &hale_types::surface_doc::ClientModel) -> (std::collectio
     type Out = (std::collections::BTreeMap<String, ClientEnum>, bool);
     fn walk(f: &FieldSchema, out: &mut Out) {
         match f {
-            FieldSchema::Enum { name, variants, .. } => {
+            FieldSchema::Enum { name, variants, wire, .. } => {
                 if !out.0.contains_key(name) {
-                    out.0.insert(name.clone(), variants.clone());
+                    out.0.insert(name.clone(), ClientEnum { variants: variants.clone(), wire: wire.clone() });
                     for (_, values) in variants {
                         values.iter().for_each(|v| walk(v, out));
                     }
