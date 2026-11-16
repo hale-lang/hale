@@ -35,10 +35,18 @@
 //!   raise`, `or fail err`, `or discard`, a default), a call routed through
 //!   a fallible wrapper and addressed each of those ways.
 //!
-//! A candidate is a seed program with a chain of one or two mutations,
-//! chosen by an RNG seeded from the seed's TEXT (FNV-1a), so a candidate
-//! is the same on every machine and does not move when an unrelated
-//! program joins the corpus.
+//! A candidate is a seed program with a chain of one or two mutations.
+//! Which ones is a draw over the cross product: every (seed, mutator)
+//! pair is drawn or not on a key of its own — the seed's TEXT (FNV-1a),
+//! the mutator's NAME and the salt — and every (seed, first, second)
+//! triple likewise, at a lower rate; the mutation a drawn pair makes runs
+//! on an RNG seeded by the same key. So a candidate is the same on every
+//! machine, does not move when an unrelated program joins the corpus,
+//! and does not move when a MUTATOR joins `MUTATORS`: the new one adds
+//! its own candidates and deals no one else's again
+//! (`a_new_mutator_moves_no_other_candidate`). A drawn pair whose
+//! mutator finds no site yields nothing rather than passing the draw to
+//! another mutator.
 //!
 //! ## The verdict
 //!
@@ -84,14 +92,16 @@
 //! # the sample (the ordinary codegen suite, seconds) and the ratchet's
 //! # reproducers
 //! cargo test --release -p hale-codegen --test parity_gate
-//! # the sweep (CI's sanitizer job; every seed, three candidates each)
+//! # the sweep (CI's sanitizer job; every seed, the sweep's draw)
 //! cargo test --release -p hale-codegen --test parity_gate -- --ignored --nocapture sweep_
 //! ```
 //!
 //! Knobs (all read by the test, never by codegen):
 //!
-//! - `HALE_PARITY_SEEDS` caps the sweep's seeds, `HALE_PARITY_PER_SEED`
-//!   sets its candidates per seed (3);
+//! - `HALE_PARITY_SEEDS` caps the sweep's seeds; `HALE_PARITY_SINGLE`
+//!   and `HALE_PARITY_CHAIN` set its draw, in parts per thousand of the
+//!   (seed, mutator) pairs and the (seed, first, second) triples
+//!   (`DRAW`; 1000 and 0 try every mutator once on every seed);
 //! - `HALE_PARITY_SALT=<n>` draws another set of candidates, to explore
 //!   (the gate's own runs use 0), and `HALE_PARITY_ONLY=<mutator>`
 //!   restricts a run to one mutator;
@@ -283,45 +293,77 @@ fn only() -> Option<String> {
     std::env::var("HALE_PARITY_ONLY").ok().filter(|s| !s.is_empty())
 }
 
-/// `per_seed` candidates from one seed: the k-th applies one mutator (or,
-/// on every third, a chain of two), each drawn from an RNG seeded by the
-/// seed's text, `k` and the salt. A draw that finds no site tries the
-/// next mutator, so a seed with few shapes still yields what it can.
-fn candidates_of(index: usize, seed: &Seed, per_seed: usize) -> Vec<Candidate> {
-    let base = mutators::fnv(&seed.source) ^ salt().wrapping_mul(0x2545_F491_4F6C_DD1D);
-    let pool: Vec<&mutators::Mutator> = match only() {
-        Some(name) => MUTATORS.iter().filter(|m| m.name == name).collect(),
-        None => MUTATORS.iter().collect(),
-    };
+/// How much of the cross product a run draws, in parts per thousand: each
+/// (seed, mutator) pair is a single mutation with probability
+/// `single`/1000, and each (seed, first, second) triple a chain of two
+/// with probability `chain`/1000.
+#[derive(Clone, Copy)]
+struct Draw {
+    single: u64,
+    chain: u64,
+}
+
+/// One 64-bit key from several: SplitMix64 over each word in turn, so
+/// every word moves every bit of the result.
+fn key(words: &[u64]) -> u64 {
+    words.iter().fold(0x243F_6A88_85A3_08D3, |h, w| Rng::new(h ^ w).next_u64())
+}
+
+/// Whether a pair or triple whose key is `k` is in the draw.
+fn drawn(k: u64, per_mille: u64) -> bool {
+    // the high bits: `Rng::new(k)` below starts from the low ones
+    (k >> 32) % 1000 < per_mille
+}
+
+/// A seed's candidates. Every (seed, mutator) pair and every (seed,
+/// first, second) triple is drawn or not on its OWN key — the seed's
+/// text, the mutators' names and the salt — and the mutation it draws
+/// runs on an RNG seeded by that key. Nothing about a candidate depends
+/// on which other mutators exist or in what order `MUTATORS` lists them:
+/// adding a mutator adds its own candidates and moves no one else's
+/// (`a_new_mutator_moves_no_other_candidate` holds that). A drawn pair
+/// whose mutator finds no site yields nothing — it does not fall through
+/// to another mutator, which is what would couple them.
+fn candidates_of(index: usize, seed: &Seed, pool: &[&mutators::Mutator], draw: Draw) -> Vec<Candidate> {
+    let base = key(&[mutators::fnv(&seed.source), salt()]);
+    let start = seed_files(seed);
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
-    for k in 0..per_seed {
-        let mut rng = Rng::new(base ^ (k as u64).wrapping_mul(0x9E37_79B9));
-        let depth = if k % 3 == 2 { 2 } else { 1 };
-        // a fair rotation for the first mutator, so every mutator meets
-        // every seed across `per_seed >= MUTATORS.len()` candidates
-        let start = (mutators::fnv(&seed.origin) as usize + k) % pool.len();
-        let mut files = seed_files(seed);
-        let mut chain = Vec::new();
-        let mut names = Vec::new();
-        for step in 0..depth {
-            let offset = if step == 0 { 0 } else { rng.below(pool.len()) };
-            for t in 0..pool.len() {
-                let m = pool[(start + offset + t) % pool.len()];
-                if let Some((next, desc)) = (m.apply)(&files, &mut rng) {
-                    files = next;
-                    chain.push(desc);
-                    names.push(m.name);
-                    break;
-                }
-            }
+    let mut push = |files: Files, chain: Vec<String>, names: Vec<&'static str>| {
+        if files != start && seen.insert(files.clone()) {
+            out.push(Candidate { seed: index, chain, mutators: names, files });
         }
-        if chain.is_empty() || !seen.insert(files.clone()) {
+    };
+    for m in pool {
+        let k = key(&[base, mutators::fnv(m.name)]);
+        if !drawn(k, draw.single) {
             continue;
         }
-        out.push(Candidate { seed: index, chain, mutators: names, files });
+        if let Some((files, desc)) = (m.apply)(&start, &mut Rng::new(k)) {
+            push(files, vec![desc], vec![m.name]);
+        }
+    }
+    for first in pool {
+        for second in pool {
+            let k = key(&[base, mutators::fnv(first.name), mutators::fnv(second.name)]);
+            if !drawn(k, draw.chain) {
+                continue;
+            }
+            let mut rng = Rng::new(k);
+            let Some((files, a)) = (first.apply)(&start, &mut rng) else { continue };
+            let Some((files, b)) = (second.apply)(&files, &mut rng) else { continue };
+            push(files, vec![a, b], vec![first.name, second.name]);
+        }
     }
     out
+}
+
+/// The mutators a run draws from: every one, or `HALE_PARITY_ONLY`'s.
+fn pool() -> Vec<&'static mutators::Mutator> {
+    match only() {
+        Some(name) => MUTATORS.iter().filter(|m| m.name == name).collect(),
+        None => MUTATORS.iter().collect(),
+    }
 }
 
 // --- the run ---------------------------------------------------------
@@ -390,10 +432,64 @@ struct Report {
     stats: BTreeMap<&'static str, Stats>,
 }
 
-fn run(seeds: &[Seed], per_seed: usize) -> Report {
-    let candidates: Vec<Candidate> =
-        seeds.iter().enumerate().flat_map(|(i, s)| candidates_of(i, s, per_seed)).collect();
-    let verdicts: Vec<Verdict> = pooled(&candidates, |i, c| gate::verdict(&c.files, &format!("hale_parity_{i}")));
+fn tmp_none(_: &Files, _: &mut Rng) -> Option<(Files, String)> { None }
+static TMP_DUMMY: mutators::Mutator = mutators::Mutator { name: "tmp_dummy", apply: tmp_none };
+
+fn tmp_old_candidates_of(index: usize, seed: &Seed, per_seed: usize, pool: &[&mutators::Mutator]) -> Vec<Candidate> {
+    let base = mutators::fnv(&seed.source) ^ salt().wrapping_mul(0x2545_F491_4F6C_DD1D);
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for k in 0..per_seed {
+        let mut rng = Rng::new(base ^ (k as u64).wrapping_mul(0x9E37_79B9));
+        let depth = if k % 3 == 2 { 2 } else { 1 };
+        let start = (mutators::fnv(&seed.origin) as usize + k) % pool.len();
+        let mut files = seed_files(seed);
+        let mut chain = Vec::new();
+        let mut names = Vec::new();
+        for step in 0..depth {
+            let offset = if step == 0 { 0 } else { rng.below(pool.len()) };
+            for t in 0..pool.len() {
+                let m = pool[(start + offset + t) % pool.len()];
+                if let Some((next, desc)) = (m.apply)(&files, &mut rng) {
+                    files = next;
+                    chain.push(desc);
+                    names.push(m.name);
+                    break;
+                }
+            }
+        }
+        if chain.is_empty() || !seen.insert(files.clone()) {
+            continue;
+        }
+        out.push(Candidate { seed: index, chain, mutators: names, files });
+    }
+    out
+}
+
+fn run(seeds: &[Seed], draw: Draw) -> Report {
+    let mut pool = pool();
+    let candidates: Vec<Candidate> = if let Some(at) = env_usize("HALE_PARITY_OLD") {
+        pool.insert(at.min(pool.len()), &TMP_DUMMY);
+        seeds.iter().enumerate().flat_map(|(i, s)| tmp_old_candidates_of(i, s, 3, &pool)).collect()
+    } else {
+        seeds.iter().enumerate().flat_map(|(i, s)| candidates_of(i, s, &pool, draw)).collect()
+    };
+    let verdicts: Vec<Verdict> = pooled(&candidates, |i, c| {
+        let inflight = std::env::var("HALE_PARITY_INFLIGHT").ok().map(|d| Path::new(&d).join(format!("{i}.repro")));
+        if let Some(p) = &inflight {
+            let _ = std::fs::create_dir_all(p.parent().unwrap());
+            let _ = std::fs::write(p, format!("// seed: {}\n// mutations: {}\n{}", seeds[c.seed].origin, c.chain.join(" > "), render_repro(&c.files)));
+        }
+        let skip = std::env::var("HALE_PARITY_SKIP").unwrap_or_default();
+        if skip.split(',').any(|x| x == i.to_string()) {
+            return Verdict::CheckRejects;
+        }
+        let v = gate::verdict(&c.files, &format!("hale_parity_{i}"));
+        if let Some(p) = &inflight {
+            let _ = std::fs::remove_file(p);
+        }
+        v
+    });
     let mut report = Report {
         candidates: candidates.len(),
         clean: 0,
@@ -590,9 +686,22 @@ fn print_summary(what: &str, report: &Report, took: std::time::Duration) {
 
 // --- the tests -------------------------------------------------------
 
-/// The sample's size: seeds, and candidates per seed.
+/// The sample's seeds.
 const SAMPLE_SEEDS: usize = 16;
-const SAMPLE_PER_SEED: usize = 3;
+
+/// The draw the sample and the sweep make: about 30% of the (seed,
+/// mutator) pairs and 1.5% of the (seed, first, second) triples, which
+/// over the whole corpus is about as many candidates (two singles to a
+/// chain) as the sanitizer job has had time for. A sweep run takes
+/// `HALE_PARITY_SINGLE` / `HALE_PARITY_CHAIN` (parts per thousand) over it.
+const DRAW: Draw = Draw { single: 300, chain: 15 };
+
+fn sweep_draw() -> Draw {
+    Draw {
+        single: env_usize("HALE_PARITY_SINGLE").map_or(DRAW.single, |n| n as u64),
+        chain: env_usize("HALE_PARITY_CHAIN").map_or(DRAW.chain, |n| n as u64),
+    }
+}
 
 /// The sample: a fixed, deterministic slice of the on-disk corpus,
 /// mutated and built — seconds, in the ordinary codegen suite.
@@ -601,7 +710,7 @@ fn sample_of_mutated_programs_builds() {
     let t = Instant::now();
     let seeds: Vec<Seed> = sample_seeds().into_iter().take(SAMPLE_SEEDS).collect();
     assert!(seeds.len() == SAMPLE_SEEDS, "only {} sample seeds: the corpus walk is broken", seeds.len());
-    let report = run(&seeds, SAMPLE_PER_SEED);
+    let report = run(&seeds, DRAW);
     print_summary("parity sample", &report, t.elapsed());
     assert!(report.clean > 0, "no sample candidate checked clean: the mutators are broken, not the compiler");
     if let Err(msg) = judge(&report, 150) {
@@ -694,6 +803,42 @@ fn the_minimizer_shrinks_to_what_the_predicate_needs() {
     assert!(asked < 100, "asked {asked} times for a 12-line program");
 }
 
+/// The draw is per mutator: taking any one mutator out of the pool (as
+/// adding one puts it in) or reordering the pool leaves every other
+/// mutator's candidates as they were. Before this held, adding a mutator
+/// re-dealt every seed's mutations, and the gate's coverage moved with
+/// the length of `MUTATORS` (a new mutator surfaced 8 old gaps in other
+/// mutators' shapes, and dropping it hid them again).
+#[test]
+fn a_new_mutator_moves_no_other_candidate() {
+    let seeds: Vec<Seed> = sample_seeds().into_iter().take(SAMPLE_SEEDS).collect();
+    let full: Vec<&mutators::Mutator> = MUTATORS.iter().collect();
+    let programs = |pool: &[&mutators::Mutator], skip: Option<&str>| -> BTreeSet<Files> {
+        seeds
+            .iter()
+            .enumerate()
+            .flat_map(|(i, s)| candidates_of(i, s, pool, DRAW))
+            .filter(|c| skip.is_none_or(|x| !c.mutators.contains(&x)))
+            .map(|c| c.files)
+            .collect()
+    };
+    let everything = programs(&full, None);
+    assert!(!everything.is_empty(), "the sample draws no candidate");
+    let mut reversed = full.clone();
+    reversed.reverse();
+    assert_eq!(programs(&reversed, None), everything, "reordering MUTATORS changed the draw");
+    for m in &full {
+        let without: Vec<&mutators::Mutator> = full.iter().copied().filter(|x| x.name != m.name).collect();
+        let rest = programs(&without, None);
+        assert!(rest.is_subset(&everything), "taking `{}` out of the pool drew a program the full pool does not", m.name);
+        assert!(
+            programs(&full, Some(m.name)).is_subset(&rest),
+            "taking `{}` out of the pool moved another mutator's candidates",
+            m.name
+        );
+    }
+}
+
 /// The signature leaves out what a mutation varies.
 #[test]
 fn a_signature_drops_names_and_numbers() {
@@ -722,8 +867,7 @@ fn sweep_of_mutated_programs_builds() {
     if let Some(n) = env_usize("HALE_PARITY_SEEDS") {
         seeds.truncate(n);
     }
-    let per_seed = env_usize("HALE_PARITY_PER_SEED").unwrap_or(3);
-    let report = run(&seeds, per_seed);
+    let report = run(&seeds, sweep_draw());
     print_summary(&format!("parity sweep over {} seeds", seeds.len()), &report, t.elapsed());
     assert!(report.clean > 200, "only {} candidates checked clean: the sweep is broken, not the compiler", report.clean);
     if let Err(msg) = judge(&report, 300) {
@@ -754,4 +898,20 @@ fn minimize_a_reproducer() {
     let sig = gate::signature(&msg);
     let small = minimized(&files, &sig, env_usize("HALE_PARITY_MIN_BUDGET").unwrap_or(400));
     eprintln!("refusal:   {}\nsignature: {sig}\n{}", msg.lines().next().unwrap_or(""), render_repro(&small));
+}
+
+#[test]
+#[ignore]
+fn tmp_count_draw() {
+    let seeds = all_seeds();
+    let pool = pool();
+    let draw = sweep_draw();
+    let cands: Vec<Candidate> = pooled(&seeds, |i, s| candidates_of(i, s, &pool, draw)).into_iter().flatten().collect();
+    let mut by: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for c in &cands {
+        let e = by.entry(c.mutators[0]).or_default();
+        if c.mutators.len() == 1 { e.0 += 1 } else { e.1 += 1 }
+    }
+    eprintln!("seeds {} candidates {}", seeds.len(), cands.len());
+    for (n, (a, b)) in by { eprintln!("  {n:<22} {a:>6} {b:>6}"); }
 }

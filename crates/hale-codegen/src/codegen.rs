@@ -13174,7 +13174,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the value (Expr::If / Expr::Block lowering) use
         // lower_block_as_expr instead.
         if let Some(tail) = &block.tail {
-            let _ = self.lower_expr(tail, scope)?;
+            match tail.as_ref() {
+                // `touch() or fail err` ending a body that returns
+                // nothing: its value is discarded, as the statement
+                // `touch() or fail err;`'s is, and a `() fallible(E)`
+                // call's `or` has none to give a value lowering
+                Expr::Or { inner, disposition, .. } => {
+                    let previous = self.current_call;
+                    if let Some(call) = Self::invocation_id(tail) {
+                        self.current_call = Some(call);
+                    }
+                    let lowered = self.lower_or_expr(inner, disposition, scope, true);
+                    self.current_call = previous;
+                    lowered?;
+                }
+                _ => {
+                    let _ = self.lower_expr(tail, scope)?;
+                }
+            }
             if self.seal_dead()? {
                 return Ok(BlockEnd::Terminated);
             }
@@ -16619,6 +16636,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // a crash where the verifier is not run).
             let saved_arena_override = self.current_arena_override.take();
             let saved_fused_dest = self.fused_dest.take();
+            // The same for the instantiation the caller is in the middle
+            // of: a specialization first reached in a locus literal's
+            // field (`Mid { quick: mk(1) }`, `mk` building a `Quick`)
+            // registered its own locus's birth with the caller's
+            // `Mid.self.returned` as the parent, and a pinned or pooled
+            // anchor's params would hand it the anchor's route. A free
+            // fn's body is lowered outside every instantiation; so is
+            // a specialization's.
+            let saved_obs_parent = self.current_instantiation_parent.take();
+            let saved_params_init_self = self.params_init_self.take();
+            let saved_params_init_initialized = self.params_init_initialized.take();
+            let saved_anchor_route = self.anchor_route.take();
+            let saved_in_params_default = std::mem::replace(&mut self.in_params_default, false);
+            let saved_pool_init = std::mem::replace(&mut self.pool_init, false);
+            let saved_pool_init_composite = std::mem::replace(&mut self.pool_init_composite_param, false);
             // DWARF: synthesis fires MID-STATEMENT while lowering
             // the caller — the caller's active location must not
             // leak into the synthesized fn's entry allocas
@@ -16667,6 +16699,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.loops = saved_loops;
             self.current_arena_override = saved_arena_override;
             self.fused_dest = saved_fused_dest;
+            self.current_instantiation_parent = saved_obs_parent;
+            self.params_init_self = saved_params_init_self;
+            self.params_init_initialized = saved_params_init_initialized;
+            self.anchor_route = saved_anchor_route;
+            self.in_params_default = saved_in_params_default;
+            self.pool_init = saved_pool_init;
+            self.pool_init_composite_param = saved_pool_init_composite;
         }
         Ok(mangled)
     }
@@ -19069,7 +19108,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     | Expr::Call { .. }
                     | Expr::Index { .. }
                     | Expr::If(_)
-                    | Expr::Match(_) => {
+                    | Expr::Match(_)
+                    | Expr::Or { .. } => {
                         let _ = self.lower_computed_fn_call(callee, args, scope)?;
                     }
                     _ => {
@@ -26807,8 +26847,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // to (GH #1942): a block (the desugar of a binding that
                 // shadows a fn of its name), a call that returns a fn
                 // (`pick()(2)`), an element of an array of fns
-                // (`fs[0](4)`), a branch that picks one.
-                Expr::Block(_) | Expr::Call { .. } | Expr::Index { .. } | Expr::If(_) | Expr::Match(_) => {
+                // (`fs[0](4)`), a branch that picks one, or the success
+                // of an `or` (`(pick() or raise)(4)`).
+                Expr::Block(_) | Expr::Call { .. } | Expr::Index { .. } | Expr::If(_) | Expr::Match(_) | Expr::Or { .. } => {
                     self.lower_computed_fn_call(callee, args, scope)?.ok_or_else(|| {
                         CodegenError::Unsupported(
                             "a fn value that returns no value is used in expression position".to_string(),
@@ -27878,6 +27919,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (q, _) = self.lower_binop(*op, lv, rv, &CodegenTy::Duration)?;
             return Ok((q, CodegenTy::Int));
         }
+        // A point moved by a `Duration`, and the `Duration` between two
+        // points, have fixed answers too (spec/units.md: a `Time` counts
+        // nanoseconds from its origin, a `Duration` nanoseconds). A
+        // generic body specialized at `Duration` (`fn later<T>(t: Time,
+        // d: T) -> Time { return t + d; }`) reaches here with no row: the
+        // template's walk typed `d` as its parameter, and the rows are
+        // the template's.
+        match (op, &lt, &rt) {
+            (BinOp::Add | BinOp::Sub, CodegenTy::Time, CodegenTy::Duration)
+            | (BinOp::Add, CodegenTy::Duration, CodegenTy::Time) => {
+                return self.lower_binop(*op, lv, rv, &CodegenTy::Time);
+            }
+            (BinOp::Sub, CodegenTy::Time, CodegenTy::Time) => {
+                return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
+            }
+            _ => {}
+        }
         // GH #1076: a comparison the checker typed between two
         // representations of the unit dialect (a `Duration` and a
         // refinement of it at the same denomination, which is the
@@ -27893,6 +27951,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             && crate::conversion::is_quantity_repr(&rt)
         {
             return self.lower_binop(*op, lv, rv, &CodegenTy::Int);
+        }
+        // A Decimal literal takes the scale of the place it flows into,
+        // which the checker records at the literal. In a generic body
+        // specialized at a `Decimal<S>` (`fn half<T>(x: T) -> T { return
+        // x / 2d; }`) the row is the template's, which knew no scale, so
+        // the literal is put at the other operand's scale here, as the
+        // checker puts it in a body over `Decimal<S>`.
+        if let (CodegenTy::Decimal(ls), CodegenTy::Decimal(rs)) = (&lt, &rt) {
+            if ls != rs {
+                if let Some(m) = decimal_literal_at_scale(right, *ls) {
+                    let v = i128_const(self.context, m?).into();
+                    return self.lower_binop(*op, lv, v, &lt);
+                }
+                if let Some(m) = decimal_literal_at_scale(left, *rs) {
+                    let v = i128_const(self.context, m?).into();
+                    return self.lower_binop(*op, v, rv, &rt);
+                }
+            }
         }
         // GH #1934: a 256-bit integer shifts by an `Int` count.
         if matches!(op, BinOp::Shl | BinOp::Shr) && matches!(lt, CodegenTy::U256 | CodegenTy::I256) {
@@ -32357,7 +32433,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         call_args.push(caller_arena.into());
         llvm_param_tys.push(ptr_t.into());
         for (i, a) in args.iter().enumerate() {
-            let (v, vt) = self.lower_expr(a, scope)?;
+            // an array literal for a `bounded[T; N]` parameter is that
+            // bounded, as at a direct call (GH #1951)
+            let (v, vt) = self.lower_arg_for(a, Some(&arg_tys[i]), scope)?;
             let v = if view_coerces_to(&vt, &arg_tys[i]) {
                 // F.30b (5a): unpack view + epoch check at fn-pointer
                 // arg site.
@@ -39903,6 +39981,19 @@ fn expr_kind_label(e: &Expr) -> &'static str {
         Expr::ArrayRepeat { .. } => "array-repeat literal",
         Expr::Or { .. } => "or-expression",
     }
+}
+
+/// A Decimal literal's mantissa at `scale`, when `e` is one: `None` for
+/// any other expression, an error when the literal has more places than
+/// the scale holds.
+fn decimal_literal_at_scale(e: &Expr, scale: u8) -> Option<Result<i128, CodegenError>> {
+    let Expr::Literal(Literal::Decimal(text), span) = e else { return None };
+    Some(hale_syntax::decimal_literal::parse_at_scale(text, scale).map_err(|_| {
+        CodegenError::UnsupportedAt(
+            format!("Decimal literal `{text}` does not fit `{}`", hale_types::ty::decimal_name(scale)),
+            *span,
+        )
+    }))
 }
 
 /// Build an i128 LLVM constant from a Rust i128. inkwell's

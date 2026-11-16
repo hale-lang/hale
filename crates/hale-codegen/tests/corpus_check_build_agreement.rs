@@ -3760,6 +3760,167 @@ fn the_generics_divergences_are_refused_by_the_check_not_the_build() {
     );
 }
 
+/// The latent gaps the parity gate's stable draw surfaced (GH #PLISSUE),
+/// the half compiled: a specialization first reached inside a locus
+/// literal's field, an array literal for a `bounded` parameter through a
+/// fn value, `Time + Duration` and a Decimal literal in a generic body,
+/// a fn type returning `()` in a signature, and an anchor nested in
+/// another anchor's params reading a binding of `fn main`. Each checks,
+/// builds and runs.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_latent_parity_divergences_check_build_and_run() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            // the specialization's own locus birth names no parent of the
+            // caller's (`Mid.self.returned`, an instruction of `make_mid`)
+            "locus Quick { params { n: Int = 0; } }\n\
+             locus Mid { params { quick: Quick = Quick { n: 0 }; } }\n\
+             fn make_quick<T>(n: T) -> Quick { return Quick { n: n }; }\n\
+             fn make_mid() -> Mid { return Mid { quick: make_quick(1) }; }\n\
+             fn main() { let m = make_mid(); println(m.quick.n); }\n",
+            "specialized_inside_a_locus_literal",
+            "1\n",
+        ),
+        (
+            "fn take(xs: bounded[Int; 4]) -> Int { return count(xs); }\n\
+             fn main() { let f: fn(bounded[Int; 4]) -> Int = take; println(f([1, 2]) + f([])); }\n",
+            "array_literal_through_a_fn_value",
+            "2\n",
+        ),
+        (
+            "fn later<T>(t: Time, d: T) -> Time { return t + d; }\n\
+             fn since<T>(a: T, b: T) -> Duration { return a - b; }\n\
+             fn main() { println(later(Time(1ns), 5s) == Time(1ns) + 5s, since(Time(9ns), Time(4ns))); }\n",
+            "time_and_duration_in_a_generic_body",
+            "true5ns\n",
+        ),
+        (
+            "fn half<T>(x: T) -> T { return x / 2d; }\n\
+             fn main() { let w: Decimal<18> = 0.000000000000000004d; let c: Decimal<2> = 1.50d; println(half(w), \" \", half(c)); }\n",
+            "decimal_literal_in_a_generic_body",
+            "0.000000000000000002 0.75\n",
+        ),
+        (
+            "type Row { n: Int = 1; }\n\
+             fn show(r: Row) { println(r.n); }\n\
+             fn apply(g: fn(Row) -> (), r: Row) { g(r); }\n\
+             fn main() { apply(show, Row { n: 4 }); }\n",
+            "fn_type_returning_unit",
+            "4\n",
+        ),
+        (
+            // the inner anchor's init is lowered inside the outer one's: `s`
+            // is captured into each in turn
+            "interface Part { fn tag() -> String; }\n\
+             locus Ear { params { tag: String = \"?\"; } birth() { println(self.tag); } }\n\
+             locus Leaf { params { x: Int = 0; } fn tag() -> String { return \"leaf\"; } }\n\
+             locus Hold { params { e: Ear = Ear { }; sub: Part = Leaf { }; } }\n\
+             main locus App {\n\
+             params { h: Hold = Hold { }; }\n\
+             placement { h: pinned(core = 0); }\n\
+             fn tag() -> String { return \"app\"; }\n\
+             }\n\
+             fn main() { let s = \"inner\"; App { h: Hold { e: Ear { tag: \"outer\" }, sub: App { h: Hold { e: Ear { tag: s } } } } }; }\n",
+            "binding_read_in_an_init_of_an_init",
+            "outer\ninner\n",
+        ),
+    ];
+    for (src, tag, want) in cases {
+        let out = build_and_run_probe(src, &format!("latent_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
+        assert_eq!(out, *want, "{tag}: what it computed\n{src}");
+    }
+}
+
+/// The latent gaps the parity gate's stable draw surfaced (GH #PLISSUE),
+/// the half refused: a call that leaves out a generic fn's defaulted
+/// parameter (in another fn's default too, whose walk drops what it
+/// finds), an argument a generic body's specialization still cannot type
+/// (a match arm's binding), a generic `type` at a perspective or at a
+/// generic locus, and a return a specialization does not type. Each is
+/// refused by the check at the construct; the build is never reached.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_latent_parity_divergences_are_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "fn read<T>(n: T = 42) -> T { return n; }\n\
+                 fn nested(n: Int = read()) -> Int { return n; }\n\
+                 fn main() { println(nested()); }\n",
+                "read",
+                "generic fn `read` takes 1 argument, got 0: hale can't compile a call that leaves out a generic fn's defaulted parameter yet",
+            ),
+            (
+                "fn read<T>(n: T = 42) -> T { return n; }\n\
+                 fn main() { println(read()); }\n",
+                "read",
+                "generic fn `read` takes 1 argument, got 0: hale can't compile",
+            ),
+            (
+                "type Link = enum { End, Next(Chain) };\n\
+                 type Chain { next: Link = Link::End; v: Int = 3; }\n\
+                 fn id<U>(u: U) -> U { return u; }\n\
+                 fn get<T>(c: T) -> Int { match c.next { Link::Next(n) -> { return id(n).v; }, _ -> { }, } return 0; }\n\
+                 fn main() { println(get(Chain { next: Link::Next(Chain { v: 5 }) })); }\n",
+                "n",
+                "generic fn `id` takes `U` from this argument, and hale can't name its type here",
+            ),
+            (
+                "perspective Router { fn route(code: Int) -> Int; }\n\
+                 locus RouterV1 : serves Router { fn route(code: Int) -> Int { return code + 100; } }\n\
+                 type Box<T> { v: T; }\n\
+                 fn bx<T>(x: T) -> Box<T> { return Box { v: x }; }\n\
+                 locus Gateway { params { router: perspective(Router) = RouterV1 { }; } run() { println(bx(self.router).v.route(1)); } }\n\
+                 fn main() { Gateway { }; }\n",
+                "bx",
+                "generic fn `bx`: this call makes `T` the perspective `Router`, and its signature's `Box<T>` would be a generic `type` holding a perspective slot",
+            ),
+            (
+                "locus Cache<K, V> { params { cap: Int = 1; } }\n\
+                 type Box<T> { v: T; }\n\
+                 fn bx<T>(x: T) -> Box<T> { return Box { v: x }; }\n\
+                 fn main() { let cs: [Cache<Int, String>; 2] = [Cache { cap: 2 }, Cache { cap: 3 }]; println(bx(cs[0]).v.cap); }\n",
+                "bx",
+                "generic fn `bx`: this call makes `T` the locus `Cache<Int, String>`",
+            ),
+            (
+                "fn scale<T>(x: T) -> T { return x * 1.5; }\n\
+                 fn main() { let s = scale(8); println(s); }\n",
+                "x * 1.5",
+                "return: expected `Int`, got `Float`, where a call makes `T` = `Int`",
+            ),
+        ],
+        "latent_gap",
+    );
+    // the neighbours that lower, so each rule is as wide as the refusal
+    assert_built(
+        "fn read<T>(n: T = 42) -> T { return n; }\n\
+         fn nested(n: Int = read(3)) -> Int { return n; }\n\
+         fn main() { println(nested()); }\n",
+        "hale_cb_latent_generic_default_passed",
+    );
+    assert_built(
+        "type Chain { v: Int = 3; }\n\
+         fn depth<T>(c: T, k: Int) -> Int { if k == 0 { return c.v; } return depth(c, k - 1); }\n\
+         fn main() { println(depth(Chain { v: 5 }, 3)); }\n",
+        "hale_cb_latent_generic_recursion",
+    );
+    assert_built(
+        "fn scale<T>(x: T) -> T { return x * 1.5; }\n\
+         fn main() { println(scale(2.0)); }\n",
+        "hale_cb_latent_generic_return_at_float",
+    );
+    assert_built(
+        "locus Cache<K, V> { params { cap: Int = 1; } }\n\
+         fn id<T>(x: T) -> T { return x; }\n\
+         fn main() { let c: Cache<Int, String> = Cache { cap: 2 }; println(id(c).cap); }\n",
+        "hale_cb_latent_generic_locus_through_a_generic_fn",
+    );
+}
+
 /// GH #1942: the codegen feature gaps a declaration's foreign or bus
 /// boundary reaches. An `@ffi` parameter with a default or of an enum
 /// type, a bus payload with a field the wire format has no form for, a
