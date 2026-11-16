@@ -731,7 +731,7 @@ fn main() {
   leaves `note` out builds it absent, so neither side spells the flag.
   A hand-written pair (`note: String = ""; has_note: Bool = false;`) is
   the same shape on the wire; prefer the mark, which cannot forget the
-  flag (F.51). Never encode absence as a value the field's type can
+  flag (F.52). Never encode absence as a value the field's type can
   hold (`""`, `-1`, the epoch): the description cannot say so, and a
   client cannot tell it from a real value.
 - **A presence triple, when "not sent", "clear" and a value all differ.**
@@ -2219,7 +2219,7 @@ absent thing means fighting the design, not waiting on it.
 
   At an API boundary, absence is an **optional field**: `x?: T`, the
   field `x` beside a `has_x: Bool` the mark declares, which the codec
-  reads as an optional key (2.11). There is no general `T?` (F.51):
+  reads as an optional key (2.11). There is no general `T?` (F.52):
   optionality is a record field's, never a type's.
 - **Fn-pointer callbacks don't capture state.** Loci are the
   language's closures — state lives in a locus with its own

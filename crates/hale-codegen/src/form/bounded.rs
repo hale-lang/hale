@@ -632,7 +632,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return Ok(None);
         }
         let r = self.lower_bounded_fallible_intrinsic(name, args, scope, call)?;
-        // GH #1951 item 3 (F.51): a `push` or `set` into a declared
+        // GH #1951 item 3 (F.52): a `push` or `set` into a declared
         // optional list (`tags?: bounded[T; N]`) writes it, so its record's
         // `has_tags` is set (and `clear_tags` cleared) where the call joins,
         // after the receiver's copy-on-write.

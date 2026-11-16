@@ -332,7 +332,7 @@ impl Parser {
         matches!(self.peek(), TokenKind::Ident(s) if s == w)
     }
 
-    /// F.51 (GH #1951 item 3): `name?` outside a `type`'s field list. Only
+    /// F.52 (GH #1951 item 3): `name?` outside a `type`'s field list. Only
     /// a record field is optional; `what` names the position refused.
     fn refuse_optional_mark(&self, name: &Ident, what: &str) -> Result<(), Diag> {
         if !self.at(&TokenKind::Question) {
@@ -343,7 +343,7 @@ impl Parser {
             format!(
                 "`{}?`: {what} is never optional. Only a field of a `type` takes `?` (`x?: T`, \
                  with its presence flag `has_x`); absence in a computation is `fallible(E)` \
-                 (spec/decisions.md F.51)",
+                 (spec/decisions.md F.52)",
                 name.name
             ),
         ))
@@ -6981,7 +6981,7 @@ impl Parser {
         // unambiguous, so reserving these words at field-name
         // position would just block useful patterns.
         let name = self.expect_member_name("field name")?;
-        // GH #1951 item 3 (F.51): `x?: T` is an optional field, `x` beside
+        // GH #1951 item 3 (F.52): `x?: T` is an optional field, `x` beside
         // a synthesized presence flag `has_x` (`synthesize_optional_flags`)
         let question = self.at(&TokenKind::Question).then(|| self.bump().span);
         self.expect(TokenKind::Colon, ":")?;
@@ -7394,13 +7394,13 @@ impl Parser {
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr, Diag> {
         let ty = self.parse_type_expr_inner()?;
-        // F.51 (GH #1951 item 3): optionality is a record field's, never a
+        // F.52 (GH #1951 item 3): optionality is a record field's, never a
         // type's. `T?` has no meaning anywhere a type is written.
         if self.at(&TokenKind::Question) {
             return Err(Diag::parse(
                 self.peek_token().span,
                 "Hale has no optional type `T?`: optionality belongs to a record field, `x?: T` in a \
-                 `type`, and absence in a computation is `fallible(E)` (spec/decisions.md F.51)",
+                 `type`, and absence in a computation is `fallible(E)` (spec/decisions.md F.52)",
             ));
         }
         Ok(ty)
@@ -9676,7 +9676,7 @@ fn shift_span(s: Span, base: usize, limit: usize) -> Span {
 }
 
 
-/// GH #1951 item 3 (F.51): each declared optional field `x?: T` of a
+/// GH #1951 item 3 (F.52): each declared optional field `x?: T` of a
 /// record gets its flags as real fields right after it, `has_x: Bool =
 /// false` and, for `x?: T clearable`, `clear_x: Bool = false`: the slots
 /// a hand-written presence pair or triple has (spec/api.md § Codecs), so

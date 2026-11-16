@@ -566,7 +566,7 @@ fn a_map_of_values_is_described_and_carried_by_the_clients() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// GH #1951 item 3 (F.51): an optional field (`x?: T`, `x?: T clearable`)
+/// GH #1951 item 3 (F.52): an optional field (`x?: T`, `x?: T clearable`)
 /// is its hand-written presence pair or triple on every export: the
 /// description, the JSON Schema, the OpenAPI and MCP documents, the
 /// `.proto` and the contract digest are byte-identical, so converting a

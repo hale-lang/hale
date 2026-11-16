@@ -1,5 +1,5 @@
 // tests/hale/optional_field_test.hl — optional fields, `x?: T` (GH #1951
-// item 3, spec/types.md § Optional fields, F.51). The mark declares `x` and a
+// item 3, spec/types.md § Optional fields, F.52). The mark declares `x` and a
 // real presence flag `has_x: Bool` beside it (`clear_x: Bool` too for
 // `clearable`), the presence pair or triple a record could always spell by
 // hand, so the JSON codec reads and writes it as it reads that pair

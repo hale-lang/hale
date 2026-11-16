@@ -752,7 +752,7 @@ impl Surface {
                         };
                         // an optional property is an optional field, its
                         // presence flag `has_<name>` synthesized beside it and
-                        // its absent value its type's zero (F.51)
+                        // its absent value its type's zero (F.52)
                         if f.optional {
                             o.push_str(&format!("    {}?: {}{tag};\n", f.name, f.ty.text()));
                         } else {

@@ -4020,7 +4020,7 @@ go. *Refusing a duplicate at its declaration*: two seeds may each
 declare one for a pair without either being wrong alone; the conflict
 exists where an `or raise` would have to choose.
 
-### F.51 — Optionality is a property of a record field, not a type
+### F.52 — Optionality is a property of a record field, not a type
 
 **Problem.** A record that tells a field left out from one sent spells a
 presence pair by hand, `x: T; has_x: Bool;`, and a PATCH field a triple

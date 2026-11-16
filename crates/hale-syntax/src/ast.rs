@@ -2685,14 +2685,14 @@ pub struct StructField {
     /// `name` (`{"db": "ok"}`), the element a record of the key and that
     /// one value (spec/api.md § Codecs).
     pub map_value: Option<Ident>,
-    /// GH #1951 item 3 (F.51): the field's part in a declared optional,
+    /// GH #1951 item 3 (F.52): the field's part in a declared optional,
     /// `x?: T` (spec/types.md § Optional fields).
     pub optional: FieldOptional,
     pub span: Span,
 }
 
 /// How a record field takes part in a declared optional field (GH #1951
-/// item 3, F.51). Optionality is a property of a record field, never a
+/// item 3, F.52). Optionality is a property of a record field, never a
 /// type: `x?: T` declares `x` and a real `has_x: Bool` beside it, and
 /// `x?: T clearable` a `clear_x: Bool` as well, the presence pair and
 /// triple a record could always spell by hand (spec/api.md § Codecs). The

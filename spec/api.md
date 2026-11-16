@@ -2620,7 +2620,7 @@ for what a page says beside its items.
 **An optional field** is a presence pair (2026-10-17): a field `x` beside
 a field `has_x` of the same record whose type is `Bool` (an alias of it
 included). Hale has no optional type; the flag is the presence. `x?: T`
-declares the pair (spec/types.md § Optional fields, F.51): the flag is a
+declares the pair (spec/types.md § Optional fields, F.52): the flag is a
 real field synthesized after `x`, so the codecs, the description,
 protobuf and the digest are byte for byte the hand-written `x` then
 `has_x`, and a write of `x` sets the flag. On the

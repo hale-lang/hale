@@ -9831,7 +9831,7 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
                         fields.iter().map(|f| (f.name.name.clone(), f.name.span)),
                         diags,
                     );
-                    // F.51: an optional field with no default and no zero
+                    // F.52: an optional field with no default and no zero
                     // (`optional_fields::fill_optional_zeros`)
                     for f in fields {
                         if let Some(d) =

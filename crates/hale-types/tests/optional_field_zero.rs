@@ -1,4 +1,4 @@
-//! An optional field's absent value (GH #1951 item 3, F.51): a record
+//! An optional field's absent value (GH #1951 item 3, F.52): a record
 //! literal that leaves `x?: T` out builds it absent, so `x` holds its
 //! default, or its type's zero where it declares none (the zero the JSON
 //! codecs give an absent field). A type with no zero (a tuple, a point, a

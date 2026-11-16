@@ -6661,7 +6661,7 @@ pub(crate) struct TypeInfo<'ctx> {
     /// The expression is evaluated at instantiation time in the
     /// caller's scope, same as locus-param non-literal defaults.
     pub(crate) defaults: BTreeMap<String, Expr>,
-    /// GH #1951 item 3 (F.51): each declared optional field (`x?: T`) →
+    /// GH #1951 item 3 (F.52): each declared optional field (`x?: T`) →
     /// the flag a write of it sets (`has_x`) and the one it clears
     /// (`clear_x`, for `clearable`). A hand-written pair is not here: its
     /// flag is written by hand.
@@ -17889,7 +17889,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
-        // GH #1951 item 3 (F.51): a write of a declared optional field (or
+        // GH #1951 item 3 (F.52): a write of a declared optional field (or
         // of a part of one) sets its record's presence flag, after the
         // store, so a part the write copied first holds the flag too.
         if let (Ok(BlockEnd::Open), Stmt::Assign { target, .. }) = (&r, stmt) {
@@ -17903,7 +17903,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         r.map_err(|err| self.place(err, stmt.span()))
     }
 
-    /// GH #1951 item 3 (F.51): `target` was just written. Each field
+    /// GH #1951 item 3 (F.52): `target` was just written. Each field
     /// segment `x` of it that its record declares optional (`x?: T`) sets
     /// that record's `has_x` and clears its `clear_x`: `r.x = v`,
     /// `self.row.x = v`, `xs[i].x = v`, and a write into a part of one,

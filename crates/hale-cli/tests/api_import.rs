@@ -118,7 +118,7 @@ fn an_openapi_document_becomes_a_surface_the_checker_accepts() {
         "rpc list_items(ShelfListItemsRequest) -> std::json::Value wire: \"GET /items?limit\";",
         "item_id: Int `json:\"itemId\"`;",
         // an optional parameter and an optional, nullable field are optional
-        // fields, their presence flags synthesized (F.51)
+        // fields, their presence flags synthesized (F.52)
         "limit?: Int;",
         "note?: String;",
         "labels?: bounded[String; 4];",

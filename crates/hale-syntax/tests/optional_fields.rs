@@ -1,4 +1,4 @@
-//! Optional fields, `x?: T` (GH #1951 item 3, F.51): the parser declares
+//! Optional fields, `x?: T` (GH #1951 item 3, F.52): the parser declares
 //! `x` and synthesizes its presence flag `has_x: Bool = false` right after
 //! it (and `clear_x` for `clearable`), the slots a hand-written presence
 //! pair or triple has. Optionality is a property of a record field, never

@@ -1092,7 +1092,7 @@ scalar_clause     = "range" , ":" , range_expr
 struct_field      = IDENTIFIER , [ "?" ] , ":" , type_expr , [ "clearable" ] ,
                     [ "indexed_by" , IDENTIFIER , [ "->" , IDENTIFIER ] ] ,
                     [ "=" , expression ] , [ field_tag ] , ";" ;
-(* `x?: T` is an optional field (GH #1951 item 3, F.51): it declares `x`
+(* `x?: T` is an optional field (GH #1951 item 3, F.52): it declares `x`
    and a presence flag `has_x: Bool = false` right after it, and
    `clearable` (contextual, only after an optional field's type) a clear
    flag `clear_x: Bool = false` after that: the presence pair and triple

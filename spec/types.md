@@ -375,7 +375,7 @@ two won the slot, with nothing in the source to say which — while
 the json codecs and a surface's description assume one slot
 per name.
 
-### Optional fields (GH #1951 item 3, F.51)
+### Optional fields (GH #1951 item 3, F.52)
 
 Optionality is a property of a record field, not a type. `x?: T` in a
 `type` declares the field `x` and, right after it, a real field `has_x:

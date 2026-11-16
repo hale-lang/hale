@@ -1,4 +1,4 @@
-//! The value an absent optional field holds (GH #1951 item 3, F.51).
+//! The value an absent optional field holds (GH #1951 item 3, F.52).
 //!
 //! `x?: T` declares `x` beside its presence flag `has_x`
 //! (`hale_syntax::ast::FieldOptional`, synthesized by the parser). A record

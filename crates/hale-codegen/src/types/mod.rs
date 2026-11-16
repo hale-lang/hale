@@ -1157,7 +1157,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_store(field_ptr, val)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
-        // GH #1951 item 3 (F.51): a declared optional field the literal
+        // GH #1951 item 3 (F.52): a declared optional field the literal
         // spells is present: its `has_x` is set, unless the literal spells
         // the flag itself (its `clear_x` keeps its default, `false`, or
         // what the literal spells).
@@ -1170,7 +1170,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
-    /// GH #1951 item 3 (F.51): store `on` into the `Bool` flag `flag` of
+    /// GH #1951 item 3 (F.52): store `on` into the `Bool` flag `flag` of
     /// the record of type `info` at `ptr`.
     pub(crate) fn store_presence_flag(
         &mut self,

@@ -79,7 +79,7 @@ pub struct Sequence<'a> {
 /// unchanged, so a caller that cannot tell whether its program went
 /// through it (the test harness) may run it again.
 pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
-    // GH #1951 item 3 (F.51): an optional field with no default takes its
+    // GH #1951 item 3 (F.52): an optional field with no default takes its
     // type's zero as one, before the JSON parsers read the defaults
     // (`optional_fields`).
     crate::optional_fields::fill_optional_zeros(programs, bundled_stdlib().ok().as_slice());
