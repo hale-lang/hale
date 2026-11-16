@@ -3102,11 +3102,15 @@ The typechecker validates three classes of constraint issue
    fixed-size array of anything else (`[P; 2]` of a struct,
    `[Time; 2]`), which keeps the out-of-line layout, a pointer
    that would dangle across the zero-copy / shm boundary; an
-   unbounded array `[T]`; and an enum. The binding is refused at
+   unbounded array `[T]`; a tuple (a pointer to its block); a
+   `bounded` list of strings, bytes, records or enums; and an enum.
+   The bus wire carries all of these (§ Payload type); a raw copy
+   does not. The binding is refused at
    typecheck, at its `zero_copy`, rather than compiled into a
    cross-process use-after-free: "binding for topic `TA` requires
    `zero_copy` but payload type `PayA` is not flat-shapeable — it
-   contains a String, Bytes, or fixed-size array field, …". Send
+   contains a String, Bytes, fixed-size array, tuple, enum or
+   list-of-pointers field, …". Send
    variable data as `Bytes` on a binding without `zero_copy`, or as
    a `layout:`-bound `BytesView` raw frame.
 
@@ -4685,7 +4689,9 @@ A subject's payload type — `T` in `of type T`, or a `topic`'s
 
 - a user `type` (`type T { ... }`);
 - an `enum` with at least one variant that carries a payload,
-  which travels as that enum's storage struct;
+  which travels as its tag and the variant's values (below; one whose
+  every value is a scalar or a payload-free enum travels as its
+  storage struct, the bytes it always had);
 - `BytesView` (`std::bytes::BytesView`), the raw-frame path: the
   payload is not typed at all, and the handler receives a bounded
   view over each record. This is how a foreign writer's ring is
@@ -4725,21 +4731,56 @@ path). To send one, wrap it in a user `type` and declare the topic's
 `payload:` as that.
 ```
 
-**Within** a payload, the wire format supports primitives (`Int`,
-`Float`, `Bool`, `Decimal`, `Duration`, `Time`, `String`),
-`Bytes`, and **nested user struct types** recursively composed. A
-bus payload may carry a struct whose fields are primitives,
-Strings, Bytes, or other nested structs, at any depth. Serialize
-walks the field tree in declaration order; deserialize allocates
-each nested struct in the lazy global payload arena and recurses.
+**Within** a payload, every value a `type` may hold is carried, at
+any depth (GH #1951 item 4). Serialize walks the value in declaration
+order and deserialize allocates each pointer-shaped value (a string, a
+record, a list's or an array's element, an enum's cell, a tuple) in the
+lazy global payload arena. The encodings are the wire format's carriage
+table, `hale_types::wire_carriage::WIRE_TABLE`; the check's refusal and
+the serializer both read it, so the list a refusal prints is the list
+the serializer encodes. The format is internal (F.36): Hale talks to
+Hale with it, and a foreign peer goes through a `codec(...)` clause.
+Little-endian, nothing between values:
+
+| Value | Wire bytes |
+|---|---|
+| `Int`, `Float`, `Bool`, `Duration`, `Time`, a unit type | 8 bytes |
+| `Decimal` | 16 bytes |
+| `U256`, `I256` | 32 bytes |
+| a payload-free enum | its tag, a `u32` (the variant's declaration index) |
+| `String`, `Bytes` | an `i64` length, then its bytes |
+| a record | its fields, in declaration order |
+| `bounded[T; N]`, `T` a scalar or a payload-free enum | its inline storage: the `i64` count and all `N` slots |
+| `bounded[T; N]`, `T` a `String`, `Bytes`, record or enum with payloads | an `i64` count, then that many elements, each as a value of `T` |
+| `[T; N]` | its `N` elements (an array of scalars as one block, as before) |
+| an enum with payloads | its `u32` tag, then the variant's values in order |
+| a tuple | as a record of its elements |
+| `std::json::Value` | its text, as a `String` |
+
+What no frame can hold stays refused, naming the part and the carried
+set: a fn value, a locus handle, a view (`BytesView`, `StringView`,
+`BytesMut` as a field), a projection, an array of no fixed length, and a
+type that reaches itself (`type Node { kids: bounded[Node; 4]; }`),
+whose frame has no bound. A topic whose payload holds one is rejected
+at typecheck where it is delivered, as above ("topic \`Ev\` declares
+\`payload: Msg\`, whose field \`f\` is a fn value (\`fn(Int) -> Int\`),
+which the wire format does not carry: a delivery serializes each value,
+and carries scalars (…), …, and records of these"). Until
+2026-11-16 the check refused an enum with payloads, a tuple, a `bounded`
+of strings, bytes or records and an array of strings as a field, and the
+build refused a top-level enum with a `String` value with no place
+(and copied any other pointer value of one as the pointer).
+
 A frame is decoded only as far as it reaches (2026-11-07, downstream
 handoff): one shorter than its type's minimum encoded size (its
-fixed fields and length prefixes; the empty datagram included) is
-refused before any field is read, and every read after that — a
-fixed field, a length prefix, the bytes a String or Bytes length
-announces, a nested struct's or an array element's fields — is held
-to what remains of the frame after it, never to the frame's whole
-length; a refused frame is dropped by the reader that received it and
+fixed fields, length prefixes, list counts and enum tags; the empty
+datagram included) is refused before any field is read, and every read
+after that — a fixed field, a length prefix, the bytes a String or
+Bytes length announces, a list's count, an enum's tag, a nested
+struct's or an element's fields — is held to what remains of the frame
+after it, never to the frame's whole length. A list count below zero or
+past the list's `N`, and an enum tag past its last variant, are refused
+too. A refused frame is dropped by the reader that received it and
 counted (`dropped_decode` in the counters dump), and nothing of the
 reader's previous frame is delivered as part of it. It used to be
 that an empty datagram was delivered as a zero-filled record, one
@@ -4751,23 +4792,20 @@ frame. In-process delivery — a publish materialized on the owner's
 thread, a cross-pool create cell — holds the program's own
 serializer's bytes and is decoded straight through, unchecked, so a
 create cell's dispatch stays one straight-line block (accept, the
-children's push, then birth, in the text's order).
-A payload-free enum field travels as its four-byte tag (so a topic
-`keyed_by` an enum field builds), and a `bounded[T; N]` of scalars or
-such enums and an array of scalars or structs are carried too. An
-enum with payloads, a tuple, a `bounded` of pointers (strings, bytes,
-structs) and an array of strings or arrays as a payload *field* (at
-any depth) are post-v1 polish, and a topic whose payload struct holds
-one is rejected at typecheck where it is delivered, as above, naming
-the field ("topic \`Ev\` declares \`payload: Msg\`, whose field \`x\` is
-a tuple (\`(Int, Int)\`), which the wire format does not carry").
-Until 2026-10-13 the check admitted every field and the build refused
-these, and every enum field, with no file or line.
+children's push, then birth, in the text's order). For that reason a
+cross-pool spawn's params keep to the shapes the walk takes without a
+loop or a switch: a counted list, an enum's cell and a tuple are refused
+there (`lowering_laws::cross_pool_child_shape`).
+
+The flat paths are unchanged: a `zero_copy` binding and a `layout:`
+ring copy the payload's bytes raw, so every new shape (a counted list,
+an enum's cell, a tuple, an array of strings) is not flat-shapeable and
+is refused at the binding, as a `String` field is; a `keyed_by` key is
+one of the key table's types.
 A literal subject's `of type` struct (`subscribe "m" as on_m of type
 M`) is held to the same rule, once per payload type, at the first clause
-that names it, and an array's element is a scalar or a struct, never an
-enum (a payload-free enum's tag travels alone): both reached the build
-until GH #1942. So does a binding's transport: a native `shm_ring`
+that names it; it reached the build until GH #1942. So is a binding's
+transport: a native `shm_ring`
 holds fixed-size struct slots, so a topic whose payload is an enum is
 refused at its entry, and a `layout:` ring hands its subscriber one
 record at a time, so a `Drain<T>` batch handler on one is refused at
