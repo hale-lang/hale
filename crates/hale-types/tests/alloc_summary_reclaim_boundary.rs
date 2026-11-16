@@ -625,6 +625,11 @@ fn per_target_moves() {
 /// `open_slices_test` (GH #1995 S1) is a new target, the same shape: one
 /// tag of a value its locus method hands back moves into the caller's
 /// arena; no leak site goes or appears.
+///
+/// `dna/api`'s habitat organizations list (organization_list.hl) adds
+/// three fns that free at return (`organization_name_ok`,
+/// `organizations_origin`, `with_organizations`): three more tags and six
+/// more sites reclaimed at return; no leak site goes or appears.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -639,7 +644,7 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/91-module-decls: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
-    "dna/api: 1 go, 0 appear, 1 move their reason; dump 549 tags, 1348 reclaim, 1 verdicts",
+    "dna/api: 1 go, 0 appear, 1 move their reason; dump 552 tags, 1354 reclaim, 1 verdicts",
     "dna/core: 0 go, 0 appear; dump 413 tags, 1052 reclaim, 0 verdicts",
     "dna/host: 2 go, 0 appear; dump 604 tags, 1406 reclaim, 2 verdicts",
     "dna/host/verb: 0 go, 0 appear; dump 604 tags, 1165 reclaim, 1461 verdicts",
