@@ -1697,7 +1697,7 @@ impl Snapshot {
                     &walked.walk.record.mono_shapes,
                     sends,
                     &scope.top,
-                    &walked.walk.record.raise_calls(),
+                    &walked.walk.record.checked_calls(),
                 )))
             })
             .as_ref()

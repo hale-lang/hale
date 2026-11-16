@@ -698,6 +698,9 @@ pub struct TypedBody {
     /// `or raise`), every raised error that is not the enclosing fn's own
     /// type and becomes it: a set's member, or a `@raise fn`'s result.
     pub raises: BTreeMap<ConversionSite, RaiseConversion>,
+    /// GH #1984: the element cursors over a collection, by the callee's
+    /// span ([`CheckedCalls::cursors`]).
+    pub cursors: std::collections::BTreeSet<(u32, u32)>,
 }
 
 /// How a raised error becomes the enclosing fn's (GH #1951, item 2):
@@ -712,22 +715,36 @@ pub enum RaiseConversion {
     Convert(String),
 }
 
-/// GH #1982: the `@raise` conversions each body calls implicitly, by the
-/// body's declaration (`NodeId`'s index) and the span of the `raise` that
-/// converts (the word's, or a fallible handler's for its implicit one),
-/// each the conversion fn's declared (merged) name: the call `or fail
-/// conv(err)` the raise lowers to, for the analyses that walk calls.
-pub type RaiseCalls = BTreeMap<u32, BTreeMap<(u32, u32), String>>;
+/// The calls the check resolved that the allocation summary's walk
+/// cannot see from the syntax alone, by the body's declaration
+/// (`NodeId`'s index).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CheckedCalls {
+    /// GH #1982: the `@raise` conversions each body calls implicitly, by
+    /// the span of the `raise` that converts (the word's, or a fallible
+    /// handler's for its implicit one), each the conversion fn's declared
+    /// (merged) name: the call `or fail conv(err)` the raise lowers to.
+    pub raises: BTreeMap<u32, BTreeMap<(u32, u32), String>>,
+    /// GH #1984: the element cursors (`.get(i)`, `.entry_at(i)`) over a
+    /// `bounded[T; N]` or a fixed array, by the callee's span: the
+    /// collection's own intrinsic (`at`), however the collection is
+    /// reached (a local, a param, a record's or a locus's field, a path
+    /// of them) and whatever it is named. An element chain rides one.
+    pub cursors: BTreeMap<u32, std::collections::BTreeSet<(u32, u32)>>,
+}
 
-/// [`RaiseCalls`] of a record's bodies.
-fn raise_calls_of(bodies: &BTreeMap<u32, TypedBody>) -> RaiseCalls {
-    let mut out = RaiseCalls::new();
+/// [`CheckedCalls`] of a record's bodies.
+fn checked_calls_of(bodies: &BTreeMap<u32, TypedBody>) -> CheckedCalls {
+    let mut out = CheckedCalls::default();
     for (body, typed) in bodies {
         for (site, conversion) in &typed.raises {
             let (RaiseConversion::Convert(name), SiteKind::Value { start, end }) = (conversion, &site.kind) else {
                 continue;
             };
-            out.entry(*body).or_default().insert((*start, *end), name.clone());
+            out.raises.entry(*body).or_default().insert((*start, *end), name.clone());
+        }
+        if !typed.cursors.is_empty() {
+            out.cursors.insert(*body, typed.cursors.clone());
         }
     }
     out
@@ -1420,10 +1437,19 @@ impl TypingRecord {
         self.body(body).injections.entry(site).or_insert(injection);
     }
 
-    /// GH #1982: every `@raise` conversion a body calls, by body and
-    /// `raise` site ([`RaiseCalls`]).
-    pub fn raise_calls(&self) -> RaiseCalls {
-        raise_calls_of(&self.bodies)
+    /// The calls each body makes that only the check resolves
+    /// ([`CheckedCalls`]).
+    pub fn checked_calls(&self) -> CheckedCalls {
+        checked_calls_of(&self.bodies)
+    }
+
+    /// GH #1984: the call whose callee is at `callee` in the body `body` is
+    /// a collection's element cursor.
+    pub fn cursor(&mut self, body: NodeId, callee: Span) {
+        if body.is_none() {
+            return;
+        }
+        self.body(body).cursors.insert((callee.start.0, callee.end.0));
     }
 
     /// GH #1951 (item 2): the error raised at `site` of the body `body`
@@ -1642,10 +1668,10 @@ impl TypedBodies {
         self.bodies.get(&body.0)?.injections.get(site)
     }
 
-    /// GH #1982: every `@raise` conversion a body calls ([`RaiseCalls`]),
-    /// the relation the allocation summary walks as calls.
-    pub fn raise_calls(&self) -> RaiseCalls {
-        raise_calls_of(&self.bodies)
+    /// The calls each body makes that only the check resolves
+    /// ([`CheckedCalls`]), the relation the allocation summary walks.
+    pub fn checked_calls(&self) -> CheckedCalls {
+        checked_calls_of(&self.bodies)
     }
 
     /// The conversion of the error raised at `site` in the body declared

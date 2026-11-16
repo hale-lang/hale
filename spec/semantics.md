@@ -4589,15 +4589,18 @@ The rewrite happens post-parse, before typecheck, so it cannot
 dispatch on the source's type; a form that does not answer `get`
 fails with an ordinary no-method diagnostic at the chain's site.
 
-`.items` and `.entries` anchor a chain on a form's iteration
-surface, and the rewrite strips the anchor before the source's type
-is known. Where the stripped receiver is no form and answers no
-accessor of its own, but has a real field of the anchor's name (a
-record's `items: bounded[T; N]`, a locus param `entries: [T; N]`),
-the chain walks that field, through the field's own accessor (`get`
-for a `bounded` or an array): `b.items.filter(it > 1).count()` over
-`type Bag { items: bounded[Int; 8]; }` counts `b.items` (GH #1984).
-A form keeps its pseudo-field whatever its fields are named.
+A chain over a `bounded[T; N]` or an array walks it by its type,
+however it is reached and whatever it is named: a local, a param, a
+record's or a locus's field, a path of fields (`o.inner.tags.filter(it
+> 1).count()`). Its element cursor is the collection's own `at`, so the
+effect and allocation analyses read it as that intrinsic (no effect, no
+allocation) and the chain holds under `@no_syscall` and `@budget(
+alloc_per_call = 0)` (GH #1984). `.items` and `.entries` anchor a chain
+on a form's iteration surface, and the rewrite strips the anchor before
+any type is known; the receiver's type then decides what it was: a
+`@form` locus, or one that declares the cursor itself, keeps the
+pseudo-field, and a receiver with a real field of the anchor's name (a
+record's `items: bounded[T; N]`) walks that field.
 
 **Fallible terminals ride the source's own `get`.** `first` / `find`
 / `min` / `max` lower to an index search whose value is

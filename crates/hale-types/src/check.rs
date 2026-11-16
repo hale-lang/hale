@@ -670,7 +670,7 @@ fn check_numbered_bundle(
         &walk.record.mono_shapes,
         &intra_locus,
         top,
-        &walk.record.raise_calls(),
+        &walk.record.checked_calls(),
     ));
     let rows = std::cell::OnceCell::new();
     let effects = || {
@@ -19231,6 +19231,19 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #1984: the callee at `callee` reads an element of a value of
+    /// `collection`: when that is a `bounded[T; N]` or a fixed array, the
+    /// call is the collection's own cursor, recorded for the allocation
+    /// summary's walk, which cannot type the receiver itself.
+    fn note_cursor(&mut self, collection: &Ty, callee: Span) {
+        if self.specializing.is_some() {
+            return;
+        }
+        if matches!(self.through_aliases(collection.clone()), Ty::Bounded(..) | Ty::Array(..)) {
+            self.typed.cursor(self.body, callee);
+        }
+    }
+
     /// GH #1978: a generic fn's declared result at one call, its
     /// parameters bound by the call: an application of them (`Box<T>`)
     /// is the monomorph its arguments name (`Box_Blob`), recorded in the
@@ -24952,6 +24965,13 @@ impl<'a> Checker<'a> {
                         if !is_callee {
                             self.refuse_method_value(&rt, name);
                         }
+                        // GH #1984: a collection's element cursor (an
+                        // element chain's `src.get(i)`), whatever the
+                        // collection is and however it is reached: by
+                        // its type, the collection's own `at`.
+                        if is_callee && matches!(name.name.as_str(), "get" | "entry_at") {
+                            self.note_cursor(&rt, *span);
+                        }
                         // STABILITY.md § Deprecation: a call of a
                         // deprecated stdlib method warns, at the call
                         // (`deprecations::DEPRECATED_METHODS`).
@@ -24975,6 +24995,7 @@ impl<'a> Checker<'a> {
                             if let Some(ft) = self.field_ty(&rt, anchor) {
                                 let accessor = if self.field_ty(&ft, &name.name).is_some() { name.name.as_str() } else { "get" };
                                 if let Some(t) = self.field_ty(&ft, accessor) {
+                                    self.note_cursor(&ft, *span);
                                     return t;
                                 }
                             }

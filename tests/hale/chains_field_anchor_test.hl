@@ -1,16 +1,22 @@
-// Element chains over a real field named `items` or `entries` (GH #1984).
+// Element chains over a `bounded[T; N]` or array field (GH #1984).
 //
-// A chain anchored on `.items` / `.entries` reads the anchor as a `@form`
-// locus's iteration pseudo-field and walks the form. Chains desugar before
-// typecheck, so `b.items` of a record looked the same and was stripped to
-// `b`, and the chain failed with "no field `get` on `Bag`". Where the
-// receiver is no form but has a field of that name (a record's, a locus
-// param), the chain walks the field.
+// A chain over a collection field walks the field because of its type,
+// whatever the field is named and however it is reached: a record local,
+// a record param, a locus param, a path of fields. Two names were broken:
+// chains desugar before typecheck and read `.items` / `.entries` as a
+// `@form` locus's iteration pseudo-field, so `b.items` of a record was
+// stripped to `b` and failed with "no field `get` on `Bag`". The receiver's
+// type decides now: a form keeps its pseudo-field, anything else walks its
+// field. And the element cursor is the collection's own `at` for the
+// effect and allocation analyses, so each chain below holds under
+// `@no_syscall` and `@budget(alloc_per_call = 0)`, as the chain docs say.
 
 type Line { sku: String = ""; qty: Int = 0; }
 type Bag { items: bounded[Int; 8]; }
 type Ledger { entries: bounded[Line; 4]; }
 type Fixed { items: [Int; 3]; }
+type Inner { tags: bounded[Int; 8]; items: bounded[Int; 4]; }
+type Outer { inner: Inner; scores: [Int; 3]; }
 
 @form(vec)
 locus Nums { capacity { heap xs of Int; } }
@@ -25,6 +31,26 @@ locus Cart {
     fn total() -> Int {
         return self.items.map(it.qty).sum();
     }
+}
+
+@no_syscall @budget(alloc_per_call = 0)
+fn tagged(o: Outer) -> Int {
+    return o.inner.tags.map(it * 2).filter(it > 2).count();
+}
+
+@no_syscall @budget(alloc_per_call = 0)
+fn nested_items(o: Outer) -> Int {
+    return o.inner.items.filter(it > 0).count();
+}
+
+@no_syscall @budget(alloc_per_call = 0)
+fn scored(o: Outer) -> Int {
+    return o.scores.filter(it > 4).sum();
+}
+
+@no_syscall @budget(alloc_per_call = 0)
+fn first_big(b: Bag) -> Int {
+    return b.items.find(it > 2) or 0;
 }
 
 fn main() {
@@ -66,6 +92,21 @@ fn main() {
     push(c.items, Line { sku: "y", qty: 1 }) or discard;
     std::test::assert_eq_int(c.big(), 1, "locus param items: filter + count");
     std::test::assert_eq_int(c.total(), 4, "locus param items: map + sum");
+
+    // Any name, any path: by the field's type.
+    let mut o = Outer { inner: Inner { }, scores: [3, 5, 9] };
+    push(o.inner.tags, 1) or discard;
+    push(o.inner.tags, 4) or discard;
+    push(o.inner.items, 6) or discard;
+    std::test::assert_eq_int(tagged(o), 1, "a record param's nested `tags`: map + filter + count");
+    std::test::assert_eq_int(
+        o.inner.tags.filter(it > 0).count(),
+        2,
+        "a record local's nested `tags`",
+    );
+    std::test::assert_eq_int(nested_items(o), 1, "a nested field named `items`");
+    std::test::assert_eq_int(scored(o), 14, "an array field: filter + sum");
+    std::test::assert_eq_int(first_big(b), 3, "a record param's `items`: find");
 
     // A `@form(vec)` keeps the pseudo-field reading.
     c.n.push(2);

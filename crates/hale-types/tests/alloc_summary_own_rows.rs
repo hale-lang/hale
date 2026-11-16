@@ -41,7 +41,7 @@ use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
 use hale_syntax::ast::{Program, TopDecl};
 use hale_types::rpc_expand::is_runtime_pos;
-use hale_types::alloc_summary::{summarize_identified, summarize_identified_raising, AllocSummary, Callee};
+use hale_types::alloc_summary::{summarize_identified, summarize_identified_checked, AllocSummary, Callee};
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
@@ -125,10 +125,11 @@ fn measure(target: &str) -> Option<(Vec<(String, String)>, Vec<(String, String)>
                 // program's own, so it is taken back out.
                 let bare: Vec<Program> = bundle.programs.values().map(|p| without_runtime(p)).collect();
                 let alone: Vec<_> = bare.iter().map(|p| (p, &bundle.snapshot)).collect();
-                // The check's `@raise` conversions are calls of the program
-                // (GH #1982), whichever summary walks it.
-                let raises = snap.demand_typed_bodies().ok()?.raise_calls();
-                let alone = summarize_identified_raising(&alone, &bundle.import_renames, &raises);
+                // The calls only the check resolves (`@raise` conversions,
+                // collection cursors) are the program's, whichever summary
+                // walks it.
+                let calls = snap.demand_typed_bodies().ok()?.checked_calls();
+                let alone = summarize_identified_checked(&alone, &bundle.import_renames, &calls);
                 let into_copy = summary
                     .fns
                     .values()
