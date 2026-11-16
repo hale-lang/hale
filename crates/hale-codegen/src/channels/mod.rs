@@ -1420,7 +1420,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(caller_arena_at_call.into());
         for i in 0..sig.params.len() {
             let (v, ty) = if i < args.len() {
-                self.lower_expr(&args[i], scope)?
+                self.lower_arg_for(&args[i], Some(&sig.params[i]), scope)?
             } else {
                 let default = sig
                     .defaults[i]

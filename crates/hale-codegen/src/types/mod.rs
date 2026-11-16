@@ -952,14 +952,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if let Some((bidx, CodegenTy::Bounded(belem, bn))) =
                 info.fields.get(fname).cloned()
             {
-                if by_name.contains_key(fname.as_str()) {
-                    return Err(CodegenError::Unsupported(format!(
-                        "type `{}` field `{}`: bounded[T; N] fields \
-                         cannot be initialized in a literal — they \
-                         start empty; use push(...)",
-                        type_name, fname
-                    )));
-                }
                 let slot = self
                     .builder
                     .build_struct_gep(
@@ -971,6 +963,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 let st = self.llvm_bounded_storage_type(&belem, bn);
                 let size = st.size_of().expect("bounded storage sized");
+                // GH #1951: a field spelled in the literal takes a bounded
+                // value or an array literal: its storage copied in, each
+                // live pointer-shaped element the record's own (a place's
+                // elements copied, a fresh value's kept).
+                if let Some(init) = by_name.get(fname.as_str()).copied() {
+                    let (src, src_ty) = self.lower_bounded_operand(init, &belem, bn, scope)?;
+                    if !matches!(&src_ty, CodegenTy::Bounded(se, sn) if **se == *belem && *sn == bn) {
+                        return Err(CodegenError::Unsupported(format!(
+                            "type `{type_name}` field `{fname}`: a bounded field initialized from a {src_ty:?}"
+                        )));
+                    }
+                    self.emit_memcpy_call(slot, src.into_pointer_value(), size, &format!("{type_name}.{fname}.bounded.init"))?;
+                    let arena = self.current_arena_ptr()?;
+                    let prev = self.cell_owned_clone;
+                    if !Self::expr_is_fresh_value(init) {
+                        self.cell_owned_clone = true;
+                    }
+                    let anchored = self.anchor_bounded_elems_in_place(slot, &belem, bn, arena, "bounded.field.init");
+                    self.cell_owned_clone = prev;
+                    anchored?;
+                    continue;
+                }
                 self.builder
                     .build_memset(
                         slot,

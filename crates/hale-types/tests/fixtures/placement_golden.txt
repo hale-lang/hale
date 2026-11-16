@@ -1811,12 +1811,15 @@ row	~.l	Listener	main	inherited
 == crates/hale-codegen/tests/bounded_collections.rs#9b194cc5
 row	L@main1	L	main	default
 
-== crates/hale-codegen/tests/bounded_collections.rs#14fd8149
+== crates/hale-codegen/tests/bounded_collections.rs#4dc03955
 -- L@main1	L
 row	~	L	main	default
 row	~.child	Child	main	inherited
 
-== crates/hale-codegen/tests/bounded_collections.rs#e6b74386
+== crates/hale-codegen/tests/bounded_collections.rs#5ae76cde
+row	Store@main1	Store	main	default
+
+== crates/hale-codegen/tests/bounded_collections.rs#2d2113bc
 -- Store@main1	Store
 row	~	Store	main	default
 row	~.slots.0	Slot	main	inherited
@@ -8477,12 +8480,16 @@ row	Store@main1	Store	main	default
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.slots	Slots	main	default
-row	Churn@main2	Churn	main	default
+row	Churn@main3	Churn	main	default
+row	Maker@main2	Maker	main	default
 row	Store@main1	Store	main	default
 
 == tests/hale/bounded_time_test.hl
 root	Clock	the entry
 row	Clock@literal1	Clock	main	default
+
+== tests/hale/bounded_values_test.hl
+row	Store@main1	Store	main	default
 
 == tests/hale/bounded_whole_assign_test.hl
 row	Store@main1	Store	main	default

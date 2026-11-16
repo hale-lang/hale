@@ -28,6 +28,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::TypeRef(_)
             | CodegenTy::Tuple(_)
             | CodegenTy::Array(_, _)
+            | CodegenTy::Bounded(_, _)
             | CodegenTy::Enum(_) => {
                 let dest = self.current_arena_ptr()?;
                 self.emit_owned_deep_copy(val, ty, dest)
@@ -80,7 +81,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn emit_local_cow(&mut self, name: &str, scope: &Scope<'ctx>) -> Result<(), CodegenError> {
         let Some((slot, ty)) = scope.locals.get(name).cloned() else { return Ok(()) };
         if self.cow_exempt_slots.contains(&slot)
-            || !matches!(ty, CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Array(_, _) | CodegenTy::Enum(_))
+            || !matches!(
+                ty,
+                CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Array(_, _) | CodegenTy::Bounded(_, _) | CodegenTy::Enum(_)
+            )
         {
             return Ok(());
         }

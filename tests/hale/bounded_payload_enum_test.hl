@@ -14,6 +14,9 @@
 //     read taken before the overwrite still reads the old value;
 //   - a whole copy of the list between records is a copy, not a view;
 //   - a `@form(hashmap)` cell holding such a list;
+//   - a list as a value (#1961): a literal of mixed variants, an owned
+//     local, a fn and a locus method returning one by value, its cells
+//     the caller's to read after the callee returned;
 //   - a locus field rewritten many times stays flat in memory.
 //
 // Every payload String is built at run time (`std::str::upper`, a
@@ -156,6 +159,34 @@ main locus App {
     params { slots: Slots = Slots { }; }
 }
 
+fn statuses(k: Int) -> bounded[Status; 6] {
+    let t = "v" + to_string(k);
+    let mut out: bounded[Status; 6] = [
+        Status::Ok,
+        Status::Other(t),
+        Status::Wrap(Inner::Named(t + "!"))
+    ];
+    push(out, Status::Pair(std::str::upper(t), k)) or raise;
+    return out;
+}
+
+locus Maker {
+    params { tag: String = "m"; held: bounded[Status; 6]; }
+
+    fn made(k: Int) -> bounded[Status; 6] {
+        let t = self.tag + to_string(k);
+        return [Status::Other(t), Status::Ok];
+    }
+
+    fn keep(k: Int) {
+        self.held = statuses(k);
+    }
+
+    fn first_kept() -> String {
+        return show(at(self.held, 1) or Status::Ok);
+    }
+}
+
 fn tags(b: Bag) -> String {
     let mut out = "";
     for s in b.items {
@@ -252,6 +283,34 @@ fn main() {
     std::test::assert_eq_int(count(later.items), 6, "a later frame's list");
     st.put(0, Status::Ok);
     std::test::assert_eq_str(st.joined(), "ok;", "the place is usable after clear");
+
+    // lists as values: a literal, an owned local, return by value
+    let v = statuses(3);
+    std::test::assert_eq_int(count(v), 4, "a returned list's count");
+    std::test::assert_eq_str(show(at(v, 1) or Status::Ok), "other:v3", "a literal's payload");
+    std::test::assert_eq_str(show(at(v, 2) or Status::Ok), "wrap:v3!", "a nested payload");
+    std::test::assert_eq_str(show(at(v, 3) or Status::Ok), "pair:V3/3", "a pushed payload");
+    let mut own = v;
+    set(own, 1, Status::Other("own" + to_string(1))) or raise;
+    std::test::assert_eq_str(
+        show(at(v, 1) or Status::Ok),
+        "other:v3",
+        "a local bound from a local is a copy",
+    );
+    std::test::assert_eq_str(show(at(own, 1) or Status::Ok), "other:own1", "the copy took the set");
+    let mk = Maker { };
+    let made = mk.made(9);
+    std::test::assert_eq_str(
+        show(at(made, 0) or Status::Ok),
+        "other:m9",
+        "a method returns a list by value",
+    );
+    mk.keep(4);
+    let later2 = statuses(5);
+    std::test::assert_eq_int(count(later2), 4, "a later list");
+    std::test::assert_eq_str(mk.first_kept(), "other:v4", "a locus field assigned a returned list");
+    mk.keep(6);
+    std::test::assert_eq_str(mk.first_kept(), "other:v6", "and assigned again");
 
     // a hashmap cell holding a list of them
     let app = App { };

@@ -361,21 +361,23 @@ fn a_whole_assigned_bounded_field_outlives_its_method_under_asan() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "first 49|SECOND 49|SECOND 49\n");
 }
 
-/// A bounded local is a view of the place it was bound from, and the
-/// elements a `push` or a `set` stores through it are anchored where that
-/// place lives: a locus's own field (`let mut dest = self.xs`), a child's
-/// (`let d = self.child.xs`), an alias of a view (`let e = d`), and an
-/// inner block's view of another place shadowing an outer one. Each used
-/// to anchor in the method's scratch, which its return frees under the
-/// field. Under AddressSanitizer (chunk recycling off, as an ASan build
-/// defaults), a slot left there is a use-after-free at the read after the
-/// methods returned.
+/// A bounded local bound from a place is the method's own copy
+/// (decisions F.49, GH #1951): the elements a `push` or a `set` stores
+/// through it are kept in the method's frame and never reach the field
+/// (`let mut dest = self.xs`, a child's `let mut d = self.child.xs`, a
+/// copy of a copy `let mut e = d`, an inner block's local shadowing an
+/// outer one). Stored back whole (`self.xs = dest`), each element is
+/// anchored in the locus's arena, so it reads whole after the methods
+/// returned. Under AddressSanitizer (chunk recycling off, as an ASan build
+/// defaults), an element left in the method's scratch would be a
+/// use-after-free at the read.
 #[test]
-fn an_element_stored_through_a_bounded_view_outlives_its_method_under_asan() {
+fn an_element_stored_through_a_bounded_local_and_stored_back_outlives_its_method_under_asan() {
     let src = r#"
         locus Child {
             params { xs: bounded[String; 4]; }
             fn first() -> String { return at(self.xs, 0) or ""; }
+            fn put(xs: bounded[String; 4]) { self.xs = xs; }
         }
         locus L {
             params { child: Child = Child { }; xs: bounded[String; 4]; ys: bounded[String; 4]; }
@@ -385,21 +387,28 @@ fn an_element_stored_through_a_bounded_view_outlives_its_method_under_asan() {
                 push(dest, "first " + to_string(k)) or raise;
                 push(dest, std::str::upper("second ") + to_string(k)) or raise;
                 set(dest, 0, "set " + to_string(k)) or raise;
-                let d = self.child.xs;
+                self.xs = dest;
+                let mut dropped = self.xs;
+                push(dropped, "dropped " + to_string(k)) or discard;
+                let mut d = self.child.xs;
                 clear(d);
                 push(d, "child " + to_string(k)) or raise;
-                let e = d;
+                let mut e = d;
                 set(e, 0, "alias " + to_string(k)) or raise;
-                let v = self.ys;
+                self.child.put(e);
+                let mut v = self.ys;
                 if k > 0 {
-                    let v = self.child.xs;
+                    let mut v = self.child.xs;
                     push(v, "inner " + to_string(k)) or discard;
                 }
                 clear(v);
                 push(v, "outer " + to_string(k)) or raise;
+                self.ys = v;
             }
             fn read() -> String {
-                return (at(self.xs, 0) or "") + "|" + (at(self.xs, 1) or "") + "|" + self.child.first() + "|" + (at(self.ys, 0) or "");
+                return (at(self.xs, 0) or "") + "|" + (at(self.xs, 1) or "") + "|" + self.child.first() + "|"
+                    + (at(self.ys, 0) or "") + "|" + to_string(count(self.xs)) + "|"
+                    + to_string(count(self.child.xs));
             }
         }
         fn main() {
@@ -412,37 +421,99 @@ fn an_element_stored_through_a_bounded_view_outlives_its_method_under_asan() {
             println(l.read());
         }
     "#;
-    let bin = harness::unique_bin("bounded_view_anchor_asan");
+    let bin = harness::unique_bin("bounded_local_anchor_asan");
     let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
     build_opts::build_source(src, &bin, &options).expect("asan build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "set 49|SECOND 49|alias 49|outer 49\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "set 49|SECOND 49|alias 49|outer 49|2|1\n");
 }
 
-/// GH #1608 review: a bounded place is evaluated once. A view bound from an
-/// indexed place (`let v = self.slots[self.next()].xs;`) calls the index's
-/// method once, and the arena the view's elements anchor in is the owner
-/// that same evaluation reached: the IR holds one call of `next`, and the
-/// element pushed through the view reads whole after the method returned.
+/// GH #1951: a member, a free fn and an interface method return a
+/// `bounded` by value. The list's String and record elements are built in
+/// the callee's scratch (a member's) or its arena (a free fn's); the
+/// return copies them into the caller's arena, so each reads whole after
+/// the callee returned, and a returned list stored whole into a field
+/// stays whole after the storing method returned. Under AddressSanitizer
+/// an element left in the callee's frame is a use-after-free at the read.
+#[test]
+fn a_returned_bounded_outlives_its_callee_under_asan() {
+    let src = r#"
+        type Item { k: Int = 0; s: String = ""; }
+        interface Named { fn names() -> bounded[String; 4]; }
+        locus Store {
+            params { prefix: String = "p"; kept: bounded[Item; 4]; }
+            fn items(k: Int) -> bounded[Item; 4] {
+                let mut out: bounded[Item; 4] = [Item { k: k, s: self.prefix + to_string(k) }];
+                push(out, Item { k: k + 1, s: std::str::upper("two ") + to_string(k) }) or raise;
+                return out;
+            }
+            fn names() -> bounded[String; 4] {
+                return [self.prefix + "-a", self.prefix + "-b"];
+            }
+            fn keep(k: Int) { self.kept = self.items(k); }
+        }
+        fn tags(k: Int) -> bounded[String; 4] {
+            let mut out: bounded[String; 4] = [];
+            push(out, "tag " + to_string(k)) or raise;
+            return out;
+        }
+        fn through(n: Named) -> String { return at(n.names(), 1) or ""; }
+        fn main() {
+            let s = Store { };
+            let mut k = 0;
+            let mut last = "";
+            while k < 50 {
+                let its = s.items(k);
+                let t = tags(k);
+                last = (at(its, 1) or Item { }).s + "|" + (at(t, 0) or "") + "|" + through(s);
+                s.keep(k);
+                k = k + 1;
+            }
+            println(last + "|" + (at(s.kept, 0) or Item { }).s + "|" + to_string(count(s.items(1))));
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_return_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "TWO 49|tag 49|p-b|p49|2\n");
+}
+
+/// GH #1608 review: a bounded place is evaluated once. A local bound from
+/// an indexed place (`let mut v = self.slots[self.next()].xs;`) calls the
+/// index's method once; the local is the method's own copy (decisions
+/// F.49), so the element pushed through it never reaches the slot, and the
+/// slot stored whole from it reads whole after the method returned.
 #[test]
 fn an_indexed_bounded_place_is_evaluated_once() {
     let src = r#"
-        locus Slot { params { xs: bounded[String; 4]; } fn first() -> String { return at(self.xs, 0) or ""; } }
+        locus Slot {
+            params { xs: bounded[String; 4]; }
+            fn first() -> String { return at(self.xs, 0) or ""; }
+            fn put(xs: bounded[String; 4]) { self.xs = xs; }
+        }
         locus Store {
             params { slots: [Slot; 2] = [Slot { }, Slot { }]; calls: Int = 0; }
             fn next() -> Int { self.calls = self.calls + 1; return 0; }
             fn view(k: Int) {
-                let v = self.slots[self.next()].xs;
+                let mut v = self.slots[self.next()].xs;
                 clear(v);
                 push(v, "viewed " + to_string(k)) or raise;
+                if k > 1 {
+                    self.slots[0].put(v);
+                }
             }
         }
         fn main() {
             let s = Store { };
             s.view(1);
+            println(s.slots[0].first());
             s.view(2);
             println(s.calls);
             println(s.slots[0].first());
@@ -455,7 +526,7 @@ fn an_indexed_bounded_place_is_evaluated_once() {
     let _ = std::fs::remove_file(&bin);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "2\nviewed 2\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "\n2\nviewed 2\n");
 
     let ir_bin = harness::unique_bin("bounded_indexed_once_ir");
     let ir = harness::build_source_ir_text(src, &ir_bin).expect("ir");
