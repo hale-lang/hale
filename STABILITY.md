@@ -199,7 +199,7 @@ Hale is called 1.0 when all of these hold together:
    threads.
 3. **The full ownership and lifecycle matrices are green nightly**:
    `HALE_MATRIX=full` on `crates/hale-codegen/tests/ownership_matrix.rs`
-   (1568 cells) and on `lifecycle_matrix.rs`, with every `KNOWN_OPEN`
+   (1792 cells) and on `lifecycle_matrix.rs`, with every `KNOWN_OPEN`
    entry closed.
 4. **The open questions this policy names are settled**: the reserved
    keywords (F.47), and a tier for every namespace and spec file. The

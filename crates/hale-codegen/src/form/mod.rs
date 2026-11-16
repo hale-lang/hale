@@ -279,7 +279,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let mut slots = Vec::new();
                 for fname in &ti.field_order {
                     let Some((idx, fty)) = ti.fields.get(fname) else { continue };
-                    if !self.record_field_owns_block(fty) && !Self::bounded_field_owns_elems(fty) {
+                    if !self.record_field_owns_block(fty) && !self.bounded_field_owns_elems(fty) {
                         continue;
                     }
                     if let Some(o) = self.target_data.offset_of_element(&ti.struct_ty, *idx) {
@@ -359,7 +359,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::String | CodegenTy::Bytes => true,
             // `set` on the field's elements retires the one it replaces
             // (`emit_bounded_set_retire`).
-            CodegenTy::Bounded(_, _) => Self::bounded_field_owns_elems(ty),
+            CodegenTy::Bounded(_, _) => self.bounded_field_owns_elems(ty),
             CodegenTy::TypeRef(tn) => {
                 self.user_types.get(tn).is_some_and(|t| {
                     t.fields.values().any(|(_, f)| matches!(f, CodegenTy::String | CodegenTy::Bytes))
@@ -394,7 +394,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // then the words), relative to the slot. The runtime
                 // walks it over [0, len) only: slots past `len` may hold
                 // stale pointers (`clear` leaves them).
-                CodegenTy::Bounded(elem, cap) if Self::bounded_elem_is_ptr(elem) => {
+                CodegenTy::Bounded(elem, cap) if self.bounded_elem_is_ptr(elem) => {
                     let st = self.llvm_bounded_storage_type(elem, *cap);
                     let Some(data_off) = self.target_data.offset_of_element(&st, 1) else { continue };
                     let stride = self.target_data.get_abi_size(&self.llvm_basic_type(elem));
@@ -449,7 +449,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         fields.values().any(|(_, t)| {
             matches!(t, CodegenTy::String | CodegenTy::Bytes)
                 || self.record_field_owns_block(t)
-                || Self::bounded_field_owns_elems(t)
+                || self.bounded_field_owns_elems(t)
         })
     }
 
@@ -481,8 +481,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// own inline bytes, so `record_field_owns_block` answers false and
     /// nothing loads it as a pointer — but the retire descriptor walks
     /// its live slots (`retire_slots_desc`).
-    pub(crate) fn bounded_field_owns_elems(fty: &CodegenTy) -> bool {
-        matches!(fty, CodegenTy::Bounded(elem, _) if Self::bounded_elem_is_ptr(elem))
+    pub(crate) fn bounded_field_owns_elems(&self, fty: &CodegenTy) -> bool {
+        matches!(fty, CodegenTy::Bounded(elem, _) if self.bounded_elem_is_ptr(elem))
     }
 
     pub(crate) fn record_field_owns_block(&self, fty: &CodegenTy) -> bool {

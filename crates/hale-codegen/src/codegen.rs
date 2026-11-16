@@ -16350,7 +16350,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // has a dedicated live-slot loop (never load the field as
         // a single pointer).
         if let CodegenTy::Bounded(elem, _) = ty {
-            return Self::bounded_elem_is_ptr(elem);
+            return self.bounded_elem_is_ptr(elem);
         }
         !matches!(
             ty,
@@ -23403,7 +23403,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let mut storage = v.into_pointer_value();
         let st = self.llvm_bounded_storage_type(&elem, cap);
-        if owned && Self::bounded_elem_is_ptr(&elem) {
+        if owned && self.bounded_elem_is_ptr(&elem) {
             // The loop walks the list it started with: a write in the
             // body may replace the place's elements and retire them
             // (`crate::view_bindings`), so it walks the frame's own copy
@@ -34762,13 +34762,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// payload-bearing enum, pass an empty `field_vals` —
     /// only the tag is written, body bytes stay uninitialized
     /// but are never read for those variants.
+    ///
+    /// Under the return-arena routing (`current_arena_override`, a
+    /// method returning a fresh value), the cell lands in the caller's
+    /// arena, so the boundary's same-arena check passes it through
+    /// uncopied: each heap payload is anchored there too, as
+    /// `populate_user_type_fields` anchors a record literal's fields. A
+    /// payload bound by a `let` in the method (`let t = …; return
+    /// E::A(t);`) lived in its scratch, which the return frees, and the
+    /// caller read it after the free until 2026-11-15 (GH #1951's
+    /// ownership-matrix cells found it).
     pub(crate) fn lower_enum_variant_alloc(
         &mut self,
         info: &EnumInfo,
         tag: u32,
         field_vals: &[(BasicValueEnum<'ctx>, CodegenTy)],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        self.lower_enum_variant_alloc_in(info, tag, field_vals, None)
+        let Some(arena) = self.current_arena_override else {
+            return self.lower_enum_variant_alloc_in(info, tag, field_vals, None);
+        };
+        let mut anchored = Vec::with_capacity(field_vals.len());
+        for (j, (val, ty)) in field_vals.iter().enumerate() {
+            let heap = val.is_pointer_value()
+                && matches!(
+                    ty,
+                    CodegenTy::String
+                        | CodegenTy::Bytes
+                        | CodegenTy::TypeRef(_)
+                        | CodegenTy::Tuple(_)
+                        | CodegenTy::Array(_, _)
+                        | CodegenTy::Enum(_)
+                );
+            // An array payload is a pointer to its own block, never the
+            // body's inline bytes (`retire_desc_for`'s variant table).
+            let v = if heap {
+                self.emit_cross_arena_store_deep_copy_ptr(*val, ty, arena, &format!("enum.payload{j}"))?
+            } else {
+                *val
+            };
+            anchored.push((v, ty.clone()));
+        }
+        self.lower_enum_variant_alloc_in(info, tag, &anchored, None)
     }
 
     /// `lower_enum_variant_alloc`, the block taken from `reusable`'s

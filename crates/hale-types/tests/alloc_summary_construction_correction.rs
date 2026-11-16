@@ -746,8 +746,10 @@ fn own_entries_run_to_exit_programs() {
     // builds its messages, and 20: `tests/hale/u256_codec_test.hl`, whose
     // codecs of 256-bit integers decode the same way (GH #1934); 21:
     // `tests/hale/api_map_wrong_kind_test.hl`, whose wire maps decode the
-    // same way (GH #1944).
-    assert_eq!(moved, 21, "the run-to-exit programs among the targets that lose a site");
+    // same way (GH #1944); 22: `tests/hale/bounded_payload_enum_test.hl`,
+    // whose `fill` builds a payload String per pushed element, as
+    // `bounded_whole_assign_test.hl`'s does (GH #1951).
+    assert_eq!(moved, 22, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1018,6 +1020,14 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2197 InUnboundedLoop",
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2186 InUnboundedLoop",
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2180 InUnboundedLoop",
+            // `tests/hale/bounded_payload_enum_test.hl`: the text its `show` and
+            // `tags` build for every element they are handed (GH #1951)
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1517..1529 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1561..1593 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1622..1649 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1676..1714 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1824..1835 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: tags StringConcat @4810..5048 InUnboundedLoop",
             "tests/hale/bounded_whole_assign_test.hl: fill StringConcat @1534..1552 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
