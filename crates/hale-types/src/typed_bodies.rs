@@ -712,6 +712,27 @@ pub enum RaiseConversion {
     Convert(String),
 }
 
+/// GH #1982: the `@raise` conversions each body calls implicitly, by the
+/// body's declaration (`NodeId`'s index) and the span of the `raise` that
+/// converts (the word's, or a fallible handler's for its implicit one),
+/// each the conversion fn's declared (merged) name: the call `or fail
+/// conv(err)` the raise lowers to, for the analyses that walk calls.
+pub type RaiseCalls = BTreeMap<u32, BTreeMap<(u32, u32), String>>;
+
+/// [`RaiseCalls`] of a record's bodies.
+fn raise_calls_of(bodies: &BTreeMap<u32, TypedBody>) -> RaiseCalls {
+    let mut out = RaiseCalls::new();
+    for (body, typed) in bodies {
+        for (site, conversion) in &typed.raises {
+            let (RaiseConversion::Convert(name), SiteKind::Value { start, end }) = (conversion, &site.kind) else {
+                continue;
+            };
+            out.entry(*body).or_default().insert((*start, *end), name.clone());
+        }
+    }
+    out
+}
+
 /// A member's value made its set's (GH #1530 step 1): the set, by its
 /// declared (merged) name, and the member's variant, named for its type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1399,6 +1420,12 @@ impl TypingRecord {
         self.body(body).injections.entry(site).or_insert(injection);
     }
 
+    /// GH #1982: every `@raise` conversion a body calls, by body and
+    /// `raise` site ([`RaiseCalls`]).
+    pub fn raise_calls(&self) -> RaiseCalls {
+        raise_calls_of(&self.bodies)
+    }
+
     /// GH #1951 (item 2): the error raised at `site` of the body `body`
     /// becomes the enclosing fn's error as `conversion` says.
     pub fn raise(&mut self, body: NodeId, site: ConversionSite, conversion: RaiseConversion) {
@@ -1613,6 +1640,12 @@ impl TypedBodies {
             return None;
         }
         self.bodies.get(&body.0)?.injections.get(site)
+    }
+
+    /// GH #1982: every `@raise` conversion a body calls ([`RaiseCalls`]),
+    /// the relation the allocation summary walks as calls.
+    pub fn raise_calls(&self) -> RaiseCalls {
+        raise_calls_of(&self.bodies)
     }
 
     /// The conversion of the error raised at `site` in the body declared

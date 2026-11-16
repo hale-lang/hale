@@ -1654,6 +1654,19 @@ declarations and literals unify, and a `Box_String` literal in a
 validate against the template with the type args substituted, and
 field reads on monomorph values type as the substituted field.
 
+A generic fn's result that applies a template to its parameters
+(`fn box_of<T>(x: T) -> Box<T>`) is, at each call, the monomorph the
+call's arguments name: `box_of(Blob { … })` is a `Box_Blob`, its field
+`v` a `Blob`, as the build lowers the call (GH #1978). A result whose
+arguments the call leaves unknown stays unchecked.
+
+An imported seed's template and enum through the qualified alias
+path are held to their declarations as the bare spellings are:
+`lib::Box<Int, String>` against `type Box<T>` is refused for its
+argument count, and `lib::E::V(…)` for its value count and each
+value's type, a scale-less Decimal literal taking the payload's
+scale (GH #1986).
+
 A declared type parameter shadows a same-named top-level declaration or
 alias throughout its template's signatures, fields and body annotations.
 Before specialization it remains unbound; a global name cannot supply

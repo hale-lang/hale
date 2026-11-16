@@ -301,7 +301,9 @@ const CALL_LINES_ONLY: [(&str, usize); 31] = [
     ("tests/hale/json_unicode_escapes_test.hl", 16),
     ("tests/hale/json_valid_test.hl", 27),
     ("tests/hale/log_fields_test.hl", 6),
-    ("tests/hale/raise_conversion_test.hl", 1),
+    // 4 more (GH #1982): each `or raise` a `@raise` fn converts is the
+    // call `conv(err)` it lowers to, one call line per conversion
+    ("tests/hale/raise_conversion_test.hl", 5),
     ("tests/hale/rand_rng_test.hl", 12),
     ("tests/hale/secret_write_private_test.hl", 10),
     ("tests/hale/std_secret_test.hl", 8),

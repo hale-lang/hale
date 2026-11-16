@@ -193,6 +193,59 @@ fn an_imported_fallible_fn_read_as_a_value_is_refused_at_the_path() {
     assert!(built, "build: {bout}");
 }
 
+/// GH #1986: an imported seed's generic type and enum variant through
+/// the qualified alias path are held to their declarations as the bare
+/// spelling is: a template's parameter count, a variant's value count and
+/// each value's type, a scale-less Decimal literal taking the payload's
+/// scale. Each passed the check and the build refused it, in lowering's
+/// terms. The well-formed program builds.
+#[test]
+fn an_imported_template_or_variant_through_its_alias_is_held_to_its_declaration() {
+    let lib = "type Box<T> { value: T = 0; }\ntype Wrap = enum { Held(Int), Empty };\n\
+               type Side = enum { Buy, Limit(Decimal<2>), Stop(Int, Decimal<4>) };\n";
+    let refused_at = |body: &str, tag: &str, at: &str, head: &str| {
+        let main = format!("import \"./lib\" as lib;\n\nfn main() {{\n{body}\n}}\n");
+        let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", &main), ("lib/lib.hl", lib)], tag);
+        assert!(!ok && out.contains(&format!("main.hl:{at}: type error: {head}")), "check: {out}");
+        assert!(!built && bout.contains(head) && !bout.contains("codegen error"), "build: {bout}");
+    };
+    refused_at(
+        "    let b: lib::Box<Int, String> = lib::Box { value: 1 };",
+        "alias_arity",
+        "4:12",
+        "generic type `lib::Box` takes 1 type argument, not 2",
+    );
+    refused_at("    let w = lib::Wrap::Held(1, 2);", "alias_variant_arity", "4:13", "`lib::Wrap::Held` carries 1 value, and this passes 2");
+    refused_at("    let w = lib::Wrap::Held(\"s\");", "alias_variant_value", "4:29", "`lib::Wrap::Held` value 0: expected `Int`, got `String`");
+    let ok_main = "import \"./lib\" as lib;\n\n\
+                   fn make(px: Decimal<2>) -> lib::Side { return lib::Side::Limit(px); }\n\n\
+                   fn main() {\n    let b: lib::Box<Int> = lib::Box { value: 1 };\n    let t = lib::Side::Limit(2.5d);\n\
+                   \x20   match lib::Side::Stop(7, 0.0001d) {\n        lib::Side::Stop(n, px) -> { println(f\"{n} {px}\"); },\n        _ -> { },\n    }\n\
+                   \x20   match make(1.25d) {\n        lib::Side::Limit(px) -> { println(f\"{px} {b.value}\"); },\n        _ -> { },\n    }\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", ok_main), ("lib/lib.hl", lib)], "alias_ok");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1978: a generic fn whose result applies a generic type to its
+/// parameter (`-> Box<T>`) is typed at its call as the monomorph its
+/// arguments name, as the build lowers it. The checker took it as
+/// `Unknown`, so a record no f-string renders, read out of the result,
+/// checked clean and the build refused it in lowering's terms (``to_string`
+/// not supported for type Bytes``).
+#[test]
+fn a_generic_fn_returning_a_generic_type_is_typed_as_its_monomorph() {
+    let src = "type Blob { data: Bytes; }\ntype Box<T> { v: T; }\nfn box_of<T>(x: T) -> Box<T> { return Box { v: x }; }\n\
+               fn main() {\n    let b = box_of(Blob { data: b\"x\" }).v;\n    println(f\"blob = {b}\");\n}\n";
+    refused(src, "generic_return_fstring", "6:23", "`to_string` cannot render a value of type `Blob`");
+    refused(
+        "type Box<T> { v: T; }\nfn box_of<T>(x: T) -> Box<T> { return Box { v: x }; }\nfn main() {\n    let z: Int = box_of(\"s\");\n    println(z);\n}\n",
+        "generic_return_let",
+        "4:18",
+        "let `z`: expected `Int`, got `Box_String`",
+    );
+}
+
 /// GH #1945: `or raise` hands the call's error on as the enclosing fn's
 /// own, so the two are one type. A mismatch passed the check and the build
 /// refused it in lowering's terms (`TypeRef("IoError")`); the check
@@ -306,6 +359,60 @@ fn a_raise_fn_that_reaches_a_forbidden_effect_is_refused() {
         "3:11",
         "effect assertion violated: `conv` is a `@raise` fn, which runs where an `or raise` hands an error on, so it makes no syscall, publishes nothing, spawns nothing and never blocks; it must not reach `syscall`",
     );
+}
+
+/// GH #1982: a converting `or raise` is the call `conv(err)` it lowers
+/// to, for the raising fn's analyses: an effect class the conversion
+/// reaches (one a `@raise` fn may: `time`, a program's own) is the raising
+/// fn's, with the conversion on the witness path; the conversion's
+/// allocations count against the raising fn's `@budget`; and `@no_panic`
+/// holds the raise to be a trap, as any `or raise` is.
+#[test]
+fn a_raise_conversion_is_a_call_of_the_fn_that_raises() {
+    let src = |raiser: &str| {
+        format!(
+            "effect audit;\ntype Oops {{ why: String; }}\ntype ApiError {{ code: Int; detail: String; }}\n\
+             @effects(is: {{audit}})\nfn note(s: String) -> Int {{ return len(s); }}\n\
+             @raise fn conv(e: Oops) -> ApiError {{\n    let n = note(e.why);\n    return ApiError {{ code: n, detail: \"no \" + e.why }};\n}}\n\
+             fn parse(s: String) -> Int fallible(Oops) {{ if s == \"bad\" {{ fail Oops {{ why: s }}; }} return 7; }}\n\
+             {raiser}\nfn main() {{ println(twice(\"bad\") or 0); }}\n"
+        )
+    };
+    refused(
+        &src("@effects(none: {audit})\nfn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or raise;\n}"),
+        "raise_conv_effect",
+        "12:4",
+        "effect assertion violated: `twice` must not reach `audit`, but reaches twice -> conv [`note` declares it carries this effect class]",
+    );
+    refused(
+        &src("@budget(alloc_per_call = 0)\nfn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or raise;\n}"),
+        "raise_conv_budget",
+        "12:4",
+        "hot-path budget exceeded: `twice` declares `@budget(alloc_per_call = 0)`",
+    );
+    let ((ok, out), _) = check_and_build(
+        &src("@budget(alloc_per_call = 0)\nfn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or raise;\n}"),
+        "raise_conv_budget_sites",
+    );
+    assert!(!ok && out.contains("main.hl:8:12: type error: counts against `twice`'s alloc budget: a `ApiError` instantiation"), "check: {out}");
+    // A fallible handler's implicit `or raise` converts, and is a call,
+    // the same way.
+    refused(
+        &src("fn retry(e: Oops) -> Int fallible(Oops) { fail e; }\n@effects(none: {audit})\nfn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or retry(err);\n}"),
+        "raise_conv_handler",
+        "13:4",
+        "effect assertion violated: `twice` must not reach `audit`, but reaches twice -> conv",
+    );
+    refused(
+        &src("@no_panic\nfn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or raise;\n}"),
+        "raise_conv_no_panic",
+        "12:4",
+        "`@no_panic` violated: `twice` can trap — a fallible call dispositioned `or raise`",
+    );
+    let ((ok, out), (built, bout)) =
+        check_and_build(&src("fn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or raise;\n}"), "raise_conv_plain");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
 }
 
 /// GH #1945: a stdlib error type spelled by its path builds wherever its

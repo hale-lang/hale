@@ -1545,7 +1545,7 @@ pub const FAMILIES: &[Family] = &[
         ),
         tests: &["crates/hale-types/tests/hot_path_alloc.rs", "crates/hale-types/tests/alloc_summary_construction_correction.rs", "crates/hale-types/tests/alloc_summary_correction.rs", "crates/hale-types/tests/alloc_summary_own_rows.rs", "crates/hale-types/tests/alloc_summary_reclaim_boundary.rs", "crates/hale-types/tests/demand_gate.rs (a_build_classifies_the_scratch_local_fns_once)", "crates/hale-codegen/tests/alloc_model_rss.rs", "crates/hale-codegen/tests/scratch_local_free_fn.rs", "crates/hale-codegen/tests/fn_nonalloc_add.rs", "crates/hale-codegen/tests/method_scratch_elision.rs"],
         spec: &["spec/memory.md § Allocation routing", "spec/verification.md § Memory-bound proofs (item 1): the reclaim boundary", "spec/styleguide.md"],
-        owned: &[site(ALLOC, "summarize_identified"), site(ALLOC, "summarize_identified_over"), site(ALLOC, "summarize_within"), site(ALLOC, "derive_alloc_summary_over"), site(ALLOC, "derive_alloc_summary_reaching"), site(ALLOC_ROUTING, "derive_alloc_routing"), site(ALLOC_ROUTING, "scratch_local_free_fns")],
+        owned: &[site(ALLOC, "summarize_identified"), site(ALLOC, "summarize_identified_raising"), site(ALLOC, "summarize_identified_over"), site(ALLOC, "summarize_within"), site(ALLOC, "derive_alloc_summary_over"), site(ALLOC, "derive_alloc_summary_reaching"), site(ALLOC_ROUTING, "derive_alloc_routing"), site(ALLOC_ROUTING, "scratch_local_free_fns")],
         seams: &[
             Seam { symbol: "scratch_local_free_fns(", allowed: &[(ALLOC, 1)] },
             Seam { symbol: "summarize_identified(", allowed: &[(ALLOC, 3)] },

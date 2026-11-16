@@ -1,0 +1,74 @@
+// Element chains over a real field named `items` or `entries` (GH #1984).
+//
+// A chain anchored on `.items` / `.entries` reads the anchor as a `@form`
+// locus's iteration pseudo-field and walks the form. Chains desugar before
+// typecheck, so `b.items` of a record looked the same and was stripped to
+// `b`, and the chain failed with "no field `get` on `Bag`". Where the
+// receiver is no form but has a field of that name (a record's, a locus
+// param), the chain walks the field.
+
+type Line { sku: String = ""; qty: Int = 0; }
+type Bag { items: bounded[Int; 8]; }
+type Ledger { entries: bounded[Line; 4]; }
+type Fixed { items: [Int; 3]; }
+
+@form(vec)
+locus Nums { capacity { heap xs of Int; } }
+
+locus Cart {
+    params { items: bounded[Line; 4]; n: Nums = Nums { }; }
+
+    fn big() -> Int {
+        return self.items.filter(it.qty > 1).count();
+    }
+
+    fn total() -> Int {
+        return self.items.map(it.qty).sum();
+    }
+}
+
+fn main() {
+    let mut b = Bag { };
+    push(b.items, 3) or discard;
+    push(b.items, 1) or discard;
+    push(b.items, 5) or discard;
+    std::test::assert_eq_int(
+        b.items.filter(it > 1).count(),
+        2,
+        "record field items: filter + count",
+    );
+    std::test::assert_eq_int(b.items.map(it * 2).sum(), 18, "record field items: map + sum");
+    std::test::assert_eq_int(b.items.find(it > 3) or 0, 5, "record field items: find");
+    std::test::assert_eq_int(b.items.filter(it > 0).max() or 0, 5, "record field items: max");
+    std::test::assert_eq_int(
+        b.items.enumerate().map(idx).sum(),
+        3,
+        "record field items: enumerate",
+    );
+
+    let mut l = Ledger { };
+    push(l.entries, Line { sku: std::str::upper("ab"), qty: 2 }) or discard;
+    push(l.entries, Line { sku: std::str::upper("cd"), qty: 7 }) or discard;
+    std::test::assert_eq_int(
+        l.entries.filter(it.qty > 1).count(),
+        2,
+        "record field entries: filter + count",
+    );
+    let top = l.entries.max(it.qty) or Line { };
+    std::test::assert_eq_str(top.sku, "CD", "record field entries: max by key");
+    std::test::assert(l.entries.any(it.sku == "AB"), "record field entries: any");
+
+    let f = Fixed { items: [4, 5, 6] };
+    std::test::assert_eq_int(f.items.filter(it > 4).count(), 2, "array field items");
+
+    let c = Cart { };
+    push(c.items, Line { sku: "x", qty: 3 }) or discard;
+    push(c.items, Line { sku: "y", qty: 1 }) or discard;
+    std::test::assert_eq_int(c.big(), 1, "locus param items: filter + count");
+    std::test::assert_eq_int(c.total(), 4, "locus param items: map + sum");
+
+    // A `@form(vec)` keeps the pseudo-field reading.
+    c.n.push(2);
+    c.n.push(9);
+    std::test::assert_eq_int(c.n.items.filter(it > 4).count(), 1, "form vec items pseudo-field");
+}
