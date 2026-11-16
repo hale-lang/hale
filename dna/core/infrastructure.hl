@@ -414,7 +414,15 @@ fn one_shot_services(services: String) -> String {
                     std::json::obj_value_raw(d, deps),
                     "condition",
                 );
-                if cond == "service_completed_successfully" && !has_word(out, dep) {
+                // `has_word(out, dep)`, spelled with the readers that keep
+                // nothing, so the append extends `out` in place (GH #1947)
+                if cond == "service_completed_successfully"
+                    && !(len(dep) > 0
+                            && (out == dep
+                                    || std::str::starts_with(out, dep + " ")
+                                    || std::str::ends_with(out, " " + dep)
+                                    || std::str::contains(out, " " + dep + " ")))
+                {
                     out = out + (if len(out) > 0 { " " } else { "" }) + dep;
                 }
                 d = std::json::object_next(d, deps);

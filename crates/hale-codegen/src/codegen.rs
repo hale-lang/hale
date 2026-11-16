@@ -2257,6 +2257,9 @@ fn build_resolved_lowered(
         xpool_handed_in_names: BTreeSet::new(),
         xpool_restamp_fns: HashMap::new(),
         xpool_fresh_slots: HashSet::new(),
+        str_accs: HashMap::new(),
+        str_parts_arrays: HashMap::new(),
+        borrowed_args: HashSet::new(),
         xpool_strings: HashMap::new(),
         site_files: options
             .debug
@@ -5242,6 +5245,18 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// an `on_failure` handler's failed child: the backstop is not
     /// emitted on them.
     pub(crate) xpool_fresh_slots: HashSet<PointerValue<'ctx>>,
+    /// GH #1947: the accumulator (`lotus_str_acc_t`, an entry-block
+    /// alloca) of each String local an appending assignment grows, by
+    /// the local's slot (`crate::string_append`).
+    pub(crate) str_accs: HashMap<PointerValue<'ctx>, PointerValue<'ctx>>,
+    /// GH #1947: each fn's one `[16 x ptr]` for the operands a String
+    /// runtime call takes (`crate::string_append`).
+    pub(crate) str_parts_arrays: HashMap<FunctionValue<'ctx>, PointerValue<'ctx>>,
+    /// GH #1947: the argument nodes of the calls being lowered that keep
+    /// none of their arguments (`hale_types::string_append::
+    /// call_keeps_no_argument`): an identifier among them is read without
+    /// giving up its local's append buffer.
+    pub(crate) borrowed_args: HashSet<*const Expr>,
     /// The backstop's report strings, one global each.
     pub(crate) xpool_strings: HashMap<String, PointerValue<'ctx>>,
     /// The source table the backstop locates its sites with (`debug`'s,
@@ -13147,7 +13162,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<BlockEnd, CodegenError> {
         for (i, stmt) in block.stmts.iter().enumerate() {
             match self.lower_stmt(stmt, scope)? {
-                BlockEnd::Open => self.note_fresh_locus_local(block, i, scope),
+                BlockEnd::Open => {
+                    self.note_fresh_locus_local(block, i, scope);
+                    self.note_string_accumulator(block, i, scope)?;
+                }
                 BlockEnd::Terminated => return Ok(BlockEnd::Terminated),
             }
         }
@@ -13283,7 +13301,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         for (i, stmt) in stmts.iter().enumerate() {
             match self.lower_stmt(stmt, scope)? {
-                BlockEnd::Open => self.note_fresh_locus_local(block, i, scope),
+                BlockEnd::Open => {
+                    self.note_fresh_locus_local(block, i, scope);
+                    self.note_string_accumulator(block, i, scope)?;
+                }
                 BlockEnd::Terminated => {
                     // Statements terminated control flow before reaching
                     // the tail. Synthesize a placeholder value so the
@@ -17917,7 +17938,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        // GH #1947: a call statement that keeps none of its arguments
+        // (`println(out);`) reads them as an expression's call does.
+        let marks = match stmt {
+            Stmt::Expr(Expr::Call { callee, args, .. }) => self.mark_borrowed_args(callee, args),
+            _ => Vec::new(),
+        };
         let r = self.lower_stmt_traced(stmt, scope);
+        self.unmark_borrowed_args(marks);
         // A value lowering inside the statement ended control flow
         // (`continue_dead`): the statement is terminated. A consumer
         // that refused the placeholder's type on the way (a String
@@ -20019,6 +20047,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // assignment names. `local.field = pick(a, make());`
                 // set it for the whole subtree, so `make()`'s result
                 // took the slot's ownership and went unreclaimed.
+                // GH #1947: an appending assignment to a String local or
+                // field of `self` appends (`crate::string_append`).
+                if let Some(end) =
+                    self.try_lower_string_append(target, op, value, slot_ptr, &slot_ty, *assign_id, scope)?
+                {
+                    return Ok(end);
+                }
                 let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
                 let new_val = if matches!(op, AssignOp::Eq) {
                     if rhs_ty != slot_ty {
@@ -20153,6 +20188,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.builder
                         .build_store(slot_ptr, new_val)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // GH #1947: the value now bound is not a buffer the
+                    // local owns.
+                    if let Some(acc) = self.str_accs.get(&slot_ptr).copied() {
+                        self.emit_str_acc_release(acc)?;
+                    }
                     // A local rebound: its copy-on-write flags follow the
                     // value now bound (`crate::view_bindings`).
                     if target.tail.is_empty() {
@@ -21025,7 +21065,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 args.len()
             )));
         }
-        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        // `len` reads its argument and keeps nothing of it.
+        let (v, ty) = self.lower_operand_borrowed(&args[0], scope)?;
         let v = self.unpack_view_if_needed(v, &ty)?;
         match ty {
             CodegenTy::String | CodegenTy::StringView => {
@@ -21414,7 +21455,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// branch (a type outside it falls back to the mixed-type error)
     /// and `println`'s composites. The rule is
     /// `hale_types::printable`'s, which the checker reads too.
-    fn value_to_string_supports(&self, ty: &CodegenTy) -> bool {
+    pub(crate) fn value_to_string_supports(&self, ty: &CodegenTy) -> bool {
         hale_types::printable::prints(ty, &|t: &CodegenTy| self.print_shape(t))
     }
 
@@ -21486,7 +21527,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// recurse on each payload field's render. For has-payload
     /// enums this emits a switch on the variant tag with
     /// per-variant inline string assembly via lotus_str_concat.
-    fn value_to_string(
+    pub(crate) fn value_to_string(
         &mut self,
         v: BasicValueEnum<'ctx>,
         ty: &CodegenTy,
@@ -22374,7 +22415,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// GH #1076 (U3): the text `s` of the value `e`, followed by the unit
     /// its printed row writes (a quantity's), when it has one.
-    fn with_printed_unit(&mut self, e: &Expr, s: BasicValueEnum<'ctx>) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    pub(crate) fn with_printed_unit(&mut self, e: &Expr, s: BasicValueEnum<'ctx>) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match self.printed_unit(e) {
             Some(unit) => {
                 let unit = self.global_string(&unit);
@@ -22386,7 +22427,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// Inline lotus_str_concat call. Caller's arena owns the
     /// result.
-    fn str_concat(
+    pub(crate) fn str_concat(
         &mut self,
         a: BasicValueEnum<'ctx>,
         b: BasicValueEnum<'ctx>,
@@ -25500,7 +25541,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1530 step 2: a seam's hop call is inlined into the seam
         let hop = matches!(e, Expr::Call { .. } | Expr::Or { .. }) && hale_types::seam_expand::is_seam_pos(e.span().start.0);
         let before = if hop { self.call_sites_here() } else { Vec::new() };
+        // GH #1947: a call that keeps none of its arguments reads an
+        // argument naming a String local without giving up its buffer.
+        let marks = match e {
+            Expr::Call { callee, args, .. } => self.mark_borrowed_args(callee, args),
+            _ => Vec::new(),
+        };
         let result = self.lower_expr_at(e, scope);
+        self.unmark_borrowed_args(marks);
         // A refusal raised with no place of its own is placed at the
         // innermost expression of the user's source being lowered when it
         // was raised, so the build names a file, line and column for it
@@ -26109,6 +26157,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .builder
                         .build_load(llvm_ty, alloca, &id.name)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // GH #1947: a read that may keep the value gives up the
+                    // local's append buffer (`crate::string_append`).
+                    if let Some(acc) = self.str_accs.get(&alloca).copied() {
+                        if !self.borrowed_args.contains(&(e as *const Expr)) {
+                            self.emit_str_acc_release(acc)?;
+                        }
+                    }
                     return Ok((loaded, ty));
                 }
                 // G7: top-level `const NAME: T = LITERAL;` reference.
@@ -26489,101 +26544,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             Expr::Binary { op, left, right, span } => {
-                let (lv, lt) = self.lower_expr(left, scope)?;
-                let (rv, rt) = self.lower_expr(right, scope)?;
-                // Ergonomics arc: `String + <printable>` and
-                // `<printable> + String` auto-coerce the non-String
-                // side via value_to_string. Resolves the apps/tcp-echo
-                // friction "String + Int rejected even though
-                // println('p=', n) works." Other mixed-type binops
-                // remain errors.
-                if *op == BinOp::Add && lt != rt {
-                    if lt == CodegenTy::String && self.value_to_string_supports(&rt) {
-                        let coerced = self.value_to_string(rv, &rt)?;
-                        let coerced = self.with_printed_unit(right, coerced)?;
-                        return self.lower_binop(*op, lv, coerced, &CodegenTy::String);
-                    }
-                    if rt == CodegenTy::String && self.value_to_string_supports(&lt) {
-                        let coerced = self.value_to_string(lv, &lt)?;
-                        let coerced = self.with_printed_unit(left, coerced)?;
-                        return self.lower_binop(*op, coerced, rv, &CodegenTy::String);
-                    }
+                // GH #1947: a `+` is a chain, lowered whole: a String
+                // chain is one allocation (`crate::string_append`).
+                if *op == BinOp::Add {
+                    return match self.lower_add_tree(e, scope)? {
+                        crate::string_append::AddTree::Str(parts) => Ok((self.concat_parts(parts)?, CodegenTy::String)),
+                        crate::string_append::AddTree::Val(v, t) => Ok((v, t)),
+                    };
                 }
-                // B13 / G30: F.23 Int → Float widening in
-                // binary-op position. Symmetric — either side
-                // can be the Int that gets widened. Must NOT
-                // cross Float → Decimal or Int → Decimal (F.23
-                // explicitly carves those out: Decimal stays
-                // strict for monetary precision).
-                if lt == CodegenTy::Float && rt == CodegenTy::Int {
-                    let rv2 = self.coerce_to_float(rv, &rt, "binop rhs")?;
-                    return self.lower_binop(*op, lv, rv2.into(), &CodegenTy::Float);
-                }
-                if lt == CodegenTy::Int && rt == CodegenTy::Float {
-                    let lv2 = self.coerce_to_float(lv, &lt, "binop lhs")?;
-                    return self.lower_binop(*op, lv2.into(), rv, &CodegenTy::Float);
-                }
-                // GH #1076 (U4): an arithmetic operator over a quantity or
-                // a point (a `Duration`, a `Time`) is the algebra's, and
-                // its row says what the result is (`Int * Duration` a
-                // `Duration`, `Time - Time` a `Duration`): the operands
-                // are each the `Int` their representation is, emitted as
-                // the result's.
-                if let Some(result) = self.operator_result(*span) {
-                    return self.lower_binop(*op, lv, rv, &result);
-                }
-                // A stdlib body has no operator rows (the checker records
-                // none for it: `conversion::row`), so its `n * 1ms` — the
-                // one spelling by which a count becomes a `Duration` —
-                // found no row and was refused here. The algebra's answer
-                // for that product is fixed whatever the site (spec/units.md:
-                // a quantity times an `Int` is the quantity, and a
-                // `Duration` counts nanoseconds, the `i64` both operands
-                // are), so it is the same multiply a row would emit.
-                if *op == BinOp::Mul
-                    && matches!(
-                        (&lt, &rt),
-                        (CodegenTy::Int, CodegenTy::Duration)
-                            | (CodegenTy::Duration, CodegenTy::Int)
-                    )
-                {
-                    return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
-                }
-                // The other fixed answer: a `Duration` over a `Duration` is
-                // the dimensionless count (`d / 1ms`, the whole milliseconds
-                // in `d`), the one spelling by which a stdlib body turns a
-                // `Duration` back into an `Int` (std::http's SSE `retry:`).
-                if *op == BinOp::Div && lt == CodegenTy::Duration && rt == CodegenTy::Duration {
-                    let (q, _) = self.lower_binop(*op, lv, rv, &CodegenTy::Duration)?;
-                    return Ok((q, CodegenTy::Int));
-                }
-                // GH #1076: a comparison the checker typed between two
-                // representations of the unit dialect (a `Duration` and a
-                // refinement of it at the same denomination, which is the
-                // `Int` it counts; a `Time` and a refinement of it) is the
-                // signed comparison of their counts: a side that changed
-                // denomination was converted where it stands, and a
-                // comparison records no operator row (downstream handoff:
-                // `a == b` with `b: Duration in ns` was refused here as
-                // operands of mixed types).
-                if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
-                    && lt != rt
-                    && crate::conversion::is_quantity_repr(&lt)
-                    && crate::conversion::is_quantity_repr(&rt)
-                {
-                    return self.lower_binop(*op, lv, rv, &CodegenTy::Int);
-                }
-                // GH #1934: a 256-bit integer shifts by an `Int` count.
-                if matches!(op, BinOp::Shl | BinOp::Shr) && matches!(lt, CodegenTy::U256 | CodegenTy::I256) {
-                    return self.lower_wide_shift(*op, lv.into_int_value(), rv.into_int_value(), &lt);
-                }
-                if lt != rt {
-                    return Err(CodegenError::Unsupported(format!(
-                        "binary op operands of mixed types {} and {}",
-                        lt, rt
-                    )));
-                }
-                self.lower_binop(*op, lv, rv, &lt)
+                // A comparison reads its operands and keeps neither.
+                let compare = matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq);
+                let (lv, lt) = if compare { self.lower_operand_borrowed(left, scope)? } else { self.lower_expr(left, scope)? };
+                let (rv, rt) = if compare { self.lower_operand_borrowed(right, scope)? } else { self.lower_expr(right, scope)? };
+                self.lower_binary_values(*op, lv, lt, rv, rt, left, right, *span)
             }
             Expr::Unary { op, operand, span } => {
                 // GH #1076: a negated quantity literal where it flows is the
@@ -27115,7 +27088,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // (`s[lo..=hi]`) maps to lotus_str_slice with hi+1
                 // since the helper takes exclusive `hi`.
                 if let Expr::Range { lo, hi, inclusive, .. } = index.as_ref() {
-                    let (recv_val, recv_ty) = self.lower_expr(receiver, scope)?;
+                    // The slice copies the bytes it names: the receiver is
+                    // read and not kept (GH #1947).
+                    let (recv_val, recv_ty) = self.lower_operand_borrowed(receiver, scope)?;
                     if !matches!(recv_ty, CodegenTy::String) {
                         return Err(CodegenError::Unsupported(format!(
                             "range slicing only supported on String in v0, \
@@ -27796,6 +27771,141 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.context.struct_type(&field_tys, false)
     }
 
+
+    /// GH #1947: when `callee` keeps none of its arguments
+    /// (`hale_types::string_append::call_keeps_no_argument`), mark the
+    /// arguments that are identifiers, so the identifier arm reads them
+    /// without giving up their locals' append buffers. Returns the marks
+    /// this call added, for [`Self::unmark_borrowed_args`].
+    pub(crate) fn mark_borrowed_args(&mut self, callee: &Expr, args: &[Expr]) -> Vec<*const Expr> {
+        if self.str_accs.is_empty() || !hale_types::string_append::call_keeps_no_argument(callee) {
+            return Vec::new();
+        }
+        args.iter()
+            .filter(|a| matches!(a, Expr::Ident(_)))
+            .map(|a| a as *const Expr)
+            .filter(|p| self.borrowed_args.insert(*p))
+            .collect()
+    }
+
+    pub(crate) fn unmark_borrowed_args(&mut self, marks: Vec<*const Expr>) {
+        for p in marks {
+            self.borrowed_args.remove(&p);
+        }
+    }
+
+    /// A binary operator over its lowered operands: the coercions and
+    /// operator rows `Expr::Binary` applies (a printable side of a String
+    /// `+` rendered, `Int` widened against `Float`, a quantity's row),
+    /// then the operator itself.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn lower_binary_values(
+        &mut self,
+        op: BinOp,
+        lv: BasicValueEnum<'ctx>,
+        lt: CodegenTy,
+        rv: BasicValueEnum<'ctx>,
+        rt: CodegenTy,
+        left: &Expr,
+        right: &Expr,
+        span: hale_syntax::Span,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let op = &op;
+        let span = &span;
+        // Ergonomics arc: `String + <printable>` and
+        // `<printable> + String` auto-coerce the non-String
+        // side via value_to_string. Resolves the apps/tcp-echo
+        // friction "String + Int rejected even though
+        // println('p=', n) works." Other mixed-type binops
+        // remain errors.
+        if *op == BinOp::Add && lt != rt {
+            if lt == CodegenTy::String && self.value_to_string_supports(&rt) {
+                let coerced = self.value_to_string(rv, &rt)?;
+                let coerced = self.with_printed_unit(right, coerced)?;
+                return self.lower_binop(*op, lv, coerced, &CodegenTy::String);
+            }
+            if rt == CodegenTy::String && self.value_to_string_supports(&lt) {
+                let coerced = self.value_to_string(lv, &lt)?;
+                let coerced = self.with_printed_unit(left, coerced)?;
+                return self.lower_binop(*op, coerced, rv, &CodegenTy::String);
+            }
+        }
+        // B13 / G30: F.23 Int → Float widening in
+        // binary-op position. Symmetric — either side
+        // can be the Int that gets widened. Must NOT
+        // cross Float → Decimal or Int → Decimal (F.23
+        // explicitly carves those out: Decimal stays
+        // strict for monetary precision).
+        if lt == CodegenTy::Float && rt == CodegenTy::Int {
+            let rv2 = self.coerce_to_float(rv, &rt, "binop rhs")?;
+            return self.lower_binop(*op, lv, rv2.into(), &CodegenTy::Float);
+        }
+        if lt == CodegenTy::Int && rt == CodegenTy::Float {
+            let lv2 = self.coerce_to_float(lv, &lt, "binop lhs")?;
+            return self.lower_binop(*op, lv2.into(), rv, &CodegenTy::Float);
+        }
+        // GH #1076 (U4): an arithmetic operator over a quantity or
+        // a point (a `Duration`, a `Time`) is the algebra's, and
+        // its row says what the result is (`Int * Duration` a
+        // `Duration`, `Time - Time` a `Duration`): the operands
+        // are each the `Int` their representation is, emitted as
+        // the result's.
+        if let Some(result) = self.operator_result(*span) {
+            return self.lower_binop(*op, lv, rv, &result);
+        }
+        // A stdlib body has no operator rows (the checker records
+        // none for it: `conversion::row`), so its `n * 1ms` — the
+        // one spelling by which a count becomes a `Duration` —
+        // found no row and was refused here. The algebra's answer
+        // for that product is fixed whatever the site (spec/units.md:
+        // a quantity times an `Int` is the quantity, and a
+        // `Duration` counts nanoseconds, the `i64` both operands
+        // are), so it is the same multiply a row would emit.
+        if *op == BinOp::Mul
+            && matches!(
+                (&lt, &rt),
+                (CodegenTy::Int, CodegenTy::Duration)
+                    | (CodegenTy::Duration, CodegenTy::Int)
+            )
+        {
+            return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
+        }
+        // The other fixed answer: a `Duration` over a `Duration` is
+        // the dimensionless count (`d / 1ms`, the whole milliseconds
+        // in `d`), the one spelling by which a stdlib body turns a
+        // `Duration` back into an `Int` (std::http's SSE `retry:`).
+        if *op == BinOp::Div && lt == CodegenTy::Duration && rt == CodegenTy::Duration {
+            let (q, _) = self.lower_binop(*op, lv, rv, &CodegenTy::Duration)?;
+            return Ok((q, CodegenTy::Int));
+        }
+        // GH #1076: a comparison the checker typed between two
+        // representations of the unit dialect (a `Duration` and a
+        // refinement of it at the same denomination, which is the
+        // `Int` it counts; a `Time` and a refinement of it) is the
+        // signed comparison of their counts: a side that changed
+        // denomination was converted where it stands, and a
+        // comparison records no operator row (downstream handoff:
+        // `a == b` with `b: Duration in ns` was refused here as
+        // operands of mixed types).
+        if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
+            && lt != rt
+            && crate::conversion::is_quantity_repr(&lt)
+            && crate::conversion::is_quantity_repr(&rt)
+        {
+            return self.lower_binop(*op, lv, rv, &CodegenTy::Int);
+        }
+        // GH #1934: a 256-bit integer shifts by an `Int` count.
+        if matches!(op, BinOp::Shl | BinOp::Shr) && matches!(lt, CodegenTy::U256 | CodegenTy::I256) {
+            return self.lower_wide_shift(*op, lv.into_int_value(), rv.into_int_value(), &lt);
+        }
+        if lt != rt {
+            return Err(CodegenError::Unsupported(format!(
+                "binary op operands of mixed types {} and {}",
+                lt, rt
+            )));
+        }
+        self.lower_binop(*op, lv, rv, &lt)
+    }
 
     fn lower_binop(
         &mut self,
@@ -40186,7 +40296,7 @@ fn match_assigns(m: &MatchStmt, name: &str) -> bool {
         })
 }
 
-fn expr_assigns(e: &Expr, name: &str) -> bool {
+pub(crate) fn expr_assigns(e: &Expr, name: &str) -> bool {
     match e {
         Expr::Block(b) => block_assigns(b, name),
         Expr::If(i) => if_assigns(i, name),

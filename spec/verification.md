@@ -3095,6 +3095,33 @@ assume the others in a build:
   `while true` — the deliberately narrow daemon signal) grows
   O(accepted children). Run-to-exit accept examples stay silent.
 
+  GH #1947 (2026-11-15): (5) an **appending assignment that copies the
+  whole String on every iteration** — `s = s + …`, `s += …` or
+  `s = f"{s}…"` in a loop, where an append no longer copies otherwise
+  (spec/stdlib.md § "Building a String"). Two shapes: the target is a
+  local declared outside the loop and the loop also reads it in a way
+  that may keep the value (anything but the reads spec/stdlib.md
+  § "Building a String" lists as keeping nothing — an operand of `+` or
+  of a comparison, a slice, an argument of a call that keeps none, the
+  append's own read: the same list lowering reads without giving the
+  buffer up), which gives the local's buffer up before each append —
+  reported with that read as its step. A read is not reported when the
+  statements after it in its own block start the local afresh (a plain
+  assignment: `tok = ""` after handing `tok` on) or leave the frame
+  (`return`, `fail`) before any append to it, nor when it is in a
+  `return`, a `fail` or a plain assignment to the local itself; the next
+  append then copies a fresh value, or never comes. The other shape: the
+  target is a place other than a local or a field of
+  `self` (`rec.body`, `self.page.body`), which builds a fresh String
+  the size of the whole each time. The message names the fix: read the
+  local after the loop, or build in a local, or in a
+  `std::bytes::BytesBuilder`. A place is judged a String when an
+  appended operand is a string literal, or, for a local, when its `let`
+  is annotated `String` or initialized with a literal; an append to a
+  local declared inside the loop starts afresh and is silent. Read
+  from the allocation summary's `quadratic_appends` rows
+  (`hale_types::string_append`).
+
   **The lint reaches inside `module { … }`** (GH #764, 2026-09-20). A
   module is a NAMESPACE, not an analysis boundary: the resolver
   registers a module's declarations under their bare names, so a fn or

@@ -2826,6 +2826,34 @@ fn hot_cell_copy_message(reason: &str, in_loop: bool) -> String {
     )
 }
 
+/// GH #1947: an appending assignment in a loop that copies the String it
+/// extends on every iteration (`crate::string_append`).
+fn hot_append_message(q: &crate::string_append::QuadraticAppend) -> String {
+    use crate::string_append::QuadraticWhy;
+    match q.why {
+        QuadraticWhy::SharedInLoop { .. } => format!(
+            "hot-path allocation: `{p}` is appended to in a loop that also \
+             reads it in a way that may keep the value (passed to a call, \
+             bound, stored or returned), so every append first copies the \
+             whole String: the loop is quadratic in time and memory. Read it \
+             after the loop, or only as an operand of `+` or a comparison, in \
+             a slice, or as an argument of a `std::` reader that returns a \
+             number or a `Bool` (`len`, `std::str::contains`); start it afresh \
+             after handing it on; or build the text in a `std::bytes::BytesBuilder` \
+             (`append_str`) and `finish()` it once.",
+            p = q.place
+        ),
+        QuadraticWhy::Place => format!(
+            "hot-path allocation: appending to `{p}` in a loop copies the \
+             whole String on every iteration: only a local or a field of \
+             `self` grows in place. Build the text in a local (`let mut s = \
+             {p}; … s += …; {p} = s;`) or a `std::bytes::BytesBuilder`, and \
+             store it once.",
+            p = q.place
+        ),
+    }
+}
+
 const HOT_SELF_REPLACE: &str = "hot-path store: whole-struct replace of a \
      self-field — every store re-anchors the struct's \
      heap fields (clone + retire per String field). \
@@ -2939,11 +2967,22 @@ fn check_hot_path_alloc(rows: &HotPathRows<'_>, out: &mut Vec<Violation>) {
             if !f.hot && hale_syntax::api_names::is_json_synth_pos(span.start.0) {
                 continue;
             }
-            if f.hot {
-                out.push(Violation::error(HOT_PATH, span, format!("@hot: {}", msg)));
+            let v = if f.hot {
+                Violation::error(HOT_PATH, span, format!("@hot: {}", msg))
             } else if rows.advisory && !rows.summary.unbounded_fns.contains(&f.key) {
-                out.push(Violation::warning(HOT_PATH, span, msg));
-            }
+                Violation::warning(HOT_PATH, span, msg)
+            } else {
+                continue;
+            };
+            // GH #1947: a quadratic append names the read that shares it.
+            let read = f.quadratic_appends.iter().find(|q| q.span == span).and_then(|q| match q.why {
+                crate::string_append::QuadraticWhy::SharedInLoop { read } => Some(read),
+                crate::string_append::QuadraticWhy::Place => None,
+            });
+            out.push(match read {
+                Some(r) => v.step(r, "this read may keep the value, so the next append copies it"),
+                None => v,
+            });
         }
     }
 }
@@ -3031,6 +3070,11 @@ fn hot_path_findings<'s>(
                     }
                 }
             }
+        }
+        // GH #1947: an appending assignment that copies the whole String
+        // on every iteration.
+        for q in &f.quadratic_appends {
+            found.push((q.span, hot_append_message(q)));
         }
         // As written: an inner finding before the one that encloses it,
         // left to right. A dispatch's alternatives are one call.

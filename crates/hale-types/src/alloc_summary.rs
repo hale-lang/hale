@@ -1150,6 +1150,11 @@ pub struct FnSummary {
     /// `main` (lowered as the program's entry), and for a row the summary
     /// did not classify.
     pub frame: Option<Frame>,
+    /// GH #1947: the appending assignments of the body that copy the
+    /// String they extend on every iteration of a loop
+    /// (`crate::string_append::quadratic_appends`), which the hot-path
+    /// lint reports.
+    pub quadratic_appends: Vec<crate::string_append::QuadraticAppend>,
 }
 
 /// What a free fn's body allocates into (E3b): the scratch-local
@@ -3617,6 +3622,7 @@ pub fn summarize_within(
                 store_calls: w.store_calls,
                 sends: w.sends,
                 frame: None,
+                quadratic_appends: crate::string_append::quadratic_appends(body),
             },
             starts,
             w.skipped,
