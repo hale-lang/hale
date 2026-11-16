@@ -94,13 +94,16 @@ fn command_guard(req: std::http::Request, origin: String) -> String {
 }
 
 // The face's call names, and the members of `HeadCommands` they stand for.
-const COMMAND_CALLS: String = "Index Org Tasks PracticePropose ReviewVerdict OrganizationPropose TaskCreate TaskReassign TaskTake TaskDone PersonRetire AttemptClaim AttemptOutcome AttemptRenew AttemptRelease AttemptAllowance FrictionFile CommandLookup PositionOpen HoldFill BatchApply BatchPreview KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeNodePropose KnowledgeNodeRevise KnowledgeNodeRetire KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeLookup";
+const COMMAND_CALLS: String = "Index Org Uis Tasks PracticePropose ReviewVerdict OrganizationPropose TaskCreate TaskReassign TaskTake TaskDone PersonRetire AttemptClaim AttemptOutcome AttemptRenew AttemptRelease AttemptAllowance FrictionFile CommandLookup PositionOpen HoldFill BatchApply BatchPreview KnowledgeEdgeLink KnowledgeEdgeUnlink KnowledgeNodePropose KnowledgeNodeRevise KnowledgeNodeRetire KnowledgeBindingBind KnowledgeBindingUnbind KnowledgeLookup";
 
 fn command_member(call: String) -> String {
     // the reads the face's screens draw on: the record's index, its org
     // chart and its handed Tasks, ungated rows of the surface
     if call == "Index" { return "Commands::index"; }
     if call == "Org" { return "Commands::org"; }
+    // the habitat's web UIs (habitat_rows.hl): the rail's list of every
+    // organization and the UIs each declares
+    if call == "Uis" { return "Commands::uis"; }
     if call == "Tasks" { return "Commands::tasks"; }
     if call == "PracticePropose" { return "Commands::propose"; }
     if call == "ReviewVerdict" { return "Commands::verdict"; }

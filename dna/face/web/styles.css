@@ -435,6 +435,8 @@ h3 { font-size: var(--size-xs); text-transform: uppercase; letter-spacing: 0.08e
 .orgs a { display: flex; align-items: center; gap: var(--space-2); color: var(--color-text-muted); padding: var(--space-1) var(--space-2); border-left: var(--line-rule) solid transparent; font-size: var(--size-sm); overflow-wrap: anywhere; }
 .orgs a:hover { color: var(--color-text); background: var(--color-bg-2); text-decoration: none; }
 .orgs a[aria-current="page"] { color: var(--color-text); border-left-color: var(--color-accent); background: var(--color-bg-2); }
+.orgs ul.sub { margin: 0 0 var(--space-1) var(--space-5); gap: 0; }
+.orgs ul.sub a, .orgs ul.sub .note { font-size: var(--size-xs); padding: 1px var(--space-2); }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--color-text-faint); }
 .dot.up { background: var(--color-green); }
 .dot.down { background: var(--color-amber); }
