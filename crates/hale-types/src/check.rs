@@ -1354,6 +1354,8 @@ fn walk_bundle(
         strict_idents,
         or_value_discarded: false,
         generic_params: Vec::new(),
+        template_literals: BTreeMap::new(),
+        admitted_template_literals: BTreeSet::new(),
         generic_fns,
         fn_decls,
         locus_decls,
@@ -1405,6 +1407,7 @@ fn walk_bundle(
                     let start = cx.diags.len();
                     cx.decl_diags_start = start;
                     cx.check_top_decl(item);
+                    cx.refuse_unadmitted_template_literals();
                     cx.settle_decimal_literals();
                     cx.settle_param_accesses(start);
                     (cx.diags.split_off(start), std::sync::Arc::new(std::mem::take(&mut cx.views)))
@@ -11494,6 +11497,13 @@ struct Checker<'a> {
     /// so the unknown-bare-type-name rule has to know them to avoid
     /// reporting `T` as a typo.
     generic_params: Vec<String>,
+    /// GH #1965: every literal spelled with a generic template's name
+    /// the ordinary walk typed (by span: the template's name), and the
+    /// ones a site that declares their type admitted or a site with none
+    /// already refused. The rest are refused when the walk ends
+    /// (`refuse_unadmitted_template_literals`).
+    template_literals: BTreeMap<(u32, u32), (Span, String)>,
+    admitted_template_literals: BTreeSet<(u32, u32)>,
     /// M3 stage 3 tranche 2: generic TYPE templates (name → decl).
     /// Mangled monomorph literals (`Box_Int { ... }`) resolve
     /// against these — previously "unknown type" at typecheck,
@@ -15543,6 +15553,17 @@ impl<'a> Checker<'a> {
                 );
                 self.check_block(&md.body);
                 self.return_ctx = prev_return;
+                // GH #1965: a mode's tail is its return, and lowering
+                // rewrites a template literal there against the declared
+                // return type. Admitted by that type; the walk above
+                // typed it.
+                if let (Some(te), Some(tail)) = (&md.ret, md.body.tail.as_deref()) {
+                    let want = self.resolve_te(te);
+                    let mark = self.walk_mark();
+                    let got = self.check_expr(tail);
+                    self.discard_since(mark);
+                    let _ = self.admit_monomorph_literal(&want, &got, tail, true);
+                }
                 self.locals.pop();
                 self.in_lifecycle = false;
             }
@@ -16356,6 +16377,13 @@ impl<'a> Checker<'a> {
             if let Some(want) = self.return_ctx.clone() {
                 let _ = self.decimal_flow(&want, &got, tail);
             }
+            // GH #1965: the body's tail is its return, and lowering
+            // rewrites a template literal there against the declared
+            // return type as it does a `return`'s.
+            let want = self.fallible_ctx.as_ref().map(|(s, _)| s.clone()).or_else(|| self.return_ctx.clone());
+            if let Some(want) = want {
+                let _ = self.admit_monomorph_literal(&want, &got, tail, true);
+            }
         }
         self.locals.pop();
     }
@@ -16630,6 +16658,24 @@ impl<'a> Checker<'a> {
             ),
         ));
         ty
+    }
+
+    /// GH #1976: a generic fn's name read as a value (`let g = get;`). A
+    /// generic fn has no single type: each call specializes it at its
+    /// arguments' types, and a value is one fn pointer of one type, so
+    /// there is nothing to hand. The build refused it as an unknown
+    /// identifier after a clean check; the check refuses it at the name.
+    fn generic_fn_value(&mut self, shown: &str, span: Span) -> Ty {
+        let last = shown.rsplit("::").next().unwrap_or(shown);
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "`{shown}` is a generic fn, and a generic fn has no single type to be a value: each call \
+                 specializes it at its arguments' types. Call it (`{shown}(x)`), or pass a fn written over \
+                 the concrete types that calls it (`fn {last}_of(x: Int) -> Int {{ return {shown}(x); }}`)"
+            ),
+        ));
+        Ty::Unknown
     }
 
     /// A `std::` path read as a value (`apply(std::url::encode, s)`). A
@@ -17432,6 +17478,10 @@ impl<'a> Checker<'a> {
                         let injected = self.set_injection(&expected_payload, &payload_ty).is_some()
                             && self.flows_into(&expected_payload, &payload_ty, value);
                         if !injected && !expected_payload.assignable_from(&payload_ty) {
+                            // Said here, once (GH #1965).
+                            if let Expr::Struct { span, .. } = value {
+                                self.admitted_template_literals.insert((span.start.0, span.end.0));
+                            }
                             self.diags.push(Diag::ty(
                                 value.span(),
                                 format!(
@@ -21392,6 +21442,66 @@ impl<'a> Checker<'a> {
     /// declaration's, read by that identity. The second value is the
     /// path as the author wrote it, unscoped (GH #746's `u$0` head
     /// reads `u`), for diagnostics.
+    /// GH #1963: why an argument the checker gives no type cannot pin
+    /// generic fn `shown`'s parameter `g`, in the program's terms.
+    fn untyped_generic_arg_message(&self, shown: &str, g: &str, arg: &Expr) -> String {
+        // A capacity slot is used through its operations; it has no
+        // value of its own to hand anywhere.
+        if let Expr::Field { receiver, name, .. } = arg {
+            let slot = matches!(receiver.as_ref(), Expr::KwSelf(_))
+                && self.current_locus.is_some_and(|li| li.capacity_slot_names.iter().any(|n| n == &name.name));
+            if slot {
+                return format!(
+                    "`self.{0}` is a capacity slot, not a value: a slot is used through its operations \
+                     (`self.{0}.acquire()`, `self.{0}.free(c)`), so it cannot be generic fn `{shown}`'s argument",
+                    name.name
+                );
+            }
+        }
+        if let Expr::Call { callee, .. } = arg {
+            // `time::sleep(..)`: the stdlib lives under `std::`.
+            if let Expr::Path(qn) = callee.as_ref() {
+                const STDLIB_ROOTS: &[&str] =
+                    &["env", "process", "time", "str", "bytes", "math", "io", "term", "text", "log", "http", "test"];
+                let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                if segs.len() >= 2
+                    && STDLIB_ROOTS.contains(&segs[0])
+                    && self.known.import_target(&segs.join("::")).is_none()
+                {
+                    return format!(
+                        "path call `{0}` is unresolved: the stdlib lives under the `std::` prefix \
+                         (`std::{0}`), and generic fn `{shown}` takes the type of a value it is given",
+                        segs.join("::")
+                    );
+                }
+            }
+            return format!(
+                "generic fn `{shown}` takes `{g}` from this argument, and hale can't name the type of this \
+                 call's result. If the call returns nothing there is no value to pass: write it as a statement \
+                 of its own. Otherwise bind it to a `let` that writes its type (`let v: <type> = …;`) and pass `v`"
+            );
+        }
+        format!(
+            "generic fn `{shown}` takes `{g}` from this argument, and hale can't name its type here, so nothing \
+             in this call says what `{g}` is. Bind it to a `let` that writes its type (`let v: <type> = …;`) and \
+             pass `v`, or write the fn over the concrete type"
+        )
+    }
+
+    /// GH #1964: an imported seed's generic fn, `alias::id`: its name in
+    /// the merged program (the template's key, which names its
+    /// monomorphs), the path as written, and the template.
+    fn imported_generic_fn(&self, path: &QualifiedName) -> Option<(String, String, &'a FnDecl)> {
+        if path.segments.len() < 2 {
+            return None;
+        }
+        let key: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let mangled = self.known.import_target(&key.join("::"))?;
+        let template = self.generic_fns.get(mangled).copied()?;
+        let written: Vec<&str> = std::iter::once(unscoped_alias(key[0])).chain(key[1..].iter().copied()).collect();
+        Some((mangled.to_string(), written.join("::"), template))
+    }
+
     fn imported_fn(&self, path: &QualifiedName) -> Option<(String, FnSig)> {
         if path.segments.len() < 2 {
             return None;
@@ -21975,6 +22085,19 @@ impl<'a> Checker<'a> {
         self.this_is_callee = std::mem::take(&mut self.callee_position);
         let ty = self.check_expr_at(expr);
         self.handling = outer;
+        // GH #1965: a literal spelled with a generic template's name,
+        // held until the walk ends to the sites that admit it.
+        if let Expr::Struct { span, .. } = expr {
+            if self.generic_params.is_empty()
+                && self.specializing.is_none()
+                && self.default_invocations.is_empty()
+                && self.generic_template_named(&ty).is_some()
+            {
+                if let Ty::Named(n) = &ty {
+                    self.template_literals.entry((span.start.0, span.end.0)).or_insert((*span, n.clone()));
+                }
+            }
+        }
         // The fallible column (F.40 phase 3, E4): a call this walk
         // typed `Fallible` (the ordinary walk's; a specialization's walk
         // records its generic calls only), unless the call arm recorded
@@ -22647,8 +22770,11 @@ impl<'a> Checker<'a> {
                 TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
             }
         }
-        let (Ty::Named(w), Expr::Struct { inits, .. }) = (want, value) else { return };
+        let (Ty::Named(w), Expr::Struct { inits, span: literal_span, .. }) = (want, value) else { return };
         let Some((template, bindings)) = self.resolve_generic_monomorph(w) else { return };
+        // GH #1965: a site that declares the literal's type supplies its
+        // arguments.
+        self.admitted_template_literals.insert((literal_span.start.0, literal_span.end.0));
         for init in inits {
             let declared: Option<&TypeExpr> = match template {
                 GenericTemplate::Type(decl) => match &decl.body {
@@ -22837,6 +22963,9 @@ impl<'a> Checker<'a> {
             Expr::Ident(id) => {
                 let is_callee = std::mem::take(&mut self.this_is_callee);
                 if !is_callee && self.locals.lookup(&id.name).is_none() {
+                    if self.generic_fns.contains_key(id.name.as_str()) {
+                        return self.generic_fn_value(&id.name, id.span);
+                    }
                     if let Some(TopSymbol::Fn(sig)) = self.top.lookup(&id.name) {
                         let sig = sig.clone();
                         return self.fn_value(&id.name, &sig, id.span);
@@ -22881,6 +23010,9 @@ impl<'a> Checker<'a> {
                 if let Some((_, sig)) = self.imported_fn(qn) {
                     if !is_callee {
                         let shown = qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                        if self.imported_generic_fn(qn).is_some() {
+                            return self.generic_fn_value(&shown, qn.span);
+                        }
                         return self.fn_value(&shown, &sig, qn.span);
                     }
                     return Ty::Function {
@@ -23660,313 +23792,13 @@ impl<'a> Checker<'a> {
                     if let Some(template) =
                         self.generic_fns.get(id.name.as_str()).copied()
                     {
-                        if args.len() != template.params.len() {
-                            self.diags.push(Diag::ty(
-                                callee.span(),
-                                format!(
-                                    "generic fn `{}` takes {} \
-                                     argument{}, got {}",
-                                    id.name,
-                                    template.params.len(),
-                                    if template.params.len() == 1 {
-                                        ""
-                                    } else {
-                                        "s"
-                                    },
-                                    args.len()
-                                ),
-                            ));
-                        }
-                        let arg_tys: Vec<Ty> = args
-                            .iter()
-                            .map(|a| self.check_expr(a))
-                            .collect();
-                        for (a, at) in args.iter().zip(&arg_tys) {
-                            self.refuse_unit_value(
-                                at,
-                                a,
-                                &format!("an argument to generic fn `{}`", id.name),
-                            );
-                        }
-                        let generic_names: std::collections::BTreeSet<
-                            String,
-                        > = template
-                            .generics
-                            .iter()
-                            .map(|g| g.name.name.clone())
-                            .collect();
-                        let mut bindings: BTreeMap<String, Ty> =
-                            BTreeMap::new();
-                        let mut conflicted = false;
-                        for (p, at) in
-                            template.params.iter().zip(arg_tys.iter())
-                        {
-                            if let Err((gname, was, now)) =
-                                unify_generic_ty(
-                                    &p.ty,
-                                    at,
-                                    &generic_names,
-                                    &mut bindings,
-                                )
-                            {
-                                conflicted = true;
-                                self.diags.push(Diag::ty(
-                                    callee.span(),
-                                    format!(
-                                        "generic fn `{}`: parameter \
-                                         `{}` bound to both `{}` and \
-                                         `{}` by this call's arguments",
-                                        id.name,
-                                        gname,
-                                        was.display(),
-                                        now.display()
-                                    ),
-                                ));
-                            }
-                        }
-                        // A quantity or a point (GH #1076) is no type
-                        // argument: its unit lives in the checker's rows
-                        // for the places that name it, and a generic body
-                        // names `G`, so it would print and convert as the
-                        // bare count. An identity or a range is its `Int`
-                        // there, as everywhere, and binds.
-                        for (gname, bound) in &bindings {
-                            // (a synthesized denomination has its own
-                            // refusal below)
-                            if matches!(bound, Ty::Named(_))
-                                && self.scalars.quantity(bound).is_some_and(|q| !q.synthesized)
-                            {
-                                self.diags.push(Diag::ty(
-                                    callee.span(),
-                                    format!(
-                                        "generic fn `{}`: `{}` would be `{}`, a quantity, and a generic body \
-                                         has no unit to print or convert one by; write the fn over `{}`, \
-                                         or pass its count (`x / 1<unit>`)",
-                                        id.name,
-                                        gname,
-                                        bound.display(),
-                                        bound.display()
-                                    ),
-                                ));
-                            }
-                        }
-                        // `T: Numeric`, held at the binding this call
-                        // infers (the build refused the instantiation
-                        // with no location).
-                        for g in &template.generics {
-                            let numeric_bound = matches!(&g.bound, Some(TypeExpr::Named { path, .. })
-                                if path.segments.len() == 1 && path.segments[0].name == "Numeric");
-                            let Some(bound) = bindings.get(&g.name.name) else { continue };
-                            if !numeric_bound || self.satisfies_numeric(bound) {
-                                continue;
-                            }
-                            self.diags.push(Diag::ty(
-                                callee.span(),
-                                format!(
-                                    "generic fn `{}`: `{}` is bounded `Numeric`, and this call makes it `{}`, \
-                                     not one of `Int`, `Float`, `Decimal` or `Duration`",
-                                    id.name,
-                                    g.name.name,
-                                    bound.display()
-                                ),
-                            ));
-                        }
-                        // GH #1942: a specialization is declared under a
-                        // name its type arguments spell (`id_Int`), and an
-                        // array, a tuple or a fn type spells none, so the
-                        // build refused the call. Refused here, at the call.
-                        for g in &template.generics {
-                            let Some(bound) = bindings.get(&g.name.name) else { continue };
-                            if let Some(what) = unnameable_generic_arg(bound) {
-                                self.diags.push(Diag::ty(
-                                    callee.span(),
-                                    format!(
-                                        "generic fn `{}`: this call makes `{}` `{}`, {what}, and hale can't compile a \
-                                         generic fn specialized at one yet: a generic argument is a primitive or a \
-                                         declared type (a struct, an enum, an alias, a locus or an interface). Wrap \
-                                         the value in a declared type (`type Wrapped {{ v: {}; }}`), or write the fn \
-                                         over the concrete type",
-                                        id.name,
-                                        g.name.name,
-                                        bound.display(),
-                                        bound.display()
-                                    ),
-                                ));
-                            }
-                        }
-                        // Every generic must be pinned — UNLESS an
-                        // arg typed Unknown could have pinned it
-                        // (stay permissive where inference was).
-                        let any_unknown_arg = arg_tys
-                            .iter()
-                            .any(|t| matches!(t, Ty::Unknown));
-                        if !any_unknown_arg {
-                            for g in &template.generics {
-                                if !bindings.contains_key(&g.name.name)
-                                {
-                                    self.diags.push(Diag::ty(
-                                        callee.span(),
-                                        format!(
-                                            "generic fn `{}`: cannot \
-                                             infer `{}` from this call \
-                                             — every generic param \
-                                             must appear in an \
-                                             argument position that \
-                                             pins it",
-                                            id.name, g.name.name
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                        // The call's row (F.40 phase 3, E4): the
-                        // bindings this unification made, by the
-                        // template's parameter order, and the params
-                        // they substitute into. An unpinned or
-                        // conflicting parameter, or a wrong arity,
-                        // leaves the call a hole.
-                        let row = {
-                            use crate::typed_bodies::{GenericCall, Hole, Typed};
-                            let unpinned = template
-                                .generics
-                                .iter()
-                                .find(|g| !bindings.contains_key(&g.name.name));
-                            if args.len() != template.params.len() {
-                                Typed::Hole(Hole {
-                                    span: callee.span(),
-                                    reason: format!(
-                                        "generic fn `{}` takes {} argument(s), this call passes {}",
-                                        id.name,
-                                        template.params.len(),
-                                        args.len()
-                                    ),
-                                })
-                            } else if let Some(g) = unpinned {
-                                Typed::Hole(Hole {
-                                    span: callee.span(),
-                                    reason: format!(
-                                        "generic fn `{}`: no argument of this call pins `{}`",
-                                        id.name, g.name.name
-                                    ),
-                                })
-                            } else if conflicted {
-                                Typed::Hole(Hole {
-                                    span: callee.span(),
-                                    reason: format!(
-                                        "generic fn `{}`: this call's arguments bind a parameter twice",
-                                        id.name
-                                    ),
-                                })
-                            } else {
-                                let type_args: Vec<Ty> = template
-                                    .generics
-                                    .iter()
-                                    .map(|g| bindings[&g.name.name].clone())
-                                    .collect();
-                                let params: Vec<Ty> = template
-                                    .params
-                                    .iter()
-                                    .map(|p| substitute_generic_ty(&p.ty, &bindings, self.known))
-                                    .collect();
-                                Typed::Known(GenericCall { template: template.id, type_args, params })
-                            }
-                        };
-                        // GH #1076 (U3): a monomorph is named by its type
-                        // arguments, and a synthesized denomination has no
-                        // declaration to name it by.
-                        if let crate::typed_bodies::Typed::Known(call) = &row {
-                            let synthesized =
-                                call.type_args.iter().find(|t| self.scalars.quantity(t).is_some_and(|q| q.synthesized));
-                            if let Some(t) = synthesized {
-                                let shown = self.scalars.type_display(t);
-                                self.unit_error(Diag::ty(
-                                    callee.span(),
-                                    format!(
-                                        "generic fn `{}`: `{shown}` is a denomination no declaration names, and a generic \
-                                         argument is a declared type: bind the value to one first (`let x: T = …`)",
-                                        id.name
-                                    ),
-                                ));
-                            }
-                        }
-                        if let crate::typed_bodies::Typed::Known(call) = &row {
-                            let tokens: Option<Vec<String>> =
-                                call.type_args.iter().map(crate::typed_bodies::mangle_token).collect();
-                            if let (Some(tokens), false) = (tokens, template.id.is_none()) {
-                                self.typed.monomorphs.insert(crate::typed_bodies::Monomorph {
-                                    template: template.id,
-                                    kind: crate::typed_bodies::TemplateKind::Fn,
-                                    args: call.type_args.clone(),
-                                    name: format!("{}_{}", id.name, tokens.join("_")),
-                                });
-                            }
-                        }
-                        if !self.default_invocations.is_empty() {
-                            self.typed.default_generic_call(
-                                self.body, &self.default_invocations,
-                                self.specializing.clone(), *call_id, row,
-                            );
-                        } else {
-                            match &self.specializing {
-                                Some(args) => {
-                                    let args = args.clone();
-                                    self.typed.specialized_generic_call(self.body, args, *call_id, row);
-                                }
-                                None => self.typed.generic_call(self.body, *call_id, row),
-                            }
-                        }
-                        // Preserve holes in the template's lexical scope. A
-                        // global declaration with the same name cannot fill an
-                        // argument that this call did not infer.
-                        for name in &generic_names {
-                            bindings.entry(name.clone()).or_insert(Ty::Unknown);
-                        }
-                        // Args vs substituted params.
-                        for ((p, at), a) in template
-                            .params
-                            .iter()
-                            .zip(arg_tys.iter())
-                            .zip(args.iter())
-                        {
-                            let want = substitute_generic_ty(
-                                &p.ty,
-                                &bindings,
-                                self.known,
-                            );
-                            if !want.assignable_from(at) {
-                                self.diags.push(Diag::ty(
-                                    a.span(),
-                                    format!(
-                                        "generic fn `{}` argument \
-                                         `{}`: expected `{}`, got `{}`",
-                                        id.name,
-                                        p.name.name,
-                                        want.display(),
-                                        at.display()
-                                    ),
-                                ));
-                            }
-                        }
-                        let ret = match &template.ret {
-                            Some(te) => substitute_generic_ty(
-                                te,
-                                &bindings,
-                                self.known,
-                            ),
-                            None => Ty::Unit,
-                        };
-                        if let Some(fe) = &template.fallible {
-                            let payload = substitute_generic_ty(
-                                fe,
-                                &bindings,
-                                self.known,
-                            );
-                            return Ty::Fallible {
-                                success: Box::new(ret),
-                                payload: Box::new(payload),
-                            };
-                        }
-                        return ret;
+                        return self.check_generic_fn_call(&id.name, &id.name, template, args, callee.span(), *call_id);
+                    }
+                }
+                // GH #1964: an imported seed's generic fn, `lib::id(..)`.
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if let Some((key, shown, template)) = self.imported_generic_fn(qn) {
+                        return self.check_generic_fn_call(&key, &shown, template, args, callee.span(), *call_id);
                     }
                 }
                 // m47-payloads: enum-variant construction with
@@ -25101,6 +24933,34 @@ impl<'a> Checker<'a> {
                 // success is `T`, its failure a `RangeError`, and what
                 // discharges it is its row's policy.
                 let narrowing = self.narrowing_at(inner);
+                // GH #1966: an `or` handles the failure of the call it
+                // follows (or of a narrowing conversion). Anything else
+                // there — a field read of a literal whose field is a
+                // fallible call, an element, a name — has no failure of
+                // its own to address, and lowering refused it after a
+                // clean check; the call inside is addressed where it is
+                // written.
+                if narrowing.is_none() && !matches!(inner.as_ref(), Expr::Call { .. }) {
+                    let what = match inner.as_ref() {
+                        Expr::Field { .. } => "a field read",
+                        Expr::Index { .. } => "an element read",
+                        Expr::Ident(_) | Expr::Path(_) => "a name",
+                        Expr::Or { .. } => "another `or`",
+                        _ => "no call",
+                    };
+                    self.diags.push(Diag::ty(
+                        inner.span(),
+                        format!(
+                            "`or` handles the failure of the call it follows, and this is {what}: it has no \
+                             failure of its own to address. Put the `or` on the fallible call where it is \
+                             written (`f(x) or 0`)"
+                        ),
+                    ));
+                    return match inner_ty {
+                        Ty::Fallible { success, .. } => *success,
+                        other => other,
+                    };
+                }
                 // GH #1076 (U3): a change of denomination's narrowing fails
                 // with an `InexactError`, a range's with a `RangeError`.
                 let ratio =
@@ -25536,6 +25396,349 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// M3 stage 3 (2026-07-02): a call to a generic fn, by its own
+    /// name or through an import alias (`lib::id(..)`, GH #1964):
+    /// `key` is the template's name in the merged program, which names
+    /// its monomorphs (`id_Int`, `__lib_…__id_Int`), and `shown` the
+    /// callee as written, for diagnostics.
+    fn check_generic_fn_call(
+        &mut self,
+        key: &str,
+        shown: &str,
+        template: &'a FnDecl,
+        args: &[Expr],
+        callee_span: Span,
+        call_id: NodeId,
+    ) -> Ty {
+        if args.len() != template.params.len() {
+            self.diags.push(Diag::ty(
+                callee_span,
+                format!(
+                    "generic fn `{}` takes {} \
+                     argument{}, got {}",
+                    shown,
+                    template.params.len(),
+                    if template.params.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    args.len()
+                ),
+            ));
+        }
+        let arg_tys: Vec<Ty> = args
+            .iter()
+            .map(|a| self.check_expr(a))
+            .collect();
+        for (a, at) in args.iter().zip(&arg_tys) {
+            self.refuse_unit_value(
+                at,
+                a,
+                &format!("an argument to generic fn `{}`", shown),
+            );
+        }
+        let generic_names: std::collections::BTreeSet<
+            String,
+        > = template
+            .generics
+            .iter()
+            .map(|g| g.name.name.clone())
+            .collect();
+        let mut bindings: BTreeMap<String, Ty> =
+            BTreeMap::new();
+        let mut conflicted = false;
+        for (p, at) in
+            template.params.iter().zip(arg_tys.iter())
+        {
+            if let Err((gname, was, now)) =
+                unify_generic_ty(
+                    &p.ty,
+                    at,
+                    &generic_names,
+                    &mut bindings,
+                )
+            {
+                conflicted = true;
+                self.diags.push(Diag::ty(
+                    callee_span,
+                    format!(
+                        "generic fn `{}`: parameter \
+                         `{}` bound to both `{}` and \
+                         `{}` by this call's arguments",
+                        shown,
+                        gname,
+                        was.display(),
+                        now.display()
+                    ),
+                ));
+            }
+        }
+        // A quantity or a point (GH #1076) is no type
+        // argument: its unit lives in the checker's rows
+        // for the places that name it, and a generic body
+        // names `G`, so it would print and convert as the
+        // bare count. An identity or a range is its `Int`
+        // there, as everywhere, and binds.
+        for (gname, bound) in &bindings {
+            // (a synthesized denomination has its own
+            // refusal below)
+            if matches!(bound, Ty::Named(_))
+                && self.scalars.quantity(bound).is_some_and(|q| !q.synthesized)
+            {
+                self.diags.push(Diag::ty(
+                    callee_span,
+                    format!(
+                        "generic fn `{}`: `{}` would be `{}`, a quantity, and a generic body \
+                         has no unit to print or convert one by; write the fn over `{}`, \
+                         or pass its count (`x / 1<unit>`)",
+                        shown,
+                        gname,
+                        bound.display(),
+                        bound.display()
+                    ),
+                ));
+            }
+        }
+        // `T: Numeric`, held at the binding this call
+        // infers (the build refused the instantiation
+        // with no location).
+        for g in &template.generics {
+            let numeric_bound = matches!(&g.bound, Some(TypeExpr::Named { path, .. })
+                if path.segments.len() == 1 && path.segments[0].name == "Numeric");
+            let Some(bound) = bindings.get(&g.name.name) else { continue };
+            if !numeric_bound || self.satisfies_numeric(bound) {
+                continue;
+            }
+            self.diags.push(Diag::ty(
+                callee_span,
+                format!(
+                    "generic fn `{}`: `{}` is bounded `Numeric`, and this call makes it `{}`, \
+                     not one of `Int`, `Float`, `Decimal` or `Duration`",
+                    shown,
+                    g.name.name,
+                    bound.display()
+                ),
+            ));
+        }
+        // GH #1942: a specialization is declared under a
+        // name its type arguments spell (`id_Int`), and an
+        // array, a tuple or a fn type spells none, so the
+        // build refused the call. Refused here, at the call.
+        for g in &template.generics {
+            let Some(bound) = bindings.get(&g.name.name) else { continue };
+            if let Some(what) = unnameable_generic_arg(bound) {
+                self.diags.push(Diag::ty(
+                    callee_span,
+                    format!(
+                        "generic fn `{}`: this call makes `{}` `{}`, {what}, and hale can't compile a \
+                         generic fn specialized at one yet: a generic argument is a primitive or a \
+                         declared type (a struct, an enum, an alias, a locus or an interface). Wrap \
+                         the value in a declared type (`type Wrapped {{ v: {}; }}`), or write the fn \
+                         over the concrete type",
+                        shown,
+                        g.name.name,
+                        bound.display(),
+                        bound.display()
+                    ),
+                ));
+            }
+        }
+        // Every generic must be pinned — UNLESS an
+        // arg typed Unknown could have pinned it
+        // (stay permissive where inference was).
+        let any_unknown_arg = arg_tys
+            .iter()
+            .any(|t| matches!(t, Ty::Unknown));
+        if !any_unknown_arg {
+            for g in &template.generics {
+                if !bindings.contains_key(&g.name.name)
+                {
+                    self.diags.push(Diag::ty(
+                        callee_span,
+                        format!(
+                            "generic fn `{}`: cannot \
+                             infer `{}` from this call \
+                             — every generic param \
+                             must appear in an \
+                             argument position that \
+                             pins it",
+                            shown, g.name.name
+                        ),
+                    ));
+                }
+            }
+        } else if self.generic_params.is_empty() && self.specializing.is_none() {
+            // GH #1963: an argument the checker gives no type pins
+            // nothing, and lowering reads the type arguments from this
+            // call's row, so a parameter only such an argument could
+            // pin left the call a hole the build refused after a clean
+            // check. Refused here, at the argument. (Inside a generic
+            // template a use of its own parameter is typed `Unknown`
+            // too; that walk is not the one lowering reads, and is
+            // left alone.)
+            for g in &template.generics {
+                if bindings.contains_key(&g.name.name) {
+                    continue;
+                }
+                for ((p, at), a) in template.params.iter().zip(&arg_tys).zip(args) {
+                    if matches!(at, Ty::Unknown) && type_expr_mentions(&p.ty, &g.name.name) {
+                        let msg = self.untyped_generic_arg_message(shown, &g.name.name, a);
+                        self.diags.push(Diag::ty(a.span(), msg));
+                    }
+                }
+            }
+        }
+        // The call's row (F.40 phase 3, E4): the
+        // bindings this unification made, by the
+        // template's parameter order, and the params
+        // they substitute into. An unpinned or
+        // conflicting parameter, or a wrong arity,
+        // leaves the call a hole.
+        let row = {
+            use crate::typed_bodies::{GenericCall, Hole, Typed};
+            let unpinned = template
+                .generics
+                .iter()
+                .find(|g| !bindings.contains_key(&g.name.name));
+            if args.len() != template.params.len() {
+                Typed::Hole(Hole {
+                    span: callee_span,
+                    reason: format!(
+                        "generic fn `{}` takes {} argument(s), this call passes {}",
+                        shown,
+                        template.params.len(),
+                        args.len()
+                    ),
+                })
+            } else if let Some(g) = unpinned {
+                Typed::Hole(Hole {
+                    span: callee_span,
+                    reason: format!(
+                        "generic fn `{}`: no argument of this call pins `{}`",
+                        shown, g.name.name
+                    ),
+                })
+            } else if conflicted {
+                Typed::Hole(Hole {
+                    span: callee_span,
+                    reason: format!(
+                        "generic fn `{}`: this call's arguments bind a parameter twice",
+                        shown
+                    ),
+                })
+            } else {
+                let type_args: Vec<Ty> = template
+                    .generics
+                    .iter()
+                    .map(|g| bindings[&g.name.name].clone())
+                    .collect();
+                let params: Vec<Ty> = template
+                    .params
+                    .iter()
+                    .map(|p| substitute_generic_ty(&p.ty, &bindings, self.known))
+                    .collect();
+                Typed::Known(GenericCall { template: template.id, type_args, params })
+            }
+        };
+        // GH #1076 (U3): a monomorph is named by its type
+        // arguments, and a synthesized denomination has no
+        // declaration to name it by.
+        if let crate::typed_bodies::Typed::Known(call) = &row {
+            let synthesized =
+                call.type_args.iter().find(|t| self.scalars.quantity(t).is_some_and(|q| q.synthesized));
+            if let Some(t) = synthesized {
+                let shown = self.scalars.type_display(t);
+                self.unit_error(Diag::ty(
+                    callee_span,
+                    format!(
+                        "generic fn `{}`: `{shown}` is a denomination no declaration names, and a generic \
+                         argument is a declared type: bind the value to one first (`let x: T = …`)",
+                        shown
+                    ),
+                ));
+            }
+        }
+        if let crate::typed_bodies::Typed::Known(call) = &row {
+            let tokens: Option<Vec<String>> =
+                call.type_args.iter().map(crate::typed_bodies::mangle_token).collect();
+            if let (Some(tokens), false) = (tokens, template.id.is_none()) {
+                self.typed.monomorphs.insert(crate::typed_bodies::Monomorph {
+                    template: template.id,
+                    kind: crate::typed_bodies::TemplateKind::Fn,
+                    args: call.type_args.clone(),
+                    name: format!("{}_{}", key, tokens.join("_")),
+                });
+            }
+        }
+        if !self.default_invocations.is_empty() {
+            self.typed.default_generic_call(
+                self.body, &self.default_invocations,
+                self.specializing.clone(), call_id, row,
+            );
+        } else {
+            match &self.specializing {
+                Some(args) => {
+                    let args = args.clone();
+                    self.typed.specialized_generic_call(self.body, args, call_id, row);
+                }
+                None => self.typed.generic_call(self.body, call_id, row),
+            }
+        }
+        // Preserve holes in the template's lexical scope. A
+        // global declaration with the same name cannot fill an
+        // argument that this call did not infer.
+        for name in &generic_names {
+            bindings.entry(name.clone()).or_insert(Ty::Unknown);
+        }
+        // Args vs substituted params.
+        for ((p, at), a) in template
+            .params
+            .iter()
+            .zip(arg_tys.iter())
+            .zip(args.iter())
+        {
+            let want = substitute_generic_ty(
+                &p.ty,
+                &bindings,
+                self.known,
+            );
+            if !want.assignable_from(at) {
+                self.diags.push(Diag::ty(
+                    a.span(),
+                    format!(
+                        "generic fn `{}` argument \
+                         `{}`: expected `{}`, got `{}`",
+                        shown,
+                        p.name.name,
+                        want.display(),
+                        at.display()
+                    ),
+                ));
+            }
+        }
+        let ret = match &template.ret {
+            Some(te) => substitute_generic_ty(
+                te,
+                &bindings,
+                self.known,
+            ),
+            None => Ty::Unit,
+        };
+        if let Some(fe) = &template.fallible {
+            let payload = substitute_generic_ty(
+                fe,
+                &bindings,
+                self.known,
+            );
+            return Ty::Fallible {
+                success: Box::new(ret),
+                payload: Box::new(payload),
+            };
+        }
+        return ret;
     }
 
     /// Same as check_expr but used when we need a type without
@@ -26673,6 +26876,38 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #1965: a literal spelled with a generic template's name that no
+    /// site declaring its type admitted
+    /// ([`Self::admit_monomorph_literal`]) and no site without one refused
+    /// ([`Self::refuse_generic_literal_without_arguments`]): a receiver
+    /// (`Box { v: 3 }.v`), a generic fn's argument, an operand, a
+    /// condition, an f-string part, an `if` or `match` arm. Lowering takes
+    /// the arguments only from a declared type, so it refused each of these
+    /// after a clean check; the check refuses them at the literal, once the
+    /// declaration's walk has seen every site that admits one.
+    fn refuse_unadmitted_template_literals(&mut self) {
+        let literals = std::mem::take(&mut self.template_literals);
+        let admitted = std::mem::take(&mut self.admitted_template_literals);
+        for (key, (span, name)) in literals {
+            if admitted.contains(&key) {
+                continue;
+            }
+            let Some(template) = self.generic_template_named(&Ty::Named(name)) else { continue };
+            let name = template.name();
+            let params: Vec<&str> = template.generics().iter().map(|g| g.name.name.as_str()).collect();
+            self.diags.push(Diag::ty(
+                span,
+                format!(
+                    "`{name}` is a generic {}: a literal spelled with the template name takes its type arguments \
+                     from the declared type at the site, and nothing here declares one. Bind it to a `let` that \
+                     writes them (`let x: {name}<{}> = {name} {{ ... }};`) and use `x`",
+                    template.kind(),
+                    params.join(", "),
+                ),
+            ));
+        }
+    }
+
     fn refuse_generic_literal_without_arguments(
         &mut self,
         ty: &Ty,
@@ -26681,6 +26916,8 @@ impl<'a> Checker<'a> {
         let Some(template) = self.generic_template_named(ty) else {
             return;
         };
+        // Said here; the walk's end does not say it again (GH #1965).
+        self.admitted_template_literals.insert((span.start.0, span.end.0));
         let name = template.name();
         let params: Vec<&str> = template
             .generics()
@@ -27784,6 +28021,24 @@ fn accumulator_outside_closure(what: &str) -> String {
          and is compiled only there. To add up an array, walk it (`for x in xs {{ total = total + x; }}`) or chain \
          it (`xs.map(it).sum()`)"
     )
+}
+
+/// Whether a generic fn's parameter type names the type parameter `g`
+/// anywhere (`T`, `Box<T>`, `[T; 2]`), so an argument there pins it.
+fn type_expr_mentions(te: &TypeExpr, g: &str) -> bool {
+    match te {
+        TypeExpr::Named { path, generic_args, .. } => {
+            (path.segments.len() == 1 && path.segments[0].name == g)
+                || generic_args.iter().any(|t| type_expr_mentions(t, g))
+        }
+        TypeExpr::Projection { inner, .. } => type_expr_mentions(inner, g),
+        TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => type_expr_mentions(elem, g),
+        TypeExpr::Tuple(parts, _) => parts.iter().any(|t| type_expr_mentions(t, g)),
+        TypeExpr::Function { params, ret, .. } => {
+            params.iter().any(|t| type_expr_mentions(t, g)) || ret.as_ref().is_some_and(|t| type_expr_mentions(t, g))
+        }
+        TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+    }
 }
 
 /// What a generic fn's inferred type argument is when no specialization

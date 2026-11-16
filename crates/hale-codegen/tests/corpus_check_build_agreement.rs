@@ -3597,6 +3597,146 @@ fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
     );
 }
 
+/// The parity gate's generics family (GH #1963, #1965, #1966, #1974,
+/// #1975, #1976), the half compiled: `or` over a generic fallible fn, a
+/// generic fn at a stdlib record's field, at a perspective, and at an
+/// interface whose value is the locus behind it (a `release`), and a
+/// bounded intrinsic over a generic fn's result. Each checks, builds and
+/// runs. (The seed-boundary half, GH #1964, is
+/// `tests/hale/generics_parity_test.hl`, a two-seed program.)
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_generics_divergences_check_build_and_run() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "fn parse<T>(s: T, ok: Bool) -> Int fallible(String) { if !ok { fail \"no\"; } return 42; }\n\
+             fn main() { let a = parse(\"42\", true) or 0; let b = parse(1.5, false) or 9; println(a, b); }\n",
+            "or_generic_fallible",
+            "429\n",
+        ),
+        (
+            "fn id<T>(x: T) -> T { return x; }\n\
+             fn main() { let out = std::process::run(\"true\") or raise; println(len(id(out.stderr))); }\n",
+            "generic_at_a_stdlib_field",
+            "0\n",
+        ),
+        (
+            "perspective Router { fn health() -> Int; }\n\
+             locus V1 : serves Router { fn health() -> Int { return 7; } }\n\
+             locus App { params { r: perspective(Router) = V1 { }; } fn probe() -> Int { return id(self.r).health(); } }\n\
+             fn id<T>(x: T) -> T { return x; }\n\
+             fn main() { let a = App { }; println(a.probe()); }\n",
+            "generic_at_a_perspective",
+            "7\n",
+        ),
+        (
+            "interface Job { fn w() -> Int; }\n\
+             locus Big { params { v: Int = 2; ran: Int = 0; } fn w() -> Int { return self.v * self.ran; } run() { self.ran = 1; } }\n\
+             locus Pool { params { n: Int = 0; } accept(c: Job) { } release(c: Job) { self.n = self.n + id(c).w(); } run() { Big { v: 3 }; Big { v: 4 }; } }\n\
+             fn id<T>(x: T) -> T { return x; }\n\
+             fn main() { let p = Pool { }; println(p.n); }\n",
+            "generic_at_an_interface_in_a_release",
+            "7\n",
+        ),
+        (
+            "type R { xs: bounded[Int; 4]; }\n\
+             fn id<T>(x: T) -> T { return x; }\n\
+             fn main() { let r = R { }; push(r.xs, 5) or discard; println(count(id(r).xs), at(id(r).xs, 0) or 0); }\n",
+            "bounded_over_a_generic_result",
+            "15\n",
+        ),
+    ];
+    for (src, tag, want) in cases {
+        let out = build_and_run_probe(src, &format!("generics_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
+        assert_eq!(out, *want, "{tag}: what it computed\n{src}");
+    }
+}
+
+/// The parity gate's generics family, the half refused: a generic call's
+/// argument the check gives no type (GH #1963), a template literal no
+/// declared type supplies arguments to (GH #1965), an `or` on no call and
+/// a substitute of another type (GH #1966), and a generic fn named as a
+/// value (GH #1976). Each is refused by the check at the construct; the
+/// build is never reached.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_generics_divergences_are_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus Host { capacity { heap registry of Int; } birth { let c = id(self.registry).acquire(); } }\n\
+                 fn id<T>(x: T) -> T { return x; }\n\
+                 fn main() { }\n",
+                "self.registry",
+                "`self.registry` is a capacity slot, not a value",
+            ),
+            (
+                "fn id<T>(x: T) -> T { return x; }\n\
+                 fn main() { id(println(\"x\")); }\n",
+                "println(\"x\")",
+                "generic fn `id` takes `T` from this argument, and hale can't name the type of this call's result",
+            ),
+            (
+                "fn id<T>(x: T) -> T { return x; }\n\
+                 fn main() { id(time::sleep(5ms)); }\n",
+                "time::sleep(5ms)",
+                "path call `time::sleep` is unresolved: the stdlib lives under the `std::` prefix",
+            ),
+            (
+                "type Box<T> { v: T; }\n\
+                 fn main() { let x = Box { v: 3 }.v; println(x); }\n",
+                "Box { v: 3 }",
+                "`Box` is a generic type: a literal spelled with the template name takes its type arguments",
+            ),
+            (
+                "type Box<T> { v: T; }\n\
+                 fn id<T>(x: T) -> T { return x; }\n\
+                 fn main() { let b = id(Box { v: 3 }); }\n",
+                "Box { v: 3 }",
+                "`Box` is a generic type",
+            ),
+            (
+                "type Box<T> { v: Bool; }\n\
+                 fn main() { while Box { v: false }.v { } }\n",
+                "Box { v: false }",
+                "`Box` is a generic type",
+            ),
+            (
+                "type R { v: Int; }\n\
+                 fn main() { let r = R { v: 1 }; let n = r.v or 0; println(n); }\n",
+                "r.v",
+                "`or` handles the failure of the call it follows, and this is a field read",
+            ),
+            (
+                "fn main() { let out = std::process::run(\"true\") or false; }\n",
+                "std::process::run(\"true\") or false",
+                "`or <substitute>`: fallback type `Bool` does not match success type",
+            ),
+            (
+                "fn get<T>(x: T) -> T { return x; }\n\
+                 fn main() { let g = get; println(g(1)); }\n",
+                "get",
+                "`get` is a generic fn, and a generic fn has no single type to be a value",
+            ),
+        ],
+        "generics_gap",
+    );
+    // the neighbours that lower, so each rule is as wide as the refusal
+    assert_built(
+        "type Box<T> { v: T; }\n\
+         fn tail() -> Box<Int> { Box { v: 4 } }\n\
+         fn main() { let b: Box<Int> = Box { v: 3 }; println(b.v + tail().v); }\n",
+        "hale_cb_generics_declared_literal",
+    );
+    assert_built(
+        "fn id<T>(x: T) -> T { return x; }\n\
+         fn main() { std::time::sleep(1ms); let n = id(3); println(n); }\n",
+        "hale_cb_generics_typed_argument",
+    );
+}
+
 /// GH #1942: the codegen feature gaps a declaration's foreign or bus
 /// boundary reaches. An `@ffi` parameter with a default or of an enum
 /// type, a bus payload with a field the wire format has no form for, a

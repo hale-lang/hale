@@ -1604,7 +1604,7 @@ carries no type arguments of its own; it takes them from the
 declared type at the site. The sites that declare one are:
 
 - a `let` ascription — `let c: Cache<Int, String> = Cache { cap: 2 };`
-- a declared return type — `fn make() -> Box<Int> { return Box { value: 4 }; }`
+- a declared return type, at a `return` or the body's tail — `fn make() -> Box<Int> { return Box { value: 4 }; }`, `fn make() -> Box<Int> { Box { value: 4 } }`
 - a declared field or param, at its DEFAULT — `params { b: Box<Int> = Box { value: 0 }; }`
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
 - the place of a plain assignment (`=`, not `+=`) — `self.cfg = Cfg { n: 2 };`, a local, a record's field or an array's element, by the place's declared type
@@ -1632,10 +1632,21 @@ is a type error at `"x"` (`type `Box`: field `value` expects `Int`, got
 into a locus param's.
 
 Anywhere else — an un-annotated `let` (of the literal, or of an array
-or tuple literal holding it), a literal in statement position — the
-arguments cannot be recovered, and the literal is a
-type error naming the template and the annotation to write. There
-is no inference from a literal's field values back to the
+or tuple literal holding it), a literal in statement position, a
+receiver (`Box { value: 1 }.value`), a call's argument (a generic
+fn's included), an operand, a condition, an f-string part, the arm of
+an `if` or `match` expression — the arguments cannot be recovered, and
+the literal is a type error, at the literal, naming the template and
+the annotation to write (GH #1965):
+
+```
+main.hl:6:13: type error: `Box` is a generic type: a literal spelled
+with the template name takes its type arguments from the declared type
+at the site, and nothing here declares one. Bind it to a `let` that
+writes them (`let x: Box<T> = Box { ... };`) and use `x`
+```
+
+There is no inference from a literal's field values back to the
 parameters.
 
 A generic instantiation's argument COUNT must equal the template's
@@ -1660,6 +1671,28 @@ A locus's method is not generic itself: `fn twice<T>(...)` inside a
 locus is refused by `hale check` at the method's name (hale can't
 compile a generic locus method yet); declare it as a free generic fn,
 or make the locus the template.
+
+**Calling a generic fn.** A call binds each type parameter from the
+argument in the position that names it, and the specialization is the
+one those arguments name. The same holds for a generic fn another seed
+declares, called through its import alias (`lib::id(3)`, for its value
+or as a statement), and for a generic `fallible(E)` fn under `or`
+(`parse(s) or 0`, `lib::parse(s) or raise`), which specializes as a
+plain call does and is addressed like any fallible call (GH #1964,
+#1966).
+
+An argument whose type the checker cannot name pins nothing: a
+capacity slot (`id(self.registry)`: a slot is used through its
+operations), a call that returns no value (`id(println("x"))`), a
+stdlib path written without `std::` (`id(time::sleep(5ms))`). A
+generic call whose parameter only such an argument could pin is a type
+error at the argument (GH #1963), naming what it is, or asking for the
+value bound to a `let` that writes its type.
+
+A generic fn has no single type, so its name is not a value: `let g =
+get;` (or passing `get` as an argument) is a type error at the name
+(GH #1976). Call it, or pass a fn written over the concrete types that
+calls it.
 
 ### Generic bounds
 
@@ -1723,10 +1756,14 @@ type, and a generic body names `T`, so it would print and convert as
 the bare count. A generic fn call that would bind one is refused at
 the callee ("generic fn \`id\`: \`T\` would be \`Money\`, a quantity,
 and a generic body has no unit to print or convert one by"); the
-stdlib's `Duration` and `Time` are primitives and bind. A locus or an
-interface binds too: the specialization takes and hands back the
-handle, as a fn declared over the locus or interface by name does
-(`let c = id(Counter { n: 3 });`).
+stdlib's `Duration` and `Time` are primitives and bind. A locus, an
+interface or a perspective binds too: the specialization takes and
+hands back the handle, as a fn declared over the locus, the interface
+or `perspective(P)` does (`let c = id(Counter { n: 3 });`,
+`id(self.router).health()` with `router: perspective(Router)`; GH
+#1974). A locus handed where the interface it is held as is the bound
+type (`id(c)` with `c: Job` in a `release(c: Job)`) is passed as that
+interface (GH #1975).
 
 An array, a tuple, a `bounded[T; N]` or a function type names no
 monomorph, so a generic fn call whose arguments would bind one is
@@ -1741,7 +1778,10 @@ an alias, a locus or an interface). Wrap the value in a declared type
 ```
 
 A qualified path is rewritten to a single segment by the import
-renames before the mangler sees it.
+renames before the mangler sees it, in a signature and in a body's
+`let` ascription alike: `let x: Box<lib::Scalar> = Box { v: 17 };` and
+`let b: lib::Box<String> = lib::Box { v: "x" };` name one monomorph in
+the check and the build (GH #1964).
 
 ### What the compiler cannot compile yet
 
@@ -1755,6 +1795,9 @@ yet" and a way forward, never by the build after a passing check:
 | an unsized array type `[T]`, or a length that is not an integer literal (`[T; N]`) | the annotation | size it with a literal, or hold a varying count in `bounded[T; N]` or a `@form(vec)` |
 | a generic fn call that binds a parameter to an array, a tuple, a `bounded` or a fn type | the callee | wrap the value in a declared type |
 | a generic locus method (`fn f<T>(…)` inside a locus) | the method's name | a free generic fn, or a generic locus |
+| a generic fn named as a value (`let g = get;`) | the name | call it, or pass a fn over the concrete types that calls it |
+| a generic fn call whose parameter only an argument with no nameable type could pin (a capacity slot, a call with no value) | the argument | bind the value to a `let` that writes its type |
+| a literal spelled with a generic template's name where no declared type supplies its arguments | the literal | bind it to a `let` that writes them |
 | an empty array literal `[]` anywhere but the value of a `let` that declares its type | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
 | a nested pattern inside a tuple pattern (`((1, 2), 3) ->`, `(E::A, 3) ->`) | the nested pattern | bind the part and match the binding (the rule a variant's pattern follows) |
 | a range index on anything but a `String` (`a[1..3]` of an array) | the index | copy the elements, `std::bytes::slice` for bytes |

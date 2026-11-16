@@ -752,6 +752,63 @@ impl<'a> QualifiedRenameApplier<'a> {
         }
     }
 
+    /// GH #1964: a generic instantiation in a body's `let` ascription
+    /// that names a qualified type (`let x: Box<lib::Scalar> = …`, `let
+    /// b: lib::Box<String> = …`) collapses to its mangled targets like a
+    /// signature's does, so the monomorph it names is spelled one way in
+    /// the check and the build. An ascription that instantiates nothing
+    /// stays as written: the check and the lowering resolve a qualified
+    /// name themselves.
+    fn rewrite_let_generic_args_in_block(&self, b: &mut Block) {
+        for s in &mut b.stmts {
+            self.rewrite_let_generic_args_in_stmt(s);
+        }
+    }
+
+    fn rewrite_let_generic_args_in_stmt(&self, s: &mut Stmt) {
+        match s {
+            Stmt::Let { ty: Some(te), .. } | Stmt::LetTuple { ty: Some(te), .. } => self.rewrite_generic_args(te),
+            Stmt::If(i) => self.rewrite_let_generic_args_in_if(i),
+            Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Block(body) => {
+                self.rewrite_let_generic_args_in_block(body)
+            }
+            Stmt::Match(m) => {
+                for arm in &mut m.arms {
+                    if let MatchArmBody::Block(b) = &mut arm.body {
+                        self.rewrite_let_generic_args_in_block(b);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn rewrite_let_generic_args_in_if(&self, i: &mut IfStmt) {
+        self.rewrite_let_generic_args_in_block(&mut i.then_block);
+        if let Some(e) = &mut i.else_block {
+            match e.as_mut() {
+                ElseBranch::Else(b) => self.rewrite_let_generic_args_in_block(b),
+                ElseBranch::ElseIf(inner) => self.rewrite_let_generic_args_in_if(inner),
+            }
+        }
+    }
+
+    /// Every generic instantiation anywhere inside `t`, rewritten whole:
+    /// its head (`lib::Box<String>`) and its arguments.
+    fn rewrite_generic_args(&self, t: &mut TypeExpr) {
+        match t {
+            TypeExpr::Named { generic_args, .. } if !generic_args.is_empty() => self.rewrite_type_expr(t),
+            TypeExpr::Projection { inner, .. } => self.rewrite_generic_args(inner),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.rewrite_generic_args(elem),
+            TypeExpr::Tuple(ts, _) => {
+                for t in ts {
+                    self.rewrite_generic_args(t);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn rewrite_sends_in_if(&self, i: &mut IfStmt) {
         self.rewrite_sends_in_block(&mut i.then_block);
         if let Some(e) = &mut i.else_block {
@@ -890,6 +947,7 @@ impl<'a> QualifiedRenameApplier<'a> {
             },
             TopDecl::Const(c) => self.rewrite_type_expr(&mut c.ty),
             TopDecl::Fn(f) => {
+                self.rewrite_let_generic_args_in_block(&mut f.body);
                 for p in &mut f.params {
                     self.rewrite_type_expr(&mut p.ty);
                 }
@@ -1089,6 +1147,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                     self.rewrite_type_expr(&mut p.ty);
                 }
                 self.rewrite_sends_in_block(&mut lc.body);
+                self.rewrite_let_generic_args_in_block(&mut lc.body);
             }
             // GH #854: a mode DOES take typed params — the grammar
             // is `mode bulk(n: Int) -> T { }` and the full mangler
@@ -1112,6 +1171,7 @@ impl<'a> QualifiedRenameApplier<'a> {
             }
             LocusMember::Fn(fd) => {
                 self.rewrite_sends_in_block(&mut fd.body);
+                self.rewrite_let_generic_args_in_block(&mut fd.body);
                 for p in &mut fd.params {
                     self.rewrite_type_expr(&mut p.ty);
                 }

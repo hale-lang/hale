@@ -1,9 +1,0 @@
-// A stdlib call spelled without `std::`, as a generic fn's argument.
-// == main/main.hl ==
-fn id<T>(x: T) -> T {
-    return x;
-}
-
-fn main() {
-    id(time::sleep(5ms));
-}
