@@ -462,6 +462,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("probes.hl", &["process"]),
         ("wide.hl", &["u256", "i256"]),
         ("time_rfc3339.hl", &["time"]),
+        ("str_helpers.hl", &["str"]),
     ];
     // Codegen's native stdlib modules, by the namespace each lowers.
     const CG: &[(&str, &[&str])] = &[

@@ -1473,6 +1473,7 @@ const BARE_BUILTIN_PROGRAMS: &[(&str, &str)] = &[
         "fn main() { println(starts_with(\"ab\", \"a\")); }\n",
     ),
     ("contains", "fn main() { println(contains(\"ab\", \"b\")); }\n"),
+    ("ends_with", "fn main() { println(ends_with(\"ab\", \"b\")); }\n"),
     // lower_print_call's four printers.
     ("println", "fn main() { println(\"x\"); }\n"),
     ("print", "fn main() { print(\"x\"); }\n"),
@@ -1691,6 +1692,10 @@ const CLAIMED_BUILTIN_NAMES: &[&str] = &[
 /// GH #892: "may take the name" has to mean at the bounded receiver
 /// too, or the six intrinsic names are only half free — see
 /// [`BOUNDED_INTRINSIC_NAMES`] and the third column of the probe.
+///
+/// GH #1995 S3: `ends_with` is the bare predicate that came after the
+/// name was free. Its codegen arm yields to a declared `fn ends_with`,
+/// so a program that had one keeps it.
 const UNCLAIMED_BUILTIN_NAMES: &[&str] = &[
     "B",
     "c",
@@ -1707,6 +1712,7 @@ const UNCLAIMED_BUILTIN_NAMES: &[&str] = &[
     "push",
     "at",
     "set",
+    "ends_with",
 ];
 
 /// The `bounded[T; N]` intrinsic names, each with the arity its

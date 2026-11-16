@@ -75,7 +75,7 @@ namespace or spec file cannot land without a tier.
 | `std::ring` | experimental | the SPSC ring's hooks; internal to the shared-memory bus |
 | `std::secret` | experimental | the local vault serves DNA and the habitat, whose shape still moves |
 | `std::shm` | experimental | timestamps of the zero-copy bus's last record; tied to the shm_ring layout |
-| `std::str` | stable |  |
+| `std::str` | stable | experimental: `cut`, `cut_last`, `eq_ignore_case`, `last_index_of`, `parse_bool`, `trim_end`, `trim_prefix`, `trim_start`, `trim_suffix`. the splits and trims are new (#1995); promoted after one minor |
 | `std::tar` | experimental | added for DNA's packaging; the API is the minimum DNA needed |
 | `std::term` | stable |  |
 | `std::test` | stable |  |

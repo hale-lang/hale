@@ -205,6 +205,13 @@ Filter these reflexes before they cost you time.
   `obj.method()` normally.
 - **No printf-style format strings.** `println(a, b, c)`
   concatenates its args. F-strings `f"hello {name}"` interpolate.
+- **String operations are `std::str` free functions**, not methods:
+  `std::str::trim(s)`, not `s.trim()`. Split and strip with them,
+  not with offsets: `let (k, v) = std::str::cut(line, "=") or { … };`
+  splits once (`cut_last` at the last `sep`); `trim_prefix(s, "v")` /
+  `trim_suffix` drop an affix if present; `trim_start` / `trim_end`,
+  `last_index_of`, `eq_ignore_case` (ASCII) and `parse_bool` round it
+  out. `contains`, `starts_with` and `ends_with` are also bare.
 - **Embedded program text, SQL or JSON is a block string**: `"""`
   ending its line, the raw text, `"""` on a line of its own; the
   closing line's indent is stripped and nothing is escaped

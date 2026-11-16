@@ -26695,6 +26695,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.reject_builtin_over_user_fn(&i.name)?;
                     self.lower_str_predicate_builtin(&i.name, args, scope)
                 }
+                // GH #1995 S3: bare `ends_with`, the third predicate. Not a
+                // reserved call form (a program's `fn ends_with` predates
+                // it and keeps the name), so it answers only where no fn
+                // of the name is declared.
+                Expr::Ident(i)
+                    if i.name == "ends_with"
+                        && !self.user_fns.contains_key("ends_with")
+                        && !self.generic_fn_templates.contains_key("ends_with") =>
+                {
+                    self.lower_str_predicate_builtin(&i.name, args, scope)
+                }
                 Expr::Ident(i) if self.user_fns.contains_key(&i.name) => {
                     let result =
                         self.lower_user_fn_call(i.name.as_str(), args, scope)?;

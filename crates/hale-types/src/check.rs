@@ -25093,6 +25093,17 @@ impl<'a> Checker<'a> {
                                     hint = format!(" — {}", advice);
                                 }
                             }
+                            // GH #1995 S3: `s.trim()` is the method
+                            // spelling of `std::str::trim(s)`.
+                            if hint.is_empty() {
+                                if let Some(advice) =
+                                    crate::stdlib_surface::str_fn_member_advice(
+                                        &rt, &name.name,
+                                    )
+                                {
+                                    hint = format!(" — {}", advice);
+                                }
+                            }
                             // Friction sweep 2026-10-12: a value of an
                             // interface offers its methods and nothing
                             // else — no fields, whatever the locus
@@ -28646,8 +28657,9 @@ pub const BARE_BUILTIN_CALLEES: &[&str] = &[
     // primitive type names are types, not conversions, and a call
     // to one is an ordinary unbound callee.
     "len", "to_string", "Int", "Float", "abs", "min", "max",
-    // lower_str_predicate_builtin.
-    "starts_with", "contains",
+    // lower_str_predicate_builtin. `ends_with` (GH #1995) only where the
+    // program declares no fn of the name.
+    "starts_with", "contains", "ends_with",
     // Statement position: lower_print_call's four printers, and the
     // explicit-epoch closure surface.
     "println", "print", "eprintln", "eprint", "check_closures",

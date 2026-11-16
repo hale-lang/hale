@@ -1,0 +1,122 @@
+// tests/hale/str_helpers_test.hl — the std::str splits and trims (GH
+// #1995 S3): `cut` / `cut_last`, `trim_prefix` / `trim_suffix`,
+// `trim_start` / `trim_end`, `last_index_of`, `eq_ignore_case`,
+// `parse_bool`, and bare `ends_with`. Each at its edges: an empty
+// separator, a separator at either end, an absent one, multibyte UTF-8.
+
+/// `cut`'s two halves joined by `|`, or `!` and the error's kind.
+fn cut(s: String, sep: String) -> String {
+    let (a, b) = std::str::cut(s, sep) or { return "!" + err.kind; };
+    return a + "|" + b;
+}
+
+/// `cut_last`'s two halves joined by `|`, or `!` and the error's kind.
+fn cut_last(s: String, sep: String) -> String {
+    let (a, b) = std::str::cut_last(s, sep) or { return "!" + err.kind; };
+    return a + "|" + b;
+}
+
+/// The input a failed `cut` reports.
+fn cut_input(s: String, sep: String) -> String {
+    let (a, b) = std::str::cut(s, sep) or { return err.input; };
+    return "cut " + a + b;
+}
+
+/// `parse_bool`'s answer as text, or `!` and the error's kind and input.
+fn parse_bool(s: String) -> String {
+    let b = std::str::parse_bool(s) or { return "!" + err.kind + ":" + err.input; };
+    return to_string(b);
+}
+
+fn main() {
+    // cut: around the first sep
+    std::test::assert_eq_str(cut("key=value", "="), "key|value", "cut");
+    std::test::assert_eq_str(cut("a=b=c", "="), "a|b=c", "cut: the first sep");
+    std::test::assert_eq_str(cut("=x", "="), "|x", "cut: sep at the start");
+    std::test::assert_eq_str(cut("x=", "="), "x|", "cut: sep at the end");
+    std::test::assert_eq_str(cut("=", "="), "|", "cut: only the sep");
+    std::test::assert_eq_str(cut("abc", ""), "|abc", "cut: empty sep at 0");
+    std::test::assert_eq_str(cut("a::b::c", "::"), "a|b::c", "cut: a longer sep");
+    std::test::assert_eq_str(cut("名前=値", "="), "名前|値", "cut: UTF-8 halves");
+    std::test::assert_eq_str(cut("näme→välue", "→"), "näme|välue", "cut: a UTF-8 sep");
+    std::test::assert_eq_str(cut("no-sep", "="), "!not_found", "cut: absent");
+    std::test::assert_eq_str(cut("", "="), "!not_found", "cut: the empty string");
+    std::test::assert_eq_str(cut("a", "ab"), "!not_found", "cut: sep longer than s");
+    std::test::assert_eq_str(cut_input("no-sep", "="), "no-sep", "cut: the error's input");
+
+    // cut_last: around the last sep
+    std::test::assert_eq_str(cut_last("a/b/c.txt", "/"), "a/b|c.txt", "cut_last");
+    std::test::assert_eq_str(cut_last("/root", "/"), "|root", "cut_last: at the start");
+    std::test::assert_eq_str(cut_last("dir/", "/"), "dir|", "cut_last: at the end");
+    std::test::assert_eq_str(cut_last("abc", ""), "abc|", "cut_last: empty sep at the end");
+    std::test::assert_eq_str(cut_last("x→y→z", "→"), "x→y|z", "cut_last: a UTF-8 sep");
+    std::test::assert_eq_str(cut_last("a::b::c", "::"), "a::b|c", "cut_last: a longer sep");
+    std::test::assert_eq_str(cut_last("plain", "/"), "!not_found", "cut_last: absent");
+    std::test::assert_eq_str(cut_last("", "/"), "!not_found", "cut_last: the empty string");
+
+    // last_index_of
+    let none = 0 - 1;
+    std::test::assert_eq_int(std::str::last_index_of("a/b/c", "/"), 3, "last: the last");
+    std::test::assert_eq_int(std::str::last_index_of("a/b/c", "a"), 0, "last: at 0");
+    std::test::assert_eq_int(std::str::last_index_of("abcabc", "abc"), 3, "last: longer sub");
+    std::test::assert_eq_int(std::str::last_index_of("aaa", "aa"), 1, "last: overlapping");
+    std::test::assert_eq_int(std::str::last_index_of("abc", "x"), none, "last: absent");
+    std::test::assert_eq_int(std::str::last_index_of("ab", "abc"), none, "last: sub longer");
+    std::test::assert_eq_int(std::str::last_index_of("", "a"), none, "last: in empty");
+    std::test::assert_eq_int(std::str::last_index_of("abc", ""), 3, "last: empty is len");
+    std::test::assert_eq_int(std::str::last_index_of("", ""), 0, "last: empty in empty");
+    std::test::assert_eq_int(std::str::last_index_of("é/é", "é"), 3, "last: byte offsets");
+
+    // trim_prefix / trim_suffix: once, and only if present
+    std::test::assert_eq_str(std::str::trim_prefix("sha256:ab", "sha256:"), "ab", "prefix");
+    std::test::assert_eq_str(std::str::trim_prefix("ab", "sha256:"), "ab", "prefix: absent");
+    std::test::assert_eq_str(std::str::trim_prefix("vvx", "v"), "vx", "prefix: once");
+    std::test::assert_eq_str(std::str::trim_prefix("abc", ""), "abc", "prefix: empty");
+    std::test::assert_eq_str(std::str::trim_prefix("abc", "abc"), "", "prefix: all");
+    std::test::assert_eq_str(std::str::trim_prefix("ab", "abc"), "ab", "prefix: longer");
+    std::test::assert_eq_str(std::str::trim_prefix("→x", "→"), "x", "prefix: UTF-8");
+    std::test::assert_eq_str(std::str::trim_suffix("a.csv", ".csv"), "a", "suffix");
+    std::test::assert_eq_str(std::str::trim_suffix("a.csv", ".tsv"), "a.csv", "suffix: absent");
+    std::test::assert_eq_str(std::str::trim_suffix("a//", "/"), "a/", "suffix: once");
+    std::test::assert_eq_str(std::str::trim_suffix("abc", ""), "abc", "suffix: empty");
+    std::test::assert_eq_str(std::str::trim_suffix("abc", "abc"), "", "suffix: all");
+    std::test::assert_eq_str(std::str::trim_suffix("bc", "abc"), "bc", "suffix: longer");
+    std::test::assert_eq_str(std::str::trim_suffix("x→", "→"), "x", "suffix: UTF-8");
+
+    // trim_start / trim_end: trim's whitespace from one end
+    std::test::assert_eq_str(std::str::trim_start(" \t\r\nx y \n"), "x y \n", "trim_start");
+    std::test::assert_eq_str(std::str::trim_end(" x y \t\r\n"), " x y", "trim_end");
+    std::test::assert_eq_str(std::str::trim_start("x"), "x", "trim_start: nothing");
+    std::test::assert_eq_str(std::str::trim_end("x"), "x", "trim_end: nothing");
+    std::test::assert_eq_str(std::str::trim_start("   "), "", "trim_start: all space");
+    std::test::assert_eq_str(std::str::trim_end("   "), "", "trim_end: all space");
+    std::test::assert_eq_str(std::str::trim_start(""), "", "trim_start: empty");
+    std::test::assert_eq_str(std::str::trim_end(""), "", "trim_end: empty");
+    std::test::assert_eq_str(std::str::trim_start(" é "), "é ", "trim_start: UTF-8");
+    std::test::assert_eq_str(std::str::trim_end(" é "), " é", "trim_end: UTF-8");
+
+    // eq_ignore_case: ASCII letters only
+    std::test::assert(std::str::eq_ignore_case("Content-Type", "content-TYPE"), "ic");
+    std::test::assert(std::str::eq_ignore_case("", ""), "ic: empty");
+    std::test::assert(!std::str::eq_ignore_case("abc", "abd"), "ic: differs");
+    std::test::assert(!std::str::eq_ignore_case("abc", "ab"), "ic: lengths differ");
+    std::test::assert(!std::str::eq_ignore_case("@", "`"), "ic: only A-Z fold");
+    std::test::assert(!std::str::eq_ignore_case("[", "{"), "ic: not past Z");
+    std::test::assert(std::str::eq_ignore_case("Ü1", "Ü1"), "ic: UTF-8 is itself");
+    std::test::assert(!std::str::eq_ignore_case("Ü", "ü"), "ic: no non-ASCII folding");
+
+    // parse_bool: "true" and "false", nothing else
+    std::test::assert_eq_str(parse_bool("true"), "true", "parse_bool: true");
+    std::test::assert_eq_str(parse_bool("false"), "false", "parse_bool: false");
+    std::test::assert_eq_str(parse_bool("True"), "!parse_bool:True", "parse_bool: case");
+    std::test::assert_eq_str(parse_bool(" true"), "!parse_bool: true", "parse_bool: space");
+    std::test::assert_eq_str(parse_bool("1"), "!parse_bool:1", "parse_bool: 1");
+    std::test::assert_eq_str(parse_bool(""), "!parse_bool:", "parse_bool: empty");
+
+    // ends_with, bare like contains and starts_with
+    std::test::assert(ends_with("main.hl", ".hl"), "bare ends_with");
+    std::test::assert(!ends_with("main.hl", ".rs"), "bare ends_with: no");
+    std::test::assert(!ends_with("hl", "main.hl"), "bare ends_with: longer suffix");
+    std::test::assert(ends_with("x", ""), "bare ends_with: empty suffix");
+    std::test::assert(ends_with("café", "é"), "bare ends_with: UTF-8");
+}

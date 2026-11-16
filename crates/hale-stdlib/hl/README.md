@@ -17,7 +17,7 @@ Builtin-only namespaces (no `.hl` in this directory):
 | namespace | what | implementation |
 |---|---|---|
 | `std::crypto` | sha1/sha256/sha512, hmac_sha256/384/512, keccak256, crc32, ecdsa_p256_sign/verify, rsa_pss_sha256_sign/verify, ed25519_sign/verify, secp256k1_verify (and `ed25519_keypair` and `secp256k1_public_key/sign/recover`, the fns in `crypto.hl`) | C in `lotus_arena.c` (hashes, hand-rolled) + `lotus_tls.c` (ECDSA, RSA-PSS, secp256k1, OpenSSL) + `lotus_ed25519.c` (Ed25519, over Monocypher in `third_party/monocypher`); lowering in `src/stdlib/crypto.rs` |
-| `std::str` | index_of, substring, byte_at_unchecked, range_* family, parse_int/float, from_bytes, … | C + codegen arms |
+| `std::str` | index_of, substring, byte_at_unchecked, range_* family, parse_int/float, from_bytes, … (`cut`, `cut_last`, the `trim_*` affix and end trims, `last_index_of`, `eq_ignore_case` and `parse_bool` are `str_helpers.hl`'s bodies; the `ByteView` surface is `str_view.hl`'s) | C + codegen arms, Hale bodies |
 | `std::math` | sqrt, pow, trig, floor/ceil/round, int↔float | libm + codegen arms |
 | `std::time` | sleep, monotonic, monotonic_ns, now, current, iso8601, parse_time, … (the types are `time.hl`'s; `parse_rfc3339` is `time_rfc3339.hl`'s body over `parse_time`) | C + codegen (`src/stdlib/time.rs`) |
 | `std::bytes` | from_string, read_*/append_* binary pack | C + codegen |
