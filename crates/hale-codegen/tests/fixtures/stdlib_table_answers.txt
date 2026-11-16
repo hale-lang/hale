@@ -1180,7 +1180,7 @@ std::process::pid | lookup=process@2 | locus=false | effects=syscall | sig=() ->
 std::process::read_stderr | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=read_stderr
 std::process::read_stdout | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=read_stdout
 std::process::rss_bytes | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=rss_bytes
-std::process::run | lookup=process@2 | locus=false | effects=syscall|block | sig=(Str) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=-
+std::process::run | lookup=process@2 | locus=false | effects=syscall|block | sig=(Str) -> Named(__StdProcessOutput) ! IoError | ret_ty=? | or=(__StdProcessOutput, IoError) | parks=false | holds=true | unknown=- | suggest=-
 std::process::run_with | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=run_with
 std::process::signal | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=signal
 std::process::spawn | lookup=process@2 | locus=false | effects=syscall | sig=(Str) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=spawn
