@@ -1411,10 +1411,20 @@ seed's own files; `hale check <fleet seed>` reports them, and `hale
 fleet check` checks each instance's seed as it cuts its artifact.
 
 - **params** are the instances: each names another seed's `main locus`
-  through the fleet seed's import (`alias::Main`) and takes no value. A
-  param naming a locus that is not its seed's main, a locus of the
-  fleet seed itself, or nothing an import declares is refused. A seed
+  through the fleet seed's import (`alias::Main`, or `Main` bare from
+  an import list, spec/projects.md) and takes no value. A param naming
+  a locus that is not its seed's main, a locus of the fleet seed
+  itself, or nothing an import declares is refused. A seed
   declares at most one fleet.
+- A name the fleet spells through its imports, a param's main or a
+  binding's or a claim's topic, resolves through the rename and
+  re-export rows the compiler builds for the same imports (GH #1987):
+  a name an import list brings in bare (`import "../desk" as desk {
+  Orders };` then `orders: Orders;`, a topic renamed `{ OrderRequest as
+  Req }` then `Req: unix(…)`), and a name an imported seed re-exports
+  from its own import list (`api::Gateway`, where `api` lists `Gateway`
+  from `venue`), whose instance is built from the seed that declares
+  it (`venue`).
 - **placement** is a default per param: `host("<name>")`, one instance
   on each of several hosts (`host("a"), host("b")`), or `replicas(<n>)`
   (n ≥ 1) on no named host. A host is one name of letters, digits,

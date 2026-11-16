@@ -164,6 +164,7 @@ fleet locus Prod {
 ### How Fleet Composition Works
 
 - **Artifact-level composition**: A fleet seed never merges source ASTs across binaries (which would conflate in-process topics with cross-process routes). Instead, `hale fleet check` compiles each referenced seed into its admitted `ComponentModel` artifact and joins them strictly along the topics declared in the fleet's `bindings { }` block.
+- **Import lists and re-exports**: A fleet names its mains and topics as any seed names an import's declarations. `import "../desk" as desk { Orders };` lets a param say `orders: Orders;`, and a seed that re-exports a main from its own import list (`api` listing `Gateway` from `venue`) can be named `api::Gateway`; the instance is built from the seed that declares the main.
 - **Process instances (`<param>-<i>`)**: Each parameter expands into concrete process instances based on its placement (`orders-0` on `box-a`; `gw-0` and `gw-1` for `replicas(2)`), allowing `claims` to reason about exact publisher/subscriber cardinalities across replicas.
 - **Binding consistency checks**: If an individual binary's `main locus` also declares a binding for a fleet topic, both must specify the same transport. Any fleet binding lacking a publisher or a subscriber fails verification.
 

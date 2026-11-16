@@ -210,7 +210,9 @@ fn a_fleet_is_checked_and_never_built() {
 /// module included).
 #[test]
 fn a_fleet_seed_holds_nothing_to_build() {
-    let d = std::env::temp_dir().join(format!("hale_fleet_locus_{}_export", std::process::id()));
+    // its own directory: `export_round_trips_what_check_reads` owns
+    // `_export`, and under libtest the two share one process id
+    let d = std::env::temp_dir().join(format!("hale_fleet_locus_{}_nothing", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("piece")).unwrap();
     std::fs::create_dir_all(d.join("deploy")).unwrap();
@@ -362,5 +364,59 @@ fn the_declared_fleets_are_checked_from_elsewhere() {
     assert!(ok && out.contains("declares no [fleets]"), "{out}");
     let (ok, out) = hale(&["fleet", "check", "--in", &dir], Path::new("/"));
     assert!(!ok && out.contains("declares no `[fleets]`"), "{out}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// GH #1987: a fleet seed names its instances and topics through the
+/// same rename and re-export rows the compiler builds for its imports. A
+/// name an import list brings in bare (`Orders`, a topic renamed `Req`)
+/// resolves to the declaration it lists, and a main an imported seed
+/// re-exports from its own import list (`api::Gateway`, `api` listing
+/// `Gateway` from `venue`) is built from the seed that declares it. A
+/// listed name the library does not declare is refused at the item.
+#[test]
+fn import_lists_and_re_exports_name_instances_and_topics() {
+    let d = workspace("listed");
+    variant(
+        &d,
+        "listed",
+        &[
+            ("import \"../desk\" as desk;", "import \"../desk\" as desk { Orders };"),
+            ("import \"../shared\" as t;", "import \"../shared\" as t { OrderRequest as Req };"),
+            ("orders: desk::Orders;", "orders: Orders;"),
+            ("t::OrderRequest: unix", "Req: unix"),
+            ("topic t::OrderRequest) == 1", "topic Req) == 1"),
+        ],
+    );
+    let (ok, out) = hale(&["fleet", "check", "listed"], &d);
+    assert!(ok, "the listed names resolve:\n{out}");
+    assert!(
+        out.contains("component `orders` runs `Orders` from ")
+            && out.contains("route `Req` (svc.order.request, unix): orders-0 -> gw-0, gw-1"),
+        "{out}"
+    );
+
+    std::fs::create_dir_all(d.join("api")).unwrap();
+    std::fs::write(d.join("api/api.hl"), "import \"../venue\" as venue { Gateway };\n").unwrap();
+    variant(
+        &d,
+        "reexp",
+        &[("import \"../venue\" as venue;", "import \"../api\" as api;"), ("gw: venue::Gateway;", "gw: api::Gateway;")],
+    );
+    let (ok, out) = hale(&["fleet", "check", "reexp"], &d);
+    assert!(ok, "the re-exported main resolves:\n{out}");
+    let venue = d.join("venue").canonicalize().unwrap();
+    assert!(
+        out.contains(&format!("component `gw` runs `api::Gateway` from {}", venue.display())),
+        "the instance is built from the seed that declares its main:\n{out}"
+    );
+
+    variant(&d, "unlisted", &[("import \"../desk\" as desk;", "import \"../desk\" as desk { Nowhere };")]);
+    let (ok, out) = hale(&["check", "unlisted"], &d);
+    assert!(
+        !ok && out.contains("unlisted/fleet.hl:4:28:")
+            && out.contains("`Nowhere` is not a top-level name of the library imported as `desk`"),
+        "{out}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }

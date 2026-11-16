@@ -1835,7 +1835,7 @@ pub const FAMILIES: &[Family] = &[
         state: State::Canonical,
         kind: Kind::Derivation,
         answers: "A deployment as typed rows, derived from a fleet seed's `fleet locus` (phase 4, C2): its components (each param's main locus, the seed it is built from, the artifact cut from that seed and its shape), its instances (one per param, or `replicas(n)` of them), each component's placement default (a host by name or a replica count), the endpoints each component's artifact records with the transport its own main binds each to, and the routes, one per binding, derived from those endpoints; and the fleet's claims across its instances, judged over the composed rows. Hosting allocations, incarnations, resources and persistence obligations are the habitat's.",
-        inputs: &["a fleet seed's own source and what each of its imports declares (`deployment::check_fleet_seed` into `hale_types::fleet::fleet_source`), never merged with the seeds it imports", "each instance seed's topology artifact (its topics, endpoint identity and bindings rows)", "the import aliases of the fleet seed"],
+        inputs: &["a fleet seed's own source and what each of its imports declares (`deployment::check_fleet_seed` into `hale_types::fleet::fleet_source`), its laws never judged over the seeds it imports; a name it spells through its imports resolves through the rename and re-export rows the seed's link builds (GH #1987)", "each instance seed's topology artifact (its topics, endpoint identity and bindings rows)", "the import aliases of the fleet seed"],
         producer: Some(site("crates/hale-cli/src/deployment.rs", "derive_deployment")),
         legacy: &[],
         consumers: &[

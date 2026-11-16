@@ -140,11 +140,19 @@ fn render(
     }
 }
 
-/// The fleet seed `path`, checked over its own source and what each of
-/// its imports declares, never merged with them (they are its
-/// instances): the fleet as resolved source, the seed's directory, and
-/// each import alias's seed. `Err` holds each diagnostic, rendered at
-/// its line.
+/// The fleet seed `path`, checked over its own source, never merged with
+/// the seeds it imports (they are its instances): the fleet as resolved
+/// source, the seed's directory, and each instance's seed by the key its
+/// [`hale_types::fleet::FleetInstance::seed`] carries. `Err` holds each
+/// diagnostic, rendered at its line.
+///
+/// A name the fleet spells through its imports (`alias::Main`, a bare
+/// `Main` an import list brings in, a name an imported seed re-exports
+/// from its own import list) resolves through the rename and re-export
+/// rows the compiler builds for the same imports, the seed linked as
+/// every verb links it, to the declaration it names in the seed that
+/// declares it (GH #1987). The link is read for those rows alone; the
+/// fleet's laws are judged over its own source.
 pub fn check_fleet_seed(
     path: &Path,
 ) -> Result<(FleetSource, PathBuf, BTreeMap<String, PathBuf>), Vec<String>> {
@@ -154,7 +162,7 @@ pub fn check_fleet_seed(
         out.extend(f.diags.iter().map(|d| render(d, &f.file_bases, &f.sources)));
         out
     };
-    let (_, _, programs, sources, file_bases, _) =
+    let (files, own_files, programs, sources, file_bases, effects) =
         hale_frontend::frontend::parse_checkable(path, &disk).map_err(render_failure)?;
     let root = if path.is_dir() {
         path.to_path_buf()
@@ -163,80 +171,139 @@ pub fn check_fleet_seed(
     };
     let root = root.canonicalize().unwrap_or(root);
     let workspace = hale_frontend::workspace::find_workspace_root(&root);
-    // Each import alias's seed, and what its own files declare.
-    let mut seeds: BTreeMap<String, PathBuf> = BTreeMap::new();
-    let mut declared: BTreeMap<String, BTreeMap<String, Imported>> = BTreeMap::new();
+    // Each import alias's seed on disk: an import that names none is
+    // refused at its path.
+    let mut direct: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut errs: Vec<String> = Vec::new();
     for prog in programs.values() {
         for i in &prog.imports {
             let Some(alias) = &i.alias else { continue };
-            if seeds.contains_key(alias) {
+            if direct.contains_key(alias) {
                 continue;
             }
-            let seed = match hale_frontend::imports::resolve_import(
-                &root,
-                workspace.as_deref(),
-                &i.path,
-                &disk,
-            ) {
+            match hale_frontend::imports::resolve_import(&root, workspace.as_deref(), &i.path, &disk) {
                 Some(hale_frontend::imports::ImportTarget::Directory(d)) => {
-                    d.canonicalize().unwrap_or(d)
+                    direct.insert(alias.clone(), d.canonicalize().unwrap_or(d));
                 }
-                Some(hale_frontend::imports::ImportTarget::SingleFile(f)) => f,
+                Some(hale_frontend::imports::ImportTarget::SingleFile(f)) => {
+                    direct.insert(alias.clone(), f.canonicalize().unwrap_or(f));
+                }
                 None => {
-                    let d = hale_syntax::Diag::ty(
-                        i.path_span,
-                        format!("import `{}` names no seed on disk", i.path),
-                    );
+                    let d = hale_syntax::Diag::ty(i.path_span, format!("import `{}` names no seed on disk", i.path));
                     errs.push(render(&d, &file_bases, &sources));
-                    continue;
                 }
-            };
-            let mut names: BTreeMap<String, Imported> = BTreeMap::new();
-            match hale_frontend::frontend::parse_checkable(&seed, &disk) {
-                Ok((_, _, theirs, _, _, _)) => {
-                    // the seed's entry, as every consumer reads it: the entry row
-                    let progs: Vec<&hale_syntax::ast::Program> = theirs.values().collect();
-                    let row = hale_types::entry::entry_row_in(&progs);
-                    let main = row.entry().map(|m| m.name.clone());
-                    for p in theirs.values() {
-                        for d in hale_syntax::ast::flat_decls(&p.items) {
-                            match d {
-                                TopDecl::Locus(l) => {
-                                    let kind = if main.as_deref() == Some(l.name.name.as_str()) {
-                                        Imported::Main
-                                    } else {
-                                        Imported::Locus
-                                    };
-                                    names.insert(l.name.name.clone(), kind);
-                                }
-                                TopDecl::Topic(t) => {
-                                    names.insert(
-                                        t.name.name.clone(),
-                                        Imported::Topic {
-                                            subject: t.subject.clone(),
-                                        },
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                Err(f) => errs.extend(render_failure(f)),
             }
-            declared.insert(alias.clone(), names);
-            seeds.insert(alias.clone(), seed);
         }
     }
     if !errs.is_empty() {
         return Err(errs);
     }
+    // The compiler's rows: the seed linked as `hale check` links one.
+    let (linked, _, linked_bases, renames, _, _) = hale_frontend::frontend::link_checkable(
+        path,
+        &files,
+        own_files,
+        programs.clone(),
+        sources.clone(),
+        file_bases.clone(),
+        effects,
+        &disk,
+    )
+    .map_err(render_failure)?;
+    let merged: Vec<&TopDecl> =
+        linked.values().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)).collect();
+    // The seed a merged declaration is in: the alias's own when the file
+    // is that single-file seed, else the file's directory.
+    let seed_of = |pos: u32| -> Option<PathBuf> {
+        let f = hale_frontend::frontend::file_of_span(pos, &linked_bases)?;
+        let f = f.canonicalize().unwrap_or(f);
+        if direct.values().any(|s| s == &f) {
+            return Some(f);
+        }
+        f.parent().map(Path::to_path_buf)
+    };
+    // The one row an alias names `name` by. A contested alias (two seeds
+    // of the graph bind it to two libraries) is scoped per seed
+    // (`alias$N`); the fleet's own is the row whose declaration is in
+    // the seed the fleet's import names.
+    let row = |alias: &str, name: &str| -> Option<String> {
+        let scoped = format!("{alias}$");
+        let mut found: Vec<&String> = renames
+            .iter()
+            .filter(|(k, _)| k.len() == 2 && k[1] == name && (k[0] == alias || k[0].starts_with(&scoped)))
+            .map(|(_, m)| m)
+            .collect();
+        found.sort();
+        found.dedup();
+        match found.as_slice() {
+            [one] => Some((*one).clone()),
+            many => {
+                let want = direct.get(alias)?;
+                many.iter()
+                    .find(|m| {
+                        merged.iter().any(|d| decl_name(d) == Some(m.as_str()) && seed_of(d.span().start.0).as_ref() == Some(want))
+                    })
+                    .map(|m| (*m).clone())
+            }
+        }
+    };
+    // A bare name: the import list that brings it in, as `alias::name`.
+    let listed: BTreeMap<String, (String, String)> = programs
+        .values()
+        .flat_map(|p| p.imports.iter())
+        .filter_map(|i| i.alias.as_ref().map(|a| (a, i)))
+        .flat_map(|(a, i)| i.items.iter().map(move |it| (it.local().name.clone(), (a.clone(), it.name.name.clone()))))
+        .collect();
+    let seeds: std::cell::RefCell<BTreeMap<String, PathBuf>> = std::cell::RefCell::new(BTreeMap::new());
+    let resolve = |segs: &[&str]| -> Option<Imported> {
+        let mangled = match segs {
+            [name] => {
+                let (alias, theirs) = listed.get(*name)?;
+                row(alias, theirs)?
+            }
+            [alias, name] => row(alias, name)?,
+            _ => return None,
+        };
+        let decl = merged.iter().find(|d| decl_name(d) == Some(mangled.as_str()))?;
+        match decl {
+            TopDecl::Topic(t) => Some(Imported::Topic { subject: t.subject.clone() }),
+            TopDecl::Locus(l) => {
+                let seed = seed_of(l.name.span.start.0)?;
+                // The declaring seed's entry, as every consumer reads it:
+                // the entry row of that seed's own load. The two loads
+                // number their files apart, so a declaration is matched
+                // by its file and its offset in it.
+                let at = |pos: u32, bases: &[(u32, PathBuf, u32)]| -> Option<(PathBuf, u32)> {
+                    let (base, f, _) = bases.iter().filter(|(b, _, len)| pos >= *b && pos <= b + len).max_by_key(|(b, _, _)| *b)?;
+                    Some((f.canonicalize().unwrap_or_else(|_| f.clone()), pos - base))
+                };
+                let here = at(l.name.span.start.0, &linked_bases)?;
+                let is_main = match hale_frontend::frontend::parse_checkable(&seed, &disk) {
+                    Ok((_, _, theirs, _, their_bases, _)) => {
+                        let progs: Vec<&hale_syntax::ast::Program> = theirs.values().collect();
+                        let row = hale_types::entry::entry_row_in(&progs);
+                        hale_types::entry::root_decl(&progs)
+                            .filter(|_| row.entry().is_some())
+                            .and_then(|m| at(m.name.span.start.0, &their_bases))
+                            == Some(here)
+                    }
+                    Err(_) => false,
+                };
+                if is_main {
+                    let key = seed.display().to_string();
+                    seeds.borrow_mut().insert(key.clone(), seed);
+                    Some(Imported::Main { seed: key })
+                } else {
+                    Some(Imported::Locus)
+                }
+            }
+            _ => None,
+        }
+    };
     let own: Vec<&hale_syntax::ast::Program> = programs.values().collect();
-    let resolve = |alias: &str, name: &str| declared.get(alias).and_then(|m| m.get(name)).cloned();
     let (source, diags) = hale_types::fleet::fleet_source(&own, &resolve);
     match source {
-        Some(s) => Ok((s, root, seeds)),
+        Some(s) => Ok((s, root, seeds.into_inner())),
         None if diags.is_empty() => Err(vec![format!(
             "{}: declares no `fleet locus`",
             path.display()
@@ -245,6 +312,15 @@ pub fn check_fleet_seed(
             .iter()
             .map(|d| render(d, &file_bases, &sources))
             .collect()),
+    }
+}
+
+/// A locus's or a topic's declared (merged) name.
+fn decl_name(d: &TopDecl) -> Option<&str> {
+    match d {
+        TopDecl::Locus(l) => Some(l.name.name.as_str()),
+        TopDecl::Topic(t) => Some(t.name.name.as_str()),
+        _ => None,
     }
 }
 
@@ -274,7 +350,7 @@ fn deployment_rows(
     let cache = workspace.join(".hale/fleet").join(place);
     let mut models = BTreeMap::new();
     for inst in &source.instances {
-        let Some(seed) = seeds.get(&inst.alias) else {
+        let Some(seed) = seeds.get(&inst.seed) else {
             errs.push(format!(
                 "instance `{}`: import `{}` names no seed on disk",
                 inst.param, inst.alias

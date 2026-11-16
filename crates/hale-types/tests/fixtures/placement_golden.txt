@@ -8506,6 +8506,11 @@ row	Producer@main2	Producer	main	default
 == tests/hale/bytes_writer_offset_test.hl
 row	__StdIoMirrorRing@main1	__StdIoMirrorRing	main	default
 
+== tests/hale/chains_field_anchor_test.hl
+-- Cart@main1	Cart
+row	~	Cart	main	default
+row	~.n	Nums	main	inherited
+
 == tests/hale/chains_hashmap_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
