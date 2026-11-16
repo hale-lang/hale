@@ -614,6 +614,10 @@ fn per_target_moves() {
 /// target, the same shape: one tag of a value it hands back to its caller
 /// moves into the caller's arena; no leak site goes or appears.
 ///
+/// `ends_with_own_fn_test` (GH #1995 S3) is a new target, the same
+/// shape: one tag moves into the caller's arena; no leak site goes or
+/// appears.
+///
 /// `bus_wire_type_set_test` (GH #1951 item 4) is a new target, the same
 /// shape: one tag of a value one of its fns hands back moves into the
 /// caller's arena; no leak site goes or appears.
@@ -669,6 +673,7 @@ const PINNED: &[&str] = &[
     "tests/hale/contextual_keywords_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/crypto_sha256_stream_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 5 verdicts",
     "tests/hale/decorator_stack_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/ends_with_own_fn_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/factory_field_owner_test.hl: 2 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
     "tests/hale/float_ieee_compare_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/float_widening_surfaces_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",

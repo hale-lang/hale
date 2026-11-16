@@ -562,6 +562,15 @@ ns std::str open_prefixes=[]
   substring pure
   trim pure
   upper pure
+  cut pure
+  cut_last pure
+  eq_ignore_case pure
+  last_index_of pure
+  parse_bool pure
+  trim_end pure
+  trim_prefix pure
+  trim_start pure
+  trim_suffix pure
 ns std::term open_prefixes=[]
   __raw_disable syscall
   __raw_enable syscall
@@ -1225,19 +1234,24 @@ std::str::contains | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) 
 std::str::cp_at | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=cp_at
 std::str::cp_count | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=cp_count
 std::str::cp_size | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=cp_size
+std::str::cut | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::str::cut_last | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=cut_last
 std::str::ends_with | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=ends_with
+std::str::eq_ignore_case | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=eq_ignore_case
 std::str::find | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find
 std::str::from_bytes | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=from_bytes
 std::str::from_int | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::from_int` is not a stdlib function; rendering a value as a String is the builtin `to_string(x)` | suggest=-
 std::str::index_of | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=index_of
 std::str::index_of_from | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=index_of_from
 std::str::join | lookup=str@2 | locus=false | effects=pure | sig=(Any, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=join
+std::str::last_index_of | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_index_of
 std::str::len | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::len` is not a stdlib function; the length of a String is the builtin `len(s)` | suggest=-
 std::str::lenght | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::str::lenght` | suggest=-
 std::str::length | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::length` is not a stdlib function; the length of a String is the builtin `len(s)` | suggest=-
 std::str::lower | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=lower
 std::str::pad_left | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=pad_left
 std::str::pad_right | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=pad_right
+std::str::parse_bool | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Bool ! ParseError | ret_ty=? | or=(Bool, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_bool
 std::str::parse_decimal | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Decimal ! ParseError | ret_ty=? | or=(Decimal, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_decimal
 std::str::parse_float | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Float ! ParseError | ret_ty=? | or=(Float, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_float
 std::str::parse_in | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::str::parse_in` — did you mean `std::str::parse_int`? | suggest=parse_int
@@ -1255,6 +1269,10 @@ std::str::starts_with | lookup=str@2 | locus=false | effects=pure | sig=(Str, St
 std::str::substring | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=substring
 std::str::to_string | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::to_string` is not a stdlib function; rendering a value as a String is the builtin `to_string(x)` | suggest=-
 std::str::trim | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim
+std::str::trim_end | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim_end
+std::str::trim_prefix | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim_prefix
+std::str::trim_start | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim_start
+std::str::trim_suffix | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim_suffix
 std::str::upper | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=upper
 std::str::view_cp_at | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=view_cp_at
 std::str::view_cp_size | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=view_cp_size

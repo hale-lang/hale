@@ -3,7 +3,7 @@ import { isWrite } from './command-wire.mjs';
 
 // The face reads through the commands relay too: a POST whose line is a
 // read call (`Index`, `Org`, `Tasks`, `BatchPreview`) or the describe is no write.
-const READ_LINE = /^\s*\{\s*"(describe|call"\s*:\s*"(Index|Org|Tasks|BatchPreview)")/;
+const READ_LINE = /^\s*\{\s*"(describe|call"\s*:\s*"(Index|Org|Uis|Tasks|BatchPreview)")/;
 const isMutation = request => isWrite(request) && !READ_LINE.test(request.postData() || '');
 
 // The board: a pending Review is a card in review, a settled one is done, opening a card shows the Review and its question, and reading

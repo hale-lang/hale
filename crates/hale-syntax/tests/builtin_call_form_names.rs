@@ -378,6 +378,9 @@ fn unclaimed_bare_builtin_names_stay_free() {
         "push",
         "at",
         "set",
+        // GH #1995: the bare predicate that came after the name was
+        // free; it yields to a declared fn.
+        "ends_with",
     ] {
         for params in ["a: Int", "a: Int, b: Int"] {
             let src = format!(

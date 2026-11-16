@@ -21,12 +21,17 @@ fn main() {
 | `len(s)` | `(String \| Bytes) -> Int` | Builtin: byte length of `s` |
 | `to_string(x)` | `(T) -> String` | Builtin: formats scalar or printable composite `x` as `String` |
 | `std::str::upper(s)` / `lower(s)` | `(String) -> String` | ASCII case conversion |
-| `std::str::trim(s)` | `(String) -> String` | Strips leading and trailing ASCII whitespace |
+| `std::str::trim(s)` | `(String) -> String` | Strips leading and trailing ASCII whitespace (space, tab, CR, LF) |
+| `std::str::trim_start(s)` / `trim_end(s)` | `(String) -> String` | Strips the same whitespace from one end only |
+| `std::str::trim_prefix(s, pre)` / `trim_suffix(s, suf)` | `(String, String) -> String` | Removes one leading `pre` / trailing `suf`; `s` unchanged when it is absent |
+| `std::str::cut(s, sep)` / `cut_last(s, sep)` | `(String, String) -> (String, String) fallible(ParseError)` | The text before and after the first / last `sep`; `kind: "not_found"` when `s` has none |
+| `std::str::eq_ignore_case(a, b)` | `(String, String) -> Bool` | Equal with ASCII letters compared without case |
 | `std::str::replace(s, old, new)` | `(String, String, String) -> String` | Replaces all occurrences of `old` with `new` |
 | `std::str::contains(s, sub)` | `(String, String) -> Bool` | True if `s` contains `sub` (also available as builtin `contains`) |
-| `std::str::starts_with(s, pre)` / `ends_with(s, suf)` | `(String, String) -> Bool` | Prefix / suffix test (`starts_with` is also a builtin) |
+| `std::str::starts_with(s, pre)` / `ends_with(s, suf)` | `(String, String) -> Bool` | Prefix / suffix test (both are also builtins) |
 | `std::str::substring(s, lo, hi)` | `(String, Int, Int) -> String` | The bytes from offset `lo` up to, not including, `hi` (the same slice as `s[lo..hi]`; both ends are clamped into the string) |
 | `std::str::index_of(s, sub)` / `index_of_from(s, sub, pos)` | `(String, String, ...) -> Int` | Byte offset of first match, or `-1` if absent |
+| `std::str::last_index_of(s, sub)` | `(String, String) -> Int` | Byte offset of the last match, or `-1` if absent |
 | `std::str::split_into(s, sep, out)` | `(String, String, VecLocus) -> ()` | Splits `s` by `sep` into a caller-owned `@form(vec)` of `String` |
 | `std::str::join(items, sep)` | `(VecLocus, String) -> String` | Joins elements of a `@form(vec)` of `String` with `sep` |
 | `std::str::bytes_view(s)` | `(String) -> ByteView` | Measures `s` once (`v.n` bytes) for `O(1)` indexed scanning |
@@ -37,6 +42,7 @@ fn main() {
 | `std::str::cp_at(s, i)` / `cp_size(s, i)` | `(String, Int) -> Int` | Code point value or byte width (`1..4`) at byte offset `i` (`-1` if invalid) |
 | `std::str::view_cp_at(v, i)` / `view_cp_size(v, i)` | `(ByteView, Int) -> Int` | `O(1)` code point value or byte width at offset `i` on a `ByteView` |
 | `std::str::parse_int(s)` / `parse_float(s)` / `parse_decimal(s)` | `(String) -> T fallible(ParseError)` | Parses text into `Int`, `Float`, or `Decimal<S>` |
+| `std::str::parse_bool(s)` | `(String) -> Bool fallible(ParseError)` | `"true"` or `"false"`, exactly; anything else fails with `kind: "parse_bool"` |
 | `std::str::can_parse_int(s)` | `(String) -> Bool` | Non-failing check for valid integer syntax |
 | `std::str::from_bytes(b)` / `std::bytes::from_string(s)` | `(Bytes) -> String` / `(String) -> Bytes` | Converts between `Bytes` and `String` |
 | `std::bytes::at(b, i)` | `(Bytes, Int) -> Int fallible(IndexError)` | Reads single byte (`0..255`) at index `i` |
@@ -298,6 +304,30 @@ fn main() {
 - **Reusable storage:** A message handler can keep a single `Fields` locus in its `params` and call `f.clear()` before each `split_into` call for zero steady-state allocations.
 - **Preserves empty fields:** `"a,,b,"` splits into 4 elements (`"a"`, `""`, `"b"`, `""`), preserving column alignment in CSV/TSV data.
 
+### Splitting Once and Trimming
+
+To split a line once, at a separator, `std::str::cut` returns the text on each side of it as a tuple. A line without the separator fails with `ParseError { kind: "not_found", input: s }`, so the `or` says what to do then:
+
+```hale
+fn setting(line: String) -> String {
+    let (key, value) = std::str::cut(line, "=") or { return "no setting in " + line; };
+    return key + " -> " + value;
+}
+
+fn main() {
+    println(setting("timeout=30s"));                      // timeout -> 30s
+    println(setting("a=b=c"));                            // a -> b=c
+    println(setting("verbose"));                          // no setting in verbose
+    let (dir, file) = std::str::cut_last("a/b/c.txt", "/") or { return; };
+    println(dir, " | ", file);                            // a/b | c.txt
+    println(std::str::trim_prefix("sha256:ab12", "sha256:")); // ab12
+    println(std::str::trim_suffix("report.csv", ".csv")); // report
+    println(std::str::eq_ignore_case("Content-Type", "content-type")); // true
+}
+```
+
+`cut` splits at the first separator and keeps the rest whole; `cut_last` splits at the last one. `trim_prefix` and `trim_suffix` remove the affix once if it is there and otherwise return the string unchanged, so they replace both the `starts_with` test and the magic offset (`g[7..len(g)]`). `std::str::last_index_of` is the offset `cut_last` splits at. Offsets and comparisons are bytes: a separator matches byte for byte, and `eq_ignore_case` folds only `A`–`Z`.
+
 ### Parsing Numbers and Binary `Bytes`
 
 Number parsers return `fallible(ParseError)` and must be addressed with `or` (covered in [When a Call Can Fail](./fallible.md)):
@@ -305,6 +335,7 @@ Number parsers return `fallible(ParseError)` and must be addressed with `or` (co
 ```hale,fragment
 let n = std::str::parse_int("42") or 0;
 let ok = std::str::can_parse_int("42");        // true (non-failing check)
+let on = std::str::parse_bool("true") or false; // only "true" and "false" parse
 ```
 
 Use `b"..."` literals and `std::bytes` when working with raw binary payloads:
