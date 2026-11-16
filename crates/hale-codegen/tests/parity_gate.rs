@@ -432,64 +432,11 @@ struct Report {
     stats: BTreeMap<&'static str, Stats>,
 }
 
-fn tmp_none(_: &Files, _: &mut Rng) -> Option<(Files, String)> { None }
-static TMP_DUMMY: mutators::Mutator = mutators::Mutator { name: "tmp_dummy", apply: tmp_none };
-
-fn tmp_old_candidates_of(index: usize, seed: &Seed, per_seed: usize, pool: &[&mutators::Mutator]) -> Vec<Candidate> {
-    let base = mutators::fnv(&seed.source) ^ salt().wrapping_mul(0x2545_F491_4F6C_DD1D);
-    let mut out = Vec::new();
-    let mut seen = BTreeSet::new();
-    for k in 0..per_seed {
-        let mut rng = Rng::new(base ^ (k as u64).wrapping_mul(0x9E37_79B9));
-        let depth = if k % 3 == 2 { 2 } else { 1 };
-        let start = (mutators::fnv(&seed.origin) as usize + k) % pool.len();
-        let mut files = seed_files(seed);
-        let mut chain = Vec::new();
-        let mut names = Vec::new();
-        for step in 0..depth {
-            let offset = if step == 0 { 0 } else { rng.below(pool.len()) };
-            for t in 0..pool.len() {
-                let m = pool[(start + offset + t) % pool.len()];
-                if let Some((next, desc)) = (m.apply)(&files, &mut rng) {
-                    files = next;
-                    chain.push(desc);
-                    names.push(m.name);
-                    break;
-                }
-            }
-        }
-        if chain.is_empty() || !seen.insert(files.clone()) {
-            continue;
-        }
-        out.push(Candidate { seed: index, chain, mutators: names, files });
-    }
-    out
-}
-
 fn run(seeds: &[Seed], draw: Draw) -> Report {
-    let mut pool = pool();
-    let candidates: Vec<Candidate> = if let Some(at) = env_usize("HALE_PARITY_OLD") {
-        pool.insert(at.min(pool.len()), &TMP_DUMMY);
-        seeds.iter().enumerate().flat_map(|(i, s)| tmp_old_candidates_of(i, s, 3, &pool)).collect()
-    } else {
-        seeds.iter().enumerate().flat_map(|(i, s)| candidates_of(i, s, &pool, draw)).collect()
-    };
-    let verdicts: Vec<Verdict> = pooled(&candidates, |i, c| {
-        let inflight = std::env::var("HALE_PARITY_INFLIGHT").ok().map(|d| Path::new(&d).join(format!("{i}.repro")));
-        if let Some(p) = &inflight {
-            let _ = std::fs::create_dir_all(p.parent().unwrap());
-            let _ = std::fs::write(p, format!("// seed: {}\n// mutations: {}\n{}", seeds[c.seed].origin, c.chain.join(" > "), render_repro(&c.files)));
-        }
-        let skip = std::env::var("HALE_PARITY_SKIP").unwrap_or_default();
-        if skip.split(',').any(|x| x == i.to_string()) {
-            return Verdict::CheckRejects;
-        }
-        let v = gate::verdict(&c.files, &format!("hale_parity_{i}"));
-        if let Some(p) = &inflight {
-            let _ = std::fs::remove_file(p);
-        }
-        v
-    });
+    let pool = pool();
+    let candidates: Vec<Candidate> =
+        seeds.iter().enumerate().flat_map(|(i, s)| candidates_of(i, s, &pool, draw)).collect();
+    let verdicts: Vec<Verdict> = pooled(&candidates, |i, c| gate::verdict(&c.files, &format!("hale_parity_{i}")));
     let mut report = Report {
         candidates: candidates.len(),
         clean: 0,
@@ -898,20 +845,4 @@ fn minimize_a_reproducer() {
     let sig = gate::signature(&msg);
     let small = minimized(&files, &sig, env_usize("HALE_PARITY_MIN_BUDGET").unwrap_or(400));
     eprintln!("refusal:   {}\nsignature: {sig}\n{}", msg.lines().next().unwrap_or(""), render_repro(&small));
-}
-
-#[test]
-#[ignore]
-fn tmp_count_draw() {
-    let seeds = all_seeds();
-    let pool = pool();
-    let draw = sweep_draw();
-    let cands: Vec<Candidate> = pooled(&seeds, |i, s| candidates_of(i, s, &pool, draw)).into_iter().flatten().collect();
-    let mut by: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
-    for c in &cands {
-        let e = by.entry(c.mutators[0]).or_default();
-        if c.mutators.len() == 1 { e.0 += 1 } else { e.1 += 1 }
-    }
-    eprintln!("seeds {} candidates {}", seeds.len(), cands.len());
-    for (n, (a, b)) in by { eprintln!("  {n:<22} {a:>6} {b:>6}"); }
 }

@@ -73,7 +73,10 @@ tail of another type, a member included, with no place). A
 fallible locus method's tail is its return as every other body's
 is.
 A body with *no* declared return type keeps statement-position
-semantics: the tail is evaluated for side effects.
+semantics: the tail is evaluated for side effects. So does a `()
+fallible(E)` body's, an `or` included (`fn fwd() -> () fallible(E) {
+touch() or fail err }` lowers as the statement `touch() or fail err;`;
+GH #PLISSUE).
 The same body's **last statement** is its value when it is a `match`,
 an `if` or a block: its arms and tails carry the value down, each leaf a
 return (§ "Definite return", below).

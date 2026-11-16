@@ -1073,9 +1073,23 @@ A field read (`sink.path`) or a method the interface does not declare
 methods; a local bound from the parameter (`let s = sink;`) is the
 interface too (friction sweep 2026-10-12; until then the parameter
 typed as unknown, the check passed such a read and the build refused
-it). A fn or locus-method parameter has this typing; an interface-
-typed slot (a field, an array element, a `let` annotation) still
-accepts any satisfying locus.
+it). A fn or locus-method parameter has this typing, and so does a
+`let` that declares an interface, an array, `bounded` or tuple element
+declared as one (`let gs: [Greeter; 2]`, `fn f(gs: [Greeter; 2])`), and
+a stdlib interface written as its path (`h: std::http::Handler`); each
+such slot still accepts any satisfying locus where it is declared (GH
+#PLISSUE: until then these read as unknown, and the check passed what
+the build refused).
+
+A value of an interface converts into no OTHER interface: passing one
+where another interface is expected (`via(gs[0])` with `fn via(x:
+Other)`) is a check-time error at the argument, even when the two
+declare the same methods; declare the parameter as the value's own
+interface, or pass the locus. Nor is a locus assigned to a place of an
+interface (`g = Hey { };` for `let mut g: Greeter`, an element of an
+interface array, an interface field): the conversion happens where the
+place is declared, and the assignment is refused at the value (GH
+#PLISSUE).
 
 **Fallible methods (GH #732).** An interface method may declare
 `fallible(E)` after its return type, as a fn does:
@@ -1851,15 +1865,19 @@ generic call whose parameter only such an argument could pin is a type
 error at the argument (GH #1963), naming what it is, or asking for the
 value bound to a `let` that writes its type. Inside a generic body a
 use of its own type parameter is unnamed until a call specializes it,
-so there the rule is held at each specialization: a value the body
+so there the rule is held at each specialization: a local the body
 still cannot name at the type arguments a call makes (a `match` arm's
-binding, `Link::Next(n) -> id(n)`) is refused at the argument (GH
+binding of a recursive record, `Link::Next(n) -> id(n)`, unnamed in a
+body over the concrete type as well) is refused at the argument (GH
 #PLISSUE).
 
 A call fills no default on a generic fn's parameter: a call that leaves
 a defaulted parameter out (`fn read<T>(n: T = 42) -> T` called as
-`read()`, in a body or in another fn's parameter default) is refused at
-the callee, naming the parameters to pass (GH #PLISSUE).
+`read()`) is refused at the callee, naming the parameters to pass. A
+call written in another fn's parameter default (`fn f(n: Int =
+read())`) is held to the same rule (GH #PLISSUE; the default's walk
+kept no findings, so the check passed it and the build refused it
+where the default is left out).
 
 **A generic body is checked at each specialization.** The template is
 checked once with its parameters unnamed, and again for each set of
@@ -1867,7 +1885,9 @@ type arguments its calls make; a `return` (or a body's value) that does
 not type at those is refused at the value, naming the specialization
 (`fn scale<T>(x: T) -> T { return x * 1.5; }` called with an `Int`:
 "return: expected \`Int\`, got \`Float\`, where a call makes \`T\` =
-\`Int\`"; GH #PLISSUE). Inside the specialization, `Time ± Duration`,
+\`Int\`"; GH #PLISSUE), and so is a value that is `()` only there (a
+generic locus's `id(self.child.go())` at a `T` whose `go` returns
+nothing). Inside the specialization, `Time ± Duration`,
 `Time - Time` and a Decimal literal beside a `Decimal<S>` operand lower
 as they do in a body written over the concrete types.
 
@@ -2208,8 +2228,9 @@ function literals can be assigned, passed, returned.
 A call's callee is any expression that evaluates to a fn value: a
 name, a record's fn field (`h.f(x)`), and, as of GH #1942, a call that
 returns one (`pick()(2)`, `a.get()(4)`), an array element (`fs[0](4)`),
-a tuple part (`t.0(4)`), or an `if` or `match` that picks one (`(if c {
-dbl } else { tri })(5)`). The callee is evaluated once, before the
+a tuple part (`t.0(4)`), an `if` or `match` that picks one (`(if c {
+dbl } else { tri })(5)`), or the success of an `or` (`(pick() or
+raise)(4)`, GH #PLISSUE). The callee is evaluated once, before the
 arguments, each passed as at a direct call (an array literal for a
 `bounded[T; N]` parameter is that bounded, GH #PLISSUE). A fn value
 returns any value type, a view's included: a

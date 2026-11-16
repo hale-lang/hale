@@ -3785,9 +3785,10 @@ fn the_generics_divergences_are_refused_by_the_check_not_the_build() {
 /// the half compiled: a specialization first reached inside a locus
 /// literal's field, an array literal for a `bounded` parameter through a
 /// fn value, `Time + Duration` and a Decimal literal in a generic body,
-/// a fn type returning `()` in a signature, and an anchor nested in
-/// another anchor's params reading a binding of `fn main`. Each checks,
-/// builds and runs.
+/// a fn type returning `()` in a signature, an anchor nested in another
+/// anchor's params reading a binding of `fn main`, the success of an `or`
+/// called as a fn value, and a `() fallible(E)` body whose tail is an
+/// `or`. Each checks, builds and runs.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
@@ -3847,6 +3848,24 @@ fn the_latent_parity_divergences_check_build_and_run() {
             "binding_read_in_an_init_of_an_init",
             "outer\ninner\n",
         ),
+        (
+            // the callee is the success of an `or`
+            "fn dbl(n: Int) -> Int { return n * 2; }\n\
+             const NEVER: Bool = false;\n\
+             fn pick(big: Bool) -> fn(Int) -> Int fallible(String) { if NEVER { fail \"never\"; } return dbl; }\n\
+             fn main() { println((pick(true) or raise)(4)); (pick(false) or raise)(1); }\n",
+            "or_success_called",
+            "8\n",
+        ),
+        (
+            // a `() fallible(E)` body ending in an `or` with no `;`
+            "const NEVER: Bool = false;\n\
+             fn touch() -> () fallible(String) { if NEVER { fail \"never\"; } println(\"touched\"); }\n\
+             fn fwd() -> () fallible(String) { touch() or fail err }\n\
+             fn main() { fwd() or raise; }\n",
+            "unit_or_as_the_tail",
+            "touched\n",
+        ),
     ];
     for (src, tag, want) in cases {
         let out = build_and_run_probe(src, &format!("latent_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
@@ -3858,9 +3877,14 @@ fn the_latent_parity_divergences_check_build_and_run() {
 /// the half refused: a call that leaves out a generic fn's defaulted
 /// parameter (in another fn's default too, whose walk drops what it
 /// finds), an argument a generic body's specialization still cannot type
-/// (a match arm's binding), a generic `type` at a perspective or at a
-/// generic locus, and a return a specialization does not type. Each is
-/// refused by the check at the construct; the build is never reached.
+/// (a match arm's binding), a method returning nothing handed to a
+/// generic fn in a specialization only, a generic `type` at a perspective or at a
+/// generic locus, a return a specialization does not type, a value of
+/// one interface passed where another is expected (read from an array
+/// element, a `let` or a stdlib interface's parameter, all of which the
+/// check typed as unknown), and a locus assigned to an interface place.
+/// Each is refused by the check at the construct; the build is never
+/// reached.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
@@ -3913,6 +3937,50 @@ fn the_latent_parity_divergences_are_refused_by_the_check_not_the_build() {
                 "x * 1.5",
                 "return: expected `Int`, got `Float`, where a call makes `T` = `Int`",
             ),
+            (
+                // only the specialization at `Beta` calls a method that
+                // returns nothing
+                "locus Beta { fn go() { println(\"go\"); } }\n\
+                 fn id<T>(x: T) -> T { return x; }\n\
+                 locus Supervisor<T> { params { child: T; } run() { id(self.child.go()); } }\n\
+                 fn main() { let b: Supervisor<Beta> = Supervisor { child: Beta { } }; }\n",
+                "self.child.go()",
+                "an argument to generic fn `id` needs a value, and this expression produces none (its type is `()`, where a call makes `T` = `Beta`)",
+            ),
+            (
+                "interface Greeter { fn greet() -> String; }\n\
+                 interface Other { fn greet() -> String; }\n\
+                 locus Hi { fn greet() -> String { return \"hi\"; } }\n\
+                 fn via(x: Other) -> String { return x.greet(); }\n\
+                 fn main() { let gs: [Greeter; 2] = [Hi { }, Hi { }]; println(via(gs[0])); }\n",
+                "gs[0]",
+                "a value of interface `Greeter` where interface `Other` is expected",
+            ),
+            (
+                "interface Greeter { fn greet() -> String; }\n\
+                 interface Other { fn greet() -> String; }\n\
+                 locus Hi { fn greet() -> String { return \"hi\"; } }\n\
+                 fn via(x: Other) -> String { return x.greet(); }\n\
+                 fn main() { let g: Greeter = Hi { }; println(via(g)); }\n",
+                "g",
+                "a value of interface `Greeter` where interface `Other` is expected",
+            ),
+            (
+                "interface Other { fn handle(req: std::http::Request) -> std::http::Response; }\n\
+                 fn via(x: Other, req: std::http::Request) -> Int { return x.handle(req).status; }\n\
+                 fn poke(h: std::http::Handler) -> Int { return via(h, std::http::Request { method: \"GET\", path: \"/\", version: \"\", headers: \"\", body: \"\" }); }\n\
+                 fn main() { }\n",
+                "h",
+                "a value of interface `std::http::Handler` where interface `Other` is expected",
+            ),
+            (
+                "interface Greeter { fn greet() -> String; }\n\
+                 locus Hi { fn greet() -> String { return \"hi\"; } }\n\
+                 locus Hey { fn greet() -> String { return \"hey\"; } }\n\
+                 fn main() { let mut g: Greeter = Hi { }; g = Hey { }; println(g.greet()); }\n",
+                "Hey { }",
+                "assignment: target type `Greeter` not assignable from `Hey`: hale can't assign a locus to a place of an interface yet",
+            ),
         ],
         "latent_gap",
     );
@@ -3939,6 +4007,23 @@ fn the_latent_parity_divergences_are_refused_by_the_check_not_the_build() {
          fn id<T>(x: T) -> T { return x; }\n\
          fn main() { let c: Cache<Int, String> = Cache { cap: 2 }; println(id(c).cap); }\n",
         "hale_cb_latent_generic_locus_through_a_generic_fn",
+    );
+    assert_built(
+        "interface Greeter { fn greet() -> String; }\n\
+         locus Hi { fn greet() -> String { return \"hi\"; } }\n\
+         locus Hey { fn greet() -> String { return \"hey\"; } }\n\
+         fn same(x: Greeter) -> String { return x.greet(); }\n\
+         fn pick(gs: [Greeter; 2]) -> String { return same(gs[1]); }\n\
+         fn id<T>(x: T) -> T { return x; }\n\
+         fn main() { let gs: [Greeter; 2] = [Hi { }, Hey { }]; let t: (Greeter, Int) = (Hey { }, 1); let g: Greeter = Hi { }; \
+         println(pick(gs), same(t.0), same(id(g))); for x in gs { println(x.greet()); } }\n",
+        "hale_cb_latent_interface_value_as_its_own_interface",
+    );
+    assert_built(
+        "fn poke(h: std::http::Handler) -> Int { return h.handle(std::http::Request { method: \"GET\", path: \"/\", version: \"\", headers: \"\", body: \"\" }).status; }\n\
+         locus C { fn handle(req: std::http::Request) -> std::http::Response { return std::http::Response { status: 201, body: \"\" }; } }\n\
+         fn main() { println(poke(C { })); }\n",
+        "hale_cb_latent_stdlib_interface_param",
     );
 }
 
