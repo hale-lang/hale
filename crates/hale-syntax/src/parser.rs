@@ -332,6 +332,23 @@ impl Parser {
         matches!(self.peek(), TokenKind::Ident(s) if s == w)
     }
 
+    /// F.52 (GH #1951 item 3): `name?` outside a `type`'s field list. Only
+    /// a record field is optional; `what` names the position refused.
+    fn refuse_optional_mark(&self, name: &Ident, what: &str) -> Result<(), Diag> {
+        if !self.at(&TokenKind::Question) {
+            return Ok(());
+        }
+        Err(Diag::parse(
+            self.peek_token().span,
+            format!(
+                "`{}?`: {what} is never optional. Only a field of a `type` takes `?` (`x?: T`, \
+                 with its presence flag `has_x`); absence in a computation is `fallible(E)` \
+                 (spec/decisions.md F.52)",
+                name.name
+            ),
+        ))
+    }
+
     /// Consume the contextual keyword `w` if it is next.
     fn eat_word(&mut self, w: &str) -> bool {
         if self.at_word(w) {
@@ -761,12 +778,56 @@ impl Parser {
         }
         self.bump();
         let alias = self.expect_ident("import alias")?.name;
+        // GH #1951 item 6: an optional import list, `{ Name, Other as
+        // Mine }` — each listed name bare in this seed, and re-exported
+        // through its alias (F.51). No globs: every name is spelled.
+        let mut items: Vec<ImportItem> = Vec::new();
+        if matches!(self.peek(), TokenKind::LBrace) {
+            self.bump();
+            loop {
+                if matches!(self.peek(), TokenKind::RBrace) {
+                    if items.is_empty() {
+                        return Err(Diag::parse(
+                            self.peek_token().span,
+                            format!(
+                                "the import list of \"{}\" names nothing: list the names to bring in bare \
+                                 (`{{ Name, Other as Mine }}`), or drop the braces",
+                                path,
+                            ),
+                        ));
+                    }
+                    break;
+                }
+                if matches!(self.peek(), TokenKind::Star) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "an import list names each name it brings in; there is no glob \
+                         (`import \"...\" as a { Name, Other };`)"
+                            .to_string(),
+                    ));
+                }
+                let name = self.expect_ident("a name in the import list")?;
+                let rename = if self.peek_is_kw_as() {
+                    self.bump();
+                    Some(self.expect_ident("the name after `as` in the import list")?)
+                } else {
+                    None
+                };
+                let end = rename.as_ref().map_or(name.span, |r| r.span);
+                items.push(ImportItem { span: name.span.merge(end), name, rename });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBrace, "}")?;
+        }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(Import {
             path,
             alias: Some(alias),
             span: kw.span.merge(semi.span),
             path_span,
+            items,
         })
     }
 
@@ -821,6 +882,21 @@ impl Parser {
                             td.name.name, td.name.name
                         ),
                     ));
+                }
+                // a positional row has no keys, so no key is optional: every
+                // declared field is an element (spec/api.md § Codecs)
+                if let TypeDeclBody::Struct(fields) = &td.body {
+                    if let Some(f) = fields.iter().find(|f| matches!(f.optional, FieldOptional::Declared { .. })) {
+                        return Err(Diag::parse(
+                            f.name.span,
+                            format!(
+                                "a positional record has no optional field: every field of it is an element \
+                                 of its row, so `{}` takes no `?` (an absent element is a left-out tail, its \
+                                 field's default)",
+                                f.name.name
+                            ),
+                        ));
+                    }
                 }
                 td.positional = true;
                 td.span = at.span.merge(td.span);
@@ -3409,6 +3485,7 @@ impl Parser {
             || name == "rpc"
             || name == "idempotent"
             || name == "not_idempotent"
+            || name == "raise"
             || Self::effect_assert_for(name).is_some()
             || Self::is_effects_form(name)
     }
@@ -3497,6 +3574,19 @@ impl Parser {
                 // GH #1530: the repo method's idempotency marker. Kept
                 // as the decorator's name; `repo_check` reads it.
                 "idempotent" | "not_idempotent" => {}
+                // GH #1951 (item 2): `@raise fn conv(e: P) -> E` declares
+                // the conversion an `or raise` applies from `P` to `E`.
+                // Kept as the decorator's name (the check reads it); what
+                // it implies of the fn's effects is an assertion like any
+                // other: a conversion runs on an error path, so it makes
+                // no syscall, publishes nothing, spawns nothing and never
+                // blocks (it may allocate the error it returns).
+                "raise" => out.effects.push(EffectAssert::Forbid(vec![
+                    EffectClass::Syscall,
+                    EffectClass::Publish,
+                    EffectClass::Spawn,
+                    EffectClass::Block,
+                ])),
                 _ => out.effects.push(
                     Self::effect_assert_for(&name)
                         .expect("is_fn_decorator admitted this name"),
@@ -5845,6 +5935,7 @@ impl Parser {
 
     fn parse_param_decl(&mut self) -> Result<ParamDecl, Diag> {
         let name = self.expect_decl_name("params field name")?;
+        self.refuse_optional_mark(&name, "a locus param")?;
         let ty = if self.eat(&TokenKind::Colon) {
             // Could be inferred or a type expression. Check next.
             if self.at_word("inferred") {
@@ -6262,6 +6353,7 @@ impl Parser {
             secret = true;
         }
         let name = self.expect_decl_name("parameter name")?;
+        self.refuse_optional_mark(&name, "a parameter")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let default = if self.eat(&TokenKind::Eq) {
@@ -6813,6 +6905,7 @@ impl Parser {
             while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
                 fields.push(self.parse_struct_field()?);
             }
+            let fields = synthesize_optional_flags(fields)?;
             let close = self.expect(TokenKind::RBrace, "}")?;
             Ok(TypeDecl {
                 display: None,
@@ -6932,8 +7025,24 @@ impl Parser {
         // unambiguous, so reserving these words at field-name
         // position would just block useful patterns.
         let name = self.expect_member_name("field name")?;
+        // GH #1951 item 3 (F.52): `x?: T` is an optional field, `x` beside
+        // a synthesized presence flag `has_x` (`synthesize_optional_flags`)
+        let question = self.at(&TokenKind::Question).then(|| self.bump().span);
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
+        // `x?: T clearable`: a PATCH field, `null` its clear flag `clear_x`
+        let clearable_span = self.at_word("clearable").then(|| self.bump().span);
+        let clearable = clearable_span.is_some();
+        if let (Some(at), None) = (clearable_span, question) {
+            return Err(Diag::parse(
+                at,
+                format!(
+                    "`clearable` marks an optional field: write `{}?: … clearable;` \
+                     (an optional field's `null` then clears it)",
+                    name.name
+                ),
+            ));
+        }
         // `indexed_by <field>`: the field is a wire map keyed by its
         // elements' `<field>` (the slot clause's spelling and rules)
         let indexed_by = if self.eat_word("indexed_by") {
@@ -6957,6 +7066,7 @@ impl Parser {
         // field. The backtick lexer is shared with time literals (which
         // only appear in expression position); in field-declaration
         // position it's a tag, and we keep its raw body verbatim.
+        let tag_span = self.peek_token().span;
         let tag = if matches!(self.peek(), TokenKind::TimeLit(_)) {
             match self.bump().kind {
                 TokenKind::TimeLit(body) => Some(body),
@@ -6965,6 +7075,26 @@ impl Parser {
         } else {
             None
         };
+        // GH #1948: a tag written before the default stopped at the `=`
+        // with "expected ;, got Eq".
+        if let (Some(body), None, true) = (&tag, &default, self.at(&TokenKind::Eq)) {
+            let eq = self.peek_token().span;
+            return Err(Diag::parse(
+                eq,
+                format!(
+                    "write the default before the tag: `{}: … = <default> `{}`;` \
+                     (a field's tag is the last thing before its `;`)",
+                    name.name, body
+                ),
+            )
+            .with_related(tag_span, "the tag, written before the default"));
+        }
+        if self.at_word("clearable") && question.is_some() {
+            return Err(Diag::parse(
+                self.peek_token().span,
+                format!("write `clearable` right after the type: `{}?: <type> clearable …;`", name.name),
+            ));
+        }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(StructField {
             span: name.span.merge(semi.span),
@@ -6974,6 +7104,10 @@ impl Parser {
             tag,
             indexed_by,
             map_value,
+            optional: match question {
+                Some(_) => FieldOptional::Declared { clearable },
+                None => FieldOptional::No,
+            },
         })
     }
 
@@ -7303,6 +7437,20 @@ impl Parser {
     // === type expressions ================================
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr, Diag> {
+        let ty = self.parse_type_expr_inner()?;
+        // F.52 (GH #1951 item 3): optionality is a record field's, never a
+        // type's. `T?` has no meaning anywhere a type is written.
+        if self.at(&TokenKind::Question) {
+            return Err(Diag::parse(
+                self.peek_token().span,
+                "Hale has no optional type `T?`: optionality belongs to a record field, `x?: T` in a \
+                 `type`, and absence in a computation is `fallible(E)` (spec/decisions.md F.52)",
+            ));
+        }
+        Ok(ty)
+    }
+
+    fn parse_type_expr_inner(&mut self) -> Result<TypeExpr, Diag> {
         let start = self.peek_token().span;
         match self.peek() {
             // Primitive type names are predefined identifiers; the
@@ -7848,6 +7996,7 @@ impl Parser {
             });
         }
         let name = self.expect_decl_name("variable name")?;
+        self.refuse_optional_mark(&name, "a local")?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type_expr()?)
         } else {
@@ -8646,6 +8795,21 @@ impl Parser {
                 TokenKind::LBracket => {
                     let lb = self.bump();
                     let index = self.parse_expr()?;
+                    // GH #1948: `bounded[String; 4] { }` in value position
+                    // reads as an index of a name `bounded` and stopped at
+                    // the `;` with "expected ]". Say what it is instead.
+                    if self.at(&TokenKind::Semi)
+                        && matches!(&expr, Expr::Ident(id) if id.name == "bounded")
+                    {
+                        return Err(Diag::parse(
+                            expr.span().merge(self.peek_token().span),
+                            "`bounded[T; N]` is a type, not a value: write the \
+                             list as an array literal where its type is declared, \
+                             `let mut xs: bounded[String; 4] = [];` (or `= [\"a\", \"b\"]`), \
+                             and add to it with `push(xs, x) or …` \
+                             (spec/types.md § bounded[T; N])",
+                        ));
+                    }
                     let rb = self.expect(TokenKind::RBracket, "]")?;
                     let span = expr.span().merge(rb.span);
                     expr = Expr::Index {
@@ -9553,6 +9717,66 @@ fn shift_span(s: Span, base: usize, limit: usize) -> Span {
     let lo = (base + s.start.as_usize()).min(limit);
     let hi = (base + s.end.as_usize()).clamp(lo, limit);
     Span::new(lo, hi)
+}
+
+
+/// GH #1951 item 3 (F.52): each declared optional field `x?: T` of a
+/// record gets its flags as real fields right after it, `has_x: Bool =
+/// false` and, for `x?: T clearable`, `clear_x: Bool = false`: the slots
+/// a hand-written presence pair or triple has (spec/api.md § Codecs), so
+/// the codecs, the description and the digest read one shape. A flag
+/// the record declares itself beside its optional field is refused: the
+/// name is one slot (GH #1141), and the mark already declares it.
+fn synthesize_optional_flags(fields: Vec<StructField>) -> Result<Vec<StructField>, Diag> {
+    if !fields.iter().any(|f| matches!(f.optional, FieldOptional::Declared { .. })) {
+        return Ok(fields);
+    }
+    for f in &fields {
+        let FieldOptional::Declared { clearable } = f.optional else { continue };
+        let x = &f.name.name;
+        let mut flags = vec![format!("has_{x}")];
+        if clearable {
+            flags.push(format!("clear_{x}"));
+        }
+        for flag in &flags {
+            if let Some(dup) = fields.iter().find(|g| g.name.name == *flag) {
+                let mark = if flag.starts_with("has_") { format!("`{x}?`") } else { format!("`{x}?: … clearable`") };
+                return Err(Diag::parse(
+                    dup.name.span,
+                    format!(
+                        "field `{flag}` is already declared by {mark}: an optional field's flag is \
+                         synthesized beside it, so drop this declaration (or write the pair by hand, \
+                         without the `?`)"
+                    ),
+                )
+                .with_related(f.name.span, "the optional field that declares it"));
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(fields.len() + 2);
+    for f in fields {
+        let declared = match f.optional {
+            FieldOptional::Declared { clearable } => Some((f.name.clone(), f.span, clearable)),
+            _ => None,
+        };
+        out.push(f);
+        let Some((x, span, clearable)) = declared else { continue };
+        let flag = |name: String, optional: FieldOptional| StructField {
+            name: Ident::new(name, x.span),
+            ty: TypeExpr::Primitive(PrimType::Bool, x.span),
+            default: Some(Expr::Literal(Literal::Bool(false), x.span)),
+            tag: None,
+            indexed_by: None,
+            map_value: None,
+            optional,
+            span,
+        };
+        out.push(flag(format!("has_{}", x.name), FieldOptional::Presence));
+        if clearable {
+            out.push(flag(format!("clear_{}", x.name), FieldOptional::Clear));
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -10665,6 +10889,34 @@ fn main() { }
         assert_eq!(prog.imports.len(), 1);
         assert_eq!(prog.imports[0].path, "lib/foo");
         assert_eq!(prog.imports[0].alias.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn parse_import_list_names_and_renames() {
+        let src = r#"
+import "../store" as st { ModelRow, Names as StoreNames, };
+
+fn main() { }
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let items = &prog.imports[0].items;
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].name.name, "ModelRow");
+        assert!(items[0].rename.is_none());
+        assert_eq!(items[0].local().name, "ModelRow");
+        assert_eq!(items[1].name.name, "Names");
+        assert_eq!(items[1].local().name, "StoreNames");
+        assert!(prog.imports[0].span.end.as_usize() > items[1].span.end.as_usize());
+    }
+
+    #[test]
+    fn parse_import_list_refuses_a_glob_and_an_empty_list() {
+        let glob = parse_str("import \"../store\" as st { * };\nfn main() { }\n")
+            .expect_err("a glob is refused");
+        assert!(glob.iter().any(|d| d.message.contains("there is no glob")), "{glob:?}");
+        let empty = parse_str("import \"../store\" as st { };\nfn main() { }\n")
+            .expect_err("an empty list is refused");
+        assert!(empty.iter().any(|d| d.message.contains("names nothing")), "{empty:?}");
     }
 
     #[test]

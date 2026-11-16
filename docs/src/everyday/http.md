@@ -80,7 +80,7 @@ locus Rows {
 }
 ```
 
-Passing `body` to a function inside the loop, or appending to a field of a record (`resp.body = resp.body + row`), copies the whole body on every iteration; `hale check` warns on both. For a JSON body of records, `T::api_encode` writes it in one pass.
+Passing `body` to a function inside the loop, or appending to a field of a record (`resp.body = resp.body + row`), copies the whole body on every iteration; `hale verify` reports both. For a JSON body of records, `T::api_encode` writes it in one pass.
 
 ---
 

@@ -997,7 +997,13 @@ fn nonalloc_free_fns(
     // keyed by the bare name the call site spells.
     let fns: Vec<&FnDecl> = hale_syntax::ast::flat_decls(items)
         .filter_map(|it| match it {
-            TopDecl::Fn(f) if f.fallible.is_none() && f.ffi.is_none() => Some(f),
+            // GH #1951: a fn returning a `bounded` list copies it into its
+            // caller's arena, an allocation whatever its body does.
+            TopDecl::Fn(f)
+                if f.fallible.is_none() && f.ffi.is_none() && !matches!(f.ret, Some(TypeExpr::Bounded { .. })) =>
+            {
+                Some(f)
+            }
             _ => None,
         })
         .collect();

@@ -158,6 +158,7 @@ alias.
 
 ```
 import "<path>" as <alias>;
+import "<path>" as <alias> { <Name>, <Name> as <Local>, ... };
 ```
 
 - **`<path>`** is a string literal naming the library to import.
@@ -166,6 +167,10 @@ import "<path>" as <alias>;
   import site. It is **required** — bare `import "<path>";` is
   a parse error. Cross-seed references in the importing seed
   read as `<alias>::Name`.
+- **`{ ... }`**, the optional **import list**, names top-level
+  declarations of the imported seed that the importing seed spells
+  bare, and re-exports them through its alias. See "Import lists"
+  below.
 
 The alias-required rule is the same forcing-function discipline
 v1.x-3 enforces for `: projection recognition` (no default
@@ -192,6 +197,52 @@ fn main() {
     let h = helpers::Formatter { };
 }
 ```
+
+### Import lists
+
+An import list brings named declarations of the imported seed in
+by their bare names (GH #1951 item 6, F.51):
+
+```hale
+import "../store" as st { ModelRow, Names as StoreNames };
+
+fn first(rows: [ModelRow; 2]) -> ModelRow { return rows[0]; }
+fn tally(n: StoreNames) -> Int { return st::count(n); }
+```
+
+- **An item names a top-level declaration of the imported seed**: a
+  `type` (records, enums and aliases), `locus`, `fn`, `const`,
+  `topic`, `interface` or `perspective`, declared at the top level
+  or in a `module { }` — or a name the imported seed's own import
+  lists bring in (below). Any other name is refused, located at the
+  item, with what the library provides. There are no globs: every
+  name is spelled.
+- **A listed name is bare in the whole importing seed**, every file
+  of it, as the import itself is: `ModelRow { ... }`, `ModelRow` in
+  a signature, `Side::Buy`, `subscribe Ticks` and `Box<Int>` all
+  name the imported declaration. `<alias>::<Name>` keeps working
+  beside it. `as` renames: `Names as StoreNames` binds `StoreNames`
+  and leaves `Names` unbound.
+- **Locals shadow a listed name** as they shadow any top-level name.
+- **A bare name names one declaration.** A listed name that is also
+  a declaration of the importing seed, or that another import's list
+  binds to a different declaration, is refused at the item, naming
+  both and suggesting a rename. The same declaration listed twice
+  (two files of a seed importing one library) is one name.
+- **A list re-exports.** A listed name is reachable through the
+  importing seed's alias by the seed's own importers: when `api`
+  imports `"../store" as st { ModelRow }`, an importer of `api` may
+  write `api::ModelRow`, or list it (`import "../api" as api {
+  ModelRow };`). It is the **same declaration** — one mangled symbol
+  — as `st::ModelRow`, so a value made under one spelling is passed,
+  returned, compared and published under the other with no
+  conversion. Only listed names re-export; `api`'s alias `st` stays
+  `api`'s alone ("Scoped imports (A4)" below). The alias form `type
+  ModelRow = st::ModelRow;` keeps working, as a type alias does.
+
+An import list is the one way a name crosses into a seed bare; the
+seed's own files share their names without one, and importing a file
+of the seed itself is refused (below).
 
 ### Resolution order
 
@@ -559,8 +610,11 @@ expression position`, `unknown qualified name b::Nope`,
 `qualified type zz::T not in stdlib path-renames table` — late,
 from another layer, and with no source location.)
 
-**No re-exports.** B's decls are not visible to A's importers
-unless they declare their own dependency on B. The `<lib_id>`
+**No re-exports but listed names.** B's decls are not visible to
+A's importers unless they declare their own dependency on B, or A
+lists them on its import of B ("Import lists" above: a listed name
+is reachable through A's alias, as the declaration B's alias names).
+The `<lib_id>`
 in B's mangled prefix is derived from B's canonical path, NOT
 from any importer's alias — so a util library reached through
 two different importers gets ONE shared identity in the merged
@@ -630,7 +684,9 @@ it always has; the compiler does not (yet) reject that shape.
 
 Every top-level decl in an imported seed is exported. There is
 no visibility modifier in v1. The whole imported seed becomes
-available under the alias.
+available under the alias. An import list is not a visibility
+modifier either: it chooses what the importing seed spells bare
+(and so re-exports), not what the imported seed hides.
 
 Adding `pub` doubles the design surface (every decl picks a
 visibility; users author the modifier; the typechecker enforces
@@ -779,7 +835,7 @@ demonstrates the need.
   reached through two different importers gets ONE shared identity
   — its `<lib_id>` is derived from its canonical path and
   deduplicated in the resolver's visited set (the 2026-05-22
-  change; see § "No re-exports" above), so the same source yields
+  change; see § "No re-exports but listed names" above), so the same source yields
   the same symbols across consumers. What's *not* done is
   content-level unification: two libraries vendored at different
   paths are distinct symbols even if byte-identical.
@@ -866,6 +922,7 @@ its source-map path, the same whichever target loaded it.
 | `hale lsp` | Publishes `hale check <dir>`'s diagnostics for the open file's seed, read through the editor's buffers, in two stages: first every file of the seed with what needs no model (the scope's and the type check's findings, the build rules, the allocation survey), then, when the laws' verdicts add a finding, each file they add to again with its whole list, which the first publication prefixes. A file's last publication is what `hale check` reports for it. A publication for a document the editor has changed again since is not sent; the next check replaces it. The first stage is incremental by declaration: after an edit that changes only what fn, method and hook bodies do, the type check and the secret-reveal rule run again for the changed declarations and the declarations the call graph (over every body the check reads, an `on_failure` handler and a params initializer among them), the ownership and bus graphs, the placement table and the flow rows say read them, and keep the previous findings for the rest; every other part of the stage runs whole, an edit to what a declaration declares (a signature, a field, a member, a declaration added or removed) checks the whole seed, and the result is the full check's either way. The laws stage always runs whole. |
 | `HALE_TIME=1` | Per-phase build wall times on stderr (resolve, front-end+codegen, llvm-passes, obj-emit, emit+link). |
 | `--no-warn-unbounded-alloc` | Opts a run out of the default-on memory-bound survey (see verification.md). |
+| `--warn-hot-path` | Turns on the hot-path allocation lint's warnings (an allocation per loop iteration or bus message; verification.md § Structural & design rules). Off by default since GH #1948; `hale verify` always reports them, and a `@hot` fn's findings are errors either way. |
 | `hale check --report-unbounded-use` | One stdout line per `@unbounded` or `@bounded_by` fn or hook of the program, imported seeds' included, and of the stdlib source it reaches: `unbounded-use<TAB><path>:<line><TAB><fn><TAB><survey sites silenced><TAB><hot-path warnings silenced><TAB><decorator>`, the path relative to the working directory (a stdlib decorator's `crates/hale-stdlib/hl/<file>`), the line the decorator's, sorted by path and line. Each count is what removing that decorator would add (see verification.md § the memory-bound survey). The diagnostics and the exit code are the check's (GH #1490). |
 | `hale check --adopt <constitution>` / `hale build --adopt` / `hale run --adopt` | Adopts a constitution into the entry's `main locus` for this command only, as an environment's `constitution = …` is and as if the source wrote `adopt`; repeatable. A stdlib constitution (`std::law::Standard`) needs no import and is loaded only when adopted; an unknown one is refused by name, a seed with no `main locus` of its own is refused (`--adopt` needs a main locus), and one adopted by the flag and by `hale.toml` or the source is one adoption. `BuildOptions::adopt` is the same field for a library caller (see verification.md § Adopting from outside the source). |
 | `hale check --sealable` | Reports which loci could take `@sealed` and what it would cost: per locus, the sites outside it that read or write its `params`. Empty means sealing is a no-op. The survey reads the param-access rows the check recorded (every access through a locus-typed receiver, imports resolved), the rows the sealed rule judges, so it cannot disagree with the checker; an imported seed's locus reached through its qualified name counts. |

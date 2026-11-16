@@ -2581,12 +2581,6 @@ fn a_value_where_its_place_cannot_hold_it_is_refused_by_the_check_not_the_build(
                 "`bounded[(Int, Int); N]`: a tuple",
             ),
             (
-                "type Shape = enum { Dot, Circle(Int) };\ntype W { xs: bounded[Shape; 2]; }\n\
-                 fn main() { let w = W { }; println(count(w.xs)); }\n",
-                "bounded[Shape; 2]",
-                "`bounded[Shape; N]`: `Shape` is an enum with payloads",
-            ),
-            (
                 "unit cent;\ntype Money = quantity Int in cent;\nfn id<G>(x: G) -> G { return x; }\n\
                  fn main() { let m: Money = 3cent; let y = id(m); println(\"ok\"); }\n",
                 "id",
@@ -3352,4 +3346,533 @@ fn a_valueless_field_default_is_refused_by_the_check_not_the_build() {
          fn main() { let p = Page { }; println(to_string(p.meta.count)); }\n",
         "hale_cb_record_literal_field_default",
     );
+}
+
+/// GH #1942, the half compiled: shapes the check accepted and lowering
+/// refused as a feature it had not learned. Each now checks, builds and
+/// runs, printing what it computed: a call through the fn value any
+/// callee expression evaluates to (a call's result, an array element, a
+/// tuple part, an `if`), zero-length arrays (`[x; 0]`, `[T; 0]`, `[]`
+/// under a declared type), a view returned through an interface or a fn
+/// value, a generic fn at a locus or an interface, and a compound
+/// assignment to an element of a locus's array field.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_codegen_feature_gaps_check_build_and_run() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "fn dbl(n: Int) -> Int { return n * 2; }\n\
+             fn pick() -> fn(Int) -> Int { return dbl; }\n\
+             fn main() { println(pick()(21)); }\n",
+            "call_of_call",
+            "42\n",
+        ),
+        (
+            "fn dbl(n: Int) -> Int { return n * 2; }\n\
+             fn tri(n: Int) -> Int { return n * 3; }\n\
+             fn main() { let fs = [dbl, tri]; let t = (dbl, 1); let c = false; println(fs[1](2), t.0(3), (if c { dbl } else { tri })(4)); }\n",
+            "computed_callees",
+            "6612\n",
+        ),
+        (
+            "fn dbl(n: Int) -> Int { return n * 2; }\n\
+             locus A { fn get() -> fn(Int) -> Int { return dbl; } }\n\
+             fn main() { let a = A { }; println(a.get()(4)); }\n",
+            "method_call_of_call",
+            "8\n",
+        ),
+        (
+            "fn size(xs: [Int; 0]) -> Int { return len(xs); }\n\
+             fn main() { let a = [7; 0]; let b: [String; 0] = []; println(len(a), size([1; 0]), len(b), a); }\n",
+            "zero_length_arrays",
+            "000[]\n",
+        ),
+        (
+            "interface Source { fn text() -> StringView; }\n\
+             locus Holder { params { b: std::bytes::BytesBuilder = std::bytes::BytesBuilder { }; } fn put(s: String) { self.b.append_str(s); } fn text() -> StringView { return self.b.text_view(); } }\n\
+             fn show(s: Source) { println(s.text()); }\n\
+             fn view_of(b: std::bytes::BytesBuilder) -> StringView { return b.text_view(); }\n\
+             fn main() { let h = Holder { }; h.put(\"abc\"); show(h); let b = std::bytes::BytesBuilder { }; b.append_str(\"xyz\"); let f: fn(std::bytes::BytesBuilder) -> StringView = view_of; println(f(b)); }\n",
+            "view_through_dispatch",
+            "abc\nxyz\n",
+        ),
+        (
+            "interface Named { fn name() -> String; }\n\
+             locus Dog { fn name() -> String { return \"rex\"; } }\n\
+             locus Counter { params { n: Int = 7; } }\n\
+             fn id<T>(x: T) -> T { return x; }\n\
+             fn show(n: Named) { let m = id(n); println(m.name()); }\n\
+             fn main() { let c = id(Counter { n: 3 }); println(c.n); show(Dog { }); }\n",
+            "generic_at_a_locus_and_an_interface",
+            "3\nrex\n",
+        ),
+        (
+            "locus L { params { xs: [Int; 3] = [1, 2, 3]; } fn bump() { self.xs[1] += 5; self.xs[2] *= 3; } }\n\
+             fn main() { let l = L { }; l.bump(); println(l.xs[0], l.xs[1], l.xs[2]); }\n",
+            "self_element_compound_assign",
+            "179\n",
+        ),
+    ];
+    for (src, tag, want) in cases {
+        let out = build_and_run_probe(src, &format!("gap_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
+        assert_eq!(out, *want, "{tag}: what it computed\n{src}");
+    }
+}
+
+/// GH #1942, the half refused: a construct lowering cannot compile yet,
+/// which the check accepted, is refused by the check, at the construct,
+/// in the program's terms and with a way forward; the build is never
+/// reached. One program per refusal site.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "fn id<T>(x: T) -> T { return x; }\n\
+                 fn main() { let a = id([1, 2]); println(a[1]); }\n",
+                "id",
+                "generic fn `id`: this call makes `T` `[Int; 2]`, an array, and hale can't compile a generic fn specialized at one yet",
+            ),
+            (
+                "fn id<T>(x: T) -> T { return x; }\n\
+                 fn main() { let t = id((1, \"a\")); println(t.0); }\n",
+                "id",
+                "generic fn `id`: this call makes `T` `(Int, String)`, a tuple",
+            ),
+            (
+                "fn id<T>(x: T) -> T { return x; }\n\
+                 fn dbl(n: Int) -> Int { return n * 2; }\n\
+                 fn main() { let f = id(dbl); println(f(3)); }\n",
+                "id",
+                "generic fn `id`: this call makes `T` `fn(Int) -> Int`, a fn type",
+            ),
+            (
+                "locus Util { params { n: Int = 0; } fn twice<T>(x: T) -> T { return x; } }\n\
+                 fn main() { let u = Util { }; println(u.n); }\n",
+                "twice",
+                "locus `Util` method `twice` is generic (`<T>`), and hale can't compile a generic locus method yet",
+            ),
+            (
+                "type W { xs: [Int]; }\n\
+                 fn main() { println(\"x\"); }\n",
+                "[Int]",
+                "`[Int]` has no length, and hale can't compile an unsized array yet",
+            ),
+            (
+                "fn total(xs: [Int]) -> Int { return 0; }\n\
+                 fn main() { println(\"x\"); }\n",
+                "[Int]",
+                "`[Int]` has no length",
+            ),
+            (
+                "const N: Int = 3;\n\
+                 type W { xs: [Int; N]; }\n\
+                 fn main() { println(\"x\"); }\n",
+                "N",
+                "`[Int; …]`: an array's length is an integer literal",
+            ),
+            (
+                "fn main() { let t = ((1, 2), 3); match t { ((1, 2), 3) -> { println(\"a\"); }, _ -> { println(\"b\"); } } }\n",
+                "(1, 2)",
+                "a tuple pattern takes a binding, `_` or a literal for each of its parts",
+            ),
+            (
+                "type Light = enum { Red, Green };\n\
+                 fn main() { let t = (Light::Red, 3); match t { (Light::Red, 3) -> { println(\"a\"); }, _ -> { println(\"b\"); } } }\n",
+                "Light::Red",
+                "a tuple pattern takes a binding, `_` or a literal for each of its parts",
+            ),
+            (
+                "fn main() { let a = [1, 2, 3, 4]; let b = a[1..3]; println(b); }\n",
+                "a[1..3]",
+                "`a[lo..hi]`: a range index slices a `String`, and hale can't compile a slice of a `[Int; 4]` yet",
+            ),
+            (
+                "fn main() { let t = (1, 2); println(len(t)); }\n",
+                "len(t)",
+                "`len` does not apply to a value of type `(Int, Int)`",
+            ),
+            (
+                "fn main() { println(Int(true)); }\n",
+                "true",
+                "`Int(…)` takes an `Int` or a `Float`, and `Bool` is neither",
+            ),
+            (
+                "fn main() { println(Int(\"3\")); }\n",
+                "\"3\"",
+                "`Int(…)` takes an `Int` or a `Float`, and `String` is neither: a `String` is parsed, not cast",
+            ),
+            (
+                "fn main() { println(Float(3s)); }\n",
+                "3s",
+                "`Float(…)` takes an `Int` or a `Float`, and `Duration` is neither",
+            ),
+            (
+                "fn main() { let a = [1, 2, 3]; println(sum(a)); }\n",
+                "sum(a)",
+                "`sum(…)` is a closure assertion's accumulator",
+            ),
+            (
+                "fn main() { println(count()); }\n",
+                "count()",
+                "`count(…)` is a closure assertion's accumulator",
+            ),
+            (
+                "locus T {\n\
+                 params { a: Int = 0; b: Int = 0; }\n\
+                 closure band { sum(self.a + self.b) ~~ 0 within 100; epoch birth; }\n\
+                 }\n\
+                 fn main() { T { }; }\n",
+                "self.a + self.b",
+                "`sum(…)` accumulates one field of the locus",
+            ),
+            (
+                "locus T {\n\
+                 params { a: Int = 1; }\n\
+                 closure band { prod(self.a) ~~ 1 within 100; epoch birth; }\n\
+                 }\n\
+                 fn main() { T { }; }\n",
+                "prod(self.a)",
+                "hale can't compile the `prod(…)` accumulator yet",
+            ),
+            (
+                "locus T {\n\
+                 params { a: Int = 1; }\n\
+                 closure band { mean(self.a) ~~ 1.0 within 100; epoch birth; }\n\
+                 }\n\
+                 fn main() { T { }; }\n",
+                "100",
+                "closure `band`: the band is a `Float` (the other side is one), and its tolerance is an `Int`",
+            ),
+            (
+                "@form(vec)\n\
+                 locus Flags { capacity { heap xs of Bool; } }\n\
+                 fn main() { let f = Flags { }; f.push(true); f.sort(); }\n",
+                "f.sort",
+                "`f.sort()`: `Flags` holds `Bool` cells, which have no default ordering",
+            ),
+            (
+                "type R { k: Float; v: Int; }\n\
+                 @form(lru_cache, cap = 3)\n\
+                 locus M { capacity { pool rows of R indexed_by k; } }\n\
+                 fn main() { let m = M { }; m.put(R { k: 1.5, v: 2 }); }\n",
+                "k",
+                "@form(lru_cache) key `R.k` is a `Float`",
+            ),
+            (
+                "fn main() { println(\"x\"); }\n\
+                 fn take(xs: [Int; 0]) -> Int { return len(xs); }\n\
+                 fn go() -> Int { return take([]); }\n",
+                "[]",
+                "an empty array literal `[]` names no element type",
+            ),
+        ],
+        "codegen_gap",
+    );
+    // the neighbours that lower, so each rule is as wide as the refusal
+    assert_built("fn main() { let s = \"abcd\"; println(s[1..3]); }\n", "hale_cb_gap_string_slice");
+    assert_built("fn main() { let a = [1, 2]; println(len(a), Int(2.5), Float(2)); }\n", "hale_cb_gap_casts");
+    assert_built(
+        "@form(vec)\n\
+         locus Nums { capacity { heap xs of Int; } }\n\
+         fn main() { let n = Nums { }; n.push(2); n.push(1); n.sort(); println(n.len()); }\n",
+        "hale_cb_gap_vec_sort_int",
+    );
+    assert_built(
+        "locus T {\n\
+         params { a: Int = 1; }\n\
+         closure band { sum(self.a) ~~ 1 within 100; epoch birth; }\n\
+         }\n\
+         fn main() { T { }; }\n",
+        "hale_cb_gap_sum_of_a_field",
+    );
+}
+
+/// The parity gate's generics family (GH #1963, #1965, #1966, #1974,
+/// #1975, #1976), the half compiled: `or` over a generic fallible fn, a
+/// generic fn at a stdlib record's field, at a perspective, and at an
+/// interface whose value is the locus behind it (a `release`), a
+/// bounded intrinsic over a generic fn's result, a specialization first
+/// reached inside a method's `return` of a record, and a bare `0`
+/// substituted for a Duration. Each checks, builds and runs. (The seed-boundary half, GH #1964, is
+/// `tests/hale/generics_parity_test.hl`, a two-seed program.)
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_generics_divergences_check_build_and_run() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "fn parse<T>(s: T, ok: Bool) -> Int fallible(String) { if !ok { fail \"no\"; } return 42; }\n\
+             fn main() { let a = parse(\"42\", true) or 0; let b = parse(1.5, false) or 9; println(a, b); }\n",
+            "or_generic_fallible",
+            "429\n",
+        ),
+        (
+            "fn id<T>(x: T) -> T { return x; }\n\
+             fn main() { let out = std::process::run(\"true\") or raise; println(len(id(out.stderr))); }\n",
+            "generic_at_a_stdlib_field",
+            "0\n",
+        ),
+        (
+            "perspective Router { fn health() -> Int; }\n\
+             locus V1 : serves Router { fn health() -> Int { return 7; } }\n\
+             locus App { params { r: perspective(Router) = V1 { }; } fn probe() -> Int { return id(self.r).health(); } }\n\
+             fn id<T>(x: T) -> T { return x; }\n\
+             fn main() { let a = App { }; println(a.probe()); }\n",
+            "generic_at_a_perspective",
+            "7\n",
+        ),
+        (
+            "interface Job { fn w() -> Int; }\n\
+             locus Big { params { v: Int = 2; ran: Int = 0; } fn w() -> Int { return self.v * self.ran; } run() { self.ran = 1; } }\n\
+             locus Pool { params { n: Int = 0; } accept(c: Job) { } release(c: Job) { self.n = self.n + id(c).w(); } run() { Big { v: 3 }; Big { v: 4 }; } }\n\
+             fn id<T>(x: T) -> T { return x; }\n\
+             fn main() { let p = Pool { }; println(p.n); }\n",
+            "generic_at_an_interface_in_a_release",
+            "7\n",
+        ),
+        (
+            "type R { xs: bounded[Int; 4]; }\n\
+             fn id<T>(x: T) -> T { return x; }\n\
+             fn main() { let r = R { }; push(r.xs, 5) or discard; println(count(id(r).xs), at(id(r).xs, 0) or 0); }\n",
+            "bounded_over_a_generic_result",
+            "15\n",
+        ),
+        (
+            // a specialization first reached inside a method's `return`
+            // of a record allocates through its own caller arena, not
+            // the method's return redirection (the parity sweep's crash)
+            "type Box<T> { v: T; }\n\
+             type Out { n: Int; }\n\
+             fn mk<T>(x: T) -> Box<T> { return Box { v: x }; }\n\
+             locus C { params { hits: Int = 4; } fn get() -> Out { return Out { n: mk(self.hits).v }; } }\n\
+             fn main() { let c = C { }; println(c.get().n); }\n",
+            "specialized_inside_a_methods_return",
+            "4\n",
+        ),
+        (
+            // a bare `0` is a quantity's zero, as the check admits it
+            "fn main() { let d = 1day / 4 or 0; println(d == 6h); }\n",
+            "zero_substitute_for_a_duration",
+            "true\n",
+        ),
+    ];
+    for (src, tag, want) in cases {
+        let out = build_and_run_probe(src, &format!("generics_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
+        assert_eq!(out, *want, "{tag}: what it computed\n{src}");
+    }
+}
+
+/// The parity gate's generics family, the half refused: a generic call's
+/// argument the check gives no type (GH #1963), a template literal no
+/// declared type supplies arguments to (GH #1965), an `or` on no call and
+/// a substitute of another type (GH #1966), a generic fn named as a
+/// value (GH #1976), and a generic `type` at a locus (the parity sweep).
+/// Each is refused by the check at the construct; the build is never
+/// reached.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_generics_divergences_are_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus Host { capacity { heap registry of Int; } birth { let c = id(self.registry).acquire(); } }\n\
+                 fn id<T>(x: T) -> T { return x; }\n\
+                 fn main() { }\n",
+                "self.registry",
+                "`self.registry` is a capacity slot, not a value",
+            ),
+            (
+                "fn id<T>(x: T) -> T { return x; }\n\
+                 fn main() { id(println(\"x\")); }\n",
+                "println(\"x\")",
+                "generic fn `id` takes `T` from this argument, and hale can't name the type of this call's result",
+            ),
+            (
+                "fn id<T>(x: T) -> T { return x; }\n\
+                 fn main() { id(time::sleep(5ms)); }\n",
+                "time::sleep(5ms)",
+                "path call `time::sleep` is unresolved: the stdlib lives under the `std::` prefix",
+            ),
+            (
+                "type Box<T> { v: T; }\n\
+                 fn main() { let x = Box { v: 3 }.v; println(x); }\n",
+                "Box { v: 3 }",
+                "`Box` is a generic type: a literal spelled with the template name takes its type arguments",
+            ),
+            (
+                "type Box<T> { v: T; }\n\
+                 fn id<T>(x: T) -> T { return x; }\n\
+                 fn main() { let b = id(Box { v: 3 }); }\n",
+                "Box { v: 3 }",
+                "`Box` is a generic type",
+            ),
+            (
+                "type Box<T> { v: Bool; }\n\
+                 fn main() { while Box { v: false }.v { } }\n",
+                "Box { v: false }",
+                "`Box` is a generic type",
+            ),
+            (
+                "locus H { capacity { heap r of Int; } birth { let x = self.r or 0; } }\n\
+                 fn main() { H { }; }\n",
+                "self.r",
+                "`or` handles the failure of the call it follows, and this is a field read",
+            ),
+            (
+                "fn main() { let out = std::process::run(\"true\") or false; }\n",
+                "std::process::run(\"true\") or false",
+                "`or <substitute>`: fallback type `Bool` does not match success type",
+            ),
+            (
+                "fn get<T>(x: T) -> T { return x; }\n\
+                 fn main() { let g = get; println(g(1)); }\n",
+                "get",
+                "`get` is a generic fn, and a generic fn has no single type to be a value",
+            ),
+            (
+                "locus L { params { n: Int = 1; } }\n\
+                 type Box<T> { v: T; }\n\
+                 fn main() { let b: Box<L> = Box { v: L { } }; }\n",
+                "L",
+                "`Box<L>` would make `type Box` hold the locus `L`",
+            ),
+            (
+                "locus L { params { n: Int = 1; } }\n\
+                 type Box<T> { v: T; }\n\
+                 fn bx<T>(x: T) -> Box<T> { return Box { v: x }; }\n\
+                 fn main() { let a = bx(L { }).v; }\n",
+                "bx",
+                "generic fn `bx`: this call makes `T` the locus `L`, and its signature's `Box<T>` would be a `type` holding it",
+            ),
+        ],
+        "generics_gap",
+    );
+    // the neighbours that lower, so each rule is as wide as the refusal
+    assert_built(
+        "type Box<T> { v: T; }\n\
+         fn tail() -> Box<Int> { Box { v: 4 } }\n\
+         fn main() { let b: Box<Int> = Box { v: 3 }; println(b.v + tail().v); }\n",
+        "hale_cb_generics_declared_literal",
+    );
+    assert_built(
+        "fn id<T>(x: T) -> T { return x; }\n\
+         fn main() { std::time::sleep(1ms); let n = id(3); println(n); }\n",
+        "hale_cb_generics_typed_argument",
+    );
+}
+
+/// GH #1942: the codegen feature gaps a declaration's foreign or bus
+/// boundary reaches. An `@ffi` parameter with a default or of an enum
+/// type, a bus payload with a field the wire format has no form for, a
+/// cross-pool child whose params the spawn cannot marshal or which keeps
+/// work the far side would schedule, an enum in a native `shm_ring`, and
+/// a `Drain<T>` handler on a `layout:` ring: each checked clean and the
+/// build refused it (some with no place at all).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_codegen_feature_gaps_at_a_boundary_are_refused_by_the_check() {
+    let xpool = |ship: &str| {
+        format!(
+            "{ship}\n\
+             locus Driver {{ run() {{ Ship {{ }}; }} }}\n\
+             main locus World {{\n\
+             params {{ driver: Driver = Driver {{ }}; }}\n\
+             placement {{ driver: cooperative(pool = workers); }}\n\
+             accept(s: Ship) {{ }}\n\
+             run() {{ }}\n\
+             }}\n\
+             fn main() {{ World {{ }}; }}\n"
+        )
+    };
+    let xpool_tuple = xpool("locus Ship { params { t: (Int, Int) = (1, 2); } }");
+    let xpool_run = xpool("locus Ship { params { n: Int = 0; } run() { println(self.n); } }");
+    let layout_drain = "topic Recs { payload: BytesView; }\n\
+         ring_layout ForeignRing {\n\
+         magic 0x52494E47464D5431;\n\
+         version 1 at 8 : u32;\n\
+         buffer_size at 12 : u32;\n\
+         data_at 128;\n\
+         cursor published { at 64; repr atomic_u64; load acquire; unit bytes; }\n\
+         framing byte_records { len_prefix u32; align 8; pad_sentinel 0xFFFFFFFF; }\n\
+         overflow lap_detect;\n\
+         }\n\
+         locus Reader { params { n: Int = 0; } bus { subscribe Recs as on_rec; } fn on_rec(v: Drain<BytesView>) { self.n = self.n + 1; } }\n\
+         main locus App { params { r: Reader = Reader { }; } bindings { Recs: shm_ring(\"/hale.cb.gap.recs\", on_overflow: drop, layout: ForeignRing); } }\n\
+         fn main() { App { }; }\n";
+    assert_refused_by_the_check(
+        &[
+            (
+                "@ffi(\"c\") fn ext_add(a: Int, b: Int = 1) -> Int;\n\
+                 fn main() { println(ext_add(1, 2)); }\n",
+                "1",
+                "`@ffi` fn `ext_add`: parameter `b` has a default, and a C function has a fixed arity",
+            ),
+            (
+                "type Color = enum { Red, Green };\n\
+                 @ffi(\"c\") fn ext_c(c: Color) -> Int;\n\
+                 fn main() { println(ext_c(Color::Red)); }\n",
+                "Color",
+                "`@ffi` fn `ext_c` parameter `c` has type Color — `Color` is an enum, which has no C layout at Stage 1",
+            ),
+            (
+                "type M { xs: [Int; 2]; t: (Int, Int); }\n\
+                 locus Rx { bus { subscribe \"m\" as on_m of type M; } fn on_m(m: M) { println(m.xs[0]); } }\n\
+                 locus Tx { bus { publish \"m\" of type M; } birth() { \"m\" <- M { xs: [1, 2], t: (1, 2) }; } }\n\
+                 fn main() { Rx { }; Tx { }; }\n",
+                "M",
+                "subscribe `m`: the payload `M`, whose field `t` is a tuple (`(Int, Int)`), which hale can't carry on the bus yet",
+            ),
+            (
+                "type M { xs: [String; 2]; }\n\
+                 locus Rx { bus { subscribe \"m\" as on_m of type M; } fn on_m(m: M) { println(m.xs[0]); } }\n\
+                 locus Tx { bus { publish \"m\" of type M; } birth() { \"m\" <- M { xs: [\"a\", \"b\"] }; } }\n\
+                 fn main() { Rx { }; Tx { }; }\n",
+                "M",
+                "subscribe `m`: the payload `M`, whose field `xs` is an array of other than scalars or structs (`[String; 2]`)",
+            ),
+            (
+                xpool_tuple.as_str(),
+                "Ship { }",
+                "cross-pool spawn `Ship{ }`: it is born on `World`'s thread from a marshaled copy of its params, and hale \
+                 can't compile this child that way yet: its param `t` is `(Int, Int)`, a tuple",
+            ),
+            (
+                xpool_run.as_str(),
+                "Ship { }",
+                "cross-pool spawn `Ship{ }`: it is born on `World`'s thread from a marshaled copy of its params, and hale \
+                 can't compile this child that way yet: it keeps a non-empty `run()`",
+            ),
+            (
+                "type Ev = enum { A(Int), B };\n\
+                 topic Evs { payload: Ev; }\n\
+                 locus Reader { params { n: Int = 0; } bus { subscribe Evs as on_ev; } fn on_ev(e: Ev) { self.n = self.n + 1; } }\n\
+                 main locus App { params { r: Reader = Reader { }; } bindings { Evs: shm_ring(\"/hale.cb.gap.evs\", on_overflow: drop); } }\n\
+                 fn main() { App { }; }\n",
+                "Evs: shm_ring(\"/hale.cb.gap.evs\", on_overflow: drop);",
+                "`Evs: shm_ring(...)`: topic `Evs` carries the enum `Ev`, and hale can't put an enum in a native ring yet",
+            ),
+            (
+                layout_drain,
+                "subscribe Recs as on_rec;",
+                "subscribe `Recs`: the topic is bound to a `layout:` ring, which hands its subscriber one record at a time",
+            ),
+        ],
+        "codegen_gap_boundary",
+    );
+    // the neighbours that lower
+    assert_built(
+        "type C = enum { A, B };\n\
+         type M { c: C; xs: [Int; 2]; }\n\
+         locus Rx { bus { subscribe \"m\" as on_m of type M; } fn on_m(m: M) { println(m.c); } }\n\
+         locus Tx { bus { publish \"m\" of type M; } birth() { \"m\" <- M { c: C::A, xs: [1, 2] }; } }\n\
+         fn main() { Rx { }; Tx { }; }\n",
+        "hale_cb_gap_wire_enum_field",
+    );
+    assert_built(&xpool("locus Ship { params { n: Int = 0; } }"), "hale_cb_gap_xpool_params");
 }

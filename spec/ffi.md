@@ -60,7 +60,9 @@ An `@ffi("c")` fn declaration MUST NOT be:
   if exposed to user code.
 - **Defaulted.** Parameter defaults are not portable across the
   C-ABI boundary; the wrapper layer applies defaults before the
-  call.
+  call. `hale check` refuses a defaulted `@ffi` parameter at its
+  default (GH #1942: the build refused it after a passing check),
+  naming the wrapper to write.
 
 The parser rejects all three with a diagnostic at the annotation
 or marker position.
@@ -336,15 +338,21 @@ Typecheck errors:
 - `\`@ffi\` is only valid on top-level free fns at Stage 1, not
   on locus methods`
 
-Codegen errors:
+A named type crosses only as a user struct (by pointer, its C struct
+kept layout-compatible by the library author), an identity, a range
+or a quantity (its `Int`). An enum, a locus, an interface or a
+perspective has no C layout at Stage 1, and is refused at the
+annotation (GH #1942):
 
-- `@ffi fn \`<name>\` parameter \`<p>\`: type <T> is not yet
-  wired for FFI codegen at Stage 1` — user-type structs, arrays,
-  etc. fall here.
-- `@ffi fn \`<name>\`: parameter defaults are not supported
-  across the C-ABI boundary`
-- `@export fn \`<name>\`: fallible exports are not supported yet
-  (wasm entry-inversion v1)`
+- `\`@ffi\` fn \`<name>\` parameter \`<p>\` has type Color — \`Color\`
+  is an enum, which has no C layout at Stage 1; pass its variant as
+  an \`Int\` you map on each side, or a struct that carries it`
+- `\`@ffi\` fn \`<name>\`: parameter \`<p>\` has a default, and a C
+  function has a fixed arity, so nothing fills it in at the boundary`
+
+Lowering keeps its own refusals of these as the backstop of a build
+that skips the check; `hale check` stands in front of every one, so a
+program it accepts is a program `hale build` lowers.
 
 ## WASM host interface
 

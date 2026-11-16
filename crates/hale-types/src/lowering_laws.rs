@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    Block, ClosureClause, ElseBranch, EpochSpec, Expr, FnDecl, IfStmt, LValueSeg, LifecycleKind, LocusDecl,
+    Block, BusMember, ClosureClause, ElseBranch, EpochSpec, Expr, FnDecl, IfStmt, LValueSeg, LifecycleKind, LocusDecl,
     LocusMember, MatchArmBody, MatchStmt, OrDisposition, ParamInit, ParamsBlock, PerspectiveMember, Program,
     RecoveryModifier, Stmt, StructInit, TopDecl, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
@@ -66,6 +66,8 @@ const RULE_18: RuleId = RuleId::registered("semantics/placement", "18");
 const TOP_LEVEL_ENTRY: RuleId = RuleId::registered("verification/structural", "module-nested-main");
 /// A cross-pool spawn is fire-and-forget.
 const CROSS_POOL_VALUE: RuleId = RuleId::registered("verification/structural", "cross-pool-spawn-as-a-value");
+/// GH #1942: a cross-pool child is born from a marshaled payload.
+const CROSS_POOL_SHAPE: RuleId = RuleId::registered("verification/structural", "cross-pool-child-shape");
 /// GH #813, #870: a locus cannot contain itself by value.
 const SELF_CONTAINING: RuleId = RuleId::registered("verification/structural", "self-containing-locus");
 /// A record type cannot contain itself by value.
@@ -79,6 +81,7 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
     diags.extend(Law { rule: RULE_17, eval: pinned_root_in_a_loop }.diags(&rows));
     diags.extend(Law { rule: RULE_18, eval: placement_entry_consumed }.diags(&rows));
     diags.extend(Law { rule: CROSS_POOL_VALUE, eval: cross_pool_spawn_used_as_a_value }.diags(&rows));
+    diags.extend(Law { rule: CROSS_POOL_SHAPE, eval: cross_pool_child_shape }.diags(&rows));
     diags.extend(Law { rule: SELF_CONTAINING, eval: self_containing_locus }.diags(&rows));
     diags.extend(Law { rule: SELF_CONTAINING_RECORD, eval: self_containing_record }.diags(&rows));
     diags
@@ -147,8 +150,9 @@ fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Vi
         return;
     }
     let Some(ownership) = (inputs.ownership)() else { return };
-    let crosspool = ownership.bubble_plans().crosspool;
-    if crosspool.is_empty() {
+    let plans = ownership.bubble_plans();
+    let (crosspool, mixed) = (plans.crosspool, plans.mixed);
+    if crosspool.is_empty() && mixed.is_empty() {
         return;
     }
     // The ownership walk owns both the resolved child and its use
@@ -161,6 +165,27 @@ fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Vi
             continue;
         }
         let child = &site.child_ty;
+        // GH #1972: a `Mixed` edge (U-1): the enclosing locus runs both on
+        // the owner's thread and off it, so the birth is a same-tower
+        // allocation in some instances and a cross-pool post in others,
+        // chosen at a bare statement. A value has no post to stand for:
+        // refused in lowering's words, which the check never said.
+        if let Some(plan) = mixed.get(&(site.enclosing_locus.clone(), child.clone())) {
+            out.push(Violation::error(
+                CROSS_POOL_VALUE,
+                site.span,
+                format!(
+                    "`{child} {{ }}` is born to `{owner}`, but `{enclosing}` runs both on `{owner}`'s thread and \
+                     off it ({instances}), so its birth is a same-tower allocation in some instances and a \
+                     cross-pool post in others; a cross-pool birth is fire-and-forget, so the literal cannot be \
+                     used as a value. Write it as a bare statement (`{child} {{ ... }};`).",
+                    owner = plan.owner,
+                    enclosing = site.enclosing_locus,
+                    instances = plan.instances.join("; "),
+                ),
+            ));
+            continue;
+        }
         let Some(owner) = crosspool.get(&(site.enclosing_locus.clone(), child.clone())) else { continue };
         out.push(Violation::error(
             CROSS_POOL_VALUE,
@@ -284,6 +309,102 @@ fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Vi
                 .step(span, format!("the default of `{callee}`'s argument `{param}` builds `{child}` here")),
             );
         }
+    }
+}
+
+/// GH #1942: a cross-pool spawn marshals the child's params through the
+/// bus wire serializer, posts them to the owner's thread, and births the
+/// child there from the payload, co-located with the owner, so its
+/// teardown is the owner's ordinary reclaim (spec/semantics.md, "accept
+/// bubbling"). A param the serializer cannot carry, or a child that keeps
+/// work the far side would have to schedule (a non-empty `run()`, bus
+/// subscriptions, closures, capacity slots, its own `accept`), checked
+/// clean and the build refused the literal. Refused here, once per child,
+/// at the first literal the bubble plan posts across.
+fn cross_pool_child_shape(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
+    let (bundle, inputs) = (rows.bundle, rows.inputs);
+    if inputs.placement.domains.len() <= 1 {
+        return;
+    }
+    let Some(ownership) = (inputs.ownership)() else { return };
+    let crosspool = ownership.bubble_plans().crosspool;
+    if crosspool.is_empty() {
+        return;
+    }
+    fn collect<'a>(items: &'a [TopDecl], out: &mut BTreeMap<&'a str, &'a LocusDecl>) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    out.entry(l.name.name.as_str()).or_insert(l);
+                }
+                TopDecl::Module(m) => collect(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        collect(&program.items, &mut loci);
+    }
+    let wire = crate::wire_carriage::WireDecls::of(bundle);
+    let mut reported: BTreeSet<String> = BTreeSet::new();
+    let crossing = ownership
+        .sites
+        .iter()
+        .filter_map(|s| crosspool.get(&(s.enclosing_locus.clone(), s.child_ty.clone())).map(|owner| (s, owner)));
+    for (site, owner) in crossing {
+        let child = &site.child_ty;
+        if reported.contains(child) {
+            continue;
+        }
+        let Some(decl) = loci.get(child.as_str()) else { continue };
+        let mut why: Option<String> = None;
+        'params: for m in &decl.members {
+            let LocusMember::Params(pb) = m else { continue };
+            for p in &pb.params {
+                let Some(te) = &p.ty else { continue };
+                if let Some(u) = wire.crosspool_uncarried(te, &p.name.name) {
+                    why = Some(format!(
+                        "its param `{}` is `{}`, {}, which the spawn cannot marshal across the thread boundary (it \
+                         carries scalars, `String`, `Bytes`, structs of what the bus carries, and fixed arrays of \
+                         those); give the param one of those types",
+                        u.path, u.ty, u.what
+                    ));
+                    break 'params;
+                }
+            }
+        }
+        if why.is_none() {
+            let keeps = decl.members.iter().find_map(|m| match m {
+                LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run && !lc.body.stmts.is_empty() => {
+                    Some("a non-empty `run()`")
+                }
+                LocusMember::Bus(bb) if bb.members.iter().any(|b| matches!(b, BusMember::Subscribe { .. })) => {
+                    Some("bus subscriptions")
+                }
+                LocusMember::Closure(_) => Some("closures"),
+                LocusMember::Capacity(cb) if !cb.slots.is_empty() => Some("capacity slots"),
+                LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Accept => Some("its own `accept`"),
+                _ => None,
+            });
+            why = keeps.map(|k| {
+                format!(
+                    "it keeps {k}, which the far side would have to schedule; a cross-pool child is params, an \
+                     optional `birth`, `drain` or `dissolve`, and a contract. Move that work to a locus built on \
+                     `{owner}`'s side"
+                )
+            });
+        }
+        let Some(why) = why else { continue };
+        reported.insert(child.clone());
+        out.push(Violation::error(
+            CROSS_POOL_SHAPE,
+            site.span,
+            format!(
+                "cross-pool spawn `{child}{{ }}`: it is born on `{owner}`'s thread from a marshaled copy of its params, \
+                 and hale can't compile this child that way yet: {why}"
+            ),
+        ));
     }
 }
 
@@ -1477,7 +1598,7 @@ fn walk_record_containment(
                     "a record cannot contain itself by value: {ring_text} puts a whole `{target}` inside every \
                      `{target}`, so none can be built. Hold the `{target}` values a `{record}` may have in a \
                      `bounded[{target}; N]` (it starts empty), or in an enum variant beside one that holds none \
-                     (`type Child = enum {{ Nothing, One({target}) }}`), or keep them elsewhere and hold a key",
+                     (`type Child = enum {{ Nothing, One({target}) }};`), or keep them elsewhere and hold a key",
                 ),
             ));
             continue;

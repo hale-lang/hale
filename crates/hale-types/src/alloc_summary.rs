@@ -2412,6 +2412,7 @@ pub fn derive_alloc_summary_reaching(
     monos: &crate::typed_bodies::MonoShapes,
     sends: &[hale_syntax::desugar::IntraLocusRewrite],
     top: &crate::resolve::TopScope,
+    calls: &crate::typed_bodies::CheckedCalls,
 ) -> AllocSummary {
     let mut identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
         bundle.programs.values().map(|p| (*p, &bundle.snapshot)).collect();
@@ -2430,7 +2431,7 @@ pub fn derive_alloc_summary_reaching(
             top,
             copy.is_some().then_some(&mut reach),
         );
-        match summarize_within(&identified, &bundle.import_renames, &column, Some(&reach)) {
+        match summarize_within(&identified, &bundle.import_renames, &column, Some(&reach), calls) {
             Ok(summary) => return summary,
             Err(beyond) => {
                 if !reach.widen(beyond) {
@@ -2584,6 +2585,18 @@ pub fn summarize_identified(
     identified: &[(&Program, &crate::snapshot::Snapshot)],
     import_renames: &[(Vec<String>, String)],
 ) -> AllocSummary {
+    summarize_identified_checked(identified, import_renames, &crate::typed_bodies::CheckedCalls::default())
+}
+
+/// [`summarize_identified`] with the `@raise` conversions the check
+/// recorded (`calls`, [`crate::typed_bodies::TypedBodies::checked_calls`]):
+/// each `@raise` conversion walked as the call it lowers to (GH #1982),
+/// each collection cursor as the `at` it is (GH #1984).
+pub fn summarize_identified_checked(
+    identified: &[(&Program, &crate::snapshot::Snapshot)],
+    import_renames: &[(Vec<String>, String)],
+    calls: &crate::typed_bodies::CheckedCalls,
+) -> AllocSummary {
     let is_copy = |ids: &crate::snapshot::Snapshot| {
         crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, ids))
     };
@@ -2596,7 +2609,8 @@ pub fn summarize_identified(
     let mut bundle = crate::symbol::Bundle::new(own);
     bundle.import_renames = import_renames.to_vec();
     let views = crate::view_bindings::OwnedViewColumn::of_bundle(&bundle);
-    summarize_identified_over(identified, import_renames, &views)
+    summarize_within(identified, import_renames, &views, None, calls)
+        .unwrap_or_else(|_| unreachable!("every body of the stdlib's analysis copy is walked without a reach"))
 }
 
 /// [`summarize_identified`] over an owned-view column already computed
@@ -2608,7 +2622,7 @@ pub fn summarize_identified_over(
     import_renames: &[(Vec<String>, String)],
     views: &crate::view_bindings::OwnedViewColumn,
 ) -> AllocSummary {
-    summarize_within(identified, import_renames, views, None)
+    summarize_within(identified, import_renames, views, None, &crate::typed_bodies::CheckedCalls::default())
         .unwrap_or_else(|_| unreachable!("every body of the stdlib's analysis copy is walked without a reach"))
 }
 
@@ -2630,6 +2644,7 @@ pub fn summarize_within(
     import_renames: &[(Vec<String>, String)],
     views: &crate::view_bindings::OwnedViewColumn,
     reach: Option<&crate::stdlib_reach::StdlibReach>,
+    calls: &crate::typed_bodies::CheckedCalls,
 ) -> Result<AllocSummary, BTreeSet<usize>> {
     let programs: Vec<&Program> = identified.iter().map(|(p, _)| *p).collect();
     let programs = programs.as_slice();
@@ -3472,6 +3487,8 @@ pub fn summarize_within(
     // same summarized alone or beside it — each copy keyed by its
     // program's scope and its span.
     let no_cell_copies: BTreeMap<(u32, u32), &'static str> = BTreeMap::new();
+    let no_raises: BTreeMap<(u32, u32), String> = BTreeMap::new();
+    let no_cursors: BTreeSet<(u32, u32)> = BTreeSet::new();
     let cell_copies: BTreeMap<usize, BTreeMap<(u32, u32), &'static str>> = identified
         .iter()
         .map(|(_, ids)| {
@@ -3572,6 +3589,16 @@ pub fn summarize_within(
             retired_init: false,
             cell_copies: cell_copies.get(&scope_index(ids)).unwrap_or(&no_cell_copies),
             placed_cell_copies: BTreeSet::new(),
+            raises: key
+                .decl
+                .filter(|d| d.universe == SiteUniverse::User && !is_stdlib_copy(ids))
+                .and_then(|d| calls.raises.get(&d.index))
+                .unwrap_or(&no_raises),
+            cursors: key
+                .decl
+                .filter(|d| d.universe == SiteUniverse::User && !is_stdlib_copy(ids))
+                .and_then(|d| calls.cursors.get(&d.index))
+                .unwrap_or(&no_cursors),
         };
         w.walk_block(body, 0, Escape::Local);
         let starts = std::mem::take(&mut w.starts);
@@ -6017,6 +6044,15 @@ struct Walker<'a> {
     /// (`crate::view_bindings`), and the ones this walk has placed.
     cell_copies: &'a BTreeMap<(u32, u32), &'static str>,
     placed_cell_copies: BTreeSet<(u32, u32)>,
+    /// GH #1982: the `@raise` conversions this body calls where an `or
+    /// raise` converts, by the `raise`'s span: each is walked as the
+    /// call `conv(err)` the raise lowers to (`or fail conv(err)`), so the
+    /// conversion's allocations and effects are this body's callee's.
+    raises: &'a BTreeMap<(u32, u32), String>,
+    /// GH #1984: the element cursors over a collection (`.get(i)` on a
+    /// `bounded` or an array, by the callee's span), which the check typed:
+    /// each is the collection's `at`, not a method of an untyped receiver.
+    cursors: &'a BTreeSet<(u32, u32)>,
 }
 
 impl<'a> Walker<'a> {
@@ -7647,14 +7683,30 @@ impl<'a> Walker<'a> {
             Expr::Or { inner, disposition, .. } => {
                 self.walk_expr(inner, depth, escape);
                 match disposition {
-                    OrDisposition::Substitute(e) => self.walk_expr(e, depth, escape),
+                    OrDisposition::Substitute(e) => {
+                        self.walk_expr(e, depth, escape);
+                        // A fallible handler's implicit `or raise`.
+                        self.walk_raise_conversion(e.span(), depth, escape);
+                    }
                     OrDisposition::Fail(e, _) => self.walk_expr(e, depth, escape),
-                    OrDisposition::Raise(_)
-                    | OrDisposition::Discard(_)
-                    | OrDisposition::Wait(_) => {}
+                    OrDisposition::Raise(at) => self.walk_raise_conversion(*at, depth, escape),
+                    OrDisposition::Discard(_) | OrDisposition::Wait(_) => {}
                 }
             }
         }
+    }
+
+    /// GH #1982: the `raise` at `at` converts the error through a `@raise`
+    /// fn: walk the call `conv(err)` it lowers to (`or fail conv(err)`).
+    fn walk_raise_conversion(&mut self, at: Span, depth: u32, escape: Escape) {
+        let Some(conv) = self.raises.get(&(at.start.0, at.end.0)) else { return };
+        let call = Expr::Call {
+            callee: Box::new(Expr::Ident(hale_syntax::ast::Ident::new(conv.clone(), at))),
+            args: vec![Expr::Ident(hale_syntax::ast::Ident::new("err", at))],
+            span: at,
+            id: NodeId::NONE,
+        };
+        self.walk_expr(&call, depth, escape);
     }
 
     fn record_call(&mut self, callee: &Expr, args: &[Expr], span: Span, id: NodeId, depth: u32, escape: Escape) {
@@ -7704,6 +7756,11 @@ impl<'a> Walker<'a> {
                 }
             }
             Expr::Path(qp) => self.path_callee(qp),
+            Expr::Field { span: at, .. } | Expr::Path2 { span: at, .. }
+                if self.cursors.contains(&(at.start.0, at.end.0)) =>
+            {
+                Callee::Unresolved("at".to_string())
+            }
             Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
                 // #382: a receiver that is a bare ident naming an
                 // IMPORT ALIAS is a qualified free-fn call

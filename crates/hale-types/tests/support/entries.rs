@@ -267,7 +267,8 @@ pub fn resolve_files(files: &[(&str, &str)]) -> Result<LoweringView, String> {
 pub fn check_files(files: &[(&str, &str)]) -> Vec<Diag> {
     let dir = PathBuf::from(SEED_DIR);
     let buffers = buffers(files);
-    match Snapshot::load(&dir, LoadMode::WholeSeed, &Overlay::new(&buffers), Config::check(true, false)) {
+    let config = Config { hot_path_advisory: true, ..Config::check(true, false) };
+    match Snapshot::load(&dir, LoadMode::WholeSeed, &Overlay::new(&buffers), config) {
         Ok(snap) => checked(&snap),
         Err(hale_frontend::snapshot::LoadError::Load(failure)) => failure.diags,
         Err(hale_frontend::snapshot::LoadError::Refused(msg)) => {
@@ -340,6 +341,11 @@ pub fn model_of(snap: &Snapshot, sources: &[SourceFile]) -> ApplicationModel {
 }
 
 fn from_program(program: Program, import_renames: Vec<(Vec<String>, String)>, config: Config) -> Snapshot {
+    // The hot-path advisory on (GH #1948): every check these helpers
+    // stand in for predates its default going off, and its tests read
+    // its warnings. `load_files` keeps the caller's config, for a test
+    // of the default.
+    let config = Config { hot_path_advisory: true, ..config };
     match Snapshot::from_program(program, import_renames, config) {
         Ok(s) => s,
         Err(_) => panic!("a bare program's snapshot is refused only for an `--api` or `--env` it does not ask for"),

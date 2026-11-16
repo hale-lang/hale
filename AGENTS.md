@@ -175,7 +175,10 @@ Filter these reflexes before they cost you time.
 
 - **No `import` / `use` syntax for stdlib.** Stdlib is called
   inline through `std::*` paths (`std::io::fs::read_file(p)`).
-  Cross-seed user libraries use `import "lib/x" as alias;`.
+  Cross-seed user libraries use `import "lib/x" as alias;`; an
+  import list (`import "lib/x" as x { Row, f as g };`) spells
+  those names bare in the seed and re-exports them to its
+  importers (`<its alias>::Row`, the same declaration). No globs.
 - **No visibility modifiers** (`pub`, `private`). Every
   top-level decl in a seed (one directory) is visible to every
   file in that seed. Decompose by concern, not visibility.
@@ -205,7 +208,8 @@ Filter these reflexes before they cost you time.
 - **Embedded program text, SQL or JSON is a block string**: `"""`
   ending its line, the raw text, `"""` on a line of its own; the
   closing line's indent is stripped and nothing is escaped
-  (`spec/tokens.md` § Block strings).
+  (`spec/tokens.md` § Block strings). A one-line regex or path is a
+  raw string, `r"\d+"` (`r#"…"#` when it holds a `"`).
 - **No `return` inside `birth` / `run` / `dissolve` bodies.**
   Factor short-circuit logic into helper free fns.
 - **`fallible(E)` is rejected on substrate-facing surfaces:**
@@ -325,7 +329,8 @@ fighting the language instead of using it.
    surface).
 4. Write the smallest program that gets one thing working.
    `hale run <file-or-dir>` for fast feedback; `hale build`
-   for the native binary.
+   for the native binary, tuned to this machine's CPU
+   (`--target-cpu portable` for one you ship, such as an image).
 5. Iterate. Before you finish, run `hale fmt <file-or-dir>` —
    canonical form is tool-defined (zero config), so your diff
    touches only the lines you actually changed. Never

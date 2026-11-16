@@ -136,3 +136,20 @@ fn positional_marks_a_record() {
         assert!(err[0].message.starts_with(want), "`{src}`: {}", err[0].message);
     }
 }
+
+/// GH #1948: a tag written before the default (`x: Int `json:"x"` = 3;`)
+/// stopped at the `=` with "expected ;, got Eq". It is a located
+/// refusal at the `=` now, naming the order, with the tag as related.
+#[test]
+fn a_tag_before_its_default_says_to_write_the_default_first() {
+    let src = "type Cfg { x: Int `json:\"x\"` = 3; }\n";
+    let err = parse_source(src).expect_err("a tag before the default does not parse");
+    let d = &err[0];
+    assert!(d.message.contains("write the default before the tag"), "{}", d.message);
+    assert!(d.message.contains("`x: … = <default> `json:\"x\"`;`"), "{}", d.message);
+    assert_eq!(&src[d.span.start.as_usize()..d.span.end.as_usize()], "=", "at the `=`");
+    assert_eq!(d.related.len(), 1, "the tag is the related location");
+    // The order it names parses.
+    let ok = fields("type Cfg { x: Int = 3 `json:\"x\"`; }");
+    assert_eq!(ok, vec![("x".to_string(), Some("json:\"x\"".to_string()))]);
+}

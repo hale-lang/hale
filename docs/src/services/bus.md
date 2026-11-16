@@ -48,6 +48,8 @@ bus { publish "org.metrics" of type Int; }   // error: `Int` cannot be carried d
 
 Wrap scalar values in a single-field record (`type Metric { n: Int = 0; }`).
 
+A delivery is serialized field by field, so each field of a payload record is one the wire carries: a scalar (`Int`, `Float`, `Bool`, `Decimal`, `U256`, `I256`, `Duration`, `Time`, a unit type), a payload-free enum, a `String`, `Bytes`, a nested record of those, a `bounded` buffer of scalars, or a fixed array of scalars or records. A tuple field, an enum with payloads, or an array of strings is refused by `hale check` where the payload is first delivered or declared (`of type M`); make the tuple a record. A native `shm_ring` binding carries struct payloads only, and a `layout:` ring hands its subscriber one record per call (no `Drain<T>` handler).
+
 ## Publishing & Subscribing (`bus { }`)
 
 Every locus declares its bus inputs and outputs inside a `bus { }` block:

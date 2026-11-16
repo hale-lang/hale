@@ -86,6 +86,7 @@ pub mod probes;
 pub mod printable;
 pub mod purity;
 pub mod quantitative;
+pub mod raise_conversion;
 pub mod resolve;
 pub mod resolved;
 pub mod roles;
@@ -93,6 +94,7 @@ pub mod hub_expand;
 pub mod proto_gen;
 pub mod surface_doc;
 pub mod observe_expand;
+pub mod optional_fields;
 pub mod rest_routes;
 pub mod rpc_expand;
 pub mod client_expand;
@@ -129,6 +131,7 @@ pub mod target;
 pub mod typed_bodies;
 pub mod ty;
 pub mod violate_fallible;
+pub mod wire_carriage;
 pub mod working_set;
 
 /// m94: subject wildcard matching used by the type checker

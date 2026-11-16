@@ -1,0 +1,105 @@
+// GH #1967, #1968, #1970: shapes `hale check` accepted and `hale build`
+// refused, found by the check/build parity gate (#1949). Each builds now
+// and computes what the check said it would.
+//
+// - a call through a fn value widens an `Int` argument to a `Float`
+//   parameter, as a direct call does (#1967);
+// - a fallible locus method whose body ends in a tail expression returns
+//   it, as a free fallible fn and an infallible method do (#1968);
+// - a fn returning a set type returns a member's value as its tail, the
+//   member flowing into the set as it does at a `return` (#1970).
+
+fn half(x: Float) -> Float {
+    return x / 2.0;
+}
+
+fn apply(f: fn (Float) -> Float, n: Int) -> Float {
+    return f(n);
+}
+
+locus Scaler {
+    params {
+        by: fn (Float) -> Float = half;
+    }
+
+    fn scaled(n: Int) -> Float {
+        return self.by(n);
+    }
+}
+
+type Pt { x: Int; y: Int; }
+
+type Oops { why: String; }
+
+locus Lv {
+    params { base: Int = 10; }
+
+    fn plain(x: Int) -> Int fallible(String) {
+        x + self.base
+    }
+
+    fn record(x: Int) -> Pt fallible(String) {
+        if x < 0 { fail "negative"; }
+        Pt { x: x, y: self.base }
+    }
+
+    fn pick(x: Int) -> Int fallible(Oops) {
+        if x > 0 { x } else { 0 - x }
+    }
+}
+
+type Book { id: Int; }
+type Trade { qty: Int; }
+type Inbound = Book | Trade;
+
+fn decode_trade(q: Int) -> Inbound {
+    Trade { qty: q }
+}
+
+fn decode_book(id: Int) -> Inbound fallible(String) {
+    if id < 0 { fail "no book"; }
+    Book { id: id }
+}
+
+locus Decoder {
+    fn next(q: Int) -> Inbound {
+        Trade { qty: q * 2 }
+    }
+}
+
+fn describe(m: Inbound) -> String {
+    return match m {
+        Book(b) -> "book " + b.id,
+        Trade(t) -> "trade " + t.qty,
+    };
+}
+
+fn main() {
+    let fv: fn (Float) -> Float = half;
+    let n = 8;
+    std::test::assert(fv(n) == 4.0, "an Int argument widens through a local fn value");
+    std::test::assert(apply(half, 5) == 2.5, "and through a fn-typed parameter");
+    let s = Scaler { };
+    std::test::assert(s.scaled(3) == 1.5, "and through a fn-typed locus param");
+
+    let l = Lv { };
+    std::test::assert_eq_int(l.plain(1) or 0, 11, "a fallible method's tail is its return");
+    std::test::assert_eq_int((l.record(2) or Pt { x: 0, y: 0 }).y, 10, "a tail record literal");
+    std::test::assert_eq_int((l.record(-1) or Pt { x: 7, y: 7 }).x, 7, "beside a fail");
+    std::test::assert_eq_int(l.pick(-4) or 0, 4, "a tail if expression");
+    std::test::assert_eq_int(l.pick(3) or 0, 3, "its other arm");
+
+    std::test::assert_eq_str(describe(decode_trade(3)), "trade 3", "a member as a set fn's tail");
+    std::test::assert_eq_str(
+        describe(decode_book(5) or Trade { qty: 0 }),
+        "book 5",
+        "in a fallible fn",
+    );
+    std::test::assert_eq_str(
+        describe(decode_book(-1) or Trade { qty: 9 }),
+        "trade 9",
+        "beside its fail",
+    );
+    let d = Decoder { };
+    std::test::assert_eq_str(describe(d.next(4)), "trade 8", "a set-typed method's tail");
+}

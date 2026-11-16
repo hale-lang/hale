@@ -335,11 +335,13 @@ fn own_scope_let_block_scope_test() {
             // 511 since `wide.hl` came (GH #1934: `std::u256` /
             // `std::i256`'s fallible calls and the JSON codecs' hex
             // helpers, 20 fns); 513 since `std::json::Builder` writes
-            // JSON as given in `raw_field` and `raw_value` (GH #1943)
+            // JSON as given in `raw_field` and `raw_value` (GH #1943);
+            // 515 since `time_rfc3339.hl` came (GH #1948:
+            // `std::time::parse_rfc3339` and its digit helper)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 513 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 513 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 515 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 515 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -449,7 +451,7 @@ fn unreached(target: &str, stdlib: &BTreeSet<FnKey>) -> Option<Unreached> {
     })
 }
 
-/// The six targets pinned below are the only ones whose own fns or leak
+/// The seven targets pinned below are the only ones whose own fns or leak
 /// sites the reached correction moves.
 #[test]
 fn reached_no_other_target_changes() {
@@ -468,6 +470,7 @@ fn reached_no_other_target_changes() {
             "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
             "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
             "dna/oidc",
+            "tests/hale/codegen_gaps_test.hl",
             "tests/hale/is_route_test.hl",
             "tests/hale/perspective_ctor_override_test.hl",
         ]
@@ -743,9 +746,16 @@ fn own_entries_run_to_exit_programs() {
     // builds its messages, and 20: `tests/hale/u256_codec_test.hl`, whose
     // codecs of 256-bit integers decode the same way (GH #1934); 21:
     // `tests/hale/api_map_wrong_kind_test.hl`, whose wire maps decode the
-    // same way (GH #1944); 22: `tests/hale/string_append_test.hl`, whose
-    // `main` appends to Strings in its loops (GH #1947).
-    assert_eq!(moved, 22, "the run-to-exit programs among the targets that lose a site");
+    // same way (GH #1944); 22: `tests/hale/bounded_values_test.hl`, whose
+    // fns build a returned bounded list's elements in their loops (GH #1951);
+    // 23: `tests/hale/bounded_payload_enum_test.hl`, whose `fill` builds a
+    // payload String per pushed element, as `bounded_whole_assign_test.hl`'s
+    // does (GH #1951 item 4);
+    // 24: `tests/hale/optional_field_test.hl`, whose codec of optional fields
+    // decodes the same way (GH #1951 item 3); 25:
+    // `tests/hale/string_append_test.hl`, whose `main` appends to Strings in
+    // its loops (GH #1947).
+    assert_eq!(moved, 25, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1016,6 +1026,19 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2197 InUnboundedLoop",
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2186 InUnboundedLoop",
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2180 InUnboundedLoop",
+            // `tests/hale/bounded_payload_enum_test.hl`: the text its `show` and
+            // `tags` build for every element they are handed (GH #1951)
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1716..1728 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1760..1792 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1821..1848 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1875..1913 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: show StringConcat @2023..2034 InvokedUnboundedly",
+            "tests/hale/bounded_payload_enum_test.hl: tags StringConcat @5672..5910 InUnboundedLoop",
+            // `tests/hale/bounded_values_test.hl`: fns that build a returned
+            // bounded list's record and String elements per pass (GH #1951)
+            "tests/hale/bounded_values_test.hl: items_of StructLit(\"Item\") @1253..1282 InUnboundedLoop",
+            "tests/hale/bounded_values_test.hl: items_of StringConcat @1269..1280 InUnboundedLoop",
+            "tests/hale/bounded_values_test.hl: tags_of StringConcat @1089..1096 InUnboundedLoop",
             "tests/hale/bounded_whole_assign_test.hl: fill StringConcat @1534..1552 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
@@ -1055,6 +1078,17 @@ fn own_entries_run_to_exit_programs() {
             // the property test's copy of the per-byte escaper as it was:
             // its `\u00XX` digits were a concatenation per control byte
             "tests/hale/json_escape_runs_test.hl: old_hex_byte StringConcat @7937..7972 InvokedUnboundedly",
+            // `tests/hale/optional_field_test.hl`: its codec of optional fields
+            // (GH #1951 item 3), decoding and writing the same way as a
+            // hand-written presence pair's
+            "tests/hale/optional_field_test.hl: __api_decode_Inner StructLit(\"JsonError\") @1610617065..1610617109 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610623675..1610623722 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610624423..1610624469 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610625356..1610625409 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610626640..1610626688 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610628672..1610628717 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat @1610631493..1610631537 InUnboundedLoop",
+            "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat @1610631493..1610631530 InUnboundedLoop",
             // `tests/hale/string_append_test.hl`: the appending assignments
             // its loops make, to a local and to a field (GH #1947)
             "tests/hale/string_append_test.hl: build StringConcat @705..774 InUnboundedLoop",
@@ -1182,7 +1216,8 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
             sharing += 1;
         }
     }
-    assert_eq!(sharing, 33, "the stdlib source files that share a name with the copy");
+    // 34 since `time_rfc3339.hl` came (GH #1948: `std::time::parse_rfc3339`).
+    assert_eq!(sharing, 34, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the
@@ -1527,5 +1562,19 @@ fn startable_only_the_verb_program_runs_to_exit() {
                 "the stdlib's copy: 1",
             ])
         )]
+    );
+}
+
+/// GH #1942's test of the shapes now compiled starts no loop, so, as in
+/// the perspective fixtures, the appended HTTP dispatch's fallback site is
+/// no longer counted as invoked without bound.
+#[test]
+fn reached_codegen_gaps_test() {
+    pinned_unreached(
+        "tests/hale/codegen_gaps_test.hl",
+        (131, 0),
+        &[],
+        &["__http_fn_unset StructLit(\"std::http::Response\") @53535..53594 InvokedUnboundedly"],
+        &[],
     );
 }

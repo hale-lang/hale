@@ -30,7 +30,8 @@
 //!   * **type** — the shape of the tree being instantiated (plain,
 //!     a `@form(vec)` child, one whose elements carry a nested
 //!     record, a `@form(hashmap)` child whose cells do, a grandchild,
-//!     an interface-typed child, a `perspective(P)` child);
+//!     an interface-typed child, a `perspective(P)` child, one whose
+//!     `bounded` lists hold an enum with payloads);
 //!   * **context** — the frame the payload runs in (`fn main`, a
 //!     free fn, a locus METHOD, a `while` loop of four iterations, a
 //!     fn inside `module { }`, and an early-`return` guard both
@@ -87,7 +88,7 @@
 //!
 //! ## Size
 //!
-//! The full matrix (32 × 7 × 7 = 1568 cells, ~150 s on seven threads)
+//! The full matrix (32 × 8 × 7 = 1792 cells, ~170 s on seven threads)
 //! is behind `HALE_MATRIX=full`, for a nightly job. The per-PR
 //! default runs a deterministic sample (~90 cells, ~17 s) that
 //! always contains one
@@ -143,7 +144,7 @@ const KNOWN_OPEN: &[(&str, &str)] = &[];
 /// How many cells the per-PR sample aims for.
 const TARGET_SAMPLE: usize = 60;
 
-/// A stride co-prime with the cell count (32 · 7 · 7 = 1568 = 2⁵·7²),
+/// A stride co-prime with the cell count (32 · 8 · 7 = 1792 = 2⁸·7),
 /// so topping the sample up visits the space evenly and
 /// deterministically.
 const FILL_STRIDE: usize = 101;
@@ -160,7 +161,7 @@ const DEADLINE: Duration = Duration::from_secs(90);
 /// Every shape declares a locus called `Subj` with a `params` field
 /// `n: Int`, a method `probe() -> Int` answering `n + 1`, and a method
 /// `bump(k)` that WRITES `n` and answers `probe()`, so one set of
-/// positions is written against all seven.
+/// positions is written against all eight.
 struct Shape {
     id: &'static str,
     decls: &'static str,
@@ -348,6 +349,72 @@ locus Subj {
 }
 ";
 
+/// A subject whose own `bounded` list, and a record field's, hold an
+/// enum with payloads (GH #1951 item 4): each slot points at its cell,
+/// and the cell's variant owns a String, a Bytes or a nested enum's
+/// cell. Birth pushes cells built in another method's frame, `set`s and
+/// `truncate`s its own list, replaces the record holding the other list
+/// whole, `set`s into it, `clear`s its own and pushes a cell read back
+/// from the record's, and reads a payload through `match`; so the locus
+/// anchors cells and retires them (and what their variants carry) while
+/// the subject's teardown and every position around it run. `probe`
+/// reads every payload String back in a later frame, so a cell kept in
+/// a frame that has returned is a read ASan sees. Built at run time, as
+/// `vec_nested` is, so no payload is a static literal.
+const SHAPE_PAYLOAD_ENUM: &str = "
+type PLeaf = enum { Bare, Named(String) };
+type PState = enum { Idle, Note(String), Pair(String, Int), Blob(Bytes), Deep(PLeaf) };
+type PHeld { states: bounded[PState; 3]; }
+
+locus Subj {
+    params { n: Int = 0; held: PHeld = PHeld { }; own: bounded[PState; 3]; }
+    fn state(v: Int) -> PState {
+        let t = \"t\" + to_string(v + self.n);
+        return match v % 4 {
+            0 -> PState::Note(t),
+            1 -> PState::Pair(t + \".p\", v),
+            2 -> PState::Blob(std::bytes::from_string(t)),
+            _ -> PState::Deep(PLeaf::Named(t + \".d\")),
+        };
+    }
+    birth() {
+        push(self.own, self.state(1)) or discard;
+        push(self.own, PState::Idle) or discard;
+        push(self.own, self.state(2)) or discard;
+        set(self.own, 0, self.state(3)) or discard;
+        truncate(self.own, 2);
+        let mut h = PHeld { };
+        push(h.states, self.state(0)) or discard;
+        push(h.states, at(self.own, 0) or PState::Idle) or discard;
+        self.held = h;
+        set(self.held.states, 1, self.state(1)) or discard;
+        clear(self.own);
+        push(self.own, at(self.held.states, 0) or PState::Idle) or discard;
+        let k = match at(self.own, 0) or PState::Idle {
+            PState::Note(t) -> len(t),
+            _ -> 0,
+        };
+        self.n = self.n + count(self.held.states) - 2 + k - k;
+    }
+    dissolve() { println(\"D:subj\"); }
+    fn texts() -> Int {
+        let mut k = 0;
+        for s in self.own { k = k + self.text(s); }
+        for s in self.held.states { k = k + self.text(s); }
+        return k;
+    }
+    fn text(s: PState) -> Int {
+        return match s {
+            PState::Note(t) -> if std::str::starts_with(t, \"t\") { 1 } else { 0 },
+            PState::Pair(t, _) -> if std::str::starts_with(t, \"t\") { 1 } else { 0 },
+            _ -> 0,
+        };
+    }
+    fn probe() -> Int { return self.n + self.texts() - 2; }
+    fn bump(k: Int) -> Int { self.n = self.n + k; return self.probe(); }
+}
+";
+
 const SHAPES: &[Shape] = &[
     Shape { id: "plain", decls: SHAPE_PLAIN, tags: &["D:subj"] },
     Shape { id: "vec_child", decls: SHAPE_VEC_CHILD, tags: &["D:subj"] },
@@ -368,9 +435,10 @@ const SHAPES: &[Shape] = &[
         decls: SHAPE_PERSP_CHILD,
         tags: &["D:subj", "D:routev1"],
     },
+    Shape { id: "payload_enum", decls: SHAPE_PAYLOAD_ENUM, tags: &["D:subj"] },
 ];
 
-/// Everything the positions lean on, shared by all seven shapes.
+/// Everything the positions lean on, shared by all eight shapes.
 ///
 /// Only `Subj` (and its own children) and `Cfg` print at dissolve:
 /// the holders are deliberately silent so a cell's tag counts speak
@@ -1453,11 +1521,11 @@ fn matrix_behind_an_untaken_guard() {
 #[test]
 fn the_matrix_is_rectangular_and_non_vacuous() {
     assert_eq!(POSITIONS.len(), 32, "position axis changed size");
-    assert_eq!(SHAPES.len(), 7, "type axis changed size");
+    assert_eq!(SHAPES.len(), 8, "type axis changed size");
     assert_eq!(CONTEXTS.len(), 7, "context axis changed size");
 
     let all = all_cells();
-    assert_eq!(all.len(), 32 * 7 * 7);
+    assert_eq!(all.len(), 32 * 8 * 7);
     let ids: BTreeSet<String> = all.iter().map(|c| cell_id(*c)).collect();
     assert_eq!(ids.len(), all.len(), "two cells share an id");
 

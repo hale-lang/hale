@@ -211,6 +211,44 @@ struct Chain {
     /// an accessor that does not resolve on the real source form fails
     /// with the ordinary no-method diagnostic at the chain's site.
     accessor: &'static str,
+    /// The pseudo-field the source was anchored on and stripped of
+    /// (`"items"`, `"entries"`), `None` for a bare source. Chains
+    /// desugar before typecheck, so `b.items` cannot be told apart from
+    /// a `@form(vec)`'s `v.items` here: the anchor travels in the
+    /// cursor's index name ([`cursor_anchor`]), and where the stripped
+    /// receiver has no accessor of its own but a real field of the
+    /// anchor's name (a record's or a locus's `items: bounded[T; N]`),
+    /// the checker and lowering walk that field (GH #1984).
+    anchor: Option<&'static str>,
+}
+
+/// The pseudo-field a chain's element cursor was anchored on, read from
+/// the cursor call's argument (`src.get(__hale_chain_i3_items)`): the
+/// desugar strips `.items` / `.entries` from the source and names the
+/// index after the anchor, so the checker and lowering can walk a real
+/// field of that name when the stripped receiver is no form (GH #1984).
+/// `None` for any other call.
+pub fn cursor_anchor(args: &[Expr]) -> Option<&'static str> {
+    let [Expr::Ident(i)] = args else { return None };
+    if !i.name.starts_with("__hale_chain_i") {
+        return None;
+    }
+    if i.name.ends_with("_items") {
+        Some("items")
+    } else if i.name.ends_with("_entries") {
+        Some("entries")
+    } else {
+        None
+    }
+}
+
+/// A chain temporary's name: `base` and the chain's number, and the
+/// anchor for the index names [`cursor_anchor`] reads.
+fn cursor_var(base: &str, uid: usize, anchor: Option<&str>) -> String {
+    match anchor {
+        Some(a) => format!("{base}{uid}_{a}"),
+        None => format!("{base}{uid}"),
+    }
 }
 
 /// The chain terminals, for the checker's advice on a stage-less one
@@ -434,17 +472,17 @@ fn peel(e: &Expr) -> Option<Chain> {
     // stripped so the accessor is called on the collection itself.
     // `for e in m.entries` already recognizes these pseudo-fields by
     // shape in check.rs; this mirrors that so a chain reads the same.
-    let (src, accessor) = match cur {
+    let (src, accessor, anchor) = match cur {
         Expr::Field { receiver, name, .. } if name.name == "entries" => {
-            ((**receiver).clone(), "entry_at")
+            ((**receiver).clone(), "entry_at", Some("entries"))
         }
         Expr::Field { receiver, name, .. } if name.name == "items" => {
-            ((**receiver).clone(), "get")
+            ((**receiver).clone(), "get", Some("items"))
         }
-        other => (other.clone(), "get"),
+        other => (other.clone(), "get", None),
     };
 
-    Some(Chain { src, stages, terminal, term_args, accessor })
+    Some(Chain { src, stages, terminal, term_args, accessor, anchor })
 }
 
 // ---- `it` substitution --------------------------------------------
@@ -881,9 +919,10 @@ fn build_loop(
     uid: usize,
     body: Vec<Stmt>,
     accessor: &str,
+    anchor: Option<&str>,
     sp: Span,
 ) -> Vec<Stmt> {
-    let i_name = format!("__hale_chain_i{}", uid);
+    let i_name = cursor_var("__hale_chain_i", uid, anchor);
     let elem = format!("__hale_it{}", uid);
     let mut loop_body = vec![
         assign(
@@ -1152,7 +1191,7 @@ fn lower(mut c: Chain, sp: Span, uid: usize) -> Expr {
         stmts.push(i);
     }
     stmts.extend(stage_inits);
-    stmts.extend(build_loop(&c.src, uid, body, c.accessor, sp));
+    stmts.extend(build_loop(&c.src, uid, body, c.accessor, c.anchor, sp));
     stmts.extend(post);
     Expr::Block(Block {
         stmts,
@@ -1174,7 +1213,7 @@ fn lower_indexed(
     uid: usize,
     disposition: Option<OrDisposition>,
 ) -> Expr {
-    let idx_name = format!("__hale_chain_idx{}", uid);
+    let idx_name = cursor_var("__hale_chain_idx", uid, c.anchor);
     let idx = idx_name.as_str();
     let elem0 = format!("__hale_it{}", uid);
 
@@ -1183,7 +1222,7 @@ fn lower_indexed(
         c.stages.push(Stage::Filter(c.term_args.remove(0)));
     }
 
-    let i_name = format!("__hale_chain_i{}", uid);
+    let i_name = cursor_var("__hale_chain_i", uid, c.anchor);
     let action: Vec<Stmt> = match c.terminal.as_str() {
         "first" | "find" => vec![
             assign(idx, var(&i_name, sp), sp),
@@ -1248,7 +1287,7 @@ fn lower_indexed(
         apply_stages(&c.stages, &elem0, uid, action, sp);
     let mut stmts = vec![let_mut(idx, int(-1, sp), sp)];
     stmts.extend(stage_inits);
-    stmts.extend(build_loop(&c.src, uid, body, c.accessor, sp));
+    stmts.extend(build_loop(&c.src, uid, body, c.accessor, c.anchor, sp));
 
     // The element-valued result rides the same accessor the loop did —
     // `get` for a vec, `entry_at` for a hashmap — so first/find/min/max

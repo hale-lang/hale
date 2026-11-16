@@ -76,7 +76,10 @@ fn lsp_v1_diagnostics_lifecycle() {
 
     let broken = "fn main() {\n    let x: Int = \"not an int\";\n    println(x);\n}\n";
     let fixed = "fn main() {\n    let x: Int = 42;\n    println(x);\n}\n";
-    let warny = "locus L {\n    params { n: Int = 0; }\n    run() {\n        let mut i = 0;\n        while true {\n            let b = std::bytes::BytesBuilder { };\n            i = i + 1;\n        }\n    }\n}\nfn main() { L { }; }\n";
+    // A plain string that looks interpolated (a warning the editor shows),
+    // and a builder made per iteration of a run loop, which the hot-path
+    // lint reports only when asked for (GH #1948), never in the editor.
+    let warny = "locus L {\n    params { n: Int = 0; }\n    run() {\n        let mut i = 0;\n        while true {\n            let b = std::bytes::BytesBuilder { };\n            i = i + 1;\n            println(\"i={i}\");\n        }\n    }\n}\nfn main() { L { }; }\n";
     std::fs::write(&file, broken).expect("write seed file");
 
     let mut lsp = Lsp::start();
@@ -136,7 +139,7 @@ fn lsp_v1_diagnostics_lifecycle() {
         clear
     );
 
-    // Warning shapes → severity 2, hot-path lint present.
+    // Warning shapes → severity 2; the hot-path lint is not the editor's.
     lsp.send(serde_json::json!({
         "jsonrpc": "2.0", "method": "textDocument/didChange",
         "params": {
@@ -153,11 +156,13 @@ fn lsp_v1_diagnostics_lifecycle() {
         warn
     );
     assert!(
-        wdiags.iter().any(|d| d["message"]
-            .as_str()
-            .unwrap()
-            .contains("hot-path allocation")),
-        "hot-path lint expected: {}",
+        wdiags.iter().any(|d| d["message"].as_str().unwrap().contains("this is a plain string")),
+        "the interpolation lint expected: {}",
+        warn
+    );
+    assert!(
+        !wdiags.iter().any(|d| d["message"].as_str().unwrap().contains("hot-path allocation")),
+        "the hot-path lint is asked for, not the editor's default: {}",
         warn
     );
 
@@ -1319,6 +1324,107 @@ fn main() {\n\
     }));
     let _ = lsp.child.wait();
     let _ = std::fs::remove_dir_all(&seed);
+}
+
+/// GH #1951 item 6 (F.51): `textDocument/definition` on a name an
+/// import list brings in bare, on the name as the list spells it, on a
+/// renamed one, and on a re-exported `api::ModelRow` lands on the
+/// declaration in the seed that wrote it.
+#[test]
+fn lsp_definition_follows_import_lists_and_reexports() {
+    let root = std::env::temp_dir().join(format!("hale_lsp_import_lists_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for d in ["store", "api", "app"] {
+        std::fs::create_dir_all(root.join(d)).expect("mkdir");
+    }
+    std::fs::write(
+        root.join("store/store.hl"),
+        "type ModelRow { id: Int; name: String; }\n\
+         fn describe(r: ModelRow) -> String { return r.name; }\n",
+    )
+    .expect("write store");
+    std::fs::write(
+        root.join("api/api.hl"),
+        "import \"../store\" as st { ModelRow };\n\
+         fn make(id: Int) -> ModelRow { return ModelRow { id: id, name: \"row\" }; }\n",
+    )
+    .expect("write api");
+    let file = root.join("app/main.hl");
+    let uri = format!("file://{}", file.display());
+    let text = "import \"../api\" as api { ModelRow };\n\
+import \"../store\" as st { describe as show };\n\
+fn keep(r: ModelRow) -> api::ModelRow { return r; }\n\
+fn main() {\n\
+    let r: ModelRow = api::make(1);\n\
+    println(show(keep(r)));\n\
+}\n";
+    std::fs::write(&file, text).expect("write app");
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": text
+        }}
+    }));
+    let diags = lsp.recv();
+    assert_eq!(
+        diags.pointer("/params/diagnostics").and_then(|d| d.as_array()).map(|d| d.len()),
+        Some(0),
+        "the seed checks clean: {diags}"
+    );
+
+    // (line, the text the cursor starts on, what the target line holds)
+    let cases = [
+        (2, "ModelRow) ->", "type ModelRow"),
+        (2, "ModelRow { return", "type ModelRow"),
+        (4, "ModelRow =", "type ModelRow"),
+        (0, "ModelRow }", "type ModelRow"),
+        (5, "show(", "fn describe"),
+        (1, "describe", "fn describe"),
+    ];
+    for (id, (line, at, holds)) in cases.into_iter().enumerate() {
+        let mut character = text.lines().nth(line).unwrap().find(at).unwrap();
+        if at == "ModelRow { return" {
+            // the `ModelRow` of `api::ModelRow`
+            character = text.lines().nth(line).unwrap().find("api::ModelRow").unwrap() + 5;
+        }
+        lsp.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": 10 + id, "method": "textDocument/definition",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character }
+            }
+        }));
+        let d = lsp.recv();
+        let def_uri = d
+            .pointer("/result/uri")
+            .and_then(|u| u.as_str())
+            .unwrap_or_else(|| panic!("`{}` on line {} resolves: {}", at, line, d));
+        assert!(def_uri.ends_with("store/store.hl"), "`{}` lands in the store: {}", at, def_uri);
+        let content = std::fs::read_to_string(def_uri.strip_prefix("file://").unwrap()).expect("definition file");
+        let target = d.pointer("/result/range/start/line").unwrap().as_u64().unwrap() as usize;
+        assert!(
+            content.lines().nth(target).unwrap_or("").contains(holds),
+            "`{}` on line {} → line {}, expected {:?}",
+            at,
+            line,
+            target,
+            holds
+        );
+    }
+
+    lsp.send(serde_json::json!({ "jsonrpc": "2.0", "id": 99, "method": "shutdown", "params": {} }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({ "jsonrpc": "2.0", "method": "exit", "params": {} }));
+    let _ = lsp.child.wait();
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// A file inside the materialized stdlib cache

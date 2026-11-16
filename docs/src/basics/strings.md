@@ -1,6 +1,6 @@
 # Strings & Text
 
-`String` in Hale is an immutable UTF-8 byte sequence, while `Bytes` holds arbitrary binary data (including null bytes). For text processing, Hale provides string interpolation (`f"..."`), multi-line raw block strings (`"""`), `BytesBuilder` for linear-time buffer construction, and `ByteView` for zero-rescan parsing.
+`String` in Hale is an immutable UTF-8 byte sequence, while `Bytes` holds arbitrary binary data (including null bytes). For text processing, Hale provides string interpolation (`f"..."`), multi-line raw block strings (`"""`), one-line raw strings (`r"..."`), `BytesBuilder` for linear-time buffer construction, and `ByteView` for zero-rescan parsing.
 
 ```hale
 fn main() {
@@ -75,7 +75,7 @@ fn main() {
 }
 ```
 
-The buffer stays the local's only while nothing else holds the text. Strings are values, so a read that may keep the local's value (passing it to a function, binding it to another name, storing it, returning it) gives the buffer up, and the next append copies the whole text first; a copy taken before an append never sees it. Reading the text as an operand of `+` or of a comparison, in a slice (`s[lo..hi]` copies), or as an argument of a `std::` reader that returns a number or a `Bool` (`len`, `std::str::contains`, `index_of`, `starts_with`) keeps the buffer; passing it to a function of your own does not, since the compiler does not know what that function keeps. So inside the loop, use the growing text only in those ways, and hand it on after the loop. A loop that appends and also passes the text to a call (`out += row; log(out);`) copies the text on every iteration, and so does appending to any other place (`rec.body = rec.body + row`); `hale check` warns on both, and `hale verify` fails on them.
+The buffer stays the local's only while nothing else holds the text. Strings are values, so a read that may keep the local's value (passing it to a function, binding it to another name, storing it, returning it) gives the buffer up, and the next append copies the whole text first; a copy taken before an append never sees it. Reading the text as an operand of `+` or of a comparison, in a slice (`s[lo..hi]` copies), or as an argument of a `std::` reader that returns a number or a `Bool` (`len`, `std::str::contains`, `index_of`, `starts_with`) keeps the buffer; passing it to a function of your own does not, since the compiler does not know what that function keeps. So inside the loop, use the growing text only in those ways, and hand it on after the loop. A loop that appends and also passes the text to a call (`out += row; log(out);`) copies the text on every iteration, and so does appending to any other place (`rec.body = rec.body + row`); `hale verify` reports both (and `hale check --warn-hot-path` shows them).
 
 For those cases, or for a buffer that outlives one call, append into a `std::bytes::BytesBuilder` (or use `std::str::join` when you already have a collection of strings):
 
@@ -169,6 +169,20 @@ Block strings obey four lexical rules (`spec/tokens.md` § Block strings):
 2. **Raw content (no escapes or interpolation):** Backslashes (`\n`, `\"`) and braces (`{`) are literal characters. Join with `+` if you need to splice runtime values.
 3. **Boundary newlines excluded:** The newline immediately following the opening `"""` and the newline immediately preceding the closing `"""` are not included in the string. Add a blank line before the closing `"""` if you want a trailing newline.
 4. **Extended fences (`""""`):** If a line inside the block string starts with `"""`, open and close the block string with four or more quotes (`""""`). `hale fmt` re-indents block strings alongside surrounding code without changing their contents.
+
+## Raw Strings
+
+A one-line text whose backslashes are its own, such as a regular expression or a Windows path, is a **raw string**: `r` before the opening quote. Nothing in it is an escape and `{` is plain text. When the text holds a `"`, put `#` between the `r` and the quote and close with `"#` (add more `#` if the text holds `"#`):
+
+```hale
+fn main() {
+    println(r"C:\temp\new");        // C:\temp\new
+    println(r"^\d+\.\d+$");        // ^\d+\.\d+$
+    println(r#"say "hi" {x}"#);    // say "hi" {x}
+}
+```
+
+A raw string is an ordinary `String` literal and goes wherever one does (`spec/tokens.md` § Raw strings).
 
 ## Slicing, Scanning, and `ByteView`
 

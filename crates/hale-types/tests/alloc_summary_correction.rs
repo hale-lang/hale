@@ -236,7 +236,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 38 targets below are the only ones the correction changes.
+/// The 39 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -247,7 +247,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 29] = [
+const CALL_LINES_ONLY: [(&str, usize); 34] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -274,10 +274,21 @@ const CALL_LINES_ONLY: [(&str, usize); 29] = [
     // 4: the new test (S6) calls the writers and the readers, whose
     // stdlib bodies only the renames name.
     ("tests/hale/bytes_writer_offset_test.hl", 4),
+    // GH #1942's test of the shapes now compiled: the BytesBuilder's
+    // stdlib methods only the renames name
+    // GH #1984: each element cursor over a `bounded` or array field (22:
+    // one per chain, three for `max`, two for `find`) is the collection's
+    // `at`, which only the check's typing names
+    ("tests/hale/chains_field_anchor_test.hl", 22),
+    ("tests/hale/codegen_gaps_test.hl", 10),
     // the incremental SHA-256's test: the `Sha256` locus is appended to
     // the program that names it, so only the two native calls of its
     // `std::crypto::sha256` comparisons are the renames'
     ("tests/hale/crypto_sha256_stream_test.hl", 2),
+    // 5: the generics parity test (GH #1964): an imported seed's generic
+    // fns and their specializations, called through the alias, which
+    // only the renames name
+    ("tests/hale/generics_parity_test.hl", 5),
     // 2: P3 2 of 3's classified correction resolves `let f = lib::add3;
     // f()` to the fn the local names, which only the renames reach; 3
     // more: E5 resolves the calls through a function value to the
@@ -285,6 +296,12 @@ const CALL_LINES_ONLY: [(&str, usize); 29] = [
     // only the renames name.
     ("tests/hale/http_status_phrase_test.hl", 1),
     ("tests/hale/imported_fn_value_test.hl", 5),
+    // GH #1951 item 6: the five calls spelled through an alias
+    // (`api::make`, `st::describe`, `api::show`, `api::sell` twice) only
+    // the renames name; the bare listed names (`show`, `size`) were named
+    // already, since the seed binds them to the declaration's symbol
+    // before anything summarizes it.
+    ("tests/hale/import_list_test.hl", 5),
     // the property test of the run-appending escaper (its Rng and
     // generators are the program's own; the escapers' stdlib bodies
     // only the renames name)
@@ -298,6 +315,9 @@ const CALL_LINES_ONLY: [(&str, usize); 29] = [
     ("tests/hale/json_unicode_escapes_test.hl", 16),
     ("tests/hale/json_valid_test.hl", 27),
     ("tests/hale/log_fields_test.hl", 6),
+    // 4 more (GH #1982): each `or raise` a `@raise` fn converts is the
+    // call `conv(err)` it lowers to, one call line per conversion
+    ("tests/hale/raise_conversion_test.hl", 5),
     ("tests/hale/rand_rng_test.hl", 12),
     ("tests/hale/secret_write_private_test.hl", 10),
     ("tests/hale/std_secret_test.hl", 8),

@@ -61,16 +61,6 @@ impl Ty {
 
     /// The literal a field of the type defaults to when it is optional, for
     /// a scalar.
-    fn zero(&self) -> Option<&'static str> {
-        match self {
-            Ty::Int => Some("0"),
-            Ty::Float => Some("0.0"),
-            Ty::Bool => Some("false"),
-            Ty::Str => Some("\"\""),
-            _ => None,
-        }
-    }
-
     fn why(&self) -> Option<&str> {
         match self {
             Ty::Value(w) => Some(w),
@@ -760,12 +750,11 @@ impl Surface {
                         } else {
                             String::new()
                         };
+                        // an optional property is an optional field, its
+                        // presence flag `has_<name>` synthesized beside it and
+                        // its absent value its type's zero (F.52)
                         if f.optional {
-                            o.push_str(&format!("    has_{}: Bool = false;\n", f.name));
-                            match f.ty.zero() {
-                                Some(z) => o.push_str(&format!("    {}: {} = {z}{tag};\n", f.name, f.ty.text())),
-                                None => o.push_str(&format!("    {}: {}{tag};\n", f.name, f.ty.text())),
-                            }
+                            o.push_str(&format!("    {}?: {}{tag};\n", f.name, f.ty.text()));
                         } else {
                             o.push_str(&format!("    {}: {}{tag};\n", f.name, f.ty.text()));
                         }

@@ -1,0 +1,29 @@
+// A generic fn whose result applies a generic type to its parameter
+// (`-> Box<T>`) is typed at its call as the monomorph its arguments name
+// (GH #1978). The checker took the call as `Unknown`: a field read of it
+// took anything, so a scale-less Decimal literal beside a `Decimal<4>`
+// never took the scale and the build refused the comparison.
+
+type Box<T> { v: T; }
+type Pair<A, B> { a: A; b: B; }
+type Quote { fills: bounded[Decimal<4>; 4]; }
+
+fn box_of<T>(x: T) -> Box<T> { return Box { v: x }; }
+fn pair_of<A, B>(a: A, b: B) -> Pair<A, B> { return Pair { a: a, b: b }; }
+fn nested<T>(x: T) -> Box<Box<T>> { return Box { v: Box { v: x } }; }
+
+fn main() {
+    let q = Quote { };
+    push(q.fills, 0.001d) or discard;
+    let b = box_of(at(q.fills, 0) or 0.0d);
+    let f = b.v;
+    std::test::assert(f == 0.001d, "a Decimal<4> through a generic result takes a literal's scale");
+    std::test::assert_eq_str("" + f, "0.001", "and prints as a Decimal<4> does");
+
+    let p = pair_of(3, "x");
+    std::test::assert_eq_int(p.a + 1, 4, "a two-parameter result's Int field");
+    std::test::assert_eq_str(p.b + "y", "xy", "and its String field");
+
+    let n = nested(5);
+    std::test::assert_eq_int(n.v.v * 2, 10, "a nested application reads through");
+}

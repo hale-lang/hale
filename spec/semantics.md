@@ -65,6 +65,13 @@ declared return type treats its trailing expression as an
 implicit `return`: `fn double(n: Int) -> Int { let d = n * 2;
 d }` returns `d` (2026-08-11 — previously the typechecker
 accepted this form and codegen rejected it as a fall-through).
+The tail is checked as that `return` is: against the return type
+(a fallible body's success type), a set's member flowing into the
+set, an `Int` widening to a `Float` (2026-11-15 — previously the
+check judged only a Decimal tail's scale, and the build refused a
+tail of another type, a member included, with no place). A
+fallible locus method's tail is its return as every other body's
+is.
 A body with *no* declared return type keeps statement-position
 semantics: the tail is evaluated for side effects.
 The same body's **last statement** is its value when it is a `match`,
@@ -74,7 +81,9 @@ return (§ "Definite return", below).
 Such a body returns nothing, so a `return` in it carries no value: a
 `return <expr>;` in a fn or mode with no `-> T` (a fallible fn's
 success type is then `()`) or in a lifecycle hook (`birth`, `run`,
-`accept`, `drain`, …) is a type error at the value. `fn main` is the
+`accept`, `drain`, …) is a type error at the value, a call with no
+value of its own included (`return touch() or fail err;` in a
+`() fallible(E)` fn: write the call as a statement, then `return;`). `fn main` is the
 exception: its `return n;` is the process exit code (§ "Process
 exit").
 
@@ -579,7 +588,11 @@ owner may live in a different tower or on a different pool: a
 cross-pool owner is served by an async handoff over the bus, so a
 cross-pool `I{}` is **fire-and-forget** — it may only appear as a
 bare statement, and using the instance as a value is rejected at
-compile time. The rule holds at every expansion of a default, since
+compile time. So is a value use where the enclosing locus runs both
+on the owner's thread and off it (its birth is a same-tower
+allocation in some instances and a cross-pool post in others,
+chosen at a bare statement): the typechecker refuses it at the
+literal, naming the instances and their threads. The rule holds at every expansion of a default, since
 a default is lowered where it is expanded, not where it is written.
 The typechecker rejects it at the literal: in a member body (a
 closure's assertion included), under the locus whose body it is; in
@@ -596,6 +609,20 @@ not rejected. Chains of defaults of either kind are followed. A
 use, under whichever locus uses them, so one that builds an `I{}`
 some locus would post is rejected at the position. See `runtime.md`
 "Interest-based ownership (accept bubbling)."
+
+A cross-pool child is born on the owner's thread from a marshaled copy
+of its params, and nothing of it runs on the far side but that birth:
+each param must be a type the spawn marshals (a scalar of `Int`,
+`Float`, `Bool`, `Decimal`, `Duration` and `Time`, a `String`, a
+`Bytes`, a struct whose fields the bus carries, a fixed array of those),
+and the child keeps params, an optional `birth`, `drain` or `dissolve`,
+and a contract, never a non-empty `run()`, bus subscriptions, closures,
+capacity slots or an `accept` of its own. `hale check` refuses a child
+that breaks either, once, at the first literal the bubble plan posts
+across ("cross-pool spawn \`Ship{ }\`: it is born on \`World\`'s thread
+from a marshaled copy of its params, and hale can't compile this child
+that way yet: its param \`t\` is \`(Int, Int)\`, a tuple, …"); the build
+refused it after a passing check (GH #1942).
 
 **An interface `accept`.** `accept(c: I)` may name an interface
 (`spec/types.md` § Interface types). It accepts every locus that
@@ -4562,6 +4589,19 @@ The rewrite happens post-parse, before typecheck, so it cannot
 dispatch on the source's type; a form that does not answer `get`
 fails with an ordinary no-method diagnostic at the chain's site.
 
+A chain over a `bounded[T; N]` or an array walks it by its type,
+however it is reached and whatever it is named: a local, a param, a
+record's or a locus's field, a path of fields (`o.inner.tags.filter(it
+> 1).count()`). Its element cursor is the collection's own `at`, so the
+effect and allocation analyses read it as that intrinsic (no effect, no
+allocation) and the chain holds under `@no_syscall` and `@budget(
+alloc_per_call = 0)` (GH #1984). `.items` and `.entries` anchor a chain
+on a form's iteration surface, and the rewrite strips the anchor before
+any type is known; the receiver's type then decides what it was: a
+`@form` locus, or one that declares the cursor itself, keeps the
+pseudo-field, and a receiver with a real field of the anchor's name (a
+record's `items: bounded[T; N]`) walks that field.
+
 **Fallible terminals ride the source's own `get`.** `first` / `find`
 / `min` / `max` lower to an index search whose value is
 `src.get(idx)` — an empty result is the ordinary `IndexError`, so
@@ -4723,6 +4763,15 @@ the field ("topic \`Ev\` declares \`payload: Msg\`, whose field \`x\` is
 a tuple (\`(Int, Int)\`), which the wire format does not carry").
 Until 2026-10-13 the check admitted every field and the build refused
 these, and every enum field, with no file or line.
+A literal subject's `of type` struct (`subscribe "m" as on_m of type
+M`) is held to the same rule, once per payload type, at the first clause
+that names it, and an array's element is a scalar or a struct, never an
+enum (a payload-free enum's tag travels alone): both reached the build
+until GH #1942. So does a binding's transport: a native `shm_ring`
+holds fixed-size struct slots, so a topic whose payload is an enum is
+refused at its entry, and a `layout:` ring hands its subscriber one
+record at a time, so a `Drain<T>` batch handler on one is refused at
+the `subscribe`.
 
 **Size.** A delivery is as large as its fields make it, and local
 delivery is bounded only by the payload arena (`spec/memory.md`):
@@ -4751,6 +4800,25 @@ For each `closure NAME { LEFT ~~ RIGHT within TOL; epoch
 3. If `<= TOL`: closure passes silently.
 4. If `> TOL`: flips the locus's "exploded" flag; emits a
    typed `ClosureViolation` event.
+
+The band is computed in one type: LEFT, RIGHT and TOL are all `Int`
+(a `Duration`, a `Decimal`) or all `Float`. An `Int` beside a `Float`
+— most often a literal beside `mean(self.x)`, which is a `Float` — is
+refused by `hale check` at the `Int` ("closure \`band\`: the band is a
+\`Float\` (the other side is one), and its tolerance is an \`Int\`; …
+write it as a \`Float\`").
+
+The accumulators `sum(…)`, `count()` and `mean(…)` are a closure
+assertion's, sampled once per epoch, and each accumulates one field of
+the locus (`sum(self.x)`, `mean(self.x)`). Outside a closure assertion
+they name nothing the build can call, an accumulator over a wider
+expression (`sum(self.a + self.b)`) has no slot to sample, and
+`prod(…)`, which the grammar reserves, has no lowering: `hale check`
+refuses each at the accumulator ("\`sum(…)\` is a closure assertion's
+accumulator …, and is compiled only there"; "hale can't compile the
+\`prod(…)\` accumulator yet"), where the build refused it after a
+passing check (GH #1942). A running product, or a sum of two fields,
+is kept in a field the locus updates, and asserted on.
 
 Epoch boundaries:
 
@@ -5854,7 +5922,9 @@ narrowing's full reasoning and the rejected alternatives.
 `fail <expr>;` inside a fallible fn body:
 
 1. Evaluates `<expr>` to a value `v` (typed as the fn's
-   declared payload type E).
+   declared payload type E, or as a member of E when E is a
+   set type: the member's value is the set's, spec/types.md
+   § Set types).
 2. Exits the enclosing fallible fn body via the error path.
 3. The caller's `Expr::Call` sees the result as
    `FallibleErr(v)` — a tagged value the immediate caller's
@@ -5936,6 +6006,13 @@ today, not part of the rule:
 non-error value, that value is the expression's value
 (disposition is a no-op). If the result is `FallibleErr(p)`:
 
+`<expr>` is the fallible call itself (a fn's, a generic fn's, a
+method's, a stdlib path's) or a narrowing conversion. Anything else
+in that place — a field read of a record whose field holds a fallible
+call (`Box { v: f() }.v or 0`), an element, a name — has no failure
+of its own, and the `or` is a type error at it (GH #1966): the `or`
+goes on the call where it is written.
+
 - **`or raise`** — propagate the error one frame up the
   static call stack. Inside a fallible(E) fn, this writes `p`
   into the enclosing fn's error sret slot and exits via the
@@ -5945,12 +6022,15 @@ non-error value, that value is the expression's value
   later promote a value error to a closure violation
   explicitly, but no such syntax exists in v1.) The payload
   forwarded is the enclosing fn's error, so the call's error
-  type must be the one the fn declares: `std::os::getrandom(4)
-  or raise` in a `fallible(CryptoError)` fn is refused at the
-  `or raise`, naming both types, and is written `or fail
-  CryptoError { kind: err.kind, detail: err.detail }` (below)
-  or the fn declared `fallible(IoError)` (GH #1945: the check
-  admitted it and the build refused it in lowering's terms). A
+  type must be the one the fn declares or one it converts from
+  ("Converting a raised error", below): `std::os::getrandom(4)
+  or raise` in a `fallible(CryptoError)` fn, with nothing to
+  convert an `IoError` into a `CryptoError`, is refused at the
+  `or raise`, naming both types and the three ways forward (a
+  `@raise` conversion, a set holding the call's error, or `or
+  fail CryptoError { kind: err.kind, detail: err.detail }`,
+  below) (GH #1945: the check admitted it and the build refused
+  it in lowering's terms). A
   stdlib error type spelled by its path (`std::crypto::CryptoError`,
   `std::io::IoError`, `std::str::ParseError`, `std::index::IndexError`,
   `std::form::hashmap::KeyError`, `std::form::ring_buffer::EmptyError`)
@@ -5998,10 +6078,88 @@ non-error value, that value is the expression's value
   `src() or fail DstError { kind: err.kind }`. Same
   divergence rule: chain value type collapses to the inner
   success type. Typechecker rejects outside a fallible fn
-  body with a hint to use `or raise` or `or <fallback>`.
+  body with a hint to use `or raise` or `or <fallback>`. As
+  with `fail`, a member of a set error type is the set's: `or
+  fail err` hands a `ParseError` on in a `fallible(LoadError)`
+  fn, with `type LoadError = ParseError | IoError;`.
 
 Chains are right-associative: `a() or b() or raise` reduces
 the value to the success type level by level.
+
+### Converting a raised error
+
+An `or raise` (and the implicit `or raise` of a fallible
+handler, spec/types.md § "Disposition operators (`or`)") whose
+call fails with `P` inside a `fallible(E)` fn, `P` not `E`,
+converts the error into an `E` in one of two ways, tried in
+this order (GH #1951, F.50):
+
+1. **A set member (R2).** `E` is a set type holding `P`
+   (spec/types.md § Set types): the error becomes the set's
+   member, exactly as `fail p;` and `or fail err` make it. One
+   relation decides all four: `fail`, `or fail <expr>`, `or
+   raise` and a fallible handler's failure.
+2. **A conversion (R3).** One `@raise fn` from `P` to `E` is
+   declared: the raise is `or fail conv(err)`, so the caller's
+   handler sees the converted error and every field the
+   conversion copied.
+
+   ```hale
+   type StoreError { key: String; }
+   type ApiError { status: Int; detail: String; }
+
+   @raise fn api_from_store(e: StoreError) -> ApiError {
+       return ApiError { status: 404, detail: "no key " + e.key };
+   }
+
+   fn lookup(key: String) -> Int fallible(StoreError) {
+       if key == "missing" { fail StoreError { key: key }; }
+       return len(key);
+   }
+
+   fn get(key: String) -> Int fallible(ApiError) {
+       return lookup(key) or raise;
+   }
+   ```
+
+A `@raise fn` is a free fn of one parameter, not generic and
+not `fallible`, whose result type is not its parameter's; each
+other shape is refused at the fn. It runs on the error path of
+the raise, so `@raise` implies the effect assertion
+`@effects(none: {syscall, publish, spawn, block})`, held as
+every assertion is (spec/verification.md): it may allocate the
+error it returns and do nothing else with an effect. The
+conversion's call is not written, and every analysis of the fn
+that raises reads it as the call it is, the `or fail conv(err)`
+the raise stands for (GH #1982): its allocations count against
+the raising fn's `@budget(alloc_per_call = N)`, an effect class it
+reaches beyond the four (`time`, a program's own `effect` class)
+is one the raising fn reaches, with the conversion on the witness
+path (`get -> api_from_store`), and `@no_panic` judges the raise as
+the `or raise` it is written, a trap.
+
+Conversions are coherent:
+
+- **The orphan rule.** A `@raise fn` is declared in a seed that
+  declares `P` or `E`. A builtin type (`IoError`,
+  `ParseError`, `CryptoError`, …) belongs to no seed, so a
+  conversion from one is declared beside the type it converts
+  into. A conversion declared anywhere else is refused at the fn
+  ("`conv` converts `IoError` into `lib::ApiError`, and a
+  `@raise` fn is declared in the seed of one of its two types").
+- **In reach.** By the orphan rule every conversion from `P` to
+  `E` is in the seed of `P` or of `E`, so the conversions an `or
+  raise` sees are those two seeds'. Two of them for one pair are
+  refused at the `or raise`, naming both; either alone applies.
+- **No chaining.** A conversion applies once: a `P` that one
+  converts into `Q` and another from `Q` into `E` is not an `E`.
+  Nor does a conversion apply into a set by way of a member, or
+  to a member by way of the set.
+
+A set member is tried first: where `E` is a set holding `P`, a
+conversion from `P` to `E` is never called. Where neither
+applies, the `or raise` is refused as above, and the error is
+translated where it is raised, `or fail E { … }`.
 
 ### Process exit
 
