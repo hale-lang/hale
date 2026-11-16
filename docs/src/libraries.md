@@ -41,6 +41,45 @@ main locus App {
 }
 ```
 
+### Bringing names in bare: import lists
+
+An import may end in a list of names. Each listed name is spelled bare
+in your seed, in every file of it, and `as` renames one:
+
+```hale
+import "../store" as st { ModelRow, Side, describe as show };
+
+fn label(r: ModelRow) -> String {
+    return show(r);
+}
+
+fn buying() -> Side {
+    return Side::Buy;
+}
+```
+
+`st::ModelRow` keeps working beside the bare `ModelRow`; they are one
+declaration. A list names types (records, enums, aliases), loci, fns,
+consts, topics, interfaces and perspectives; there is no glob.
+
+**A list re-exports.** What a seed lists is reachable through that
+seed's alias by its own importers. If `api` lists `ModelRow` from
+`st`, an importer of `api` can write `api::ModelRow`, or list it again
+(`import "../api" as api { ModelRow };`), and it is the same type as
+`st::ModelRow` — a value moves between the spellings with no
+conversion. Moving a type from one seed to another is then a change to
+an import list rather than to every use.
+
+The compiler refuses, at the item:
+
+- a name the imported seed neither declares nor re-exports (and says
+  what it does provide);
+- a listed name your seed also declares, or that another list binds
+  to a different declaration — rename one (`ModelRow as StModelRow`).
+
+A local variable or parameter of the same name shadows a listed name,
+as it shadows any top-level name.
+
 ### Resolution & Scoping Rules
 
 | Rule | Behavior |
@@ -49,7 +88,9 @@ main locus App {
 | **Directory vs. file imports** | `import "../lib" as lib;` and `import "../lib/main" as lib;` both import the entire `../lib/` seed directory as one library. Importing any other `.hl` file (`import "../lib/helper" as h;`) imports that single file standalone. You cannot import both a directory and an individual file inside that same directory in one program. |
 | **A seed never imports its own files** | The files of one directory share one scope, so a sibling's declarations are already yours by their bare names: call `double(2)`, not `util::double(2)`. `import "util" as util;` (or `"./util"`, or `"."`) naming a file of the seed being built, or its own directory, is refused at the import. A single-file target (`hale run main.hl`) is a seed of that one file, so there a sibling `util.hl` is imported as a library of its own. |
 | **Aliases are seed-local namespaces** | An import alias (`sqlite::Db`) is a namespace, not a value binding: a function named `fn core()` and `import "../core" as core;` do not collide (`core::fn_name()` vs `core()`). However, keep aliases `snake_case` so they never collide with `PascalCase` `type` or `enum` names (`Type::Variant` takes precedence over `alias::Symbol`). |
-| **Type identity across aliases** | Importing the same library under two aliases (`a` and `b`) refers to the exact same underlying types (`a::Row` is type-compatible with `b::Row`). |
+| **Qualified names check like bare ones** | A library's generic type or enum named through its alias is checked against its declaration exactly as a local one is: `lib::Box<Int, String>` against `type Box<T>` is a type error for its argument count, and `lib::Side::Limit("x")` for its payload type. A scale-less Decimal literal in a `lib::Side::Limit(1.25d)` payload takes the declared scale. |
+| **Type identity across aliases** | Importing the same library under two aliases (`a` and `b`) refers to the exact same underlying types (`a::Row` is type-compatible with `b::Row`). A name re-exported through an import list (`api::Row`) is the same type too. |
+| **Aliases are not re-exported** | A library's own import aliases stay inside it: when `api` imports `"../store" as st`, its importers cannot write `api::st::Row` or `st::Row` without importing the store themselves. Only the names `api` lists on that import are reachable as `api::Name`. |
 | **Imported `main locus` is inert** | If an imported library directory contains its own `main locus` and `fn main()`, importing that library does **not** activate its `main locus`, `bindings`, or `placement`. Your application can still declare its own `main locus`. |
 | **Stdlib requires `std::`** | Built-in standard library modules are called directly via `std::*` (e.g., `std::env::args_count()`, `std::time::sleep(1s)`) with no `import` statement. Omitting `std::` produces a compile error suggesting the `std::` prefix. |
 

@@ -1114,6 +1114,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         } else {
                             (sub_v, sub_ty)
                         };
+                        // A bare `0` is every quantity's zero (spec/units.md),
+                        // so the check admits `1day / 4 or 0`: a Duration (or
+                        // a Time's count) is the integer it holds.
+                        let sub_ty = match (&sub_ty, &call.success_ty) {
+                            (Some(CodegenTy::Int), Some(want @ (CodegenTy::Duration | CodegenTy::Time)))
+                                if hale_types::unit_values::int_literal(rhs) == Some(0) =>
+                            {
+                                Some(want.clone())
+                            }
+                            _ => sub_ty,
+                        };
                         if !value_discarded && sub_ty != call.success_ty {
                             return Err(CodegenError::Invalid(format!(
                                 "`or` substitute type mismatch: expected \
@@ -1324,7 +1335,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     return Ok(result);
                 }
-                id.name.clone()
+                // GH #1966: a generic fallible fn, specialized as a
+                // plain call to it is, and called through the fallible
+                // ABI like any other fallible fn.
+                if self.generic_fn_templates.contains_key(&id.name) && !self.user_fns.contains_key(&id.name) {
+                    self.generic_fn_instance(&id.name, call_id, id.span, args.len())?
+                } else {
+                    id.name.clone()
+                }
             }
             Expr::Field { receiver, name, .. } => {
                 return self.lower_fallible_method_call(
@@ -1342,15 +1360,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     return Ok(result);
                 }
-                // Otherwise the path is either an imported-lib free
-                // fn (mangled name lives in `user_fns`) or unknown.
-                match self.mangled_for_path(&segs) {
-                    Some(mangled) => mangled,
-                    None => {
-                        return Err(CodegenError::Unsupported(format!(
-                            "`or` over unknown path call `{}`",
-                            segs.join("::")
-                        )));
+                // GH #1964 / #1966: an imported seed's generic
+                // fallible fn.
+                if let Some(name) = self.imported_generic_template(qn) {
+                    let call_id = match inner {
+                        Expr::Call { id, .. } => *id,
+                        _ => hale_syntax::ast::NodeId::NONE,
+                    };
+                    self.generic_fn_instance(&name, call_id, qn.span, args.len())?
+                } else {
+                    // Otherwise the path is either an imported-lib free
+                    // fn (mangled name lives in `user_fns`) or unknown.
+                    match self.mangled_for_path(&segs) {
+                        Some(mangled) => mangled,
+                        None => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "`or` over unknown path call `{}`",
+                                segs.join("::")
+                            )));
+                        }
                     }
                 }
             }
@@ -2164,6 +2192,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// the synthesized @form(vec) get/pop. User-declared
     /// fallible locus methods are not yet wired (see PR6 commit
     /// 1's note about declare_locus_struct).
+    /// GH #1984: the field an element chain's cursor walks when its
+    /// source was anchored on `.items` / `.entries`
+    /// (`hale_syntax::chains::cursor_anchor`) and the receiver the
+    /// desugar stripped it to is no form: a record's field, or a locus
+    /// param, of the anchor's name. A form locus, or a locus that
+    /// declares the accessor itself, keeps the pseudo-field reading.
+    /// Returns the field read and the accessor to call on it: `get` for
+    /// a collection, the chain's own for a form locus held in the field.
+    fn chain_anchor_field(
+        &self,
+        receiver: &Expr,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Option<(Expr, &'static str)> {
+        let anchor = hale_syntax::chains::cursor_anchor(args)?;
+        let field_ty = match self.static_expr_codegen_ty(receiver, scope)? {
+            CodegenTy::TypeRef(n) => self.user_types.get(&n)?.fields.get(anchor)?.1.clone(),
+            CodegenTy::LocusRef(n) => {
+                let info = self.user_loci.get(&n)?;
+                let declares = self.locus_declaration(&n).is_some_and(|d| {
+                    d.members.iter().any(|m| matches!(m, LocusMember::Fn(fd) if fd.name.name == method_name))
+                });
+                if declares || info.capacity_slots.iter().any(|s| s.form.is_some()) {
+                    return None;
+                }
+                info.fields.get(anchor)?.1.clone()
+            }
+            _ => return None,
+        };
+        let accessor = match field_ty {
+            CodegenTy::Bounded(..) | CodegenTy::Array(..) => "get",
+            CodegenTy::LocusRef(_) if method_name == "entry_at" => "entry_at",
+            CodegenTy::LocusRef(_) => "get",
+            _ => return None,
+        };
+        let span = receiver.span();
+        Some((
+            Expr::Field {
+                receiver: Box::new(receiver.clone()),
+                name: Ident { name: anchor.to_string(), span, id: NodeId::NONE },
+                span,
+            },
+            accessor,
+        ))
+    }
+
     pub(crate) fn lower_fallible_method_call(
         &mut self,
         receiver: &Expr,
@@ -2171,6 +2246,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        // GH #1984: an element chain anchored on `.items` / `.entries`
+        // over a receiver that is no form but has a real field of that
+        // name walks the field, as the checker typed it.
+        if let Some((field, accessor)) = self.chain_anchor_field(receiver, method_name, args, scope) {
+            return self.lower_fallible_method_call(&field, accessor, args, scope);
+        }
         // `src.get(i)` where src is a type-level collection (a fixed
         // array or a `bounded[T; N]`) rather than a form locus. This
         // is what the element-chain desugar emits, and it is checked

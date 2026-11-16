@@ -4833,7 +4833,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// resulting specialized FunctionValue lands in `user_fns`
     /// keyed by mangled name, so subsequent calls with the same
     /// type args resolve directly.
-    generic_fn_templates: BTreeMap<String, FnDecl>,
+    pub(crate) generic_fn_templates: BTreeMap<String, FnDecl>,
     /// m63: generic locus templates indexed by name. Populated
     /// from LocusDecls with non-empty generics. Unlike generic
     /// fns (which synthesize on-demand at call sites), generic
@@ -6661,6 +6661,11 @@ pub(crate) struct TypeInfo<'ctx> {
     /// The expression is evaluated at instantiation time in the
     /// caller's scope, same as locus-param non-literal defaults.
     pub(crate) defaults: BTreeMap<String, Expr>,
+    /// GH #1951 item 3 (F.52): each declared optional field (`x?: T`) →
+    /// the flag a write of it sets (`has_x`) and the one it clears
+    /// (`clear_x`, for `clearable`). A hand-written pair is not here: its
+    /// flag is written by hand.
+    pub(crate) optional: BTreeMap<String, (String, Option<String>)>,
 }
 
 /// An array or a tuple of loci a locus holds as a field, as an element
@@ -6768,6 +6773,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
         self.mangled_for_path(&refs)
+    }
+
+    /// The generic fn template a callee names: a bare name, or an
+    /// imported seed's path (`lib::id`), by its name in the merged
+    /// program.
+    pub(crate) fn generic_template_of_callee(&self, callee: &Expr) -> Option<String> {
+        match callee {
+            Expr::Ident(i) if self.generic_fn_templates.contains_key(&i.name) && !self.user_fns.contains_key(&i.name) => {
+                Some(i.name.clone())
+            }
+            Expr::Path(qn) => self.imported_generic_template(qn),
+            _ => None,
+        }
+    }
+
+    /// GH #1964: the generic fn template an imported seed's path names
+    /// (`lib::id`), by its name in the merged program.
+    pub(crate) fn imported_generic_template(&self, qn: &QualifiedName) -> Option<String> {
+        if qn.segments.len() < 2 {
+            return None;
+        }
+        let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+        self.mangled_for_path(&segs).filter(|m| self.generic_fn_templates.contains_key(m) && !self.user_fns.contains_key(m))
     }
 
     pub(crate) fn mangled_for_path(&self, segs: &[&str]) -> Option<String> {
@@ -13343,6 +13371,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     fields,
                     field_order: t.fields.iter().map(|(n, _)| n.to_string()).collect(),
                     defaults: BTreeMap::new(),
+                    optional: BTreeMap::new(),
                 },
             );
         }
@@ -13515,7 +13544,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `TypeExpr` per the supplied substitution map. Recurses into
     /// generic args, array elems, tuple parts, etc., so a body
     /// like `[T; 4]` substitutes to `[Int; 4]` correctly.
-    fn substitute_type_expr(
+    pub(crate) fn substitute_type_expr(
         expr: &TypeExpr,
         subst: &BTreeMap<String, TypeExpr>,
     ) -> TypeExpr {
@@ -13812,7 +13841,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// arguments. An argument lowering cannot name a specialization for
     /// (m62 v0.1: primitives and named types) is refused as it always
     /// was; a hole, or a call the table holds no row for, at the call.
-    fn generic_call_instance(
+    pub(crate) fn generic_call_instance(
         &self,
         name: &str,
         call: hale_syntax::ast::NodeId,
@@ -13912,6 +13941,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     generic_args: Vec::new(),
                     span,
                 })
+            }
+            // A perspective (GH #1974): the specialization takes and hands
+            // back the `perspective(P)` handle, as a fn declared over
+            // `perspective(P)` does.
+            Ty::Named(n)
+                if hale_syntax::ast::flat_decls(&self.program.items)
+                    .any(|d| matches!(d, TopDecl::Perspective(p) if p.name.name == *n)) =>
+            {
+                Ok(TypeExpr::Perspective { name: Ident::new(n.clone(), span), span })
             }
             // The check refuses a generic call whose argument names no
             // monomorph (an array, a tuple, a fn type), at the call
@@ -14568,6 +14606,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         tag: f.tag.clone(),
                         indexed_by: f.indexed_by.clone(),
                         map_value: f.map_value.clone(),
+                        optional: f.optional,
                         span: f.span.clone(),
                     })
                     .collect();
@@ -16431,18 +16470,84 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for a in args {
             arg_pairs.push(self.lower_expr(a, scope)?);
         }
+        let mangled = self.generic_fn_instance(name, call, call_span, args.len())?;
+
+        // Emit the call manually using the pre-lowered args (so
+        // we don't lower them twice). Mirrors lower_user_fn_call's
+        // call-emit tail but without the inline arg lowering.
+        let sig = self
+            .user_fns
+            .get(&mangled)
+            .cloned()
+            .expect("specialized fn was just declared");
+        let caller_arena = self.call_site_arena(args, scope)?;
+        let mut llvm_args: Vec<BasicMetadataValueEnum> =
+            Vec::with_capacity(sig.params.len() + 1);
+        llvm_args.push(caller_arena.into());
+        for (i, (val, ty)) in arg_pairs.iter().enumerate() {
+            let val = if view_coerces_to(ty, &sig.params[i]) {
+                // F.30b (5a): unpack view + epoch check at
+                // monomorphized generic-fn arg site.
+                self.unpack_view_if_needed(*val, ty)?
+            } else if let (CodegenTy::Interface(iface), CodegenTy::LocusRef(l)) = (&sig.params[i], ty) {
+                // GH #1975: a locus where the specialization takes the
+                // interface it is held as (`id(c)` with `c: Job` bound
+                // to a `Big`): the fat pointer, as at any fn's argument.
+                self.coerce_to_interface(val.into_pointer_value(), l, iface)?.into()
+            } else if ty != &sig.params[i] {
+                return Err(CodegenError::Unsupported(format!(
+                    "generic fn `{}` arg {} type mismatch after \
+                     monomorphization: expected {}, got {}",
+                    mangled, i, sig.params[i], ty
+                )));
+            } else {
+                *val
+            };
+            llvm_args.push(val.into());
+        }
+        let call = self
+            .builder
+            .build_call(
+                sig.func,
+                &llvm_args,
+                &format!("{}.call", mangled),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        match sig.ret {
+            None => Ok(None),
+            Some(lt) => {
+                let v = call
+                    .try_as_basic_value()
+                    .left()
+                    .expect("non-void fn returns a basic value");
+                Ok(Some((v, lt)))
+            }
+        }
+    }
+
+    /// m62: the specialization a call to generic fn `name` instantiates,
+    /// by its mangled name, synthesized and lowered the first time it is
+    /// reached. A plain call (`lower_generic_fn_call`) and an `or` over a
+    /// fallible one (`lower_fallible_call`, GH #1966) both call it.
+    pub(crate) fn generic_fn_instance(
+        &mut self,
+        name: &str,
+        call: hale_syntax::ast::NodeId,
+        call_span: hale_syntax::span::Span,
+        arg_count: usize,
+    ) -> Result<String, CodegenError> {
         let template = self
             .generic_fn_templates
             .get(name)
             .cloned()
             .expect("caller verified template exists");
-        if arg_pairs.len() != template.params.len() {
+        if arg_count != template.params.len() {
             return Err(CodegenError::Invalid(format!(
                 "generic fn `{}` expects {} args, got {} (m62 v0.1 \
                  doesn't fill defaults on generic templates yet)",
                 name,
                 template.params.len(),
-                arg_pairs.len()
+                arg_count
             )));
         }
         let (inferred, mangled, instance) = self.generic_call_instance(name, call, call_span)?;
@@ -16483,6 +16588,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
             let saved_loops = std::mem::take(&mut self.loops);
+            // The caller's arena redirection (a method's `return` of a
+            // record, a locus instantiation's field init) and its fused
+            // return slot are its own: a specialization first reached
+            // inside one (`return Out { n: mk(x).v };` in a method)
+            // allocated its result through the caller's
+            // `method.caller_arena.for_return`, an instruction of another
+            // function (LLVM: "Instruction does not dominate all uses",
+            // a crash where the verifier is not run).
+            let saved_arena_override = self.current_arena_override.take();
+            let saved_fused_dest = self.fused_dest.take();
             // DWARF: synthesis fires MID-STATEMENT while lowering
             // the caller — the caller's active location must not
             // leak into the synthesized fn's entry allocas
@@ -16529,54 +16644,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.in_main = saved_in_main;
             self.current_self = saved_current_self;
             self.loops = saved_loops;
+            self.current_arena_override = saved_arena_override;
+            self.fused_dest = saved_fused_dest;
         }
-
-        // Emit the call manually using the pre-lowered args (so
-        // we don't lower them twice). Mirrors lower_user_fn_call's
-        // call-emit tail but without the inline arg lowering.
-        let sig = self
-            .user_fns
-            .get(&mangled)
-            .cloned()
-            .expect("specialized fn was just declared");
-        let caller_arena = self.call_site_arena(args, scope)?;
-        let mut llvm_args: Vec<BasicMetadataValueEnum> =
-            Vec::with_capacity(sig.params.len() + 1);
-        llvm_args.push(caller_arena.into());
-        for (i, (val, ty)) in arg_pairs.iter().enumerate() {
-            let val = if view_coerces_to(ty, &sig.params[i]) {
-                // F.30b (5a): unpack view + epoch check at
-                // monomorphized generic-fn arg site.
-                self.unpack_view_if_needed(*val, ty)?
-            } else if ty != &sig.params[i] {
-                return Err(CodegenError::Unsupported(format!(
-                    "generic fn `{}` arg {} type mismatch after \
-                     monomorphization: expected {}, got {}",
-                    mangled, i, sig.params[i], ty
-                )));
-            } else {
-                *val
-            };
-            llvm_args.push(val.into());
-        }
-        let call = self
-            .builder
-            .build_call(
-                sig.func,
-                &llvm_args,
-                &format!("{}.call", mangled),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        match sig.ret {
-            None => Ok(None),
-            Some(lt) => {
-                let v = call
-                    .try_as_basic_value()
-                    .left()
-                    .expect("non-void fn returns a basic value");
-                Ok(Some((v, lt)))
-            }
-        }
+        Ok(mangled)
     }
 
     /// Produce a human-readable diagnostic for a call-expression
@@ -17883,10 +17954,68 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+        // GH #1951 item 3 (F.52): a write of a declared optional field (or
+        // of a part of one) sets its record's presence flag, after the
+        // store, so a part the write copied first holds the flag too.
+        if let (Ok(BlockEnd::Open), Stmt::Assign { target, .. }) = (&r, stmt) {
+            if let Err(err) = self.mark_optional_written(target, scope) {
+                return Err(self.place(err, stmt.span()));
+            }
+        }
         // GH #1941: a refusal the statement raised outside any expression
         // (a `let`'s annotation, a loop's shape, a send's subject) is
         // placed at the statement.
         r.map_err(|err| self.place(err, stmt.span()))
+    }
+
+    /// GH #1951 item 3 (F.52): `target` was just written. Each field
+    /// segment `x` of it that its record declares optional (`x?: T`) sets
+    /// that record's `has_x` and clears its `clear_x`: `r.x = v`,
+    /// `self.row.x = v`, `xs[i].x = v`, and a write into a part of one,
+    /// `r.x.n = v`. A hand-written pair's flag is not touched.
+    pub(crate) fn mark_optional_written(
+        &mut self,
+        target: &LValue,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if self.user_types.values().all(|t| t.optional.is_empty()) {
+            return Ok(());
+        }
+        for i in 0..target.tail.len() {
+            let LValueSeg::Field(x) = &target.tail[i] else { continue };
+            let prefix = LValue { head: target.head.clone(), tail: target.tail[..i].to_vec(), span: target.span };
+            let Some(CodegenTy::TypeRef(t)) = self.place_declared_ty(&prefix, scope) else { continue };
+            let Some((has, clear)) = self.user_types.get(&t).and_then(|info| info.optional.get(&x.name)).cloned()
+            else {
+                continue;
+            };
+            self.store_flag_through(&prefix, &has, true, scope)?;
+            if let Some(c) = clear {
+                self.store_flag_through(&prefix, &c, false, scope)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Store `on` into the `Bool` field `flag` of the record at `prefix`.
+    fn store_flag_through(
+        &mut self,
+        prefix: &LValue,
+        flag: &str,
+        on: bool,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let mut place = prefix.clone();
+        place.tail.push(LValueSeg::Field(Ident::new(flag, prefix.span)));
+        let (slot, ty, _, _) = self.resolve_lvalue_chain(&place, scope)?;
+        if ty != CodegenTy::Bool {
+            return Err(CodegenError::Unsupported(format!("optional field flag `{flag}` is a {ty}, not a Bool")));
+        }
+        let bit = self.context.bool_type().const_int(u64::from(on), false);
+        self.builder
+            .build_store(slot, bit)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
     }
 
     fn lower_stmt_traced(
@@ -18047,10 +18176,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         loc: inkwell::debug_info::DILocation<'ctx>,
     ) {
         use inkwell::debug_info::{AsDIScope, DIFlagsConstants};
-        let Some(cur_bb) = self.builder.get_insert_block() else {
+        // The fn the alloca is in, not the builder's: a monomorph
+        // lowered on demand from another fn's call site (a generic fn
+        // whose name opts out of debug info, `__box<T>`) declared its
+        // params under the CALLER's subprogram, and LLVM's DWARF
+        // finalization crashed on the stray scope.
+        let Some(func) = alloca
+            .as_instruction()
+            .and_then(|i| i.get_parent())
+            .or_else(|| self.builder.get_insert_block())
+            .and_then(|bb| bb.get_parent())
+        else {
             return;
         };
-        let Some(func) = cur_bb.get_parent() else { return };
         let Some(sp) = func.get_subprogram() else { return };
         let Some(ditype) = self.di_type_for(ty) else { return };
         let Some(di) = self.di.as_ref() else { return };
@@ -18844,6 +18982,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             };
                             let _ = self.lower_expr(call, scope)?;
                         }
+                    }
+                    // GH #1964: an imported seed's generic fn.
+                    Expr::Path(qn) if self.imported_generic_template(qn).is_some() => {
+                        let name = self.imported_generic_template(qn).expect("guard matched");
+                        let _ = self.lower_generic_fn_call(&name, *call_id, qn.span, args, scope)?;
                     }
                     Expr::Path(qn) => {
                         self.lower_path_call(qn, args, scope)?;
@@ -26644,6 +26787,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             "fn-pointer `{}` returns no value but is used \
                              in expression position",
                             i.name
+                        ))
+                    })
+                }
+                // GH #1964: an imported seed's generic fn.
+                Expr::Path(qn) if self.imported_generic_template(qn).is_some() => {
+                    let name = self.imported_generic_template(qn).expect("guard matched");
+                    let result = self.lower_generic_fn_call(&name, *call_id, qn.span, args, scope)?;
+                    result.ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "generic fn `{}` returns no value but is used in expression position",
+                            qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")
                         ))
                     })
                 }

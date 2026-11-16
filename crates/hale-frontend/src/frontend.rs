@@ -525,6 +525,9 @@ pub fn link_checkable(
     // The load's one effect-class table: the imported seeds intern into
     // it as they are parsed.
     let mut effects = effects;
+    // The seed's own declarations lead the merged items; the imported
+    // seeds' follow them as they are resolved.
+    let entry_len = merged.items.len();
     let mut merged_items = merged.items;
     let mut renames: ImportRenames = Vec::new();
     let mut seed_cache: BTreeMap<
@@ -569,6 +572,30 @@ pub fn link_checkable(
         src,
     )
     .is_err();
+    // GH #1951 item 6 (F.51): the names this seed's import lists bring
+    // in, bare in every file of the seed — its references rewritten to
+    // the listed declaration's own symbol, as an imported seed's are
+    // by its mangling. Nothing lists against a graph that did not
+    // resolve.
+    if !resolve_failed {
+        let declared = super::imports::declared_names(&merged_items[..entry_len]);
+        let listed = super::imports::listed_import_names(
+            &union_imports,
+            &target_scope,
+            &declared,
+            &alias_scopes,
+            &file_bases,
+            &mut path_sources,
+            src,
+            &mut errors,
+        );
+        if !listed.is_empty() {
+            let aliases: std::collections::HashSet<String> =
+                union_imports.iter().filter_map(|i| i.alias.clone()).collect();
+            hale_types::mangle::bind_listed_imports(&mut merged_items[..entry_len], &listed, &aliases);
+            alias_scopes.listed.insert(target_scope.clone(), listed.into_keys().collect());
+        }
+    }
     // GH #765: `resolve_imports` reports an imported file's PARSE
     // failure by pushing it into `errors` and continuing — it still
     // returns Ok. This site used to test only the `Err`, so the

@@ -546,8 +546,11 @@ fn generic_identity(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     Some((with_main(files, out), format!("generic_identity({})", describe(&src, site.e))))
 }
 
-/// A value `e` travels through a generic record: `__PgBox { v: e }.v`,
-/// or a binding of one.
+/// A value `e` travels through a generic record: `__pg_box(e).v`, or a
+/// binding of one. The record is built where its type arguments are
+/// declared, a generic fn's return slot (`-> __PgBox<T>`): a literal
+/// spelled with the template name anywhere else is refused by the check
+/// (GH #1965), so `__PgBox { v: e }.v` would test nothing.
 fn generic_box(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     let (src, program) = parsed(files)?;
     let sites = value_sites(&program);
@@ -557,14 +560,17 @@ fn generic_box(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     let bound = rng.below(2) == 0;
     let edits = if bound {
         vec![
-            (site.before, site.before, format!("let __pg_b = __PgBox {{ v: {e} }};\n    ")),
+            (site.before, site.before, format!("let __pg_b = __pg_box({e});\n    ")),
             (sp.start.as_usize(), sp.end.as_usize(), "__pg_b.v".to_string()),
         ]
     } else {
-        vec![(sp.start.as_usize(), sp.end.as_usize(), format!("__PgBox {{ v: {e} }}.v"))]
+        vec![(sp.start.as_usize(), sp.end.as_usize(), format!("__pg_box({e}).v"))]
     };
     let out = splice(&src, edits)?;
-    let out = append(&out, "type __PgBox<T> {\n    v: T;\n}");
+    let out = append(
+        &out,
+        "type __PgBox<T> {\n    v: T;\n}\n\nfn __pg_box<T>(x: T) -> __PgBox<T> {\n    return __PgBox { v: x };\n}",
+    );
     let how = if bound { "bound" } else { "inline" };
     Some((with_main(files, out), format!("generic_box({}, {how})", describe(&src, site.e))))
 }
@@ -693,7 +699,10 @@ fn requalify(src: &str, name: &str, alias: &str) -> Option<String> {
 }
 
 /// A top-level fn, type or const moves to a seed of its own, imported
-/// under an alias; the main seed names it through the alias.
+/// under an alias; the main seed names it through the alias — or, for
+/// about half the names (GH #1951 item 6), lists it on the import and
+/// keeps naming it bare. The form is a hash of the name rather than a
+/// draw, so the RNG stream every other candidate sees is unchanged.
 fn import_alias(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     let (src, program) = parsed(files)?;
     if files.contains_key(LIB) || !program.imports.is_empty() {
@@ -713,7 +722,14 @@ fn import_alias(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     let (s, e) = decl_range(&src, decl_span(item)?);
     let moved = src.get(s..e)?.to_string();
     let rest = splice(&src, vec![(s, e, String::new())])?;
-    let rest = requalify(&rest, &name, ALIAS)?;
+    // a site either way: the main file names it
+    let qualified = requalify(&rest, &name, ALIAS)?;
+    if fnv(&name) % 2 == 1 {
+        let mut out = with_main(files, format!("import \"./pglib\" as {ALIAS} {{ {name} }};\n\n{rest}"));
+        out.insert(LIB.to_string(), format!("{}\n", moved.trim()));
+        return Some((out, format!("import_alias({name}, listed)")));
+    }
+    let rest = qualified;
     let mut out = with_main(files, format!("import \"./pglib\" as {ALIAS};\n\n{rest}"));
     out.insert(LIB.to_string(), format!("{}\n", moved.trim()));
     Some((out, format!("import_alias({name})")))

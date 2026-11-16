@@ -20,8 +20,8 @@
 //! - fn tail shapes: `return e;` to a tail and back, a tail `if`/`match`/
 //!   block, an early return inside a loop, a return through a `let`;
 //! - generics: a value through `fn __pg_id<T>(x: T) -> T`, through a
-//!   generic record `__PgBox<T>`, a free fn's parameter made a type
-//!   parameter;
+//!   generic record `__PgBox<T>` a generic fn builds, a free fn's
+//!   parameter made a type parameter;
 //! - seeds: a declaration moved to another file of the seed, or to a seed
 //!   of its own imported under an alias;
 //! - element types: a probe exercising `bounded[T; N]` fields and

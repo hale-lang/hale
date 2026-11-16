@@ -143,11 +143,13 @@ fn main() {
 }
 ```
 
-A `@raise` function takes exactly one parameter, is not generic and not `fallible`, and returns a type other than its parameter's. It runs on the error path, so it may allocate the error it builds but may not make a syscall, publish, spawn or block (each is refused as an effect assertion is). It is declared in the seed that declares one of its two types, its parameter's or its result's. A builtin error type such as `IoError` belongs to no seed, so a conversion from `IoError` lives beside the type it converts into. At most one conversion may apply to an `or raise`: two from the same `P` to the same `E` are an error at the `or raise`, naming both. Conversions never chain (a `P` converted into a `Q` does not then become an `E`), and a set member is preferred over a conversion.
+A `@raise` function takes exactly one parameter, is not generic and not `fallible`, and returns a type other than its parameter's. It runs on the error path, so it may allocate the error it builds but may not make a syscall, publish, spawn or block (each is refused as an effect assertion is). Whatever it does still counts against the function that raises: its allocations against that function's `@budget(alloc_per_call = N)`, and an effect it reaches (`time`, an `effect` class of your own) against that function's `@effects`, exactly as if the `or raise` were the call `conv(err)` it stands for. It is declared in the seed that declares one of its two types, its parameter's or its result's. A builtin error type such as `IoError` belongs to no seed, so a conversion from `IoError` lives beside the type it converts into. At most one conversion may apply to an `or raise`: two from the same `P` to the same `E` are an error at the `or raise`, naming both. Conversions never chain (a `P` converted into a `Q` does not then become an `E`), and a set member is preferred over a conversion.
 
 When neither applies, translate the error where it is raised with `or fail E { … }` (the call's error is in scope as `err`).
 
 ## Chaining and Fallible Recovery Handlers
+
+An `or` goes on the fallible call itself (a fn's, a generic fn's, a method's or a stdlib path's). Written after something that only holds a call's result — `R { v: parse(s) }.v or 0`, an element, a name — it has no failure to address, and `hale check` refuses it there; put it where the call is written: `R { v: parse(s) or 0 }.v`.
 
 `or` clauses associate right-to-left, allowing you to chain fallback attempts before a final default or `raise`:
 

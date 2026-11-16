@@ -64,6 +64,15 @@ pub struct AliasScopes {
     /// share one alias namespace (they share one decl namespace), so
     /// the rewrite applies to all of them.
     pub files: BTreeMap<PathBuf, Vec<PathBuf>>,
+    /// GH #1951 item 6 (F.51): what an import list may name in each
+    /// imported seed, keyed like `files`: its own declarations of the
+    /// listable kinds (type, locus, fn, const, topic, interface,
+    /// perspective) and the names its own import lists bring in,
+    /// re-exported — each to the declaration's mangled symbol.
+    pub exports: BTreeMap<PathBuf, std::collections::HashMap<String, String>>,
+    /// The bare names each seed's import lists bound, by seed: a seed's
+    /// own names for the alias-scoping rule (`unscoped_alias_uses`).
+    pub listed: BTreeMap<PathBuf, std::collections::BTreeSet<String>>,
     /// The two anchors a library's name is relative to, canonical:
     /// the entry's workspace root, and the entry seed's directory.
     workspace_root: Option<PathBuf>,
@@ -83,6 +92,8 @@ impl AliasScopes {
         AliasScopes {
             bindings: Vec::new(),
             files: BTreeMap::new(),
+            exports: BTreeMap::new(),
+            listed: BTreeMap::new(),
             workspace_root: workspace_root.map(canon),
             entry_dir: canon(entry_dir),
         }
@@ -117,6 +128,16 @@ impl AliasScopes {
             alias.to_string(),
             lib.to_path_buf(),
         ));
+    }
+
+    /// The library `seed` bound `alias` to, the last binding winning as
+    /// it does in the rename table.
+    pub fn lib_of(&self, seed: &Path, alias: &str) -> Option<&Path> {
+        self.bindings
+            .iter()
+            .rev()
+            .find(|(s, a, _)| s == seed && a == alias)
+            .map(|(_, _, l)| l.as_path())
     }
 
     pub fn record_files(&mut self, seed: &Path, files: Vec<PathBuf>) {
@@ -498,6 +519,191 @@ fn self_import_message(
     }
 }
 
+/// GH #1951 item 6 (F.51): the top-level names of one seed that an
+/// import list may bind against, with each name's span, by name: its
+/// declarations of the listable kinds, module-nested ones included
+/// (a module shares the seed's one namespace).
+pub fn listable_decls(
+    items: &[hale_syntax::ast::TopDecl],
+) -> BTreeMap<String, hale_syntax::Span> {
+    use hale_syntax::ast::TopDecl as T;
+    let mut out = BTreeMap::new();
+    for d in hale_syntax::ast::flat_decls(items) {
+        let name = match d {
+            T::Locus(l) => &l.name,
+            T::Perspective(p) => &p.name,
+            T::Type(t) => &t.name,
+            T::Const(c) => &c.name,
+            T::Fn(f) => &f.name,
+            T::Interface(i) => &i.name,
+            T::Topic(t) => &t.name,
+            _ => continue,
+        };
+        out.entry(name.name.clone()).or_insert(name.span);
+    }
+    out
+}
+
+/// Every top-level name a seed declares, listable or not, with its
+/// span: what a listed name may not collide with.
+pub fn declared_names(items: &[hale_syntax::ast::TopDecl]) -> BTreeMap<String, hale_syntax::Span> {
+    use hale_syntax::ast::TopDecl as T;
+    let mut out = listable_decls(items);
+    for d in hale_syntax::ast::flat_decls(items) {
+        let name = match d {
+            T::RingLayout(r) => &r.name,
+            T::Target(t) => &t.name,
+            T::Group(g) => &g.name,
+            _ => continue,
+        };
+        out.entry(name.name.clone()).or_insert(name.span);
+    }
+    out
+}
+
+/// GH #1951 item 6 (F.51): the names the import lists of one seed
+/// bring in bare, each to the mangled symbol of the declaration it
+/// names — `local -> mangled`.
+///
+/// `imports` are the seed's imports, every file's (a seed's files
+/// share one namespace, so a listed name is bare in all of them, as
+/// the import itself is); `scope_key` the seed, as the bindings record
+/// it; `declared` the seed's own declarations ([`declared_names`] over
+/// every file). Every import is resolved
+/// already, so the library each alias names has its `exports` row.
+///
+/// Refused, each located at the item: a name the imported seed does
+/// not declare (or re-export), and a bare name that collides — with a
+/// declaration of this seed, or with a name another import's list
+/// binds to a different declaration. The same declaration listed
+/// twice (two files of the seed importing one library) is one name.
+#[allow(clippy::too_many_arguments)]
+pub fn listed_import_names(
+    imports: &[hale_syntax::ast::Import],
+    scope_key: &Path,
+    declared: &BTreeMap<String, hale_syntax::Span>,
+    alias_scopes: &AliasScopes,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &mut BTreeMap<PathBuf, String>,
+    src: &dyn SourceProvider,
+    errors: &mut Vec<ImportDiag>,
+) -> std::collections::HashMap<String, String> {
+    let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // A graph that already failed (a seed that did not parse) has
+    // holes a list would only echo.
+    if imports.iter().all(|i| i.items.is_empty()) || !errors.is_empty() {
+        return out;
+    }
+    // local -> (the item that bound it, the import's alias)
+    let mut bound: BTreeMap<String, (hale_syntax::Span, String)> = BTreeMap::new();
+    for imp in imports {
+        if imp.items.is_empty() {
+            continue;
+        }
+        let Some(alias) = imp.alias.as_deref() else { continue };
+        let exports = alias_scopes
+            .lib_of(scope_key, alias)
+            .and_then(|lib| alias_scopes.exports.get(lib));
+        let Some(exports) = exports else {
+            // `std` (skipped by the resolver), or an import that did
+            // not resolve and was reported already.
+            continue;
+        };
+        for item in &imp.items {
+            let name = item.name.name.as_str();
+            let local = item.local();
+            let fail = |span: hale_syntax::Span,
+                        message: String,
+                        errors: &mut Vec<ImportDiag>,
+                        sources: &mut BTreeMap<PathBuf, String>| {
+                let io = IoDiag::target(scope_key, message.clone());
+                errors.push(unresolved_import_diag(span, message, io, file_bases, sources, src));
+            };
+            let Some(mangled) = exports.get(name) else {
+                let mut provided: Vec<&str> =
+                    exports.keys().map(String::as_str).filter(|n| !n.starts_with("__")).collect();
+                provided.sort_unstable();
+                let extra = provided.len().saturating_sub(8);
+                let mut shown = provided[..provided.len().min(8)].join(", ");
+                if extra > 0 {
+                    shown.push_str(&format!(", … ({extra} more)"));
+                }
+                let tail = if shown.is_empty() { String::new() } else { format!("; `{alias}` provides: {shown}") };
+                fail(
+                    item.name.span,
+                    format!(
+                        "`{name}` is not a top-level name of the library imported as `{alias}` (\"{}\"): an \
+                         import list names a type, locus, fn, const, topic, interface or perspective that \
+                         library declares or re-exports{tail}",
+                        imp.path,
+                    ),
+                    errors,
+                    sources,
+                );
+                continue;
+            };
+            if let Some(decl) = declared.get(&local.name) {
+                let at = import_site(*decl, file_bases, sources, src)
+                    .map(|s| format!(" at {s}"))
+                    .unwrap_or_default();
+                fail(
+                    local.span,
+                    format!(
+                        "`{}` is listed on the import of `{alias}`, and this seed declares `{}`{at}: a bare \
+                         name names one declaration — rename the import (`{name} as {}`) or the declaration",
+                        local.name,
+                        local.name,
+                        suggested_rename(alias, name),
+                    ),
+                    errors,
+                    sources,
+                );
+                continue;
+            }
+            match bound.get(&local.name) {
+                Some((first, other)) if out.get(&local.name) != Some(mangled) => {
+                    let at = import_site(*first, file_bases, sources, src)
+                        .map(|s| format!(" at {s}"))
+                        .unwrap_or_default();
+                    fail(
+                        local.span,
+                        format!(
+                            "`{}` is listed on the import of `{alias}` and on the import of `{other}`{at}, \
+                             naming two declarations: a bare name names one — rename one of them \
+                             (`{name} as {}`)",
+                            local.name,
+                            suggested_rename(alias, name),
+                        ),
+                        errors,
+                        sources,
+                    );
+                }
+                Some(_) => {}
+                None => {
+                    bound.insert(local.name.clone(), (local.span, alias.to_string()));
+                    out.insert(local.name.clone(), mangled.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The rename a collision suggests, in the name's own case: `ModelRow`
+/// from `st` is `StModelRow`, `double` is `st_double`.
+fn suggested_rename(alias: &str, name: &str) -> String {
+    if name.starts_with(|c: char| c.is_ascii_uppercase()) {
+        let mut c = alias.chars();
+        let head: String = match c.next() {
+            Some(f) => f.to_uppercase().chain(c).collect(),
+            None => String::new(),
+        };
+        format!("{head}{name}")
+    } else {
+        format!("{alias}_{name}")
+    }
+}
+
 pub fn resolve_imports(
     imports: &[hale_syntax::ast::Import],
     importer_dir: &Path,
@@ -847,7 +1053,7 @@ pub fn resolve_imports(
         // identity.
         let lib_id = alias_scopes
             .name_library(&lib_key, matches!(target, ImportTarget::Directory(_)));
-        let seed_renames =
+        let mut seed_renames =
             hale_types::mangle::build_seed_renames(&stem_prog_refs, &lib_id);
         // GH #714: the names that may head a qualified path in this
         // seed (its type decls). Everything else a path head can be
@@ -866,6 +1072,23 @@ pub fn resolve_imports(
             ),
         };
         seed_cache.insert(lib_key.clone(), seed_renames.clone());
+        // GH #1951 item 6: what an import list may name in this seed —
+        // its own listable declarations now, before its imports are
+        // followed (a cycle back to it finds them), and what its own
+        // lists re-export once they are.
+        let mut declared: BTreeMap<String, hale_syntax::Span> = BTreeMap::new();
+        let mut listable: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        for f in &parsed_files {
+            for (name, span) in declared_names(&f.program.items) {
+                declared.entry(name).or_insert(span);
+            }
+            for name in listable_decls(&f.program.items).into_keys() {
+                if let Some(m) = seed_renames.get(&name) {
+                    listable.insert(name, m.clone());
+                }
+            }
+        }
+        alias_scopes.exports.insert(lib_key.clone(), listable);
         // GH #746: the lib's own files, for the alias-scoping pass.
         alias_scopes.record_files(
             &lib_key,
@@ -930,6 +1153,46 @@ pub fn resolve_imports(
                 alias_scopes,
                 src,
             )?;
+        }
+        // GH #1951 item 6 (F.51): the names this seed's import lists
+        // bring in. Each is bare in the seed — a row of its rename map,
+        // so the mangling below rewrites its uses to the declaration's
+        // own symbol — and re-exported: a row under every alias that
+        // names this seed, and a name an importer's list may name.
+        let lib_imports: Vec<hale_syntax::ast::Import> =
+            parsed_files.iter().flat_map(|f| f.program.imports.iter().cloned()).collect();
+        let listed = listed_import_names(
+            &lib_imports,
+            &lib_key,
+            &declared,
+            alias_scopes,
+            file_bases,
+            sources,
+            src,
+            errors,
+        );
+        if !listed.is_empty() {
+            let mut rows: Vec<(&String, &String)> = listed.iter().collect();
+            rows.sort_unstable();
+            let mut aliases: Vec<&str> = alias_scopes
+                .bindings
+                .iter()
+                .filter(|(_, _, l)| *l == lib_key)
+                .map(|(_, a, _)| a.as_str())
+                .collect();
+            aliases.sort_unstable();
+            aliases.dedup();
+            for a in aliases {
+                for (name, mangled) in &rows {
+                    renames.push((vec![a.to_string(), (*name).clone()], (*mangled).clone()));
+                }
+            }
+            seed_renames.extend(listed.iter().map(|(k, v)| (k.clone(), v.clone())));
+            seed_cache.insert(lib_key.clone(), seed_renames.clone());
+            if let Some(e) = alias_scopes.exports.get_mut(&lib_key) {
+                e.extend(listed.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+            alias_scopes.listed.insert(lib_key.clone(), listed.into_keys().collect());
         }
         // Parse each file again, through the load's effect-class table —
         // after the seeds it imports, so its classes are numbered after
@@ -1298,6 +1561,14 @@ pub fn unscoped_alias_uses(
     for (seed, names) in seed_cache {
         let e = own_names.entry(seed.as_path()).or_default();
         for n in names.keys() {
+            e.insert(n.as_str());
+        }
+    }
+    // GH #1951 item 6: a name an import list brings in is the seed's
+    // own bare name too (`Side::Buy` heads with it).
+    for (seed, names) in &scopes.listed {
+        let e = own_names.entry(seed.as_path()).or_default();
+        for n in names {
             e.insert(n.as_str());
         }
     }

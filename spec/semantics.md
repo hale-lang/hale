@@ -4593,6 +4593,19 @@ The rewrite happens post-parse, before typecheck, so it cannot
 dispatch on the source's type; a form that does not answer `get`
 fails with an ordinary no-method diagnostic at the chain's site.
 
+A chain over a `bounded[T; N]` or an array walks it by its type,
+however it is reached and whatever it is named: a local, a param, a
+record's or a locus's field, a path of fields (`o.inner.tags.filter(it
+> 1).count()`). Its element cursor is the collection's own `at`, so the
+effect and allocation analyses read it as that intrinsic (no effect, no
+allocation) and the chain holds under `@no_syscall` and `@budget(
+alloc_per_call = 0)` (GH #1984). `.items` and `.entries` anchor a chain
+on a form's iteration surface, and the rewrite strips the anchor before
+any type is known; the receiver's type then decides what it was: a
+`@form` locus, or one that declares the cursor itself, keeps the
+pseudo-field, and a receiver with a real field of the anchor's name (a
+record's `items: bounded[T; N]`) walks that field.
+
 **Fallible terminals ride the source's own `get`.** `first` / `find`
 / `min` / `max` lower to an index search whose value is
 `src.get(idx)` — an empty result is the ordinary `IndexError`, so
@@ -6031,6 +6044,13 @@ today, not part of the rule:
 non-error value, that value is the expression's value
 (disposition is a no-op). If the result is `FallibleErr(p)`:
 
+`<expr>` is the fallible call itself (a fn's, a generic fn's, a
+method's, a stdlib path's) or a narrowing conversion. Anything else
+in that place — a field read of a record whose field holds a fallible
+call (`Box { v: f() }.v or 0`), an element, a name — has no failure
+of its own, and the `or` is a type error at it (GH #1966): the `or`
+goes on the call where it is written.
+
 - **`or raise`** — propagate the error one frame up the
   static call stack. Inside a fallible(E) fn, this writes `p`
   into the enclosing fn's error sret slot and exits via the
@@ -6147,11 +6167,14 @@ the raise, so `@raise` implies the effect assertion
 `@effects(none: {syscall, publish, spawn, block})`, held as
 every assertion is (spec/verification.md): it may allocate the
 error it returns and do nothing else with an effect. The
-conversion's call is not written, so the effect, allocation and
-`@no_panic` analyses of the fn that raises do not see it: what it
-can add to them is its allocation, any class it reaches beyond the
-four (`time`, a program's own `effect` class), and a trap. A limit
-of this release, not part of the rule.
+conversion's call is not written, and every analysis of the fn
+that raises reads it as the call it is, the `or fail conv(err)`
+the raise stands for (GH #1982): its allocations count against
+the raising fn's `@budget(alloc_per_call = N)`, an effect class it
+reaches beyond the four (`time`, a program's own `effect` class)
+is one the raising fn reaches, with the conversion on the witness
+path (`get -> api_from_store`), and `@no_panic` judges the raise as
+the `or raise` it is written, a trap.
 
 Conversions are coherent:
 

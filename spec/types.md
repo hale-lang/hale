@@ -375,6 +375,68 @@ two won the slot, with nothing in the source to say which — while
 the json codecs and a surface's description assume one slot
 per name.
 
+### Optional fields (GH #1951 item 3, F.52)
+
+Optionality is a property of a record field, not a type. `x?: T` in a
+`type` declares the field `x` and, right after it, a real field `has_x:
+Bool = false`, its presence flag; `x?: T clearable` declares a third,
+`clear_x: Bool = false`, after that:
+
+```hale
+type Ticker {
+    symbol: String;
+    last?: Decimal<8>;
+    raw?: std::json::Value;
+    expires_at?: Time clearable;
+    limit?: Int = 100;
+}
+```
+
+The flags are ordinary fields in every way: read and written by name,
+held in the record's own slots, declared exactly as the hand-written
+presence pair (`x` then `has_x`) and triple (`x`, `has_x`, `clear_x`)
+the api codecs read (spec/api.md § Codecs). So the JSON and protobuf
+codecs, the bus wire, a surface's description and its contract digest
+see one shape, and converting a hand-written pair to the mark changes no
+shape hash. A record that declares `has_x` itself beside `x?` (or
+`clear_x` beside a clearable `x?`) is refused at that declaration: the
+mark declares it already (§ One name, one field).
+
+What the mark adds is how the flags follow the field:
+
+- **A write of `x` sets `has_x` and clears `clear_x`.** A record
+  literal that spells `x` (`Ticker { symbol: "a", last: 1.5d }`), an
+  assignment to it through any path (`t.last = v`, `self.row.last = v`,
+  `rows[i].last = v`, compound assignment included), an assignment into
+  a part of it (`t.inner.n = 4` writes `inner`), and a `push` or `set`
+  into an optional `bounded` field all set the flag after the store. A
+  literal that spells `has_x` (or `clear_x`) itself keeps what it spells.
+  Writing a flag by hand sets only the flag.
+- **A literal that leaves `x` out builds it absent:** `has_x` false and
+  `x` at its default (`x?: T = d`), or, where it declares none, at its
+  type's zero, the value the JSON codecs give an absent field: `0`,
+  `0.0`, `false`, `""`, a `Decimal`'s or a 256-bit integer's `0`, the
+  epoch for a `Time`, `0ns` for a `Duration`, `null` for a
+  `std::json::Value`, an identity's or a quantity's `0`, a range's `0`
+  (its least value when it leaves `0` out), a fixed array of its
+  element's zero, an enum's first variant with its values' zeros, and a
+  record built of its fields' defaults and zeros (a nested optional field
+  absent). An optional `bounded` field starts empty as any `bounded`
+  does. A type with none of these (a point, `Bytes`, a tuple, a generic
+  parameter, a record that reaches itself) is refused at the field:
+  "optional field `x` of type `T`: `…` has no zero for an absent `x` to
+  hold, so give it a default".
+
+A hand-written pair keeps working as it always did: its `has_x` is
+written by hand, and writing `x` leaves it alone.
+
+Nothing else is optional. `?` on a parameter, a locus param or a local
+is a parse error naming the position, and so is `T?` after any type (a
+field's, a return's, an enum payload's): Hale has no optional type, and
+absence in a computation is `fallible(E)` (§ Fallible typing). A
+`@positional` record's fields take no `?`, since every field of a
+positional row is an element.
+
 ### A struct binding is a copy (GH #713)
 
 `let b = <place>;` where the place holds a struct — a field of `self`
@@ -1656,6 +1718,19 @@ declarations and literals unify, and a `Box_String` literal in a
 validate against the template with the type args substituted, and
 field reads on monomorph values type as the substituted field.
 
+A generic fn's result that applies a template to its parameters
+(`fn box_of<T>(x: T) -> Box<T>`) is, at each call, the monomorph the
+call's arguments name: `box_of(Blob { … })` is a `Box_Blob`, its field
+`v` a `Blob`, as the build lowers the call (GH #1978). A result whose
+arguments the call leaves unknown stays unchecked.
+
+An imported seed's template and enum through the qualified alias
+path are held to their declarations as the bare spellings are:
+`lib::Box<Int, String>` against `type Box<T>` is refused for its
+argument count, and `lib::E::V(…)` for its value count and each
+value's type, a scale-less Decimal literal taking the payload's
+scale (GH #1986).
+
 A declared type parameter shadows a same-named top-level declaration or
 alias throughout its template's signatures, fields and body annotations.
 Before specialization it remains unbound; a global name cannot supply
@@ -1690,7 +1765,7 @@ carries no type arguments of its own; it takes them from the
 declared type at the site. The sites that declare one are:
 
 - a `let` ascription — `let c: Cache<Int, String> = Cache { cap: 2 };`
-- a declared return type — `fn make() -> Box<Int> { return Box { value: 4 }; }`
+- a declared return type, at a `return` or the body's tail — `fn make() -> Box<Int> { return Box { value: 4 }; }`, `fn make() -> Box<Int> { Box { value: 4 } }`
 - a declared field or param, at its DEFAULT — `params { b: Box<Int> = Box { value: 0 }; }`
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
 - the place of a plain assignment (`=`, not `+=`) — `self.cfg = Cfg { n: 2 };`, a local, a record's field or an array's element, by the place's declared type
@@ -1718,10 +1793,21 @@ is a type error at `"x"` (`type `Box`: field `value` expects `Int`, got
 into a locus param's.
 
 Anywhere else — an un-annotated `let` (of the literal, or of an array
-or tuple literal holding it), a literal in statement position — the
-arguments cannot be recovered, and the literal is a
-type error naming the template and the annotation to write. There
-is no inference from a literal's field values back to the
+or tuple literal holding it), a literal in statement position, a
+receiver (`Box { value: 1 }.value`), a call's argument (a generic
+fn's included), an operand, a condition, an f-string part, the arm of
+an `if` or `match` expression — the arguments cannot be recovered, and
+the literal is a type error, at the literal, naming the template and
+the annotation to write (GH #1965):
+
+```
+main.hl:6:13: type error: `Box` is a generic type: a literal spelled
+with the template name takes its type arguments from the declared type
+at the site, and nothing here declares one. Bind it to a `let` that
+writes them (`let x: Box<T> = Box { ... };`) and use `x`
+```
+
+There is no inference from a literal's field values back to the
 parameters.
 
 A generic instantiation's argument COUNT must equal the template's
@@ -1746,6 +1832,28 @@ A locus's method is not generic itself: `fn twice<T>(...)` inside a
 locus is refused by `hale check` at the method's name (hale can't
 compile a generic locus method yet); declare it as a free generic fn,
 or make the locus the template.
+
+**Calling a generic fn.** A call binds each type parameter from the
+argument in the position that names it, and the specialization is the
+one those arguments name. The same holds for a generic fn another seed
+declares, called through its import alias (`lib::id(3)`, for its value
+or as a statement), and for a generic `fallible(E)` fn under `or`
+(`parse(s) or 0`, `lib::parse(s) or raise`), which specializes as a
+plain call does and is addressed like any fallible call (GH #1964,
+#1966).
+
+An argument whose type the checker cannot name pins nothing: a
+capacity slot (`id(self.registry)`: a slot is used through its
+operations), a call that returns no value (`id(println("x"))`), a
+stdlib path written without `std::` (`id(time::sleep(5ms))`). A
+generic call whose parameter only such an argument could pin is a type
+error at the argument (GH #1963), naming what it is, or asking for the
+value bound to a `let` that writes its type.
+
+A generic fn has no single type, so its name is not a value: `let g =
+get;` (or passing `get` as an argument) is a type error at the name
+(GH #1976). Call it, or pass a fn written over the concrete types that
+calls it.
 
 ### Generic bounds
 
@@ -1809,10 +1917,24 @@ type, and a generic body names `T`, so it would print and convert as
 the bare count. A generic fn call that would bind one is refused at
 the callee ("generic fn \`id\`: \`T\` would be \`Money\`, a quantity,
 and a generic body has no unit to print or convert one by"); the
-stdlib's `Duration` and `Time` are primitives and bind. A locus or an
-interface binds too: the specialization takes and hands back the
-handle, as a fn declared over the locus or interface by name does
-(`let c = id(Counter { n: 3 });`).
+stdlib's `Duration` and `Time` are primitives and bind. A locus, an
+interface or a perspective binds too: the specialization takes and
+hands back the handle, as a fn declared over the locus, the interface
+or `perspective(P)` does (`let c = id(Counter { n: 3 });`,
+`id(self.router).health()` with `router: perspective(Router)`; GH
+#1974). A locus handed where the interface it is held as is the bound
+type (`id(c)` with `c: Job` in a `release(c: Job)`) is passed as that
+interface (GH #1975).
+
+A generic `type`'s argument is never a locus: `Box<L>` would make a
+`type` hold the locus `L`, and a `type` is plain data that can neither
+own a locus nor keep one alive (the rule a `type`'s field of a locus
+type follows). `hale check` refuses it at the argument of the
+annotation, and refuses a generic fn call that binds a parameter to a
+locus where the fn's signature instantiates a generic `type` at that
+parameter (`fn bx<T>(x: T) -> Box<T>` called with an `L`), at the
+callee; the build refused the monomorph with no location. A generic
+locus (`locus Box<T>`) holds one.
 
 An array, a tuple, a `bounded[T; N]` or a function type names no
 monomorph, so a generic fn call whose arguments would bind one is
@@ -1827,7 +1949,10 @@ an alias, a locus or an interface). Wrap the value in a declared type
 ```
 
 A qualified path is rewritten to a single segment by the import
-renames before the mangler sees it.
+renames before the mangler sees it, in a signature and in a body's
+`let` ascription alike: `let x: Box<lib::Scalar> = Box { v: 17 };` and
+`let b: lib::Box<String> = lib::Box { v: "x" };` name one monomorph in
+the check and the build (GH #1964).
 
 ### What the compiler cannot compile yet
 
@@ -1841,6 +1966,10 @@ yet" and a way forward, never by the build after a passing check:
 | an unsized array type `[T]`, or a length that is not an integer literal (`[T; N]`) | the annotation | size it with a literal, or hold a varying count in `bounded[T; N]` or a `@form(vec)` |
 | a generic fn call that binds a parameter to an array, a tuple, a `bounded` or a fn type | the callee | wrap the value in a declared type |
 | a generic locus method (`fn f<T>(…)` inside a locus) | the method's name | a free generic fn, or a generic locus |
+| a generic fn named as a value (`let g = get;`) | the name | call it, or pass a fn over the concrete types that calls it |
+| a generic fn call whose parameter only an argument with no nameable type could pin (a capacity slot, a call with no value) | the argument | bind the value to a `let` that writes its type |
+| a literal spelled with a generic template's name where no declared type supplies its arguments | the literal | bind it to a `let` that writes them |
+| a generic `type` instantiated at a locus (`Box<L>`, or a generic fn's `-> Box<T>` called with an `L`) | the argument, or the callee | a generic locus, or pass the locus as a parameter |
 | an empty array literal `[]` with no list type declared where it stands: anywhere but the value of a `let` that declares its type, or a site that declares a `bounded[T; N]` (a `let`, a `return`, an argument, an assignment, a record field; § bounded[T; N]) | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
 | a nested pattern inside a tuple pattern (`((1, 2), 3) ->`, `(E::A, 3) ->`) | the nested pattern | bind the part and match the binding (the rule a variant's pattern follows) |
 | a range index on anything but a `String` (`a[1..3]` of an array) | the index | copy the elements, `std::bytes::slice` for bytes |

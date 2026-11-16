@@ -1405,7 +1405,7 @@ pub const SURFACES: &[NsSurface] = &[
             // std::process child management — success types are internal
             // handles (__StdProcessSpawnHandle etc.); Any keeps arity +
             // arg + fallible checking without naming them.
-            row!("run", SYSCALL | BLOCK, [Str] -> Any ! "IoError", Intrinsic(ProcessRun)),
+            row!("run", SYSCALL | BLOCK, [Str] -> Named("__StdProcessOutput") ! "IoError", Intrinsic(ProcessRun)),
             // `run` / `spawn` under a `SpawnOptions` (cwd, environment,
             // timeout, rlimits): `process.hl` bodies over `__run_with` /
             // `__spawn_with`, typed against those bodies' signatures.

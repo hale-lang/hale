@@ -256,6 +256,8 @@ let total_age    = users.filter(it.active).map(it.age).sum();
 users.filter(it.active).into(active_users_vec);
 ```
 
+A chain over a `bounded` or array field walks it by its type, whatever the field is called and however you reach it: `b.tags.filter(it > 1).count()`, `o.inner.tags.map(it * 2).sum()`, or a field named `items` or `entries`. Only on a `@form` locus are `.items` and `.entries` the form's own iteration surface.
+
 Every chain is lowered by the compiler into a single inline loop with **zero heap allocations**, making chains legal inside `@budget(alloc_per_call = 0)` and `@hot` functions. Within stage expressions, `it` refers to the current element (and `idx` refers to the 0-based position after `.enumerate()`).
 
 ### Chain Stages and Terminals

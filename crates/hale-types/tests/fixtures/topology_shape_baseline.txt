@@ -321,7 +321,7 @@ crates/hale-codegen/tests/bounded_receiver_dispatch.rs#3 d4275fdcef4d5b13
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#4 617296ff76880391
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#5 617296ff76880391
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#6 617296ff76880391
-crates/hale-codegen/tests/bounded_receiver_dispatch.rs#7 8d626fb945314339
+crates/hale-codegen/tests/bounded_receiver_dispatch.rs#7 28aaab5e1e49f2d6
 crates/hale-codegen/tests/bubble_from_param_child.rs#0 a31b0ad53fe9f5fc
 crates/hale-codegen/tests/build_hello.rs#0 00a03caa9965a9a5
 crates/hale-codegen/tests/build_hello.rs#1 f21fbc665a9c2254
@@ -536,10 +536,10 @@ crates/hale-codegen/tests/case_fold_and_nested_fstring.rs#2 f21fbc665a9c2254
 crates/hale-codegen/tests/case_fold_and_nested_fstring.rs#3 f21fbc665a9c2254
 crates/hale-codegen/tests/case_fold_and_nested_fstring.rs#4 d4275fdcef4d5b13
 crates/hale-codegen/tests/case_fold_and_nested_fstring.rs#5 d4275fdcef4d5b13
-crates/hale-codegen/tests/chain_array_sources.rs#0 5b8eccc1b3947077
-crates/hale-codegen/tests/chain_array_sources.rs#1 c70a96d9e23bc5e6
-crates/hale-codegen/tests/chain_array_sources.rs#2 5b8eccc1b3947077
-crates/hale-codegen/tests/chain_array_sources.rs#3 c70a96d9e23bc5e6
+crates/hale-codegen/tests/chain_array_sources.rs#0 23b967856f510c81
+crates/hale-codegen/tests/chain_array_sources.rs#1 4292a5d08542a50e
+crates/hale-codegen/tests/chain_array_sources.rs#2 23b967856f510c81
+crates/hale-codegen/tests/chain_array_sources.rs#3 4292a5d08542a50e
 crates/hale-codegen/tests/children_count_sugar.rs#0 aa862d6e4637d781
 crates/hale-codegen/tests/children_growable.rs#0 7b42b29113cebf4c
 crates/hale-codegen/tests/children_growable.rs#1 7b42b29113cebf4c
@@ -1926,8 +1926,8 @@ crates/hale-types/tests/diag_quality.rs#32 8010c72d712438ac
 crates/hale-types/tests/diag_quality.rs#42 74c5ee9386adb91c
 crates/hale-types/tests/diag_quality.rs#46 836dc88c36809480
 crates/hale-types/tests/diag_quality.rs#5 f21fbc665a9c2254
-crates/hale-types/tests/diag_quality.rs#8 d6325a0b5e9d93db
-crates/hale-types/tests/diag_quality.rs#9 9340303665f67845
+crates/hale-types/tests/diag_quality.rs#8 fc74192244e0fe90
+crates/hale-types/tests/diag_quality.rs#9 a712e05d29d1ad3a
 crates/hale-types/tests/dispatch_plan.rs#0 fe4628dffcd0e1c9
 crates/hale-types/tests/dispatch_plan.rs#1 f9df46108bfdfb03
 crates/hale-types/tests/dispatch_plan.rs#10 8831f70364306fc6

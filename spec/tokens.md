@@ -644,6 +644,10 @@ annotations are not in v1.
 #   $   ?   ??  ?:
 ```
 
+One position gives `?` a meaning: after a record field's name, `x?: T`
+declares an optional field (spec/types.md § Optional fields, F.52).
+Anywhere else, after a type (`T?`) included, it is a parse error.
+
 ## Literals
 
 ### Integer literals
