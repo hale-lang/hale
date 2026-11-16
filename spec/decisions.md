@@ -4223,3 +4223,199 @@ Shipped as the fourth form in v1 via v1.x-FORM-6.
    `hale-lang/bench`, parallel to the other forms'. Ships after a
    consumer workload surfaces.
 
+### F.52 — Optionality is a property of a record field, not a type
+
+**Problem.** A record that tells a field left out from one sent spells a
+presence pair by hand, `x: T; has_x: Bool;`, and a PATCH field a triple
+with `clear_x` (spec/api.md § Codecs). The pair is what the codecs, the
+description, protobuf and the contract digest read, and it works, but
+nothing ties the flag to the field: a program that sets `x` and forgets
+`has_x` writes a record whose value is never sent, and every literal that
+builds an absent field has to spell a value for it anyway (GH #1951,
+downstream handoff). The fix could be a general optional type, `T?`,
+usable anywhere; once programs hold `T?` locals and return `T?` from fns,
+taking it back would break them.
+
+**Decision.** Optionality belongs to a record field and to nothing else.
+`x?: T` in a `type` declares `x` and a real field `has_x: Bool = false`
+right after it, and `x?: T clearable` a `clear_x: Bool = false` after
+that: the hand-written pair and triple, field for field, so the wire,
+the description, protobuf and the digest are byte-identical and
+converting a pair changes no shape hash. A write of `x` (a literal that
+spells it, an assignment through any path or into a part of it, a `push`
+or `set` into an optional list) sets `has_x` and clears `clear_x`; a
+literal that leaves `x` out builds it absent, at its default or its
+type's zero. Declaring the synthesized flag beside the mark is a
+duplicate field. There is no `T?`: the `?` is refused on a parameter, a
+locus param, a local, a return and an enum payload, and after any type.
+Absence in a computation stays `fallible(E)`. `clearable` is a
+contextual keyword, a word only after an optional field's type.
+
+**Considered and rejected.** *A general `T?`.* It would be a second
+protocol for absence beside `fallible(E)`, with its own unwrapping
+operators, and every analysis that follows a value through a call (the
+ownership pass, the alloc summary, the codecs) would learn a new shape;
+the only place a program needs absence to be data is a record crossing a
+wire, which the field mark covers. *Keep the pair hand-written.* The
+flag a program forgets is the bug the mark removes. *A flag that is not
+a field* (presence kept out of the record's slots): the codecs, the
+`.proto` and the digest already read the pair as fields, and a hidden
+slot would change every one of them.
+
+## Deferred & future work
+
+### semantics — What's deferred
+
+
+- **Formal small-step semantics.** Engineering-grade prose for
+  v0; formal operational rules in v1+ if needed for compiler
+  correctness proofs.
+- **Concurrency-correctness proofs.** Cooperative scheduler
+  + per-locus arena makes most concurrency questions trivial,
+  but full formal modeling deferred.
+- **Memory-model formalization** as a happens-before relation.
+  Currently informal; formal in v1+.
+- **Async / await semantics.** Reserved keywords; no operational
+  semantics in v0.
+
+
+### types — What's deferred
+
+
+Per `notes/open-questions.md` and design-rationale §16:
+
+- **Trait system.** No `trait` keyword in v0 (reserved). The
+  structural `interface` form (F.20) ships as the v1 interface
+  mechanism — both Phase A (typecheck) and Phase B (codegen
+  vtable dispatch) landed 2026-05-11. Full traits with `impl I
+  for L` declarations and generic bounds remain deferred.
+- **Refinement types** (e.g., `int where x > 0`). Deferred.
+- **Effect / capability system.** Substrate-derivation tracking
+  is currently runtime-enforced via closure tests; future
+  version may move into type system as effects.
+- **Async / await.** Reserved keywords; no v0 typing.
+- **Macros.** Reserved keyword; no v0 typing.
+- **Sum-type-typed `self.children`** for multi-accept-type loci.
+  v0 is single-accept-type only (F.11).
+- **Projection-class-annotated translation impls** (per F.14
+  follow-on). Deferred until forced by an example.
+
+
+### memory — Future work
+
+
+- **Hot-load preservation across perspective updates.** The
+  in-process live swap (`reperspective`, Phase 3) preserves the
+  receiving locus's arena state across the swap: the perspective
+  slot is `{ data, vtable }`, so re-pointing at a new impl of the
+  same footprint stores only the new vtable — `data` (the
+  arena-backed state) is untouched and the new impl's methods
+  continue on it. The remaining future piece is the same
+  preservation for a *transport-driven* wire redeploy whose new
+  impl changes the footprint (the `migrate` case). See
+  `spec/semantics.md` § "The live swap".
+- **Region size hints.** Initial chunk sizes per locus are
+  taken from declared params. Per The Design's locus-as-region
+  invariant, the load-bearing property is *lifetime* (wholesale
+  free at dissolve), not *fixed size*. The C-runtime arena
+  grows linked-list chunks on demand: when the head chunk
+  can't fit a request, a fresh chunk is allocated and pushed
+  on the front. Declared params are sizing hints, not
+  ceilings — a locus that out-allocates its declared budget
+  doesn't panic, it just adds chunks. Compaction across
+  long-lived chunked loci stays deferred (see below).
+- **Compaction passes.** For long-running chunked-class loci
+  with high churn, periodic compaction may be needed. Currently
+  free-list reclamation is sufficient for v0; compaction passes
+  are deferred.
+
+
+### forms — Open questions deferred to a future milestone
+
+
+These are spec-level questions that don't block FORM-4 because
+the core surface above is independent of them.
+
+1. **Iteration surface.** `for entry in registry { ... }` is
+   natural but the loop construct's lowering depends on what
+   the existing `for` over capacity slots does — and a hashmap
+   iteration that visits each occupied slot once needs cluster-
+   aware traversal. Deferred.
+2. **Bulk operations.** `clear()`, `extend(other)`,
+   `take(key) -> S fallible(KeyError)` (get + remove fused).
+   Useful but not foundational. Add after a workload demands.
+3. **Additional key types.** `Bytes`, custom structs with a
+   hashable derivation, enum tags. Each adds a `key_type_tag`
+   to the runtime ABI. Workload-driven.
+4. **Capacity hints.** `@form(hashmap, cap = 64)` is rejected
+   in v1; no tuning knobs. Add when a workload demonstrates
+   the 0 → 8 → 16 → ... grow cascade is costing measurable
+   time.
+5. **Set type.** ~~A `@form(set)` would be a hashmap-without-
+   value variant (the cell IS the key). Not part of FORM-4;
+   revisit if a workload needs it.~~ **SHIPPED 2026-08-03**
+   (#353). The trigger fired. It reuses the hashmap slot and
+   the whole `lotus_hashmap_*` runtime — sync disciplines
+   included — and differs only in the synthesized surface:
+   `insert` / `contains` / `remove` / `len` / `is_empty`. The
+   separate surface exists to keep the VALUE off the call
+   site; membership through a hashmap means writing
+   `get(k) or false` everywhere.
+
+---
+
+# `@form(ring_buffer)`
+
+A fixed-capacity FIFO with push-back and pop-front semantics.
+The Hale analogue of a bounded circular buffer — same shape as
+a Go channel of capacity N, or a Java `ArrayBlockingQueue`, but
+without the synchronization machinery (the cooperative scheduler
+already serializes access). Shipped as the third form in v1
+via v1.x-FORM-5.
+
+
+### forms — Open questions deferred to a future milestone
+
+
+1. **Iteration surface.** `for x in recent { ... }` is natural
+   but iteration over a ring buffer must respect head/tail wrap
+   — needs the `for` lowering to know about ring shapes.
+   Deferred.
+2. **Bulk operations.** `clear()`, `peek() -> T fallible`,
+   evict-oldest-on-full mode (cyclic-overwrite as a tuning
+   knob). Useful but not foundational; add when a workload
+   demonstrates demand.
+3. **Iteration in pop order without removing.** A "drain" or
+   "iter_pop" that visits elements oldest-first as a one-shot.
+4. **Bench protocol.** A `micro/form_ring_buffer_*` family
+   in `hale-lang/bench`, parallel to vec's and hashmap's.
+   Ships as a separate milestone after a consumer workload
+   surfaces.
+
+# `@form(lru_cache)`
+
+A fixed-capacity keyed cache with least-recently-used eviction.
+The keyed counterpart of `@form(ring_buffer)`: like
+`@form(hashmap)` it is intrusively keyed (the cell carries its own
+key via `indexed_by`), but like `@form(ring_buffer)` it is
+capacity-bounded and NEVER grows. Inserting a new key over `cap`
+silently evicts the least-recently-**used** entry to make room.
+This is the "cap-bounded, never-flagged" keyed form — the
+unbounded-allocation analysis (`spec/verification.md`) treats an
+`@form(lru_cache)` locus as bounded, exactly like `ring_buffer`.
+Shipped as the fourth form in v1 via v1.x-FORM-6.
+
+
+### forms — Open questions deferred to a future milestone
+
+
+1. **TTL eviction.** A `ttl = <duration>` annotation arg to
+   expire entries by age in addition to LRU by capacity. Deferred
+   — v1 evicts by capacity + recency only.
+2. **`remove(k)` / `clear()`.** Explicit eviction of a named key
+   and bulk clear. Add when a workload demonstrates demand.
+3. **Iteration surface.** `key_at` / `entry_at`-style indexed
+   iteration, parallel to `@form(hashmap)`. Deferred.
+4. **Bench protocol.** A `micro/form_lru_cache_*` family in
+   `hale-lang/bench`, parallel to the other forms'. Ships after a
+   consumer workload surfaces.

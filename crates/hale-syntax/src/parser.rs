@@ -332,6 +332,23 @@ impl Parser {
         matches!(self.peek(), TokenKind::Ident(s) if s == w)
     }
 
+    /// F.52 (GH #1951 item 3): `name?` outside a `type`'s field list. Only
+    /// a record field is optional; `what` names the position refused.
+    fn refuse_optional_mark(&self, name: &Ident, what: &str) -> Result<(), Diag> {
+        if !self.at(&TokenKind::Question) {
+            return Ok(());
+        }
+        Err(Diag::parse(
+            self.peek_token().span,
+            format!(
+                "`{}?`: {what} is never optional. Only a field of a `type` takes `?` (`x?: T`, \
+                 with its presence flag `has_x`); absence in a computation is `fallible(E)` \
+                 (spec/decisions.md F.52)",
+                name.name
+            ),
+        ))
+    }
+
     /// Consume the contextual keyword `w` if it is next.
     fn eat_word(&mut self, w: &str) -> bool {
         if self.at_word(w) {
@@ -865,6 +882,21 @@ impl Parser {
                             td.name.name, td.name.name
                         ),
                     ));
+                }
+                // a positional row has no keys, so no key is optional: every
+                // declared field is an element (spec/api.md § Codecs)
+                if let TypeDeclBody::Struct(fields) = &td.body {
+                    if let Some(f) = fields.iter().find(|f| matches!(f.optional, FieldOptional::Declared { .. })) {
+                        return Err(Diag::parse(
+                            f.name.span,
+                            format!(
+                                "a positional record has no optional field: every field of it is an element \
+                                 of its row, so `{}` takes no `?` (an absent element is a left-out tail, its \
+                                 field's default)",
+                                f.name.name
+                            ),
+                        ));
+                    }
                 }
                 td.positional = true;
                 td.span = at.span.merge(td.span);
@@ -5903,6 +5935,7 @@ impl Parser {
 
     fn parse_param_decl(&mut self) -> Result<ParamDecl, Diag> {
         let name = self.expect_decl_name("params field name")?;
+        self.refuse_optional_mark(&name, "a locus param")?;
         let ty = if self.eat(&TokenKind::Colon) {
             // Could be inferred or a type expression. Check next.
             if self.at_word("inferred") {
@@ -6320,6 +6353,7 @@ impl Parser {
             secret = true;
         }
         let name = self.expect_decl_name("parameter name")?;
+        self.refuse_optional_mark(&name, "a parameter")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let default = if self.eat(&TokenKind::Eq) {
@@ -6871,6 +6905,7 @@ impl Parser {
             while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
                 fields.push(self.parse_struct_field()?);
             }
+            let fields = synthesize_optional_flags(fields)?;
             let close = self.expect(TokenKind::RBrace, "}")?;
             Ok(TypeDecl {
                 display: None,
@@ -6990,8 +7025,24 @@ impl Parser {
         // unambiguous, so reserving these words at field-name
         // position would just block useful patterns.
         let name = self.expect_member_name("field name")?;
+        // GH #1951 item 3 (F.52): `x?: T` is an optional field, `x` beside
+        // a synthesized presence flag `has_x` (`synthesize_optional_flags`)
+        let question = self.at(&TokenKind::Question).then(|| self.bump().span);
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
+        // `x?: T clearable`: a PATCH field, `null` its clear flag `clear_x`
+        let clearable_span = self.at_word("clearable").then(|| self.bump().span);
+        let clearable = clearable_span.is_some();
+        if let (Some(at), None) = (clearable_span, question) {
+            return Err(Diag::parse(
+                at,
+                format!(
+                    "`clearable` marks an optional field: write `{}?: … clearable;` \
+                     (an optional field's `null` then clears it)",
+                    name.name
+                ),
+            ));
+        }
         // `indexed_by <field>`: the field is a wire map keyed by its
         // elements' `<field>` (the slot clause's spelling and rules)
         let indexed_by = if self.eat_word("indexed_by") {
@@ -7038,6 +7089,12 @@ impl Parser {
             )
             .with_related(tag_span, "the tag, written before the default"));
         }
+        if self.at_word("clearable") && question.is_some() {
+            return Err(Diag::parse(
+                self.peek_token().span,
+                format!("write `clearable` right after the type: `{}?: <type> clearable …;`", name.name),
+            ));
+        }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(StructField {
             span: name.span.merge(semi.span),
@@ -7047,6 +7104,10 @@ impl Parser {
             tag,
             indexed_by,
             map_value,
+            optional: match question {
+                Some(_) => FieldOptional::Declared { clearable },
+                None => FieldOptional::No,
+            },
         })
     }
 
@@ -7376,6 +7437,20 @@ impl Parser {
     // === type expressions ================================
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr, Diag> {
+        let ty = self.parse_type_expr_inner()?;
+        // F.52 (GH #1951 item 3): optionality is a record field's, never a
+        // type's. `T?` has no meaning anywhere a type is written.
+        if self.at(&TokenKind::Question) {
+            return Err(Diag::parse(
+                self.peek_token().span,
+                "Hale has no optional type `T?`: optionality belongs to a record field, `x?: T` in a \
+                 `type`, and absence in a computation is `fallible(E)` (spec/decisions.md F.52)",
+            ));
+        }
+        Ok(ty)
+    }
+
+    fn parse_type_expr_inner(&mut self) -> Result<TypeExpr, Diag> {
         let start = self.peek_token().span;
         match self.peek() {
             // Primitive type names are predefined identifiers; the
@@ -7921,6 +7996,7 @@ impl Parser {
             });
         }
         let name = self.expect_decl_name("variable name")?;
+        self.refuse_optional_mark(&name, "a local")?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type_expr()?)
         } else {
@@ -9641,6 +9717,66 @@ fn shift_span(s: Span, base: usize, limit: usize) -> Span {
     let lo = (base + s.start.as_usize()).min(limit);
     let hi = (base + s.end.as_usize()).clamp(lo, limit);
     Span::new(lo, hi)
+}
+
+
+/// GH #1951 item 3 (F.52): each declared optional field `x?: T` of a
+/// record gets its flags as real fields right after it, `has_x: Bool =
+/// false` and, for `x?: T clearable`, `clear_x: Bool = false`: the slots
+/// a hand-written presence pair or triple has (spec/api.md § Codecs), so
+/// the codecs, the description and the digest read one shape. A flag
+/// the record declares itself beside its optional field is refused: the
+/// name is one slot (GH #1141), and the mark already declares it.
+fn synthesize_optional_flags(fields: Vec<StructField>) -> Result<Vec<StructField>, Diag> {
+    if !fields.iter().any(|f| matches!(f.optional, FieldOptional::Declared { .. })) {
+        return Ok(fields);
+    }
+    for f in &fields {
+        let FieldOptional::Declared { clearable } = f.optional else { continue };
+        let x = &f.name.name;
+        let mut flags = vec![format!("has_{x}")];
+        if clearable {
+            flags.push(format!("clear_{x}"));
+        }
+        for flag in &flags {
+            if let Some(dup) = fields.iter().find(|g| g.name.name == *flag) {
+                let mark = if flag.starts_with("has_") { format!("`{x}?`") } else { format!("`{x}?: … clearable`") };
+                return Err(Diag::parse(
+                    dup.name.span,
+                    format!(
+                        "field `{flag}` is already declared by {mark}: an optional field's flag is \
+                         synthesized beside it, so drop this declaration (or write the pair by hand, \
+                         without the `?`)"
+                    ),
+                )
+                .with_related(f.name.span, "the optional field that declares it"));
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(fields.len() + 2);
+    for f in fields {
+        let declared = match f.optional {
+            FieldOptional::Declared { clearable } => Some((f.name.clone(), f.span, clearable)),
+            _ => None,
+        };
+        out.push(f);
+        let Some((x, span, clearable)) = declared else { continue };
+        let flag = |name: String, optional: FieldOptional| StructField {
+            name: Ident::new(name, x.span),
+            ty: TypeExpr::Primitive(PrimType::Bool, x.span),
+            default: Some(Expr::Literal(Literal::Bool(false), x.span)),
+            tag: None,
+            indexed_by: None,
+            map_value: None,
+            optional,
+            span,
+        };
+        out.push(flag(format!("has_{}", x.name), FieldOptional::Presence));
+        if clearable {
+            out.push(flag(format!("clear_{}", x.name), FieldOptional::Clear));
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

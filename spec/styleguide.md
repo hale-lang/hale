@@ -671,14 +671,12 @@ type Check { name: String; status: Status; }
 
 type HealthQuery {
     verbose: Bool = false;
-    since: Time = `1970-01-01T00:00:00Z`;
-    has_since: Bool = false;
+    since?: Time;
 }
 
 type Health {
     checks: bounded[Check; 16] indexed_by name;
-    note: String = "";
-    has_note: Bool = false;
+    note?: String;
 }
 
 type Problem = enum { @not_found NotFound(String), @unavailable Busy };
@@ -696,7 +694,6 @@ locus Probe {
         push(h.checks, Check { name: "cache", status: Status::Degraded("cold") }) or discard;
         if q.has_since {
             h.note = "since " + std::time::iso8601(q.since);
-            h.has_note = true;
         }
         return h;
     }
@@ -726,18 +723,22 @@ fn main() {
   constants, module fns and records of those: a default never reads
   the scope of the literal that leaves it (C11), so the decoder builds
   it on its own.
-- **A presence pair, when "not sent" means not sent.** With `since`
-  and `has_since: Bool`, the caller may leave the key out or send
-  `null`, and the handler reads the flag. The encoder writes `note`
-  only when `has_note` is set, and it never writes a flag. Declare
-  both fields with defaults, so that a literal with nothing to say
-  names neither. Never encode absence as a value the field's type can
+- **An optional field, when "not sent" means not sent.** `since?: Time`
+  declares `since` and its presence flag `has_since: Bool`: the caller
+  may leave the key out or send `null`, and the handler reads the flag.
+  The encoder writes `note` only when `has_note` is set, and it never
+  writes a flag. Writing `h.note` sets `has_note`, and a literal that
+  leaves `note` out builds it absent, so neither side spells the flag.
+  A hand-written pair (`note: String = ""; has_note: Bool = false;`) is
+  the same shape on the wire; prefer the mark, which cannot forget the
+  flag (F.52). Never encode absence as a value the field's type can
   hold (`""`, `-1`, the epoch): the description cannot say so, and a
   client cannot tell it from a real value.
 - **A presence triple, when "not sent", "clear" and a value all differ.**
   A PATCH keeps a field it is not sent, clears one sent as `null`, and
-  sets one sent a value. Add `clear_note: Bool = false` beside the pair,
-  and the handler reads `clear_note` before `has_note`. Use it only where
+  sets one sent a value. Declare it `note?: String clearable` (the pair
+  and a `clear_note` flag), and the handler reads `clear_note` before
+  `has_note`. Use it only where
   a caller must be able to clear: on a pair, `null` and "not sent" are
   one answer, which is the right one for every other input.
 - **A `std::json::Value`, when the program carries JSON it never
@@ -761,7 +762,7 @@ fn main() {
   `{"Degraded": "cold"}`, and the description lists the variants. A
   `String` status crosses as any string, and every client re-invents
   the list. An absent enum field is its default when it declares one,
-  and `missing_field` otherwise, unless the field is a presence pair.
+  and `missing_field` otherwise, unless the field is optional.
 - **An error type that says which thing went wrong.** With
   `fallible(Problem)`, where `Problem` is an enum or a set of error
   records, a caller branches on the variant. A record of `code: String`
@@ -2163,8 +2164,8 @@ thread / pool / subject / fd counts in CI — see
   one** — memory quadratic in the text, on every path (S15, S16).
 - **A hand-written `match` forwarding a set's members to another
   locus's methods** — a seam checks the coverage both ways (2.10).
-- **A sentinel for "absent" on the wire** (`""`, `-1`) — declare a
-  presence pair (2.11).
+- **A sentinel for "absent" on the wire** (`""`, `-1`) — declare an
+  optional field, `x?: T` (2.11).
 - **JSON built by hand for a type the codec carries** — call
   `T::api_encode` (2.11).
 
@@ -2216,9 +2217,10 @@ absent thing means fighting the design, not waiting on it.
   `Vec<User>`. So `Option<T>` is not merely unblessed; it is
   not currently expressible.
 
-  At an API boundary, absence is a **presence pair**: a field `x`
-  beside a `has_x: Bool`, which the codec reads as an optional key
-  (2.11).
+  At an API boundary, absence is an **optional field**: `x?: T`, the
+  field `x` beside a `has_x: Bool` the mark declares, which the codec
+  reads as an optional key (2.11). There is no general `T?` (F.52):
+  optionality is a record field's, never a type's.
 - **Fn-pointer callbacks don't capture state.** Loci are the
   language's closures — state lives in a locus with its own
   `self`, or routes through bus subjects. A capturing lambda

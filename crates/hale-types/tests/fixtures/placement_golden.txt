@@ -8624,6 +8624,13 @@ row	Cache_Int_String@main1	Cache_Int_String	main	default
 row	Holder_Int@main2	Holder_Int	main	default
 dynamic	Cache	on main|unresolved arguments	in the seed
 
+== tests/hale/generics_parity_test.hl
+row	Pool@main2	Pool	main	default
+dynamic	Big	on main	in the seed
+-- App@main1	App
+row	~	App	main	default
+row	~.router	RouterV1	main	inherited
+
 == tests/hale/http_client_stream_test.hl
 root	App	the entry
 domain	pool:io	async_io
@@ -8790,6 +8797,9 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	main	default
 dynamic	Probe	on main	in the seed
+
+== tests/hale/optional_field_test.hl
+row	Desk@main1	Desk	main	default
 
 == tests/hale/or_discard_value_test.hl
 root	App	the entry

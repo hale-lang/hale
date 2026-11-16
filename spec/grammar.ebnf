@@ -1097,8 +1097,20 @@ scalar_clause     = "range" , ":" , range_expr
    concrete type expression (it may be a generic *instantiation*,
    `type Names = Vec<String>;`). GH #759. *)
 
-struct_field      = IDENTIFIER , ":" , type_expr , [ "indexed_by" , IDENTIFIER , [ "->" , IDENTIFIER ] ] ,
+struct_field      = IDENTIFIER , [ "?" ] , ":" , type_expr , [ "clearable" ] ,
+                    [ "indexed_by" , IDENTIFIER , [ "->" , IDENTIFIER ] ] ,
                     [ "=" , expression ] , [ field_tag ] , ";" ;
+(* `x?: T` is an optional field (GH #1951 item 3, F.52): it declares `x`
+   and a presence flag `has_x: Bool = false` right after it, and
+   `clearable` (contextual, only after an optional field's type) a clear
+   flag `clear_x: Bool = false` after that: the presence pair and triple
+   of spec/api.md § Codecs. `clearable` without the `?` is a parse error,
+   as is a `has_x` (or a clearable field's `clear_x`) the record declares
+   itself, and a `?` on a `@positional` record's field. Only a field of a
+   `type` takes the `?`: on a parameter, a locus param or a local it is a
+   parse error, and after any type expression (`T?`, a return, an enum
+   payload) too, since Hale has no optional type (spec/types.md §
+   Optional fields). *)
 (* `indexed_by` on a `bounded[T; N]` of records names the `String` field
    of `T` that keys a wire map: the api codecs carry the list as an object
    keyed by it (spec/api.md § Codecs), the value-level projection of the
