@@ -19,7 +19,7 @@ same precedence; their associativity is given in the right column.
 | 4 | `~~` | non-assoc | Approximate equality (closure context only) |
 | 3 | `&&` | left | Logical and |
 | 2 | `\|\|` | left | Logical or |
-| 1 | `..` `..=` | non-assoc | Range (parsed everywhere; *use* restricted to `for x in lo..hi` at typecheck) |
+| 1 | `..` `..=` | non-assoc | Range (parsed everywhere; *use* restricted to `for x in lo..hi` and a `String` slice's index at typecheck; a bound left out only in an index, `s[lo..]` / `s[..hi]`) |
 | 1 | `or` | right | Fallible disposition (v1.x-FORM-1; contextual). RHS is `raise` / `discard` / `fail <expr>` / another expression. |
 | 0 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` | right | Assignment |
 | -1 | `<-` | non-assoc | Bus send (statement-shape only) |
@@ -164,8 +164,12 @@ foo<T>(x)                  // generic instantiation, not (foo < T) > (x)
 
 - `..` / `..=` (range) — level 1, non-assoc. These **parse in any
   expression position**; v1 restricts their *use* to `for x in
-  lo..hi`, so a range elsewhere is a typecheck error, not a parse
-  error. `..` is exclusive, `..=` inclusive.
+  lo..hi` and a `String` slice (`s[lo..hi]`), so a range elsewhere
+  is a typecheck error, not a parse error. `..` is exclusive, `..=`
+  inclusive. Inside an index's brackets either bound may be left
+  out (`s[lo..]`, `s[..hi]`, `s[..=hi]`, `s[..]`; GH #1995); a range
+  missing a bound anywhere else (`3..`, `..3`) is a parse error
+  (spec/semantics.md § String slicing).
 
 Future operators expected to land at specific levels:
 
