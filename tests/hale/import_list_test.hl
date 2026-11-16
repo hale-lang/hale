@@ -1,0 +1,48 @@
+// GH #1951 item 6 (F.51): an import list brings names in bare, and a
+// seed's list re-exports them through its alias as the same declaration.
+//
+// `import_list_api` lists `Row`, `Side` and `describe as show` from
+// `import_list_store`. Here `api::Row` is `st::Row` (one declaration,
+// one symbol), so a value made under one spelling is passed, returned
+// and compared under the other with no conversion, and this seed lists
+// names from both seeds — re-exported ones included.
+import "./import_list_api" as api { Row, show };
+import "./import_list_store" as st { Box, LIMIT, Side, size };
+
+fn first(rows: [Row; 2]) -> Row {
+    return rows[0];
+}
+
+fn widen(r: st::Row) -> api::Row {
+    return r;
+}
+
+fn main() {
+    let r: api::Row = api::make(3);
+    std::test::assert_eq_str(
+        st::describe(r),
+        "row#3",
+        "a re-exported value passed to the declaring seed's fn",
+    );
+    std::test::assert_eq_str(
+        show(widen(r)),
+        "row#3",
+        "a re-exported fn, renamed in the seed between",
+    );
+    let mine: Row = first([Row { id: 1, name: "a" }, st::Row { id: 2, name: "b" }]);
+    std::test::assert_eq_str(
+        api::show(mine),
+        "a#1",
+        "bare, qualified and re-exported spellings are one type",
+    );
+    let b: Box<Int> = Box { v: LIMIT };
+    std::test::assert_eq_int(b.v + st::LIMIT, 14, "a generic record and a const, bare");
+    std::test::assert_eq_int(
+        size(api::sell(5)),
+        5,
+        "a re-exported enum's value to the declaring seed",
+    );
+    std::test::assert(api::sell(2) == Side::Sell(2), "an enum value compared across spellings");
+    let ModelCount = 4;
+    std::test::assert_eq_int(ModelCount, 4, "a local is a local");
+}
