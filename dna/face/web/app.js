@@ -1052,7 +1052,12 @@ function renderOrganizations(name, idx) {
   const items = [];
   const given = parseList(idx.organizations);
   if (given.length) {
-    for (const o of given) items.push(entry(o.name, o.name === name ? "#/org" : (o.face_link || handIn(o.name)), o.state, o.name === name));
+    // the organization this face serves is the entry its head marks
+    // `current` (a child's own name is not on its Index read), else by name
+    for (const o of given) {
+      const current = o.current === true || (!!idx.name && o.name === idx.name);
+      items.push(entry(o.name, current ? "#/org" : (o.face_link || handIn(o.name)), o.state === "grafted" ? "not answering" : o.state, current));
+    }
   } else if (S.uis && S.uis.length) {
     // on the habitat's face: itself, then each organism, its declared UIs under it
     items.push(entry(name, "#/org", "up", true));
