@@ -359,13 +359,24 @@ fn the_wire_decoder_table_keeps_every_payload_type_past_a_thousand() {
     let subject = format!("evt{last:04}");
     let l = Listener::start_on("many", &src, &subject);
     let probe = UdpSocket::bind("127.0.0.1:0").expect("probe socket");
-    // a valid frame first, waited for: the subscription is live before the
-    // short frame goes out (sent first, it could arrive before the
-    // subscriber was ready and be counted as buffered early, not as a
-    // decode drop, which failed this test on loaded runners)
-    l.send(&probe, &4241i64.to_le_bytes());
+    // a valid frame first, sent again until one is delivered: the
+    // subscription is live before the short frame goes out. Sent once, a
+    // frame that reached the bound socket before 1,025 subscriptions were
+    // up could be lost (stdout empty after 10 s on a loaded runner), and a
+    // short frame sent first could be counted as buffered early, not as a
+    // decode drop
     let first = format!("got {last:04} n=4241");
-    assert!(wait_for_line(&l.lines, &first, Duration::from_secs(10)), "stdout:\n{}", l.lines.lock().unwrap().join("\n"));
+    let ready = Instant::now();
+    loop {
+        l.send(&probe, &4241i64.to_le_bytes());
+        if wait_for_line(&l.lines, &first, Duration::from_millis(500)) {
+            break;
+        }
+        assert!(ready.elapsed() < Duration::from_secs(60), "no frame delivered within 60 s; stdout:\n{}", l.lines.lock().unwrap().join("\n"));
+    }
+    // a resent frame still in flight is delivered before the short one
+    // (loopback keeps the order), so it is counted with the first
+    std::thread::sleep(Duration::from_millis(200));
     // one byte: too short for `P<last>`, dropped by the wire decoder
     l.send(&probe, &[0x07]);
     // a valid frame after it: delivered (loopback keeps the order)
@@ -374,7 +385,10 @@ fn the_wire_decoder_table_keeps_every_payload_type_past_a_thousand() {
     assert!(wait_for_line(&l.lines, &want, Duration::from_secs(10)), "stdout:\n{}", l.lines.lock().unwrap().join("\n"));
     let (status, _, stderr, out) = l.stop();
     assert!(status.success(), "{status:?}\nstdout:\n{out}\nstderr:\n{stderr}");
-    assert_eq!(got(&out), vec![first.as_str(), want.as_str()], "stdout:\n{out}\nstderr:\n{stderr}");
-    assert_eq!(counter_of(&stderr, &subject, "delivered"), 2, "{stderr}");
+    // the first frame once or more (resent until the subscription was
+    // live), then the last; every line printed is a frame delivered
+    let lines = got(&out);
+    assert!(lines.len() >= 2 && lines[lines.len() - 1] == want && lines[..lines.len() - 1].iter().all(|x| *x == first), "stdout:\n{out}\nstderr:\n{stderr}");
+    assert_eq!(counter_of(&stderr, &subject, "delivered"), lines.len() as u64, "{stderr}");
     assert_eq!(counter_of(&stderr, &subject, "dropped_decode"), 1, "the one-byte frame of the last type:\n{stderr}");
 }
