@@ -205,10 +205,13 @@ fn api() {
     // (`index_answers`) dial `dna::loopback_host()`, which reads
     // `HALE_DNA_LOOPBACK_HOST`: both gain `env` through the core, which
     // only the renames-aware walk sees.
+    // The org read's habitat (`OrganizationHabitat` and the fns of
+    // org_chart.hl that read it) adds five rows on each side, none of them a
+    // row the correction changes.
     pinned(
         "api",
-        764,
-        766,
+        769,
+        771,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
