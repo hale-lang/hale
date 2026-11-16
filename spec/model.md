@@ -361,7 +361,12 @@ the hash of every type that reaches it:
   replaces it, as it does in the checker;
 - an enum: `=enum(` its variants in declaration order joined by `|`,
   a variant written `<Name>` or `<Name>(<tag>,…)` `)`: `type Side =
-  enum { Buy, Sell(Int, String) }` is `=enum(Buy|Sell(i,s))`;
+  enum { Buy, Sell(Int, String) }` is `=enum(Buy|Sell(i,s))`; after a
+  variant, its declared error class (`@not_found`), its `json:` wire name
+  when a tag renames it (`="sell"`, the name quoted, `\` and `"`
+  escaped) and the catch-all's mark (`!other`), each only where the
+  declaration has it (`spec/api.md` § Codecs): ``Buy `json:"buy"`,
+  Other(String) `json:",other"` `` is `=enum(Buy="buy"|Other(s)!other)`;
 - an alias, and a scalar that is neither an identity, a range, a
   quantity nor a point (`distinct Float`): the shape of what it stands
   for;

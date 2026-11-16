@@ -1,0 +1,74 @@
+// tests/hale/open_slices_test.hl — open-ended slices (GH #1995 S1,
+// spec/semantics.md § String slicing). `s[a..]` runs to the end of the
+// string, `s[..b]` starts at 0, `s[..=b]` includes byte `b`, and `s[..]`
+// is the whole string. Each is the closed slice it reads as, with the
+// receiver evaluated once and the bounds clamped as `s[lo..hi]` clamps
+// them.
+
+locus Lines {
+    params { calls: Int = 0; }
+    fn next() -> String {
+        self.calls = self.calls + 1;
+        return "key=value";
+    }
+    // a receiver that is a call runs once, wherever the bound is left out
+    fn go() -> String {
+        let v = self.next()[4..];
+        let k = self.next()[..3];
+        let all = self.next()[..];
+        return k + "|" + v + "|" + all;
+    }
+}
+
+fn eq(at: Int) -> String {
+    let s = "a=b";
+    return s[(at + 1)..];
+}
+
+fn main() {
+    let s = "hello world";
+
+    // the open end: to len(s)
+    std::test::assert_eq_str(s[6..], "world", "s[a..] runs to the end");
+    std::test::assert_eq_str(s[6..], s[6..len(s)], "s[a..] is s[a..len(s)]");
+    std::test::assert_eq_str(s[0..], s, "s[0..] is the whole string");
+    std::test::assert_eq_str(s[len(s)..], "", "from the end, nothing");
+
+    // the open start: from 0
+    std::test::assert_eq_str(s[..5], "hello", "s[..b] starts at 0");
+    std::test::assert_eq_str(s[..5], s[0..5], "s[..b] is s[0..b]");
+    std::test::assert_eq_str(s[..=4], "hello", "s[..=b] includes byte b");
+    std::test::assert_eq_str(s[..0], "", "s[..0] is empty");
+
+    // both open: the whole string, a copy
+    std::test::assert_eq_str(s[..], s, "s[..] is the whole string");
+    let empty = "";
+    std::test::assert_eq_str(empty[..], "", "the empty string's whole");
+    std::test::assert_eq_str(empty[1..], "", "past the empty string's end");
+
+    // bounds clamp as a closed slice's do
+    std::test::assert_eq_str(s[100..], "", "a start past the end clamps to the end");
+    std::test::assert_eq_str(s[-3..], s, "a negative start clamps to 0");
+    std::test::assert_eq_str(s[..100], s, "an end past the end clamps to the end");
+    std::test::assert_eq_str(s[..-1], "", "a negative end clamps to the start");
+
+    // a bound is any Int expression, in parentheses or not
+    let at = std::str::index_of(s, " ");
+    std::test::assert_eq_str(s[(at + 1)..], "world", "split after the space");
+    std::test::assert_eq_str(s[..at], "hello", "split before it");
+    std::test::assert_eq_str(eq(1), "b", "in a fn's return");
+
+    // byte offsets, as every slice: a multibyte character is two bytes
+    let u = "né=x";
+    std::test::assert_eq_str(u[4..], "x", "past a two-byte é");
+    std::test::assert_eq_str(u[..3], "né", "up to the end of é");
+
+    // the receiver runs once
+    let l = Lines { };
+    std::test::assert_eq_str(l.go(), "key|value|key=value", "each slice of a call");
+    std::test::assert_eq_int(l.calls, 3, "one call per slice, not two");
+
+    // a slice of a slice, and of a concatenation
+    std::test::assert_eq_str(s[6..][..3], "wor", "an open slice of an open slice");
+    std::test::assert_eq_str((s + "!")[6..], "world!", "of a concatenation");
+}

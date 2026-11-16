@@ -621,6 +621,10 @@ fn per_target_moves() {
 /// `bus_wire_type_set_test` (GH #1951 item 4) is a new target, the same
 /// shape: one tag of a value one of its fns hands back moves into the
 /// caller's arena; no leak site goes or appears.
+///
+/// `open_slices_test` (GH #1995 S1) is a new target, the same shape: one
+/// tag of a value its locus method hands back moves into the caller's
+/// arena; no leak site goes or appears.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -678,6 +682,7 @@ const PINNED: &[&str] = &[
     "tests/hale/json_escape_runs_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
     "tests/hale/let_block_scope_test.hl: 0 go, 0 appear; dump 5 tags, 0 reclaim, 0 verdicts",
     "tests/hale/local_place_value_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/open_slices_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/queued_self_cycle_test.hl: 0 go, 0 appear; dump 1 tags, 14 reclaim, 0 verdicts",
     "tests/hale/rest_fallback_test.hl: 0 go, 0 appear; dump 1 tags, 3 reclaim, 0 verdicts",
     "tests/hale/sigterm_drains_pinned_test.hl: 0 go, 0 appear; dump 1 tags, 21 reclaim, 0 verdicts",

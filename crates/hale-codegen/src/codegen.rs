@@ -13437,6 +13437,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     class: None,
                     span,
                     member: false,
+                    tag: None,
                 },
                 EnumVariant {
                     name: mk_ident("Err"),
@@ -13444,6 +13445,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     class: None,
                     span,
                     member: false,
+                    tag: None,
                 },
             ]),
             span,
@@ -13462,6 +13464,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     class: None,
                     span,
                     member: false,
+                    tag: None,
                 },
                 EnumVariant {
                     name: mk_ident("None"),
@@ -13469,6 +13472,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     class: None,
                     span,
                     member: false,
+                    tag: None,
                 },
             ]),
             span,
@@ -14669,6 +14673,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         class: v.class.clone(),
                         span: v.span.clone(),
                         member: v.member,
+                        tag: v.tag.clone(),
                     })
                     .collect();
                 TypeDeclBody::Enum(new_variants)

@@ -202,6 +202,27 @@ let h = s[0..5];                                  // "hello"
 let i = std::str::index_of(s, "world");           // 6
 ```
 
+Leave out a bound to run from the start or to the end:
+
+```hale,fragment
+let line = "key=value";
+let at = std::str::index_of(line, "=");           // 3
+let key = line[..at];                             // "key", the same as line[0..at]
+let value = line[(at + 1)..];                     // "value", the same as line[(at + 1)..len(line)]
+let first = line[..=2];                           // "key", bytes 0 through 2
+let copy = line[..];                              // "key=value"
+```
+
+| Form | Bytes |
+|---|---|
+| `s[lo..hi]` | `lo` up to, not including, `hi` |
+| `s[lo..=hi]` | `lo` through `hi` |
+| `s[lo..]` | `lo` to the end |
+| `s[..hi]` / `s[..=hi]` | from the start |
+| `s[..]` | all of them |
+
+The receiver is evaluated once, so `next_line()[4..]` calls `next_line` once. Bounds are clamped, never an error: a start below 0 is 0, a bound past the end is the end, and an end before the start gives `""`. Offsets count bytes, not characters (`"né"` is three bytes long). A bound can only be left out inside the brackets: `3..` on its own is a parse error, and `s[lo..=]` is refused because `..=` needs an end to include.
+
 ### Walking Large Strings with `ByteView`
 
 A `String` in Hale is a null-terminated byte pointer without an inline length header. Calling `len(s)`, slicing `s[i..(i + 1)]`, or calling `std::str::index_of_from(s, "\n", start)` inside a loop scans for the null terminator on every iteration, turning a linear scan into an `O(n²)` bottleneck on megabyte-scale inputs.

@@ -521,6 +521,9 @@ fn value_sites<'a>(program: &'a Program) -> Vec<ExprSite<'a>> {
         .into_iter()
         .filter(|s| s.value)
         .filter(|s| !matches!(s.e, Expr::KwSelf(_) | Expr::Range { .. } | Expr::Block(_)))
+        // the bound an open slice leaves out (`s[a..]`): synthesized by
+        // the parser, zero-width, with no text to wrap
+        .filter(|s| s.e.span().start != s.e.span().end)
         .collect()
 }
 

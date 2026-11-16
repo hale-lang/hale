@@ -3491,6 +3491,23 @@ fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
                 "`a[lo..hi]`: a range index slices a `String`, and hale can't compile a slice of a `[Int; 4]` yet",
             ),
             (
+                // GH #1995: the open forms close at parse, so they meet
+                // the same refusal
+                "fn main() { let a = [1, 2, 3, 4]; let b = a[1..]; println(b); }\n",
+                "a[1..]",
+                "`a[lo..hi]`: a range index slices a `String`, and hale can't compile a slice of a `[Int; 4]` yet",
+            ),
+            (
+                "fn main() { let s = \"abc\"; println(s[\"a\"..]); }\n",
+                "\"a\"",
+                "a slice's bounds are `Int` byte offsets, and this one is a `String`",
+            ),
+            (
+                "fn main() { let s = \"abc\"; println(s[..1.5]); }\n",
+                "1.5",
+                "a slice's bounds are `Int` byte offsets, and this one is a `Float`",
+            ),
+            (
                 "fn main() { let t = (1, 2); println(len(t)); }\n",
                 "len(t)",
                 "`len` does not apply to a value of type `(Int, Int)`",
@@ -3574,6 +3591,10 @@ fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
     );
     // the neighbours that lower, so each rule is as wide as the refusal
     assert_built("fn main() { let s = \"abcd\"; println(s[1..3]); }\n", "hale_cb_gap_string_slice");
+    assert_built(
+        "fn main() { let s = \"abcd\"; println(s[1..], s[..2], s[..=2], s[..]); }\n",
+        "hale_cb_gap_string_open_slice",
+    );
     assert_built("fn main() { let a = [1, 2]; println(len(a), Int(2.5), Float(2)); }\n", "hale_cb_gap_casts");
     assert_built(
         "@form(vec)\n\

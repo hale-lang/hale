@@ -203,6 +203,9 @@ Filter these reflexes before they cost you time.
 - **No method syntax on builtins.** `len(s)`, `to_string(n)` —
   not `s.len()`. User-defined locus / type methods use
   `obj.method()` normally.
+- **A `String` slices by byte offset**, clamped: `s[lo..hi]`,
+  `s[lo..]` (to the end), `s[..hi]` (from the start). Write
+  `line[(at + 1)..]`, not `line[(at + 1)..len(line)]`.
 - **No printf-style format strings.** `println(a, b, c)`
   concatenates its args. F-strings `f"hello {name}"` interpolate.
 - **String operations are `std::str` free functions**, not methods:

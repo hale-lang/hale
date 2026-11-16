@@ -6803,6 +6803,7 @@ impl Parser {
                 self.bump();
             }
             let ty = self.parse_type_expr()?;
+            self.refuse_member_tag(kind.is_none(), false)?;
             // GH #1530 step 1: a set type, `type S = A | B | C;`. Untagged:
             // each member is a named type and is its own discriminant, so
             // the set is an enum whose variants are named for their
@@ -6811,6 +6812,7 @@ impl Parser {
                 let mut members = vec![ty];
                 while self.eat(&TokenKind::Pipe) {
                     members.push(self.parse_type_expr()?);
+                    self.refuse_member_tag(true, true)?;
                 }
                 let end = self.expect(TokenKind::Semi, ";")?.span;
                 let mut variants = Vec::new();
@@ -6831,7 +6833,14 @@ impl Parser {
                         ));
                     }
                     let last = path.segments.last().expect("a path has a segment").clone();
-                    variants.push(EnumVariant { name: last, fields: vec![m.clone()], class: None, span: *span, member: true });
+                    variants.push(EnumVariant {
+                        name: last,
+                        fields: vec![m.clone()],
+                        class: None,
+                        span: *span,
+                        member: true,
+                        tag: None,
+                    });
                 }
                 return Ok(TypeDecl {
                     display: None,
@@ -7111,6 +7120,29 @@ impl Parser {
         })
     }
 
+    /// GH #1951 item 5: a backtick tag after a set's member (or after an
+    /// alias's type) is refused here, where it was written. A member is
+    /// its own discriminant and crosses the codecs named for its type, so
+    /// it has no wire name to rename and no catch-all to be; a variant of
+    /// a declared enum takes a tag (`type S = enum { A(A) `json:"a"` };`).
+    fn refuse_member_tag(&mut self, set_or_alias: bool, in_set: bool) -> Result<(), Diag> {
+        if !set_or_alias || !matches!(self.peek(), TokenKind::TimeLit(_)) {
+            return Ok(());
+        }
+        let at = self.peek_token().span;
+        let set = in_set || matches!(self.peek_at(1), TokenKind::Pipe);
+        Err(Diag::parse(
+            at,
+            if set {
+                "a set's member takes no tag: it is its own discriminant and crosses the codecs named for its \
+                 type, so it has no wire name to rename and is no catch-all; to rename one, declare an enum \
+                 whose variant holds it (`type S = enum { A(A) `json:\"a\"`, B(B) };`)"
+            } else {
+                "an alias takes no tag: a metadata tag follows a record's field or an enum's variant"
+            },
+        ))
+    }
+
     fn parse_enum_variant(&mut self) -> Result<EnumVariant, Diag> {
         // `@not_found Missing`: the variant's error class (spec/api.md §
         // Error classes), any word here; the checker names the classes.
@@ -7133,8 +7165,19 @@ impl Parser {
             }
             self.expect(TokenKind::RParen, ")")?;
         }
+        // GH #1951 item 5: an optional metadata tag after the values, as
+        // after a struct field (``Sell `json:"sell"` ``); the backtick
+        // string is a tag in this position, never a time literal
+        let tag = if matches!(self.peek(), TokenKind::TimeLit(_)) {
+            match self.bump().kind {
+                TokenKind::TimeLit(body) => Some(body),
+                _ => unreachable!("peeked TimeLit"),
+            }
+        } else {
+            None
+        };
         let span = name.span;
-        Ok(EnumVariant { name, fields, class, span, member: false })
+        Ok(EnumVariant { name, fields, class, span, member: false, tag })
     }
 
     fn parse_generic_params_opt(&mut self) -> Result<Vec<GenericParam>, Diag> {
@@ -8467,26 +8510,91 @@ impl Parser {
         let lhs = self.parse_expr_bp(0)?;
         // Range operator binds at the lowest precedence: `for i in
         // 0 .. n + 1` should parse as `0 .. (n + 1)`. v0 only
-        // surfaces ranges in for-loop iterator position; the
-        // typechecker / codegen rejects them elsewhere.
+        // surfaces ranges in for-loop iterator position and as a
+        // String slice's index; the typechecker / codegen rejects
+        // them elsewhere. With no range, the v1.x-FORM-1
+        // `or`-disposition postfix (right-associative, so `a() or
+        // b() or raise` chains correctly).
+        self.parse_expr_tail(lhs)
+    }
+
+    /// The expression inside an index's `[ ]`. Everything `parse_expr`
+    /// takes, plus a range with an end left out (GH #1995 S1):
+    /// `s[a..]`, `s[..b]`, `s[..=b]`, `s[..]`. An open range parses
+    /// here and nowhere else, so a bare `3..` stays a parse error.
+    ///
+    /// It desugars at once to the closed form, so every later pass
+    /// sees an ordinary `Expr::Range`: a missing start is the literal
+    /// `0`, a missing end the literal `i64::MAX`, which the slice clamps
+    /// to the receiver's length (`lotus_str_slice`, spec/semantics.md §
+    /// String slicing). Spelling the end as `len(recv)` would evaluate
+    /// the receiver twice; the clamp gives the same bytes with the
+    /// receiver evaluated once. The synthesized literals carry
+    /// zero-width spans at the `..`, and `hale fmt` (a token-stream
+    /// formatter) never sees them, so the source round-trips as written.
+    fn parse_index_expr(&mut self) -> Result<Expr, Diag> {
+        let open_lo = matches!(self.peek(), TokenKind::DotDot | TokenKind::DotDotEq);
+        if !open_lo {
+            let lhs = self.parse_expr_bp(0)?;
+            let ends_open = matches!(self.peek(), TokenKind::DotDot | TokenKind::DotDotEq)
+                && matches!(self.peek_at(1), TokenKind::RBracket);
+            if !ends_open {
+                return self.parse_expr_tail(lhs);
+            }
+            let op = self.bump();
+            let inclusive = matches!(op.kind, TokenKind::DotDotEq);
+            if inclusive {
+                return Err(Self::open_inclusive_range(op.span));
+            }
+            let hi = Self::open_range_end(op.span);
+            let span = lhs.span().merge(op.span);
+            return Ok(Expr::Range { lo: Box::new(lhs), hi: Box::new(hi), inclusive: false, span });
+        }
+        let op = self.bump();
+        let inclusive = matches!(op.kind, TokenKind::DotDotEq);
+        let lo = Expr::Literal(
+            Literal::Int(0),
+            Span { start: op.span.start, end: op.span.start },
+        );
+        if self.at(&TokenKind::RBracket) {
+            if inclusive {
+                return Err(Self::open_inclusive_range(op.span));
+            }
+            let hi = Self::open_range_end(op.span);
+            return Ok(Expr::Range { lo: Box::new(lo), hi: Box::new(hi), inclusive: false, span: op.span });
+        }
+        let hi = self.parse_expr_bp(0)?;
+        let span = op.span.merge(hi.span());
+        Ok(Expr::Range { lo: Box::new(lo), hi: Box::new(hi), inclusive, span })
+    }
+
+    /// The end of `s[a..]`: a zero-width `i64::MAX` just past the `..`,
+    /// which the slice clamps to the receiver's length.
+    fn open_range_end(op: Span) -> Expr {
+        Expr::Literal(Literal::Int(i64::MAX), Span { start: op.end, end: op.end })
+    }
+
+    fn open_inclusive_range(op: Span) -> Diag {
+        Diag::parse(
+            op,
+            "`..=` needs an end to include: write `s[a..]` for the rest of the \
+             string, or `s[a..=b]` with the last index (spec/semantics.md § \
+             String slicing)",
+        )
+    }
+
+    /// `parse_expr` past its left operand: a range, or an `or` tail.
+    fn parse_expr_tail(&mut self, lhs: Expr) -> Result<Expr, Diag> {
         let inclusive = if self.eat(&TokenKind::DotDot) {
             false
         } else if self.eat(&TokenKind::DotDotEq) {
             true
         } else {
-            // No range; check for the v1.x-FORM-1 `or`-disposition
-            // postfix instead. Right-associative so
-            // `a() or b() or raise` chains correctly.
             return self.parse_or_disposition_tail(lhs);
         };
         let rhs = self.parse_expr_bp(0)?;
         let span = lhs.span().merge(rhs.span());
-        Ok(Expr::Range {
-            lo: Box::new(lhs),
-            hi: Box::new(rhs),
-            inclusive,
-            span,
-        })
+        Ok(Expr::Range { lo: Box::new(lhs), hi: Box::new(rhs), inclusive, span })
     }
 
     /// v1.x-FORM-1: `<expr> or <disposition>` postfix. Addresses
@@ -8794,7 +8902,7 @@ impl Parser {
                 }
                 TokenKind::LBracket => {
                     let lb = self.bump();
-                    let index = self.parse_expr()?;
+                    let index = self.parse_index_expr()?;
                     // GH #1948: `bounded[String; 4] { }` in value position
                     // reads as an index of a name `bounded` and stopped at
                     // the `;` with "expected ]". Say what it is instead.
