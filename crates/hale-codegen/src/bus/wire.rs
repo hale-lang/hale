@@ -1320,7 +1320,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 CodegenTy::Bounded(belem, bn) => {
-                    if Self::bounded_elem_is_ptr(belem) {
+                    if self.bounded_elem_is_ptr(belem) {
                         return Err(CodegenError::Unsupported(format!(
                             "bus payload field `{}: bounded[{}; {}]` — \
                              pointer-element bounded cross-process is \
@@ -1759,7 +1759,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 CodegenTy::Bounded(belem, bn) => {
-                    if Self::bounded_elem_is_ptr(belem) {
+                    if self.bounded_elem_is_ptr(belem) {
                         return Err(CodegenError::Unsupported(format!(
                             "bus payload field `{}: bounded[{}; {}]` — \
                              pointer-element bounded cross-process is \

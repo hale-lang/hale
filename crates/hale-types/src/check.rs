@@ -21196,10 +21196,12 @@ impl<'a> Checker<'a> {
     /// `bounded[T; N]` holds its elements inline, so `T` is one lowering
     /// lays out in a slot: a scalar (`Int`, `Float`, `Bool`, `Decimal<S>`,
     /// `Duration`, `Time`, an identity, a range or a quantity), a payload-
-    /// free enum (its tag), a `String`, `Bytes` or a struct. A tuple, an
-    /// array, another `bounded`, an enum with payloads or an interface
-    /// checked clean and the build refused the element type; refused here,
-    /// at the annotation. A type this bundle cannot name stays permissive.
+    /// free enum (its tag), a `String`, `Bytes`, a struct or an enum with
+    /// payloads (a pointer to its cell, which the slots' anchoring and
+    /// retire walk follow by its tag, GH #1951). A tuple, an array, another
+    /// `bounded` or an interface checked clean and the build refused the
+    /// element type; refused here, at the annotation. A type this bundle
+    /// cannot name stays permissive.
     fn check_bounded_element(&mut self, te: &TypeExpr) {
         let TypeExpr::Bounded { elem, span, .. } = te else { return };
         let ty = self.resolve_te(elem);
@@ -21222,8 +21224,8 @@ impl<'a> Checker<'a> {
                 *span,
                 format!(
                     "`bounded[{shown}; N]`: {what}, which a bounded buffer cannot hold inline. Its elements \
-                     are scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, a unit type), enums \
-                     without payloads, `String`, `Bytes` or structs; wrap the element in a struct"
+                     are scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, a unit type), enums, \
+                     `String`, `Bytes` or structs; wrap the element in a struct"
                 ),
             ));
         }
@@ -21307,9 +21309,7 @@ impl<'a> Checker<'a> {
             Ty::Function { .. } => Some("a fn value".into()),
             Ty::Named(n) => match self.top.symbols.get(n) {
                 Some(TopSymbol::Type(ti)) => match &ti.kind {
-                    TypeKind::Struct(_) | TypeKind::Scalar(_) => None,
-                    TypeKind::Enum(vs) if vs.iter().all(|v| v.fields.is_empty()) => None,
-                    TypeKind::Enum(_) => Some(format!("`{n}` is an enum with payloads")),
+                    TypeKind::Struct(_) | TypeKind::Scalar(_) | TypeKind::Enum(_) => None,
                     TypeKind::Alias(inner) => self.bounded_element_refusal(inner, depth + 1),
                 },
                 Some(TopSymbol::Interface(_)) => Some(format!("`{n}` is an interface")),
