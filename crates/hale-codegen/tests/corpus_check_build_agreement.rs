@@ -2581,12 +2581,6 @@ fn a_value_where_its_place_cannot_hold_it_is_refused_by_the_check_not_the_build(
                 "`bounded[(Int, Int); N]`: a tuple",
             ),
             (
-                "type Shape = enum { Dot, Circle(Int) };\ntype W { xs: bounded[Shape; 2]; }\n\
-                 fn main() { let w = W { }; println(count(w.xs)); }\n",
-                "bounded[Shape; 2]",
-                "`bounded[Shape; N]`: `Shape` is an enum with payloads",
-            ),
-            (
                 "unit cent;\ntype Money = quantity Int in cent;\nfn id<G>(x: G) -> G { return x; }\n\
                  fn main() { let m: Money = 3cent; let y = id(m); println(\"ok\"); }\n",
                 "id",

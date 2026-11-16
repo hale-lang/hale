@@ -33,13 +33,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let e = self.type_expr_to_codegen_ty(elem)?;
                 // A payload-free enum is its i32 tag: inline bytes, like
                 // a `Bool`. One with payloads is a pointer to its cell,
-                // which the slots' anchoring does not walk; the check
-                // refuses it (`bounded_element_refusal`).
-                let tag_enum = matches!(&e, CodegenTy::Enum(n)
-                    if self.user_enums.get(n.as_str()).is_some_and(|i| !i.has_payload));
-                if !tag_enum && !matches!(
+                // which the slots' anchoring and retire walk follow by
+                // its tag, as a record field's (`bounded_elem_is_ptr`,
+                // GH #1951).
+                if !matches!(
                     e,
-                    CodegenTy::Int
+                    CodegenTy::Enum(_)
+                        | CodegenTy::Int
                         | CodegenTy::Float
                         | CodegenTy::Bool
                         | CodegenTy::Decimal(_)
@@ -54,8 +54,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     return Err(CodegenError::Unsupported(format!(
                         "bounded[T; N]: element type {} not supported \
                          — scalars (Int / Float / Bool / Decimal / \
-                         Duration / Time), String, Bytes, and user \
-                         structs are covered",
+                         Duration / Time), enums, String, Bytes, and \
+                         user structs are covered",
                         e
                     )));
                 }

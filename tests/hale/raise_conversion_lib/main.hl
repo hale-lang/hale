@@ -1,0 +1,22 @@
+// The library half of `raise_conversion_test.hl`: an error type, the
+// conversions into it this seed may declare (it declares the result
+// type), and a fallible fn whose error converts.
+
+type StoreError { key: String; }
+
+type ApiError { status: Int; detail: String; }
+
+fn lookup(key: String) -> Int fallible(StoreError) {
+    if key == "missing" {
+        fail StoreError { key: key };
+    }
+    return len(key);
+}
+
+@raise fn api_from_store(e: StoreError) -> ApiError {
+    return ApiError { status: 404, detail: "no key " + e.key };
+}
+
+@raise fn api_from_io(e: IoError) -> ApiError {
+    return ApiError { status: 503, detail: e.kind };
+}

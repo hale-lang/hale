@@ -362,7 +362,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         cap: u64,
         scope: &Scope<'ctx>,
     ) -> Result<(PointerValue<'ctx>, PointerValue<'ctx>, Option<PointerValue<'ctx>>), CodegenError> {
-        if !Self::bounded_elem_is_ptr(elem) {
+        if !self.bounded_elem_is_ptr(elem) {
             let (storage, len_ptr, _) = self.bounded_storage_ptrs(recv, elem, cap, scope)?;
             return Ok((storage, len_ptr, None));
         }
@@ -716,7 +716,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // clone skip / lotus_arena_contains_ptr gate), so
                 // an already-anchored value is identity.
                 self.refuse_element_through_member_param("push", &args[0], &elem, scope)?;
-                let xv = if Self::bounded_elem_is_ptr(&elem) {
+                let xv = if self.bounded_elem_is_ptr(&elem) {
                     let owned = self.bounded_store_owns(&args[0], &place_owner, &args[1], call, scope)?;
                     let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
                     self.emit_bounded_elem_store_copy(xv, &elem, target, owned, "bounded.push")?
@@ -948,7 +948,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // receiver's owning arena, same as push.
                 self.refuse_element_through_member_param("set", &args[0], &elem, scope)?;
                 let mut retire_into = None;
-                let xv = if Self::bounded_elem_is_ptr(&elem) {
+                let xv = if self.bounded_elem_is_ptr(&elem) {
                     let owned = self.bounded_store_owns(&args[0], &place_owner, &args[2], call, scope)?;
                     let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
                     // A place a locus holds owns its elements: the one
@@ -1082,7 +1082,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 _ => None,
             }
         }
-        if !Self::bounded_elem_is_ptr(elem) {
+        if !self.bounded_elem_is_ptr(elem) {
             return Ok(());
         }
         match root(recv) {
@@ -1260,12 +1260,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// Pointer-shaped bounded element? (String/Bytes/TypeRef slots
     /// hold heap pointers that need arena anchoring; scalars are
-    /// inline bytes.)
-    pub(crate) fn bounded_elem_is_ptr(elem: &CodegenTy) -> bool {
-        matches!(
-            elem,
-            CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_)
-        )
+    /// inline bytes.) An enum with payloads is a pointer to its cell
+    /// (`{ i32 tag, body }`), anchored and retired by its tag as a record
+    /// field of it is (GH #1951); a payload-free enum is its inline `i32`
+    /// tag.
+    pub(crate) fn bounded_elem_is_ptr(&self, elem: &CodegenTy) -> bool {
+        match elem {
+            CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_) => true,
+            CodegenTy::Enum(n) => self.user_enums.get(n.as_str()).is_some_and(|i| i.has_payload),
+            _ => false,
+        }
     }
 
     /// Anchor every LIVE slot of a bounded storage in place — a
@@ -1283,7 +1287,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         dest_arena: PointerValue<'ctx>,
         site: &str,
     ) -> Result<(), CodegenError> {
-        if !Self::bounded_elem_is_ptr(elem) {
+        if !self.bounded_elem_is_ptr(elem) {
             return Ok(());
         }
         let i64_t = self.context.i64_type();

@@ -8476,6 +8476,14 @@ dynamic	Mx	on main	in the seed
 == tests/hale/bounded_on_call_result_test.hl
 row	Store@main1	Store	main	default
 
+== tests/hale/bounded_payload_enum_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.slots	Slots	main	default
+row	Churn@main3	Churn	main	default
+row	Maker@main2	Maker	main	default
+row	Store@main1	Store	main	default
+
 == tests/hale/bounded_time_test.hl
 root	Clock	the entry
 row	Clock@literal1	Clock	main	default

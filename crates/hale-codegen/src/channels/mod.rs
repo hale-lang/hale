@@ -8,9 +8,10 @@
 //! refactor.
 
 use hale_syntax::ast::{
-    Expr, FnDecl, LocusDecl, LocusMember, OrDisposition, Stmt, TopDecl,
-    TypeExpr,
+    Expr, FnDecl, Ident, LocusDecl, LocusMember, NodeId, OrDisposition, Stmt,
+    TopDecl, TypeExpr,
 };
+use hale_syntax::Span;
 use inkwell::types::BasicType;
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
@@ -928,8 +929,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.position_at_end(err_bb);
         let err_join: Option<(Option<BasicValueEnum<'ctx>>, inkwell::basic_block::BasicBlock<'ctx>)> =
             match disposition {
-                OrDisposition::Raise(_) => {
-                    self.lower_or_raise(&call)?;
+                OrDisposition::Raise(at) => {
+                    self.lower_or_raise(&call, *at, scope)?;
                     None
                 }
                 // GH #255: typecheck rejects `or wait` in
@@ -2047,7 +2048,72 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn lower_or_raise(
         &mut self,
         call: &FallibleCallResult<'ctx>,
+        at: Span,
+        scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
+        // GH #1951 (item 2): an error the checker converted at this
+        // `raise` (the word's span, or a fallible handler's for its
+        // implicit one) is raised as the `or fail` the conversion stands
+        // for: `or fail S::P(err)` for a member of the fn's set error type,
+        // `or fail conv(err)` for a `@raise fn`.
+        let conversion = self.current_body.and_then(|body| {
+            let site = self.site(hale_types::typed_bodies::SiteKind::value(at));
+            self.typed.raise_in(body, &site).cloned()
+        });
+        if let (Some(conversion), Some(_)) = (conversion, &self.current_user_fn_fallible) {
+            use hale_types::typed_bodies::RaiseConversion;
+            let err = Expr::Ident(Ident { name: "err".to_string(), span: at, id: NodeId::NONE });
+            match conversion {
+                RaiseConversion::Member(inj) => {
+                    let enclosing = self.current_user_fn_fallible.clone().expect("checked above");
+                    let info = self.user_enums.get(&inj.set).cloned().ok_or_else(|| {
+                        CodegenError::UnsupportedAt(format!("the set `{}` has no declaration lowering knows", inj.set), at)
+                    })?;
+                    let idx = info.variants.iter().position(|v| v.name == inj.member).ok_or_else(|| {
+                        CodegenError::UnsupportedAt(format!("the set `{}` has no member `{}`", inj.set, inj.member), at)
+                    })?;
+                    if info.variants[idx].field_tys.first() != Some(&call.payload_ty) {
+                        return Err(CodegenError::UnsupportedAt(
+                            format!(
+                                "an error of {} raised into the set `{}` as its member `{}`, which holds {}",
+                                call.payload_ty,
+                                inj.set,
+                                inj.member,
+                                crate::codegen::ty_list(&info.variants[idx].field_tys)
+                            ),
+                            at,
+                        ));
+                    }
+                    let llvm_err_ty = self.llvm_basic_type(&call.payload_ty);
+                    let v = self
+                        .builder
+                        .build_load(llvm_err_ty, call.out_err_slot, "or.raise.member.load")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let ptr = self.lower_enum_variant_alloc(&info, idx as u32, &[(v, call.payload_ty.clone())])?;
+                    self.builder
+                        .build_store(enclosing.err_alloca, ptr)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let bool_t = self.context.bool_type();
+                    self.builder
+                        .build_store(enclosing.path_alloca, bool_t.const_int(1, false))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let exit_bb = self.current_user_fn_exit_bb.expect("exit_bb set inside a fn body");
+                    self.builder
+                        .build_unconditional_branch(exit_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                RaiseConversion::Convert(name) => {
+                    let converted = Expr::Call {
+                        callee: Box::new(Expr::Ident(Ident { name, span: at, id: NodeId::NONE })),
+                        args: vec![err],
+                        span: at,
+                        id: NodeId::NONE,
+                    };
+                    self.lower_or_fail(&converted, call, scope)?;
+                }
+            }
+            return Ok(());
+        }
         match self.current_user_fn_fallible.clone() {
             Some(enclosing) => {
                 if call.payload_ty != enclosing.payload_ty {

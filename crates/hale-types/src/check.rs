@@ -1257,6 +1257,7 @@ fn walk_bundle(
     }
     let mut cx = Checker {
         unfresh_builders,
+        raise_fns: crate::raise_conversion::raise_fns(bundle, top).0,
         top,
         target_class,
         known,
@@ -1552,6 +1553,8 @@ pub fn check_bundle_rules(
     // be incoherent — the same decorator twice, or `@unbounded` against
     // a contract that forbids allocation.
     check_decorator_stacks(bundle, &mut diags);
+    // GH #1951 (item 2): a `@raise` fn that converts nothing.
+    diags.extend(crate::raise_conversion::raise_fns(bundle, top).1);
     diags.extend(crate::repo::laws(&bundle.programs.values().copied().collect::<Vec<_>>()));
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
@@ -11405,6 +11408,9 @@ struct Checker<'a> {
     /// call through a fn value hands back a fresh instance its caller
     /// owns, so one of these is refused as a value (`fn_value`).
     unfresh_builders: BTreeMap<String, String>,
+    /// GH #1951 (item 2): the bundle's `@raise` conversions, which an `or
+    /// raise` of an error that is not the enclosing fn's applies.
+    raise_fns: Vec<crate::raise_conversion::RaiseFn>,
     locus_decls: BTreeMap<String, &'a LocusDecl>,
     /// The bundle's types, whose field defaults are evaluated at each
     /// literal that leaves the field (GH #1076).
@@ -20095,6 +20101,66 @@ impl<'a> Checker<'a> {
         Some(crate::typed_bodies::Injection { set: set.clone(), member: v.name.clone() })
     }
 
+    /// The members of the set `t`, when it is one (GH #1530).
+    fn set_members(&self, t: &Ty) -> Option<Vec<String>> {
+        let Ty::Named(set) = t else { return None };
+        let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) = self.top.symbols.get(set) else {
+            return None;
+        };
+        (!vs.is_empty() && vs.iter().all(|v| v.member)).then(|| vs.iter().map(|v| v.name.clone()).collect())
+    }
+
+    /// GH #1951 (item 2): whether an error of type `got`, raised at `at`
+    /// where the enclosing fn fails with `want`, becomes the fn's error:
+    /// it is that type; it is a member of `want`, a set (R2); or one
+    /// `@raise fn` converts it (R3), tried in that order. A conversion is
+    /// recorded at `at` for lowering, which writes the raise as the `or
+    /// fail` it stands for. Two conversions are refused at `at`, naming
+    /// both; `false` is no route at all, which the caller words.
+    fn judge_raise(&mut self, want: &Ty, got: &Ty, at: Span) -> bool {
+        use crate::typed_bodies::RaiseConversion;
+        if want.assignable_from(got) {
+            return true;
+        }
+        let conversion = match self.set_injection(want, got) {
+            Some(injection) => RaiseConversion::Member(injection),
+            None => {
+                let found: Vec<&crate::raise_conversion::RaiseFn> =
+                    self.raise_fns.iter().filter(|f| &f.from == got && &f.to == want).collect();
+                match found.as_slice() {
+                    [] => return false,
+                    [one] => RaiseConversion::Convert(one.name.clone()),
+                    [a, b, ..] => {
+                        let (a, b) = ((*a).clone(), (*b).clone());
+                        self.diags.push(
+                            Diag::ty(
+                                at,
+                                format!(
+                                    "`or raise` converts the call's error, of type `{}`, into the enclosing fn's \
+                                     `{}`, and two `@raise` fns convert it: `{}` and `{}`. Keep one, or translate \
+                                     here, `or fail {} {{ … }}`",
+                                    got.display(),
+                                    want.display(),
+                                    a.name,
+                                    b.name,
+                                    want.display()
+                                ),
+                            )
+                            .with_related(a.span, "one conversion")
+                            .with_related(b.span, "the other"),
+                        );
+                        return true;
+                    }
+                }
+            }
+        };
+        if self.specializing.is_none() {
+            let site = self.site(SiteKind::value(at));
+            self.typed.raise(self.body, site, conversion);
+        }
+        true
+    }
+
     /// Does a value expected as `want` (an alias resolved) take its
     /// element type from it: a `bounded[T; N]` anywhere, a fixed array
     /// only where `arrays` says so (a `let`'s ascription, the one array
@@ -21210,10 +21276,12 @@ impl<'a> Checker<'a> {
     /// `bounded[T; N]` holds its elements inline, so `T` is one lowering
     /// lays out in a slot: a scalar (`Int`, `Float`, `Bool`, `Decimal<S>`,
     /// `Duration`, `Time`, an identity, a range or a quantity), a payload-
-    /// free enum (its tag), a `String`, `Bytes` or a struct. A tuple, an
-    /// array, another `bounded`, an enum with payloads or an interface
-    /// checked clean and the build refused the element type; refused here,
-    /// at the annotation. A type this bundle cannot name stays permissive.
+    /// free enum (its tag), a `String`, `Bytes`, a struct or an enum with
+    /// payloads (a pointer to its cell, which the slots' anchoring and
+    /// retire walk follow by its tag, GH #1951). A tuple, an array, another
+    /// `bounded` or an interface checked clean and the build refused the
+    /// element type; refused here, at the annotation. A type this bundle
+    /// cannot name stays permissive.
     fn check_bounded_element(&mut self, te: &TypeExpr) {
         let TypeExpr::Bounded { elem, span, .. } = te else { return };
         let ty = self.resolve_te(elem);
@@ -21236,8 +21304,8 @@ impl<'a> Checker<'a> {
                 *span,
                 format!(
                     "`bounded[{shown}; N]`: {what}, which a bounded buffer cannot hold inline. Its elements \
-                     are scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, a unit type), enums \
-                     without payloads, `String`, `Bytes` or structs; wrap the element in a struct"
+                     are scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, a unit type), enums, \
+                     `String`, `Bytes` or structs; wrap the element in a struct"
                 ),
             ));
         }
@@ -21321,9 +21389,7 @@ impl<'a> Checker<'a> {
             Ty::Function { .. } => Some("a fn value".into()),
             Ty::Named(n) => match self.top.symbols.get(n) {
                 Some(TopSymbol::Type(ti)) => match &ti.kind {
-                    TypeKind::Struct(_) | TypeKind::Scalar(_) => None,
-                    TypeKind::Enum(vs) if vs.iter().all(|v| v.fields.is_empty()) => None,
-                    TypeKind::Enum(_) => Some(format!("`{n}` is an enum with payloads")),
+                    TypeKind::Struct(_) | TypeKind::Scalar(_) | TypeKind::Enum(_) => None,
                     TypeKind::Alias(inner) => self.bounded_element_refusal(inner, depth + 1),
                 },
                 Some(TopSymbol::Interface(_)) => Some(format!("`{n}` is an interface")),
@@ -25416,16 +25482,30 @@ impl<'a> Checker<'a> {
                         // are one type; the build refused a mismatch,
                         // unlocated in the program's terms, after the
                         // check had admitted it.
-                        if let Some((_, expected)) = &self.fallible_ctx {
-                            if !expected.assignable_from(&payload) {
+                        //
+                        // GH #1951 (item 2): or one it converts from — a
+                        // member of the fn's set error type (R2), or the
+                        // type a `@raise` fn converts (R3), in that order.
+                        let raised_at = match disposition {
+                            OrDisposition::Raise(at) => *at,
+                            _ => *span,
+                        };
+                        if let Some((_, expected)) = self.fallible_ctx.clone() {
+                            if !self.judge_raise(&expected, &payload, raised_at) {
                                 let (want, got) = (expected.display(), payload.display());
+                                let set = if self.set_members(&expected).is_some() {
+                                    format!("add `{got}` to the set `{want}`")
+                                } else {
+                                    format!("make `{want}` a set holding it (`type {want} = {got} | …;`)")
+                                };
                                 self.diags.push(Diag::ty(
                                     *span,
                                     format!(
                                         "`or raise` hands on the call's error, of type `{got}`, and the enclosing fn \
-                                         is declared `fallible({want})`: a raised error is the fn's own type. Map \
-                                         it, `or fail {want} {{ … }}` (the call's error is in scope as `err`), or \
-                                         declare the fn `fallible({got})`",
+                                         is declared `fallible({want})`: a raised error is the fn's own type, or one \
+                                         it converts from, and nothing converts `{got}` into `{want}`. Declare the \
+                                         conversion, `@raise fn …(e: {got}) -> {want} {{ … }}`; {set}; or translate \
+                                         here, `or fail {want} {{ … }}` (the call's error is in scope as `err`)",
                                     ),
                                 ));
                             }
@@ -25516,7 +25596,12 @@ impl<'a> Checker<'a> {
                                  a value".to_string(),
                             )),
                             Some((_, expected_payload)) => {
-                                if !expected_payload.assignable_from(&new_payload_ty) {
+                                // GH #1951 (item 2): a member fails as its
+                                // set, as it does through `fail` (R2).
+                                let expected_payload = expected_payload.clone();
+                                let injected = self.set_injection(&expected_payload, &new_payload_ty).is_some()
+                                    && self.flows_into(&expected_payload, &new_payload_ty, payload_expr);
+                                if !injected && !expected_payload.assignable_from(&new_payload_ty) {
                                     self.diags.push(Diag::ty(
                                         payload_expr.span(),
                                         format!(
@@ -25635,9 +25720,12 @@ impl<'a> Checker<'a> {
                                     ),
                                 )),
                                 Some((_, expected_payload)) => {
-                                    if !expected_payload
-                                        .assignable_from(h_payload)
-                                    {
+                                    // GH #1951 (item 2): its implicit `or
+                                    // raise` converts as a written one does,
+                                    // at the handler (where lowering writes
+                                    // it).
+                                    let (expected_payload, h_payload) = (expected_payload.clone(), (**h_payload).clone());
+                                    if !self.judge_raise(&expected_payload, &h_payload, rhs.span()) {
                                         self.diags.push(Diag::ty(
                                             *span,
                                             format!(
@@ -25646,7 +25734,12 @@ impl<'a> Checker<'a> {
                                                  enclosing fn is \
                                                  `fallible({})` — the \
                                                  propagated payload must \
-                                                 match",
+                                                 match, be a member of the \
+                                                 set the fn fails with, or \
+                                                 have a `@raise fn …(e: {}) \
+                                                 -> {}` conversion",
+                                                h_payload.display(),
+                                                expected_payload.display(),
                                                 h_payload.display(),
                                                 expected_payload.display()
                                             ),

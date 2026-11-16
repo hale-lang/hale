@@ -5909,7 +5909,9 @@ narrowing's full reasoning and the rejected alternatives.
 `fail <expr>;` inside a fallible fn body:
 
 1. Evaluates `<expr>` to a value `v` (typed as the fn's
-   declared payload type E).
+   declared payload type E, or as a member of E when E is a
+   set type: the member's value is the set's, spec/types.md
+   § Set types).
 2. Exits the enclosing fallible fn body via the error path.
 3. The caller's `Expr::Call` sees the result as
    `FallibleErr(v)` — a tagged value the immediate caller's
@@ -6007,12 +6009,15 @@ goes on the call where it is written.
   later promote a value error to a closure violation
   explicitly, but no such syntax exists in v1.) The payload
   forwarded is the enclosing fn's error, so the call's error
-  type must be the one the fn declares: `std::os::getrandom(4)
-  or raise` in a `fallible(CryptoError)` fn is refused at the
-  `or raise`, naming both types, and is written `or fail
-  CryptoError { kind: err.kind, detail: err.detail }` (below)
-  or the fn declared `fallible(IoError)` (GH #1945: the check
-  admitted it and the build refused it in lowering's terms). A
+  type must be the one the fn declares or one it converts from
+  ("Converting a raised error", below): `std::os::getrandom(4)
+  or raise` in a `fallible(CryptoError)` fn, with nothing to
+  convert an `IoError` into a `CryptoError`, is refused at the
+  `or raise`, naming both types and the three ways forward (a
+  `@raise` conversion, a set holding the call's error, or `or
+  fail CryptoError { kind: err.kind, detail: err.detail }`,
+  below) (GH #1945: the check admitted it and the build refused
+  it in lowering's terms). A
   stdlib error type spelled by its path (`std::crypto::CryptoError`,
   `std::io::IoError`, `std::str::ParseError`, `std::index::IndexError`,
   `std::form::hashmap::KeyError`, `std::form::ring_buffer::EmptyError`)
@@ -6060,10 +6065,85 @@ goes on the call where it is written.
   `src() or fail DstError { kind: err.kind }`. Same
   divergence rule: chain value type collapses to the inner
   success type. Typechecker rejects outside a fallible fn
-  body with a hint to use `or raise` or `or <fallback>`.
+  body with a hint to use `or raise` or `or <fallback>`. As
+  with `fail`, a member of a set error type is the set's: `or
+  fail err` hands a `ParseError` on in a `fallible(LoadError)`
+  fn, with `type LoadError = ParseError | IoError;`.
 
 Chains are right-associative: `a() or b() or raise` reduces
 the value to the success type level by level.
+
+### Converting a raised error
+
+An `or raise` (and the implicit `or raise` of a fallible
+handler, spec/types.md § "Disposition operators (`or`)") whose
+call fails with `P` inside a `fallible(E)` fn, `P` not `E`,
+converts the error into an `E` in one of two ways, tried in
+this order (GH #1951, F.50):
+
+1. **A set member (R2).** `E` is a set type holding `P`
+   (spec/types.md § Set types): the error becomes the set's
+   member, exactly as `fail p;` and `or fail err` make it. One
+   relation decides all four: `fail`, `or fail <expr>`, `or
+   raise` and a fallible handler's failure.
+2. **A conversion (R3).** One `@raise fn` from `P` to `E` is
+   declared: the raise is `or fail conv(err)`, so the caller's
+   handler sees the converted error and every field the
+   conversion copied.
+
+   ```hale
+   type StoreError { key: String; }
+   type ApiError { status: Int; detail: String; }
+
+   @raise fn api_from_store(e: StoreError) -> ApiError {
+       return ApiError { status: 404, detail: "no key " + e.key };
+   }
+
+   fn lookup(key: String) -> Int fallible(StoreError) {
+       if key == "missing" { fail StoreError { key: key }; }
+       return len(key);
+   }
+
+   fn get(key: String) -> Int fallible(ApiError) {
+       return lookup(key) or raise;
+   }
+   ```
+
+A `@raise fn` is a free fn of one parameter, not generic and
+not `fallible`, whose result type is not its parameter's; each
+other shape is refused at the fn. It runs on the error path of
+the raise, so `@raise` implies the effect assertion
+`@effects(none: {syscall, publish, spawn, block})`, held as
+every assertion is (spec/verification.md): it may allocate the
+error it returns and do nothing else with an effect. The
+conversion's call is not written, so the effect, allocation and
+`@no_panic` analyses of the fn that raises do not see it: what it
+can add to them is its allocation, any class it reaches beyond the
+four (`time`, a program's own `effect` class), and a trap. A limit
+of this release, not part of the rule.
+
+Conversions are coherent:
+
+- **The orphan rule.** A `@raise fn` is declared in a seed that
+  declares `P` or `E`. A builtin type (`IoError`,
+  `ParseError`, `CryptoError`, …) belongs to no seed, so a
+  conversion from one is declared beside the type it converts
+  into. A conversion declared anywhere else is refused at the fn
+  ("`conv` converts `IoError` into `lib::ApiError`, and a
+  `@raise` fn is declared in the seed of one of its two types").
+- **In reach.** By the orphan rule every conversion from `P` to
+  `E` is in the seed of `P` or of `E`, so the conversions an `or
+  raise` sees are those two seeds'. Two of them for one pair are
+  refused at the `or raise`, naming both; either alone applies.
+- **No chaining.** A conversion applies once: a `P` that one
+  converts into `Q` and another from `Q` into `E` is not an `E`.
+  Nor does a conversion apply into a set by way of a member, or
+  to a member by way of the set.
+
+A set member is tried first: where `E` is a set holding `P`, a
+conversion from `P` to `E` is never called. Where neither
+applies, the `or raise` is refused as above, and the error is
+translated where it is raised, `or fail E { … }`.
 
 ### Process exit
 
