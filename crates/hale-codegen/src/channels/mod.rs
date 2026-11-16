@@ -421,7 +421,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut scope = Scope::default();
         self.bind_member_params(&fd.params, func, &mut scope)?;
 
-        let end = self.in_body(fd.id, |cx| cx.lower_block(&fd.body, &mut scope))?;
+        // A body's tail is its return (spec/semantics.md, the definite-
+        // return rule takes it as one): lowered as one, as an infallible
+        // method's and a free fallible fn's are (GH #1968).
+        let end = self.in_body(fd.id, |cx| {
+            Ok(match fd.body.tail.as_deref() {
+                Some(tail) if ret_ty.is_some() => {
+                    let mut stmts_end = BlockEnd::Open;
+                    for stmt in &fd.body.stmts {
+                        if cx.lower_stmt(stmt, &mut scope)? == BlockEnd::Terminated {
+                            stmts_end = BlockEnd::Terminated;
+                            break;
+                        }
+                    }
+                    match stmts_end {
+                        BlockEnd::Open => cx.lower_return(Some(tail), &scope)?,
+                        BlockEnd::Terminated => BlockEnd::Terminated,
+                    }
+                }
+                _ => cx.lower_block(&fd.body, &mut scope)?,
+            })
+        })?;
         if end == BlockEnd::Open {
             // Fall-through. For Unit success (`() fallible(E)`)
             // this is the natural shape: the body fires `fail`

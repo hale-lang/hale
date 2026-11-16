@@ -8505,6 +8505,11 @@ row	Nums@main3	Nums	main	default
 row	Nums@main4	Nums	main	default
 row	Tallies@main5	Tallies	main	default
 
+== tests/hale/check_build_parity_shapes_test.hl
+row	Decoder@main3	Decoder	main	default
+row	Lv@main2	Lv	main	default
+row	Scaler@main1	Scaler	main	default
+
 == tests/hale/closure_restore_inline_array_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

@@ -18,13 +18,6 @@
 #1966 | or_generic_fallible.repro | hale can't compile this yet: `_` over call to unknown fn `_`
 #1966 | or_on_field_read.repro | hale can't compile this yet: `_` requires a fallible call expression; got a field read
 #1966 | or_substitute_type.repro | `_` substitute type mismatch: expected T, got T
-#1967 | fn_value_arg_type.repro | hale can't compile this yet: __pg_fv arg #: expected T, got T
-#1967 | fn_value_arity.repro | hale can't compile this yet: __pg_fv (fn pointer): expected # args, got #
-#1968 | fallible_method_tail.repro | method `_` can reach the end of its body without a `_` or a `_`: end every path in one
-#1969 | return_unit_call.repro | hale can't compile this yet: fn declared with no return type but `_` carries a value
-#1970 | set_type_tail.repro | hale can't compile this yet: return type mismatch: declared T, got T
-#1971 | bare_variant_pattern.repro | hale can't compile this yet: constructor pattern path must be `_` (got # segments)
-#1972 | cross_pool_literal_value.repro | hale can't compile this yet: `_` is born to `_`, but `_` runs both on `_`'s thread and off it (T on main; T on the pinned thread of T; the owner T on main), so its birth is a same-tower allocation in some instances and a cross-pool post in others; a cross-pool birth is fire-and-forget, so the literal cannot be used as a value. Write it as a bare statement (`_`).
 #1974 | generic_perspective_arg.repro | hale can't compile this yet: a generic fn specialized at `_`: a generic argument is a primitive or a declared type
 #1975 | generic_interface_locus_arg.repro | hale can't compile this yet: generic fn `_` arg # type mismatch after monomorphization: expected T, got T
 #1976 | generic_fn_as_value.repro | hale can't compile this yet: unknown identifier `_`

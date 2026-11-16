@@ -65,6 +65,13 @@ declared return type treats its trailing expression as an
 implicit `return`: `fn double(n: Int) -> Int { let d = n * 2;
 d }` returns `d` (2026-08-11 — previously the typechecker
 accepted this form and codegen rejected it as a fall-through).
+The tail is checked as that `return` is: against the return type
+(a fallible body's success type), a set's member flowing into the
+set, an `Int` widening to a `Float` (2026-11-15 — previously the
+check judged only a Decimal tail's scale, and the build refused a
+tail of another type, a member included, with no place). A
+fallible locus method's tail is its return as every other body's
+is.
 A body with *no* declared return type keeps statement-position
 semantics: the tail is evaluated for side effects.
 The same body's **last statement** is its value when it is a `match`,
@@ -74,7 +81,9 @@ return (§ "Definite return", below).
 Such a body returns nothing, so a `return` in it carries no value: a
 `return <expr>;` in a fn or mode with no `-> T` (a fallible fn's
 success type is then `()`) or in a lifecycle hook (`birth`, `run`,
-`accept`, `drain`, …) is a type error at the value. `fn main` is the
+`accept`, `drain`, …) is a type error at the value, a call with no
+value of its own included (`return touch() or fail err;` in a
+`() fallible(E)` fn: write the call as a statement, then `return;`). `fn main` is the
 exception: its `return n;` is the process exit code (§ "Process
 exit").
 
@@ -579,7 +588,11 @@ owner may live in a different tower or on a different pool: a
 cross-pool owner is served by an async handoff over the bus, so a
 cross-pool `I{}` is **fire-and-forget** — it may only appear as a
 bare statement, and using the instance as a value is rejected at
-compile time. The rule holds at every expansion of a default, since
+compile time. So is a value use where the enclosing locus runs both
+on the owner's thread and off it (its birth is a same-tower
+allocation in some instances and a cross-pool post in others,
+chosen at a bare statement): the typechecker refuses it at the
+literal, naming the instances and their threads. The rule holds at every expansion of a default, since
 a default is lowered where it is expanded, not where it is written.
 The typechecker rejects it at the literal: in a member body (a
 closure's assertion included), under the locus whose body it is; in

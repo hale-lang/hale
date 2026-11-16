@@ -816,10 +816,45 @@ pub const CANT_COMPILE_YET: &str = "hale can't compile this yet";
 
 /// Whether a declaration (or the LLVM function lowered for one) named
 /// `name` is the Hale-source stdlib's: a merged `__…` name that is not an
-/// imported seed's (`__lib_…`, real user code at real file bases). The
-/// test the debug-location pass makes (`di_enter_stmt`).
+/// imported seed's (`__lib_…`, real user code at real file bases), and
+/// that one of the stdlib's own declarations is called, or that names a
+/// function lowered for one (`<decl>.<member>`, `<decl>_<suffix>`). A
+/// program's own `__…` declaration is not the stdlib's: its refusals were
+/// rendered as positions in the stdlib (GH #1969, #1971, reached through
+/// the parity gate's `__pg_…` declarations).
 pub(crate) fn stdlib_named(name: &str) -> bool {
-    name.starts_with("__") && !name.starts_with("__lib_")
+    if !name.starts_with("__") || name.starts_with("__lib_") {
+        return false;
+    }
+    let decls = stdlib_decl_names();
+    // No stdlib to compare with (it failed to parse, which is reported
+    // where it is merged): every `__…` name is taken as the stdlib's, as
+    // before.
+    if decls.is_empty() {
+        return true;
+    }
+    decls.contains(name)
+        || name.char_indices().any(|(i, c)| matches!(c, '.' | '_' | '$') && i > 2 && decls.contains(&name[..i]))
+}
+
+/// The names the bundled stdlib's declarations carry, modules' included.
+fn stdlib_decl_names() -> &'static std::collections::HashSet<String> {
+    static NAMES: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        use hale_syntax::ast::TopDecl;
+        let Ok(stdlib) = hale_types::desugar_sequence::bundled_stdlib() else { return Default::default() };
+        hale_syntax::ast::flat_decls(&stdlib.items)
+            .filter_map(|d| match d {
+                TopDecl::Fn(f) => Some(f.name.name.clone()),
+                TopDecl::Locus(l) => Some(l.name.name.clone()),
+                TopDecl::Type(t) => Some(t.name.name.clone()),
+                TopDecl::Perspective(p) => Some(p.name.name.clone()),
+                TopDecl::Const(c) => Some(c.name.name.clone()),
+                TopDecl::Interface(i) => Some(i.name.name.clone()),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 /// The place a locus member names: its name where it has one, else the
@@ -31621,6 +31656,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // F.30b (5a): unpack view + epoch check at
                         // self.fnptr arg site.
                         self.unpack_view_if_needed(v, &vt)?
+                    } else if arg_tys[i] == CodegenTy::Float && vt == CodegenTy::Int {
+                        // Int -> Float widening, as at a direct call
+                        // (GH #1967).
+                        self.coerce_to_float(v, &vt, method_name)?.into()
                     } else if vt != arg_tys[i] {
                         return Err(CodegenError::Unsupported(format!(
                             "self.{} arg {}: expected {}, got {}",
@@ -31941,6 +31980,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // F.30b (5a): unpack view + epoch check at fn-pointer
                 // arg site.
                 self.unpack_view_if_needed(v, &vt)?
+            } else if arg_tys[i] == CodegenTy::Float && vt == CodegenTy::Int {
+                // Int -> Float widening, as at a direct call: the check
+                // holds a call through a fn value to its type's
+                // parameters as it holds a direct call (GH #1967).
+                self.coerce_to_float(v, &vt, callee_label)?.into()
             } else if vt != arg_tys[i] {
                 return Err(CodegenError::Unsupported(format!(
                     "{} arg {}: expected {}, got {}",

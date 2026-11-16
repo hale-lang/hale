@@ -326,3 +326,106 @@ fn a_builder_field_or_value_call_warns_deprecated_and_writes_raw() {
     let ((ok, out), _) = check_and_build(quiet, "builder_quiet");
     assert!(ok && !out.contains("deprecated"), "check: {out}");
 }
+
+/// GH #1967: a call through a fn value is held to the value's type. A
+/// short call is refused at the callee (a fn type has no defaults), for
+/// a local and for a fn-typed locus param; an `Int` argument to a
+/// `Float` parameter widens, as at a direct call, and builds.
+#[test]
+fn a_call_through_a_fn_value_is_held_to_its_type() {
+    refused(
+        "fn add(a: Int, b: Int) -> Int { return a + b; }\nfn main() {\n    let add2: fn(Int, Int) -> Int = add;\n    println(add2(1));\n}\n",
+        "fn_value_arity",
+        "4:13",
+        "`add2` is a fn value of type `fn(Int, Int) -> Int`, which takes 2 arguments, got 1",
+    );
+    refused(
+        "fn add(a: Int, b: Int) -> Int { return a + b; }\nlocus S {\n    params { f: fn(Int, Int) -> Int = add; }\n    fn go() -> Int { return self.f(1); }\n}\nfn main() { println(S { }.go()); }\n",
+        "fn_field_arity",
+        "4:29",
+        "`f` is a fn value of type `fn(Int, Int) -> Int`, which takes 2 arguments, got 1",
+    );
+    let widened = "fn half(x: Float) -> Float { return x / 2.0; }\nfn main() {\n    let h: fn(Float) -> Float = half;\n    let n = 8;\n    println(h(n));\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(widened, "fn_value_widen");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1969: `return <a call with no value>;` in a `() fallible(E)` fn
+/// is a value returned from a body that returns nothing, as in any fn
+/// with no `-> T`.
+#[test]
+fn a_unit_call_returned_from_a_unit_fallible_fn_is_refused_at_the_value() {
+    refused(
+        "fn touch() -> () fallible(String) {\n}\n\nfn fwd() -> () fallible(String) {\n    return touch() or fail err;\n}\n\nfn main() {\n    fwd() or discard;\n}\n",
+        "unit_fallible_return",
+        "5:12",
+        "`return` carries a value, but this body returns nothing",
+    );
+}
+
+/// GH #1971: a pattern on an enum names its enum; a bare `A(x)` is a
+/// set member's spelling only.
+#[test]
+fn a_bare_variant_pattern_on_an_enum_is_refused_at_the_pattern() {
+    refused(
+        "type E = enum { A(Int), B };\n\nfn f(e: E) -> Int {\n    return match e {\n        A(x) -> x,\n        E::B -> 0,\n    };\n}\n\nfn main() {\n    println(f(E::A(3)));\n}\n",
+        "bare_variant",
+        "5:9",
+        "`A(…)` names a variant of the enum `E` without its enum: a pattern on an enum names it, `E::A(…)`",
+    );
+    // Structural, whatever the scrutinee is: under a type parameter the
+    // check cannot see a set, and lowering refused it unlocated.
+    refused(
+        "type Opt = enum { Has(Int), Empty };\nfn unwrap<T>(o: T, d: Int) -> Int {\n    return match o {\n        Has(x) -> x,\n    };\n}\nfn main() {\n    let o = Opt::Has(7);\n    println(unwrap(o, 7));\n}\n",
+        "bare_variant_generic",
+        "4:9",
+        "`Has(…)` names a variant without its enum, against a value whose type is not known here",
+    );
+    // A value that is no enum or set.
+    refused(
+        "fn f(n: Int) -> Int {\n    return match n {\n        Has(x) -> x,\n        _ -> 0,\n    };\n}\nfn main() { println(f(1)); }\n",
+        "bare_variant_int",
+        "3:9",
+        "`Has(…)` is a constructor pattern without its enum against a value of `Int`, which is no enum or set",
+    );
+    // A set's member keeps its bare name, an imported set's included.
+    let set = "type Book { id: Int; }\ntype Trade { qty: Int; }\ntype Inbound = Book | Trade;\nfn d(m: Inbound) -> Int {\n    return match m {\n        Book(b) -> b.id,\n        Trade(t) -> t.qty,\n    };\n}\nfn main() { println(d(Trade { qty: 4 })); }\n";
+    let ((ok, out), (built, bout)) = check_and_build(set, "bare_set_member");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1970: a body's tail is its return, checked as one: a member of
+/// the return type's set builds as that set (in a fn, a fallible fn and
+/// a method), and a tail of another type is refused at the tail.
+#[test]
+fn a_tail_is_checked_and_lowered_as_its_return() {
+    let src = "type Book { id: Int; }\ntype Trade { qty: Int; }\ntype Inbound = Book | Trade;\nfn decode() -> Inbound {\n    Trade { qty: 1 }\n}\nfn maybe(n: Int) -> Inbound fallible(String) {\n    if n < 0 { fail \"neg\"; }\n    Book { id: n }\n}\nlocus D {\n    fn next() -> Inbound {\n        Book { id: 2 }\n    }\n}\nfn main() {\n    let x = decode();\n    let y = maybe(1) or Trade { qty: 0 };\n    let z = D { }.next();\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "set_tail");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+    refused("fn f() -> Int {\n    \"s\"\n}\nfn main() { println(f()); }\n", "tail_mismatch", "2:5", "this is the body's value (its tail): expected `Int`, got `String`");
+}
+
+/// GH #1968: a fallible locus method's tail is its return.
+#[test]
+fn a_fallible_method_ending_in_a_tail_builds() {
+    let src = "locus Lv {\n    fn go(x: Int) -> Int fallible(String) {\n        x\n    }\n}\n\nfn main() {\n    println(Lv { }.go(1) or 0);\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "fallible_method_tail");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1972: a locus literal used as a value where its enclosing locus
+/// runs both on the owner's thread and off it is refused by the check,
+/// in the words lowering used, with the instances it runs in.
+#[test]
+fn a_mixed_edge_literal_used_as_a_value_is_refused_at_the_literal() {
+    refused(
+        "locus I {\n    params {\n        x: Int = 0;\n    }\n}\n\nfn id<T>(x: T) -> T {\n    return x;\n}\n\nlocus Worker {\n    fn spawn() {\n        id(I { });\n    }\n}\n\nlocus Owner {\n    params {\n        w: Worker = Worker { };\n    }\n}\n\nmain locus App {\n    params {\n        a: Worker = Worker { };\n        o: Owner = Owner { };\n    }\n    placement {\n        o: pinned;\n    }\n    accept(c: I) { }\n}\n\nfn main() {\n    App { };\n}\n",
+        "mixed_value",
+        "13:12",
+        "`I { }` is born to `App`, but `Worker` runs both on `App`'s thread and off it (App.a on main; App.o.w on the pinned thread of App.o; the owner App on main), so its birth is a same-tower allocation in some instances and a cross-pool post in others; a cross-pool birth is fire-and-forget, so the literal cannot be used as a value.",
+    );
+}

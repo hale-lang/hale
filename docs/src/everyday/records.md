@@ -185,7 +185,8 @@ fn describe(m: Inbound) -> String {
 }
 ```
 
-- **Type-as-tag coercion:** A `Book`, `Trade`, or `Unknown` value automatically coerces to `Inbound` wherever `Inbound` is expected (return values, function arguments, typed `let` bindings, or struct fields).
+- **Type-as-tag coercion:** A `Book`, `Trade`, or `Unknown` value automatically coerces to `Inbound` wherever `Inbound` is expected (return values, a function body's final expression included, function arguments, typed `let` bindings, or struct fields).
+- **Bare names are for sets only:** A set's `match` names a member by its type alone (`Book(b)`). An `enum`'s `match` always names the enum (`Shape::Line(l)`); `Line(l)` against an enum, or against a generic fn's type parameter, is a type error.
 - **Target type required for mixed branches:** An unannotated `if` or `match` whose arms produce `Book` and `Trade` (`let m = if n == 0 { Book { ... } } else { Trade { ... } };`) fails typechecking because the compiler does not guess which set type joins them; annotate the binding (`let m: Inbound = ...`) or return from a function declared `-> Inbound`.
 - **Members must be declared structs or enums:** Primitive types like `Int` cannot appear directly in a set; wrap them in a struct (`type Count { n: Int; }`).
 - **Wire representation and seams:** Across JSON APIs, a set serializes as a tagged object keyed by the member's type name (`{"Trade": {"qty": 2, "px": 1.5}}`). At the service layer, a [seam](../services/seams.md) can dispatch each member of a set to a dedicated handler method and verify exhaustiveness at compile time.

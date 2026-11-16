@@ -150,8 +150,9 @@ fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Vi
         return;
     }
     let Some(ownership) = (inputs.ownership)() else { return };
-    let crosspool = ownership.bubble_plans().crosspool;
-    if crosspool.is_empty() {
+    let plans = ownership.bubble_plans();
+    let (crosspool, mixed) = (plans.crosspool, plans.mixed);
+    if crosspool.is_empty() && mixed.is_empty() {
         return;
     }
     // The ownership walk owns both the resolved child and its use
@@ -164,6 +165,27 @@ fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Vi
             continue;
         }
         let child = &site.child_ty;
+        // GH #1972: a `Mixed` edge (U-1): the enclosing locus runs both on
+        // the owner's thread and off it, so the birth is a same-tower
+        // allocation in some instances and a cross-pool post in others,
+        // chosen at a bare statement. A value has no post to stand for:
+        // refused in lowering's words, which the check never said.
+        if let Some(plan) = mixed.get(&(site.enclosing_locus.clone(), child.clone())) {
+            out.push(Violation::error(
+                CROSS_POOL_VALUE,
+                site.span,
+                format!(
+                    "`{child} {{ }}` is born to `{owner}`, but `{enclosing}` runs both on `{owner}`'s thread and \
+                     off it ({instances}), so its birth is a same-tower allocation in some instances and a \
+                     cross-pool post in others; a cross-pool birth is fire-and-forget, so the literal cannot be \
+                     used as a value. Write it as a bare statement (`{child} {{ ... }};`).",
+                    owner = plan.owner,
+                    enclosing = site.enclosing_locus,
+                    instances = plan.instances.join("; "),
+                ),
+            ));
+            continue;
+        }
         let Some(owner) = crosspool.get(&(site.enclosing_locus.clone(), child.clone())) else { continue };
         out.push(Violation::error(
             CROSS_POOL_VALUE,

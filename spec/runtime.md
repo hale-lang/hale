@@ -150,9 +150,9 @@ the model: runtime is automatic; stdlib is explicit.
   an enclosing locus has instances on both sides of its owner's
   thread and the owner is a `main locus`, a bare `I{};` tests
   `lotus_on_main_thread()` at the literal and takes the same-tower
-  birth on main, the handoff off it; a value use there, or such an
-  edge to an owner with several instances, is refused at the
-  literal.
+  birth on main, the handoff off it; a value use there (refused by
+  the typechecker, under the cross-pool rule), or such an edge to an
+  owner with several instances, is refused at the literal.
 - **Order by construction, with latches.** A locus can't run
   before its birth completed, can't be torn down twice, etc.
   There is no runtime state machine: the order is the order the
