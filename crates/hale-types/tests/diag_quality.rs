@@ -840,13 +840,14 @@ fn a_bounded_returns_by_value_and_its_literal_fits_its_capacity() {
         fn take(xs: bounded[Int; 4]) -> Int { return count(xs); }
         fn main() {
             let r = Row { names: ["a", "b"] };
-            let n = take([1, 2]) + count(names()) + count(none());
+            let n = take([1, 2]) + take([]) + count(names()) + count(none());
+            let e = Row { names: [] };
             let mut mine: bounded[String; 4] = [];
             push(mine, "x") or discard;
         }
     "#,
     );
-    assert!(ok.is_empty(), "{ok:?}");
+    assert!(ok.is_empty(), "`[]` takes its element type from each declared site: {ok:?}");
 
     let src = r#"
         type Row { names: bounded[String; 2]; }

@@ -19990,7 +19990,13 @@ impl<'a> Checker<'a> {
         // that bounded, its count the literal's length (`[]` is empty).
         // A literal longer than the capacity is refused where it stands;
         // each element flows into `T` from its own type.
-        if let (Ty::Bounded(we, cap), Expr::Array(elems, _)) = (want, value) {
+        if let (Ty::Bounded(we, cap), Expr::Array(elems, span)) = (want, value) {
+            // `[]` takes its element type from the declared bounded, which
+            // the literal's own walk could not see: its "names no element
+            // type" refusal (GH #1942) is withdrawn here.
+            if elems.is_empty() {
+                self.diags.retain(|d| !(d.span == *span && d.message.starts_with("an empty array literal `[]`")));
+            }
             if elems.len() as u64 > *cap {
                 self.diags.push(Diag::ty(
                     value.span(),
