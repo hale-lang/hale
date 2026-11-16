@@ -91,6 +91,7 @@ fn main() {
     let none: bounded[Int; 4] = [];
     std::test::assert_eq_int(count(none), 0, "`[]` is empty");
     std::test::assert_eq_int(total_of([4, 5]), 9, "a literal argument");
+    std::test::assert_eq_int(total_of([]), 0, "an empty literal argument");
     let d = Doc { title: "t", tags: ["a", "b"] };
     std::test::assert_eq_int(count(d.tags), 2, "a literal record field");
     std::test::assert_eq_int(count(d.items), 0, "a field left out starts empty");

@@ -33130,8 +33130,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(data_ptr.into());
         llvm_param_tys.push(ptr_t.into());
         for (i, a) in args.iter().enumerate() {
-            let (v, ty) = self.lower_expr(a, scope)?;
             let want = self.type_expr_to_codegen_ty(&method_sig.params[i].ty)?;
+            let (v, ty) = self.lower_arg_for(a, Some(&want), scope)?;
             // Same Locus→Interface coercion the free-fn call site
             // does — keeps interface-typed method params usable.
             let (v, ty) = if let (

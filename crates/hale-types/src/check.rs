@@ -16903,10 +16903,8 @@ impl<'a> Checker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
-                self.empty_array_typed =
-                    matches!((ty, value), (Some(TypeExpr::Array { .. }), Expr::Array(parts, _)) if parts.is_empty());
-                let got = self.check_expr(value);
-                self.empty_array_typed = false;
+                let declared = ty.as_ref().map(|te| crate::resolve::resolve_type_expr(te, &self.top.names));
+                let got = self.check_expr_expecting_in(value, declared.as_ref(), true);
                 self.refuse_unit_value(&got, value, &format!("let `{}`", name.name));
                 let bound = match ty {
                     Some(te) => {
@@ -17018,8 +17016,15 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Assign { target, op, value, span, .. } => {
-                let mut got = self.check_expr(value);
-                let want = self.lvalue_ty(target);
+                // An empty `[]` takes its element type from the place, so the
+                // place is typed first for it (and only for it, keeping the
+                // order of every other assignment's diagnostics).
+                let early = matches!(value, Expr::Array(parts, _) if parts.is_empty()).then(|| self.lvalue_ty(target));
+                let mut got = self.check_expr_expecting(value, early.as_ref());
+                let want = match early {
+                    Some(w) => w,
+                    None => self.lvalue_ty(target),
+                };
                 // GH #1076 (U2): `x += v` is the operator over the target
                 // and the value, stored back: no arithmetic on an
                 // identity, and a range's sum is an `Int` storing it
@@ -17198,7 +17203,8 @@ impl<'a> Checker<'a> {
             }
             Stmt::Return(expr, ret_span) => {
                 if let Some(e) = expr {
-                    let got = self.check_expr(e);
+                    let expected = self.fallible_ctx.as_ref().map(|(t, _)| t.clone()).or_else(|| self.return_ctx.clone());
+                    let got = self.check_expr_expecting(e, expected.as_ref());
                     // GH #1940: a `return` the tail-return desugar wrote for a
                     // value in the body's result position carries the value's
                     // own span; one the author wrote spans its keyword.
@@ -19929,6 +19935,50 @@ impl<'a> Checker<'a> {
         Some(crate::typed_bodies::Injection { set: set.clone(), member: v.name.clone() })
     }
 
+    /// Does a value expected as `want` (an alias resolved) take its
+    /// element type from it: a `bounded[T; N]` anywhere, a fixed array
+    /// only where `arrays` says so (a `let`'s ascription, the one array
+    /// site lowering builds an empty literal at)?
+    fn expects_list(&self, want: &Ty, arrays: bool) -> bool {
+        let mut cur = want.clone();
+        for _ in 0..16 {
+            match cur {
+                Ty::Bounded(..) => return true,
+                Ty::Array(..) => return arrays,
+                Ty::Named(ref n) => match self.top.lookup(n) {
+                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Alias(a), .. })) => cur = a.clone(),
+                    _ => return false,
+                },
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// `check_expr` of a value whose site declares the type `want` (a
+    /// `let` ascription, a `return`, an argument, an assignment, a record
+    /// literal's field): an empty array literal there takes its element
+    /// type from that type, so the empty-`[]` rule (GH #1942) sees it
+    /// typed (GH #1951). A site with no list type expected checks the
+    /// value as `check_expr` does.
+    fn check_expr_expecting(&mut self, value: &Expr, want: Option<&Ty>) -> Ty {
+        self.check_expr_expecting_in(value, want, false)
+    }
+
+    /// [`Self::check_expr_expecting`], with `arrays`: whether a fixed
+    /// array type declared at the site types an empty literal too.
+    fn check_expr_expecting_in(&mut self, value: &Expr, want: Option<&Ty>, arrays: bool) -> Ty {
+        let typed = matches!(value, Expr::Array(parts, _) if parts.is_empty())
+            && want.is_some_and(|w| self.expects_list(w, arrays));
+        if !typed {
+            return self.check_expr(value);
+        }
+        self.empty_array_typed = true;
+        let got = self.check_expr(value);
+        self.empty_array_typed = false;
+        got
+    }
+
     fn flows_into(&mut self, want: &Ty, got: &Ty, value: &Expr) -> bool {
         // GH #1530 step 1: a member's value flows into its set, as the
         // set's variant for it (built where it stands).
@@ -19990,13 +20040,7 @@ impl<'a> Checker<'a> {
         // that bounded, its count the literal's length (`[]` is empty).
         // A literal longer than the capacity is refused where it stands;
         // each element flows into `T` from its own type.
-        if let (Ty::Bounded(we, cap), Expr::Array(elems, span)) = (want, value) {
-            // `[]` takes its element type from the declared bounded, which
-            // the literal's own walk could not see: its "names no element
-            // type" refusal (GH #1942) is withdrawn here.
-            if elems.is_empty() {
-                self.diags.retain(|d| !(d.span == *span && d.message.starts_with("an empty array literal `[]`")));
-            }
+        if let (Ty::Bounded(we, cap), Expr::Array(elems, _)) = (want, value) {
             if elems.len() as u64 > *cap {
                 self.diags.push(Diag::ty(
                     value.span(),
@@ -23138,8 +23182,8 @@ impl<'a> Checker<'a> {
                                     ));
                                 }
                                 for (i, a) in args.iter().enumerate() {
-                                    let got =
-                                        self.check_expr(a);
+                                    let expected = f.params.get(i).map(|(_, w)| w.clone());
+                                    let got = self.check_expr_expecting(a, expected.as_ref());
                                     if let Some((_, want)) =
                                         f.params.get(i)
                                     {
@@ -23232,7 +23276,8 @@ impl<'a> Checker<'a> {
                                 ));
                             }
                             for (i, a) in args.iter().enumerate() {
-                                let got = self.check_expr(a);
+                                let expected = sig.params.get(i).map(|w| w.to_ty());
+                                let got = self.check_expr_expecting(a, expected.as_ref());
                                 if let Some(want) = sig.params.get(i) {
                                     // GH #1076 (U2): and a range widens to
                                     // an `Int` parameter.
@@ -24230,7 +24275,12 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 }
-                let arg_tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
+                let expected: Vec<Ty> = match &callee_ty {
+                    Ty::Function { params, .. } => params.clone(),
+                    _ => Vec::new(),
+                };
+                let arg_tys: Vec<Ty> =
+                    args.iter().enumerate().map(|(i, a)| self.check_expr_expecting(a, expected.get(i))).collect();
                 // F.20: when a fn param is an interface type, the
                 // arg's locus type must structurally satisfy the
                 // interface (have the required methods with
@@ -25005,8 +25055,10 @@ impl<'a> Checker<'a> {
             }
             Expr::Array(parts, span) => {
                 // GH #1942: `[]` names no element type; lowering takes it
-                // from the declared type of the `let` it is the value of,
-                // and nowhere else.
+                // from the type its site declares (`check_expr_expecting`):
+                // a `let`'s array or bounded ascription, or a bounded
+                // return, argument, assignment or record field (GH #1951).
+                // The site decides, here, once.
                 if parts.is_empty() && !std::mem::take(&mut self.empty_array_typed) {
                     self.diags.push(Diag::ty(
                         *span,
@@ -27230,7 +27282,8 @@ impl<'a> Checker<'a> {
     ) -> Ty {
         let mut seen: BTreeMap<String, ()> = BTreeMap::new();
         for init in inits {
-            let got = self.check_expr(&init.value);
+            let expected = fields.iter().find(|(n, _, _)| n == &init.name.name).map(|(_, w, _)| w.clone());
+            let got = self.check_expr_expecting(&init.value, expected.as_ref());
             // a hub param is numbered, and given its rows, in its default
             // (`hub_expand`); a construction that supplies its own would
             // leave the listener and the stream adapters on a key the hub

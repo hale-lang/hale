@@ -1804,7 +1804,7 @@ yet" and a way forward, never by the build after a passing check:
 | an unsized array type `[T]`, or a length that is not an integer literal (`[T; N]`) | the annotation | size it with a literal, or hold a varying count in `bounded[T; N]` or a `@form(vec)` |
 | a generic fn call that binds a parameter to an array, a tuple, a `bounded` or a fn type | the callee | wrap the value in a declared type |
 | a generic locus method (`fn f<T>(…)` inside a locus) | the method's name | a free generic fn, or a generic locus |
-| an empty array literal `[]` anywhere but the value of a `let` that declares its type, or a declared `bounded[T; N]` site (§ bounded[T; N]) | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
+| an empty array literal `[]` with no list type declared where it stands: anywhere but the value of a `let` that declares its type, or a site that declares a `bounded[T; N]` (a `let`, a `return`, an argument, an assignment, a record field; § bounded[T; N]) | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
 | a nested pattern inside a tuple pattern (`((1, 2), 3) ->`, `(E::A, 3) ->`) | the nested pattern | bind the part and match the binding (the rule a variant's pattern follows) |
 | a range index on anything but a `String` (`a[1..3]` of an array) | the index | copy the elements, `std::bytes::slice` for bytes |
 | `sum(…)`, `count()`, `mean(…)` outside a closure assertion; an accumulator over anything but one field (`sum(self.a + self.b)`); `prod(…)` anywhere | the accumulator | spec/semantics.md § Closure tests |
