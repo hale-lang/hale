@@ -85,6 +85,7 @@ pub mod probes;
 pub mod printable;
 pub mod purity;
 pub mod quantitative;
+pub mod raise_conversion;
 pub mod resolve;
 pub mod resolved;
 pub mod roles;

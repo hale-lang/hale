@@ -206,7 +206,7 @@ fn an_or_raise_of_another_error_type_is_refused_at_the_or_raise() {
         "fn seed() -> Bytes fallible(CryptoError) {\n    let b = std::os::getrandom(4) or raise;\n    return b;\n}\nfn main() { let b = seed() or { return; }; println(len(b)); }\n",
         "or_raise_mismatch",
         "2:13",
-        "`or raise` hands on the call's error, of type `IoError`, and the enclosing fn is declared `fallible(CryptoError)`: a raised error is the fn's own type. Map it, `or fail CryptoError { … }` (the call's error is in scope as `err`), or declare the fn `fallible(IoError)`",
+        "`or raise` hands on the call's error, of type `IoError`, and the enclosing fn is declared `fallible(CryptoError)`: a raised error is the fn's own type, or one it converts from, and nothing converts `IoError` into `CryptoError`. Declare the conversion, `@raise fn …(e: IoError) -> CryptoError { … }`; make `CryptoError` a set holding it (`type CryptoError = IoError | …;`); or translate here, `or fail CryptoError { … }` (the call's error is in scope as `err`)",
     );
     let mapped = "fn seed() -> Bytes fallible(CryptoError) {\n    let b = std::os::getrandom(4) or fail CryptoError { kind: err.kind, detail: err.detail };\n    return b;\n}\nfn main() { let b = seed() or { return; }; println(len(b)); }\n";
     let ((ok, out), (built, bout)) = check_and_build(mapped, "or_raise_mapped");
@@ -218,6 +218,94 @@ fn an_or_raise_of_another_error_type_is_refused_at_the_or_raise() {
     let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", main), ("lib/lib.hl", lib)], "or_raise_cross_seed");
     assert!(ok, "check: {out}");
     assert!(built, "build: {bout}");
+}
+
+/// GH #1951 (item 2): an `or raise` whose error two `@raise` fns convert
+/// into the enclosing fn's is refused at the `raise`, naming both. Each
+/// alone builds.
+#[test]
+fn an_or_raise_two_conversions_apply_to_is_refused_naming_both() {
+    let src = |second: &str| {
+        format!(
+            "type Oops {{ why: String; }}\ntype ApiError {{ code: Int; }}\n\
+             fn parse(s: String) -> Int fallible(Oops) {{ if s == \"bad\" {{ fail Oops {{ why: s }}; }} return 7; }}\n\
+             @raise fn api_a(e: Oops) -> ApiError {{ return ApiError {{ code: 1 }}; }}\n{second}\
+             fn twice(s: String) -> Int fallible(ApiError) {{\n    let n = parse(s) or raise;\n    return n * 2;\n}}\n\
+             fn main() {{ println(twice(\"bad\") or 0); }}\n"
+        )
+    };
+    refused(
+        &src("@raise fn api_b(e: Oops) -> ApiError { return ApiError { code: 2 }; }\n"),
+        "raise_ambiguous",
+        "7:25",
+        "`or raise` converts the call's error, of type `Oops`, into the enclosing fn's `ApiError`, and two `@raise` fns convert it: `api_a` and `api_b`. Keep one, or translate here, `or fail ApiError { … }`",
+    );
+    let ((ok, out), (built, bout)) = check_and_build(&src(""), "raise_one");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1951 (item 2): a `@raise` fn's shape. It takes one parameter, is
+/// neither fallible nor generic, and returns another type; and it is
+/// declared in the seed of one of its two types (the orphan rule, where a
+/// builtin error type belongs to no seed). Each is refused at the fn.
+#[test]
+fn a_raise_fn_of_the_wrong_shape_is_refused_at_the_fn() {
+    let with = |decl: &str| format!("type Oops {{ why: String; }}\ntype ApiError {{ code: Int; }}\n{decl}\nfn main() {{ println(1); }}\n");
+    refused(
+        &with("@raise fn conv(e: Oops, n: Int) -> ApiError { return ApiError { code: n }; }"),
+        "raise_arity",
+        "3:11",
+        "a `@raise` fn takes one parameter, the error it converts, and `conv` takes 2: `@raise fn conv(e: P) -> E { … }`",
+    );
+    refused(
+        &with("@raise fn conv(e: Oops) -> ApiError fallible(Oops) { return ApiError { code: 1 }; }"),
+        "raise_fallible",
+        "3:46",
+        "a `@raise` fn cannot fail: it runs where an `or raise` hands an error on, and a second error there has nowhere to go. Drop `fallible(…)` from `conv`",
+    );
+    refused(
+        &with("@raise fn conv<T>(e: T) -> ApiError { return ApiError { code: 1 }; }"),
+        "raise_generic",
+        "3:16",
+        "a `@raise` fn converts one error type into another, and `conv` is generic",
+    );
+    refused(
+        &with("@raise fn conv(e: Oops) -> Oops { return e; }"),
+        "raise_itself",
+        "3:1",
+        "`conv` converts `Oops` into itself",
+    );
+    refused(
+        &with("locus L { @raise fn conv(e: Oops) -> ApiError { return ApiError { code: 1 }; } }"),
+        "raise_method",
+        "3:11",
+        "`@raise` declares a conversion, a free fn: `L.conv` is a method of a locus",
+    );
+    // The orphan rule: the entry seed declares neither the builtin
+    // `IoError` nor the library's `ApiError`.
+    let lib = "type ApiError { code: Int; }\n";
+    let main = "import \"./lib\" as lib;\n\n@raise fn conv(e: IoError) -> lib::ApiError { return lib::ApiError { code: e.errno }; }\n\nfn main() { println(1); }\n";
+    let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", main), ("lib/lib.hl", lib)], "raise_orphan");
+    let head = "`conv` converts `IoError` into `lib::ApiError`, and a `@raise` fn is declared in the seed of one of its two types: `IoError` is a builtin type, which no seed declares, and `lib::ApiError` is declared in another seed.";
+    assert!(!ok && out.contains("main.hl:3:1: type error: ") && out.contains(head), "check: {out}");
+    assert!(!built && bout.contains(head) && !bout.contains("codegen error"), "build: {bout}");
+}
+
+/// GH #1951 (item 2): a `@raise` fn runs where an `or raise` hands an
+/// error on, so it makes no syscall, publishes, spawns or blocks. One that
+/// does is refused as its implied effect assertion is, saying why.
+#[test]
+fn a_raise_fn_that_reaches_a_forbidden_effect_is_refused() {
+    let src = "type Oops { why: String; }\ntype ApiError { code: Int; }\n\
+               @raise fn conv(e: Oops) -> ApiError {\n    println(e.why);\n    return ApiError { code: 1 };\n}\n\
+               fn main() { println(1); }\n";
+    refused(
+        src,
+        "raise_effect",
+        "3:11",
+        "effect assertion violated: `conv` is a `@raise` fn, which runs where an `or raise` hands an error on, so it makes no syscall, publishes nothing, spawns nothing and never blocks; it must not reach `syscall`",
+    );
 }
 
 /// GH #1945: a stdlib error type spelled by its path builds wherever its

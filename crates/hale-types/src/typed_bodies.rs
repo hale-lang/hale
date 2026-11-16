@@ -693,6 +693,23 @@ pub struct TypedBody {
     /// into the set (an argument, a binding, a return, a field), which
     /// lowering builds as the set's variant for it.
     pub injections: BTreeMap<ConversionSite, Injection>,
+    /// GH #1951 (item 2): by the site of the `raise` it converts at (the
+    /// `raise` word's span, or a fallible handler's for its implicit
+    /// `or raise`), every raised error that is not the enclosing fn's own
+    /// type and becomes it: a set's member, or a `@raise fn`'s result.
+    pub raises: BTreeMap<ConversionSite, RaiseConversion>,
+}
+
+/// How a raised error becomes the enclosing fn's (GH #1951, item 2):
+/// lowering reads the row as the `or fail` it stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RaiseConversion {
+    /// R2: the error is a member of the fn's set error type, `or fail
+    /// S::P(err)`.
+    Member(Injection),
+    /// R3: the one `@raise fn` from the error's type to the fn's, by its
+    /// declared (merged) name: `or fail conv(err)`.
+    Convert(String),
 }
 
 /// A member's value made its set's (GH #1530 step 1): the set, by its
@@ -1382,6 +1399,15 @@ impl TypingRecord {
         self.body(body).injections.entry(site).or_insert(injection);
     }
 
+    /// GH #1951 (item 2): the error raised at `site` of the body `body`
+    /// becomes the enclosing fn's error as `conversion` says.
+    pub fn raise(&mut self, body: NodeId, site: ConversionSite, conversion: RaiseConversion) {
+        if site.path.iter().any(|at| NodeId(*at).is_none()) {
+            return;
+        }
+        self.body(body).raises.entry(site).or_insert(conversion);
+    }
+
     pub fn conversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
         let unminted = match &site.kind {
             SiteKind::Cast(id) => NodeId(*id).is_none(),
@@ -1587,6 +1613,13 @@ impl TypedBodies {
             return None;
         }
         self.bodies.get(&body.0)?.injections.get(site)
+    }
+
+    /// The conversion of the error raised at `site` in the body declared
+    /// at `body` (GH #1951, item 2), if it is not the enclosing fn's own
+    /// type.
+    pub fn raise_in(&self, body: NodeId, site: &ConversionSite) -> Option<&RaiseConversion> {
+        self.bodies.get(&body.0)?.raises.get(site)
     }
 
     /// The `conversions` column's row at `site`: lowering reads a cast's

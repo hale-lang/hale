@@ -1130,6 +1130,7 @@ They attach to the declaration that follows.
 | `@sealed` | locus | this locus's `params` are readable only from inside it |
 | `@repo(T)` | locus | the locus is where `T`'s state lives; held to the method set and the state classes (spec/api.md § Repositories) |
 | `@idempotent` / `@not_idempotent` | fn | a `@repo` method's marker: repeating the write is, or is not, safe |
+| `@raise` | free fn | the conversion an `or raise` applies from the fn's one parameter's type to its result's; implies `@effects(none: {syscall, publish, spawn, block})` (spec/semantics.md § `or` disposition) |
 | `@secret` | fn param | **lint**: flags a value reaching a publish or log/file sink in the same body |
 | `@effects(publish: {…})` | fn | the allowed publish set |
 | `@effects(depends: {…})` | locus | complete set of subjects that may transitively reach any handler |
