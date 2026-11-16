@@ -3787,7 +3787,7 @@ fn the_generics_divergences_are_refused_by_the_check_not_the_build() {
     );
 }
 
-/// The latent gaps the parity gate's stable draw surfaced (GH #PLISSUE),
+/// The latent gaps the parity gate's stable draw surfaced (GH #2005),
 /// the half compiled: a specialization first reached inside a locus
 /// literal's field, an array literal for a `bounded` parameter through a
 /// fn value, `Time + Duration` and a Decimal literal in a generic body,
@@ -3879,7 +3879,7 @@ fn the_latent_parity_divergences_check_build_and_run() {
     }
 }
 
-/// The latent gaps the parity gate's stable draw surfaced (GH #PLISSUE),
+/// The latent gaps the parity gate's stable draw surfaced (GH #2005),
 /// the half refused: a call that leaves out a generic fn's defaulted
 /// parameter (in another fn's default too, whose walk drops what it
 /// finds), an argument a generic body's specialization still cannot type
@@ -3888,7 +3888,8 @@ fn the_latent_parity_divergences_check_build_and_run() {
 /// generic locus, a return a specialization does not type, a value of
 /// one interface passed where another is expected (read from an array
 /// element, a `let` or a stdlib interface's parameter, all of which the
-/// check typed as unknown), and a locus assigned to an interface place.
+/// check typed as unknown), a locus assigned to an interface place, and
+/// an argument to a parameter typed by a builtin error type.
 /// Each is refused by the check at the construct; the build is never
 /// reached.
 ///
@@ -3978,6 +3979,16 @@ fn the_latent_parity_divergences_are_refused_by_the_check_not_the_build() {
                  fn main() { }\n",
                 "h",
                 "a value of interface `std::http::Handler` where interface `Other` is expected",
+            ),
+            (
+                // a signature naming a builtin error type resolved it to
+                // unknown; an `or` hands the handler a `String` error
+                "fn default_port(e: ParseError) -> Int { return 8080; }\n\
+                 const NEVER: Bool = false;\n\
+                 fn try_it(n: Int) -> Int fallible(String) { if NEVER { fail \"never\"; } return n; }\n\
+                 fn main() { println(try_it(1) or default_port(err)); }\n",
+                "default_port",
+                "argument 0 type mismatch: expected `ParseError`, got `String`",
             ),
             (
                 "interface Greeter { fn greet() -> String; }\n\

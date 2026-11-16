@@ -409,7 +409,7 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // the handler an `or` hands `err`) resolved to `Unknown` here while a
     // body's annotation named the record, so the check passed any
     // argument (`default_port("x")`, a `String` error's `err`) and the
-    // build refused it (GH #PLISSUE). A program's own declaration of the
+    // build refused it (GH #2005). A program's own declaration of the
     // name still wins.
     for t in crate::builtin_types::BUILTIN_TYPES {
         if matches!(t.injected, crate::builtin_types::Injected::Always) {

@@ -76,7 +76,7 @@ A body with *no* declared return type keeps statement-position
 semantics: the tail is evaluated for side effects. So does a `()
 fallible(E)` body's, an `or` included (`fn fwd() -> () fallible(E) {
 touch() or fail err }` lowers as the statement `touch() or fail err;`;
-GH #PLISSUE).
+GH #2005).
 The same body's **last statement** is its value when it is a `match`,
 an `if` or a block: its arms and tails carry the value down, each leaf a
 return (§ "Definite return", below).

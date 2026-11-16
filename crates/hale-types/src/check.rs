@@ -17305,7 +17305,7 @@ impl<'a> Checker<'a> {
                     // interface where the place is declared (a `let`, a
                     // field's initializer, an argument, a return), not
                     // at an assignment, and refused it there (GH
-                    // #PLISSUE: `let mut g: Greeter = Hi { }; g = Hey { };`)
+                    // #2005: `let mut g: Greeter = Hi { }; g = Hey { };`)
                     let hint = if self.locus_meets_interface(&want, &got) {
                         format!(
                             ": hale can't assign a locus to a place of an interface yet (it converts one where \
@@ -18838,7 +18838,7 @@ impl<'a> Checker<'a> {
     /// a value read from there is a value of the interface, so passing it
     /// where ANOTHER interface is expected is refused at the argument as
     /// the build refuses it (it converts a locus into an interface, never
-    /// one interface's value into another's; GH #PLISSUE).
+    /// one interface's value into another's; GH #2005).
     fn resolve_param_te(&self, te: &TypeExpr) -> Ty {
         let ty = self.resolve_te(te);
         self.with_interfaces_named(te, ty)
@@ -24776,7 +24776,7 @@ impl<'a> Checker<'a> {
                                 {
                                     // A value of another interface (a
                                     // parameter, a `let`, an element
-                                    // declared as one; GH #PLISSUE)
+                                    // declared as one; GH #2005)
                                     let msg = match self.top.lookup(arg_name) {
                                         Some(TopSymbol::Interface(_)) => format!(
                                             "a value of interface `{a}` where interface `{}` is expected: hale \
