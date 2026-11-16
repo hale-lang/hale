@@ -162,6 +162,8 @@ async function loadAll() {
     command(S.app, "Index", { limit: 200 }).then(x => { S.index = x; }, e => { S.errors.index = e; }),
     // the org chart row; a head without it answers a malformed-call
     // refusal, and the chart falls back to the index's positions
+    // every organization's UIs, where this head is a habitat's (`Uis`)
+    (S.calls.has("Uis") ? command(S.app, "Uis", { limit: 200 }).then(x => { if (x && x.ok) S.uis = parseList(x.uis); }, () => {}) : Promise.resolve()),
     command(S.app, "Org", { limit: 500 }).then(x => { if (x && x.ok) S.org = x; else S.errors.org = new ReadError(200, "org_refused", (x && (x.why || (x.refusal && x.refusal.reason))) || ""); }, e => { S.errors.org = e; }),
     readAllKnowledge().then(x => { S.knowledge = x; }, e => { S.errors.knowledge = e; }),
     read(S.app, "dna/reviews?limit=100").then(x => { S.reviews = x.data.items; }, e => { S.errors.reviews = e; }),
@@ -1025,13 +1027,67 @@ function targetLink(target) {
 
 // ---- shell ---------------------------------------------------------------
 
+// Every organization's UI in one list, in the rail of every organization
+// face: the habitat first, then each organization it holds, each entered
+// signed in through the habitat head's hand-in (`/organisms/<name>/face`,
+// an absolute address on the habitat's face), with the UIs it declares
+// nested under it. The list is, in order of preference: `organizations`
+// as this organization's read carries it (a child's head fetches it from
+// its habitat); the habitat's own `Uis` rows (on the habitat's face); this
+// organization and its habitat (`habitat: {name, face}`); or the
+// organizations the record names.
+function readObject(v) { if (!v) return null; if (typeof v === "object") return v; try { return JSON.parse(v); } catch (e) { return null; } }
+function renderOrganizations(name, idx) {
+  const list = $("orgs");
+  if (!list) return;
+  list.replaceChildren();
+  const habitat = readObject(S.org && S.org.habitat) || readObject(idx.habitat);
+  const base = (habitat && habitat.face ? habitat.face : location.origin).replace(/\/$/, "");
+  const handIn = n => base + "/organisms/" + encodeURIComponent(n) + "/face";
+  const entry = (label, href_, state, current, extra) => el("li", {},
+    el("a", { href: href_, "aria-current": current ? "page" : null, target: current ? null : "_blank", rel: current ? null : "noopener" },
+      el("span", { class: "dot " + (state === "up" || current ? "up" : state ? "down" : "") }), label,
+      current ? el("span", { class: "note" }, " this one") : state && state !== "up" ? el("span", { class: "note" }, " " + state) : ""),
+    extra || "");
+  const items = [];
+  const given = parseList(idx.organizations);
+  if (given.length) {
+    // the organization this face serves is the entry its head marks
+    // `current` (a child's own name is not on its Index read), else by name
+    for (const o of given) {
+      const current = o.current === true || (!!idx.name && o.name === idx.name);
+      items.push(entry(o.name, current ? "#/org" : (o.face_link || handIn(o.name)), o.state === "grafted" ? "not answering" : o.state, current));
+    }
+  } else if (S.uis && S.uis.length) {
+    // on the habitat's face: itself, then each organism, its declared UIs under it
+    items.push(entry(name, "#/org", "up", true));
+    const byOrg = new Map();
+    for (const u of S.uis) { if (!byOrg.has(u.organism)) byOrg.set(u.organism, []); byOrg.get(u.organism).push(u); }
+    const organisms = new Map(parseList(S.org ? S.org.organisms : idx.organisms).map(o => [o.name, o]));
+    for (const [org, uis] of byOrg) {
+      const declared = uis.filter(u => u.kind === "declared" && u.name);
+      const sub = declared.length ? el("ul", { class: "sub" }, declared.map(u => el("li", {},
+        u.url ? el("a", { href: u.url, target: "_blank", rel: "noopener" }, u.label || u.name) : el("span", { class: "note" }, (u.label || u.name) + (u.loopback_host ? " · loopback only on " + u.loopback_host : u.note ? " · " + u.note : ""))))) : "";
+      const o = organisms.get(org);
+      items.push(entry(org, handIn(org), o ? o.state : "", false, sub));
+    }
+  } else if (habitat && habitat.name) {
+    items.push(entry(habitat.name, base + "/organization", "up", false), entry(name, "#/org", "up", true));
+  } else {
+    const orgs = parseList(S.org ? S.org.organisms : idx.organisms);
+    if (!orgs.length) return;
+    items.push(entry(name, "#/org", "up", true), ...orgs.map(o => entry(o.name, handIn(o.name), o.state, false)));
+  }
+  list.append(el("h3", {}, "organizations"), el("ul", {}, items));
+}
+
 function renderShell() {
   const idx = S.index || {};
   const horizon = $("horizon");
   horizon.replaceChildren();
   const name = idx.name || (S.record && "record " + S.record.record_id.slice(0, 12)) || "organization";
   horizon.append(el("span", { class: "org" }, name));
-  if (idx.organisms && parseList(idx.organisms).length) horizon.append(el("span", { class: "note" }, `habitat · ${parseList(idx.organisms).length} grafted`));
+  renderOrganizations(name, idx);
   const who = $("who");
   who.replaceChildren(S.principal ? el("span", {}, el("b", {}, S.principal.name), " · ", S.principal.mode) : "");
   const picker = $("theme");
