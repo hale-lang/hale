@@ -1,0 +1,15 @@
+// tests/hale/ends_with_own_fn_test.hl — bare `ends_with` became a
+// builtin in GH #1995 S3, but the name was free before, so a program's
+// own `fn ends_with` keeps it: the builtin answers a bare call only where
+// no fn of the name is declared, and `std::str::ends_with` still answers
+// by its path.
+
+fn ends_with(n: Int, digit: Int) -> Bool {
+    return n % 10 == digit;
+}
+
+fn main() {
+    std::test::assert(ends_with(42, 2), "the program's fn answers the bare call");
+    std::test::assert(!ends_with(42, 3), "and runs its own body");
+    std::test::assert(std::str::ends_with("main.hl", ".hl"), "the path still reaches std::str");
+}

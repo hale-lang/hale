@@ -290,8 +290,12 @@ pub const AP_SOURCE: &str = concat!(
     include_str!("../hl/wide.hl"),
     "\n",
     // std::time::parse_rfc3339 (GH #1948): an offset-aware parse over
-    // `parse_time`. Last, so no other file's spans move.
+    // `parse_time`.
     include_str!("../hl/time_rfc3339.hl"),
+    "\n",
+    // std::str's splits and trims (GH #1995 S3): free fns over the
+    // ByteView primitives. Last, so no other file's spans move.
+    include_str!("../hl/str_helpers.hl"),
 );
 
 /// `std::law`: the standard constitutions, loaded only when a program
@@ -347,6 +351,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("probes.hl", include_str!("../hl/probes.hl")),
     ("wide.hl", include_str!("../hl/wide.hl")),
     ("time_rfc3339.hl", include_str!("../hl/time_rfc3339.hl")),
+    ("str_helpers.hl", include_str!("../hl/str_helpers.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -685,6 +690,16 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "str", "find"], "__str_find"),
     (&["std", "str", "view_cp_at"], "__str_view_cp_at"),
     (&["std", "str", "view_cp_size"], "__str_view_cp_size"),
+    // str_helpers.hl (GH #1995 S3): the splits and trims.
+    (&["std", "str", "cut"], "__str_cut"),
+    (&["std", "str", "cut_last"], "__str_cut_last"),
+    (&["std", "str", "eq_ignore_case"], "__str_eq_ignore_case"),
+    (&["std", "str", "last_index_of"], "__str_last_index_of"),
+    (&["std", "str", "parse_bool"], "__str_parse_bool"),
+    (&["std", "str", "trim_end"], "__str_trim_end"),
+    (&["std", "str", "trim_prefix"], "__str_trim_prefix"),
+    (&["std", "str", "trim_start"], "__str_trim_start"),
+    (&["std", "str", "trim_suffix"], "__str_trim_suffix"),
     (&["std", "tagged", "Accumulator"], "__StdTaggedAccumulator"),
     (&["std", "text", "Sink"], "__StdTextSink"),
     (&["std", "text", "StdoutSink"], "__StdTextStdoutSink"),

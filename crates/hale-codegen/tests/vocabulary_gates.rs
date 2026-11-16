@@ -315,6 +315,7 @@ const STATEMENT_POSITION_PROGRAMS: &[(&str, &str)] = &[
         "fn main() {\n    starts_with(\"ab\", \"a\");\n}\n",
     ),
     ("contains", "fn main() {\n    contains(\"ab\", \"b\");\n}\n"),
+    ("ends_with", "fn main() {\n    ends_with(\"ab\", \"b\");\n}\n"),
     ("__fmt", "fn main() {\n    __fmt(255, \"x\");\n}\n"),
     // The four printers: statement position is their natural home,
     // and they are here because the arm that serves them is now

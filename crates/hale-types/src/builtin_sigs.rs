@@ -83,6 +83,16 @@ pub const BARE_BUILTIN_SIGS: &[BuiltinSig] = &[
         operands: Operands::Strings,
         returns: Returns::Prim(PrimType::Bool),
     },
+    // GH #1995 S3: the third of the predicates. Unlike the two above it
+    // is not a reserved call form: a program's own `fn ends_with` keeps
+    // the bare name (it was free before), and the builtin answers only
+    // where no fn of the name is declared.
+    BuiltinSig {
+        name: "ends_with",
+        arity: 2,
+        operands: Operands::Strings,
+        returns: Returns::Prim(PrimType::Bool),
+    },
 ];
 
 /// The row for a bare builtin callee, if `name` is one.

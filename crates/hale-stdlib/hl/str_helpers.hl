@@ -1,0 +1,148 @@
+// std::str helpers (GH #1995 S3): the everyday splits and trims a
+// program otherwise writes by hand with a magic offset —
+// `line[(at + len(sep))..len(line)]` after an `index_of`, or
+// `g[7..len(g)]` after a `starts_with(g, "sha256:")`.
+//
+// Each measures its String once and works on byte offsets against
+// that length with the ByteView primitives (`range_index_of`,
+// `range_copy`, `byte_at_unchecked`), so none pays a strlen per step
+// and none copies more than the part it returns. Offsets are bytes:
+// a separator or prefix is matched byte for byte, so a valid UTF-8
+// separator always cuts on a character boundary. All are pure.
+
+/// Whether byte `c` is whitespace to `trim`: space, tab, CR or LF
+/// (`lotus_str_trim`'s set).
+fn __str_trim_space(c: Int) -> Bool {
+    return c == 32 || c == 9 || c == 13 || c == 10;
+}
+
+/// `s` around its first `sep`: the text before it and the text after
+/// it, neither holding `sep`. `cut("k=v=w", "=")` is `("k", "v=w")`. An
+/// empty `sep` is found at 0 (`("", s)`). No `sep` in `s` is
+/// `ParseError { kind: "not_found", input: s }`.
+fn __str_cut(s: String, sep: String) -> (String, String) fallible(ParseError) {
+    let n = len(s);
+    let at = std::str::range_index_of(s, n, sep, 0);
+    if at < 0 {
+        fail ParseError { kind: "not_found", input: s };
+    }
+    return (std::str::range_copy(s, n, 0, at), std::str::range_copy(s, n, at + len(sep), n));
+}
+
+/// The byte index of the last `sub` in `s`, or -1. An empty `sub` is
+/// found at the end, `len(s)`.
+fn __str_last_index_of(s: String, sub: String) -> Int {
+    let n = len(s);
+    let m = len(sub);
+    if m == 0 {
+        return n;
+    }
+    let first = std::str::byte_at_unchecked(sub, 0);
+    let mut i = n - m;
+    while i >= 0 {
+        if std::str::byte_at_unchecked(s, i) == first && std::str::range_eq(s, i, i + m, sub) {
+            return i;
+        }
+        i = i - 1;
+    }
+    return -1;
+}
+
+/// `s` around its last `sep`: `cut_last("a/b/c", "/")` is `("a/b",
+/// "c")`. An empty `sep` is found at the end (`(s, "")`). No `sep` in
+/// `s` is `ParseError { kind: "not_found", input: s }`.
+fn __str_cut_last(s: String, sep: String) -> (String, String) fallible(ParseError) {
+    let n = len(s);
+    let at = __str_last_index_of(s, sep);
+    if at < 0 {
+        fail ParseError { kind: "not_found", input: s };
+    }
+    return (std::str::range_copy(s, n, 0, at), std::str::range_copy(s, n, at + len(sep), n));
+}
+
+/// `s` without a leading `prefix`, or `s` unchanged when it does not
+/// start with one. Only one `prefix` goes.
+fn __str_trim_prefix(s: String, prefix: String) -> String {
+    if !std::str::starts_with(s, prefix) {
+        return s;
+    }
+    let n = len(s);
+    return std::str::range_copy(s, n, len(prefix), n);
+}
+
+/// `s` without a trailing `suffix`, or `s` unchanged when it does not
+/// end with one. Only one `suffix` goes.
+fn __str_trim_suffix(s: String, suffix: String) -> String {
+    if !std::str::ends_with(s, suffix) {
+        return s;
+    }
+    let n = len(s);
+    return std::str::range_copy(s, n, 0, n - len(suffix));
+}
+
+/// `s` without its leading whitespace (space, tab, CR, LF: `trim`'s
+/// set).
+fn __str_trim_start(s: String) -> String {
+    let n = len(s);
+    let mut lo = 0;
+    while lo < n && __str_trim_space(std::str::byte_at_unchecked(s, lo)) {
+        lo = lo + 1;
+    }
+    if lo == 0 {
+        return s;
+    }
+    return std::str::range_copy(s, n, lo, n);
+}
+
+/// `s` without its trailing whitespace (space, tab, CR, LF: `trim`'s
+/// set).
+fn __str_trim_end(s: String) -> String {
+    let n = len(s);
+    let mut hi = n;
+    while hi > 0 && __str_trim_space(std::str::byte_at_unchecked(s, hi - 1)) {
+        hi = hi - 1;
+    }
+    if hi == n {
+        return s;
+    }
+    return std::str::range_copy(s, n, 0, hi);
+}
+
+/// Whether `a` and `b` are equal with ASCII letters compared without
+/// case: `A`–`Z` match `a`–`z`, every other byte (UTF-8 included) only
+/// itself.
+fn __str_eq_ignore_case(a: String, b: String) -> Bool {
+    let n = len(a);
+    if n != len(b) {
+        return false;
+    }
+    let mut i = 0;
+    while i < n {
+        let mut x = std::str::byte_at_unchecked(a, i);
+        let mut y = std::str::byte_at_unchecked(b, i);
+        if x >= 65 && x <= 90 {
+            x = x + 32;
+        }
+        if y >= 65 && y <= 90 {
+            y = y + 32;
+        }
+        if x != y {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// `true` for `"true"`, `false` for `"false"`; anything else (another
+/// case, surrounding space, `"1"`) is `ParseError { kind: "parse_bool",
+/// input: s }`.
+fn __str_parse_bool(s: String) -> Bool fallible(ParseError) {
+    if s == "true" {
+        return true;
+    }
+    if s == "false" {
+        return false;
+    }
+    fail ParseError { kind: "parse_bool", input: s };
+}

@@ -1754,6 +1754,7 @@ crates/hale-stdlib/hl/process.hl 42d1930e7e552fa7
 crates/hale-stdlib/hl/rand.hl 0fcacf844a971187
 crates/hale-stdlib/hl/secret.hl c614724f5bda3c16
 crates/hale-stdlib/hl/source.hl 5dee20cb0f0c4164
+crates/hale-stdlib/hl/str_helpers.hl 05112ec23f5f47f5
 crates/hale-stdlib/hl/str_view.hl c5e644fc5d3b4ffd
 crates/hale-stdlib/hl/tagged.hl 7b514c1ecd3e9de5
 crates/hale-stdlib/hl/term.hl f643d32e6ab5d1e6

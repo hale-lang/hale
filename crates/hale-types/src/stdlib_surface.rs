@@ -1539,6 +1539,20 @@ pub const SURFACES: &[NsSurface] = &[
             row!("substring", PURE, [Str, Int, Int] -> Str, Intrinsic(StrSubstring)),
             row!("trim", PURE, [Str] -> Str, Intrinsic(StrTrim)),
             row!("upper", PURE, [Str] -> Str, Intrinsic(StrUpper)),
+            // GH #1995 S3: the splits and trims a program otherwise writes
+            // with a magic offset, Hale bodies in `str_helpers.hl`. `cut`
+            // and `cut_last` return a tuple, which the signature
+            // vocabulary has no word for: the checker reads their types
+            // from the bodies.
+            row!("cut", PURE, _, Renamed),
+            row!("cut_last", PURE, _, Renamed),
+            row!("eq_ignore_case", PURE, [Str, Str] -> Bool, Renamed),
+            row!("last_index_of", PURE, [Str, Str] -> Int, Renamed),
+            row!("parse_bool", PURE, [Str] -> Bool ! "ParseError", Renamed),
+            row!("trim_end", PURE, [Str] -> Str, Renamed),
+            row!("trim_prefix", PURE, [Str, Str] -> Str, Renamed),
+            row!("trim_start", PURE, [Str] -> Str, Renamed),
+            row!("trim_suffix", PURE, [Str, Str] -> Str, Renamed),
         ],
         open_prefixes: &[],
     },
@@ -2343,6 +2357,27 @@ pub fn builtin_member_advice(recv: &Ty, field: &str) -> Option<&'static str> {
         }
         _ => None,
     }
+}
+
+/// GH #1995 S3, the rest of the member half: `s.trim()` on a String is
+/// the method spelling of a `std::str` free function, and Hale has no
+/// methods on its primitives. For a field named like a public `std::str`
+/// fn that takes the String first, the advice names the call to write
+/// (`std::str::trim(s)`, `std::str::cut(s, …)`). The fns over a
+/// `ByteView` take no String first and are not suggested.
+pub fn str_fn_member_advice(recv: &Ty, field: &str) -> Option<String> {
+    if !matches!(recv, Ty::Prim(PrimType::String) | Ty::Prim(PrimType::StringView)) {
+        return None;
+    }
+    let f = row(&["std", "str", field]).filter(|f| f.is_public() && !field.starts_with("__"))?;
+    let args = match f.sig.as_ref() {
+        Some(sig) if sig.params.first() != Some(&SigTy::Str) => return None,
+        Some(sig) if sig.params.len() == 1 => "s",
+        _ => "s, …",
+    };
+    Some(format!(
+        "string operations are free functions, not methods: `std::str::{field}({args})`"
+    ))
 }
 
 /// The stage-1 check: for a call whose callee is a `std::` path,
