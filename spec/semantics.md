@@ -377,6 +377,44 @@ when it compared). Until 2026-10-13 the check held only that the two sides were
 one type, and the build refused `true < false`, `p == q` of two
 structs, `b"a" + b"b"` and `!n` with no file or line.
 
+## String slicing
+
+A range in an index's brackets slices a `String` by byte offset and
+yields a new `String` holding a copy of those bytes:
+
+| Form | Bytes | Same as |
+|---|---|---|
+| `s[lo..hi]` | `lo` up to, not including, `hi` | `std::str::substring(s, lo, hi)` |
+| `s[lo..=hi]` | `lo` through `hi` | `s[lo..(hi + 1)]` |
+| `s[lo..]` | `lo` to the end | `s[lo..len(s)]` |
+| `s[..hi]` | the start up to, not including, `hi` | `s[0..hi]` |
+| `s[..=hi]` | the start through `hi` | `s[0..(hi + 1)]` |
+| `s[..]` | every byte (a copy) | `s[0..len(s)]` |
+
+The bounds are `Int` expressions, evaluated left to right after the
+receiver, and the receiver is evaluated once in every form:
+`next_line()[4..]` calls `next_line` once, as a closed slice does.
+Bounds clamp and never fail: a start below 0 is 0, a bound past the
+end is the end, and an end before the start gives `""`. Offsets are
+bytes, not characters, so a slice can cut a multibyte UTF-8 character
+in two; `std::str::cp_at` and `cp_size` walk code points.
+
+A bound is left out only inside an index's brackets (GH #1995): a
+bare `3..` or `..3` anywhere else, `for i in 0..` included, is a
+parse error. `..=` needs its end (`s[lo..=]` is refused). An open
+form is the closed form it reads as before anything checks or
+lowers it, so `hale check` and the build accept exactly the same
+open slices as closed ones. Only a `String` slices: a range index on
+an array, a `bounded`, `Bytes` or a view is refused at the check
+(spec/types.md § What the compiler cannot compile yet;
+`std::bytes::slice` copies a range of
+bytes, `std::str::slice` a range of a `ByteView`).
+
+Each slice measures the receiver and copies the bytes (`O(n) +
+O(hi - lo)`, spec/stdlib.md § Linear byte scanning), so walking
+a long string by re-slicing its tail is quadratic; a `ByteView` walks
+it in one pass (spec/styleguide.md S16).
+
 ## Binary data — Bytes and conversion
 
 `Bytes` is the binary-safe sibling of `String`. Same
