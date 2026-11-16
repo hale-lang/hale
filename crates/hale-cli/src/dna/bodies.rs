@@ -139,7 +139,10 @@ impl Habitat {
 }
 
 /// The compose file of the body of the organism keyed `key` at `root`, its
-/// service labelled with `labels` (`compose_labels(<organism>, "body")`).
+/// service labelled with `labels` (`compose_labels(<organism>, "body")`),
+/// with no face beside it: what the tests read a body's service from (the
+/// habitat renders every body through `render_with_face`).
+#[cfg(test)]
 pub(super) fn render(shape: &BodyShape, key: &str, labels: &str, root: &str, habitat: &Habitat) -> String {
     render_with_face(shape, key, labels, "", root, None, "", habitat)
 }
