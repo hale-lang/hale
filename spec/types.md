@@ -24,7 +24,8 @@ document tells you what's *meaningfully* valid.
 | `BytesMut` (#3) | raw `{ptr, len}` window (by-value; no `[i64 len]` prefix) | A non-owning **raw writable/readable window** — distinct from `Bytes` (which carries a length prefix the handle points *into*) because `BytesMut` is a bare `{ptr, len}` pair over memory owned elsewhere. Handed out by the zero-copy ring producer (`Topic.write(max) { w => … }` binds `w: BytesMut` over the reserved slot) and by `std::io::MirrorRing` (`readable()` / `writable()` return a `BytesMut` over the live / free region). Read it zero-copy with the `_raw` siblings of the binary-pack family (`std::bytes::read_*` / `at` / `find_byte` accept a `BytesMut` directly — length is the window length, not a prefix); write into it with the binary-pack writers (`std::bytes::write_*`). The window is valid only until the next ring commit / mirror advance — no epoch guard, so the lifetime discipline is the caller's. |
 
 **FnPtr (m80):** First-class function values, type-spelled
-`fn(T1, T2) -> R` (or `fn(T1, T2)` for void-returning). LLVM
+`fn(T1, T2) -> R` (or `fn(T1, T2)` for void-returning; `fn(T1, T2) ->
+()` is the same type, in a signature too, GH #2005). LLVM
 lowering is `ptr` (raw fn pointer); calls go through
 `build_indirect_call` with an LLVM `FunctionType` synthesized
 from the FnPtr's args/ret at the call site. The implicit
@@ -1072,9 +1073,23 @@ A field read (`sink.path`) or a method the interface does not declare
 methods; a local bound from the parameter (`let s = sink;`) is the
 interface too (friction sweep 2026-10-12; until then the parameter
 typed as unknown, the check passed such a read and the build refused
-it). A fn or locus-method parameter has this typing; an interface-
-typed slot (a field, an array element, a `let` annotation) still
-accepts any satisfying locus.
+it). A fn or locus-method parameter has this typing, and so does a
+`let` that declares an interface, an array, `bounded` or tuple element
+declared as one (`let gs: [Greeter; 2]`, `fn f(gs: [Greeter; 2])`), and
+a stdlib interface written as its path (`h: std::http::Handler`); each
+such slot still accepts any satisfying locus where it is declared (GH
+#2005: until then these read as unknown, and the check passed what
+the build refused).
+
+A value of an interface converts into no OTHER interface: passing one
+where another interface is expected (`via(gs[0])` with `fn via(x:
+Other)`) is a check-time error at the argument, even when the two
+declare the same methods; declare the parameter as the value's own
+interface, or pass the locus. Nor is a locus assigned to a place of an
+interface (`g = Hey { };` for `let mut g: Greeter`, an element of an
+interface array, an interface field): the conversion happens where the
+place is declared, and the assignment is refused at the value (GH
+#2005).
 
 **Fallible methods (GH #732).** An interface method may declare
 `fallible(E)` after its return type, as a fn does:
@@ -1848,7 +1863,33 @@ operations), a call that returns no value (`id(println("x"))`), a
 stdlib path written without `std::` (`id(time::sleep(5ms))`). A
 generic call whose parameter only such an argument could pin is a type
 error at the argument (GH #1963), naming what it is, or asking for the
-value bound to a `let` that writes its type.
+value bound to a `let` that writes its type. Inside a generic body a
+use of its own type parameter is unnamed until a call specializes it,
+so there the rule is held at each specialization: a local the body
+still cannot name at the type arguments a call makes (a `match` arm's
+binding of a recursive record, `Link::Next(n) -> id(n)`, unnamed in a
+body over the concrete type as well) is refused at the argument (GH
+#2005).
+
+A call fills no default on a generic fn's parameter: a call that leaves
+a defaulted parameter out (`fn read<T>(n: T = 42) -> T` called as
+`read()`) is refused at the callee, naming the parameters to pass. A
+call written in another fn's parameter default (`fn f(n: Int =
+read())`) is held to the same rule (GH #2005; the default's walk
+kept no findings, so the check passed it and the build refused it
+where the default is left out).
+
+**A generic body is checked at each specialization.** The template is
+checked once with its parameters unnamed, and again for each set of
+type arguments its calls make; a `return` (or a body's value) that does
+not type at those is refused at the value, naming the specialization
+(`fn scale<T>(x: T) -> T { return x * 1.5; }` called with an `Int`:
+"return: expected \`Int\`, got \`Float\`, where a call makes \`T\` =
+\`Int\`"; GH #2005), and so is a value that is `()` only there (a
+generic locus's `id(self.child.go())` at a `T` whose `go` returns
+nothing). Inside the specialization, `Time ± Duration`,
+`Time - Time` and a Decimal literal beside a `Decimal<S>` operand lower
+as they do in a body written over the concrete types.
 
 A generic fn has no single type, so its name is not a value: `let g =
 get;` (or passing `get` as an argument) is a type error at the name
@@ -1934,7 +1975,12 @@ annotation, and refuses a generic fn call that binds a parameter to a
 locus where the fn's signature instantiates a generic `type` at that
 parameter (`fn bx<T>(x: T) -> Box<T>` called with an `L`), at the
 callee; the build refused the monomorph with no location. A generic
-locus (`locus Box<T>`) holds one.
+locus's monomorph is a locus too (`bx(c)` with `c: Cache<Int, String>`),
+and so is the locus a perspective slot holds: a call binding the
+parameter to `perspective(P)`'s value (`bx(self.router)`) is refused at
+the callee as well, since hale can't compile a generic `type` holding a
+perspective slot yet; a non-generic `type` with a `perspective(P)` field
+holds one (GH #2005). A generic locus (`locus Box<T>`) holds one.
 
 An array, a tuple, a `bounded[T; N]` or a function type names no
 monomorph, so a generic fn call whose arguments would bind one is
@@ -1967,9 +2013,11 @@ yet" and a way forward, never by the build after a passing check:
 | a generic fn call that binds a parameter to an array, a tuple, a `bounded` or a fn type | the callee | wrap the value in a declared type |
 | a generic locus method (`fn f<T>(…)` inside a locus) | the method's name | a free generic fn, or a generic locus |
 | a generic fn named as a value (`let g = get;`) | the name | call it, or pass a fn over the concrete types that calls it |
-| a generic fn call whose parameter only an argument with no nameable type could pin (a capacity slot, a call with no value) | the argument | bind the value to a `let` that writes its type |
+| a generic fn call whose parameter only an argument with no nameable type could pin (a capacity slot, a call with no value, a `match` arm's binding in a generic body) | the argument | bind the value to a `let` that writes its type |
 | a literal spelled with a generic template's name where no declared type supplies its arguments | the literal | bind it to a `let` that writes them |
-| a generic `type` instantiated at a locus (`Box<L>`, or a generic fn's `-> Box<T>` called with an `L`) | the argument, or the callee | a generic locus, or pass the locus as a parameter |
+| a generic `type` instantiated at a locus (`Box<L>`, or a generic fn's `-> Box<T>` called with an `L` or a generic locus's monomorph) | the argument, or the callee | a generic locus, or pass the locus as a parameter |
+| a generic fn's `-> Box<T>` called with a perspective slot's value | the callee | a `type` with a `perspective(P)` field, or pass the value as a `perspective(P)` parameter |
+| a call that leaves out a generic fn's defaulted parameter | the callee | pass the parameter |
 | an empty array literal `[]` with no list type declared where it stands: anywhere but the value of a `let` that declares its type, or a site that declares a `bounded[T; N]` (a `let`, a `return`, an argument, an assignment, a record field; § bounded[T; N]) | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
 | a nested pattern inside a tuple pattern (`((1, 2), 3) ->`, `(E::A, 3) ->`) | the nested pattern | bind the part and match the binding (the rule a variant's pattern follows) |
 | a range index on anything but a `String` (`a[1..3]` of an array) | the index | copy the elements, `std::bytes::slice` for bytes |
@@ -2180,9 +2228,12 @@ function literals can be assigned, passed, returned.
 A call's callee is any expression that evaluates to a fn value: a
 name, a record's fn field (`h.f(x)`), and, as of GH #1942, a call that
 returns one (`pick()(2)`, `a.get()(4)`), an array element (`fs[0](4)`),
-a tuple part (`t.0(4)`), or an `if` or `match` that picks one (`(if c {
-dbl } else { tri })(5)`). The callee is evaluated once, before the
-arguments. A fn value returns any value type, a view's included: a
+a tuple part (`t.0(4)`), an `if` or `match` that picks one (`(if c {
+dbl } else { tri })(5)`), or the success of an `or` (`(pick() or
+raise)(4)`, GH #2005). The callee is evaluated once, before the
+arguments, each passed as at a direct call (an array literal for a
+`bounded[T; N]` parameter is that bounded, GH #2005). A fn value
+returns any value type, a view's included: a
 `StringView` comes back through a fn value, an interface method or a
 perspective method as through a direct call.
 
@@ -2471,7 +2522,12 @@ type is expected must name a declaration: a primitive, a `type`
 a generic parameter of the declaration being checked, or one of the
 types the compiler synthesizes for its own channels (`IoError`,
 `ParseError`, `CryptoError`, `IndexError`, `KeyError`, `EmptyError`,
-`CapacityError`, `BusUnmatchedKey`, `ClosureViolation`). In a whole
+`CapacityError`, `BusUnmatchedKey`, `ClosureViolation`). A
+synthesized type names the same record in a signature as in a body: a
+parameter typed `ParseError` takes a `ParseError`, and an argument of
+another type is refused at the call (GH #2005; the signature had read
+it as unknown, so the check passed `default_port("x")` and an `or`'s
+`String` `err`, and the build refused them). In a whole
 program — the same set of callers as above — any other bare name is a
 type error at its own span:
 

@@ -33,6 +33,8 @@ Hale provides three distinct boundary mechanisms depending on whether you are de
 | **`interface`** | Per-value fat pointer; many implementations can coexist simultaneously | Structural satisfaction (any locus with a superset of methods satisfies `I`, no `serves` clause needed) | Heterogeneous collections, per-instance plugins, polymorphic `accept(j: Job)` parent hooks. |
 | **`contract { expose; consume; }`** | Parent-child depth edge (`H4`/`H5`) | Direct static field access checked between a parent's `accept(c: Child)` and `Child` | Declaring which internal fields a child locus exposes to its supervising parent. See [Parents & Children](./parents-children.md). |
 
+A locus converts into an interface where the place is declared: an argument, a return, a field's initializer, a `let` that declares the interface, an element of an array declared as one. A value read back from any of those is that interface's value and offers only its methods. It does not convert into a *different* interface, even one declaring the same methods, so passing it where another interface is expected is refused at the argument; declare the parameter as the value's own interface, or pass the locus. Assigning a locus to an interface place after its declaration (`g = Hey { };` for `let mut g: Greeter`) is refused too: bind a new `let`.
+
 ## Declaring & Serving a Perspective
 
 ### The Contract (`perspective`)

@@ -2488,7 +2488,8 @@ its `KNOWN_OPEN` table, which is empty today.
   instantiating thread waits, an anchor among them included, whose own
   params are built in an init of that init, at any depth (each init
   reads the scope through its argument block, from the function that
-  starts it; #1555), each of a replicated field's (`replicas = K`) K
+  starts it, a binding of an outer function included, which each init
+  between passes on through its own block; #1555, #2005), each of a replicated field's (`replicas = K`) K
   instances, an anchor apiece, a keyed subscription's, its key applied
   (`where key == replica` claims its own replica's shard) — then
   claims its copy
