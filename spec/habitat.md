@@ -21,7 +21,9 @@ first nor last a `-`); `local` when its birth names none. The name is
 recorded on its `habitat.profile` row and kept: an `up` that asks another
 name of a habitat born is refused (exit 2). `hale habitat status` shows it
 (`name` line), the head's `Commands::index` answers it (`name`, `""` for
-any record but a habitat's), and the operator face's first screen shows it
+any record but a habitat's; an organism the habitat keeps a body for
+answers it on `Commands::org` as its `habitat`'s `name`, § A sapling's
+body), and the operator face's first screen shows it
 as the habitat's name.
 
 The local habitat is one docker compose project per machine, named for the
@@ -942,6 +944,25 @@ face-<key>`; a removal takes every `role: "body"` service of the organism),
 so the `face` and `head` the habitat's index lists for the organism answer.
 A shape kept by an `up` from before faces were kept carries no face
 environment, and its organisms get a face at the next `up`.
+
+**Both know the habitat they live in.** The body and the face are handed
+the habitat's name, `HALE_DNA_HABITAT_NAME` (as the organism's services
+are, The handover), and its face, `HALE_DNA_HABITAT_FACE`: the absolute
+origin a person reaches the habitat's face at, `http://<address>:<port>`
+with no path and no trailing `/`, as the latest `habitat.profile` row
+records it (under the habitat's declared address,
+`HALE_DNA_HABITAT_ADDRESS`; the address `hale habitat status` prints on its
+`face` line). Both or neither: a habitat whose record holds no face
+address hands neither. The organism's head answers them on its
+organization's org read, `Commands::org`, as `habitat`, an object
+`{name, face}`, so its face links to the habitat's
+(`<face>/organization`) and, through the habitat face's hand-in, to each
+of its siblings (`<face>/organisms/<name>/face`). Both are `""` on the
+habitat's own record (one that holds a `habitat.profile` row, whatever its
+process was handed) and for an organism run outside a habitat. The
+habitat's own `body` and `face` are handed neither. Written into
+`body.yaml` at every `up`, graft and apply on the habitat's machine, so a
+body made before the habitat recorded its face is told at the next.
 
 **The body stays on the habitat's machine**, wherever the organism's
 services are placed: it runs the habitat's image with the habitat's

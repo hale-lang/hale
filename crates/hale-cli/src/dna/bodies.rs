@@ -102,18 +102,59 @@ fn q(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_default()
 }
 
+/// The habitat an organism's body and face are told they live in: its name
+/// (`HALE_DNA_HABITAT_NAME`) and the absolute origin a person reaches its
+/// face at (`HALE_DNA_HABITAT_FACE`, `http://<address>:<port>`), which the
+/// organism's organization reads answer as their `habitat`, so its face
+/// links back to the habitat's (`<face>/organisms/<name>/face`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Habitat {
+    pub name: String,
+    pub face: String,
+}
+
+impl Habitat {
+    /// The habitat as its record `rows` hold it: named `name` (its label),
+    /// its face the latest `habitat.profile` row's (`up` records it there,
+    /// under the habitat's declared address), "" when none is recorded.
+    pub(super) fn of(rows: &[serde_json::Value], name: &str) -> Habitat {
+        let face = rows
+            .iter()
+            .rev()
+            .find(|r| r["kind"] == "habitat.profile")
+            .and_then(|r| r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()))
+            .and_then(|b| b["face"].as_str().map(|f| f.trim().trim_end_matches('/').to_string()))
+            .unwrap_or_default();
+        Habitat { name: name.to_string(), face }
+    }
+
+    /// Its `environment:` entries, both or neither: none when either is
+    /// unknown, as for an organism run outside a habitat.
+    fn environment(&self) -> String {
+        if self.name.is_empty() || self.face.is_empty() {
+            return String::new();
+        }
+        format!("      HALE_DNA_HABITAT_NAME: {}\n      HALE_DNA_HABITAT_FACE: {}\n", q(&self.name), q(&self.face))
+    }
+}
+
 /// The compose file of the body of the organism keyed `key` at `root`, its
-/// service labelled with `labels` (`compose_labels(<organism>, "body")`).
-pub(super) fn render(shape: &BodyShape, key: &str, labels: &str, root: &str) -> String {
-    render_with_face(shape, key, labels, "", root, None, "")
+/// service labelled with `labels` (`compose_labels(<organism>, "body")`),
+/// with no face beside it: what the tests read a body's service from (the
+/// habitat renders every body through `render_with_face`).
+#[cfg(test)]
+pub(super) fn render(shape: &BodyShape, key: &str, labels: &str, root: &str, habitat: &Habitat) -> String {
+    render_with_face(shape, key, labels, "", root, None, "", habitat)
 }
 
 /// `render`, and when `face_port` names its graft's head block (and the
 /// shape carries the face's environment), its face beside it: a service
 /// `face-<key>` running `hale dna head <root>` as the habitat's face runs
 /// its own, its state in `face_state`, signing in through the habitat's
-/// identity (it publishes none of its own).
-pub(super) fn render_with_face(shape: &BodyShape, key: &str, labels: &str, face_labels: &str, root: &str, face_port: Option<u16>, face_state: &str) -> String {
+/// identity (it publishes none of its own). Both are told of the `habitat`
+/// they live in.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_with_face(shape: &BodyShape, key: &str, labels: &str, face_labels: &str, root: &str, face_port: Option<u16>, face_state: &str, habitat: &Habitat) -> String {
     let mut s = format!("# The body of the organism {key}, kept by the habitat: written by `hale habitat up`,\n# a graft and an apply from the habitat body's shape (body-shape.json).\nservices:\n  {}:\n", service_of(key));
     s.push_str(&format!("    image: {}\n", q(&shape.image)));
     s.push_str(labels);
@@ -130,6 +171,7 @@ pub(super) fn render_with_face(shape: &BodyShape, key: &str, labels: &str, face_
     // the habitat's body serves the readings' fixed ports on this machine;
     // a second body there would take them from it (or lose them to it)
     s.push_str("      HALE_DNA_SENSES_PORT: \"0\"\n");
+    s.push_str(&habitat.environment());
     s.push_str("    volumes:\n");
     for (src, dst) in &shape.mounts {
         s.push_str(&format!("      - {}\n", q(&format!("{src}:{dst}"))));
@@ -156,6 +198,8 @@ pub(super) fn render_with_face(shape: &BodyShape, key: &str, labels: &str, face_
         s.push_str("    environment:\n");
         s.push_str(&shape.face_environment);
         s.push_str(&format!("      HALE_DNA_HEAD_STATE: {}\n", q(face_state)));
+        // its organization's reads answer the habitat it lives in
+        s.push_str(&habitat.environment());
         if !shape.face_publish.is_empty() {
             // its head block, as the habitat's face publishes its own
             s.push_str("    ports:\n");
@@ -271,7 +315,8 @@ fn ensure(k: &Kept, rows: &[serde_json::Value], shape: &BodyShape) -> Result<(),
             sapling::record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{}/face", k.key), "body": allocation_of(&k.id, &local_habitat_project(), &face_service_of(&k.key)).to_string() })])?;
         }
     }
-    let text = render_with_face(shape, &k.key, &compose_labels(&k.name, "body"), &compose_labels(&k.name, "face"), &k.root.display().to_string(), face_port, &face_state.display().to_string());
+    let habitat = Habitat::of(rows, &habitat_label());
+    let text = render_with_face(shape, &k.key, &compose_labels(&k.name, "body"), &compose_labels(&k.name, "face"), &k.root.display().to_string(), face_port, &face_state.display().to_string(), &habitat);
     let path = dir.join(BODY_FILE);
     if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
         std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
@@ -443,7 +488,7 @@ mod tests {
     #[test]
     fn a_body_runs_dna_dev_on_its_organism_with_the_habitats_shape() {
         let labels = "    labels:\n      hale.habitat: \"lab\"\n      hale.organism: \"voice\"\n      hale.role: \"body\"\n";
-        let text = render(&shape(), "0a1b2c3d4e5f", labels, "/h/saplings/voice");
+        let text = render(&shape(), "0a1b2c3d4e5f", labels, "/h/saplings/voice", &Habitat::default());
         assert!(text.contains("services:\n  body-0a1b2c3d4e5f:\n    image: \"hale-habitat:abc\"\n"), "{text}");
         assert!(text.contains(labels), "labelled as the organism's body: {text}");
         assert!(text.contains("    working_dir: \"/h/saplings/voice\"\n"), "{text}");
@@ -463,7 +508,7 @@ mod tests {
         let mut s = shape();
         s.hostname = "box".to_string();
         s.network = "    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n".to_string();
-        let text = render(&s, "0a1b2c3d4e5f", "", "/elsewhere/voice");
+        let text = render(&s, "0a1b2c3d4e5f", "", "/elsewhere/voice", &Habitat::default());
         assert!(text.contains("      - \"/elsewhere/voice:/elsewhere/voice\"\n"), "{text}");
         assert!(text.contains("    hostname: \"box\"\n"), "{text}");
         assert!(!shape().covers("/hx/voice") && shape().covers("/h") && shape().covers("/h/a/b"));
@@ -491,7 +536,7 @@ mod tests {
         let mut s = shape();
         s.face_environment = "      HALE_DNA_LISTEN_HOST: \"0.0.0.0\"\n".to_string();
         s.face_publish = "127.0.0.1".to_string();
-        let text = render_with_face(&s, "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/h/allocations/0a1b2c3d4e5f/face-state");
+        let text = render_with_face(&s, "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/h/allocations/0a1b2c3d4e5f/face-state", &Habitat::default());
         assert!(text.contains("\n  body-0a1b2c3d4e5f:\n") && text.contains("\n  face-0a1b2c3d4e5f:\n"), "{text}");
         let face = text.split("\n  face-0a1b2c3d4e5f:\n").nth(1).unwrap();
         assert!(face.contains("command: [\"dna\", \"head\", \"/h/saplings/voice\"]"), "{face}");
@@ -501,12 +546,41 @@ mod tests {
         assert!(!face.contains("HALE_DNA_IDENTITY"), "it publishes no identity of its own: {face}");
         assert!(!face.contains("HALE_DNA_FACE_HOME"), "it lands on its own organization, not the operator face: {face}");
         // a shape an earlier `up` kept carries no face environment: no face
-        let old = render_with_face(&shape(), "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/x");
+        let old = render_with_face(&shape(), "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/x", &Habitat::default());
         assert!(!old.contains("face-0a1b2c3d4e5f"), "{old}");
         // on the host's network it binds its ports itself
         s.face_publish = String::new();
-        assert!(!render_with_face(&s, "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/x").contains("ports:"));
+        assert!(!render_with_face(&s, "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/x", &Habitat::default()).contains("ports:"));
         assert_eq!(face_port_of("http://127.0.0.1:9024/"), Some(9024));
+    }
+
+    #[test]
+    fn a_kept_organism_s_body_and_face_are_told_their_habitat() {
+        let mut s = shape();
+        s.face_environment = "      HALE_DNA_LISTEN_HOST: \"127.0.0.1\"\n".to_string();
+        let profile = |body: serde_json::Value| serde_json::json!({ "kind": "habitat.profile", "entity": "local", "body": body.to_string() });
+        let rows = vec![
+            profile(serde_json::json!({ "profile": "local", "name": "home" })),
+            // a later `up` records the face under the habitat's declared address
+            profile(serde_json::json!({ "profile": "local", "name": "home", "face": "http://habitat.example.test:9000/", "head": "http://habitat.example.test:9001" })),
+        ];
+        let habitat = Habitat::of(&rows, "home");
+        assert_eq!(habitat, Habitat { name: "home".to_string(), face: "http://habitat.example.test:9000".to_string() }, "its origin, no trailing /");
+        let text = render_with_face(&s, "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/x", &habitat);
+        let (body, face) = text.split_once("\n  face-0a1b2c3d4e5f:\n").unwrap();
+        for (service, part) in [("body", body), ("face", face)] {
+            let env = part.split("    environment:\n").nth(1).and_then(|e| e.split("    volumes:\n").next()).unwrap_or_default();
+            assert!(env.contains("      HALE_DNA_HABITAT_NAME: \"home\"\n"), "the {service} is handed the habitat's name: {part}");
+            assert!(env.contains("      HALE_DNA_HABITAT_FACE: \"http://habitat.example.test:9000\"\n"), "the {service} is handed the habitat's face: {part}");
+        }
+        // a habitat whose record holds no face (`up --no-body` before): neither
+        let faceless = Habitat::of(&rows[..1], "home");
+        assert_eq!(faceless.face, "");
+        let text = render_with_face(&s, "0a1b2c3d4e5f", "", "", "/h/saplings/voice", Some(9024), "/x", &faceless);
+        assert!(!text.contains("HALE_DNA_HABITAT_NAME") && !text.contains("HALE_DNA_HABITAT_FACE"), "both or neither: {text}");
+        // the habitat's own body is never told of a habitat above it: its
+        // environment is the shape's, which carries neither
+        assert!(!s.environment.contains("HALE_DNA_HABITAT_FACE") && !s.face_environment.contains("HALE_DNA_HABITAT_FACE"));
     }
 
     #[test]
