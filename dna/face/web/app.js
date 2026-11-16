@@ -750,7 +750,12 @@ function taskInspector(t) {
     el("dt", {}, "task"), el("dd", { class: "mono" }, t.id),
   ));
   const acts = el("div", { class: "actions" });
-  if (S.calls.has("TaskTake") && t.assignee !== me && !["done", "delivered"].includes(t.state)) acts.append(el("button", { onclick: () => act(wrap, "TaskTake", { task_id: t.id }, "taken") }, "Take this task"));
+  // taking: an unassigned task is taken; one assigned to someone else is
+  // reassigned to the signed-in person (the record refuses a take of it)
+  const open = !["done", "delivered"].includes(t.state);
+  if (open && !t.assignee && S.calls.has("TaskTake")) acts.append(el("button", { onclick: () => act(wrap, "TaskTake", { task_id: t.id }, "taken") }, "Take this task"));
+  else if (open && t.assignee && t.assignee !== me && me && S.calls.has("TaskReassign") && t.reassignment_supported && t.assignment_digest)
+    acts.append(el("button", { onclick: () => act(wrap, "TaskReassign", { request_id: requestId(), task_id: t.id, assignment_digest: t.assignment_digest, assignee: t.assignee, to: me }, "taken over") }, "Take this task"));
   if (S.calls.has("TaskReassign") && t.reassignment_supported && t.assignment_digest && !["done", "delivered"].includes(t.state)) {
     const to = el("input", { list: "hand-people", placeholder: "hand to…", "aria-label": "Hand to" });
     acts.append(to, peopleList("hand-people"), el("button", { onclick: () => {
@@ -795,6 +800,8 @@ function kindColour(kind) {
 
 async function drawKnowledgeGraph(host, nodes, center) {
   if (typeof window.cytoscape !== "function") { host.replaceWith(el("p", { class: "note" }, "the graph library is not served")); return; }
+  // a newer draw supersedes this one: it never touches the graph on screen
+  const draw = (S.kdraw = (S.kdraw || 0) + 1);
   const css = getComputedStyle(document.documentElement);
   const v = name => css.getPropertyValue(name).trim();
   const byId = new Map(nodes.map(n => [n.id, n]));
@@ -842,8 +849,8 @@ async function drawKnowledgeGraph(host, nodes, center) {
     for (const k of kinds) elements.push({ data: { id: "kind:" + k, label: k, kind: "group" }, classes: "group" });
     for (const n of nodes) { addNode(n); elements[elements.length - 1].data.parent = "kind:" + n.kind; }
   }
+  if (draw !== S.kdraw || !host.isConnected) return;
   if (S.kcy) { try { S.kcy.destroy(); } catch (e) { /* torn down */ } }
-  if (!host.isConnected) return;
   const cy = window.cytoscape({
     container: host, elements, boxSelectionEnabled: false, autounselectify: true, wheelSensitivity: 0.2, minZoom: 0.2, maxZoom: 1.6,
     style: [
