@@ -8084,13 +8084,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///   the lazy global payload arena and writes a NUL
     ///   terminator so existing C-side `strlen`/`strcpy` ops
     ///   still work on the deserialized struct.
-    /// - Other field types (nested struct, enum, array): error
-    ///   at synthesis time — defer to a future polish.
+    /// - Every other value a record may hold (a nested struct, an
+    ///   enum, a `bounded` list, an array, a tuple): the carriage
+    ///   table's encoding (`hale_types::wire_carriage::WIRE_TABLE`,
+    ///   GH #1951 item 4; `bus/wire.rs`).
     ///
-    /// Enum payload types: keep memcpy-shape (no per-field walk
-    /// inside variants for v0.1). Enum-with-String fields
-    /// errors at synthesis time. Non-String enums round-trip
-    /// fine because their in-memory layout has no pointers.
+    /// Enum payload types: a memcpy of the storage struct when every
+    /// variant value is fixed bytes, else the tag and the variant's
+    /// values (`bus/wire.rs`, `synthesize_serializer`).
     ///
     /// Saves and restores the builder position so this can run
     /// between passes that use the builder (notably between A2

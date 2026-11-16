@@ -312,11 +312,11 @@ pub fn generic_arg_refusal(p: PrimType) -> String {
 /// memory layout suitable for zero-copy bus payload routing?
 ///
 /// True iff every leaf is a fixed-size primitive (Int, Uint,
-/// Float, Decimal, Bool, Time, Duration), Unit, a tuple of
-/// flat-shapeables, or a named struct whose every field is
-/// flat-shapeable.
+/// Float, Decimal, Bool, Time, Duration), Unit, or a named struct
+/// whose every field is flat-shapeable.
 ///
-/// False for String, Bytes, BytesView, StringView (heap-shaped
+/// False for a tuple (a pointer to its block), String, Bytes,
+/// BytesView, StringView (heap-shaped
 /// / fat-pointer; their backing storage isn't part of the
 /// value's own layout), **fixed- and unbounded-size arrays**
 /// (codegen stores an array field out-of-line — the field is a
@@ -401,9 +401,11 @@ fn is_flat_shapeable_inner(
             )
         ),
         Ty::Array(_, None) => false,
-        Ty::Tuple(parts) => parts
-            .iter()
-            .all(|p| is_flat_shapeable_inner(p, scope, seen)),
+        // A tuple is a pointer to its own block in every layout codegen
+        // gives it (`llvm_basic_type`), so a raw memcpy would share it. A
+        // tuple field reached the flat paths only after the bus wire
+        // carried tuples (GH #1951 item 4); before, the field was refused.
+        Ty::Tuple(_) => false,
         Ty::Named(name) => {
             // Cycle guard: a struct cannot transitively contain
             // itself by value (codegen would reject earlier), so

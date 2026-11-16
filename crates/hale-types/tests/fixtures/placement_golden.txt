@@ -2618,6 +2618,16 @@ row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 row	App@literal1.w	Wire	main	default
 
+== crates/hale-codegen/tests/bus_wire_type_set.rs#226cccf2
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.s	Sub	main	default
+
+== crates/hale-codegen/tests/bus_wire_type_set.rs#86d38882
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.s	Sub	main	default
+
 == crates/hale-codegen/tests/bytes_builder.rs#737371a4
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
@@ -8502,6 +8512,11 @@ row	App@literal1.w	Worker	main	default
 == tests/hale/bus_static_wide_payload_test.hl
 row	Printer@main1	Printer	main	default
 row	Producer@main2	Producer	main	default
+
+== tests/hale/bus_wire_type_set_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	main	default
 
 == tests/hale/bytes_writer_offset_test.hl
 row	__StdIoMirrorRing@main1	__StdIoMirrorRing	main	default

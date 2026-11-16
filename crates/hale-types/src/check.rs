@@ -8951,8 +8951,9 @@ fn check_binding_constraints(
                     format!(
                         "binding for topic `{}` requires `zero_copy` but \
                          payload type `{}` is not flat-shapeable — it \
-                         contains a String, Bytes, or fixed-size array \
-                         field, whose storage is out-of-line (a pointer), \
+                         contains a String, Bytes, fixed-size array, tuple, \
+                         enum or list-of-pointers field, whose storage is \
+                         out-of-line (a pointer), \
                          so a raw memcpy would share a pointer that dangles \
                          across the zero-copy boundary. Use only fixed-size \
                          scalar fields in a `zero_copy` payload",
@@ -10976,14 +10977,13 @@ fn topic_payload_not_carried(
         Carriage::NotCarried(repair) => repair,
         Carriage::Carried => {
             let ty = resolve_type_expr(&row.payload, known);
-            let field = struct_field_not_carried(&ty, top, 0)?;
+            let part = payload_part_not_carried(&ty, top)?;
             return Some(format!(
-                "topic `{topic}` declares `payload: {}`, {field}, which the wire format does not \
-                 carry: a delivery serializes each field, and carries scalars (`Int`, `Float`, \
-                 `Bool`, `Decimal`, `U256`, `I256`, `Duration`, `Time`, a unit type), payload-free enums, `String`, \
-                 `Bytes`, structs of those, `bounded` buffers of scalars, and arrays of scalars or structs. Carry it as \
-                 a value the wire takes (a payload-free enum's tag, a tuple as a struct).",
-                ty.display()
+                "topic `{topic}` declares `payload: {}`, {part}, which the wire format does not carry: a delivery \
+                 serializes each value, and carries {}. Give that part a type the wire carries (send what a handle \
+                 or a fn names, an id or a `String`, instead of it).",
+                ty.display(),
+                crate::wire_carriage::carried_list(),
             ));
         }
         Carriage::Unresolved => return None,
@@ -11000,79 +11000,32 @@ fn topic_payload_not_carried(
     ))
 }
 
-/// A struct payload whose field the wire format has no encoding for
-/// (`bus/wire.rs`, `emit_per_field_serialize`): an enum with payloads,
-/// a tuple, a `bounded` buffer of pointers, an array of strings or
-/// arrays. A payload-free enum travels as its tag. The
-/// topic's declaration checked clean and lowering refused the field
-/// ("bus payload field `x: Enum(..)` — m70 wire format supports …").
-/// Names the first such field, through nested structs; `None` when
-/// every field is carried or not judged here.
-fn struct_field_not_carried(ty: &Ty, top: &TopScope, depth: u32) -> Option<String> {
-    if depth > 8 {
-        return None;
-    }
+/// The part of a payload the wire format has no encoding for, as the tail
+/// of a refusal: "whose field `x` is a fn value (`fn(Int) -> Int`)".
+/// Every value the carriage table (`wire_carriage::WIRE_TABLE`) names is
+/// carried at any depth — scalars, enums with payloads or without,
+/// `String`, `Bytes`, records, `bounded` lists, fixed arrays, tuples and
+/// `std::json::Value` (GH #1951 item 4); what is left is a value that
+/// names something no frame can hold (a fn, a locus handle, a view, a
+/// projection) or a type that reaches itself. The topic's declaration
+/// used to check clean and lowering refused the field with no place.
+/// `None` when every part is carried or not judged here.
+fn payload_part_not_carried(ty: &Ty, top: &TopScope) -> Option<String> {
+    // the payload itself is `payload_carriage`'s to judge (a `BytesView` is
+    // the raw-frame opt-out, a primitive is refused there): this walks the
+    // parts of a record or an enum
     let Ty::Named(n) = ty else { return None };
-    let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(fields), .. })) = top.symbols.get(n) else {
-        return None;
+    let enum_payload = match top.symbols.get(n) {
+        Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. })) => true,
+        Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_), .. })) => false,
+        _ => return None,
     };
-    // A scalar, or a payload-free enum's tag: fixed bytes on the wire.
-    let scalar = |t: &Ty| match t {
-        Ty::Prim(
-            PrimType::Int
-            | PrimType::Float
-            | PrimType::Bool
-            | PrimType::Decimal(_)
-            | PrimType::U256
-            | PrimType::I256
-            | PrimType::Duration
-            | PrimType::Time,
-        ) => true,
-        Ty::Named(m) => match top.symbols.get(m) {
-            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Scalar(_), .. })) => true,
-            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => vs.iter().all(|v| v.fields.is_empty()),
-            _ => false,
-        },
-        _ => false,
-    };
-    let is_struct = |t: &Ty| match t {
-        Ty::Named(m) => matches!(top.symbols.get(m), Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_), .. }))),
-        _ => false,
-    };
-    let is_enum = |t: &Ty| match t {
-        Ty::Named(m) => matches!(top.symbols.get(m), Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. }))),
-        _ => false,
-    };
-    for f in fields {
-        let shown = f.ty.display();
-        let bad = match &f.ty {
-            t if scalar(t) => None,
-            Ty::Prim(PrimType::String | PrimType::Bytes) => None,
-            t if is_struct(t) => {
-                if let Some(inner) = struct_field_not_carried(t, top, depth + 1) {
-                    // `whose field `c` is …` of the nested struct, as a path
-                    return Some(inner.replacen("whose field `", &format!("whose field `{}.", f.name), 1));
-                }
-                None
-            }
-            Ty::Named(m) => match top.symbols.get(m) {
-                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. })) => Some("an enum with payloads"),
-                _ => None,
-            },
-            Ty::Tuple(_) => Some("a tuple"),
-            Ty::Bounded(e, _) if !scalar(e) => Some("a `bounded` buffer of other than scalars"),
-            // An array's elements are fixed bytes or structs: a payload-free
-            // enum's tag travels alone, not as an array element (GH #1942).
-            Ty::Array(e, Some(_)) if !(scalar(e) && !is_enum(e)) && !is_struct(e) => {
-                Some("an array of other than scalars or structs")
-            }
-            _ => None,
-        };
-        if let Some(what) = bad {
-            return Some(format!("whose field `{}` is {what} (`{shown}`)", f.name));
-        }
-    }
-    None
+    let u = crate::wire_carriage::ty_uncarried(ty, top)?;
+    Some(match (u.path.is_empty(), enum_payload) {
+        (true, _) => format!("which is {} (`{}`)", u.what, u.ty),
+        (false, true) => format!("whose variant value `{}` is {} (`{}`)", u.path, u.what, u.ty),
+        (false, false) => format!("whose field `{}` is {} (`{}`)", u.path, u.what, u.ty),
+    })
 }
 
 /// The topics a raw `BytesView` payload can travel on: a binding entry
@@ -11151,7 +11104,7 @@ fn check_bus_payload_carriable(
     }
     // GH #1942: a struct named by a literal subject's `of type` clause is
     // serialized field by field like a topic's payload, each field one the
-    // wire format carries (`struct_field_not_carried`, which judges a
+    // wire format carries (`payload_part_not_carried`, which judges a
     // topic's at each delivery); the build refused any other, with no
     // place. Said once per payload type, at the first clause naming it.
     let mut wire_reported: BTreeSet<String> = BTreeSet::new();
@@ -11193,20 +11146,19 @@ fn check_bus_payload_carriable(
                     }
                     let (BusSubject::Literal { .. }, Some(te)) = (subject, written) else { continue };
                     let ty = resolve_type_expr(te, known);
-                    let Some(field) = struct_field_not_carried(&ty, top, 0) else { continue };
+                    let Some(part) = payload_part_not_carried(&ty, top) else { continue };
                     if !wire_reported.insert(ty.display()) {
                         continue;
                     }
                     diags.push(Diag::ty(
                         te.span(),
                         format!(
-                            "{verb} `{}`: the payload `{}`, {field}, which hale can't carry on the bus yet: a delivery \
-                             serializes each field, and carries scalars (`Int`, `Float`, `Bool`, `Decimal`, `U256`, \
-                             `I256`, `Duration`, `Time`, a unit type), payload-free enums, `String`, `Bytes`, structs of \
-                             those, `bounded` buffers of scalars, and arrays of scalars or structs. Carry it as a value \
-                             the wire takes (a payload-free enum's tag, a tuple as a struct)",
+                            "{verb} `{}`: the payload `{}`, {part}, which hale can't carry on the bus: a delivery \
+                             serializes each value, and carries {}. Give that part a type the wire carries (send what \
+                             a handle or a fn names, an id or a `String`, instead of it)",
                             subject.canonical(),
-                            ty.display()
+                            ty.display(),
+                            crate::wire_carriage::carried_list(),
                         ),
                     ));
                 }

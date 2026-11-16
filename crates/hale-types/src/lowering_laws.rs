@@ -366,8 +366,9 @@ fn cross_pool_child_shape(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) 
                 if let Some(u) = wire.crosspool_uncarried(te, &p.name.name) {
                     why = Some(format!(
                         "its param `{}` is `{}`, {}, which the spawn cannot marshal across the thread boundary (it \
-                         carries scalars, `String`, `Bytes`, structs of what the bus carries, and fixed arrays of \
-                         those); give the param one of those types",
+                         carries scalars, `String`, `Bytes`, structs whose fields the wire walks without a loop \
+                         (no `bounded` list of strings or records, enum with payloads or tuple), and fixed arrays \
+                         of those); give the param one of those types",
                         u.path, u.ty, u.what
                     ));
                     break 'params;

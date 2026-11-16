@@ -6254,6 +6254,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.crosspool_child_shape_ok(child_locus, info)?;
         let (param_order, param_fields) =
             self.crosspool_param_layout(child_locus, info)?;
+        // GH #1951 item 4: the wire walks a counted list, an enum's cell or
+        // a tuple in a loop or a switch, and the create cell's dispatch is
+        // one straight-line block, so a spawn marshals only the shapes the
+        // walk takes without either (the check refuses the rest at the
+        // spawn, `lowering_laws::cross_pool_child_shape`).
+        for fname in &param_order {
+            if let Some((_, t)) = param_fields.get(fname) {
+                if !self.wire_fixed_walk(t, true, 0) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "cross-pool spawn `{child_locus}`: param `{fname}: {t}` is a value the wire \
+                         carries in a loop or a switch (a `bounded` list of pointers, an enum with \
+                         payloads, a tuple), and a cross-pool create cell is one straight-line block"
+                    )));
+                }
+            }
+        }
         // Synthesize (once) the far-side dispatcher for this (I, A) pair.
         let dispatcher = self.synthesize_crosspool_dispatcher(
             child_locus,
