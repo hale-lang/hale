@@ -505,10 +505,12 @@ fn claim_a_bounded_lives_in_its_holder() {
         "{row}fn names() -> bounded[String; 4] {{ let mut r = Row {{ }}; return r.names; }}\n\
          fn main() {{ }}"
     ));
+    assert!(ret.is_empty(), "C9 says a fn returns a bounded by value: {:?}", ret);
+    let long = build_errs(&format!("{row}fn main() {{ let xs: bounded[Int; 2] = [1, 2, 3]; }}"));
     assert!(
-        ret.iter().any(|m| m.contains("cannot be returned by value")),
-        "C9 says a fn returning a bounded is refused: {:?}",
-        ret
+        long.iter().any(|m| m.contains("holds at most 2 elements, and this literal has 3")),
+        "C9 says a literal longer than its capacity is refused: {:?}",
+        long
     );
     let through = build_errs(&format!(
         "{row}fn fill(r: Row) {{ push(r.names, \"a\") or discard; }}\n\

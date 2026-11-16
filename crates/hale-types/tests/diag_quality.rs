@@ -338,20 +338,21 @@ fn a_bounded_place_is_assigned_whole_from_its_own_type_only() {
             let mut a = A { };
             let b = B { };
             a.xs = b.xs;
-            a.xs = ["a"];
+            a.xs = "a";
         }
     "#,
     );
     assert_eq!(ds.len(), 2, "one refusal per assignment; got: {ds:?}");
     assert!(ds[0].contains("not assignable from `bounded[String; 8]`"), "got: {ds:?}");
     assert!(
-        ds[1].contains("a `bounded[String; 4]` is assigned whole only from another `bounded[String; 4]`"),
+        ds[1].contains(
+            "a `bounded[String; 4]` is assigned whole only from another `bounded[String; 4]` or an array literal"
+        ),
         "got: {ds:?}"
     );
-    // A bounded local views the place it was bound from: assigned whole,
-    // its elements would be anchored in the frame, not where the place
-    // lives. Refused, naming the place to assign.
-    let ds = diags(
+    // GH #1951: a bounded local is the frame's own list, assigned whole
+    // from a place, another local or a literal.
+    let ok = diags(
         r#"
         type R { xs: bounded[String; 2]; }
         locus L {
@@ -359,13 +360,16 @@ fn a_bounded_place_is_assigned_whole_from_its_own_type_only() {
             fn put(r: R) {
                 let mut dest = self.xs;
                 dest = r.xs;
+                dest = ["a", "b"];
+                dest = [];
+                self.xs = dest;
+                self.xs = ["c"];
             }
         }
         fn main() { }
     "#,
     );
-    assert_eq!(ds.len(), 1, "one refusal; got: {ds:?}");
-    assert!(ds[0].contains("`dest` is a `bounded[String; 2]` local, a view of the place"), "got: {ds:?}");
+    assert!(ok.is_empty(), "a bounded local and a place are assigned whole; got: {ok:?}");
 }
 
 #[test]
@@ -795,10 +799,13 @@ fn a_parameter_place_writer_follows_bindings_not_spellings() {
     // a field path through a type parameter, which the template cannot
     // resolve, may be a bounded place (fourth review)
     refused("tfill(self.row);", "a field path through a type parameter");
-    // fifth review: a view bound through a type parameter, and a type
-    // parameter named as a global type is
-    refused("vfill(self.row);", "a view of a field path through a type parameter");
-    refused("afill(self.row);", "an annotated view through a type parameter");
+    // fifth review, revisited by decisions F.49 (GH #1951): a local bound
+    // through a type parameter is the fn's own copy, a bounded one too, so
+    // writing it writes no place of the caller's
+    accepted(
+        "locus L { params { row: Row = Row { }; } fn put() { vfill(self.row); afill(self.row); } }",
+        "a local bound from a field path through a type parameter is a copy",
+    );
     refused("pass_on(self.row);", "a generic fn handing a type parameter to a fn value");
     accepted(
         "locus L { params { row: Row = Row { }; } fn put() { gid(self.row); } }",
@@ -813,49 +820,70 @@ fn a_parameter_place_writer_follows_bindings_not_spellings() {
     );
 }
 
-/// A fn, a method or an interface's method declared to return a `bounded`
-/// (written or through an alias) is refused at the check with the build's
-/// reason: the build cannot return one by value, and the check passed it
-/// (a downstream handoff hit the build's refusal with no file or line). A
-/// record holding the `bounded` returns it.
+/// GH #1951: a fn, a method and an interface's method return a `bounded`
+/// by value (written or through an alias), and an array literal at a
+/// declared `bounded[T; N]` site is that bounded. A literal longer than
+/// the capacity, an element of another type, a write intrinsic on a call's
+/// result and a field default are refused where they are written.
 #[test]
-fn a_bounded_return_is_refused_at_the_check() {
-    let ds = diags(
+fn a_bounded_returns_by_value_and_its_literal_fits_its_capacity() {
+    let ok = diags(
         r#"
         type E { code: Int; }
         type Items = bounded[Int; 4];
         type Row { names: bounded[String; 4]; }
-        type Names { items: bounded[String; 4]; }
         fn names() -> bounded[String; 4] { let mut r = Row { }; push(r.names, "a") or discard; return r.names; }
-        fn ints() -> bounded[Int; 4] fallible(E) { let r = Row { }; return [1]; }
+        fn ints() -> bounded[Int; 4] fallible(E) { return [1]; }
+        fn none() -> Items { return []; }
         locus L { params { xs: bounded[Int; 4]; } fn get() -> Items { return self.xs; } }
         interface I { fn get() -> bounded[Int; 4]; }
-        fn wrapped() -> Names { let mut n = Names { }; push(n.items, "a") or discard; return n; }
-        fn main() { }
+        fn take(xs: bounded[Int; 4]) -> Int { return count(xs); }
+        fn main() {
+            let r = Row { names: ["a", "b"] };
+            let n = take([1, 2]) + take([]) + count(names()) + count(none());
+            let e = Row { names: [] };
+            let mut mine: bounded[String; 4] = [];
+            push(mine, "x") or discard;
+        }
     "#,
     );
-    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("cannot be returned by value")).collect();
-    assert_eq!(hits.len(), 4, "{ds:?}");
-    for (who, ty) in [("`names`", "bounded[String; 4]"), ("`ints`", "bounded[Int; 4]"), ("`L::get`", "bounded[Int; 4]"), ("`I::get`", "bounded[Int; 4]")] {
-        assert!(hits.iter().any(|m| m.starts_with(&format!("{who} returns a `{ty}`"))), "{who}: {hits:?}");
-    }
-    assert!(!ds.iter().any(|m| m.contains("`wrapped`")), "a record holding it returns: {ds:?}");
+    assert!(ok.is_empty(), "`[]` takes its element type from each declared site: {ok:?}");
 
-    // Review of #1625: a type parameter is the declaration's own, whatever
-    // global type shares its name; the global alias itself is a bounded
-    let ds = diags(
-        r#"
-        type T = bounded[String; 4];
-        fn identity<T>(x: T) -> T { return x; }
-        locus Box<T> { fn get(x: T) -> T { return x; } }
-        fn aliased() -> T { let r = Row { }; return r.names; }
-        type Row { names: bounded[String; 4]; }
-        fn main() { }
-    "#,
-    );
-    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("cannot be returned by value")).collect();
-    assert_eq!(hits.len(), 1, "{ds:?}");
-    assert!(hits[0].starts_with("`aliased` returns a `bounded[String; 4]`"), "{hits:?}");
+    let src = r#"
+        type Row { names: bounded[String; 2]; }
+        type Def { names: bounded[String; 2] = ["a"]; }
+        fn make() -> bounded[Int; 2] { return [1, 2, 3]; }
+        fn main() {
+            let xs: bounded[Int; 2] = [1, 2, 3];
+            let ys: bounded[Int; 2] = ["a"];
+            let r = Row { names: [1] };
+            push(make(), 1) or discard;
+            clear(make());
+        }
+    "#;
+    let program = parse_source(src).expect("parse");
+    let mut programs: std::collections::BTreeMap<String, &hale_syntax::ast::Program> =
+        std::collections::BTreeMap::new();
+    programs.insert("test.hl".to_string(), &program);
+    let bundle = Bundle::new(programs);
+    let (scope, mut found) = hale_types::resolve::build_top_scope(&bundle);
+    found.extend(hale_types::check::check_bundle(&bundle, &scope, true));
+    // Each refusal with the line it is located on.
+    let ds: Vec<(usize, String)> = found
+        .iter()
+        .map(|d| (src[..d.span.start.0 as usize].matches('\n').count() + 1, d.message.clone()))
+        .collect();
+    let has = |needle: &str, line: usize| {
+        assert!(ds.iter().any(|(l, m)| m.contains(needle) && *l == line), "{needle} at line {line}: {ds:?}")
+    };
+    has("a `bounded[Int; 2]` holds at most 2 elements, and this literal has 3", 4);
+    has("a `bounded[Int; 2]` holds at most 2 elements, and this literal has 3", 6);
+    has("an element of `String` in a literal of `bounded[Int; 2]`", 7);
+    has("an element of `Int` in a literal of `bounded[String; 2]`", 8);
+    has("a call's result is no place to push into", 9);
+    has("a call's result is no place to clear", 10);
+    has("type `Def` field `names`: a `bounded[String; 2]` starts empty and takes no default", 3);
+    assert_eq!(ds.len(), 7, "{ds:?}");
 }
 
 /// `len` of a `bounded` (written or through an alias) is refused at the

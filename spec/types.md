@@ -574,13 +574,21 @@ it is, so a local or a literal's part viewing it is copied first. A call
 through a parameter declared a fn returning a primitive (`cb: fn(Int)
 -> Int`) hands back a primitive, as a declared fn of that signature
 does.
-A `bounded[T; N]` local is not a first-class value and is not copied:
-a bounded intrinsic on one bound from a field still writes the field,
-and the element a `push` or a `set` stores through it is anchored where
-that field lives (the holding locus's arena, for `let mut dest =
-self.xs` or a child's field), as on the field itself; until 2026-10-17
-it went to the current arena, so a method's view of `self.xs` left the
-field holding Strings its scratch freed at return.
+A `bounded[T; N]` local is held to the same rule (decisions F.49, GH
+#1951): `let mut dest = self.xs; push(dest, s) or …;` leaves `self.xs`
+as it was, and a write into `self.xs` while `dest` is live does not
+reach `dest`. A bounded intrinsic that writes the local (`push`, `set`,
+`clear`, `truncate`) is a write into it: the local takes its own copy at
+the first one (its storage and its live pointer-shaped elements, in the
+frame's arena) unless the frame owns it already, and the element stored
+is kept in the frame. A local only read stays the place's storage, so a
+`for` over it or a `count` of it costs nothing; one bound across an
+in-place write of its place, or handed to a call that may write through
+its parameter, is bound as a copy, as any binding of a place is. To
+write the place, name it (`push(self.xs, s)`), or store the local back
+whole (`self.xs = dest;`). Until F.49 a bounded local was a view: an
+intrinsic on one bound from a field wrote the field, its element
+anchored where the field lives.
 Before this rule the write landed in the place's block: `let mut a =
 self.r.names; a[0] = x;` changed the field.
 
@@ -1412,21 +1420,63 @@ file or line, and a payload-free enum, which lowers as a `Bool` does,
 was refused too.
 
 Semantics:
-- Fields auto-initialize EMPTY. Literal init is rejected — the
-  intrinsics build a bounded value. There is no `bounded` value
-  literal either: `let x = bounded[String; 4] { };` is a parse error
-  at `bounded[String;` that says `bounded[T; N]` is a type, not a
-  value, and names the shape to write — a record field (`type Names {
-  items: bounded[String; 4]; }`), the record built (`Names {}`) and
-  `push` into its field (GH #1948; it was a bare "expected ], got
-  Semi"). Whether a `bounded` becomes a value is GH #1951. Whole-STRUCT copies carry
-  elements + count by construction (the storage is inline).
-- A fn, a locus method or an interface method does not return a
-  `bounded` (written, or through an alias): the check refuses the
-  declaration ("\`names\` returns a \`bounded[String; 4]\`, and
-  bounded[T; N] cannot be returned by value — it lives inline in its
-  containing type …"), where the build refused it with no file or line
-  until 2026-10-18. A record holding the `bounded` returns it.
+- **An array literal at a declared site is a bounded** (GH #1951). Where
+  a `bounded[T; N]` is declared — a `let` ascription, a `return` from a
+  fn declared to return one, an argument for a parameter of one, an
+  assignment to a place or local of one, a record literal's field —
+  `[e1, …, ek]` with `k <= N` is that list, its count `k`, and `[]` is
+  the empty one. Each element flows into `T` from its own type (an `Int`
+  widening into a `Float` as a `push` widens it). A literal longer than
+  the capacity is refused where it stands ("a \`bounded[Int; 2]\` holds
+  at most 2 elements, and this literal has 3"), and so is an element of
+  another type, at the element. The list owns its elements, as `push`
+  stores one: a pointer-shaped element that is not a fresh value (a
+  local, a field, an element read) is stored as the list's own copy. An
+  unannotated `let xs = [];` declares no list; the check refuses it, as
+  any `[]` with no declared type (§ What the compiler cannot compile
+  yet). The type written as a value (`let x = bounded[String; 4] { };`) is a parse error at
+  `bounded[String;` that names this spelling (GH #1948).
+  ```hale
+  type Doc { tags: bounded[String; 8]; }
+  fn tags_of(d: Doc) -> bounded[String; 8] { return d.tags; }
+  fn main() {
+      let ids: bounded[Int; 4] = [1, 2, 3];
+      let mut tags: bounded[String; 8] = [];
+      push(tags, "a") or discard;
+      let d = Doc { tags: tags };
+      println(count(ids), " ", count(tags_of(d)));
+  }
+  ```
+- Fields auto-initialize EMPTY, and a field takes no default: the check
+  refuses one at the default ("type \`Doc\` field \`tags\`: a
+  \`bounded[String; 8]\` starts empty and takes no default …"), where
+  lowering evaluated none and the field started empty whatever the
+  default said. An absent list decodes as empty. Whole-STRUCT copies
+  carry elements + count by construction (the storage is inline).
+- **A local is the frame's own list.** One bound from a literal or a
+  call's result is fresh; one bound from a place is a copy (§ A local
+  bound from a place is yours). A `let mut` local is assigned whole
+  (`xs = ys;`, `xs = [];`, a copy of the value unless it is fresh) and
+  written by the intrinsics; an intrinsic that writes a local declared
+  with `let` is refused at its argument ("\`d\` is a
+  \`bounded[String; 4]\` local declared with \`let\`, and \`push\`
+  writes it: declare it \`let mut d\` …"), so a program written against
+  the view a bounded local was before F.49 is told where it no longer
+  writes the place. A local's storage is a block of the frame's arena,
+  never a stack slot, whatever its capacity.
+- **A fn returns a `bounded` by value** (GH #1951): a free fn, a locus
+  method, a mode and an interface method may be declared to return
+  `bounded[T; N]` (written, or through an alias), and return its storage
+  as a record is returned, a pointer into the caller's arena. Every
+  return copies the list there, its live pointer-shaped elements with
+  it (an element already in the caller's arena is kept), so a String or
+  record a member's scratch built reads whole after the call. A call's
+  result is a temporary the intrinsics read (`count(tags_of(d))`,
+  `at(names(), 0) or …`, `for x in names()`); one that writes it is
+  refused at the argument ("a call's result is no place to push into
+  …"): bind it to a `let mut` local first. Until GH #1951 the check
+  refused such a declaration and a record holding the `bounded`
+  returned it.
 - Its live count is `count(x)`; `len` does not apply to a `bounded`
   (written or through an alias), and the check refuses it, pointing at
   `count` ("\`len\` does not apply to a \`bounded[String; 4]\`: a
@@ -1451,14 +1501,12 @@ Semantics:
   anchored in the place's owner's arena, as `push` anchors the one it
   adds (the holding locus's arena, else the current one). It is a
   copy: a later intrinsic on either side does not reach the other.
-  Any other value (an array literal, another element type or
-  capacity) is refused at the assignment ("a \`bounded[String; 4]\` is
-  assigned whole only from another \`bounded[String; 4]\` …"). A bounded
-  local is not assigned whole: it is a view of the place it was bound
-  from, and the assignment would anchor the elements in the frame rather
-  than where that place lives (a locus's field would hold blocks its
-  method's scratch frees), so the check refuses it and names the place
-  to assign instead.
+  An array literal builds the value it copies (above); any other value
+  (another element type or capacity) is refused at the assignment ("a
+  \`bounded[String; 4]\` is assigned whole only from another
+  \`bounded[String; 4]\` or an array literal …"). Until GH #1951 a
+  bounded local was not assigned whole: it was a view of the place it
+  was bound from.
   Until 2026-10-17 every whole assignment was refused, with no
   ruling behind it but a lowering that had none, so a copy between
   two records' fields was a `push` loop.
@@ -1528,7 +1576,7 @@ Semantics:
   into a bounded place under a parameter of a locus member …"), and a
   free fn doing it, directly or through a fn it hands the place to, is
   refused at a call that hands it a place the frame does not own: one
-  under `self` or a bounded local viewing one ("\`fill\` stores
+  under `self` ("\`fill\` stores
   pointer-shaped elements … this argument is a place in this locus's
   arena …"). A call through a function value is the fn the value's
   binding names (`let f = fill;`, a tuple `let`'s element of a tuple
@@ -1538,9 +1586,10 @@ Semantics:
   spellings: an inner `let f` names nothing after its block, and
   `let r = r;` is an owned copy, not the parameter. A generic fn is
   read as any other, its type parameters taken as any type (fail closed): a
-  field path through one (`fn fill<T>(r: T) { push(r.xs, s) }`, or a local view
-  of it, `let dst = r.xs`) may be such a place, so `fill(self.row)` is
-  refused; a type parameter is the fn's own, whatever global type shares
+  field path through one (`fn fill<T>(r: T) { push(r.xs, s) }`) may be
+  such a place, so `fill(self.row)` is refused (a local bound from it,
+  `let mut dst = r.xs`, is the frame's own copy since F.49, and writing
+  it writes no place); a type parameter is the fn's own, whatever global type shares
   its name. A record of the
   frame's own, a copy of one, and a scalar element are sound; the shape that works for a locus's field is to fill
   a local and store it whole (`self.row = mine`), which anchors the
@@ -1769,7 +1818,7 @@ yet" and a way forward, never by the build after a passing check:
 | an unsized array type `[T]`, or a length that is not an integer literal (`[T; N]`) | the annotation | size it with a literal, or hold a varying count in `bounded[T; N]` or a `@form(vec)` |
 | a generic fn call that binds a parameter to an array, a tuple, a `bounded` or a fn type | the callee | wrap the value in a declared type |
 | a generic locus method (`fn f<T>(…)` inside a locus) | the method's name | a free generic fn, or a generic locus |
-| an empty array literal `[]` anywhere but the value of a `let` that declares its type | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
+| an empty array literal `[]` with no list type declared where it stands: anywhere but the value of a `let` that declares its type, or a site that declares a `bounded[T; N]` (a `let`, a `return`, an argument, an assignment, a record field; § bounded[T; N]) | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
 | a nested pattern inside a tuple pattern (`((1, 2), 3) ->`, `(E::A, 3) ->`) | the nested pattern | bind the part and match the binding (the rule a variant's pattern follows) |
 | a range index on anything but a `String` (`a[1..3]` of an array) | the index | copy the elements, `std::bytes::slice` for bytes |
 | `sum(…)`, `count()`, `mean(…)` outside a closure assertion; an accumulator over anything but one field (`sum(self.a + self.b)`); `prod(…)` anywhere | the accumulator | spec/semantics.md § Closure tests |

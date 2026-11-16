@@ -428,16 +428,10 @@ impl<'a, 't, 's> World<'a, 't, 's> {
                 return;
             }
         }
-        let Some((root, path)) = b.place(value) else { return };
-        // a view of a bounded place, or of a place behind a type parameter
-        // that may be one (fail closed: the write through it still counts)
-        let bounded = root_ty(&root).is_some_and(|t| match self.type_at(&t, &path) {
-            Some(at) => matches!(at, Ty::Bounded(..)),
-            None => self.opaque_on(&t, &path),
-        });
-        if bounded {
-            b.views.insert(k, (root, path));
-        }
+        // A local bound from a place is the frame's own copy, a bounded one
+        // too (decisions F.49, GH #1951): an element stored through it is
+        // kept in this frame and reaches no place, so it views nothing.
+        let _ = root_ty;
     }
 
     /// The bindings a statement introduces: a `let`'s name, and a tuple
