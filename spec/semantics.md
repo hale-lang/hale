@@ -6072,7 +6072,7 @@ An `or raise` (and the implicit `or raise` of a fallible
 handler, spec/types.md § "Disposition operators (`or`)") whose
 call fails with `P` inside a `fallible(E)` fn, `P` not `E`,
 converts the error into an `E` in one of two ways, tried in
-this order (GH #1951, F.49):
+this order (GH #1951, F.50):
 
 1. **A set member (R2).** `E` is a set type holding `P`
    (spec/types.md § Set types): the error becomes the set's
