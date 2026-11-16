@@ -566,6 +566,49 @@ fn a_map_of_values_is_described_and_carried_by_the_clients() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// GH #1951 item 3 (F.51): an optional field (`x?: T`, `x?: T clearable`)
+/// is its hand-written presence pair or triple on every export: the
+/// description, the JSON Schema, the OpenAPI and MCP documents, the
+/// `.proto` and the contract digest are byte-identical, so converting a
+/// pair to the mark changes no shape hash.
+#[test]
+fn an_optional_field_exports_exactly_as_its_hand_written_pair() {
+    let surface = "locus L {\n    fn edit(p: Patch) -> Patch { return p; }\n}\napi Edits { rpc L::edit; }\n";
+    let export = |tag: &str, patch: &str| -> std::collections::BTreeMap<String, String> {
+        let dir = unique_dir(tag);
+        let src = dir.join("patch.hl");
+        std::fs::write(&src, format!("type Inner {{ a: Int; }}\n{patch}\n{surface}")).unwrap();
+        let out = dir.join("out");
+        let e = hale().args(["api", "export", "--surface", "Edits", "--out"]).arg(&out).arg(&src).output().expect("export");
+        assert!(e.status.success(), "{tag}: {}", String::from_utf8_lossy(&e.stderr));
+        let files = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|f| {
+                let f = f.unwrap().path();
+                (f.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read_to_string(&f).unwrap())
+            })
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        files
+    };
+    let pair = export(
+        "pair",
+        "type Patch {\n    id: Int;\n    note: String;\n    has_note: Bool = false;\n    clear_note: Bool = false;\n    \
+         inner: Inner;\n    has_inner: Bool;\n    tags: bounded[String; 4];\n    has_tags: Bool;\n    \
+         raw: std::json::Value;\n    has_raw: Bool;\n}",
+    );
+    let marked = export(
+        "marked",
+        "type Patch {\n    id: Int;\n    note?: String clearable;\n    inner?: Inner;\n    tags?: bounded[String; 4];\n    \
+         raw?: std::json::Value;\n}",
+    );
+    assert!(pair.contains_key("DIGEST") && pair.contains_key("Edits.proto"), "{:?}", pair.keys());
+    assert_eq!(pair.keys().collect::<Vec<_>>(), marked.keys().collect::<Vec<_>>());
+    for (name, text) in &pair {
+        assert_eq!(text, &marked[name], "{name} differs between the pair and the mark");
+    }
+}
+
 /// A presence triple (`note` beside `has_note` and `clear_note`, spec/api.md
 /// § Codecs) is described as the field's schema or `null`, optional, with
 /// `"x-hale-null": "clear"`; protobuf carries its three fields. The Hale

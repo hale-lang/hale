@@ -54,6 +54,32 @@ fn main() {
 - **Top-level only:** `type` declarations must appear at the top level outside any `locus` body.
 - **No loci inside records:** Because records are pure values with no lifecycle hooks, a `type` field (or `enum` variant) cannot hold a `locus` or a function pointer whose signature names a locus (`fn() -> Worker`). Store loci inside another locus's `params` instead. (A record field typed by an `interface` is permitted because it is a non-owning reference.)
 
+### Optional Fields (`x?: T`)
+
+A field marked `?` may be absent. `x?: T` declares `x` and, right after it, a real `Bool` field `has_x` that says whether `x` holds a value; `x?: T clearable` adds `clear_x` as well, for a PATCH field whose `null` means "clear it":
+
+```hale
+type Ticker {
+    symbol: String;
+    last?: Decimal<8>;
+    expires_at?: Time clearable;
+    limit?: Int = 100;
+}
+
+fn main() {
+    let mut t = Ticker { symbol: "BTC" };   // `last` left out: absent
+    println(t.has_last);                    // false
+    t.last = 97000.5d;                      // a write sets the flag
+    println(t.has_last);                    // true
+    println(t.limit, t.has_limit);          // 100 false: absent, at its default
+}
+```
+
+- **A write sets the flag:** a literal that spells `x`, an assignment to it through any path (`t.last = v`, `self.row.last = v`, `rows[i].last = v`), a write into a part of it, and a `push` or `set` into an optional `bounded` field all set `has_x` (and clear `clear_x`). The flags are ordinary fields, so a program may also read and write them by name.
+- **Leaving it out builds it absent:** `x` then holds its default, or its type's zero (`0`, `""`, `false`, the epoch, an empty list, an enum's first variant, a record of zeros). A type with no zero (a tuple, a point, `Bytes`) needs a default, and `hale check` says so at the field.
+- **One shape on the wire:** the flags are exactly the hand-written presence pair (`x: T; has_x: Bool;`) and triple the JSON and protobuf codecs read, so a record converted from the pair to `x?` crosses the wire, describes itself and hashes byte for byte as before (see [JSON](json.md) and [The API surface](../services/api.md)).
+- **Only record fields:** Hale has no optional type. `?` on a parameter, a local or a locus param, and `T?` after any type, are refused; a value that may be missing in a computation is `fallible(E)` ([Fallible values](../basics/fallible.md)).
+
 ## Value Copy Semantics and Mutation
 
 ### Independent Value Copies and Copy-on-Write

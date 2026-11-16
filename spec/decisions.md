@@ -3974,6 +3974,45 @@ where a write happens. *Return through a caller-supplied place.* A
 record already returns through the caller's arena; a list returned the
 same way needs no second convention.
 
+### F.51 — Optionality is a property of a record field, not a type
+
+**Problem.** A record that tells a field left out from one sent spells a
+presence pair by hand, `x: T; has_x: Bool;`, and a PATCH field a triple
+with `clear_x` (spec/api.md § Codecs). The pair is what the codecs, the
+description, protobuf and the contract digest read, and it works, but
+nothing ties the flag to the field: a program that sets `x` and forgets
+`has_x` writes a record whose value is never sent, and every literal that
+builds an absent field has to spell a value for it anyway (GH #1951,
+downstream handoff). The fix could be a general optional type, `T?`,
+usable anywhere; once programs hold `T?` locals and return `T?` from fns,
+taking it back would break them.
+
+**Decision.** Optionality belongs to a record field and to nothing else.
+`x?: T` in a `type` declares `x` and a real field `has_x: Bool = false`
+right after it, and `x?: T clearable` a `clear_x: Bool = false` after
+that: the hand-written pair and triple, field for field, so the wire,
+the description, protobuf and the digest are byte-identical and
+converting a pair changes no shape hash. A write of `x` (a literal that
+spells it, an assignment through any path or into a part of it, a `push`
+or `set` into an optional list) sets `has_x` and clears `clear_x`; a
+literal that leaves `x` out builds it absent, at its default or its
+type's zero. Declaring the synthesized flag beside the mark is a
+duplicate field. There is no `T?`: the `?` is refused on a parameter, a
+locus param, a local, a return and an enum payload, and after any type.
+Absence in a computation stays `fallible(E)`. `clearable` is a
+contextual keyword, a word only after an optional field's type.
+
+**Considered and rejected.** *A general `T?`.* It would be a second
+protocol for absence beside `fallible(E)`, with its own unwrapping
+operators, and every analysis that follows a value through a call (the
+ownership pass, the alloc summary, the codecs) would learn a new shape;
+the only place a program needs absence to be data is a record crossing a
+wire, which the field mark covers. *Keep the pair hand-written.* The
+flag a program forgets is the bug the mark removes. *A flag that is not
+a field* (presence kept out of the record's slots): the codecs, the
+`.proto` and the digest already read the pair as fields, and a hidden
+slot would change every one of them.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

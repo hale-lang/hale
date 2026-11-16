@@ -517,6 +517,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 defaults.insert(f.name.name.clone(), d.clone());
             }
         }
+        let optional: BTreeMap<String, (String, Option<String>)> = struct_fields
+            .iter()
+            .filter_map(|f| {
+                hale_syntax::ast::optional_flags(struct_fields, &f.name.name).map(|flags| (f.name.name.clone(), flags))
+            })
+            .collect();
         let struct_ty = self
             .context
             .opaque_struct_type(&format!("type.{}", t.name.name));
@@ -529,6 +535,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 fields,
                 field_order,
                 defaults,
+                optional,
             },
         );
         Ok(())
@@ -1150,6 +1157,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_store(field_ptr, val)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        // GH #1951 item 3 (F.51): a declared optional field the literal
+        // spells is present: its `has_x` is set, unless the literal spells
+        // the flag itself (its `clear_x` keeps its default, `false`, or
+        // what the literal spells).
+        for (x, (has, _)) in &info.optional {
+            if !by_name.contains_key(x.as_str()) || by_name.contains_key(has.as_str()) {
+                continue;
+            }
+            self.store_presence_flag(info, dest_ptr, type_name, has, true)?;
+        }
+        Ok(())
+    }
+
+    /// GH #1951 item 3 (F.51): store `on` into the `Bool` flag `flag` of
+    /// the record of type `info` at `ptr`.
+    pub(crate) fn store_presence_flag(
+        &mut self,
+        info: &TypeInfo<'ctx>,
+        ptr: PointerValue<'ctx>,
+        type_name: &str,
+        flag: &str,
+        on: bool,
+    ) -> Result<(), CodegenError> {
+        let Some((idx, _)) = info.fields.get(flag).cloned() else {
+            return Err(CodegenError::Unsupported(format!(
+                "type `{type_name}`: optional field flag `{flag}` is not declared"
+            )));
+        };
+        let slot = self
+            .builder
+            .build_struct_gep(info.struct_ty, ptr, idx, &format!("{type_name}.{flag}.ptr"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let bit = self.context.bool_type().const_int(u64::from(on), false);
+        self.builder
+            .build_store(slot, bit)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 

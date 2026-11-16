@@ -375,6 +375,68 @@ two won the slot, with nothing in the source to say which — while
 the json codecs and a surface's description assume one slot
 per name.
 
+### Optional fields (GH #1951 item 3, F.51)
+
+Optionality is a property of a record field, not a type. `x?: T` in a
+`type` declares the field `x` and, right after it, a real field `has_x:
+Bool = false`, its presence flag; `x?: T clearable` declares a third,
+`clear_x: Bool = false`, after that:
+
+```hale
+type Ticker {
+    symbol: String;
+    last?: Decimal<8>;
+    raw?: std::json::Value;
+    expires_at?: Time clearable;
+    limit?: Int = 100;
+}
+```
+
+The flags are ordinary fields in every way: read and written by name,
+held in the record's own slots, declared exactly as the hand-written
+presence pair (`x` then `has_x`) and triple (`x`, `has_x`, `clear_x`)
+the api codecs read (spec/api.md § Codecs). So the JSON and protobuf
+codecs, the bus wire, a surface's description and its contract digest
+see one shape, and converting a hand-written pair to the mark changes no
+shape hash. A record that declares `has_x` itself beside `x?` (or
+`clear_x` beside a clearable `x?`) is refused at that declaration: the
+mark declares it already (§ One name, one field).
+
+What the mark adds is how the flags follow the field:
+
+- **A write of `x` sets `has_x` and clears `clear_x`.** A record
+  literal that spells `x` (`Ticker { symbol: "a", last: 1.5d }`), an
+  assignment to it through any path (`t.last = v`, `self.row.last = v`,
+  `rows[i].last = v`, compound assignment included), an assignment into
+  a part of it (`t.inner.n = 4` writes `inner`), and a `push` or `set`
+  into an optional `bounded` field all set the flag after the store. A
+  literal that spells `has_x` (or `clear_x`) itself keeps what it spells.
+  Writing a flag by hand sets only the flag.
+- **A literal that leaves `x` out builds it absent:** `has_x` false and
+  `x` at its default (`x?: T = d`), or, where it declares none, at its
+  type's zero, the value the JSON codecs give an absent field: `0`,
+  `0.0`, `false`, `""`, a `Decimal`'s or a 256-bit integer's `0`, the
+  epoch for a `Time`, `0ns` for a `Duration`, `null` for a
+  `std::json::Value`, an identity's or a quantity's `0`, a range's `0`
+  (its least value when it leaves `0` out), a fixed array of its
+  element's zero, an enum's first variant with its values' zeros, and a
+  record built of its fields' defaults and zeros (a nested optional field
+  absent). An optional `bounded` field starts empty as any `bounded`
+  does. A type with none of these (a point, `Bytes`, a tuple, a generic
+  parameter, a record that reaches itself) is refused at the field:
+  "optional field `x` of type `T`: `…` has no zero for an absent `x` to
+  hold, so give it a default".
+
+A hand-written pair keeps working as it always did: its `has_x` is
+written by hand, and writing `x` leaves it alone.
+
+Nothing else is optional. `?` on a parameter, a locus param or a local
+is a parse error naming the position, and so is `T?` after any type (a
+field's, a return's, an enum payload's): Hale has no optional type, and
+absence in a computation is `fallible(E)` (§ Fallible typing). A
+`@positional` record's fields take no `?`, since every field of a
+positional row is an element.
+
 ### A struct binding is a copy (GH #713)
 
 `let b = <place>;` where the place holds a struct — a field of `self`

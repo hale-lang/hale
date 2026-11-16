@@ -117,13 +117,14 @@ fn an_openapi_document_becomes_a_surface_the_checker_accepts() {
         "// response: std::json::Value, an array with no `maxItems`, and a record holds a bounded list only",
         "rpc list_items(ShelfListItemsRequest) -> std::json::Value wire: \"GET /items?limit\";",
         "item_id: Int `json:\"itemId\"`;",
-        // an optional parameter and an optional, nullable field are presence pairs
-        "has_limit: Bool = false;\n    limit: Int = 0;",
-        "has_note: Bool = false;\n    note: String = \"\";",
-        "labels: bounded[String; 4];",
+        // an optional parameter and an optional, nullable field are optional
+        // fields, their presence flags synthesized (F.51)
+        "limit?: Int;",
+        "note?: String;",
+        "labels?: bounded[String; 4];",
         "// std::json::Value: `oneOf`: the codec has no union of shapes",
         "// std::json::Value: `#/components/schemas/Item` is a recursive shape, and a record cannot hold itself",
-        "type_: String = \"\" `json:\"type\"`;",
+        "type_?: String `json:\"type\"`;",
         "type ShelfItemState = enum { open, held, gone };",
     ] {
         assert!(src.contains(want), "missing `{want}` in:\n{src}");
@@ -387,7 +388,7 @@ fn an_mcp_endpoint_is_read_through_its_tool_list() {
         "rpc ping() -> std::json::Value wire: \"ping\";",
         "rpc sum(ToolsSumInput) -> ToolsSumOutput wire: \"sum\";",
         "type ToolsSumOutput {\n    total: Float;\n}",
-        "has_days: Bool = false;",
+        "days?: ",
     ] {
         assert!(src.contains(want), "missing `{want}` in:\n{src}");
     }

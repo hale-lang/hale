@@ -2619,7 +2619,11 @@ for what a page says beside its items.
 
 **An optional field** is a presence pair (2026-10-17): a field `x` beside
 a field `has_x` of the same record whose type is `Bool` (an alias of it
-included). Hale has no optional type; the flag is the presence. On the
+included). Hale has no optional type; the flag is the presence. `x?: T`
+declares the pair (spec/types.md § Optional fields, F.51): the flag is a
+real field synthesized after `x`, so the codecs, the description,
+protobuf and the digest are byte for byte the hand-written `x` then
+`has_x`, and a write of `x` sets the flag. On the
 JSON wire `x` is a key that may be left out, and `null` is its absence
 as well: a payload carrying `x` with a value other than `null` sets
 `has_x`, one that leaves it out or sends `null` leaves `has_x` false and
@@ -2630,7 +2634,11 @@ is absent; a `bounded` list's is empty). The last of a key sent twice wins:
 a `null` after a value is an absence, the earlier value gone. `has_x` is no key: the decoder skips one a payload sends, as it
 skips any unknown key, and the encoder never writes it. The encoder writes
 `x` only when `has_x` is set. The value is as strict as any field's: `"x":
-5` for a `String` is `wrong_type`. Any shape a field may have may be
+5` for a `String` is `wrong_type`. An optional `std::json::Value` that
+holds `null` is written as absent, its key left out, never as `null`
+(GH #1951 item 3): read back, an optional field's `null` is its absence,
+and a triple's is its clear flag, so writing it would change what it
+reads as. Any shape a field may have may be
 optional, a list included (JSON tells a present empty list, `[]`, from an
 absent one). A description gives `x` the schema `{"anyOf": [<its schema>,
 {"type": "null"}]}`, lists it under no `required`, and has no property for
@@ -2641,7 +2649,9 @@ carrying neither reads as an absence, `x` at its default or zero. The
 digest is the record's shape, which already holds both fields.
 
 **A three-way field** is a presence triple (2026-10-19): a presence pair
-and a third field `clear_x` of the same record whose type is `Bool`. It
+and a third field `clear_x` of the same record whose type is `Bool`.
+`x?: T clearable` declares the triple, `clear_x` synthesized after
+`has_x`, and a write of `x` clears it. It
 is the field of a PATCH, where leaving `x` out keeps what the server
 holds, `null` clears it, and a value sets it. On the JSON wire `null` is
 then a value of its own: a payload that sends `"x": null` sets `clear_x`
@@ -3245,8 +3255,7 @@ api Shelf from openapi "../shelf.json" {
 
 type ShelfNewItem {
     name: String;
-    has_note: Bool = false;
-    note: String = "";
+    note?: String;
 }
 ```
 
@@ -3303,8 +3312,10 @@ as one when it serves one by `GET`, and as an MCP endpoint otherwise
   by the key in snake case with a `json:"key"` tag when the two differ (a
   key that would name a field `has_…` or `clear_…`, which reads as another
   field's presence flag, is `key_has_…`, its key in the tag); a
-  property the object does not require, or that admits `null`, is a
-  presence pair (§ Codecs); a string enum whose values are all names is an
+  property the object does not require, or that admits `null`, is an
+  optional field, `name?: T;` (§ Codecs, spec/types.md § Optional
+  fields: the presence pair, its flag synthesized after the field, its
+  absent value its type's zero); a string enum whose values are all names is an
   enum; `integer`, `number`, `boolean` and `string` are `Int`, `Float`,
   `Bool` and `String`; an array with a `maxItems` of at most 1024 is a
   `bounded` list; a `$ref` inside the document is the type it names,

@@ -6661,6 +6661,11 @@ pub(crate) struct TypeInfo<'ctx> {
     /// The expression is evaluated at instantiation time in the
     /// caller's scope, same as locus-param non-literal defaults.
     pub(crate) defaults: BTreeMap<String, Expr>,
+    /// GH #1951 item 3 (F.51): each declared optional field (`x?: T`) →
+    /// the flag a write of it sets (`has_x`) and the one it clears
+    /// (`clear_x`, for `clearable`). A hand-written pair is not here: its
+    /// flag is written by hand.
+    pub(crate) optional: BTreeMap<String, (String, Option<String>)>,
 }
 
 /// An array or a tuple of loci a locus holds as a field, as an element
@@ -13342,6 +13347,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     fields,
                     field_order: t.fields.iter().map(|(n, _)| n.to_string()).collect(),
                     defaults: BTreeMap::new(),
+                    optional: BTreeMap::new(),
                 },
             );
         }
@@ -14567,6 +14573,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         tag: f.tag.clone(),
                         indexed_by: f.indexed_by.clone(),
                         map_value: f.map_value.clone(),
+                        optional: f.optional,
                         span: f.span.clone(),
                     })
                     .collect();
@@ -17882,10 +17889,68 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+        // GH #1951 item 3 (F.51): a write of a declared optional field (or
+        // of a part of one) sets its record's presence flag, after the
+        // store, so a part the write copied first holds the flag too.
+        if let (Ok(BlockEnd::Open), Stmt::Assign { target, .. }) = (&r, stmt) {
+            if let Err(err) = self.mark_optional_written(target, scope) {
+                return Err(self.place(err, stmt.span()));
+            }
+        }
         // GH #1941: a refusal the statement raised outside any expression
         // (a `let`'s annotation, a loop's shape, a send's subject) is
         // placed at the statement.
         r.map_err(|err| self.place(err, stmt.span()))
+    }
+
+    /// GH #1951 item 3 (F.51): `target` was just written. Each field
+    /// segment `x` of it that its record declares optional (`x?: T`) sets
+    /// that record's `has_x` and clears its `clear_x`: `r.x = v`,
+    /// `self.row.x = v`, `xs[i].x = v`, and a write into a part of one,
+    /// `r.x.n = v`. A hand-written pair's flag is not touched.
+    pub(crate) fn mark_optional_written(
+        &mut self,
+        target: &LValue,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if self.user_types.values().all(|t| t.optional.is_empty()) {
+            return Ok(());
+        }
+        for i in 0..target.tail.len() {
+            let LValueSeg::Field(x) = &target.tail[i] else { continue };
+            let prefix = LValue { head: target.head.clone(), tail: target.tail[..i].to_vec(), span: target.span };
+            let Some(CodegenTy::TypeRef(t)) = self.place_declared_ty(&prefix, scope) else { continue };
+            let Some((has, clear)) = self.user_types.get(&t).and_then(|info| info.optional.get(&x.name)).cloned()
+            else {
+                continue;
+            };
+            self.store_flag_through(&prefix, &has, true, scope)?;
+            if let Some(c) = clear {
+                self.store_flag_through(&prefix, &c, false, scope)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Store `on` into the `Bool` field `flag` of the record at `prefix`.
+    fn store_flag_through(
+        &mut self,
+        prefix: &LValue,
+        flag: &str,
+        on: bool,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let mut place = prefix.clone();
+        place.tail.push(LValueSeg::Field(Ident::new(flag, prefix.span)));
+        let (slot, ty, _, _) = self.resolve_lvalue_chain(&place, scope)?;
+        if ty != CodegenTy::Bool {
+            return Err(CodegenError::Unsupported(format!("optional field flag `{flag}` is a {ty}, not a Bool")));
+        }
+        let bit = self.context.bool_type().const_int(u64::from(on), false);
+        self.builder
+            .build_store(slot, bit)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
     }
 
     fn lower_stmt_traced(
