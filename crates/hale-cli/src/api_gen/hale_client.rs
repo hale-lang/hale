@@ -303,16 +303,26 @@ fn struct_decl(model: &ClientModel, name: &str, t: &TypeSchema) -> Result<String
 }
 
 /// An enum as the client declares it: the server's variants, each with its
-/// values' types, so the api codec carries it as the server's does.
-fn enum_decl(name: &str, variants: &super::ClientEnum) -> Result<String, String> {
-    let vs = variants
+/// values' types and its `json:` tag (its wire name, the catch-all), so the
+/// api codec carries it as the server's does.
+fn enum_decl(name: &str, e: &super::ClientEnum) -> Result<String, String> {
+    let vs = e
+        .variants
         .iter()
         .map(|(v, values)| {
+            let renamed = e.wire.name(v) != v;
+            let other = e.wire.other_variant() == Some(v.as_str());
+            let tag = match (renamed, other) {
+                (false, false) => String::new(),
+                (true, false) => format!(" `json:\"{}\"`", e.wire.name(v)),
+                (true, true) => format!(" `json:\"{},other\"`", e.wire.name(v)),
+                (false, true) => " `json:\",other\"`".to_string(),
+            };
             if values.is_empty() {
-                return Ok(v.clone());
+                return Ok(format!("{v}{tag}"));
             }
             let tys = values.iter().map(|f| hale_type(f, &format!("{name}::{v}"))).collect::<Result<Vec<_>, _>>()?;
-            Ok(format!("{v}({})", tys.join(", ")))
+            Ok(format!("{v}({}){tag}", tys.join(", ")))
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(format!("type {} = enum {{ {} }};\n\n", type_ident(name), vs.join(", ")))

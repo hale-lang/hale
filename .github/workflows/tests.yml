@@ -359,7 +359,9 @@ jobs:
           # the runners' resolver stopped answering for Ubuntu's archive
           # (2026-11-11): fetch from archive.ubuntu.com at an address a public
           # resolver gives (a known one if it gives none), retrying a failed download
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
@@ -450,7 +452,9 @@ jobs:
           # the runners' resolver stopped answering for Ubuntu's archive
           # (2026-11-11): fetch from archive.ubuntu.com at an address a public
           # resolver gives (a known one if it gives none), retrying a failed download
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
@@ -489,7 +493,9 @@ jobs:
           tag="hale-habitat:ci-${GITHUB_SHA::12}"
           # the image's apt reaches Ubuntu's archive at a pinned address, as
           # the runner's does (its resolver stopped answering for it, 2026-11-11)
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           ip=${ip:-185.125.190.81}
           DOCKER_BUILDKIT=1 docker build --add-host "archive.ubuntu.com:$ip" --add-host "security.ubuntu.com:$ip" \
             --build-arg HALE_FROM=artifact -t "$tag" -f Dockerfile "$ctx"
@@ -637,7 +643,9 @@ jobs:
           # the runners' resolver stopped answering for Ubuntu's archive
           # (2026-11-11): fetch from archive.ubuntu.com at an address a public
           # resolver gives (a known one if it gives none), retrying a failed download
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
@@ -1071,7 +1079,9 @@ jobs:
           # the runners' resolver stopped answering for Ubuntu's archive
           # (2026-11-11): fetch from archive.ubuntu.com at an address a public
           # resolver gives (a known one if it gives none), retrying a failed download
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
@@ -1248,7 +1258,9 @@ jobs:
           # the runners' resolver stopped answering for Ubuntu's archive
           # (2026-11-11): fetch from archive.ubuntu.com at an address a public
           # resolver gives (a known one if it gives none), retrying a failed download
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
@@ -1523,7 +1535,9 @@ jobs:
           # the runners' resolver stopped answering for Ubuntu's archive
           # (2026-11-11): fetch from archive.ubuntu.com at an address a public
           # resolver gives (a known one if it gives none), retrying a failed download
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
@@ -1657,7 +1671,9 @@ jobs:
           # the runners' resolver stopped answering for Ubuntu's archive
           # (2026-11-11): fetch from archive.ubuntu.com at an address a public
           # resolver gives (a known one if it gives none), retrying a failed download
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
@@ -1767,7 +1783,9 @@ jobs:
           # the runners' resolver stopped answering for Ubuntu's archive
           # (2026-11-11): fetch from archive.ubuntu.com at an address a public
           # resolver gives (a known one if it gives none), retrying a failed download
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
@@ -1851,7 +1869,9 @@ jobs:
           # the runners' resolver stopped answering for Ubuntu's archive
           # (2026-11-11): fetch from archive.ubuntu.com at an address a public
           # resolver gives (a known one if it gives none), retrying a failed download
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
@@ -1980,7 +2000,9 @@ jobs:
           # the runners' resolver stopped answering for Ubuntu's archive
           # (2026-11-11): fetch from archive.ubuntu.com at an address a public
           # resolver gives (a known one if it gives none), retrying a failed download
-          ip=$(dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi

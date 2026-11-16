@@ -70,7 +70,17 @@ schema = 1
 "std::process" = { tier = "stable" }
 "std::rand" = { tier = "stable" }
 "std::regex" = { tier = "stable" }
-"std::str" = { tier = "stable" }
+"std::str" = { tier = "stable", experimental_fns = [
+    "cut",
+    "cut_last",
+    "eq_ignore_case",
+    "last_index_of",
+    "parse_bool",
+    "trim_end",
+    "trim_prefix",
+    "trim_start",
+    "trim_suffix",
+], why = "the splits and trims are new (#1995); promoted after one minor" }
 "std::term" = { tier = "stable" }
 "std::test" = { tier = "stable" }
 "std::text" = { tier = "stable" }

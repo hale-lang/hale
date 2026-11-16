@@ -264,6 +264,25 @@ type Change = enum { Renamed(String), Moved(Int, Int), Archived };
 
 Type sets (`type Inbound = NewOrder | Cancel;`) serialize as enums keyed by each member's type name (`{"Cancel": {"id": 1}}`).
 
+#### Wire names and the catch-all
+
+A wire you do not own often spells its values in lowercase, with dashes, or adds values over time. Tag a variant with `json:` to give it a wire name, and mark one variant `other` to catch the strings no variant names:
+
+```hale,fragment
+type Side = enum { Buy `json:"buy"`, Sell `json:"sell"` };
+type Event = enum { Fill(Int) `json:"fill"`, Cancel `json:"cancel"` };
+type Venue = enum { Spot `json:"spot"`, Margin `json:"margin"`, Other(String) `json:",other"` };
+type Kind = enum { Limit `json:"limit"`, Market `json:"market"`, Unknown `json:"unknown,other"` };
+```
+
+- `Side::Sell` crosses as `"sell"`, and `"Sell"` is now `wrong_type` like any unknown name. `Event::Fill(3)` is `{"fill": 3}`: a variant with values uses its wire name as the object key.
+- `Other(String)` is a **lossless** catch-all: `"dark"` decodes to `Venue::Other("dark")`, which writes `"dark"` back. It writes whatever it holds, so `Venue::Other("spot")` writes `"spot"`, which reads back as `Venue::Spot`.
+- `Unknown` is a **lossy** catch-all: `"iceberg"` decodes to `Kind::Unknown`, which writes its own wire name, `"unknown"`.
+- Only strings are caught: an object with an unknown key is still `wrong_type`.
+- The check refuses two variants with one wire name, a second catch-all, a catch-all holding anything but one `String`, and a name on a lossless catch-all. A set's member takes no tag.
+
+The description lists the wire names (`"enum": ["spot", "margin"]`) and adds `x-hale-variants` (each variant's wire name) and `x-hale-other` (the catch-all). The tags are part of the contract digest. The TypeScript client types `Venue` as `"spot" | "margin" | (string & {})`, and the Hale client declares the same tags. Protobuf ignores the renames and keeps `Venue_Spot`-style identifiers; a lossy catch-all also takes an enum number no variant has. A lossless catch-all makes the enum one with payloads, so the codecs cannot yet carry a list of it, and it cannot be a map value or a route parameter. The bus carries such an enum as any other, by its variant's tag and values, so the renames do not reach it.
+
 ### Error Classes
 
 When a handler's error type in `fallible(E)` is an enum, its variants can carry an error class annotation to select the transport status code:
@@ -886,7 +905,7 @@ type ShelfNewItem {
 }
 ```
 
-- **Mapping Rules**: Operations map to snake_case `rpc` rows with `wire: "METHOD /path?query_param"`. Non-required properties generate optional fields (`name?: T;`, the `has_<field>` presence pair); non-identifier JSON keys use `` `json:"..."` `` tags; schemas that cannot map to fixed Hale structs (`oneOf`, unbounded arrays without `maxItems`, free-form objects, or schemaless MCP outputs) fall back to `std::json::Value` with an explanatory comment.
+- **Mapping Rules**: Operations map to snake_case `rpc` rows with `wire: "METHOD /path?query_param"`. Non-required properties generate optional fields (`name?: T;`, the `has_<field>` presence pair); non-identifier JSON keys use `` `json:"..."` `` tags; a string enum whose values are not all identifiers becomes PascalCase variants tagged with their values (`` StopLimit `json:"stop-limit"` ``); schemas that cannot map to fixed Hale structs (`oneOf`, unbounded arrays without `maxItems`, free-form objects, or schemaless MCP outputs) fall back to `std::json::Value` with an explanatory comment.
 - **Supported YAML Subset**: The built-in YAML reader follows the YAML 1.2 Core Schema (so `on` and `yes` are strings, not booleans) and supports block/flow mappings and sequences, plain/quoted scalars, `|` and `>` block scalars, comments, and a single `---` document marker. Anchors/aliases (`&`, `*`), merge keys (`<<`), tags (`!`), complex keys (`?`), duplicate keys, and multi-document streams are rejected with a line-numbered diagnostic.
 
 ### Calling External Surfaces (`api::client` and `VaultPrincipals`)

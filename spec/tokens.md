@@ -927,8 +927,8 @@ sum             prod            min             max
 length          empty
 print           println         eprint          eprintln
 to_string       len             abs
-starts_with     contains        check_closures
-Int             Float
+starts_with     contains        ends_with
+check_closures  Int             Float
 ```
 
 `Int(x)` (v1.x-11) is a built-in cast — explicit Float → Int
@@ -939,8 +939,12 @@ call. `Float(x)` is its widening twin — Int → Float via `sitofp`,
 Float arg the identity, other types reject. These two are the only
 casts; the remaining primitive-type names are types and nothing
 else. `to_string(x)`, `len(x)`, `abs(x)`, `min(a, b)`, `max(a, b)`,
-`starts_with(s, p)` and `contains(s, p)` are similarly bare-name
-builtins, as is `check_closures()` at statement position.
+`starts_with(s, p)`, `contains(s, p)` and `ends_with(s, p)` are
+similarly bare-name builtins, as is `check_closures()` at statement
+position. `ends_with` (GH #1995) answers only where the program
+declares no fn of that name: the name was free before it was a
+builtin, so a program's own `fn ends_with` keeps it, and it is not
+among the claimed names below.
 
 **A bare builtin call is the same call in either position.** In
 statement position the expression is evaluated and its value

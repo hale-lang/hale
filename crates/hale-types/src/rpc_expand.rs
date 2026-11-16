@@ -2517,24 +2517,36 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
         }
         // no key of its own: `type_json` leaves it out
         FieldSchema::Presence { .. } | FieldSchema::Unformed => "{}".to_string(),
-        FieldSchema::Enum { name, variants, classes } => {
-            // the declared error classes, as `surface_doc` renders them
-            let classed = if classes.is_empty() {
-                String::new()
-            } else {
+        FieldSchema::Enum { name, variants, classes, wire } => {
+            // what the variants' `json:` tags say, then the declared error
+            // classes, as `surface_doc` renders them
+            let mut classed = String::new();
+            if !wire.is_plain() {
+                let vs: Vec<String> = variants
+                    .iter()
+                    .filter(|(v, _)| !wire.is_lossless_other(v))
+                    .map(|(v, _)| format!("{}:{}", jstr(v), jstr(wire.name(v))))
+                    .collect();
+                classed.push_str(&format!(",\"x-hale-variants\":{{{}}}", vs.join(",")));
+                if let Some(other) = wire.other_variant() {
+                    classed.push_str(&format!(",\"x-hale-other\":{}", jstr(other)));
+                }
+            }
+            if !classes.is_empty() {
                 let cs: Vec<String> = classes.iter().map(|(v, c)| format!("{}:{}", jstr(v), jstr(c))).collect();
-                format!(",\"x-hale-error-classes\":{{{}}}", cs.join(","))
-            };
-            let units: Vec<String> = variants.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| jstr(n)).collect();
+                classed.push_str(&format!(",\"x-hale-error-classes\":{{{}}}", cs.join(",")));
+            }
+            let carried: Vec<&(String, Vec<FieldSchema>)> = variants.iter().filter(|(v, _)| !wire.is_lossless_other(v)).collect();
+            let units: Vec<String> = carried.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| jstr(wire.name(n))).collect();
             let unit = format!("{{\"type\":\"string\",\"enum\":[{}]", units.join(","));
-            if units.len() == variants.len() {
+            if units.len() == carried.len() {
                 return format!("{unit},\"x-hale-type\":{}{classed}}}", jstr(name));
             }
             let mut one: Vec<String> = Vec::new();
             if !units.is_empty() {
                 one.push(format!("{unit}}}"));
             }
-            for (v, values) in variants.iter().filter(|(_, v)| !v.is_empty()) {
+            for (v, values) in carried.iter().filter(|(_, v)| !v.is_empty()) {
                 let value = match values.as_slice() {
                     [only] => field_json(only),
                     many => format!(
@@ -2543,10 +2555,9 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
                         n = many.len()
                     ),
                 };
+                let key = jstr(wire.name(v));
                 one.push(format!(
-                    "{{\"type\":\"object\",\"properties\":{{{}:{value}}},\"required\":[{}],\"additionalProperties\":false}}",
-                    jstr(v),
-                    jstr(v)
+                    "{{\"type\":\"object\",\"properties\":{{{key}:{value}}},\"required\":[{key}],\"additionalProperties\":false}}"
                 ));
             }
             format!("{{\"oneOf\":[{}],\"x-hale-type\":{}{classed}}}", one.join(","), jstr(name))

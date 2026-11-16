@@ -22,7 +22,8 @@ test('lists the record\'s nodes by kind, shows a node\'s literal text, and write
   expect(await node.textContent()).toContain(service.text);
   expect(await page.evaluate(() => window.__injected)).toBeUndefined();
   await expect(page.locator('img[src="x"]')).toHaveCount(0);
-  await expect(node).toContainText('bound to');
+  await expect(node).toContainText('applies to');
+  await expect(page.getByRole('region', { name: 'Knowledge graph' }).locator('canvas').first()).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('knowledge.png'), fullPage: true });
   await page.getByRole('searchbox', { name: 'Search knowledge' }).fill('no-such-node-anywhere');
   await expect(page.locator('#kn-list').getByRole('link')).toHaveCount(0);
