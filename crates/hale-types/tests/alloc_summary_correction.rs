@@ -247,7 +247,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 30] = [
+const CALL_LINES_ONLY: [(&str, usize); 31] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -281,6 +281,10 @@ const CALL_LINES_ONLY: [(&str, usize); 30] = [
     // the program that names it, so only the two native calls of its
     // `std::crypto::sha256` comparisons are the renames'
     ("tests/hale/crypto_sha256_stream_test.hl", 2),
+    // 5: the generics parity test (GH #1964): an imported seed's generic
+    // fns and their specializations, called through the alias, which
+    // only the renames name
+    ("tests/hale/generics_parity_test.hl", 5),
     // 2: P3 2 of 3's classified correction resolves `let f = lib::add3;
     // f()` to the fn the local names, which only the renames reach; 3
     // more: E5 resolves the calls through a function value to the

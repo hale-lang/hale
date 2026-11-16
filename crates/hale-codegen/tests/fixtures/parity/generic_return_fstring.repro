@@ -1,0 +1,9 @@
+// A generic fn returning a generic type, its value's field rendered in an f-string.
+// == main/main.hl ==
+type Blob { data: Bytes; }
+fn main() {
+    let b = __pg_box(Blob { data: b"x" }).v;
+    println(f"blob = {b}");
+}
+type __PgBox<T> { v: T; }
+fn __pg_box<T>(x: T) -> __PgBox<T> { return __PgBox { v: x }; }

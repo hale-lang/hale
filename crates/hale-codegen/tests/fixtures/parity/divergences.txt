@@ -12,3 +12,5 @@
 #1970 | set_type_tail.repro | hale can't compile this yet: return type mismatch: declared T, got T
 #1971 | bare_variant_pattern.repro | hale can't compile this yet: constructor pattern path must be `_` (got # segments)
 #1972 | cross_pool_literal_value.repro | hale can't compile this yet: `_` is born to `_`, but `_` runs both on `_`'s thread and off it (T on main; T on the pinned thread of T; the owner T on main), so its birth is a same-tower allocation in some instances and a cross-pool post in others; a cross-pool birth is fire-and-forget, so the literal cannot be used as a value. Write it as a bare statement (`_`).
+#1978 | generic_return_decimal_scale.repro | hale can't compile this yet: binary op operands of mixed types T<#> and T
+#1978 | generic_return_fstring.repro | hale can't compile this yet: `_` not supported for type T

@@ -1093,6 +1093,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         } else {
                             (sub_v, sub_ty)
                         };
+                        // A bare `0` is every quantity's zero (spec/units.md),
+                        // so the check admits `1day / 4 or 0`: a Duration (or
+                        // a Time's count) is the integer it holds.
+                        let sub_ty = match (&sub_ty, &call.success_ty) {
+                            (Some(CodegenTy::Int), Some(want @ (CodegenTy::Duration | CodegenTy::Time)))
+                                if hale_types::unit_values::int_literal(rhs) == Some(0) =>
+                            {
+                                Some(want.clone())
+                            }
+                            _ => sub_ty,
+                        };
                         if !value_discarded && sub_ty != call.success_ty {
                             return Err(CodegenError::Invalid(format!(
                                 "`or` substitute type mismatch: expected \

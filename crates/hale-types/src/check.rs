@@ -1356,6 +1356,8 @@ fn walk_bundle(
         generic_params: Vec::new(),
         template_literals: BTreeMap::new(),
         admitted_template_literals: BTreeSet::new(),
+        kept_specialization_diags: Vec::new(),
+        walk_decl_span: None,
         generic_fns,
         fn_decls,
         locus_decls,
@@ -1406,8 +1408,10 @@ fn walk_bundle(
                 None => {
                     let start = cx.diags.len();
                     cx.decl_diags_start = start;
+                    cx.walk_decl_span = Some(item.span());
                     cx.check_top_decl(item);
                     cx.refuse_unadmitted_template_literals();
+                    cx.walk_decl_span = None;
                     cx.settle_decimal_literals();
                     cx.settle_param_accesses(start);
                     (cx.diags.split_off(start), std::sync::Arc::new(std::mem::take(&mut cx.views)))
@@ -1428,6 +1432,8 @@ fn walk_bundle(
         by_decl.insert(key.clone(), per);
     }
     cx.specialize_generic_bodies();
+    let kept = std::mem::take(&mut cx.kept_specialization_diags);
+    cx.diags.extend(kept);
     cx.settle_decimal_literals();
     // The walks per monomorph keep their param accesses alone: an access
     // through a value of a parameter type is judged there, against every
@@ -11504,6 +11510,15 @@ struct Checker<'a> {
     /// (`refuse_unadmitted_template_literals`).
     template_literals: BTreeMap<(u32, u32), (Span, String)>,
     admitted_template_literals: BTreeSet<(u32, u32)>,
+    /// What a walk of a generic body for one of its monomorphs finds that
+    /// the template's own walk cannot (its parameters are `Unknown`
+    /// there): an argument with no nameable type, an unadmitted template
+    /// literal (GH #1963, #1965). That walk's diagnostics are dropped;
+    /// these are kept, once each, and reported after every walk.
+    kept_specialization_diags: Vec<Diag>,
+    /// The declaration the walk is in (a top declaration, or the generic
+    /// template a monomorph walk re-walks), for GH #1965's literals.
+    walk_decl_span: Option<Span>,
     /// M3 stage 3 tranche 2: generic TYPE templates (name → decl).
     /// Mangled monomorph literals (`Box_Int { ... }`) resolve
     /// against these — previously "unknown type" at typecheck,
@@ -11889,6 +11904,11 @@ impl<'a> Checker<'a> {
                         let defaults: Vec<&'a Expr> = fields.iter().filter_map(|f| f.default.as_ref()).collect();
                         let typed = self.judge_defaults_where_declared(&defaults, &t.generics);
                         self.refuse_valueless_field_defaults(&t.name.name, fields, &typed);
+                        // a field's declared type supplies a template
+                        // literal's arguments (GH #1965)
+                        for d in &defaults {
+                            self.mark_declared_site(d);
+                        }
                         // A field default is not typed here, but lowering
                         // emits it at every literal of the type that
                         // leaves the field, so the defaults its calls
@@ -15301,6 +15321,10 @@ impl<'a> Checker<'a> {
                     let got = self.check_expr(init);
                     self.params_default = prev_default;
                     let Some(te) = &p.ty else { continue };
+                    // the param's declared type supplies a template
+                    // literal's arguments (GH #1965), a generic locus's
+                    // `Box<T>` included
+                    self.mark_declared_site(init);
                     let want = self.resolve_te(te);
                     // `Unknown` on either side is an unresolved
                     // type, already diagnosed (or deliberately
@@ -19061,6 +19085,10 @@ impl<'a> Checker<'a> {
             let prev_locus = self.current_locus.take();
             let prev_decl = self.locus_decl.take();
             let prev_body = self.body;
+            self.walk_decl_span = Some(match template {
+                GenericBody::Fn(f) => f.span,
+                GenericBody::Locus(l) => l.span,
+            });
             match template {
                 GenericBody::Fn(f) => self.check_fn(f, None),
                 GenericBody::Locus(l) => {
@@ -19069,6 +19097,8 @@ impl<'a> Checker<'a> {
                     self.check_locus(l);
                 }
             }
+            self.refuse_unadmitted_template_literals();
+            self.walk_decl_span = None;
             self.body = prev_body;
             self.locus_decl = prev_decl;
             self.current_locus = prev_locus;
@@ -21442,6 +21472,62 @@ impl<'a> Checker<'a> {
     /// declaration's, read by that identity. The second value is the
     /// path as the author wrote it, unscoped (GH #746's `u$0` head
     /// reads `u`), for diagnostics.
+    /// A generic `type` instantiation inside `te` whose argument is a type
+    /// parameter `bindings` binds to a locus: the type's name, the
+    /// parameter and the locus.
+    fn generic_type_holding_locus(&self, te: &TypeExpr, bindings: &BTreeMap<String, Ty>) -> Option<(String, String, String)> {
+        match te {
+            TypeExpr::Named { path, generic_args, .. } => {
+                if path.segments.len() == 1 && self.generic_types.contains_key(path.segments[0].name.as_str()) {
+                    for a in generic_args {
+                        if let TypeExpr::Named { path: ap, generic_args: aa, .. } = a {
+                            if ap.segments.len() == 1 && aa.is_empty() {
+                                let g = &ap.segments[0].name;
+                                if let Some(Ty::Named(n)) = bindings.get(g) {
+                                    if matches!(self.top.lookup(n), Some(TopSymbol::Locus(_))) {
+                                        return Some((path.segments[0].name.clone(), g.clone(), n.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                generic_args.iter().find_map(|a| self.generic_type_holding_locus(a, bindings))
+            }
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.generic_type_holding_locus(elem, bindings),
+            TypeExpr::Tuple(parts, _) => parts.iter().find_map(|p| self.generic_type_holding_locus(p, bindings)),
+            _ => None,
+        }
+    }
+
+    /// GH #1963: an argument with no value whatever a template's
+    /// parameters are: a capacity slot of `self`, a printing builtin's
+    /// call, a stdlib path written without `std::`.
+    fn valueless_whatever_the_parameters(&self, arg: &Expr) -> bool {
+        match arg {
+            Expr::Field { receiver, name, .. } => {
+                matches!(receiver.as_ref(), Expr::KwSelf(_))
+                    && self.current_locus.is_some_and(|li| li.capacity_slot_names.iter().any(|n| n == &name.name))
+            }
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Ident(id) => {
+                    matches!(id.name.as_str(), "println" | "print" | "eprintln" | "eprint")
+                        && self.locals.lookup(&id.name).is_none()
+                        && self.top.lookup(&id.name).is_none()
+                }
+                Expr::Path(qn) => {
+                    let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                    segs.len() >= 2
+                        && ["env", "process", "time", "str", "bytes", "math", "io", "term", "text", "log", "http", "test"]
+                            .contains(&segs[0])
+                        && self.known.import_target(&segs.join("::")).is_none()
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     /// GH #1963: why an argument the checker gives no type cannot pin
     /// generic fn `shown`'s parameter `g`, in the program's terms.
     fn untyped_generic_arg_message(&self, shown: &str, g: &str, arg: &Expr) -> String {
@@ -22088,9 +22174,13 @@ impl<'a> Checker<'a> {
         // GH #1965: a literal spelled with a generic template's name,
         // held until the walk ends to the sites that admit it.
         if let Expr::Struct { span, .. } = expr {
-            if self.generic_params.is_empty()
-                && self.specializing.is_none()
+            // (a literal outside the declaration being walked is another
+            // declaration's default, typed where it is evaluated, and
+            // judged in its own declaration's walk)
+            let own = self.walk_decl_span.is_none_or(|d| d.start.0 <= span.start.0 && span.end.0 <= d.end.0);
+            if (self.generic_params.is_empty() || self.specializing.is_some())
                 && self.default_invocations.is_empty()
+                && own
                 && self.generic_template_named(&ty).is_some()
             {
                 if let Ty::Named(n) = &ty {
@@ -22864,6 +22954,7 @@ impl<'a> Checker<'a> {
     /// ([`Self::refuse_generic_literals_without_arguments`]). The rows are
     /// `generic_monomorph_agreement.rs`'s, one per site.
     fn admit_monomorph_literal(&mut self, want: &Ty, got: &Ty, value: &Expr, allow_loci: bool) -> bool {
+        self.mark_declared_site(value);
         let admitted = self.two_spellings_of_one_monomorph(want, got, allow_loci);
         if admitted {
             self.meet_monomorph_literal(want, value);
@@ -24939,8 +25030,13 @@ impl<'a> Checker<'a> {
                 // fallible call, an element, a name — has no failure of
                 // its own to address, and lowering refused it after a
                 // clean check; the call inside is addressed where it is
-                // written.
-                if narrowing.is_none() && !matches!(inner.as_ref(), Expr::Call { .. }) {
+                // written. (A non-fallible type there is the rule below's:
+                // "not fallible, drop the `or`".)
+                if narrowing.is_none()
+                    && stdlib_or.is_none()
+                    && !matches!(inner.as_ref(), Expr::Call { .. })
+                    && matches!(inner_ty, Ty::Fallible { .. } | Ty::Unknown)
+                {
                     let what = match inner.as_ref() {
                         Expr::Field { .. } => "a field read",
                         Expr::Index { .. } => "an element read",
@@ -25546,6 +25642,24 @@ impl<'a> Checker<'a> {
                 ));
             }
         }
+        // A generic `type` the signature instantiates at a parameter this
+        // call binds to a locus (`fn bx<T>(x: T) -> Box<T>` at `L`) would
+        // hold the locus, which a `type` cannot; the build refused the
+        // monomorph with no location.
+        for te in template.ret.iter().chain(template.params.iter().map(|p| &p.ty)) {
+            if let Some((ty_name, g, locus)) = self.generic_type_holding_locus(te, &bindings) {
+                let d = Diag::ty(
+                    callee_span,
+                    format!(
+                        "generic fn `{shown}`: this call makes `{g}` the locus `{locus}`, and its signature's \
+                         `{ty_name}<{g}>` would be a `type` holding it: {}",
+                        generic_type_at_locus_message(&ty_name, &locus)
+                    ),
+                );
+                self.push_or_keep(d);
+                break;
+            }
+        }
         // Every generic must be pinned — UNLESS an
         // arg typed Unknown could have pinned it
         // (stay permissive where inference was).
@@ -25570,21 +25684,26 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
-        } else if self.generic_params.is_empty() && self.specializing.is_none() {
+        } else if self.specializing.is_none() {
             // GH #1963: an argument the checker gives no type pins
             // nothing, and lowering reads the type arguments from this
             // call's row, so a parameter only such an argument could
             // pin left the call a hole the build refused after a clean
             // check. Refused here, at the argument. (Inside a generic
             // template a use of its own parameter is typed `Unknown`
-            // too; that walk is not the one lowering reads, and is
-            // left alone.)
+            // too, so there only an argument that has no value whatever
+            // the parameters are is refused: a capacity slot, a printing
+            // builtin's call, a stdlib path without `std::`.)
+            let in_template = !self.generic_params.is_empty();
             for g in &template.generics {
                 if bindings.contains_key(&g.name.name) {
                     continue;
                 }
                 for ((p, at), a) in template.params.iter().zip(&arg_tys).zip(args) {
-                    if matches!(at, Ty::Unknown) && type_expr_mentions(&p.ty, &g.name.name) {
+                    if matches!(at, Ty::Unknown)
+                        && type_expr_mentions(&p.ty, &g.name.name)
+                        && (!in_template || self.valueless_whatever_the_parameters(a))
+                    {
                         let msg = self.untyped_generic_arg_message(shown, &g.name.name, a);
                         self.diags.push(Diag::ty(a.span(), msg));
                     }
@@ -25650,11 +25769,11 @@ impl<'a> Checker<'a> {
             let synthesized =
                 call.type_args.iter().find(|t| self.scalars.quantity(t).is_some_and(|q| q.synthesized));
             if let Some(t) = synthesized {
-                let shown = self.scalars.type_display(t);
+                let shown_ty = self.scalars.type_display(t);
                 self.unit_error(Diag::ty(
                     callee_span,
                     format!(
-                        "generic fn `{}`: `{shown}` is a denomination no declaration names, and a generic \
+                        "generic fn `{}`: `{shown_ty}` is a denomination no declaration names, and a generic \
                          argument is a declared type: bind the value to one first (`let x: T = …`)",
                         shown
                     ),
@@ -26876,6 +26995,39 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A diagnostic of the ordinary walk, or, in a walk of a generic body
+    /// for one of its monomorphs (whose diagnostics are dropped), one kept
+    /// for after every walk (`kept_specialization_diags`), once.
+    fn push_or_keep(&mut self, d: Diag) {
+        if self.specializing.is_none() {
+            self.diags.push(d);
+            return;
+        }
+        let dup = self.kept_specialization_diags.iter().any(|k| k.span == d.span && k.message == d.message);
+        if !dup {
+            self.kept_specialization_diags.push(d);
+        }
+    }
+
+    /// GH #1965: the template literals `value` is, or an array, array
+    /// repeat or tuple literal of them holds, are at a site that declares
+    /// their type: that site admits them or reports its own mismatch, and
+    /// lowering rewrites them there.
+    fn mark_declared_site(&mut self, value: &Expr) {
+        match value {
+            Expr::Struct { span, .. } => {
+                self.admitted_template_literals.insert((span.start.0, span.end.0));
+            }
+            Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
+                for p in parts {
+                    self.mark_declared_site(p);
+                }
+            }
+            Expr::ArrayRepeat { val, .. } => self.mark_declared_site(val),
+            _ => {}
+        }
+    }
+
     /// GH #1965: a literal spelled with a generic template's name that no
     /// site declaring its type admitted
     /// ([`Self::admit_monomorph_literal`]) and no site without one refused
@@ -26886,6 +27038,8 @@ impl<'a> Checker<'a> {
     /// after a clean check; the check refuses them at the literal, once the
     /// declaration's walk has seen every site that admits one.
     fn refuse_unadmitted_template_literals(&mut self) {
+        // (each walk of a generic body for a monomorph ends here too,
+        // `specialize_generic_bodies`)
         let literals = std::mem::take(&mut self.template_literals);
         let admitted = std::mem::take(&mut self.admitted_template_literals);
         for (key, (span, name)) in literals {
@@ -26895,7 +27049,7 @@ impl<'a> Checker<'a> {
             let Some(template) = self.generic_template_named(&Ty::Named(name)) else { continue };
             let name = template.name();
             let params: Vec<&str> = template.generics().iter().map(|g| g.name.name.as_str()).collect();
-            self.diags.push(Diag::ty(
+            self.push_or_keep(Diag::ty(
                 span,
                 format!(
                     "`{name}` is a generic {}: a literal spelled with the template name takes its type arguments \
@@ -27062,6 +27216,25 @@ impl<'a> Checker<'a> {
                 let want = template.generics().len();
                 if generic_args.len() == want {
                     self.check_generic_bounds(template.kind(), name, template.generics(), generic_args);
+                    // A generic `type` at a locus would hold the locus,
+                    // which a `type` cannot (`refuse_locus_in_type`); the
+                    // build refused the monomorph with no location.
+                    // (an argument that is the enclosing template's own
+                    // parameter is judged where a call binds it)
+                    if template.is_type() {
+                        for arg in generic_args {
+                            let own_param = matches!(arg, TypeExpr::Named { path, generic_args, .. }
+                                if generic_args.is_empty() && path.segments.len() == 1
+                                    && self.generic_params.iter().any(|g| *g == path.segments[0].name));
+                            if own_param {
+                                continue;
+                            }
+                            if let Some(locus) = self.locus_held_by(arg) {
+                                let d = Diag::ty(arg.span(), generic_type_at_locus_message(name, &locus));
+                                self.push_or_keep(d);
+                            }
+                        }
+                    }
                     return;
                 }
                 self.diags.push(Diag::ty(
@@ -28020,6 +28193,16 @@ fn accumulator_outside_closure(what: &str) -> String {
         "`{what}` is a closure assertion's accumulator (`closure c {{ sum(self.x) ~~ 0 within 10; epoch tick; }}`), \
          and is compiled only there. To add up an array, walk it (`for x in xs {{ total = total + x; }}`) or chain \
          it (`xs.map(it).sum()`)"
+    )
+}
+
+/// A generic `type` instantiated at a locus: the type would hold it.
+fn generic_type_at_locus_message(ty_name: &str, locus: &str) -> String {
+    format!(
+        "`{ty_name}<{locus}>` would make `type {ty_name}` hold the locus `{locus}`. A `type` is plain data with \
+         no lifecycle: it is copied by value, so it can neither own a locus nor keep one alive. Make `{ty_name}` \
+         a generic locus (`locus {ty_name}<T> {{ params {{ ... }} }}`), or pass the `{locus}` as a parameter where \
+         it is used"
     )
 }
 

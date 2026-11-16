@@ -1765,6 +1765,16 @@ or `perspective(P)` does (`let c = id(Counter { n: 3 });`,
 type (`id(c)` with `c: Job` in a `release(c: Job)`) is passed as that
 interface (GH #1975).
 
+A generic `type`'s argument is never a locus: `Box<L>` would make a
+`type` hold the locus `L`, and a `type` is plain data that can neither
+own a locus nor keep one alive (the rule a `type`'s field of a locus
+type follows). `hale check` refuses it at the argument of the
+annotation, and refuses a generic fn call that binds a parameter to a
+locus where the fn's signature instantiates a generic `type` at that
+parameter (`fn bx<T>(x: T) -> Box<T>` called with an `L`), at the
+callee; the build refused the monomorph with no location. A generic
+locus (`locus Box<T>`) holds one.
+
 An array, a tuple, a `bounded[T; N]` or a function type names no
 monomorph, so a generic fn call whose arguments would bind one is
 refused by `hale check` at the callee (GH #1942):
@@ -1798,6 +1808,7 @@ yet" and a way forward, never by the build after a passing check:
 | a generic fn named as a value (`let g = get;`) | the name | call it, or pass a fn over the concrete types that calls it |
 | a generic fn call whose parameter only an argument with no nameable type could pin (a capacity slot, a call with no value) | the argument | bind the value to a `let` that writes its type |
 | a literal spelled with a generic template's name where no declared type supplies its arguments | the literal | bind it to a `let` that writes them |
+| a generic `type` instantiated at a locus (`Box<L>`, or a generic fn's `-> Box<T>` called with an `L`) | the argument, or the callee | a generic locus, or pass the locus as a parameter |
 | an empty array literal `[]` anywhere but the value of a `let` that declares its type | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
 | a nested pattern inside a tuple pattern (`((1, 2), 3) ->`, `(E::A, 3) ->`) | the nested pattern | bind the part and match the binding (the rule a variant's pattern follows) |
 | a range index on anything but a `String` (`a[1..3]` of an array) | the index | copy the elements, `std::bytes::slice` for bytes |

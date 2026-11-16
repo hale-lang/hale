@@ -3600,9 +3600,10 @@ fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
 /// The parity gate's generics family (GH #1963, #1965, #1966, #1974,
 /// #1975, #1976), the half compiled: `or` over a generic fallible fn, a
 /// generic fn at a stdlib record's field, at a perspective, and at an
-/// interface whose value is the locus behind it (a `release`), and a
-/// bounded intrinsic over a generic fn's result. Each checks, builds and
-/// runs. (The seed-boundary half, GH #1964, is
+/// interface whose value is the locus behind it (a `release`), a
+/// bounded intrinsic over a generic fn's result, a specialization first
+/// reached inside a method's `return` of a record, and a bare `0`
+/// substituted for a Duration. Each checks, builds and runs. (The seed-boundary half, GH #1964, is
 /// `tests/hale/generics_parity_test.hl`, a two-seed program.)
 ///
 /// Plain string literals, for the reason given above.
@@ -3646,6 +3647,24 @@ fn the_generics_divergences_check_build_and_run() {
             "bounded_over_a_generic_result",
             "15\n",
         ),
+        (
+            // a specialization first reached inside a method's `return`
+            // of a record allocates through its own caller arena, not
+            // the method's return redirection (the parity sweep's crash)
+            "type Box<T> { v: T; }\n\
+             type Out { n: Int; }\n\
+             fn mk<T>(x: T) -> Box<T> { return Box { v: x }; }\n\
+             locus C { params { hits: Int = 4; } fn get() -> Out { return Out { n: mk(self.hits).v }; } }\n\
+             fn main() { let c = C { }; println(c.get().n); }\n",
+            "specialized_inside_a_methods_return",
+            "4\n",
+        ),
+        (
+            // a bare `0` is a quantity's zero, as the check admits it
+            "fn main() { let d = 1day / 4 or 0; println(d == 6h); }\n",
+            "zero_substitute_for_a_duration",
+            "true\n",
+        ),
     ];
     for (src, tag, want) in cases {
         let out = build_and_run_probe(src, &format!("generics_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
@@ -3656,9 +3675,10 @@ fn the_generics_divergences_check_build_and_run() {
 /// The parity gate's generics family, the half refused: a generic call's
 /// argument the check gives no type (GH #1963), a template literal no
 /// declared type supplies arguments to (GH #1965), an `or` on no call and
-/// a substitute of another type (GH #1966), and a generic fn named as a
-/// value (GH #1976). Each is refused by the check at the construct; the
-/// build is never reached.
+/// a substitute of another type (GH #1966), a generic fn named as a
+/// value (GH #1976), and a generic `type` at a locus (the parity sweep).
+/// Each is refused by the check at the construct; the build is never
+/// reached.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
@@ -3704,9 +3724,9 @@ fn the_generics_divergences_are_refused_by_the_check_not_the_build() {
                 "`Box` is a generic type",
             ),
             (
-                "type R { v: Int; }\n\
-                 fn main() { let r = R { v: 1 }; let n = r.v or 0; println(n); }\n",
-                "r.v",
+                "locus H { capacity { heap r of Int; } birth { let x = self.r or 0; } }\n\
+                 fn main() { H { }; }\n",
+                "self.r",
                 "`or` handles the failure of the call it follows, and this is a field read",
             ),
             (
@@ -3719,6 +3739,21 @@ fn the_generics_divergences_are_refused_by_the_check_not_the_build() {
                  fn main() { let g = get; println(g(1)); }\n",
                 "get",
                 "`get` is a generic fn, and a generic fn has no single type to be a value",
+            ),
+            (
+                "locus L { params { n: Int = 1; } }\n\
+                 type Box<T> { v: T; }\n\
+                 fn main() { let b: Box<L> = Box { v: L { } }; }\n",
+                "L",
+                "`Box<L>` would make `type Box` hold the locus `L`",
+            ),
+            (
+                "locus L { params { n: Int = 1; } }\n\
+                 type Box<T> { v: T; }\n\
+                 fn bx<T>(x: T) -> Box<T> { return Box { v: x }; }\n\
+                 fn main() { let a = bx(L { }).v; }\n",
+                "bx",
+                "generic fn `bx`: this call makes `T` the locus `L`, and its signature's `Box<T>` would be a `type` holding it",
             ),
         ],
         "generics_gap",

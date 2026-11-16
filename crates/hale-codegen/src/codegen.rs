@@ -16544,6 +16544,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
             let saved_loops = std::mem::take(&mut self.loops);
+            // The caller's arena redirection (a method's `return` of a
+            // record, a locus instantiation's field init) and its fused
+            // return slot are its own: a specialization first reached
+            // inside one (`return Out { n: mk(x).v };` in a method)
+            // allocated its result through the caller's
+            // `method.caller_arena.for_return`, an instruction of another
+            // function (LLVM: "Instruction does not dominate all uses",
+            // a crash where the verifier is not run).
+            let saved_arena_override = self.current_arena_override.take();
+            let saved_fused_dest = self.fused_dest.take();
             // DWARF: synthesis fires MID-STATEMENT while lowering
             // the caller — the caller's active location must not
             // leak into the synthesized fn's entry allocas
@@ -16590,6 +16600,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.in_main = saved_in_main;
             self.current_self = saved_current_self;
             self.loops = saved_loops;
+            self.current_arena_override = saved_arena_override;
+            self.fused_dest = saved_fused_dest;
         }
         Ok(mangled)
     }
