@@ -30,12 +30,15 @@ pub fn host_name_ok(h: &str) -> bool {
         && h.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-/// What a seed the fleet imports declares under a name, read from that
-/// seed's own files.
+/// What a name the fleet seed spells through its imports declares, read
+/// from the declaring seed's own files.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Imported {
-    /// Its `main locus`: what an instance runs.
-    Main,
+    /// Its seed's `main locus`: what an instance runs. `seed` names the
+    /// seed that declares it (the resolver's key): the alias's own, or,
+    /// for a name it re-exports, the seed its import list names it from
+    /// (GH #1987).
+    Main { seed: String },
     /// Another locus.
     Locus,
     /// A topic, with its declared `subject:` if it has one.
@@ -61,8 +64,11 @@ pub struct FleetInstance {
     /// replicas' ids, and the label its claims group it by.
     pub param: String,
     /// The import alias the param's type is spelled through (`oms` in
-    /// `oms::Oms`): which seed the instance is built from.
+    /// `oms::Oms`), or the bare name an import list brings in.
     pub alias: String,
+    /// The seed the instance is built from, the one that declares its
+    /// main (the resolver's key, [`Imported::Main`]).
+    pub seed: String,
     /// The main locus as its importer spells it (`oms::Oms`).
     pub main: String,
     /// The hosts its placement names, one instance on each; empty when
@@ -114,12 +120,14 @@ pub enum FleetClaim {
 
 /// The fleet the seed's own programs declare, judged: `None` with the
 /// diagnostics of every law it breaks, or the fleet as resolved source.
-/// `resolve(alias, name)` answers what the seed imported as `alias`
-/// declares as `name`. `None` and no diagnostics when the seed declares
-/// no fleet.
+/// `resolve(path)` answers what a name the seed spells through its
+/// imports declares: `alias::Name`, or a bare `Name` an import list
+/// brings in, each through the compiler's rename and re-export rows
+/// (GH #1987). `None` and no diagnostics when the seed declares no
+/// fleet.
 pub fn fleet_source(
     own: &[&Program],
-    resolve: &dyn Fn(&str, &str) -> Option<Imported>,
+    resolve: &dyn Fn(&[&str]) -> Option<Imported>,
 ) -> (Option<FleetSource>, Vec<Diag>) {
     let all: Vec<&FleetDecl> = own
         .iter()
@@ -208,14 +216,12 @@ pub fn fleet_source(
             None => "no type".to_string(),
         };
         let span = p.ty.as_ref().map(|t| t.span()).unwrap_or(p.name.span);
-        let resolved = match path.as_slice() {
-            [alias, name] => resolve(alias, name),
-            _ => None,
-        };
+        let resolved = if path.is_empty() { None } else { resolve(&path) };
         match resolved {
-            Some(Imported::Main) => instances.push(FleetInstance {
+            Some(Imported::Main { seed }) => instances.push(FleetInstance {
                 param: p.name.name.clone(),
                 alias: path[0].to_string(),
+                seed,
                 main: spelled.clone(),
                 hosts: Vec::new(),
                 replicas: 1,
@@ -232,7 +238,8 @@ pub fn fleet_source(
                 span,
                 format!(
                     "fleet param `{}` names `{}`, which no import declares: a fleet's instances \
-                     are other seeds' mains, named through the seed's import (`alias::Main`)",
+                     are other seeds' mains, named through the seed's import (`alias::Main`, or \
+                     `Main` from an import list)",
                     p.name.name, spelled
                 ),
             )),
@@ -300,8 +307,8 @@ pub fn fleet_source(
     // A topic the fleet names, through an import: its wire subject (the
     // declared `subject:`) and whether it declares one.
     let subject_of = |name: &str| -> Option<(String, Option<String>)> {
-        let (alias, topic) = name.split_once("::")?;
-        match resolve(alias, topic) {
+        let segs: Vec<&str> = name.split("::").collect();
+        match resolve(&segs) {
             Some(Imported::Topic { subject }) => {
                 Some((subject.clone().unwrap_or_else(|| name.to_string()), subject))
             }

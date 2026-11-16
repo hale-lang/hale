@@ -108,6 +108,8 @@ A type argument is a primitive or a declared type: a record, an enum, an alias, 
 
 A call takes each type argument from the argument in the position that names it. A generic fn from an imported seed is called through its alias (`lib::id(3)`), and a generic `fallible(E)` fn is addressed with `or` like any fallible call (`parse(s) or 0`). An argument whose type the compiler can't name pins nothing, so `hale check` refuses `id(self.slot)` (a capacity slot is used through its operations) and `id(println("x"))` (no value) at the argument. A generic fn has no single type, so its name is not a value: `let g = id;` is refused; call it, or pass a fn written over the concrete types that calls it.
 
+A generic function that returns a generic type of its parameter (`fn box_of<T>(x: T) -> Box<T>`) returns, at each call, the instantiation its arguments name: `box_of(7)` is a `Box<Int>`, so `box_of(7).v` is an `Int` and is checked as one.
+
 When a generic locus (such as `Holder<T>`) calls a generic function with `self.value` (or a local bound from `self.value`), the compiler monomorphizes the call for each concrete instantiation (`Holder<Int>`, `Holder<String>`). Default expressions in `params` use the declaring locus's type arguments.
 
 ## Function Pointers (`fn(T) -> U`)

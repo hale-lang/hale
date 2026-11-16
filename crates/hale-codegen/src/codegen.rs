@@ -18175,10 +18175,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         loc: inkwell::debug_info::DILocation<'ctx>,
     ) {
         use inkwell::debug_info::{AsDIScope, DIFlagsConstants};
-        let Some(cur_bb) = self.builder.get_insert_block() else {
+        // The fn the alloca is in, not the builder's: a monomorph
+        // lowered on demand from another fn's call site (a generic fn
+        // whose name opts out of debug info, `__box<T>`) declared its
+        // params under the CALLER's subprogram, and LLVM's DWARF
+        // finalization crashed on the stray scope.
+        let Some(func) = alloca
+            .as_instruction()
+            .and_then(|i| i.get_parent())
+            .or_else(|| self.builder.get_insert_block())
+            .and_then(|bb| bb.get_parent())
+        else {
             return;
         };
-        let Some(func) = cur_bb.get_parent() else { return };
         let Some(sp) = func.get_subprogram() else { return };
         let Some(ditype) = self.di_type_for(ty) else { return };
         let Some(di) = self.di.as_ref() else { return };

@@ -670,6 +670,7 @@ fn check_numbered_bundle(
         &walk.record.mono_shapes,
         &intra_locus,
         top,
+        &walk.record.checked_calls(),
     ));
     let rows = std::cell::OnceCell::new();
     let effects = || {
@@ -1266,6 +1267,7 @@ fn walk_bundle(
         params_default: None,
         in_accept_params: false,
         callee_position: false,
+        cursor_anchor: None,
         this_is_callee: false,
         callee_unshadowed: false,
         current_locus: None,
@@ -11360,6 +11362,12 @@ struct Checker<'a> {
     /// (read by the field arm) the one it is walking is.
     callee_position: bool,
     this_is_callee: bool,
+    /// The callee `check_expr` walks next is an element chain's cursor
+    /// (`src.get(__hale_chain_i3_items)`) whose source was anchored on
+    /// this pseudo-field (`hale_syntax::chains::cursor_anchor`): read by
+    /// the field arm, which walks a real field of the anchor's name where
+    /// the receiver has no accessor of its own (GH #1984).
+    cursor_anchor: Option<&'static str>,
     /// The identifier `check_ident_expr` is typing is a bare callee the
     /// shadowing desugar left as written: it names the program's fn or
     /// builtin, whatever binding of the name is in scope.
@@ -19312,6 +19320,45 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #1984: the callee at `callee` reads an element of a value of
+    /// `collection`: when that is a `bounded[T; N]` or a fixed array, the
+    /// call is the collection's own cursor, recorded for the allocation
+    /// summary's walk, which cannot type the receiver itself.
+    fn note_cursor(&mut self, collection: &Ty, callee: Span) {
+        if self.specializing.is_some() {
+            return;
+        }
+        if matches!(self.through_aliases(collection.clone()), Ty::Bounded(..) | Ty::Array(..)) {
+            self.typed.cursor(self.body, callee);
+        }
+    }
+
+    /// GH #1978: a generic fn's declared result at one call, its
+    /// parameters bound by the call: an application of them (`Box<T>`)
+    /// is the monomorph its arguments name (`Box_Blob`), recorded in the
+    /// table with the rows its fields instantiate, as lowering builds it,
+    /// so the call's value, and a field read of it, type as the
+    /// substituted template. The substitution alone kept the template's
+    /// unbound view, `Unknown`, which took anything: a record no f-string
+    /// renders, a scale-less Decimal beside a `Decimal<4>`. An argument
+    /// the call leaves unknown keeps that view.
+    fn instantiated_ty(&mut self, te: &TypeExpr, bindings: &BTreeMap<String, Ty>) -> Ty {
+        let mut rows = Vec::new();
+        if let Some(row) = self.templates.instantiation(te, self.known, bindings, &mut rows) {
+            rows.push(row);
+            if rows.iter().all(|r| !r.args.iter().any(|t| matches!(t, Ty::Unknown))) {
+                let name = rows.last().map(|r| r.name.clone()).expect("pushed above");
+                let from = self.typed.monomorphs.rows().len();
+                for row in rows {
+                    self.typed.monomorphs.insert(row);
+                }
+                self.templates.close_over_fields(self.known, &mut self.typed.monomorphs, from);
+                return Ty::Named(name);
+            }
+        }
+        substitute_generic_ty(te, bindings, self.known)
+    }
+
     /// A template field's declared type in one of its monomorphs: the
     /// template's parameters substituted, and an application of them
     /// (`Holder<T>`) the row it names (`Holder_Signer`), which the table
@@ -24140,18 +24187,33 @@ impl<'a> Checker<'a> {
                 // enum's named type; each arg is held to the
                 // variant's declared field type.
                 if let Expr::Path(qn) = callee.as_ref() {
-                    if qn.segments.len() == 2 {
+                    // GH #1986: an imported seed's enum through its
+                    // qualified path (`lib::E::V(..)`) is the enum the
+                    // merge names it by, held to its variant as the bare
+                    // spelling is; the build resolves it so and refused
+                    // what the check let through, unlocated.
+                    let qualified = (qn.segments.len() >= 3)
+                        .then(|| {
+                            let segs: Vec<&str> = qn.segments[..qn.segments.len() - 1].iter().map(|s| s.name.as_str()).collect();
+                            let mangled = self.known.import_target(&segs.join("::"))?;
+                            Some((mangled.to_string(), segs.join("::")))
+                        })
+                        .flatten();
+                    let named = match (qn.segments.len(), qualified) {
+                        (2, _) => Some((qn.segments[0].name.clone(), qn.segments[0].name.clone())),
+                        (_, Some(q)) => Some(q),
+                        _ => None,
+                    };
+                    if let Some((enum_name, shown)) = named {
                         // GH #831: through an alias of the enum too,
                         // exactly as the payload-less form above.
-                        let enum_name = &qn.segments[0].name;
-                        let variant_name = &qn.segments[1].name;
+                        let variant_name = &qn.segments[qn.segments.len() - 1].name;
                         if let Some(TopSymbol::Type(TypeInfo {
                             kind: TypeKind::Enum(variants),
                             ..
-                        })) = self.top.symbols.get(enum_name)
+                        })) = self.top.symbols.get(&enum_name)
                         {
                             if let Some(variant) = variants.iter().find(|v| v.name == *variant_name) {
-                                let enum_name = enum_name.clone();
                                 let variant_name = variant_name.clone();
                                 let fields = variant.fields.clone();
                                 // A variant carries its declared values:
@@ -24166,7 +24228,7 @@ impl<'a> Checker<'a> {
                                     self.diags.push(Diag::ty(
                                         *call_span,
                                         format!(
-                                            "`{enum_name}::{variant_name}` carries {} value{}, and this passes {}",
+                                            "`{shown}::{variant_name}` carries {} value{}, and this passes {}",
                                             fields.len(),
                                             if fields.len() == 1 { "" } else { "s" },
                                             args.len()
@@ -24192,7 +24254,7 @@ impl<'a> Checker<'a> {
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
-                                                "`{enum_name}::{variant_name}` value {i}: expected `{}`, got `{}`",
+                                                "`{shown}::{variant_name}` value {i}: expected `{}`, got `{}`",
                                                 want.display(),
                                                 got.display()
                                             ),
@@ -24280,6 +24342,7 @@ impl<'a> Checker<'a> {
                     other => {
                         self.view_callee_node = other as *const Expr as usize;
                         self.callee_position = true;
+                        self.cursor_anchor = hale_syntax::chains::cursor_anchor(args);
                         self.check_expr(other)
                     }
                 };
@@ -24732,6 +24795,7 @@ impl<'a> Checker<'a> {
             }
             Expr::Field { receiver, name, span } => {
                 let is_callee = std::mem::take(&mut self.this_is_callee);
+                let cursor_anchor = std::mem::take(&mut self.cursor_anchor);
                 // F.11 entity-collection sugar: `self.children.count`
                 // (Int) and `self.children.is_empty` (Bool) read the
                 // accept'd-child tracker's live count. `self.children`
@@ -24841,6 +24905,13 @@ impl<'a> Checker<'a> {
                         if !is_callee {
                             self.refuse_method_value(&rt, name);
                         }
+                        // GH #1984: a collection's element cursor (an
+                        // element chain's `src.get(i)`), whatever the
+                        // collection is and however it is reached: by
+                        // its type, the collection's own `at`.
+                        if is_callee && matches!(name.name.as_str(), "get" | "entry_at") {
+                            self.note_cursor(&rt, *span);
+                        }
                         // STABILITY.md § Deprecation: a call of a
                         // deprecated stdlib method warns, at the call
                         // (`deprecations::DEPRECATED_METHODS`).
@@ -24852,6 +24923,23 @@ impl<'a> Checker<'a> {
                         t
                     }
                     None => {
+                        // GH #1984: a chain anchored on `.items` /
+                        // `.entries` whose receiver is no form but has a
+                        // real field of that name (`b.items` of a record,
+                        // `self.items` of a locus param): the desugar
+                        // stripped the field as if it were the form's
+                        // pseudo-field, so the cursor walks the field.
+                        // A collection's cursor is its `get`, whichever
+                        // pseudo-field anchored the chain.
+                        if let Some(anchor) = cursor_anchor.filter(|_| is_callee) {
+                            if let Some(ft) = self.field_ty(&rt, anchor) {
+                                let accessor = if self.field_ty(&ft, &name.name).is_some() { name.name.as_str() } else { "get" };
+                                if let Some(t) = self.field_ty(&ft, accessor) {
+                                    self.note_cursor(&ft, *span);
+                                    return t;
+                                }
+                            }
+                        }
                         // F.22: `self.<slot>` references a capacity
                         // slot, not a field. Slots don't have a
                         // value-level type the typechecker reasons
@@ -26146,20 +26234,14 @@ impl<'a> Checker<'a> {
                 ));
             }
         }
+        // GH #1978: an application of the parameters is the monomorph the
+        // call's arguments name.
         let ret = match &template.ret {
-            Some(te) => substitute_generic_ty(
-                te,
-                &bindings,
-                self.known,
-            ),
+            Some(te) => self.instantiated_ty(te, &bindings),
             None => Ty::Unit,
         };
         if let Some(fe) = &template.fallible {
-            let payload = substitute_generic_ty(
-                fe,
-                &bindings,
-                self.known,
-            );
+            let payload = self.instantiated_ty(fe, &bindings);
             return Ty::Fallible {
                 success: Box::new(ret),
                 payload: Box::new(payload),
@@ -27512,13 +27594,23 @@ impl<'a> Checker<'a> {
                 for arg in generic_args {
                     self.check_generic_arity(arg);
                 }
-                if path.segments.len() != 1 || generic_args.is_empty() {
+                if generic_args.is_empty() {
                     return;
                 }
-                let name = &path.segments[0].name;
-                let Some(template) =
-                    self.generic_template_named(&Ty::Named(name.clone()))
-                else {
+                // GH #1986: an imported seed's template through its
+                // qualified path (`lib::Box<Int, String>`) is the one the
+                // merge names it by, held to its parameter count as the
+                // bare spelling is.
+                let written: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                let (key, shown) = match written.as_slice() {
+                    [one] => (one.to_string(), one.to_string()),
+                    _ => match self.known.import_target(&written.join("::")) {
+                        Some(m) => (m.to_string(), written.join("::")),
+                        None => return,
+                    },
+                };
+                let name = &shown;
+                let Some(template) = self.generic_template_named(&Ty::Named(key)) else {
                     return;
                 };
                 let want = template.generics().len();

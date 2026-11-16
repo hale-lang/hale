@@ -247,7 +247,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 33] = [
+const CALL_LINES_ONLY: [(&str, usize); 34] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -276,6 +276,10 @@ const CALL_LINES_ONLY: [(&str, usize); 33] = [
     ("tests/hale/bytes_writer_offset_test.hl", 4),
     // GH #1942's test of the shapes now compiled: the BytesBuilder's
     // stdlib methods only the renames name
+    // GH #1984: each element cursor over a `bounded` or array field (22:
+    // one per chain, three for `max`, two for `find`) is the collection's
+    // `at`, which only the check's typing names
+    ("tests/hale/chains_field_anchor_test.hl", 22),
     ("tests/hale/codegen_gaps_test.hl", 10),
     // the incremental SHA-256's test: the `Sha256` locus is appended to
     // the program that names it, so only the two native calls of its
@@ -311,7 +315,9 @@ const CALL_LINES_ONLY: [(&str, usize); 33] = [
     ("tests/hale/json_unicode_escapes_test.hl", 16),
     ("tests/hale/json_valid_test.hl", 27),
     ("tests/hale/log_fields_test.hl", 6),
-    ("tests/hale/raise_conversion_test.hl", 1),
+    // 4 more (GH #1982): each `or raise` a `@raise` fn converts is the
+    // call `conv(err)` it lowers to, one call line per conversion
+    ("tests/hale/raise_conversion_test.hl", 5),
     ("tests/hale/rand_rng_test.hl", 12),
     ("tests/hale/secret_write_private_test.hl", 10),
     ("tests/hale/std_secret_test.hl", 8),

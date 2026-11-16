@@ -5,5 +5,3 @@
 // lines. A divergence whose signature is not here fails the gate; so does
 // a listed reproducer that builds (or that the check refuses) again.
 // Delete a line, and its reproducer, with the fix that closes it.
-#1978 | generic_return_decimal_scale.repro | hale can't compile this yet: binary op operands of mixed types T<#> and T
-#1978 | generic_return_fstring.repro | hale can't compile this yet: `_` not supported for type T
