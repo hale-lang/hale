@@ -650,7 +650,7 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
         TypeDeclBody::Alias(a) => ty(a, f),
         TypeDeclBody::Struct(fields) => {
             for sf in fields {
-                let StructField { name: n, ty: t, default, tag, indexed_by, map_value, span: _ } = sf;
+                let StructField { name: n, ty: t, default, tag, indexed_by, map_value, optional: _, span: _ } = sf;
                 name(n, f);
                 opt_name(indexed_by, f);
                 opt_name(map_value, f);

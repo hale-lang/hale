@@ -31,7 +31,8 @@ fn check_app() -> String {
     let app = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/hot-factory-app");
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .arg("check")
+        // The hot-path advisory is asked for (GH #1948).
+        .args(["check", "--warn-hot-path"])
         .arg(&app)
         .output()
         .expect("run hale check");

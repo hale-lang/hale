@@ -25,6 +25,7 @@ This chapter provides a quick-reference cheat sheet of Hale's syntax, decorators
 | `constitution Name [extends Base] { ... }` | Reusable set of architectural `claims` |
 | `dimension` / `unit` / `scale` / `quantity` | Compile-time dimensional analysis and unit types |
 | `import "path/to/seed" as alias;` | Cross-seed library import |
+| `import "path/to/seed" as alias { Name, Other as Mine };` | Import list: the names bare in this seed, re-exported as `alias::Name` |
 
 ### Decorator Reference
 
@@ -38,6 +39,7 @@ This chapter provides a quick-reference cheat sheet of Hale's syntax, decorators
 | `@phase_effects(birth: {...}, run: {...})` | `locus` | Restricts which effect classes each lifecycle phase may reach |
 | `@effects(none\|only\|is\|publish\|causes\|depends: {...})` | `fn` | Declares or restricts transitive side effects |
 | `@no_syscall` / `@no_block` / `@deterministic` / `@no_ffi` / `@no_publish` / `@no_spawn` / `@no_recursion` / `@no_panic` | `fn` | Shorthand effect restrictions |
+| `@raise` | free `fn` | Declares the conversion `or raise` applies from its one parameter's error type to its result's (`@raise fn conv(e: P) -> E`); makes no syscall, publish, spawn or block |
 | `@hot` | `fn` | Promotes hot-path allocation advisories inside the function to errors |
 | `@budget(alloc_per_call = N)` | `fn` | Hard compile-time ceiling on arena allocations per call (`0` = zero-alloc) |
 | `@bounded_by(input_name)` | `fn` / hook | Documents external input bounding an allocation loop; silences unbounded-alloc advisory |

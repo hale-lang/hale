@@ -853,6 +853,16 @@ fn effect_report_three_way_over(
             }
         }
     }
+    // GH #1951 (item 2): the free fns written `@raise`, whose assertion
+    // is the one `@raise` implies; its violations say so.
+    let raise_fns: std::collections::BTreeSet<&str> = programs
+        .iter()
+        .flat_map(|p| p.items.iter())
+        .filter_map(|item| match item {
+            TopDecl::Fn(fd) if crate::raise_conversion::is_raise_fn(fd) => Some(fd.name.name.as_str()),
+            _ => None,
+        })
+        .collect();
     let p1_len = sink.len();
     for (key, asserts, span) in &roots {
         for a in asserts {
@@ -867,6 +877,19 @@ fn effect_report_three_way_over(
                             summary, key, *span, *c, &ffi, table,
                             &mut sink,
                         );
+                        if key.locus.is_none() && raise_fns.contains(key.fn_name.as_str()) {
+                            let plain = format!("effect assertion violated: `{}` must not reach", key.display());
+                            for d in sink.diags.iter_mut().skip(before) {
+                                if let Some(rest) = d.message.strip_prefix(&plain) {
+                                    d.message = format!(
+                                        "effect assertion violated: `{}` is a `@raise` fn, which runs where an \
+                                         `or raise` hands an error on, so it makes no syscall, publishes nothing, \
+                                         spawns nothing and never blocks; it must not reach{rest}",
+                                        key.display()
+                                    );
+                                }
+                            }
+                        }
                         ranges.push((rows.len(), before, sink.len()));
                         rows.push(LoweredCertificate {
                             subject: key.display(),

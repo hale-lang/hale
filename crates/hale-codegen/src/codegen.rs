@@ -816,10 +816,45 @@ pub const CANT_COMPILE_YET: &str = "hale can't compile this yet";
 
 /// Whether a declaration (or the LLVM function lowered for one) named
 /// `name` is the Hale-source stdlib's: a merged `__…` name that is not an
-/// imported seed's (`__lib_…`, real user code at real file bases). The
-/// test the debug-location pass makes (`di_enter_stmt`).
+/// imported seed's (`__lib_…`, real user code at real file bases), and
+/// that one of the stdlib's own declarations is called, or that names a
+/// function lowered for one (`<decl>.<member>`, `<decl>_<suffix>`). A
+/// program's own `__…` declaration is not the stdlib's: its refusals were
+/// rendered as positions in the stdlib (GH #1969, #1971, reached through
+/// the parity gate's `__pg_…` declarations).
 pub(crate) fn stdlib_named(name: &str) -> bool {
-    name.starts_with("__") && !name.starts_with("__lib_")
+    if !name.starts_with("__") || name.starts_with("__lib_") {
+        return false;
+    }
+    let decls = stdlib_decl_names();
+    // No stdlib to compare with (it failed to parse, which is reported
+    // where it is merged): every `__…` name is taken as the stdlib's, as
+    // before.
+    if decls.is_empty() {
+        return true;
+    }
+    decls.contains(name)
+        || name.char_indices().any(|(i, c)| matches!(c, '.' | '_' | '$') && i > 2 && decls.contains(&name[..i]))
+}
+
+/// The names the bundled stdlib's declarations carry, modules' included.
+fn stdlib_decl_names() -> &'static std::collections::HashSet<String> {
+    static NAMES: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        use hale_syntax::ast::TopDecl;
+        let Ok(stdlib) = hale_types::desugar_sequence::bundled_stdlib() else { return Default::default() };
+        hale_syntax::ast::flat_decls(&stdlib.items)
+            .filter_map(|d| match d {
+                TopDecl::Fn(f) => Some(f.name.name.clone()),
+                TopDecl::Locus(l) => Some(l.name.name.clone()),
+                TopDecl::Type(t) => Some(t.name.name.clone()),
+                TopDecl::Perspective(p) => Some(p.name.name.clone()),
+                TopDecl::Const(c) => Some(c.name.name.clone()),
+                TopDecl::Interface(i) => Some(i.name.name.clone()),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 /// The place a locus member names: its name where it has one, else the
@@ -4798,7 +4833,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// resulting specialized FunctionValue lands in `user_fns`
     /// keyed by mangled name, so subsequent calls with the same
     /// type args resolve directly.
-    generic_fn_templates: BTreeMap<String, FnDecl>,
+    pub(crate) generic_fn_templates: BTreeMap<String, FnDecl>,
     /// m63: generic locus templates indexed by name. Populated
     /// from LocusDecls with non-empty generics. Unlike generic
     /// fns (which synthesize on-demand at call sites), generic
@@ -6626,6 +6661,11 @@ pub(crate) struct TypeInfo<'ctx> {
     /// The expression is evaluated at instantiation time in the
     /// caller's scope, same as locus-param non-literal defaults.
     pub(crate) defaults: BTreeMap<String, Expr>,
+    /// GH #1951 item 3 (F.52): each declared optional field (`x?: T`) →
+    /// the flag a write of it sets (`has_x`) and the one it clears
+    /// (`clear_x`, for `clearable`). A hand-written pair is not here: its
+    /// flag is written by hand.
+    pub(crate) optional: BTreeMap<String, (String, Option<String>)>,
 }
 
 /// An array or a tuple of loci a locus holds as a field, as an element
@@ -6733,6 +6773,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
         self.mangled_for_path(&refs)
+    }
+
+    /// The generic fn template a callee names: a bare name, or an
+    /// imported seed's path (`lib::id`), by its name in the merged
+    /// program.
+    pub(crate) fn generic_template_of_callee(&self, callee: &Expr) -> Option<String> {
+        match callee {
+            Expr::Ident(i) if self.generic_fn_templates.contains_key(&i.name) && !self.user_fns.contains_key(&i.name) => {
+                Some(i.name.clone())
+            }
+            Expr::Path(qn) => self.imported_generic_template(qn),
+            _ => None,
+        }
+    }
+
+    /// GH #1964: the generic fn template an imported seed's path names
+    /// (`lib::id`), by its name in the merged program.
+    pub(crate) fn imported_generic_template(&self, qn: &QualifiedName) -> Option<String> {
+        if qn.segments.len() < 2 {
+            return None;
+        }
+        let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+        self.mangled_for_path(&segs).filter(|m| self.generic_fn_templates.contains_key(m) && !self.user_fns.contains_key(m))
     }
 
     pub(crate) fn mangled_for_path(&self, segs: &[&str]) -> Option<String> {
@@ -13307,6 +13370,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     fields,
                     field_order: t.fields.iter().map(|(n, _)| n.to_string()).collect(),
                     defaults: BTreeMap::new(),
+                    optional: BTreeMap::new(),
                 },
             );
         }
@@ -13483,7 +13547,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `TypeExpr` per the supplied substitution map. Recurses into
     /// generic args, array elems, tuple parts, etc., so a body
     /// like `[T; 4]` substitutes to `[Int; 4]` correctly.
-    fn substitute_type_expr(
+    pub(crate) fn substitute_type_expr(
         expr: &TypeExpr,
         subst: &BTreeMap<String, TypeExpr>,
     ) -> TypeExpr {
@@ -13780,7 +13844,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// arguments. An argument lowering cannot name a specialization for
     /// (m62 v0.1: primitives and named types) is refused as it always
     /// was; a hole, or a call the table holds no row for, at the call.
-    fn generic_call_instance(
+    pub(crate) fn generic_call_instance(
         &self,
         name: &str,
         call: hale_syntax::ast::NodeId,
@@ -13857,21 +13921,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         use hale_types::ty::Ty;
         let span = hale_syntax::span::Span::new(0, 0);
         match t {
-            Ty::Prim(
-                p @ (PrimType::Int
-                | PrimType::Float
-                | PrimType::Bool
-                | PrimType::String
-                | PrimType::Duration
-                | PrimType::Decimal(_)
-                | PrimType::Time),
-            ) => Ok(TypeExpr::Primitive(*p, span)),
+            // Every primitive a monomorph can be named for (the checker's
+            // and the mangler's one table, `GENERIC_ARG_PRIMS`).
+            Ty::Prim(p) if hale_types::ty::generic_arg_mangle_token(*p).is_some() => {
+                Ok(TypeExpr::Primitive(*p, span))
+            }
             // An identity, a range or a quantity (GH #1076) is a name
             // the alias table lowers as its `Int`.
+            // A locus or an interface is a name too (GH #1942): the
+            // specialization takes and hands back the handle, as a fn
+            // declared over the locus or interface by name does.
             Ty::Named(n)
                 if self.user_types.contains_key(n)
                     || self.user_enums.contains_key(n)
-                    || self.user_type_aliases.contains_key(n) =>
+                    || self.user_type_aliases.contains_key(n)
+                    || self.user_loci.contains_key(n)
+                    || self.pending_locus_names.contains(n)
+                    || self.user_interfaces.contains(n) =>
             {
                 Ok(TypeExpr::Named {
                     path: QualifiedName { segments: vec![Ident::new(n.clone(), span)], span },
@@ -13879,9 +13945,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     span,
                 })
             }
+            // A perspective (GH #1974): the specialization takes and hands
+            // back the `perspective(P)` handle, as a fn declared over
+            // `perspective(P)` does.
+            Ty::Named(n)
+                if hale_syntax::ast::flat_decls(&self.program.items)
+                    .any(|d| matches!(d, TopDecl::Perspective(p) if p.name.name == *n)) =>
+            {
+                Ok(TypeExpr::Perspective { name: Ident::new(n.clone(), span), span })
+            }
+            // The check refuses a generic call whose argument names no
+            // monomorph (an array, a tuple, a fn type), at the call
+            // (`refuse_unnameable_generic_args`); this is that rule for a
+            // caller that skips the check.
             other => Err(CodegenError::Unsupported(format!(
-                "generic type argument `{}` not supported (m62 v0.1 limits \
-                 inference to primitives + named types as generic args)",
+                "a generic fn specialized at `{}`: a generic argument is a primitive or a declared type",
                 other.display()
             ))),
         }
@@ -14531,6 +14609,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         tag: f.tag.clone(),
                         indexed_by: f.indexed_by.clone(),
                         map_value: f.map_value.clone(),
+                        optional: f.optional,
                         span: f.span.clone(),
                     })
                     .collect();
@@ -14721,13 +14800,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.bool_type().fn_type(&llvm_param_tys, false)
         } else {
             match &ret_ty {
-                Some(CodegenTy::Bounded(_, _)) => {
-                    return Err(CodegenError::Unsupported(
-                        "bounded[T; N] cannot be returned by value — it \
-                         lives inline in its containing type"
-                            .into(),
-                    ));
-                }
+                // GH #1951: a bounded list is returned as a record is, a
+                // pointer to its storage in the caller's arena.
+                Some(CodegenTy::Bounded(_, _)) => self
+                    .context
+                    .ptr_type(AddressSpace::default())
+                    .fn_type(&llvm_param_tys, false),
                 Some(CodegenTy::Int) | Some(CodegenTy::Duration) | Some(CodegenTy::Time) => self
                     .context
                     .i64_type()
@@ -15937,7 +16015,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_load(llvm_ret_ty, ret_alloca, "fn.ret.load")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 returned_locus = self.returned_locus_ptr(ret_ty, raw_ret)?;
-                if sig.non_allocating {
+                // GH #1951: a returned bounded list is the caller's own,
+                // copied out of whatever it was read from.
+                if sig.non_allocating && !matches!(ret_ty, CodegenTy::Bounded(..)) {
                     Some(raw_ret)
                 } else {
                     let dest_arena = self
@@ -16315,7 +16395,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // has a dedicated live-slot loop (never load the field as
         // a single pointer).
         if let CodegenTy::Bounded(elem, _) = ty {
-            return Self::bounded_elem_is_ptr(elem);
+            return self.bounded_elem_is_ptr(elem);
         }
         !matches!(
             ty,
@@ -16394,18 +16474,84 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for a in args {
             arg_pairs.push(self.lower_expr(a, scope)?);
         }
+        let mangled = self.generic_fn_instance(name, call, call_span, args.len())?;
+
+        // Emit the call manually using the pre-lowered args (so
+        // we don't lower them twice). Mirrors lower_user_fn_call's
+        // call-emit tail but without the inline arg lowering.
+        let sig = self
+            .user_fns
+            .get(&mangled)
+            .cloned()
+            .expect("specialized fn was just declared");
+        let caller_arena = self.call_site_arena(args, scope)?;
+        let mut llvm_args: Vec<BasicMetadataValueEnum> =
+            Vec::with_capacity(sig.params.len() + 1);
+        llvm_args.push(caller_arena.into());
+        for (i, (val, ty)) in arg_pairs.iter().enumerate() {
+            let val = if view_coerces_to(ty, &sig.params[i]) {
+                // F.30b (5a): unpack view + epoch check at
+                // monomorphized generic-fn arg site.
+                self.unpack_view_if_needed(*val, ty)?
+            } else if let (CodegenTy::Interface(iface), CodegenTy::LocusRef(l)) = (&sig.params[i], ty) {
+                // GH #1975: a locus where the specialization takes the
+                // interface it is held as (`id(c)` with `c: Job` bound
+                // to a `Big`): the fat pointer, as at any fn's argument.
+                self.coerce_to_interface(val.into_pointer_value(), l, iface)?.into()
+            } else if ty != &sig.params[i] {
+                return Err(CodegenError::Unsupported(format!(
+                    "generic fn `{}` arg {} type mismatch after \
+                     monomorphization: expected {}, got {}",
+                    mangled, i, sig.params[i], ty
+                )));
+            } else {
+                *val
+            };
+            llvm_args.push(val.into());
+        }
+        let call = self
+            .builder
+            .build_call(
+                sig.func,
+                &llvm_args,
+                &format!("{}.call", mangled),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        match sig.ret {
+            None => Ok(None),
+            Some(lt) => {
+                let v = call
+                    .try_as_basic_value()
+                    .left()
+                    .expect("non-void fn returns a basic value");
+                Ok(Some((v, lt)))
+            }
+        }
+    }
+
+    /// m62: the specialization a call to generic fn `name` instantiates,
+    /// by its mangled name, synthesized and lowered the first time it is
+    /// reached. A plain call (`lower_generic_fn_call`) and an `or` over a
+    /// fallible one (`lower_fallible_call`, GH #1966) both call it.
+    pub(crate) fn generic_fn_instance(
+        &mut self,
+        name: &str,
+        call: hale_syntax::ast::NodeId,
+        call_span: hale_syntax::span::Span,
+        arg_count: usize,
+    ) -> Result<String, CodegenError> {
         let template = self
             .generic_fn_templates
             .get(name)
             .cloned()
             .expect("caller verified template exists");
-        if arg_pairs.len() != template.params.len() {
+        if arg_count != template.params.len() {
             return Err(CodegenError::Invalid(format!(
                 "generic fn `{}` expects {} args, got {} (m62 v0.1 \
                  doesn't fill defaults on generic templates yet)",
                 name,
                 template.params.len(),
-                arg_pairs.len()
+                arg_count
             )));
         }
         let (inferred, mangled, instance) = self.generic_call_instance(name, call, call_span)?;
@@ -16446,6 +16592,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
             let saved_loops = std::mem::take(&mut self.loops);
+            // The caller's arena redirection (a method's `return` of a
+            // record, a locus instantiation's field init) and its fused
+            // return slot are its own: a specialization first reached
+            // inside one (`return Out { n: mk(x).v };` in a method)
+            // allocated its result through the caller's
+            // `method.caller_arena.for_return`, an instruction of another
+            // function (LLVM: "Instruction does not dominate all uses",
+            // a crash where the verifier is not run).
+            let saved_arena_override = self.current_arena_override.take();
+            let saved_fused_dest = self.fused_dest.take();
             // DWARF: synthesis fires MID-STATEMENT while lowering
             // the caller — the caller's active location must not
             // leak into the synthesized fn's entry allocas
@@ -16492,54 +16648,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.in_main = saved_in_main;
             self.current_self = saved_current_self;
             self.loops = saved_loops;
+            self.current_arena_override = saved_arena_override;
+            self.fused_dest = saved_fused_dest;
         }
-
-        // Emit the call manually using the pre-lowered args (so
-        // we don't lower them twice). Mirrors lower_user_fn_call's
-        // call-emit tail but without the inline arg lowering.
-        let sig = self
-            .user_fns
-            .get(&mangled)
-            .cloned()
-            .expect("specialized fn was just declared");
-        let caller_arena = self.call_site_arena(args, scope)?;
-        let mut llvm_args: Vec<BasicMetadataValueEnum> =
-            Vec::with_capacity(sig.params.len() + 1);
-        llvm_args.push(caller_arena.into());
-        for (i, (val, ty)) in arg_pairs.iter().enumerate() {
-            let val = if view_coerces_to(ty, &sig.params[i]) {
-                // F.30b (5a): unpack view + epoch check at
-                // monomorphized generic-fn arg site.
-                self.unpack_view_if_needed(*val, ty)?
-            } else if ty != &sig.params[i] {
-                return Err(CodegenError::Unsupported(format!(
-                    "generic fn `{}` arg {} type mismatch after \
-                     monomorphization: expected {}, got {}",
-                    mangled, i, sig.params[i], ty
-                )));
-            } else {
-                *val
-            };
-            llvm_args.push(val.into());
-        }
-        let call = self
-            .builder
-            .build_call(
-                sig.func,
-                &llvm_args,
-                &format!("{}.call", mangled),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        match sig.ret {
-            None => Ok(None),
-            Some(lt) => {
-                let v = call
-                    .try_as_basic_value()
-                    .left()
-                    .expect("non-void fn returns a basic value");
-                Ok(Some((v, lt)))
-            }
-        }
+        Ok(mangled)
     }
 
     /// Produce a human-readable diagnostic for a call-expression
@@ -16586,11 +16698,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                      path or user-fn reference",
                     p
                 )
-            }
-            Expr::Call { .. } => {
-                "callee is itself a call expression (calling the result of \
-                 another call is not yet supported in codegen v0 — bind the \
-                 inner call's result to a `let` and call the binding)".to_string()
             }
             Expr::Field { name, .. } => format!(
                 "call to method `.{}`: receiver shape not supported in \
@@ -16919,7 +17026,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (v, ty) = if let Some(lowered) = first.take() {
                 lowered
             } else if i < given {
-                self.lower_expr(&args[i - skip], scope)?
+                self.lower_arg_for(&args[i - skip], Some(&sig.params[i]), scope)?
             } else {
                 // Default expressions evaluate at the call site.
                 // For const/literal defaults that's a constant; for
@@ -17851,10 +17958,68 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+        // GH #1951 item 3 (F.52): a write of a declared optional field (or
+        // of a part of one) sets its record's presence flag, after the
+        // store, so a part the write copied first holds the flag too.
+        if let (Ok(BlockEnd::Open), Stmt::Assign { target, .. }) = (&r, stmt) {
+            if let Err(err) = self.mark_optional_written(target, scope) {
+                return Err(self.place(err, stmt.span()));
+            }
+        }
         // GH #1941: a refusal the statement raised outside any expression
         // (a `let`'s annotation, a loop's shape, a send's subject) is
         // placed at the statement.
         r.map_err(|err| self.place(err, stmt.span()))
+    }
+
+    /// GH #1951 item 3 (F.52): `target` was just written. Each field
+    /// segment `x` of it that its record declares optional (`x?: T`) sets
+    /// that record's `has_x` and clears its `clear_x`: `r.x = v`,
+    /// `self.row.x = v`, `xs[i].x = v`, and a write into a part of one,
+    /// `r.x.n = v`. A hand-written pair's flag is not touched.
+    pub(crate) fn mark_optional_written(
+        &mut self,
+        target: &LValue,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if self.user_types.values().all(|t| t.optional.is_empty()) {
+            return Ok(());
+        }
+        for i in 0..target.tail.len() {
+            let LValueSeg::Field(x) = &target.tail[i] else { continue };
+            let prefix = LValue { head: target.head.clone(), tail: target.tail[..i].to_vec(), span: target.span };
+            let Some(CodegenTy::TypeRef(t)) = self.place_declared_ty(&prefix, scope) else { continue };
+            let Some((has, clear)) = self.user_types.get(&t).and_then(|info| info.optional.get(&x.name)).cloned()
+            else {
+                continue;
+            };
+            self.store_flag_through(&prefix, &has, true, scope)?;
+            if let Some(c) = clear {
+                self.store_flag_through(&prefix, &c, false, scope)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Store `on` into the `Bool` field `flag` of the record at `prefix`.
+    fn store_flag_through(
+        &mut self,
+        prefix: &LValue,
+        flag: &str,
+        on: bool,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let mut place = prefix.clone();
+        place.tail.push(LValueSeg::Field(Ident::new(flag, prefix.span)));
+        let (slot, ty, _, _) = self.resolve_lvalue_chain(&place, scope)?;
+        if ty != CodegenTy::Bool {
+            return Err(CodegenError::Unsupported(format!("optional field flag `{flag}` is a {ty}, not a Bool")));
+        }
+        let bit = self.context.bool_type().const_int(u64::from(on), false);
+        self.builder
+            .build_store(slot, bit)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
     }
 
     fn lower_stmt_traced(
@@ -18015,10 +18180,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         loc: inkwell::debug_info::DILocation<'ctx>,
     ) {
         use inkwell::debug_info::{AsDIScope, DIFlagsConstants};
-        let Some(cur_bb) = self.builder.get_insert_block() else {
+        // The fn the alloca is in, not the builder's: a monomorph
+        // lowered on demand from another fn's call site (a generic fn
+        // whose name opts out of debug info, `__box<T>`) declared its
+        // params under the CALLER's subprogram, and LLVM's DWARF
+        // finalization crashed on the stray scope.
+        let Some(func) = alloca
+            .as_instruction()
+            .and_then(|i| i.get_parent())
+            .or_else(|| self.builder.get_insert_block())
+            .and_then(|bb| bb.get_parent())
+        else {
             return;
         };
-        let Some(func) = cur_bb.get_parent() else { return };
         let Some(sp) = func.get_subprogram() else { return };
         let Some(ditype) = self.di_type_for(ty) else { return };
         let Some(di) = self.di.as_ref() else { return };
@@ -18813,6 +18987,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             let _ = self.lower_expr(call, scope)?;
                         }
                     }
+                    // GH #1964: an imported seed's generic fn.
+                    Expr::Path(qn) if self.imported_generic_template(qn).is_some() => {
+                        let name = self.imported_generic_template(qn).expect("guard matched");
+                        let _ = self.lower_generic_fn_call(&name, *call_id, qn.span, args, scope)?;
+                    }
                     Expr::Path(qn) => {
                         self.lower_path_call(qn, args, scope)?;
                     }
@@ -18862,7 +19041,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // A call through a value the callee evaluates to (a
                     // fn value bound in scope that shadows a fn of its
                     // name, `crate::shadowed_callees` in hale-types).
-                    Expr::Block(_) => {
+                    Expr::Block(_)
+                    | Expr::Call { .. }
+                    | Expr::Index { .. }
+                    | Expr::If(_)
+                    | Expr::Match(_) => {
                         let _ = self.lower_computed_fn_call(callee, args, scope)?;
                     }
                     _ => {
@@ -19215,7 +19398,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // no bounded local emits nothing here.
                 let view_key = Self::bounded_view_key(&name.name);
                 if matches!(ty, CodegenTy::Bounded(_, _)) {
-                    let arena = self.bounded_owner_arena(value_to_lower, bounded_owner, scope)?;
+                    // GH #1951: a bounded local is the frame's own list: a
+                    // write into it (after its copy on write, when it was
+                    // bound from a place) anchors elements in this frame.
+                    let _ = bounded_owner;
+                    let arena = self.current_arena_ptr()?;
                     let slot = self.alloca_in_entry(
                         self.context.ptr_type(AddressSpace::default()).into(),
                         &format!("{}.view.arena", name.name),
@@ -19348,6 +19535,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // bounded).
                 if matches!(op, AssignOp::Eq) {
                     if let Some(CodegenTy::Bounded(elem, cap)) = self.place_declared_ty(target, scope) {
+                        if target.tail.is_empty() && target.head.name != "self" {
+                            return self.lower_bounded_local_assign(target, &elem, cap, value, *assign_id, scope);
+                        }
                         return self.lower_bounded_whole_assign(target, &elem, cap, value, scope);
                     }
                 }
@@ -19447,7 +19637,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // copy-out / mutate-locally / write-back the
                     // entire fixed-cap array per single-slot
                     // update — quadratic on ladder size.
-                    if target.tail.len() == 2 {
+                    //
+                    // A compound `self.xs[i] += v` (GH #1942) reads the
+                    // slot before it writes it, which the general walker
+                    // below does for every deeper self place.
+                    if target.tail.len() == 2 && matches!(op, AssignOp::Eq) {
                         if let (
                             LValueSeg::Field(fname_ident),
                             LValueSeg::Index(idx_expr),
@@ -19560,14 +19754,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     "type mismatch in `self.{}[idx] = ...`: \
                                      slot {} vs rhs {}",
                                     fname_ident.name, elem_ty, rhs_ty
-                                )));
-                            }
-                            if !matches!(op, AssignOp::Eq) {
-                                return Err(CodegenError::Unsupported(format!(
-                                    "compound assignment `{}` on \
-                                     `self.{}[idx]` is not supported; \
-                                     use `=` only",
-                                    assign_op_text(*op), fname_ident.name
                                 )));
                             }
                             // `[T; N]` of a heap type stores POINTERS
@@ -23373,7 +23559,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let mut storage = v.into_pointer_value();
         let st = self.llvm_bounded_storage_type(&elem, cap);
-        if owned && Self::bounded_elem_is_ptr(&elem) {
+        if owned && self.bounded_elem_is_ptr(&elem) {
             // The loop walks the list it started with: a write in the
             // body may replace the place's elements and retire them
             // (`crate::view_bindings`), so it walks the frame's own copy
@@ -24746,7 +24932,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .into_pointer_value();
                     self.current_arena_override = Some(caller_arena);
                 }
-                let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;
+                // GH #1951: a `bounded[T; N]` return takes an array literal
+                // as that bounded.
+                let (v, got_ty) = if matches!(declared_ty, CodegenTy::Bounded(..)) {
+                    self.lower_expr_into(e_to_lower, scope, Some(&declared_ty))?
+                } else {
+                    self.lower_expr(e_to_lower, scope)?
+                };
                 self.current_arena_override = saved_arena_override;
                 // G20 / F.20 Phase B follow-up: implicit
                 // locus → interface coercion at return position,
@@ -26602,6 +26794,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     })
                 }
+                // GH #1964: an imported seed's generic fn.
+                Expr::Path(qn) if self.imported_generic_template(qn).is_some() => {
+                    let name = self.imported_generic_template(qn).expect("guard matched");
+                    let result = self.lower_generic_fn_call(&name, *call_id, qn.span, args, scope)?;
+                    result.ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "generic fn `{}` returns no value but is used in expression position",
+                            qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")
+                        ))
+                    })
+                }
                 Expr::Path(qn) => self.lower_path_call_expr(qn, args, scope),
                 Expr::Field { receiver, name, .. }
                     if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
@@ -26631,11 +26834,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     })
                 }
-                Expr::Block(_) => self.lower_computed_fn_call(callee, args, scope)?.ok_or_else(|| {
-                    CodegenError::Unsupported(
-                        "a fn value that returns no value is used in expression position".to_string(),
-                    )
-                }),
+                // A call through the fn value any other callee evaluates
+                // to (GH #1942): a block (the desugar of a binding that
+                // shadows a fn of its name), a call that returns a fn
+                // (`pick()(2)`), an element of an array of fns
+                // (`fs[0](4)`), a branch that picks one.
+                Expr::Block(_) | Expr::Call { .. } | Expr::Index { .. } | Expr::If(_) | Expr::Match(_) => {
+                    self.lower_computed_fn_call(callee, args, scope)?.ok_or_else(|| {
+                        CodegenError::Unsupported(
+                            "a fn value that returns no value is used in expression position".to_string(),
+                        )
+                    })
+                }
                 _ => Err(CodegenError::Unsupported(
                     self.diagnose_unresolved_callee(callee, scope),
                 )),
@@ -26761,10 +26971,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // first dictates the type. Empty arrays would need
                 // an ascription to know the element type — reject
                 // them in v0.
+                // `[]` names no element type. It lowers as the value of a
+                // `let` that declares one (`lower_expr_into`); anywhere
+                // else the check refuses it (`refuse_untyped_empty_array`),
+                // and this is that rule for a caller that skips the check.
                 if parts.is_empty() {
-                    return Err(CodegenError::Unsupported(
-                        "empty array literal needs a type ascription \
-                         (not yet supported in v0)"
+                    return Err(CodegenError::Invalid(
+                        "an empty array literal `[]` names no element type: write it as the value of a `let` \
+                         that declares one (`let xs: [Int; 0] = [];`), or use `[x; 0]`"
                             .into(),
                     ));
                 }
@@ -26824,14 +27038,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // single source value broadcast across the slots.
                 // Parser already enforced `count` is a non-negative
                 // Int literal.
+                // `[val; 0]` (GH #1942) is a zero-length array of `val`'s
+                // type: `val` is still evaluated once, for its effects, and
+                // the storage holds no slot.
                 let n = *count;
-                if n == 0 {
-                    return Err(CodegenError::Unsupported(
-                        "array-repeat with zero count is not yet \
-                         supported in v0 (empty arrays need a type \
-                         ascription mechanism)".into(),
-                    ));
-                }
                 // GH #767: the OUTERMOST repeat consumes the `let`'s
                 // one-shot stack-slot signal, before `val` is lowered —
                 // a nested `[[0; 4]; 8]` must not take it instead.
@@ -27089,13 +27299,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         hint: Option<&CodegenTy>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match (hint, e) {
+            // GH #1951: an array literal at a declared `bounded[T; N]` site
+            // is that bounded, its count the literal's length.
+            (Some(CodegenTy::Bounded(elem, cap)), Expr::Array(parts, _)) => {
+                let (elem, cap) = ((**elem).clone(), *cap);
+                let storage = self.lower_bounded_literal(parts, &elem, cap, scope)?;
+                Ok((storage.into(), CodegenTy::Bounded(Box::new(elem), cap)))
+            }
             (
                 Some(CodegenTy::Array(elem_hint, want_n)),
                 Expr::Array(parts, _),
             ) if parts.len() as u64 == *want_n => {
-                if parts.is_empty() {
-                    return self.lower_expr(e, scope);
-                }
+                // `let xs: [T; 0] = [];` (GH #1942): the ascription names
+                // the element type the literal cannot, and the storage is
+                // a zero-length `[0 x T]`; the loop below stores nothing.
                 // GH #883: an ARRAY is not any one of its elements
                 // — whatever owns it owns the storage, never an
                 // element in it. The table said so when it walked the
@@ -27240,6 +27457,101 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+    }
+
+    /// GH #1951: the array literal `[e1, .., ek]` at a declared
+    /// `bounded[T; N]` site (`k <= N`, which the check holds): a fresh
+    /// `{ i64 len, [N x T] }` block in the current arena, its count `k`.
+    /// The list owns its elements, as `push` stores one: a pointer-shaped
+    /// element that is not a fresh value (a local, a field, an element
+    /// read) is stored as the list's own copy.
+    pub(crate) fn lower_bounded_literal(
+        &mut self,
+        parts: &[Expr],
+        elem: &CodegenTy,
+        cap: u64,
+        scope: &Scope<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        if parts.len() as u64 > cap {
+            return Err(CodegenError::Unsupported(format!(
+                "a literal of {} elements for a bounded of capacity {cap}",
+                parts.len()
+            )));
+        }
+        let mut vals = Vec::with_capacity(parts.len());
+        for p in parts {
+            let (v, got) = self.lower_expr_into(p, scope, Some(elem))?;
+            let v = if *elem == CodegenTy::Float && got == CodegenTy::Int {
+                self.coerce_to_float(v, &got, "bounded literal element")?.into()
+            } else {
+                v
+            };
+            let v = if self.bounded_elem_is_ptr(elem) && !Self::expr_is_fresh_value(p) {
+                let dest = self.current_arena_ptr()?;
+                self.emit_owned_deep_copy(v, elem, dest)?
+            } else {
+                v
+            };
+            vals.push(v);
+        }
+        let st = self.llvm_bounded_storage_type(elem, cap);
+        let size = st.size_of().expect("a sized bounded storage");
+        let storage = self.arena_alloc(size, "bounded.literal")?;
+        let i64_t = self.context.i64_type();
+        let len_ptr = self.builder.build_struct_gep(st, storage, 0, "bounded.literal.len").map_err(err)?;
+        self.builder.build_store(len_ptr, i64_t.const_int(parts.len() as u64, false)).map_err(err)?;
+        let data_ptr = self.builder.build_struct_gep(st, storage, 1, "bounded.literal.data").map_err(err)?;
+        let elem_llvm = self.llvm_basic_type(elem);
+        for (i, v) in vals.into_iter().enumerate() {
+            let slot = unsafe {
+                self.builder
+                    .build_gep(elem_llvm, data_ptr, &[i64_t.const_int(i as u64, false)], "bounded.literal.slot")
+                    .map_err(err)?
+            };
+            self.builder.build_store(slot, v).map_err(err)?;
+        }
+        Ok(storage)
+    }
+
+    /// A value no other name reaches once built: a literal, a call's
+    /// result (but `at`, which hands back a list's element itself), an
+    /// f-string or an operator's result. Anything else (a local, a
+    /// field, an element, a carrier) may be another name's block.
+    pub(crate) fn expr_is_fresh_value(e: &Expr) -> bool {
+        match e {
+            Expr::Literal(..) | Expr::Struct { .. } | Expr::Array(..) | Expr::Binary { .. } => true,
+            Expr::Call { callee, .. } => !matches!(callee.as_ref(), Expr::Ident(i) if i.name == "at"),
+            _ => false,
+        }
+    }
+
+    /// An argument for a parameter of type `param`: an array literal for
+    /// a `bounded[T; N]` parameter is that bounded (GH #1951); anything
+    /// else lowers as it is.
+    pub(crate) fn lower_arg_for(
+        &mut self,
+        a: &Expr,
+        param: Option<&CodegenTy>,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        match param {
+            Some(t @ CodegenTy::Bounded(..)) => self.lower_expr_into(a, scope, Some(t)),
+            _ => self.lower_expr(a, scope),
+        }
+    }
+
+    /// The value of a `bounded[T; N]` site: an array literal built as
+    /// that bounded (`lower_bounded_literal`), anything else lowered as it
+    /// is.
+    pub(crate) fn lower_bounded_operand(
+        &mut self,
+        value: &Expr,
+        elem: &CodegenTy,
+        cap: u64,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_expr_into(value, scope, Some(&CodegenTy::Bounded(Box::new(elem.clone()), cap)))
     }
 
     /// Lower an `if`-as-expression. The then- and else- blocks must
@@ -31619,6 +31931,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // F.30b (5a): unpack view + epoch check at
                         // self.fnptr arg site.
                         self.unpack_view_if_needed(v, &vt)?
+                    } else if arg_tys[i] == CodegenTy::Float && vt == CodegenTy::Int {
+                        // Int -> Float widening, as at a direct call
+                        // (GH #1967).
+                        self.coerce_to_float(v, &vt, method_name)?.into()
                     } else if vt != arg_tys[i] {
                         return Err(CodegenError::Unsupported(format!(
                             "self.{} arg {}: expected {}, got {}",
@@ -31656,26 +31972,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .void_type()
                         .fn_type(&llvm_param_tys, false),
                     Some(rt) => {
-                        let lr = self.llvm_basic_type(rt);
-                        match lr {
-                            inkwell::types::BasicTypeEnum::IntType(t) => {
-                                t.fn_type(&llvm_param_tys, false)
-                            }
-                            inkwell::types::BasicTypeEnum::FloatType(t) => {
-                                t.fn_type(&llvm_param_tys, false)
-                            }
-                            inkwell::types::BasicTypeEnum::PointerType(t) => {
-                                t.fn_type(&llvm_param_tys, false)
-                            }
-                            _ => {
-                                return Err(CodegenError::Unsupported(
-                                    format!(
-                                        "fn-pointer return type {} not yet supported",
-                                        rt
-                                    ),
-                                ));
-                            }
-                        }
+                        // Any value type: a view returns by value as the `{ptr, i64}`
+                        // struct the callee was declared with (GH #1942).
+                        self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false)
                     }
                 };
                 let call = self
@@ -31830,7 +32129,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(cs.self_ptr.into());
         for i in 0..sig.params.len() {
             let (v, ty) = if i < args.len() {
-                self.lower_expr(&args[i], scope)?
+                let want = self.type_expr_to_codegen_ty(&sig.params[i].ty).ok();
+                self.lower_arg_for(&args[i], want.as_ref(), scope)?
             } else {
                 let default_expr =
                     sig.params[i].default.as_ref().expect("checked above");
@@ -31956,6 +32256,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // F.30b (5a): unpack view + epoch check at fn-pointer
                 // arg site.
                 self.unpack_view_if_needed(v, &vt)?
+            } else if arg_tys[i] == CodegenTy::Float && vt == CodegenTy::Int {
+                // Int -> Float widening, as at a direct call: the check
+                // holds a call through a fn value to its type's
+                // parameters as it holds a direct call (GH #1967).
+                self.coerce_to_float(v, &vt, callee_label)?.into()
             } else if vt != arg_tys[i] {
                 return Err(CodegenError::Unsupported(format!(
                     "{} arg {}: expected {}, got {}",
@@ -31973,24 +32278,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .void_type()
                 .fn_type(&llvm_param_tys, false),
             Some(rt) => {
-                let lr = self.llvm_basic_type(rt);
-                match lr {
-                    inkwell::types::BasicTypeEnum::IntType(t) => {
-                        t.fn_type(&llvm_param_tys, false)
-                    }
-                    inkwell::types::BasicTypeEnum::FloatType(t) => {
-                        t.fn_type(&llvm_param_tys, false)
-                    }
-                    inkwell::types::BasicTypeEnum::PointerType(t) => {
-                        t.fn_type(&llvm_param_tys, false)
-                    }
-                    _ => {
-                        return Err(CodegenError::Unsupported(format!(
-                            "fn-pointer return type {} not yet supported",
-                            rt
-                        )));
-                    }
-                }
+                // Any value type: a view returns by value as the `{ptr, i64}`
+                // struct the callee was declared with (GH #1942).
+                self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false)
             }
         };
         let call = self
@@ -32154,6 +32444,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             &format!("{}.{}", type_name, method_name),
                         );
                     }
+                }
+            }
+        }
+        // GH #1942: `t.0(x)` calls the fn value a tuple holds at that
+        // position, as `h.f(x)` calls a record's fn field above.
+        if let CodegenTy::Tuple(elems) = &recv_ty {
+            if let Ok(i) = method_name.parse::<usize>() {
+                if let Some(CodegenTy::FnPtr { args: fn_args, ret: fn_ret }) = elems.get(i).cloned() {
+                    let storage_ty = self.llvm_tuple_storage_type(elems);
+                    let i32_t = self.context.i32_type();
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                recv_val.into_pointer_value(),
+                                &[i32_t.const_int(0, false), i32_t.const_int(i as u64, false)],
+                                &format!("tup.{i}.fn.ptr"),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let fn_value_ptr = self
+                        .builder
+                        .build_load(self.context.ptr_type(AddressSpace::default()), slot, &format!("tup.{i}.fn"))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    return self.emit_fnptr_indirect_call(
+                        fn_value_ptr,
+                        &fn_args,
+                        fn_ret.as_deref(),
+                        args,
+                        scope,
+                        &format!("tuple.{i}"),
+                    );
                 }
             }
         }
@@ -32340,7 +32663,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(recv_val.into_pointer_value().into());
         for i in 0..sig.params.len() {
             let (v, ty) = if i < args.len() {
-                self.lower_expr(&args[i], scope)?
+                let want = self.type_expr_to_codegen_ty(&sig.params[i].ty).ok();
+                self.lower_arg_for(&args[i], want.as_ref(), scope)?
             } else {
                 let default_expr = sig.params[i]
                     .default
@@ -33009,8 +33333,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(data_ptr.into());
         llvm_param_tys.push(ptr_t.into());
         for (i, a) in args.iter().enumerate() {
-            let (v, ty) = self.lower_expr(a, scope)?;
             let want = self.type_expr_to_codegen_ty(&method_sig.params[i].ty)?;
+            let (v, ty) = self.lower_arg_for(a, Some(&want), scope)?;
             // Same Locus→Interface coercion the free-fn call site
             // does — keeps interface-typed method params usable.
             let (v, ty) = if let (
@@ -33162,24 +33486,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let fn_ty = match &ret_codegen_ty {
             None => self.context.void_type().fn_type(&llvm_param_tys, false),
-            Some(rt) => match self.llvm_basic_type(rt) {
-                inkwell::types::BasicTypeEnum::IntType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::FloatType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::PointerType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                other => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "interface method return type {} not yet supported \
-                         by Phase B dispatch",
-                        other
-                    )));
-                }
-            },
+            // Any value type, a view's `{ptr, i64}` struct included (GH #1942).
+            Some(rt) => self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false),
         };
         // Bus-arena reclaim (2026-05-21): publish caller arena
         // via TLS for the same reason as the direct-method-call
@@ -33348,24 +33656,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let fn_ty = match &ret_codegen_ty {
             None => self.context.void_type().fn_type(&llvm_param_tys, false),
-            Some(rt) => match self.llvm_basic_type(rt) {
-                inkwell::types::BasicTypeEnum::IntType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::FloatType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::PointerType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                other => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "perspective method return type {} not yet \
-                         supported by dispatch",
-                        other
-                    )));
-                }
-            },
+            // Any value type, a view's `{ptr, i64}` struct included (GH #1942).
+            Some(rt) => self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false),
         };
         self.emit_set_caller_arena_for(args, scope)?;
         let call = self
@@ -34747,13 +35039,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// payload-bearing enum, pass an empty `field_vals` —
     /// only the tag is written, body bytes stay uninitialized
     /// but are never read for those variants.
+    ///
+    /// Under the return-arena routing (`current_arena_override`, a
+    /// method returning a fresh value), the cell lands in the caller's
+    /// arena, so the boundary's same-arena check passes it through
+    /// uncopied: each heap payload is anchored there too, as
+    /// `populate_user_type_fields` anchors a record literal's fields. A
+    /// payload bound by a `let` in the method (`let t = …; return
+    /// E::A(t);`) lived in its scratch, which the return frees, and the
+    /// caller read it after the free until 2026-11-15 (GH #1951's
+    /// ownership-matrix cells found it).
     pub(crate) fn lower_enum_variant_alloc(
         &mut self,
         info: &EnumInfo,
         tag: u32,
         field_vals: &[(BasicValueEnum<'ctx>, CodegenTy)],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        self.lower_enum_variant_alloc_in(info, tag, field_vals, None)
+        let Some(arena) = self.current_arena_override else {
+            return self.lower_enum_variant_alloc_in(info, tag, field_vals, None);
+        };
+        let mut anchored = Vec::with_capacity(field_vals.len());
+        for (j, (val, ty)) in field_vals.iter().enumerate() {
+            let heap = val.is_pointer_value()
+                && matches!(
+                    ty,
+                    CodegenTy::String
+                        | CodegenTy::Bytes
+                        | CodegenTy::TypeRef(_)
+                        | CodegenTy::Tuple(_)
+                        | CodegenTy::Array(_, _)
+                        | CodegenTy::Enum(_)
+                );
+            // An array payload is a pointer to its own block, never the
+            // body's inline bytes (`retire_desc_for`'s variant table).
+            let v = if heap {
+                self.emit_cross_arena_store_deep_copy_ptr(*val, ty, arena, &format!("enum.payload{j}"))?
+            } else {
+                *val
+            };
+            anchored.push((v, ty.clone()));
+        }
+        self.lower_enum_variant_alloc_in(info, tag, &anchored, None)
     }
 
     /// `lower_enum_variant_alloc`, the block taken from `reusable`'s
@@ -35658,14 +35984,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         let e = |err: inkwell::builder::BuilderError| CodegenError::LlvmEmit(err.to_string());
-        // A bounded local is a view whose owner is not known here: the
-        // check refuses its whole assignment.
-        if target.tail.is_empty() {
-            return Err(CodegenError::UnsupportedAt(
-                format!("a whole assignment through the bounded local `{}`", target.head.name),
-                target.span,
-            ));
-        }
         let (dest, _, _, owner) = self.resolve_lvalue_chain(target, scope)?;
         if let Some(o) = owner.as_ref().filter(|o| !o.is_self) {
             let shown = format!("store into `{}`", o.locus.rsplit("__").next().unwrap_or(&o.locus));
@@ -35674,7 +35992,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (ptr, locus) = (o.ptr, o.locus.clone());
             self.emit_cross_pool_check(ptr, recv, &locus, &shown, target.span, scope)?;
         }
-        let (src, src_ty) = self.lower_expr(value, scope)?;
+        let (src, src_ty) = self.lower_bounded_operand(value, elem, cap, scope)?;
         if !matches!(&src_ty, CodegenTy::Bounded(se, sn) if se.as_ref() == elem && *sn == cap) {
             return Err(CodegenError::Unsupported(format!(
                 "a `bounded` place assigned whole from a {src_ty}, not the place's own type"
@@ -35754,6 +36072,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Open)
     }
 
+    /// GH #1951: `xs = value` where `xs` is a bounded local, the frame's
+    /// own list: it holds a value of its own afterwards. A literal and a
+    /// call's result are fresh and are bound as they are; any other value
+    /// (a place, another local) is copied into the frame's arena, its
+    /// pointer-shaped elements with it, so neither name reaches the
+    /// other's list. The local's copy-on-write flag says the frame owns it.
+    fn lower_bounded_local_assign(
+        &mut self,
+        target: &LValue,
+        elem: &CodegenTy,
+        cap: u64,
+        value: &Expr,
+        assign_id: NodeId,
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let e = |err: inkwell::builder::BuilderError| CodegenError::LlvmEmit(err.to_string());
+        let name = &target.head.name;
+        let Some((slot, slot_ty)) = scope.locals.get(name).cloned() else {
+            return Err(CodegenError::UnsupportedAt(format!("assignment to unknown local `{name}`"), target.span));
+        };
+        let (mut v, ty) = self.lower_bounded_operand(value, elem, cap, scope)?;
+        if !matches!(&ty, CodegenTy::Bounded(se, sn) if se.as_ref() == elem && *sn == cap) {
+            return Err(CodegenError::Unsupported(format!(
+                "a `bounded` local assigned whole from a {ty:?}, not the local's own type"
+            )));
+        }
+        if !Self::expr_is_fresh_value(value) {
+            let dest = self.current_arena_ptr()?;
+            v = self.emit_owned_deep_copy(v, &ty, dest)?;
+        }
+        self.builder.build_store(slot, v).map_err(e)?;
+        if let Some(fields) = self.owned_views.cow_bind(assign_id, name) {
+            let fields = fields.to_vec();
+            self.set_cell_part_flags(slot, &fields, true)?;
+        }
+        if let Some((arena_slot, _)) = scope.locals.get(&Self::bounded_view_key(name)).cloned() {
+            let arena = self.current_arena_ptr()?;
+            self.builder.build_store(arena_slot, arena).map_err(e)?;
+        }
+        let _ = slot_ty;
+        Ok(BlockEnd::Open)
+    }
+
     /// The scope key that holds the owning arena of the bounded place a
     /// bounded local `name` views (`let mut dest = self.xs`): not an
     /// identifier, so no program name meets it, and a block's end drops
@@ -35799,6 +36160,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<(PointerValue<'ctx>, Option<Option<LvalueOwner<'ctx>>>), CodegenError> {
         let target = Self::expr_place_lvalue(recv);
+        self.bounded_receiver_cow(recv, scope)?;
         // A place with an index evaluates it once, through the walk, which
         // also addresses the storage.
         if let Some(t) = target.as_ref().filter(|t| t.tail.iter().any(|s| matches!(s, LValueSeg::Index(_)))) {

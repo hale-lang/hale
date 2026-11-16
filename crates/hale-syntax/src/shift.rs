@@ -168,7 +168,8 @@ shift_struct!(Program {
     span,
 });
 shift_struct!(EffectClasses { names, declared, defs });
-shift_struct!(Import { path, alias, span, path_span });
+shift_struct!(Import { path, alias, span, path_span, items });
+shift_struct!(ImportItem { name, rename, span });
 
 impl Shift for TopDecl {
     fn shift(&mut self, d: Move) {
@@ -623,7 +624,15 @@ impl Shift for ScalarClause {
     }
 }
 
-shift_struct!(StructField { name, ty, default, tag, indexed_by, map_value, span });
+shift_struct!(StructField { name, ty, default, tag, indexed_by, map_value, optional, span });
+
+impl Shift for FieldOptional {
+    fn shift(&mut self, _: Move) {
+        match self {
+            FieldOptional::No | FieldOptional::Declared { clearable: _ } | FieldOptional::Presence | FieldOptional::Clear => {}
+        }
+    }
+}
 shift_struct!(EnumVariant { name, fields, class, span, member, tag });
 shift_struct!(ConstDecl { name, ty, value, span, id });
 

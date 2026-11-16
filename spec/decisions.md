@@ -3932,6 +3932,139 @@ without being built. *Treat a diverging call (`std::process::exit`) as
 leaving*: the language has no `Never` type; a call completes, and a
 body that ends in one says what it returns after it.
 
+### F.49 — A `bounded` local bound from a place is a copy
+
+**Problem.** The ruling of 2026-10-13 (spec/types.md § A local bound
+from a place is yours, GH #713) made every local bound from a place the
+frame's own value: a struct, a String, an array, a tuple, a payload. A
+`bounded[T; N]` local was left out. It lowered to the place's own inline
+storage, so `let mut mine = self.row.tags; push(mine, x)` wrote the
+field, a later `push(self.row.tags, y)` showed through `mine`, and the
+element pushed through the local had to be anchored where the field
+lived. A `bounded` could not be returned, built from a literal or
+assigned whole as a local, because a local had no storage of its own to
+hold one (GH #1951). Changing this after 1.0 would change what running
+programs compute.
+
+**Decision.** A `bounded` local bound from a place is a copy, by the
+same rule as the other value types. Writing the local never changes the
+place, and writing the place never changes the local. The ownership pass
+keeps reads free, as it does for the others: the local stays the
+place's storage until a write into it (a `push`, `set`, `clear` or
+`truncate` naming it), which copies the list into the frame first, its
+storage and its live pointer-shaped elements, behind the local's
+copy-on-write flag; a local bound across an in-place write of its place,
+or handed to a call that may write through its parameter, is bound as a
+copy. With a local that holds a list of its own, a `bounded` is a value:
+an array literal at a declared `bounded[T; N]` site is that list (a
+literal longer than `N` is a check error), a local bound from a literal
+or a call is owned, a `let mut` one is assigned whole, and a fn returns
+one by value through the record return path, copied into the caller's
+arena. An intrinsic that writes a local declared with `let` is refused,
+so a program written against the view is told where it stopped writing
+the place.
+
+**Considered and rejected.** *Keep the view and add a separate owned
+local.* Two kinds of bounded local would read the same and behave
+differently, and the view kept the arena-anchoring rule (an element
+pushed through it went to the place's owner) that every other value type
+had shed. *Copy at every binding.* A `for` over `self.row.tags` through a
+local would copy the list for nothing; the copy on write costs only
+where a write happens. *Return through a caller-supplied place.* A
+record already returns through the caller's arena; a list returned the
+same way needs no second convention.
+
+### F.50 — `or raise` converts: set members on the error channel, and `@raise` conversion fns
+
+**Problem.** `or raise` hands the call's error on as the enclosing
+`fallible(E)` fn's own, so the two had to be one type (GH #1945 made a
+mismatch a located check error). A fn calling into several layers fails
+with an error of its own, and every raise across a layer had to be
+spelled `or fail E { … }`, copying fields by hand at each site; a set
+type of the layers' errors could not be raised into at all, though
+`fail m;` already made a member the set's (GH #1951, item 2).
+
+**Decision.** An error `P` raised inside a `fallible(E)` fn, `P` not
+`E`, is converted, tried in this order:
+
+1. **R2, a set member.** `E` a set holding `P`: the error is the set's
+   member. One relation decides `fail`, `or fail <expr>`, `or raise` and
+   a fallible handler's failure (its implicit `or raise`).
+2. **R3, a conversion.** `@raise fn conv(e: P) -> E { … }` declares one;
+   the raise is `or fail conv(err)`. A `@raise` fn takes one parameter,
+   is neither generic nor `fallible`, returns another type, and implies
+   `@effects(none: {syscall, publish, spawn, block})` (it may allocate).
+   **Orphan rule:** it is declared in the seed of `P` or of `E`; a
+   builtin error type belongs to no seed. **Coherence:** every conversion
+   for a pair is then in one of those two seeds, which are what an `or
+   raise` reaches; two for one pair are refused at the `or raise`,
+   naming both. **No chaining.**
+
+Nothing else converts: the `or raise` is refused, naming both types and
+the three ways forward (a `@raise` fn, a set holding `P`, `or fail E {
+… }`). The check records each conversion at its `raise` (a typed-body
+row), and lowering writes the raise as the `or fail` it stands for.
+spec/semantics.md § "Converting a raised error".
+
+**Considered and rejected.** *Reach as "this seed and the seeds it
+imports directly"*: the checker's bundle carries no import graph (the
+merged program keeps only the rename table), and under the orphan rule
+the candidates are already exactly the two seeds that declare `P` and
+`E`. *Chaining conversions* (`P` to `Q` to `E`): a path search whose
+answer moves when an unrelated seed adds a conversion. *A conversion
+applied wherever a value of `P` meets an `E`* (an argument, a `let`):
+the error channel is where translation is asked for; elsewhere it would
+hide a call. *Letting a conversion fail or do I/O*: it runs where an
+error is already being handed on, and a second failure has nowhere to
+go. *Refusing a duplicate at its declaration*: two seeds may each
+declare one for a pair without either being wrong alone; the conflict
+exists where an `or raise` would have to choose.
+
+### F.51 — An import list re-exports
+
+**Problem.** F.25 made every cross-seed reference qualified
+(`st::ModelRow`), and A4 kept an import's names inside the importing
+seed. A seed had no way to spell another seed's declaration bare, and
+none to hand a declaration it imported on to its own importers except
+a `type ModelRow = st::ModelRow;` alias per name, which covers types
+only. Moving a type from one seed to another was a rename at every use
+in every seed that reached it (GH #1951, downstream handoffs). Whether
+a name a seed brings in is reachable through that seed has to be fixed
+before 1.0: deciding it later either breaks programs that rely on it or
+makes every list a second, private kind of import.
+
+**Decision.** An import may end in a list, `import "../store" as st {
+ModelRow, Names as StoreNames };`. Each item names a top-level
+declaration of the imported seed (a type, locus, fn, const, topic,
+interface or perspective) or a name that seed's own lists bring in; an
+unknown item is refused at the item. A listed name is bare in every
+file of the importing seed, as the import is; `as` renames; locals
+shadow it as they shadow any top-level name; a listed name that is also
+a declaration of the seed, or that another list binds to a different
+declaration, is refused, naming both. **A list re-exports**: a listed
+name is reachable through the importing seed's alias (`api::ModelRow`
+when `api` lists `ModelRow` from `st`), and may be listed again by an
+importer of that seed. It is the same declaration as `st::ModelRow` —
+one mangled symbol — so a value flows between the spellings with no
+conversion. There are no globs, and the alias itself stays the
+importing seed's own (A4). Importing a file of the seed itself stays
+refused: its names are already bare.
+
+**Considered and rejected.** *A list that does not re-export.* A seed
+that wants to pass a type on would still write the alias per name, and
+the two forms would differ in a way no reader can see at the use site;
+the list is where the seed says which names it speaks, which is what
+its importers want to reach. *Globs (`st::*`).* A glob makes the set of
+bare names a function of another seed's contents, so adding a
+declaration there can break a seed that never mentions it; spelling
+every name keeps each bare name traceable to one line. *A visibility
+modifier (`pub`).* Out of scope for the same reason as before (No
+`pub` / `export`): a list chooses what the importing seed speaks, not
+what the imported seed hides. *Re-export as a separate keyword
+(`export`).* A new word for what the list already says, and the
+keyword set is frozen (STABILITY.md).
+
+## Deferred & future work
 ## Deferred & future work
 
 ### semantics — What's deferred
@@ -4090,3 +4223,199 @@ Shipped as the fourth form in v1 via v1.x-FORM-6.
    `hale-lang/bench`, parallel to the other forms'. Ships after a
    consumer workload surfaces.
 
+### F.52 — Optionality is a property of a record field, not a type
+
+**Problem.** A record that tells a field left out from one sent spells a
+presence pair by hand, `x: T; has_x: Bool;`, and a PATCH field a triple
+with `clear_x` (spec/api.md § Codecs). The pair is what the codecs, the
+description, protobuf and the contract digest read, and it works, but
+nothing ties the flag to the field: a program that sets `x` and forgets
+`has_x` writes a record whose value is never sent, and every literal that
+builds an absent field has to spell a value for it anyway (GH #1951,
+downstream handoff). The fix could be a general optional type, `T?`,
+usable anywhere; once programs hold `T?` locals and return `T?` from fns,
+taking it back would break them.
+
+**Decision.** Optionality belongs to a record field and to nothing else.
+`x?: T` in a `type` declares `x` and a real field `has_x: Bool = false`
+right after it, and `x?: T clearable` a `clear_x: Bool = false` after
+that: the hand-written pair and triple, field for field, so the wire,
+the description, protobuf and the digest are byte-identical and
+converting a pair changes no shape hash. A write of `x` (a literal that
+spells it, an assignment through any path or into a part of it, a `push`
+or `set` into an optional list) sets `has_x` and clears `clear_x`; a
+literal that leaves `x` out builds it absent, at its default or its
+type's zero. Declaring the synthesized flag beside the mark is a
+duplicate field. There is no `T?`: the `?` is refused on a parameter, a
+locus param, a local, a return and an enum payload, and after any type.
+Absence in a computation stays `fallible(E)`. `clearable` is a
+contextual keyword, a word only after an optional field's type.
+
+**Considered and rejected.** *A general `T?`.* It would be a second
+protocol for absence beside `fallible(E)`, with its own unwrapping
+operators, and every analysis that follows a value through a call (the
+ownership pass, the alloc summary, the codecs) would learn a new shape;
+the only place a program needs absence to be data is a record crossing a
+wire, which the field mark covers. *Keep the pair hand-written.* The
+flag a program forgets is the bug the mark removes. *A flag that is not
+a field* (presence kept out of the record's slots): the codecs, the
+`.proto` and the digest already read the pair as fields, and a hidden
+slot would change every one of them.
+
+## Deferred & future work
+
+### semantics — What's deferred
+
+
+- **Formal small-step semantics.** Engineering-grade prose for
+  v0; formal operational rules in v1+ if needed for compiler
+  correctness proofs.
+- **Concurrency-correctness proofs.** Cooperative scheduler
+  + per-locus arena makes most concurrency questions trivial,
+  but full formal modeling deferred.
+- **Memory-model formalization** as a happens-before relation.
+  Currently informal; formal in v1+.
+- **Async / await semantics.** Reserved keywords; no operational
+  semantics in v0.
+
+
+### types — What's deferred
+
+
+Per `notes/open-questions.md` and design-rationale §16:
+
+- **Trait system.** No `trait` keyword in v0 (reserved). The
+  structural `interface` form (F.20) ships as the v1 interface
+  mechanism — both Phase A (typecheck) and Phase B (codegen
+  vtable dispatch) landed 2026-05-11. Full traits with `impl I
+  for L` declarations and generic bounds remain deferred.
+- **Refinement types** (e.g., `int where x > 0`). Deferred.
+- **Effect / capability system.** Substrate-derivation tracking
+  is currently runtime-enforced via closure tests; future
+  version may move into type system as effects.
+- **Async / await.** Reserved keywords; no v0 typing.
+- **Macros.** Reserved keyword; no v0 typing.
+- **Sum-type-typed `self.children`** for multi-accept-type loci.
+  v0 is single-accept-type only (F.11).
+- **Projection-class-annotated translation impls** (per F.14
+  follow-on). Deferred until forced by an example.
+
+
+### memory — Future work
+
+
+- **Hot-load preservation across perspective updates.** The
+  in-process live swap (`reperspective`, Phase 3) preserves the
+  receiving locus's arena state across the swap: the perspective
+  slot is `{ data, vtable }`, so re-pointing at a new impl of the
+  same footprint stores only the new vtable — `data` (the
+  arena-backed state) is untouched and the new impl's methods
+  continue on it. The remaining future piece is the same
+  preservation for a *transport-driven* wire redeploy whose new
+  impl changes the footprint (the `migrate` case). See
+  `spec/semantics.md` § "The live swap".
+- **Region size hints.** Initial chunk sizes per locus are
+  taken from declared params. Per The Design's locus-as-region
+  invariant, the load-bearing property is *lifetime* (wholesale
+  free at dissolve), not *fixed size*. The C-runtime arena
+  grows linked-list chunks on demand: when the head chunk
+  can't fit a request, a fresh chunk is allocated and pushed
+  on the front. Declared params are sizing hints, not
+  ceilings — a locus that out-allocates its declared budget
+  doesn't panic, it just adds chunks. Compaction across
+  long-lived chunked loci stays deferred (see below).
+- **Compaction passes.** For long-running chunked-class loci
+  with high churn, periodic compaction may be needed. Currently
+  free-list reclamation is sufficient for v0; compaction passes
+  are deferred.
+
+
+### forms — Open questions deferred to a future milestone
+
+
+These are spec-level questions that don't block FORM-4 because
+the core surface above is independent of them.
+
+1. **Iteration surface.** `for entry in registry { ... }` is
+   natural but the loop construct's lowering depends on what
+   the existing `for` over capacity slots does — and a hashmap
+   iteration that visits each occupied slot once needs cluster-
+   aware traversal. Deferred.
+2. **Bulk operations.** `clear()`, `extend(other)`,
+   `take(key) -> S fallible(KeyError)` (get + remove fused).
+   Useful but not foundational. Add after a workload demands.
+3. **Additional key types.** `Bytes`, custom structs with a
+   hashable derivation, enum tags. Each adds a `key_type_tag`
+   to the runtime ABI. Workload-driven.
+4. **Capacity hints.** `@form(hashmap, cap = 64)` is rejected
+   in v1; no tuning knobs. Add when a workload demonstrates
+   the 0 → 8 → 16 → ... grow cascade is costing measurable
+   time.
+5. **Set type.** ~~A `@form(set)` would be a hashmap-without-
+   value variant (the cell IS the key). Not part of FORM-4;
+   revisit if a workload needs it.~~ **SHIPPED 2026-08-03**
+   (#353). The trigger fired. It reuses the hashmap slot and
+   the whole `lotus_hashmap_*` runtime — sync disciplines
+   included — and differs only in the synthesized surface:
+   `insert` / `contains` / `remove` / `len` / `is_empty`. The
+   separate surface exists to keep the VALUE off the call
+   site; membership through a hashmap means writing
+   `get(k) or false` everywhere.
+
+---
+
+# `@form(ring_buffer)`
+
+A fixed-capacity FIFO with push-back and pop-front semantics.
+The Hale analogue of a bounded circular buffer — same shape as
+a Go channel of capacity N, or a Java `ArrayBlockingQueue`, but
+without the synchronization machinery (the cooperative scheduler
+already serializes access). Shipped as the third form in v1
+via v1.x-FORM-5.
+
+
+### forms — Open questions deferred to a future milestone
+
+
+1. **Iteration surface.** `for x in recent { ... }` is natural
+   but iteration over a ring buffer must respect head/tail wrap
+   — needs the `for` lowering to know about ring shapes.
+   Deferred.
+2. **Bulk operations.** `clear()`, `peek() -> T fallible`,
+   evict-oldest-on-full mode (cyclic-overwrite as a tuning
+   knob). Useful but not foundational; add when a workload
+   demonstrates demand.
+3. **Iteration in pop order without removing.** A "drain" or
+   "iter_pop" that visits elements oldest-first as a one-shot.
+4. **Bench protocol.** A `micro/form_ring_buffer_*` family
+   in `hale-lang/bench`, parallel to vec's and hashmap's.
+   Ships as a separate milestone after a consumer workload
+   surfaces.
+
+# `@form(lru_cache)`
+
+A fixed-capacity keyed cache with least-recently-used eviction.
+The keyed counterpart of `@form(ring_buffer)`: like
+`@form(hashmap)` it is intrusively keyed (the cell carries its own
+key via `indexed_by`), but like `@form(ring_buffer)` it is
+capacity-bounded and NEVER grows. Inserting a new key over `cap`
+silently evicts the least-recently-**used** entry to make room.
+This is the "cap-bounded, never-flagged" keyed form — the
+unbounded-allocation analysis (`spec/verification.md`) treats an
+`@form(lru_cache)` locus as bounded, exactly like `ring_buffer`.
+Shipped as the fourth form in v1 via v1.x-FORM-6.
+
+
+### forms — Open questions deferred to a future milestone
+
+
+1. **TTL eviction.** A `ttl = <duration>` annotation arg to
+   expire entries by age in addition to LRU by capacity. Deferred
+   — v1 evicts by capacity + recency only.
+2. **`remove(k)` / `clear()`.** Explicit eviction of a named key
+   and bulk clear. Add when a workload demonstrates demand.
+3. **Iteration surface.** `key_at` / `entry_at`-style indexed
+   iteration, parallel to `@form(hashmap)`. Deferred.
+4. **Bench protocol.** A `micro/form_lru_cache_*` family in
+   `hale-lang/bench`, parallel to the other forms'. Ships after a
+   consumer workload surfaces.

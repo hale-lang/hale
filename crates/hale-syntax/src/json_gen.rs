@@ -2034,7 +2034,15 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             prefix_lit(sep, &f.key)
         };
         if let Presence::Tracked(flag) = &f.presence {
-            b.push_str(&format!("    if __v.{flag} {{\n"));
+            // an optional `std::json::Value` holding `null` is written as
+            // absent, never as `null`: a reader takes an optional field's
+            // `null` as its absence, and a triple's as its clear flag
+            // (GH #1951 item 3)
+            if matches!(f.kind, FieldKind::Raw) {
+                b.push_str(&format!("    if __v.{flag} && __v.{}.text != \"null\" {{\n", f.name));
+            } else {
+                b.push_str(&format!("    if __v.{flag} {{\n"));
+            }
         }
         let value = match &f.kind {
             FieldKind::Scalar(ScalarTy::Str) => format!(

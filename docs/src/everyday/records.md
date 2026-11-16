@@ -54,6 +54,32 @@ fn main() {
 - **Top-level only:** `type` declarations must appear at the top level outside any `locus` body.
 - **No loci inside records:** Because records are pure values with no lifecycle hooks, a `type` field (or `enum` variant) cannot hold a `locus` or a function pointer whose signature names a locus (`fn() -> Worker`). Store loci inside another locus's `params` instead. (A record field typed by an `interface` is permitted because it is a non-owning reference.)
 
+### Optional Fields (`x?: T`)
+
+A field marked `?` may be absent. `x?: T` declares `x` and, right after it, a real `Bool` field `has_x` that says whether `x` holds a value; `x?: T clearable` adds `clear_x` as well, for a PATCH field whose `null` means "clear it":
+
+```hale
+type Ticker {
+    symbol: String;
+    last?: Decimal<8>;
+    expires_at?: Time clearable;
+    limit?: Int = 100;
+}
+
+fn main() {
+    let mut t = Ticker { symbol: "BTC" };   // `last` left out: absent
+    println(t.has_last);                    // false
+    t.last = 97000.5d;                      // a write sets the flag
+    println(t.has_last);                    // true
+    println(t.limit, t.has_limit);          // 100 false: absent, at its default
+}
+```
+
+- **A write sets the flag:** a literal that spells `x`, an assignment to it through any path (`t.last = v`, `self.row.last = v`, `rows[i].last = v`), a write into a part of it, and a `push` or `set` into an optional `bounded` field all set `has_x` (and clear `clear_x`). The flags are ordinary fields, so a program may also read and write them by name.
+- **Leaving it out builds it absent:** `x` then holds its default, or its type's zero (`0`, `""`, `false`, the epoch, an empty list, an enum's first variant, a record of zeros). A type with no zero (a tuple, a point, `Bytes`) needs a default, and `hale check` says so at the field.
+- **One shape on the wire:** the flags are exactly the hand-written presence pair (`x: T; has_x: Bool;`) and triple the JSON and protobuf codecs read, so a record converted from the pair to `x?` crosses the wire, describes itself and hashes byte for byte as before (see [JSON](json.md) and [The API surface](../services/api.md)).
+- **Only record fields:** Hale has no optional type. `?` on a parameter, a local or a locus param, and `T?` after any type, are refused; a value that may be missing in a computation is `fallible(E)` ([Fallible values](../basics/fallible.md)).
+
 ## Value Copy Semantics and Mutation
 
 ### Independent Value Copies and Copy-on-Write
@@ -185,7 +211,8 @@ fn describe(m: Inbound) -> String {
 }
 ```
 
-- **Type-as-tag coercion:** A `Book`, `Trade`, or `Unknown` value automatically coerces to `Inbound` wherever `Inbound` is expected (return values, function arguments, typed `let` bindings, or struct fields).
+- **Type-as-tag coercion:** A `Book`, `Trade`, or `Unknown` value automatically coerces to `Inbound` wherever `Inbound` is expected (return values, a function body's final expression included, function arguments, typed `let` bindings, or struct fields), and on the error channel of a `fallible(Inbound)` function: `fail`, `or fail err` and `or raise` of a member are the set's ([Converting Errors for `or raise`](../basics/fallible.md#converting-errors-for-or-raise)).
+- **Bare names are for sets only:** A set's `match` names a member by its type alone (`Book(b)`). An `enum`'s `match` always names the enum (`Shape::Line(l)`); `Line(l)` against an enum, or against a generic fn's type parameter, is a type error.
 - **Target type required for mixed branches:** An unannotated `if` or `match` whose arms produce `Book` and `Trade` (`let m = if n == 0 { Book { ... } } else { Trade { ... } };`) fails typechecking because the compiler does not guess which set type joins them; annotate the binding (`let m: Inbound = ...`) or return from a function declared `-> Inbound`.
 - **Members must be declared structs or enums:** Primitive types like `Int` cannot appear directly in a set; wrap them in a struct (`type Count { n: Int; }`).
 - **Wire representation and seams:** Across JSON APIs, a set serializes as a tagged object keyed by the member's type name (`{"Trade": {"qty": 2, "px": 1.5}}`). At the service layer, a [seam](../services/seams.md) can dispatch each member of a set to a dedicated handler method and verify exhaustiveness at compile time.
@@ -214,8 +241,9 @@ fn main() {
 
 ### Monomorphization and Type-Argument Rules
 
-- **Explicit type context required:** In `let b: Box<Int> = Box { value: 1 };`, the struct literal spells the template name `Box` while the concrete type argument `<Int>` comes from the surrounding type context (a `let` annotation, function return type `-> Box<Int>`, enclosing struct field, assignment target, or `[Box<Int>; 2]` array annotation). Writing `let b = Box { value: 1 };` without a type annotation is a compile error.
-- **Supported type arguments:** Any user-defined `type` record and all built-in types (`Int`, `Float`, `Bool`, `String`, `Duration`, `Decimal`, `Time`, `Bytes`, `BytesView`, `BytesMut`, `StringView`) are valid type arguments. (`Uint` has no lowered representation and is rejected; use `Int`.)
+- **Explicit type context required:** In `let b: Box<Int> = Box { value: 1 };`, the struct literal spells the template name `Box` while the concrete type argument `<Int>` comes from the surrounding type context (a `let` annotation, function return type `-> Box<Int>` at a `return` or the body's tail, enclosing struct field, assignment target, or `[Box<Int>; 2]` array annotation). Anywhere else the literal is a compile error at the literal: `let b = Box { value: 1 };` without a type annotation, and also `Box { value: 1 }.value`, `id(Box { value: 1 })`, or a literal as an operand, a condition or an `if` arm. Bind it to an annotated `let` first.
+- **Imported templates and types:** A generic record from another seed takes its arguments the same way (`let b: lib::Box<String> = lib::Box { v: "x" };`), and an imported type is a type argument like a local one (`let x: Box<lib::Scalar> = Box { v: 17 };`).
+- **Supported type arguments:** Any user-defined `type` record and all built-in types (`Int`, `Float`, `Bool`, `String`, `Duration`, `Decimal`, `Time`, `Bytes`, `BytesView`, `BytesMut`, `StringView`) are valid type arguments. (`Uint` has no lowered representation and is rejected; use `Int`.) A generic `type` cannot take a locus (`Box<L>` would make a plain-data `type` hold the locus); make the template a generic locus instead.
 - **Name mangling:** Each instantiation compiles to a distinct specialized type named `Template_Arg1_Arg2` (such as `Box_Int` or `Cache_Int_String`). Inside `Box<T>`, the identifier `T` always resolves to the type parameter even if the seed also declares a top-level type named `T`.
 
 Next: [Files](./files.md).

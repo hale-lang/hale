@@ -1,0 +1,7 @@
+// The parity gate's ratchet (crates/hale-codegen/tests/parity_gate.rs):
+// the check/build divergences its generated programs reach today, one per
+// line as `#<issue> | <reproducer> | <signature>`. Each reproducer is the
+// minimized program beside this file, its files under `// == <path> ==`
+// lines. A divergence whose signature is not here fails the gate; so does
+// a listed reproducer that builds (or that the check refuses) again.
+// Delete a line, and its reproducer, with the fix that closes it.

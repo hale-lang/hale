@@ -746,6 +746,11 @@ impl<'a> SpaceCx<'a> {
             if matches!(p, In) && pi > 0 && matches!(self.tokens[pi - 1].kind, Dot) {
                 return false;
             }
+            // GH #1942: `t.0(x)` calls the fn value a tuple holds; the
+            // part's number is a callee like a name.
+            if matches!(p, IntLit(_)) && pi > 0 && matches!(self.tokens[pi - 1].kind, Dot) {
+                return false;
+            }
             return true;
         }
 

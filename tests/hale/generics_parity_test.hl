@@ -1,0 +1,102 @@
+// Generic shapes `hale check` accepted and `hale build` refused, found by
+// the check/build parity gate and now compiled. Each runs here and its
+// result is asserted:
+//
+// - an imported seed's generic fn, called for its value and as a
+//   statement, and its generic fallible fn under `or` (GH #1964);
+// - an imported type as a generic argument, and an imported generic
+//   record's literal under a declared type (GH #1964);
+// - `or` over a call to a generic fallible fn (GH #1966);
+// - a generic fn at a stdlib record's field the checker now types, the
+//   output of `std::process::run` (GH #1963);
+// - a generic fn at a perspective (GH #1974), and at an interface whose
+//   value is a locus behind it, in a `release` (GH #1975).
+import "./generics_parity_lib" as g;
+
+type Box<T> {
+    v: T;
+}
+
+fn parse<T>(s: T, ok: Bool) -> Int fallible(String) {
+    if !ok {
+        fail "no";
+    }
+    return 42;
+}
+
+fn id<T>(x: T) -> T {
+    return x;
+}
+
+perspective Router {
+    fn health() -> Int;
+}
+
+locus RouterV1 : serves Router {
+    fn health() -> Int { return 7; }
+}
+
+locus App {
+    params {
+        router: perspective(Router) = RouterV1 { };
+    }
+    fn probe() -> Int {
+        return id(self.router).health();
+    }
+}
+
+interface Job { fn w() -> Int; }
+
+locus Big {
+    params { v: Int = 2; ran: Int = 0; }
+    fn w() -> Int { return self.v * self.ran; }
+    run() { self.ran = 1; }
+}
+
+locus Pool {
+    params { n: Int = 0; }
+    accept(c: Job) { }
+    release(c: Job) { self.n = self.n + id(c).w(); }
+    run() {
+        Big { v: 3 };
+        Big { v: 4 };
+        std::test::assert_eq_int(
+            self.n,
+            7,
+            "a generic fn at an interface, given the locus behind it",
+        );
+    }
+}
+
+fn main() {
+    // across the seed boundary
+    let n = g::id(99);
+    std::test::assert_eq_int(n, 99, "an imported generic fn's value");
+    g::id(5);
+    let s = g::id("text");
+    std::test::assert_eq_str(s, "text", "the same template at another type");
+    let f = g::first_of(11, 1) or 0;
+    std::test::assert_eq_int(f, 11, "an imported generic fallible fn under `or`");
+    let miss = g::first_of(11, -1) or 3;
+    std::test::assert_eq_int(miss, 3, "its failure takes the substitute");
+    let b: Box<g::Scalar> = Box { v: 17 };
+    std::test::assert_eq_str(to_string(b.v), "17", "an imported type as a generic argument");
+    let gb: g::Box<String> = g::Box { v: "x" };
+    std::test::assert_eq_str(gb.v, "x", "an imported generic record under a declared type");
+
+    // `or` over a generic fallible fn
+    let v = parse("42", true) or 0;
+    std::test::assert_eq_int(v, 42, "or over a generic fallible fn: success");
+    let w = parse(1.5, false) or 9;
+    std::test::assert_eq_int(w, 9, "or over a generic fallible fn: failure");
+
+    // a stdlib record's field
+    let out = std::process::run("true") or raise;
+    std::test::assert_eq_int(len(id(out.stderr)), 0, "a generic fn at a ProcessOutput field");
+
+    // a perspective, and an interface in a release
+    let a = App { };
+    std::test::assert_eq_int(a.probe(), 7, "a generic fn at a perspective");
+    let p = Pool { };
+    std::test::assert_eq_int(p.n, 7, "both releases read their child");
+}

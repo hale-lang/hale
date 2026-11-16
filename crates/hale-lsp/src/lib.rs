@@ -2400,6 +2400,15 @@ fn definition(
         return member_location(&snap, &l.name, &word);
     }
 
+    // GH #1951 item 6: a name an import list brings in bare (or the
+    // name as the list spells it) is the imported declaration, through
+    // the row its alias carries for it.
+    if prefix.len() == 1 {
+        if let Some(loc) = listed_definition(&snap, &word, merged) {
+            return Some(loc);
+        }
+    }
+
     // A top-level name: the declaration that spells it, the seed's
     // before the stdlib's. A stdlib symbol's span is in the stdlib's
     // own coordinate space, which overlaps the first seed file's, so
@@ -2412,6 +2421,23 @@ fn definition(
         Some(sym) => merged_span_to_location(&snap, sym.span()),
         None => merged_span_to_location(&snap, unit_decl_span(&snap, &word)?),
     }
+}
+
+/// GH #1951 item 6 (F.51): the declaration a bare name of the seed's
+/// import lists names: `word` as the seed spells it, or, inside the
+/// import statement itself, as the list spells the imported name.
+fn listed_definition(snap: &Snapshot, word: &str, merged: usize) -> Option<Value> {
+    snap.entry_imports().iter().find_map(|imp| {
+        let alias = imp.alias.as_deref()?;
+        let in_import = imp.span.start.as_usize() <= merged && merged < imp.span.end.as_usize();
+        let item = imp
+            .items
+            .iter()
+            .find(|i| i.local().name == word || (in_import && i.name.name == word))?;
+        let key = [alias.to_string(), item.name.name.clone()];
+        let (_, mangled) = snap.import_renames().iter().find(|(p, _)| p[..] == key)?;
+        decl_location(snap, mangled)
+    })
 }
 
 /// The node under a position a definition is asked for, as the

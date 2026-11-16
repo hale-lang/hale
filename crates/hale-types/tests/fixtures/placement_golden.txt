@@ -731,6 +731,9 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/tagged.hl#b5e9dd95
 
+== crates/hale-stdlib/hl/time_rfc3339.hl#c263c37e
+dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
+
 == crates/hale-stdlib/hl/url.hl#a4efffbc
 
 == crates/hale-stdlib/hl/wide.hl#87243d8d
@@ -1808,12 +1811,15 @@ row	~.l	Listener	main	inherited
 == crates/hale-codegen/tests/bounded_collections.rs#9b194cc5
 row	L@main1	L	main	default
 
-== crates/hale-codegen/tests/bounded_collections.rs#14fd8149
+== crates/hale-codegen/tests/bounded_collections.rs#4dc03955
 -- L@main1	L
 row	~	L	main	default
 row	~.child	Child	main	inherited
 
-== crates/hale-codegen/tests/bounded_collections.rs#e6b74386
+== crates/hale-codegen/tests/bounded_collections.rs#5ae76cde
+row	Store@main1	Store	main	default
+
+== crates/hale-codegen/tests/bounded_collections.rs#2d2113bc
 -- Store@main1	Store
 row	~	Store	main	default
 row	~.slots.0	Slot	main	inherited
@@ -6812,6 +6818,10 @@ row	App@literal1	App	main	default
 row	~	Mid	main	default
 row	~.leaf	Leaf	main	inherited
 
+== crates/hale-types/tests/hot_path_alloc.rs#e575004f
+template	Acc@main1	unbounded (built in a loop)
+row	Acc@main1	Acc	main	default
+
 == crates/hale-types/tests/hot_path_alloc.rs#0d3e5366
 
 == crates/hale-types/tests/hot_path_alloc.rs#63abfca7
@@ -8475,9 +8485,20 @@ dynamic	Mx	on main	in the seed
 == tests/hale/bounded_on_call_result_test.hl
 row	Store@main1	Store	main	default
 
+== tests/hale/bounded_payload_enum_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.slots	Slots	main	default
+row	Churn@main3	Churn	main	default
+row	Maker@main2	Maker	main	default
+row	Store@main1	Store	main	default
+
 == tests/hale/bounded_time_test.hl
 root	Clock	the entry
 row	Clock@literal1	Clock	main	default
+
+== tests/hale/bounded_values_test.hl
+row	Store@main1	Store	main	default
 
 == tests/hale/bounded_whole_assign_test.hl
 row	Store@main1	Store	main	default
@@ -8494,6 +8515,11 @@ row	Producer@main2	Producer	main	default
 == tests/hale/bytes_writer_offset_test.hl
 row	__StdIoMirrorRing@main1	__StdIoMirrorRing	main	default
 
+== tests/hale/chains_field_anchor_test.hl
+-- Cart@main1	Cart
+row	~	Cart	main	default
+row	~.n	Nums	main	inherited
+
 == tests/hale/chains_hashmap_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -8507,12 +8533,31 @@ row	Nums@main3	Nums	main	default
 row	Nums@main4	Nums	main	default
 row	Tallies@main5	Tallies	main	default
 
+== tests/hale/check_build_parity_shapes_test.hl
+row	Decoder@main3	Decoder	main	default
+row	Lv@main2	Lv	main	default
+row	Scaler@main1	Scaler	main	default
+
 == tests/hale/closure_restore_inline_array_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.bars	Bars	main	default
 shared	App@literal1.r	Ring #711a93c5
 shared	App@literal1.s	Sup #20139bc1
+
+== tests/hale/codegen_gaps_test.hl
+row	Counter@main5	Counter	main	default
+row	Dog@main6	Dog	main	default
+row	Ladder@main7	Ladder	main	default
+row	Picker@main1	Picker	main	default
+row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
+-- Holder@main2	Holder
+row	~	Holder	main	default
+row	~.b	__StdBytesBytesBuilder	main	inherited
+-- Watcher@main4	Watcher
+row	~	Watcher	main	default
+row	~.v	Holder	main	inherited
+row	~.v.b	__StdBytesBytesBuilder	main	inherited
 
 == tests/hale/contextual_keywords_test.hl
 root	App	the entry
@@ -8587,6 +8632,13 @@ row	~.rows	Rows	main	inherited
 row	Cache_Int_String@main1	Cache_Int_String	main	default
 row	Holder_Int@main2	Holder_Int	main	default
 dynamic	Cache	on main|unresolved arguments	in the seed
+
+== tests/hale/generics_parity_test.hl
+row	Pool@main2	Pool	main	default
+dynamic	Big	on main	in the seed
+-- App@main1	App
+row	~	App	main	default
+row	~.router	RouterV1	main	inherited
 
 == tests/hale/http_client_stream_test.hl
 root	App	the entry
@@ -8754,6 +8806,9 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	main	default
 dynamic	Probe	on main	in the seed
+
+== tests/hale/optional_field_test.hl
+row	Desk@main1	Desk	main	default
 
 == tests/hale/or_discard_value_test.hl
 root	App	the entry

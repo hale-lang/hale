@@ -173,6 +173,7 @@ fn main() {
 | `std::time::now()` | `() -> Int` | Current UTC Unix timestamp in whole seconds (`Int`) |
 | `std::time::iso8601(t)` | `(Time) -> String` | Formats `Time` as an ISO-8601 UTC string |
 | `std::time::parse_time(s)` | `(String) -> Time fallible(ParseError)` | Parses an ISO-8601 UTC string (validates leap years and calendar dates) |
+| `std::time::parse_rfc3339(s)` | `(String) -> Time fallible(ParseError)` | Parses an RFC 3339 timestamp with its offset (`Z`, `+02:00`, `-05:30`) and applies the offset: `2026-11-15T10:00:00+02:00` is `08:00:00Z` |
 | `std::time::parse_iso8601(s)` | `(String) -> Int fallible(ParseError)` | Parses an ISO-8601 string to Unix epoch seconds (`Int`), supporting dates outside 1677–2262 |
 | `std::time::unix(t)` / `nanos(t)` | `(Time) -> Int` | Extracts Unix seconds or epoch nanoseconds from `Time` |
 | `std::time::time_from_unix(secs)` / `from_nanos(n)` | `(Int) -> Time` | Constructs `Time` from seconds or nanoseconds |
@@ -205,7 +206,7 @@ let deadline = launch + 30min;
 let slack    = deadline - std::time::current();   // Duration
 ```
 
-- **UTC-only literals:** Non-UTC offsets (such as `` `2026-05-08T12:00:00+01:00` ``) are rejected at compile time.
+- **UTC-only literals:** Non-UTC offsets (such as `` `2026-05-08T12:00:00+01:00` ``) are rejected at compile time, and `parse_time` refuses them at run time rather than drop them. Text that carries an offset (an RFC 3339 timestamp from another system) is read with `std::time::parse_rfc3339`, which applies it.
 - **64-bit nanosecond range (1677–2262):** `Time` spans years `1677` through `2262`. Out-of-range literals fail at compile time, `parse_time` takes its `or` branch, and runtime arithmetic (`t + d` or `time_from_unix`) that overflows halts with a `violation:`. Use `std::time::parse_iso8601(s)` when working with calendar timestamps outside 1677–2262 as `Int` seconds.
 
 ## Distinct Identities, Bounded Ranges, and Custom Units

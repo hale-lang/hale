@@ -43,8 +43,16 @@ program           = { import_decl } , { top_decl } ;
    namespace at the import site so cross-seed references read as
    `alias::Name` — same forcing-function discipline as v1.x-3's
    no-default-sub-mode rule and v1.x-FORM-2's two-channel rule.
-   See spec/projects.md for resolution order + mangling scheme. *)
-import_decl       = "import" , STRING_LIT , "as" , IDENTIFIER , ";" ;
+   See spec/projects.md for resolution order + mangling scheme.
+   GH #1951 item 6 (F.51): an optional import list after the alias
+   names top-level declarations of the imported seed; each is bare
+   in the importing seed (as the `as` name when one is given) and
+   re-exported through its alias. No globs; `as` is a contextual
+   word, as it is after the path. *)
+import_decl       = "import" , STRING_LIT , "as" , IDENTIFIER ,
+                    [ "{" , import_item , { "," , import_item } , [ "," ] , "}" ] ,
+                    ";" ;
+import_item       = IDENTIFIER , [ "as" , IDENTIFIER ] ;
 
 top_decl          = locus_decl
                   | perspective_decl
@@ -1089,8 +1097,20 @@ scalar_clause     = "range" , ":" , range_expr
    concrete type expression (it may be a generic *instantiation*,
    `type Names = Vec<String>;`). GH #759. *)
 
-struct_field      = IDENTIFIER , ":" , type_expr , [ "indexed_by" , IDENTIFIER , [ "->" , IDENTIFIER ] ] ,
+struct_field      = IDENTIFIER , [ "?" ] , ":" , type_expr , [ "clearable" ] ,
+                    [ "indexed_by" , IDENTIFIER , [ "->" , IDENTIFIER ] ] ,
                     [ "=" , expression ] , [ field_tag ] , ";" ;
+(* `x?: T` is an optional field (GH #1951 item 3, F.52): it declares `x`
+   and a presence flag `has_x: Bool = false` right after it, and
+   `clearable` (contextual, only after an optional field's type) a clear
+   flag `clear_x: Bool = false` after that: the presence pair and triple
+   of spec/api.md § Codecs. `clearable` without the `?` is a parse error,
+   as is a `has_x` (or a clearable field's `clear_x`) the record declares
+   itself, and a `?` on a `@positional` record's field. Only a field of a
+   `type` takes the `?`: on a parameter, a locus param or a local it is a
+   parse error, and after any type expression (`T?`, a return, an enum
+   payload) too, since Hale has no optional type (spec/types.md §
+   Optional fields). *)
 (* `indexed_by` on a `bounded[T; N]` of records names the `String` field
    of `T` that keys a wire map: the api codecs carry the list as an object
    keyed by it (spec/api.md § Codecs), the value-level projection of the
@@ -1101,7 +1121,10 @@ struct_field      = IDENTIFIER , ":" , type_expr , [ "indexed_by" , IDENTIFIER ,
    pairs that downstream features parse (the binary-pack layer reads a
    `wire:` key; ignored otherwise). Shares the backtick lexing with time
    literals — a time literal only appears in expression position, a tag
-   only after a field's or an enum variant's declaration. *)
+   only after a field's or an enum variant's declaration. On a field
+   the tag is the last thing before the `;`, after any `= default`; a
+   tag written before the default is a parse error at the `=` that says
+   to write the default first (GH #1948). *)
 field_tag         = "`" , { ? any char except backtick ? } , "`" ;
 
 enum_variant      = [ "@" , IDENTIFIER ] , IDENTIFIER ,
@@ -1265,7 +1288,7 @@ function_decl     = [ ffi_annotation | export_annotation
 contract_decorator = unbounded_annotation | bounded_by_annotation
                    | budget_annotation
                    | hot_annotation | effect_annotation
-                   | rpc_annotation ;
+                   | rpc_annotation | raise_annotation ;
 ffi_annotation    = "@" , "ffi" , "(" , STRING_LIT , ")" ;
 export_annotation = "@" , "export" ;
 unbounded_annotation = "@" , "unbounded" ;
@@ -1274,6 +1297,10 @@ bounded_by_annotation = "@" , "bounded_by" , "(" , IDENTIFIER ,
 budget_annotation = "@" , "budget" , "(" , "alloc_per_call" ,
                     "=" , INT_LIT , ")" ;
 hot_annotation    = "@" , "hot" ;
+(* GH #1951 (item 2) — on a free fn of one parameter: the conversion an
+   `or raise` applies from the parameter's type to the result's
+   (spec/semantics.md § `or` disposition). *)
+raise_annotation  = "@" , "raise" ;
 (* GH #1109, retired in R4 (GH #1417): `@gated(role: R)` is refused by the
    parser; a role requirement is a row's `requires`. *)
 (* GH #1417 — on a locus fn: the row it contributes to its seed's
@@ -1719,6 +1746,9 @@ identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 (*                   closing line's whitespace is stripped from *)
 (*                   every line, no escapes (tokens.md § Block  *)
 (*                   strings)?                                   *)
+(*                 | ?raw string: `r`, N `#` (N >= 0), `"`, the  *)
+(*                   text as written (no escapes), `"`, N `#`    *)
+(*                   (tokens.md § Raw strings, GH #1948)?        *)
 (* FSTRING_LIT    = ?f"... {expr} ..."?                          *)
 (* BYTES_LIT      = ?b"..."?                                     *)
 (* QUANTITY_LIT   = ?<decimal int><identifier>, no space: the    *)

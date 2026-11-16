@@ -410,6 +410,17 @@ re-raises as a closure violation, not as a `fallible(...)`
 return on `push`. From the language surface, `push` never
 errors. (See `spec/runtime.md` for the OOM trap convention.)
 
+So `v.push(x) or discard` is refused, as an `or` on any call that
+cannot fail is: an `or` says a failure is handled, and there is none
+to handle. A collection operation is fallible exactly when it can
+fail — `get`, `set` and `pop` miss past the length, a `bounded[T;
+N]`'s `push(f, x)` is full at `N` (`fallible(CapacityError)`), and a
+vec's `push` grows. The refusal names the method and says so (GH
+#1948, 2026-11-15): "\`v.push(…)\` is not fallible (it returns
+\`()\`); drop the \`or\` clause: a \`@form(vec)\` grows to hold what
+is pushed …". It used to say only that the left side was not
+fallible, which read as the operations disagreeing.
+
 ### `get`
 
 ```
@@ -558,8 +569,13 @@ fn sort() -> ()
 ```
 
 Sorts the vec in place in ascending order. The cell type T MUST
-be one of `Int`, `Float`, or `String`; any other T (struct, enum,
-bytes, etc.) is a typecheck error suggesting `sort_by(cmp)`.
+be one of `Int`, `Float`, or `String` (an identity, a range or a
+quantity is its `Int`); any other T (a `Bool`, a struct, an enum,
+bytes, etc.) is a typecheck error at the `.sort`, naming the
+comparator to write: "\`f.sort()\`: \`Flags\` holds \`Bool\` cells,
+which have no default ordering …; sort with a comparator,
+\`f.sort_by(less_than)\`". (The check passed it and the build refused
+it until GH #1942.)
 String comparison is lexicographic on the underlying byte
 sequence (i.e., the C `strcmp` ordering); Float comparison
 treats `NaN` as equal-to-anything to keep the ordering total
@@ -1306,8 +1322,9 @@ is never a copy: those fields were copied with the read.
 survey (`hale check --dump-alloc-summary` prints `cell-copy (<reason>)`),
 so it counts toward `@budget(alloc_per_call = N)` and the `alloc`
 effect, and the hot-path lint reports it as it reports any other
-allocation there: a warning in a loop or a bus handler, an error
-anywhere in a `@hot` fn.
+allocation there: a warning in a loop or a bus handler (when asked
+for: `hale verify`, `hale check --warn-hot-path`), an error anywhere in
+a `@hot` fn.
 
 ## Lowering strategy
 
@@ -1782,8 +1799,12 @@ Rules verified at typecheck:
   slot, or a `heap` slot is rejected.
 - The slot MUST declare `indexed_by <fieldname>`; the named field
   must exist on the cell struct and becomes the cache key type
-  `K` (Int or String at v1). The cell struct is the value type
-  `S`.
+  `K`: an `Int` or a `String` (an identity, a range or a quantity
+  is its `Int`), as a hashmap's key. Any other key field is refused
+  at the `indexed_by` name ("@form(lru_cache) key \`R.k\` is a
+  \`Float\`: a cache's key is an \`Int\` or a \`String\` …"); the
+  build refused it after a passing check until GH #1942. The cell
+  struct is the value type `S`.
 - `cap = N` is required and must be a positive integer literal.
   v1 doesn't const-evaluate expressions for form args.
 - The slot MUST NOT declare `as_parent_for` — form-lowered slots

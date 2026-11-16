@@ -9,6 +9,10 @@
 //!
 //! In order:
 //!
+//! 0. optional zeros: a declared optional field (`x?: T`) with no
+//!    default takes its type's zero as one
+//!    ([`crate::optional_fields::fill_optional_zeros`]), so a literal
+//!    that leaves it out builds it absent.
 //! 1. JSON parsers: `json_gen` synthesizes `__json_parse_<T>` and
 //!    rewrites `T::from_json` (per program), then `alias::T::from_json`
 //!    through the rename table (bundle-wide).
@@ -75,6 +79,10 @@ pub struct Sequence<'a> {
 /// unchanged, so a caller that cannot tell whether its program went
 /// through it (the test harness) may run it again.
 pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
+    // GH #1951 item 3 (F.52): an optional field with no default takes its
+    // type's zero as one, before the JSON parsers read the defaults
+    // (`optional_fields`).
+    crate::optional_fields::fill_optional_zeros(programs, bundled_stdlib().ok().as_slice());
     // Each program's parsers in their own parse space, past every file and
     // every other program's (`JSON_SYNTH_BASE`).
     hale_syntax::json_gen::generate_json_parsers_in(programs, seq.import_renames);

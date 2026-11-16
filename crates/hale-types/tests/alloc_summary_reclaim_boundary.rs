@@ -609,6 +609,10 @@ fn per_target_moves() {
 /// `tail_value_returns_test` (GH #1940) is a new target: four fns hand a
 /// record or a String back through a tail `match`, `if` or block, whose
 /// tags the dump moves into the caller's arena as every returned value's.
+///
+/// `check_build_parity_shapes_test` (GH #1967, #1968, #1970) is a new
+/// target, the same shape: one tag of a value it hands back to its caller
+/// moves into the caller's arena; no leak site goes or appears.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -651,6 +655,8 @@ const PINNED: &[&str] = &[
     "tests/hale/block_string_test.hl: 0 go, 0 appear; dump 1 tags, 1 reclaim, 0 verdicts",
     "tests/hale/block_tail_return_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/chains_tranche2_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/check_build_parity_shapes_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/codegen_gaps_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/contextual_keywords_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/crypto_sha256_stream_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 5 verdicts",
     "tests/hale/decorator_stack_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",

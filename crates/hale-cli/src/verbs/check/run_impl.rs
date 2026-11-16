@@ -341,6 +341,12 @@ pub(crate) fn load_for_check(
         true,
         std::env::args().any(|a| a == "--allow-unowned-subscriber"),
     );
+    // GH #1948: the hot-path allocation advisory is asked for, never
+    // the default: `hale verify` is the discipline gate and reports it,
+    // `hale check --warn-hot-path` shows it. A `@hot` fn's findings are
+    // errors either way.
+    config.hot_path_advisory = std::env::args().nth(1).as_deref() == Some("verify")
+        || std::env::args().any(|a| a == "--warn-hot-path");
     // `--target`: the target the program is checked for, parsed as
     // `hale build --target` parses it, and the effective target as it
     // is the build's (T1(b)). Without it, a written declaration selects

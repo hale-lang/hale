@@ -394,20 +394,52 @@ Corpus oracles:
   a literal: a literal lives in static memory, so reading it after its
   locus's arena is freed is not a use-after-free and ASan says
   nothing. That is how #1065's test missed the bug #1067 fixed.
-- `ownership_matrix.rs`: 32 positions × 7 types × 7 contexts = 1568
+- `ownership_matrix.rs`: 32 positions × 8 types × 7 contexts = 1792
   cells, four oracles (dissolve tags, residency, ASan, inline-vs-`let`
   differential); ~90-cell sample by default, `HALE_MATRIX=full` for
   all. `KNOWN_OPEN` is empty. A listed cell must FAIL: a regression
   needs an entry with a reason and an issue, and its fix deletes it.
 - `corpus_check_build_agreement.rs` (`--ignored`): `hale check` must
   not accept what `hale build` refuses, against a recorded baseline.
+- `parity_gate.rs` (GH #1949): the same rule over programs nobody
+  wrote. It mutates the corpus (fixtures, `tests/hale`, the embedded
+  programs, the book's and the spec's `hale` blocks): tail shapes,
+  generic wraps, a declaration moved across a seed boundary, element
+  types in `bounded`/array/form/enum-payload shapes, call shapes, `or`
+  plumbing. Every candidate the check accepts is built; a refusal or a
+  lowering panic is a divergence, keyed by its message with names,
+  numbers and types taken out. `tests/fixtures/parity/divergences.txt`
+  is the ratchet: an unlisted divergence fails, and
+  `listed_divergences_still_reproduce` fails when a listed `.repro`
+  builds again (delete its line and file with the fix). The sample (16
+  seeds, ~4 s) runs in the ordinary suite; the sweep (every seed, ~9,000
+  candidates, a few minutes) is `--ignored` and runs in CI's `asan` job:
+
+  ```sh
+  cargo test --release -p hale-codegen --test parity_gate
+  cargo test --release -p hale-codegen --test parity_gate -- --ignored --nocapture sweep_
+  ```
+
+  A failure prints the seed, the mutation chain, the refusal and the
+  program minimized by line removal. To list a gap that needs its own
+  change, file an issue, save the minimized program as
+  `tests/fixtures/parity/<name>.repro` and add `#<issue> | <name>.repro
+  | <signature>`. To explore beyond the gate's draw:
+  `HALE_PARITY_SALT=<n>` (another draw), `HALE_PARITY_PER_SEED`,
+  `HALE_PARITY_ONLY=<mutator>`, `HALE_PARITY_DUMP=<dir>` (every
+  divergent candidate as a `.repro`), and `minimize_a_reproducer`
+  (`HALE_PARITY_REPRO=<file>`). A mutator is a fn in
+  `tests/parity/mutators.rs` that edits the source at parsed spans and
+  returns `None` when it finds no site; add it to `MUTATORS`, and
+  `mutators_reach_check_clean_programs` holds it to producing at least
+  one check-clean program (that file's header has the recipe).
 
 CI (`.github/workflows/tests.yml`): `scope` (prose-only diffs skip
 the substrate jobs), `quick` (LLVM-free crates), `docs`, `cli` ×3
 (part 1 runs `hale fmt --check .` on the whole repo), `codegen` ×2,
 `dna` ×2, `face-api`, `face-browser`, `cross`, `parity` (doctests +
 shared-state binaries under libtest threads), `tsan`
-(`LOTUS_TSAN=1`), `asan` (agreement, corpus ASan, `LOTUS_UBSAN=1`
+(`LOTUS_TSAN=1`), `asan` (agreement, parity sweep, corpus ASan, `LOTUS_UBSAN=1`
 ring suite), `genmc`. Run `hale fmt --check .` before committing any
 `.hl`; the failing shard prints only the path. CI is the full gate:
 run targeted tests locally and let the PR run the rest.

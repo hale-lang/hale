@@ -187,8 +187,8 @@ Every type reachable from an `rpc` row is encoded and decoded strictly. Unknown 
 | `bounded[T; N] indexed_by k -> v` | JSON object mapping `T.k` to `T.v` (`{"db": "ok"}`) | `map<string, V>` | Length > `N` (`too_long`), repeated key (`duplicate_key`) |
 | `std::json::Value` | Arbitrary well-formed JSON (<= 64 levels deep, <= 64 KiB) | `optional string` | Invalid JSON, depth > 64, or size > 64 KiB |
 | Any field with a default | `null` is the key omitted: the declared default, whatever its shape (a literal, an enum variant, a nested record's declared default); a field with no default is `missing_field` | Declared as-is | A `std::json::Value` field alone holds `null` as its text |
-| Presence pair (`x` + `has_x: Bool`) | Optional field; omitted or `null` sets `has_x = false` | Both fields declared as-is | `wrong_type` if non-null value fails to decode |
-| Clear triple (`x` + `has_x` + `clear_x`) | Omitted -> neither; `null` -> `clear_x = true`; value -> `has_x = true` | All three fields declared as-is | `wrong_type` if non-null value fails to decode |
+| Optional field (`x?: T`, or `x` + `has_x: Bool`) | Optional field; omitted or `null` sets `has_x = false` | Both fields declared as-is | `wrong_type` if non-null value fails to decode |
+| Clear triple (`x?: T clearable`, or `x` + `has_x` + `clear_x`) | Omitted -> neither; `null` -> `clear_x = true`; value -> `has_x = true` | All three fields declared as-is | `wrong_type` if non-null value fails to decode |
 | `enum { A, B(T), C(T, U) }` | `"A"`, `{"B": val}`, `{"C": [v1, v2]}` | `enum` (unit-only) or `message` with `oneof` | Unknown variant, wrong payload shape/arity (`wrong_type`), `missing_field` |
 | Type set (`type U = A \| B;`) | Tagged object by type name (`{"B": {...}}`) | `message` with `oneof` | Unknown variant or wrong inner shape (`wrong_type`) |
 
@@ -243,13 +243,15 @@ type Seat { name: String; config: std::json::Value; }
 
 `std::json::Value` preserves the exact bytes sent by the caller (including key ordering, whitespace, and trailing decimal zeros like `2.50`). It must be valid JSON at most 64 levels deep and 64 KiB long. Inside Hale, read `.text` using `std::json` cursor functions (`std::json::find_field_raw(seat.config.text, "theme")`), and construct new values using `std::json::Value::parse(text) or ...` or `std::json::Value::null()` (direct struct literals and mutating `.text` are rejected by the compiler).
 
-### Optional Fields (`has_<field>` and `clear_<field>`)
+### Optional Fields (`x?: T` and `clearable`)
 
-Because Hale does not have an `Option<T>` wrapper type, optional wire fields use companion boolean flags:
+Hale has no `Option<T>` wrapper type: optionality is a property of a record field. An optional wire field is a field with a companion boolean flag, which `x?: T` declares for you:
 
 1. **Default Value (`limit: Int = 50;`)**: Use when omitting a field has the same meaning as passing a default value.
-2. **Presence Pair (`text: String = ""; has_text: Bool = false;`)**: Use when you must distinguish an omitted/null field from a default value (or distinguish an empty list `[]` from an omitted list). When `text` is omitted or `null`, `has_text` is `false`. On output, `text` is only written when `has_text` is `true`, and `has_text` itself never appears on the wire.
-3. **PATCH Clear Triple (`note: String = ""; has_note: Bool = false; clear_note: Bool = false;`)**: Use for PATCH endpoints that distinguish "leave unchanged" (omitted -> both `false`), "clear to null" (`"note": null` -> `clear_note = true`, encoded as `null` on output), and "set to value" (`"note": "hi"` -> `has_note = true`). Marked `"x-hale-null": "clear"` in the schema and typed `note?: string | null` in TypeScript.
+2. **Optional Field (`text?: String;`)**: Use when you must distinguish an omitted/null field from a default value (or distinguish an empty list `[]` from an omitted list). It declares `text` and a real flag `has_text: Bool` after it, the presence pair. When `text` is omitted or `null`, `has_text` is `false`. On output, `text` is only written when `has_text` is `true`, and `has_text` itself never appears on the wire. Writing `text` in the program sets `has_text`.
+3. **PATCH Clear Field (`note?: String clearable;`)**: Use for PATCH endpoints that distinguish "leave unchanged" (omitted -> both flags `false`), "clear to null" (`"note": null` -> `clear_note = true`, encoded as `null` on output), and "set to value" (`"note": "hi"` -> `has_note = true`). It declares the presence triple `note`, `has_note`, `clear_note`. Marked `"x-hale-null": "clear"` in the schema and typed `note?: string | null` in TypeScript.
+
+The flags can also be spelled by hand (`text: String = ""; has_text: Bool = false;`), as earlier programs do: the description, the `.proto` and the contract digest are byte for byte the same either way, so converting a hand-written pair to `x?` changes no shape hash. Only the mark makes a write of the field set its flag.
 
 ### Enums and Type Sets
 
@@ -279,7 +281,7 @@ type Kind = enum { Limit `json:"limit"`, Market `json:"market"`, Unknown `json:"
 - Only strings are caught: an object with an unknown key is still `wrong_type`.
 - The check refuses two variants with one wire name, a second catch-all, a catch-all holding anything but one `String`, and a name on a lossless catch-all. A set's member takes no tag.
 
-The description lists the wire names (`"enum": ["spot", "margin"]`) and adds `x-hale-variants` (each variant's wire name) and `x-hale-other` (the catch-all). The tags are part of the contract digest. The TypeScript client types `Venue` as `"spot" | "margin" | (string & {})`, and the Hale client declares the same tags. Protobuf ignores the renames and keeps `Venue_Spot`-style identifiers; a lossy catch-all also takes an enum number no variant has. A lossless catch-all makes the enum one with payloads, so it cannot yet be a `bounded` element, a map value, a route parameter or a bus payload field.
+The description lists the wire names (`"enum": ["spot", "margin"]`) and adds `x-hale-variants` (each variant's wire name) and `x-hale-other` (the catch-all). The tags are part of the contract digest. The TypeScript client types `Venue` as `"spot" | "margin" | (string & {})`, and the Hale client declares the same tags. Protobuf ignores the renames and keeps `Venue_Spot`-style identifiers; a lossy catch-all also takes an enum number no variant has. A lossless catch-all makes the enum one with payloads, so the codecs cannot yet carry a list of it, and it cannot be a map value, a route parameter or a bus payload field.
 
 ### Error Classes
 
@@ -893,8 +895,7 @@ type ShelfGetItemRequest {
 type ShelfItem {
     id: Int;
     name: String;
-    has_state: Bool = false;
-    state: ShelfItemState;
+    state?: ShelfItemState;
 }
 
 type ShelfItemState = enum { open, held, gone };
@@ -904,7 +905,7 @@ type ShelfNewItem {
 }
 ```
 
-- **Mapping Rules**: Operations map to snake_case `rpc` rows with `wire: "METHOD /path?query_param"`. Non-required properties generate `has_<field>` presence pairs; non-identifier JSON keys use `` `json:"..."` `` tags; a string enum whose values are not all identifiers becomes PascalCase variants tagged with their values (`` StopLimit `json:"stop-limit"` ``); schemas that cannot map to fixed Hale structs (`oneOf`, unbounded arrays without `maxItems`, free-form objects, or schemaless MCP outputs) fall back to `std::json::Value` with an explanatory comment.
+- **Mapping Rules**: Operations map to snake_case `rpc` rows with `wire: "METHOD /path?query_param"`. Non-required properties generate optional fields (`name?: T;`, the `has_<field>` presence pair); non-identifier JSON keys use `` `json:"..."` `` tags; a string enum whose values are not all identifiers becomes PascalCase variants tagged with their values (`` StopLimit `json:"stop-limit"` ``); schemas that cannot map to fixed Hale structs (`oneOf`, unbounded arrays without `maxItems`, free-form objects, or schemaless MCP outputs) fall back to `std::json::Value` with an explanatory comment.
 - **Supported YAML Subset**: The built-in YAML reader follows the YAML 1.2 Core Schema (so `on` and `yes` are strings, not booleans) and supports block/flow mappings and sequences, plain/quoted scalars, `|` and `>` block scalars, comments, and a single `---` document marker. Anchors/aliases (`&`, `*`), merge keys (`<<`), tags (`!`), complex keys (`?`), duplicate keys, and multi-document streams are rejected with a line-numbered diagnostic.
 
 ### Calling External Surfaces (`api::client` and `VaultPrincipals`)

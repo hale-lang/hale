@@ -48,7 +48,7 @@ Every form requires a specific `capacity` slot declaration and synthesizes a fix
 
 ### Fallibility and Return Types
 - **Lookup and removal**: `get`, `pop`, `peek`, `remove`, and `vec.set` are `fallible` (raising on out-of-bounds, missing key, or empty container) and must be addressed with `or` at the call site.
-- **Insertion**: `vec.push`, `hashmap.set`, `set.insert`, `lru_cache.put`, and `heap.push` are infallible. On `@form(ring_buffer, cap = N)`, `push` returns `Bool` (`false` when the ring is full).
+- **Insertion**: `vec.push`, `hashmap.set`, `set.insert`, `lru_cache.put`, and `heap.push` are infallible: the collection grows to hold what is added, so there is nothing for an `or` to handle, and `v.push(x) or discard` is refused with a message saying why. On `@form(ring_buffer, cap = N)`, `push` returns `Bool` (`false` when the ring is full). The fallible insertion is a `bounded[T; N]`'s `push(f, x)`, which fails with `CapacityError` when full.
 
 ### Counter Increment (`hashmap.bump`)
 On a `@form(hashmap)` whose cell type contains exclusively the `indexed_by` key field and one `Int` field (such as `type Hits { word: String; n: Int; }`), `m.bump(key)` initializes a missing entry to `1` or increments the existing counter in place. `hale check` rejects `bump` on any other cell layout.

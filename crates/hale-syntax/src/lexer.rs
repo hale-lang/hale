@@ -382,6 +382,15 @@ impl<'a> Lexer<'a> {
             return self.lex_bytes(start).map(Some);
         }
 
+        // GH #1948: raw string literal `r"..."` / `r#"..."#`. Must
+        // precede the generic ident path for the same reason as `f"`.
+        if b == b'r' {
+            let hashes = self.bytes[self.pos + 1..].iter().take_while(|&&c| c == b'#').count();
+            if self.bytes.get(self.pos + 1 + hashes) == Some(&b'"') {
+                return self.lex_raw_string(start, hashes).map(Some);
+            }
+        }
+
         // Identifier or keyword
         if b.is_ascii_alphabetic() || b == b'_' {
             return Ok(Some(self.lex_ident_or_keyword(start)));
@@ -762,6 +771,39 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
+    }
+
+    /// Lex a raw string (spec/tokens.md § Raw strings, GH #1948): `r`,
+    /// `hashes` `#`, a `"`, the body as written — no escape is read, a
+    /// `\` is a backslash and `{` is text — and a `"` followed by the
+    /// same number of `#`. A body holding `"` takes one or more `#`.
+    fn lex_raw_string(&mut self, start: usize, hashes: usize) -> Result<Token, Diag> {
+        let body_start = start + 1 + hashes + 1;
+        let len = self.bytes.len();
+        let mut p = body_start;
+        while p < len {
+            if self.bytes[p] == b'"'
+                && self.bytes[p + 1..].iter().take(hashes).filter(|&&c| c == b'#').count() == hashes
+            {
+                let value = self.source[body_start..p].to_string();
+                self.pos = p + 1 + hashes;
+                return Ok(Token::new(TokenKind::StringLit(value), Span::new(start, self.pos)));
+            }
+            p += 1;
+        }
+        self.pos = len;
+        let close = format!("\"{}", "#".repeat(hashes));
+        Err(Diag::lex(
+            Span::new(start, len),
+            format!(
+                "unterminated raw string literal: nothing closes it with `{close}`{}",
+                if hashes == 0 {
+                    " (a raw string holding a `\"` opens with `r#\"` and closes with `\"#`)"
+                } else {
+                    ""
+                }
+            ),
+        ))
     }
 
     /// Lex a block string (spec/tokens.md § Block strings): a fence of
@@ -1360,6 +1402,26 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    /// GH #1948: `r"…"` reads no escape; `r#"…"#` carries a `"`.
+    #[test]
+    fn lex_raw_string() {
+        let ks = kinds(r####"r"a\b{c}" r#"say "hi"\n"# r"" r##"x"#y"## r x"####);
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::StringLit(r"a\b{c}".into()),
+                TokenKind::StringLit(r#"say "hi"\n"#.into()),
+                TokenKind::StringLit(String::new()),
+                TokenKind::StringLit(r##"x"#y"##.into()),
+                TokenKind::Ident("r".into()),
+                TokenKind::Ident("x".into()),
+                TokenKind::Eof,
+            ]
+        );
+        let err = lex(r##"let s = r#"open"; "##).unwrap_err();
+        assert!(err[0].message.contains("unterminated raw string"), "{:?}", err);
     }
 
     #[test]

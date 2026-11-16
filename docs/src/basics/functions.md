@@ -33,6 +33,10 @@ fn double(n: Int) -> Int {
 }
 ```
 
+The final expression is checked exactly as `return` would check it: against the return type (the success type of a `fallible(E)` function or method), with the same conversions — a set member becomes its set, an `Int` widens to a `Float`.
+
+In a function with no return type, including a `() fallible(E)` one, `return` carries no value, not even a call that returns nothing: write `touch() or fail err;` and then `return;`, not `return touch() or fail err;`.
+
 The last statement of a body that returns a value is its value too when it is a `match`, an `if … else` or a block: each arm's value is returned, whatever the type (an `Int`, a `String`, a record, an enum, a `Decimal`):
 
 ```hale
@@ -100,6 +104,12 @@ fn main() {
 
 `Numeric` is the only type parameter bound in Hale; there is no user-defined trait bound syntax (declarations like `<T: Eq>` are rejected).
 
+A type argument is a primitive or a declared type: a record, an enum, an alias, a locus, an interface or a perspective (`id(Counter { n: 3 })` specializes `id` at the locus). Each specialization is compiled under a name its arguments spell, and an array, a tuple or a fn type spells none yet, so `hale check` refuses a call like `id([1, 2])` at the callee; wrap the value in a record (`type Pair { v: [Int; 2]; }`). A locus method cannot be generic itself (`fn twice<T>(…)` inside a locus is refused at its name): declare it as a free generic fn.
+
+A call takes each type argument from the argument in the position that names it. A generic fn from an imported seed is called through its alias (`lib::id(3)`), and a generic `fallible(E)` fn is addressed with `or` like any fallible call (`parse(s) or 0`). An argument whose type the compiler can't name pins nothing, so `hale check` refuses `id(self.slot)` (a capacity slot is used through its operations) and `id(println("x"))` (no value) at the argument. A generic fn has no single type, so its name is not a value: `let g = id;` is refused; call it, or pass a fn written over the concrete types that calls it.
+
+A generic function that returns a generic type of its parameter (`fn box_of<T>(x: T) -> Box<T>`) returns, at each call, the instantiation its arguments name: `box_of(7)` is a `Box<Int>`, so `box_of(7).v` is an `Int` and is checked as one.
+
 When a generic locus (such as `Holder<T>`) calls a generic function with `self.value` (or a local bound from `self.value`), the compiler monomorphizes the call for each concrete instantiation (`Holder<Int>`, `Holder<String>`). Default expressions in `params` use the declaring locus's type arguments.
 
 ## Function Pointers (`fn(T) -> U`)
@@ -118,6 +128,8 @@ fn main() {
 }
 ```
 
+Any expression that evaluates to a fn value can be called directly: a call that returns one (`pick()(2)`), an array element (`handlers[i](req)`), a tuple part (`pair.0(x)`), or an `if` that picks one (`(if fast { dbl } else { tri })(5)`). A fn value can return any type, a `StringView` included, and so can an interface or perspective method.
+
 ### Function Value Capabilities and Restrictions
 
 Hale function values are thin function pointers with no environment capture. There is no inline closure syntax (`|x| x + captured`).
@@ -132,6 +144,8 @@ Hale function values are thin function pointers with no environment capture. The
 | Fallible function (`-> T fallible(E)`) | No | Indirect calls cannot attach an `or` clause; wrap in an infallible helper (`fn parse_or(s: String) -> Int { return parse(s) or 0; }`). |
 | Function returning a fresh locus (`fn make() -> Worker { return Worker { }; }`) | Yes | Caller owns the newly constructed locus. If the return value is discarded (`f();`), the locus dissolves immediately at `;`. |
 | Function returning a passed-in locus (`fn pick(w: Worker) -> Worker { return w; }`) | No | Cannot alias or forward an existing locus through a function pointer; call directly instead. |
+
+A call through a function value is checked against its type as a direct call is checked against the function: each argument against its parameter (an `Int` argument widens to a `Float` parameter), and the argument count. A function type has no defaults, so a call through `f: fn(Int, Int) -> Int` passes both arguments.
 
 ### Identifier Shadowing in Calls
 
