@@ -1303,6 +1303,7 @@ fn dna_fixture_set_is_complete() {
             "org_test.hl",
             "organism_face_test.hl",
             "organization_habitat_test.hl",
+            "organization_list_test.hl",
             "organization_source_request_test.hl",
             "organization_source_review_test.hl",
             "owners_test.hl",

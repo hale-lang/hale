@@ -964,6 +964,29 @@ habitat's own `body` and `face` are handed neither. Written into
 `body.yaml` at every `up`, graft and apply on the habitat's machine, so a
 body made before the habitat recorded its face is told at the next.
 
+**And every organization the habitat holds.** An organism's face lists
+its siblings beside its habitat: its head asks the habitat's head for
+them, `GET /api/hale/v1/head/organizations` on the habitat face's origin
+(`HALE_DNA_HABITAT_FACE`; the face passes the path to its head), and lays
+them on the face's `Index` read as `organizations`, the habitat first and
+then each organism with the link that hands a signed-in visitor into its
+face (`spec/dna.md`, Every organization of its habitat). The habitat
+answers that read to the faces it keeps and to nobody else, with a
+credential each already holds: the asking head presents as its bearer a
+proof of its own launch token, the lowercase hex SHA-256 of
+`hale-organizations-v1`, a newline and the token, and the habitat's head
+accepts it when it is the proof of the token in
+`<habitat>/allocations/<key>/face-state/head.token` of an organism it
+holds (the file its hand-in route reads), comparing it with every
+candidate. No secret is drawn for it and no session opens it; the token
+itself is never sent, and opens nothing here. A missing, wrong or unknown
+proof is refused alike (401). The habitat answers before its sign-in's
+gate, with `{name, organisms: [{name, state}]}`: its name, and each
+organism it holds by the name it was grafted under, `up` while its face
+accepts connections, else `grafted`; no key, address or anything else of
+a graft. The links are the organism's own to make, on the origin it was
+handed.
+
 **The body stays on the habitat's machine**, wherever the organism's
 services are placed: it runs the habitat's image with the habitat's
 directory and vault mounted, which another host does not hold, and it

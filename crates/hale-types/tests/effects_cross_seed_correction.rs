@@ -208,10 +208,15 @@ fn api() {
     // The org read's habitat (`OrganizationHabitat` and the fns of
     // org_chart.hl that read it) adds five rows on each side, none of them a
     // row the correction changes.
+    // The habitat's organizations list (organization_list.hl) adds nine
+    // rows on each side; one of them, `fetch_organizations`, dials the
+    // habitat through `dna::reach_host`, which reads
+    // `HALE_DNA_LOOPBACK_HOST`, so it gains `env` through the core as the
+    // probes above do, which only the renames-aware walk sees.
     pinned(
         "api",
-        769,
-        771,
+        778,
+        780,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -261,6 +266,7 @@ fn api() {
         applied_at  does={syscall,env,alloc}
         applies_dir  does={env,alloc}
         apply_running  does={syscall,block,alloc}
+        fetch_organizations  does={syscall,block,time,env,alloc}
         habitat_alerts  does={syscall,block,env,alloc}
         habitat_allocate_forge  does={syscall,block,env,alloc}
         habitat_apply  does={syscall,block,time,env,alloc}

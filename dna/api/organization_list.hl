@@ -1,0 +1,228 @@
+// dna/api/organization_list.hl — every organization a habitat holds, as an
+// organism's own face lists them (`organizations` on its Index read).
+//
+// An organism the habitat keeps knows its habitat (`OrganizationHabitat`,
+// org_chart.hl), but not its siblings: those are the habitat's record's.
+// Its head asks the habitat's head for them over the habitat's face
+// (`GET /api/hale/v1/head/organizations`), at most once a cache's life
+// (`ORGANIZATIONS_TTL_NS`), and lays them on the Index read the face's
+// relay answers, the habitat first, then every organism it grafted, each
+// with the absolute link that hands a signed-in visitor into its face.
+//
+// The habitat answers that read to the faces it keeps and to nobody else.
+// The credential is one the organism's head already holds and the habitat
+// already reads: the head's own launch token, which the habitat keeps in
+// its directory (`<habitat>/allocations/<key>/face-state/head.token`) and
+// reads for its hand-in route. The head never sends the token itself: it
+// sends a proof of it (`organizations_proof`), a hash of the token under
+// a tag of this read's own, which opens this read and nothing else. The answer is names and
+// states alone; the links are the organism's own to make, on the habitat
+// face's origin it was handed.
+
+// The path the habitat's head answers the list on.
+const ORGANIZATIONS_PATH: String = "/api/hale/v1/head/organizations";
+// How long an organism's head keeps the list it read (or the empty one it
+// fell back to) before it asks again: a face refreshing its screens does
+// not reach the habitat on every read.
+const ORGANIZATIONS_TTL_NS: Int = 30000000000;
+// What bounds the ask: the dial, and the answer once connected. A habitat
+// that does not answer costs the Index read this much once a cache's life.
+const ORGANIZATIONS_DIAL: Duration = 2s;
+const ORGANIZATIONS_TIMEOUT_NS: Int = 5000000000;
+// The most organisms the list carries.
+const ORGANIZATIONS_CAP: Int = 200;
+
+// The proof an organism's head presents for the list, of its launch token
+// `token`: the SHA-256, in lowercase hex, of the tag
+// `hale-organizations-v1`, a newline and the token, so a proof is good for
+// this read and is no hash of the token any other use computes; "" for no
+// token.
+fn organizations_proof(token: String) -> String {
+    let t = dna::trim_nl(token);
+    if len(t) == 0 { return ""; }
+    return std::hex::encode(
+        std::crypto::sha256(std::bytes::from_string("hale-organizations-v1\n" + t)),
+    );
+}
+
+// Whether `proof` is that of the launch token of the face of an organism
+// the habitat of record `j` holds, its faces' state under `habitat_dir`.
+@bounded_by(j)
+fn organizations_proof_held(j: dna::Journal, habitat_dir: String, proof: String) -> Bool {
+    if len(proof) != 64 || len(habitat_dir) == 0 { return false; }
+    let grafted = dna::habitat_latest(j, "habitat.grafted");
+    let mut found = false;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "habitat.grafted"
+            && dna::habitat_holds(grafted, e.entity, i)
+            && len(e.entity) > 0
+            && !std::str::contains(e.entity, "/")
+            && e.entity != ".."
+        {
+            let token = dna::trim_nl(
+                std::io::fs::read_file(
+                    habitat_dir + "/allocations/" + e.entity + "/face-state/head.token",
+                )
+                or "",
+            );
+            // every candidate is compared, so the answer's time names none
+            if len(token) > 0 && token_matches(proof, organizations_proof(token)) {
+                found = true;
+            }
+        }
+        i = i + 1;
+    }
+    return found;
+}
+
+// The habitat's answer to the list: its name, and each organism it holds
+// by the name a person knows it by, `up` while its face answers, else
+// `grafted` (as the index lists them, `index_organisms`):
+// `{"name": <habitat>, "organisms": [{"name", "state"}]}`.
+@bounded_by(j)
+fn habitat_organization_list(j: dna::Journal, cap: Int) -> String {
+    let mut habitat = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "habitat.profile" {
+            let named = std::json::find_string_field(e.body, "name");
+            habitat = if len(named) > 0 { named } else { "local" };
+        }
+        i = i + 1;
+    }
+    let grafted = dna::habitat_latest(j, "habitat.grafted");
+    let out = std::json::Builder { };
+    out.begin_object();
+    out.string_field("name", habitat);
+    out.begin_array_field("organisms");
+    let mut n = 0;
+    i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        if e.kind == "habitat.grafted" && dna::habitat_holds(grafted, e.entity, i) {
+            let face = std::json::find_string_field(e.body, "face");
+            let name = std::json::find_string_field(e.body, "name");
+            out.begin_object();
+            out.string_field("name", if len(name) > 0 { name } else { e.entity });
+            out.string_field(
+                "state",
+                if len(face) > 0 && index_answers(face) { "up" } else { "grafted" },
+            );
+            out.end_object();
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    out.end_array();
+    out.end_object();
+    return out.result();
+}
+
+// Whether `name` may stand in a list and a link: a name a person knows an
+// organism by, no control character, no `/`, at most 128 bytes.
+fn organization_name_ok(name: String) -> Bool {
+    if len(name) == 0 || len(name) > 128 || name == "." || name == ".." { return false; }
+    let mut i = 0;
+    while i < len(name) {
+        let c = std::str::byte_at_unchecked(name, i);
+        if c < 32 || c == 127 || c == 47 || c == 92 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The list an organism's face shows, of the `habitat` it was handed and the
+// habitat head's `answer` (`habitat_organization_list`): the habitat first
+// (`up`, it answered; its link `<face>/organization`), then each organism,
+// its link the habitat face's hand-in, `<face>/organisms/<name>/face`, as
+// `[{"name", "state", "face_link"}]`. "[]" when the habitat is unknown or
+// the answer is not one.
+fn organizations_for(habitat: OrganizationHabitat, answer: String) -> String {
+    if len(habitat.name) == 0 || len(habitat.face) == 0 { return "[]"; }
+    if !std::str::starts_with(std::str::trim(answer), "{") { return "[]"; }
+    let organisms = std::json::find_field_raw(answer, "organisms");
+    if !std::str::starts_with(organisms, "[") { return "[]"; }
+    let out = std::json::Builder { };
+    out.begin_array();
+    out.begin_object();
+    out.string_field("name", habitat.name);
+    out.string_field("state", "up");
+    out.string_field("face_link", habitat.face + "/organization");
+    out.end_object();
+    let mut seen = "\n" + habitat.name + "\n";
+    let mut n = 0;
+    let mut it = std::json::array_first(organisms);
+    while !it.done && n < ORGANIZATIONS_CAP {
+        let name = std::json::find_string_field(it.element, "name");
+        let state = std::json::find_string_field(it.element, "state");
+        if organization_name_ok(name) && !std::str::contains(seen, "\n" + name + "\n") {
+            out.begin_object();
+            out.string_field("name", name);
+            out.string_field("state", if state == "up" { "up" } else { "grafted" });
+            out.string_field(
+                "face_link",
+                habitat.face + "/organisms/" + dna::url_encode(name) + "/face",
+            );
+            out.end_object();
+            seen = seen + name + "\n";
+            n = n + 1;
+        }
+        it = std::json::array_next(it);
+    }
+    out.end_array();
+    return out.result();
+}
+
+// The Index read `body` as the face's relay answers it, with the list
+// `organizations` beside its fields (a JSON array, carried as a string as
+// the read's other lists are): `body` as it is when it is no object, or
+// already carries one.
+fn with_organizations(body: String, organizations: String) -> String {
+    let b = std::str::trim(body);
+    if !std::str::starts_with(b, "{") || !std::str::ends_with(b, "}") { return body; }
+    if len(std::json::find_field_raw(b, "organizations")) > 0 { return body; }
+    let inner = std::str::trim(b[1..(len(b) - 1)]);
+    let field = "\"organizations\":\"" + std::json::escape_string(organizations) + "\"";
+    return "{" + inner + (if len(inner) > 0 { "," } else { "" }) + field + "}";
+}
+
+// The habitat origin `face` (`http://<host>:<port>`) as `<host>\t<port>`,
+// "" for anything else (a path, another scheme, no port).
+fn organizations_origin(face: String) -> String {
+    if !std::str::starts_with(face, "http://") { return ""; }
+    let rest = face[7..len(face)];
+    if std::str::contains(rest, "/") || std::str::contains(rest, "@") { return ""; }
+    let colon = std::str::index_of(rest, ":");
+    if colon < 1 || colon == len(rest) - 1 { return ""; }
+    let port = std::str::parse_int(rest[(colon + 1)..len(rest)]) or 0;
+    if port < 1 || port > 65535 { return ""; }
+    return rest[0..colon] + "\t" + to_string(port);
+}
+
+// The list from the habitat's head, asked over the habitat's face origin
+// as this process reaches it (`dna::reach_host`: a container reaches its
+// machine's loopback by the name the habitat hands it) under the proof of
+// `token`: "[]" when the habitat is unknown, does not answer, or refuses.
+fn fetch_organizations(habitat: OrganizationHabitat, token: String) -> String {
+    if len(habitat.name) == 0 || len(habitat.face) == 0 { return "[]"; }
+    let proof = organizations_proof(token);
+    let origin = organizations_origin(habitat.face);
+    if len(proof) == 0 || len(origin) == 0 { return "[]"; }
+    let tab = std::str::index_of(origin, "\t");
+    let port = std::str::parse_int(origin[(tab + 1)..len(origin)]) or 0;
+    let up = exchange_at(
+        dna::reach_host(origin[0..tab]),
+        port,
+        "GET",
+        ORGANIZATIONS_PATH,
+        "Authorization: Bearer " + proof + "\r\nAccept: application/json\r\n",
+        "",
+        ORGANIZATIONS_DIAL,
+        ORGANIZATIONS_TIMEOUT_NS,
+    );
+    if !up.ok || up.status != 200 { return "[]"; }
+    return organizations_for(habitat, up.body);
+}
