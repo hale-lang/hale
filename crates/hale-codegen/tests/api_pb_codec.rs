@@ -665,7 +665,7 @@ fn main() {{ Desk {{ }}; }}
     // the descriptor of an enum and of a oneof message is the compiled text's
     use hale_types::surface_doc::{ClientError, ClientMember, ClientModel};
     use hale_types::surfaces::{FieldSchema, TypeSchema};
-    let status = FieldSchema::Enum { name: "Status".to_string(), variants: ["Up", "Down", "Gone"].iter().map(|v| (v.to_string(), Vec::new())).collect(), classes: Vec::new() };
+    let status = FieldSchema::Enum { name: "Status".to_string(), variants: ["Up", "Down", "Gone"].iter().map(|v| (v.to_string(), Vec::new())).collect(), classes: Vec::new(), wire: Default::default() };
     let int = || FieldSchema::Scalar { json: "integer", hale_type: None, unit: None };
     let shape = FieldSchema::Enum {
         name: "Shape".to_string(),
@@ -676,6 +676,7 @@ fn main() {{ Desk {{ }}; }}
             ("Mood".to_string(), vec![status.clone()]),
         ],
         classes: Vec::new(),
+        wire: Default::default(),
     };
     let holder = TypeSchema {
         properties: vec![

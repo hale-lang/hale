@@ -2933,7 +2933,9 @@ pub enum FieldSchema {
     /// object per variant with values, keyed by the variant. `classes` are
     /// the variants that declare an error class, with it (`("Missing",
     /// "not_found")`), in declaration order: none for most enums.
-    Enum { name: String, variants: Vec<(String, Vec<FieldSchema>)>, classes: Vec<(String, String)> },
+    /// `wire` holds what the variants' `json:` tags say (GH #1951 item 5):
+    /// their wire names and the catch-all.
+    Enum { name: String, variants: Vec<(String, Vec<FieldSchema>)>, classes: Vec<(String, String)>, wire: EnumWire },
     /// A wire map (`bounded[T; N] indexed_by <key>`, spec/api.md § Codecs):
     /// `{"type": "object", "additionalProperties": <value>, "maxProperties":
     /// N, "x-hale-key": "<key>"}`, the value the record `name`'s schema
@@ -2949,6 +2951,56 @@ pub enum FieldSchema {
     Any,
     /// A type the codec does not carry (law 5 refuses its row).
     Unformed,
+}
+
+/// GH #1951 item 5: what an enum's variant tags say of its JSON wire
+/// (spec/api.md § Codecs): the variants a `json:` tag renames, each with
+/// its wire name, and the catch-all (`json:",other"`). The default, no
+/// rename and no catch-all, is every enum without a variant tag, whose
+/// variants cross as their names.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EnumWire {
+    /// `(variant, wire name)` of each renamed variant, in declaration order.
+    pub renames: Vec<(String, String)>,
+    /// The catch-all variant, and whether it is lossless: it holds the
+    /// string it caught (its one value a `String`), and has no wire name.
+    pub other: Option<(String, bool)>,
+}
+
+impl EnumWire {
+    pub fn of(vs: &[hale_syntax::ast::EnumVariant]) -> EnumWire {
+        use hale_syntax::json_gen::{enum_other, json_tag_key, variant_wire_name};
+        EnumWire {
+            renames: vs
+                .iter()
+                .filter(|v| json_tag_key(v.tag.as_deref()).is_some())
+                .map(|v| (v.name.name.clone(), variant_wire_name(v)))
+                .collect(),
+            other: enum_other(vs).map(|(v, lossless)| (v.name.name.clone(), lossless)),
+        }
+    }
+
+    /// Whether the tags say nothing: every variant crosses as its name and
+    /// an unknown one is refused.
+    pub fn is_plain(&self) -> bool {
+        self.renames.is_empty() && self.other.is_none()
+    }
+
+    /// Variant `v`'s name on the JSON wire.
+    pub fn name<'a>(&'a self, v: &'a str) -> &'a str {
+        self.renames.iter().find(|(n, _)| n == v).map_or(v, |(_, w)| w.as_str())
+    }
+
+    /// Whether `v` is the lossless catch-all, which crosses as the string it
+    /// holds and is no wire name of the enum's.
+    pub fn is_lossless_other(&self, v: &str) -> bool {
+        matches!(&self.other, Some((o, true)) if o == v)
+    }
+
+    /// The catch-all's variant name, if the enum has one.
+    pub fn other_variant(&self) -> Option<&str> {
+        self.other.as_ref().map(|(o, _)| o.as_str())
+    }
 }
 
 /// A field's schema as its `json:` tag has it written: `json:"key,string"`
@@ -3179,7 +3231,7 @@ impl<'a> Schemas<'a> {
                     }
                     out_variants.push((v.name.name.clone(), values));
                 }
-                FieldSchema::Enum { name: self.shapes.display_name(name), variants: out_variants, classes }
+                FieldSchema::Enum { name: self.shapes.display_name(name), variants: out_variants, classes, wire: EnumWire::of(variants) }
             }
             TypeClass::Other => FieldSchema::Unformed,
         }

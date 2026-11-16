@@ -435,6 +435,48 @@ fn an_imported_surface_is_consumed_never_served() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// GH #1951 item 5: a string enum whose values are not all identifiers
+/// imports as an enum of PascalCase variants, each tagged with its value
+/// where the two differ, so the codec reads and writes the values; one
+/// whose values a tag cannot hold stays a `String`.
+#[test]
+fn a_string_enum_of_non_identifier_values_imports_as_tagged_variants() {
+    let dir = unique_dir("enum_tags");
+    std::fs::write(
+        dir.join("probe.json"),
+        r#"{"openapi": "3.0.3", "info": {"title": "Probe", "version": "1"},
+            "paths": {"/order": {"get": {"operationId": "order",
+              "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+                "type": "object", "required": ["kind", "frame", "odd"],
+                "properties": {"kind": {"type": "string", "enum": ["limit", "stop-limit", "Market"]},
+                               "frame": {"type": "string", "enum": ["1m", "1h", "type"]},
+                               "odd": {"type": "string", "enum": ["a,b", "c"]}}}}}}}}}}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.hl"), MAIN).unwrap();
+    let out = run(&dir, &["api", "import", "probe.json", "--as", "Probe"]);
+    assert!(out.status.success(), "import: {}", text(&out.stderr));
+    let src = std::fs::read_to_string(dir.join("probe.hl")).unwrap();
+    for want in [
+        "type ProbeOrderResponseKind = enum { Limit `json:\"limit\"`, StopLimit `json:\"stop-limit\"`, Market };",
+        "type ProbeOrderResponseFrame = enum { V1m `json:\"1m\"`, V1h `json:\"1h\"`, Type `json:\"type\"` };",
+        // a comma would end the tag's name: the field stays a string
+        "odd: String;",
+    ] {
+        assert!(src.contains(want), "missing `{want}` in:\n{src}");
+    }
+    let check = run(&dir, &["check", "."]);
+    assert!(check.status.success(), "check: {}", text(&check.stderr));
+    // the description carries the values as the wire names
+    let schema = run(&dir, &["check", "--api", "--surface", "Probe", "--json-schema", "."]);
+    assert!(schema.status.success(), "{}", text(&schema.stderr));
+    let doc = text(&schema.stdout);
+    assert!(doc.contains("\"stop-limit\""), "{doc}");
+    assert!(doc.contains("\"x-hale-variants\""), "{doc}");
+    assert_eq!(run(&dir, &["api", "drift", "."]).status.code(), Some(0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_property_spelled_like_a_presence_flag_stays_a_property() {
     let dir = unique_dir("flags");

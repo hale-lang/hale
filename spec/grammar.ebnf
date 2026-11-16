@@ -1101,10 +1101,17 @@ struct_field      = IDENTIFIER , ":" , type_expr , [ "indexed_by" , IDENTIFIER ,
    pairs that downstream features parse (the binary-pack layer reads a
    `wire:` key; ignored otherwise). Shares the backtick lexing with time
    literals — a time literal only appears in expression position, a tag
-   only in field-declaration position. *)
+   only after a field's or an enum variant's declaration. *)
 field_tag         = "`" , { ? any char except backtick ? } , "`" ;
 
-enum_variant      = IDENTIFIER , [ "(" , type_expr , { "," , type_expr } , ")" ] ;
+enum_variant      = [ "@" , IDENTIFIER ] , IDENTIFIER ,
+                    [ "(" , type_expr , { "," , type_expr } , ")" ] , [ field_tag ] ;
+(* `@not_found Missing`: the variant's error class (spec/api.md § Error
+   classes). GH #1951 item 5: a variant takes one metadata tag after its
+   values, as a field does; the codecs read its `json:` key, a wire name
+   (``Sell `json:"sell"` ``) and the option `other`, the enum's catch-all
+   (``Other(String) `json:",other"` ``, spec/api.md § Codecs). A set's
+   member takes none: a tag after one is a parse error naming the rule. *)
 
 generic_params    = "<" , generic_param , { "," , generic_param } , ">" ;
 generic_param     = IDENTIFIER , [ ":" , type_expr ] ;

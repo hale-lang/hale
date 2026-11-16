@@ -308,7 +308,9 @@ struct's fields in declaration order as `<field>:<tag>` joined by `;`
 (`order:i;notional:q(cent)`, the tags of `spec/units.md` § Layout and
 the wire), a nested struct or enum tagged by its own contract shape
 hash (`#<hash>`), an enum `=enum(<variants>)` (a variant's declared
-error class after it, `Missing@not_found`, § Error classes), and any other type `=`
+error class after it, `Missing@not_found`, § Error classes, then its
+`json:` wire name, `Sell="sell"`, and the catch-all mark, `!other`, §
+Codecs), and any other type `=`
 and its tag. The form is deep, so a field changed inside a nested type,
 or a variant added to an enum error type, moves every digest built on
 it. A flat struct's contract shape is its payload contract's shape, so
@@ -2705,6 +2707,73 @@ each member a variant of one value named for its type: `type Inbound =
 NewOrder | Cancel;` is `{"Cancel": {"id": 1}}`, and its description the
 `oneof` above.
 
+**A variant's wire name and the catch-all** (GH #1951 item 5). A variant
+takes a metadata tag after its values, as a field does, and the codecs
+read its `json:` key: ``type Side = enum { Buy `json:"buy"`, Sell
+`json:"sell"` };``. The key renames the variant on the JSON wire, in the
+api codecs and the record codecs (`from_json` / `to_json`) alike: a
+payload-free variant is written and read as it (`"sell"`), a variant with
+values is the key of the object holding them (``Fill(Int) `json:"fill"` ``
+is `{"fill": 3}`), and the declared name is no longer read (`"Sell"` is
+`wrong_type`, as any unknown name). An untagged variant keeps its name.
+Wire names are distinct after renaming: two variants that would cross as
+one name are refused at the second, naming both. The tag's one option is
+`other`, which makes the variant the enum's **catch-all**, at most one per
+enum:
+
+- A lossless catch-all holds the string: ``Other(String) `json:",other"` ``
+  (its one value a `String`, an alias of one included). A JSON string that
+  names no payload-free variant decodes to it holding the string, its
+  escapes read; it writes the string back as a JSON string. It has no wire
+  name of its own, so a name in its tag is refused, and its name is never
+  an object key (`{"Other": "x"}` is `wrong_type`).
+- A lossy catch-all is payload-free: ``Unknown `json:",other"` `` (or
+  `json:"unknown,other"`, renamed too). Such a string decodes to it, which
+  keeps only that the string was unknown, and it writes its own wire name.
+
+Only a string is caught: an object whose key names no variant with values
+stays `wrong_type`, and a payload variant's name sent as a bare string is
+the catch-all's. A catch-all holding anything else (`Other(Int)`, two
+values), a second catch-all, and any option but `other` (`string` and
+`hex` are a field's) are refused at the variant; other keys of the tag
+are ignored, as on a field. A lossless catch-all normalizes: it writes
+the string it holds whatever it is, so `Other("buy")` writes `"buy"`,
+which reads back as `Buy` where a variant is named so. Hold a catch-all's
+string only when it names no variant, or compare the two through the
+wire. A lossless catch-all makes the enum one with payloads, with the
+restrictions an enum with payloads has today: it is not a list's element
+(a `bounded` holds no enum with payloads), a map of values' value, a
+route's path or query parameter, or a bus topic's payload field (GH
+#1951 plans a `bounded` that holds an enum with payloads, and a bus wire
+that carries one); a lossy one keeps the enum payload-free. A set's
+member takes no tag, its type being its discriminant: a tag after one is
+a parse error.
+
+The description lists the wire names: a payload-free enum's `enum` holds
+them, an object variant's property is keyed by its wire name, and an
+enum whose variants are tagged adds `"x-hale-variants"`, an object of each
+variant's declared name and its wire name in declaration order (a lossless
+catch-all, which has none, is left out of `enum` and of the map), and
+`"x-hale-other": "<Variant>"` naming the catch-all, which says that a
+string outside `enum` is accepted rather than refused: ``{"type":
+"string", "enum": ["spot", "Margin"], "x-hale-type": "Venue",
+"x-hale-variants": {"Spot": "spot", "Margin": "Margin"}, "x-hale-other":
+"Other"}``. An enum with no tag is described as before. The renames are
+the JSON wire's: protobuf keeps the variants' numbers and the `.proto` its
+`<Enum>_<Variant>` identifiers and `oneof` member names, so a renamed
+variant crosses protobuf as it did before the tag. A lossy catch-all makes
+a number no variant has decode to it (the `.proto` notes it on the
+enum, `// Hale: a number no value has reads as Kind_Unknown`), where such
+a number is otherwise `wrong_type`; a lossless one is the `oneof`'s
+`string` member, as any variant of one `String`. The digest folds the tags
+in: a renamed variant is `<Variant>="<wire>"` in its enum's contract shape
+and the catch-all is marked `!other` (`=enum(Buy="buy"|Other(s)!other)`),
+so retagging a variant moves the hash, and an enum whose variants carry no
+`json:` tag keeps the shape it had. The generated Hale client declares the
+same tags, so its codec speaks the server's wire; the TypeScript and
+JavaScript clients type the wire names (`"spot" | "Margin"`) and add
+`(string & {})` (`string` in JavaScript) where the enum has a catch-all.
+
 **A map** is a list keyed by one of its records' fields (2026-10-17):
 `checks: bounded[Check; 16] indexed_by name;`, the `@form(hashmap)` model
 projected onto a value (spec/forms.md), no new type. The clause's rules
@@ -3143,8 +3212,10 @@ client:
   presence pair in Hale and an optional property (`text?: string`), left
   out of the object when absent, in TypeScript, and a presence triple's
   `text?: string | null`, its `null` sent as `null`; an enum is the server's
-  enum in Hale and in TypeScript the union of its variants as the wire
-  writes them (`"Empty" | { Circle: number } | { Rect: [number, number] }`);
+  enum in Hale, its variants' `json:` tags with it, and in TypeScript the
+  union of its variants as the wire writes them (`"Empty" | { Circle:
+  number } | { Rect: [number, number] }`), by their wire names, with
+  `(string & {})` beside them where the enum has a catch-all (§ Codecs);
   a wire map is its records in either, `bounded[T; N] indexed_by <key>` in
   Hale and an array in TypeScript, keyed into the wire's object and back
   by the client; any shape the JSON codec does not carry is refused, never
@@ -3304,8 +3375,14 @@ as one when it serves one by `GET`, and as an MCP endpoint otherwise
   key that would name a field `has_…` or `clear_…`, which reads as another
   field's presence flag, is `key_has_…`, its key in the tag); a
   property the object does not require, or that admits `null`, is a
-  presence pair (§ Codecs); a string enum whose values are all names is an
-  enum; `integer`, `number`, `boolean` and `string` are `Int`, `Float`,
+  presence pair (§ Codecs); a string enum is an enum, its variants the
+  values when every value is a name, and otherwise (GH #1951 item 5) a
+  PascalCase variant per value with the value as its `json:` wire name
+  where the two differ (``StopLimit `json:"stop-limit"` ``, ``V1m
+  `json:"1m"` ``, a name taken twice numbered), so the codec reads and
+  writes the values (§ Codecs); one whose values a tag cannot hold (an
+  empty value, or one with a quote, a backtick, a backslash or a comma)
+  stays a `String`, as does a value not a string; `integer`, `number`, `boolean` and `string` are `Int`, `Float`,
   `Bool` and `String`; an array with a `maxItems` of at most 1024 is a
   `bounded` list; a `$ref` inside the document is the type it names,
   declared once. What the codec cannot carry is a `std::json::Value`,

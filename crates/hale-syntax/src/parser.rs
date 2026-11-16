@@ -6711,6 +6711,7 @@ impl Parser {
                 self.bump();
             }
             let ty = self.parse_type_expr()?;
+            self.refuse_member_tag(kind.is_none(), false)?;
             // GH #1530 step 1: a set type, `type S = A | B | C;`. Untagged:
             // each member is a named type and is its own discriminant, so
             // the set is an enum whose variants are named for their
@@ -6719,6 +6720,7 @@ impl Parser {
                 let mut members = vec![ty];
                 while self.eat(&TokenKind::Pipe) {
                     members.push(self.parse_type_expr()?);
+                    self.refuse_member_tag(true, true)?;
                 }
                 let end = self.expect(TokenKind::Semi, ";")?.span;
                 let mut variants = Vec::new();
@@ -6739,7 +6741,14 @@ impl Parser {
                         ));
                     }
                     let last = path.segments.last().expect("a path has a segment").clone();
-                    variants.push(EnumVariant { name: last, fields: vec![m.clone()], class: None, span: *span, member: true });
+                    variants.push(EnumVariant {
+                        name: last,
+                        fields: vec![m.clone()],
+                        class: None,
+                        span: *span,
+                        member: true,
+                        tag: None,
+                    });
                 }
                 return Ok(TypeDecl {
                     display: None,
@@ -6977,6 +6986,29 @@ impl Parser {
         })
     }
 
+    /// GH #1951 item 5: a backtick tag after a set's member (or after an
+    /// alias's type) is refused here, where it was written. A member is
+    /// its own discriminant and crosses the codecs named for its type, so
+    /// it has no wire name to rename and no catch-all to be; a variant of
+    /// a declared enum takes a tag (`type S = enum { A(A) `json:"a"` };`).
+    fn refuse_member_tag(&mut self, set_or_alias: bool, in_set: bool) -> Result<(), Diag> {
+        if !set_or_alias || !matches!(self.peek(), TokenKind::TimeLit(_)) {
+            return Ok(());
+        }
+        let at = self.peek_token().span;
+        let set = in_set || matches!(self.peek_at(1), TokenKind::Pipe);
+        Err(Diag::parse(
+            at,
+            if set {
+                "a set's member takes no tag: it is its own discriminant and crosses the codecs named for its \
+                 type, so it has no wire name to rename and is no catch-all; to rename one, declare an enum \
+                 whose variant holds it (`type S = enum { A(A) `json:\"a\"`, B(B) };`)"
+            } else {
+                "an alias takes no tag: a metadata tag follows a record's field or an enum's variant"
+            },
+        ))
+    }
+
     fn parse_enum_variant(&mut self) -> Result<EnumVariant, Diag> {
         // `@not_found Missing`: the variant's error class (spec/api.md §
         // Error classes), any word here; the checker names the classes.
@@ -6999,8 +7031,19 @@ impl Parser {
             }
             self.expect(TokenKind::RParen, ")")?;
         }
+        // GH #1951 item 5: an optional metadata tag after the values, as
+        // after a struct field (``Sell `json:"sell"` ``); the backtick
+        // string is a tag in this position, never a time literal
+        let tag = if matches!(self.peek(), TokenKind::TimeLit(_)) {
+            match self.bump().kind {
+                TokenKind::TimeLit(body) => Some(body),
+                _ => unreachable!("peeked TimeLit"),
+            }
+        } else {
+            None
+        };
         let span = name.span;
-        Ok(EnumVariant { name, fields, class, span, member: false })
+        Ok(EnumVariant { name, fields, class, span, member: false, tag })
     }
 
     fn parse_generic_params_opt(&mut self) -> Result<Vec<GenericParam>, Diag> {

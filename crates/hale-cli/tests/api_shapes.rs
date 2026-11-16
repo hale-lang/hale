@@ -764,3 +764,136 @@ fn a_json_value_is_built_only_by_parse() {
     assert_eq!(String::from_utf8_lossy(&r.stdout), "{\"name\":\"a\",\"config\":{\"a\": 1}} null\n", "{}", String::from_utf8_lossy(&r.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// GH #1951 item 5: an enum variant's `json:` tag. The description lists
+/// the wire names in `enum` (an object's key for a variant with values),
+/// maps each variant to its wire name (`x-hale-variants`) and names the
+/// catch-all (`x-hale-other`); the served document is the exported one. The
+/// `.proto` keeps the variants' identifiers and notes a lossy catch-all. The
+/// Hale client declares the tags, so its codec speaks the server's wire, and
+/// the TypeScript client types the wire names, `(string & {})` beside them
+/// where a catch-all takes any string.
+#[test]
+fn an_enum_variant_tag_is_described_and_carried_by_the_clients() {
+    let dir = unique_dir("enum_tags");
+    let src = dir.join("tickets.hl");
+    std::fs::write(
+        &src,
+        "type Side = enum { Buy `json:\"buy\"`, Sell `json:\"sell\"` };\n\
+         type Kind = enum { Limit `json:\"limit\"`, Unknown `json:\",other\"` };\n\
+         type Venue = enum { Spot `json:\"spot\"`, Margin, Other(String) `json:\",other\"` };\n\
+         type Event = enum { Fill(Int) `json:\"fill\"`, Cancel };\n\
+         type Ticket { side: Side; kind: Kind; venue: Venue; ev: Event; }\n\
+         locus L {\n    fn put(t: Ticket) -> Ticket { return t; }\n}\n\
+         api Tickets { rpc L::put; }\n\
+         locus Tokens {\n    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: \"bearer\", name: \"reader\" }; }\n    fn refused() -> String { return \"no\"; }\n}\n\
+         locus Nobody { fn holds(p: std::api::Principal, r: String) -> Bool { return false; } }\n\
+         main locus App {\n    params {\n        bearer: Tokens = Tokens { };\n        roles: Nobody = Nobody { };\n        l: L = L { };\n        h: api::Exposure = api::serve(Tickets, http::Rpc { bind: \"127.0.0.1:0\", codec: json, principals: self.bearer, roles: self.roles }, as: \"tickets\", receivers: { L: self.l }, bound: 4, on_full: refuse);\n    }\n    run() { std::api::run_until_stopped(self.h); }\n}\n\
+         fn main() { App { }; }\n",
+    )
+    .unwrap();
+    let out = dir.join("out");
+    let e = hale().args(["api", "export", "--surface", "Tickets", "--out"]).arg(&out).arg(&src).output().expect("export");
+    assert!(e.status.success(), "{}", String::from_utf8_lossy(&e.stderr));
+    let doc = json_of(&std::fs::read_to_string(out.join("Tickets.description.json")).unwrap());
+    let props = &doc["schemas"]["Ticket"]["properties"];
+    assert_eq!(
+        props["side"],
+        json!({"type": "string", "enum": ["buy", "sell"], "x-hale-type": "Side", "x-hale-variants": {"Buy": "buy", "Sell": "sell"}})
+    );
+    assert_eq!(
+        props["kind"],
+        json!({"type": "string", "enum": ["limit", "Unknown"], "x-hale-type": "Kind", "x-hale-variants": {"Limit": "limit", "Unknown": "Unknown"}, "x-hale-other": "Unknown"})
+    );
+    // a lossless catch-all is the string it holds: no wire name of its own
+    assert_eq!(
+        props["venue"],
+        json!({"type": "string", "enum": ["spot", "Margin"], "x-hale-type": "Venue", "x-hale-variants": {"Spot": "spot", "Margin": "Margin"}, "x-hale-other": "Other"})
+    );
+    assert_eq!(
+        props["ev"],
+        json!({
+            "oneOf": [
+                {"type": "string", "enum": ["Cancel"]},
+                {"type": "object", "properties": {"fill": {"type": "integer"}}, "required": ["fill"], "additionalProperties": false}
+            ],
+            "x-hale-type": "Event",
+            "x-hale-variants": {"Fill": "fill", "Cancel": "Cancel"}
+        })
+    );
+    let proto = std::fs::read_to_string(out.join("Tickets.proto")).unwrap();
+    assert!(proto.contains("Side_Buy = 0;") && proto.contains("Side_Sell = 1;"), "the identifiers are kept: {proto}");
+    assert!(proto.contains("// Hale: a number no value has reads as Kind_Unknown"), "{proto}");
+    assert!(proto.contains("string Other = 3;"), "the lossless catch-all is a string member: {proto}");
+
+    // the served document is the exported one
+    let bin = dir.join("tickets");
+    let b = hale().arg("build").arg(&src).arg("-o").arg(&bin).output().expect("build");
+    assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
+    let mut child = Command::new(&bin).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().expect("run");
+    let port = child::tcp_port(&mut child);
+    let start = Instant::now();
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(start.elapsed() < Duration::from_secs(30), "never listened");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let d = run(&["api", "describe", &endpoint, "--json"]);
+    let served = json_of(&d.stdout);
+    let call = run(&["api", "call", &endpoint, "L::put", "--json", "{\"side\":\"sell\",\"kind\":\"iceberg\",\"venue\":\"dark\",\"ev\":{\"fill\":2}}"]);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(d.code, 0, "{}", d.stderr);
+    assert_eq!(served["schemas"], doc["schemas"], "the served schemas are the exported ones");
+    assert_eq!(call.code, 0, "{}", call.stderr);
+    assert!(
+        call.stdout.contains("{\"side\":\"sell\",\"kind\":\"Unknown\",\"venue\":\"dark\",\"ev\":{\"fill\":2}}"),
+        "the served codec reads and writes the wire names: {}",
+        call.stdout
+    );
+
+    let hl = dir.join("client.hl");
+    let o = hale().args(["api", "client", "--surface", "Tickets", "--lang", "hale", "--out"]).arg(&hl).arg(&src).output().expect("hale client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&hl).unwrap();
+    for want in [
+        "type Side = enum { Buy `json:\"buy\"`, Sell `json:\"sell\"` };",
+        "type Kind = enum { Limit `json:\"limit\"`, Unknown `json:\",other\"` };",
+        "type Venue = enum { Spot `json:\"spot\"`, Margin, Other(String) `json:\",other\"` };",
+        "type Event = enum { Fill(Int) `json:\"fill\"`, Cancel };",
+    ] {
+        assert!(text.contains(want), "missing `{want}` in the Hale client: {text}");
+    }
+    let caller = dir.join("caller.hl");
+    std::fs::write(
+        &caller,
+        text + "\nfn main() {\n    let t = Ticket::api_decode(\"{\\\"side\\\":\\\"buy\\\",\\\"kind\\\":\\\"stop\\\",\\\"venue\\\":\\\"x\\\",\\\"ev\\\":\\\"Cancel\\\"}\") or { println(err.kind + \" \" + err.field); return; };\n    println(Ticket::api_encode(t));\n}\n",
+    )
+    .unwrap();
+    let r = hale().arg("run").arg(&caller).output().expect("run the caller");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout),
+        "{\"side\":\"buy\",\"kind\":\"Unknown\",\"venue\":\"x\",\"ev\":\"Cancel\"}\n",
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    let ts = dir.join("client.ts");
+    let o = hale().args(["api", "client", "--surface", "Tickets", "--lang", "ts", "--out"]).arg(&ts).arg(&src).output().expect("ts client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&ts).unwrap();
+    for want in [
+        "export type Side = \"buy\" | \"sell\";",
+        "export type Kind = \"limit\" | \"Unknown\" | (string & {});",
+        "export type Venue = \"spot\" | \"Margin\" | (string & {});",
+        "export type Event = { fill: number } | \"Cancel\";",
+    ] {
+        assert!(text.contains(want), "missing `{want}` in the TypeScript client: {text}");
+    }
+    let tsc = std::env::var("TSC").unwrap_or_else(|_| "tsc".to_string());
+    if Command::new(&tsc).arg("--version").output().is_ok_and(|o| o.status.success()) {
+        let c = Command::new(&tsc).args(["--strict", "--target", "es2022", "--lib", "es2022,dom", "--noEmit"]).arg(&ts).output().expect("tsc");
+        assert!(c.status.success(), "tsc refused the client:\n{}{}", String::from_utf8_lossy(&c.stdout), String::from_utf8_lossy(&c.stderr));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
