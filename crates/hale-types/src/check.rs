@@ -16386,11 +16386,76 @@ impl<'a> Checker<'a> {
         self.generic_params = prev_generics;
     }
 
-    /// A fn's body: its block, and its tail is the returned value, which
-    /// flows into the declared return type where a Decimal's scale is
-    /// concerned (`Decimal<S>`: a scale-less tail takes the return type's
-    /// scale, and another scale is refused). The rest of a tail's
-    /// agreement with the return type is lowering's to check.
+    /// A value leaving the body as its return: a `return e;`, or the body's
+    /// tail (GH #1970), which lowering lowers as that `return`. Held to the
+    /// declared return type (the fallible success type in a fallible
+    /// body), a member flowing into its set as the set's variant, as at
+    /// any place of the set. `said` opens the mismatch's message.
+    fn judge_returned(&mut self, e: &Expr, got: &Ty, said: &str) {
+        let got = got.clone();
+        if self.return_ctx.is_none() && !self.in_fn_main {
+            // A body that returns nothing: its `return e;` is refused at
+            // the statement, and its tail is a statement.
+        } else if let Some((expected_ret, _)) = self.fallible_ctx.clone() {
+            let expected_ret = &expected_ret;
+            // GH #911 B5: the return slot is the other
+            // site codegen rewrites a bare generic
+            // template name at — `fn make() -> Box<Int> {
+            // return Box { value: 4 }; }` builds and runs.
+            let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
+            // The Int -> Float widening lowering applies at every return,
+            // a fallible body's success value included.
+            let widening = matches!((expected_ret, &got), (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::Int)));
+            if !widening && !monomorph && !self.flows_into(expected_ret, &got, e) {
+                self.diags.push(Diag::ty(
+                    e.span(),
+                    format!(
+                        "{said} `{}`, got `{}`{}",
+                        expected_ret.display(),
+                        got.display(),
+                        wide_conversion_hint(expected_ret, &got)
+                    ),
+                ));
+            }
+        } else if let Some(expected_ret) = self.return_ctx.clone() {
+            let expected_ret = &expected_ret;
+            // #335: the non-fallible case, which had no
+            // check. Same Unknown-permissive rule, and the
+            // same Int -> Float widening a call site
+            // allows.
+            let widening = matches!(
+                (expected_ret, &got),
+                (
+                    Ty::Prim(PrimType::Float),
+                    Ty::Prim(PrimType::Int)
+                )
+            );
+            // GH #911 B5: the same return-slot rewrite as
+            // the fallible branch above.
+            let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
+            if !widening
+                && !monomorph
+                && !self.flows_into(expected_ret, &got, e)
+            {
+                self.diags.push(Diag::ty(
+                    e.span(),
+                    format!(
+                        "{said} `{}`, got `{}`{}",
+                        expected_ret.display(),
+                        got.display(),
+                        wide_conversion_hint(expected_ret, &got)
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// A fn's body: its block, and its tail, in a body with a declared
+    /// return type, is the returned value, judged as the `return` lowering
+    /// lowers it as ([`Self::judge_returned`]): held to the return type, a
+    /// member flowing into its set (GH #1970, where the build refused the
+    /// member the check had passed), a scale-less Decimal taking the return
+    /// type's scale.
     fn check_fn_body(&mut self, block: &Block) {
         self.locals.push();
         for stmt in &block.stmts {
@@ -16398,8 +16463,8 @@ impl<'a> Checker<'a> {
         }
         if let Some(tail) = &block.tail {
             let got = self.check_expr(tail);
-            if let Some(want) = self.return_ctx.clone() {
-                let _ = self.decimal_flow(&want, &got, tail);
+            if self.return_ctx.is_some() {
+                self.judge_returned(tail, &got, "this is the body's value (its tail): expected");
             }
             // GH #1965: the body's tail is its return, and lowering
             // rewrites a template literal there against the declared
@@ -17379,14 +17444,17 @@ impl<'a> Checker<'a> {
                                 .to_string(),
                         ));
                     } else if self.return_ctx.is_none()
-                        && self.fallible_ctx.is_none()
+                        && self.fallible_ctx.as_ref().is_none_or(|(success, _)| *success == Ty::Unit)
                         && !self.in_fn_main
                     {
                         // A body that declares no return type returns
                         // nothing: a lifecycle hook, or a fn or mode
-                        // with no `-> T`. Lowering refused the value
-                        // with no span; `fn main`'s `return n;` is the
-                        // exit code and is not this.
+                        // with no `-> T`, a `() fallible(E)` one
+                        // included (GH #1969: its `return <a call with
+                        // no value>;` passed as a `()` returned, and
+                        // lowering refused it). Lowering refused the
+                        // value with no span; `fn main`'s `return n;`
+                        // is the exit code and is not this.
                         self.diags.push(Diag::ty(
                             e.span(),
                             "`return` carries a value, but this body returns \
@@ -17403,55 +17471,7 @@ impl<'a> Checker<'a> {
                     // Check that the returned type matches the fn's
                     // declared success return type when in a
                     // fallible body.
-                    if let Some((expected_ret, _)) = self.fallible_ctx.clone() {
-                        let expected_ret = &expected_ret;
-                        // GH #911 B5: the return slot is the other
-                        // site codegen rewrites a bare generic
-                        // template name at — `fn make() -> Box<Int> {
-                        // return Box { value: 4 }; }` builds and runs.
-                        let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
-                        if !monomorph && !self.flows_into(expected_ret, &got, e) {
-                            self.diags.push(Diag::ty(
-                                e.span(),
-                                format!(
-                                    "{said} `{}`, got `{}`{}",
-                                    expected_ret.display(),
-                                    got.display(),
-                                    wide_conversion_hint(expected_ret, &got)
-                                ),
-                            ));
-                        }
-                    } else if let Some(expected_ret) = self.return_ctx.clone() {
-                        let expected_ret = &expected_ret;
-                        // #335: the non-fallible case, which had no
-                        // check. Same Unknown-permissive rule, and the
-                        // same Int -> Float widening a call site
-                        // allows.
-                        let widening = matches!(
-                            (expected_ret, &got),
-                            (
-                                Ty::Prim(PrimType::Float),
-                                Ty::Prim(PrimType::Int)
-                            )
-                        );
-                        // GH #911 B5: the same return-slot rewrite as
-                        // the fallible branch above.
-                        let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
-                        if !widening
-                            && !monomorph
-                            && !self.flows_into(expected_ret, &got, e)
-                        {
-                            self.diags.push(Diag::ty(
-                                e.span(),
-                                format!(
-                                    "{said} `{}`, got `{}`{}",
-                                    expected_ret.display(),
-                                    got.display(),
-                                    wide_conversion_hint(expected_ret, &got)
-                                ),
-                            ));
-                        }
-                    }
+                    self.judge_returned(e, &got, said);
                 }
             }
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {}
@@ -17890,6 +17910,7 @@ impl<'a> Checker<'a> {
             self.bind_pattern(&arm.pattern);
             self.note_view_pattern(&arm.pattern, &scrut_ty);
             self.check_set_pattern(&arm.pattern, &scrut_ty);
+            self.check_bare_variant_pattern(&arm.pattern, &scrut_ty);
             self.check_pattern_literals(&arm.pattern, &scrut_ty);
             // `Decimal<S>`: a Decimal literal pattern is a value of the
             // scrutinee's scale, judged at it.
@@ -20014,6 +20035,65 @@ impl<'a> Checker<'a> {
             *span,
             format!("`{}` is not a member of the set `{set}`, whose members are {}", member.name, members.join(", ")),
         ));
+    }
+
+    /// GH #1971: a constructor pattern on an enum names its enum
+    /// (`E::A(x)`); only a set's member is named by its type alone
+    /// (`check_set_pattern`). The bare form passed the check, and the
+    /// build refused it with no place in the program. A bare `A` with no
+    /// parentheses is a binding, not this.
+    fn check_bare_variant_pattern(&mut self, pat: &Pattern, scrut: &Ty) {
+        let Pattern::Constructor { path, span, .. } = pat else { return };
+        let [variant] = path.segments.as_slice() else { return };
+        let v = &variant.name;
+        let shown = scrut.display();
+        // Structural: lowering lowers a one-segment constructor pattern
+        // against a set only, so anything else the scrutinee is (an enum,
+        // a generic parameter, a type the check cannot name) is refused
+        // here, where lowering refused it unlocated.
+        let what = match scrut {
+            Ty::Named(n) if self.generic_params.iter().any(|g| g == n) => format!(
+                "`{v}(…)` names a variant without its enum, and the scrutinee is of the type parameter `{shown}`: \
+                 a pattern names its enum, `Enum::{v}(…)` (only a set's member is named by its type alone, \
+                 against a value of the set's own type)"
+            ),
+            Ty::Named(n) => match self.top.symbols.get(n) {
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                    if !vs.is_empty() && vs.iter().all(|x| x.member) {
+                        return;
+                    }
+                    if vs.iter().any(|x| x.name == *v) {
+                        format!(
+                            "`{v}(…)` names a variant of the enum `{shown}` without its enum: a pattern on an enum \
+                             names it, `{shown}::{v}(…)` (only a set's member is named by its type alone)"
+                        )
+                    } else {
+                        let names: Vec<&str> = vs.iter().map(|x| x.name.as_str()).collect();
+                        format!(
+                            "`{v}(…)` is no variant of the enum `{shown}`, whose variants are {}; a pattern on an \
+                             enum names its enum, `{shown}::Variant(…)`",
+                            names.join(", ")
+                        )
+                    }
+                }
+                _ => format!(
+                    "`{v}(…)` is a constructor pattern without its enum against a value of `{shown}`, which is no \
+                     enum or set: a pattern names its enum, `Enum::{v}(…)`, and only a set's member is named by \
+                     its type alone"
+                ),
+            },
+            Ty::Unknown => format!(
+                "`{v}(…)` names a variant without its enum, against a value whose type is not known here: a \
+                 pattern names its enum, `Enum::{v}(…)` (only a set's member is named by its type alone, against \
+                 a value known to be of the set)"
+            ),
+            _ => format!(
+                "`{v}(…)` is a constructor pattern without its enum against a value of `{shown}`, which is no \
+                 enum or set: a pattern names its enum, `Enum::{v}(…)`, and only a set's member is named by its \
+                 type alone"
+            ),
+        };
+        self.diags.push(Diag::ty(*span, what));
     }
 
     /// GH #1530 step 1: a set's members are distinct structs or enums the
@@ -24046,6 +24126,12 @@ impl<'a> Checker<'a> {
                 let through_value = match callee.as_ref() {
                     Expr::Ident(id) => self.locals.lookup(&id.name).is_some() && !self.names_fn_or_builtin(&id.name),
                     Expr::Block(_) => true,
+                    // A fn-typed field or param (`self.cb(x)`), a value
+                    // as a local of fn type is (GH #1967).
+                    Expr::Field { receiver, name, .. } => matches!(
+                        self.view_method(&self.view_expr_ty(receiver), &name.name),
+                        crate::typed_bodies::CalleeRef::Value
+                    ),
                     _ => false,
                 };
                 if through_value && !matches!(callee_ty, Ty::Function { .. } | Ty::Unknown) {
@@ -24214,6 +24300,31 @@ impl<'a> Checker<'a> {
                             }
                             _ => None,
                         };
+                    // GH #1967: a call through a fn VALUE (a local or a
+                    // parameter of type `fn(A, B) -> R`, or the block a
+                    // shadowed callee was rewritten to) takes exactly the
+                    // type's parameters: a fn type has no defaults, so
+                    // every one is required. Lowering refused a short call
+                    // unlocated.
+                    if min_required.is_none() && through_value && arg_tys.len() < params.len() {
+                        let shown = match callee.as_ref() {
+                            Expr::Ident(id) => format!("`{}`", id.name),
+                            Expr::Field { name, .. } => format!("`{}`", name.name),
+                            _ => "this callee".to_string(),
+                        };
+                        self.diags.push(Diag::ty(
+                            callee.span(),
+                            format!(
+                                "{} is a fn value of type `{}`, which takes {} argument{}, got {}: a fn type \
+                                 has no defaults, so every argument is passed",
+                                shown,
+                                callee_ty.display(),
+                                params.len(),
+                                if params.len() == 1 { "" } else { "s" },
+                                arg_tys.len()
+                            ),
+                        ));
+                    }
                     if let Some((min, display)) = min_required {
                         if arg_tys.len() < min {
                             self.diags.push(Diag::ty(

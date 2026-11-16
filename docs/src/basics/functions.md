@@ -33,6 +33,10 @@ fn double(n: Int) -> Int {
 }
 ```
 
+The final expression is checked exactly as `return` would check it: against the return type (the success type of a `fallible(E)` function or method), with the same conversions — a set member becomes its set, an `Int` widens to a `Float`.
+
+In a function with no return type, including a `() fallible(E)` one, `return` carries no value, not even a call that returns nothing: write `touch() or fail err;` and then `return;`, not `return touch() or fail err;`.
+
 The last statement of a body that returns a value is its value too when it is a `match`, an `if … else` or a block: each arm's value is returned, whatever the type (an `Int`, a `String`, a record, an enum, a `Decimal`):
 
 ```hale
@@ -138,6 +142,8 @@ Hale function values are thin function pointers with no environment capture. The
 | Fallible function (`-> T fallible(E)`) | No | Indirect calls cannot attach an `or` clause; wrap in an infallible helper (`fn parse_or(s: String) -> Int { return parse(s) or 0; }`). |
 | Function returning a fresh locus (`fn make() -> Worker { return Worker { }; }`) | Yes | Caller owns the newly constructed locus. If the return value is discarded (`f();`), the locus dissolves immediately at `;`. |
 | Function returning a passed-in locus (`fn pick(w: Worker) -> Worker { return w; }`) | No | Cannot alias or forward an existing locus through a function pointer; call directly instead. |
+
+A call through a function value is checked against its type as a direct call is checked against the function: each argument against its parameter (an `Int` argument widens to a `Float` parameter), and the argument count. A function type has no defaults, so a call through `f: fn(Int, Int) -> Int` passes both arguments.
 
 ### Identifier Shadowing in Calls
 

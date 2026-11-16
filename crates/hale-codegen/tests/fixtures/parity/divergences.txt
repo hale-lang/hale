@@ -5,12 +5,5 @@
 // lines. A divergence whose signature is not here fails the gate; so does
 // a listed reproducer that builds (or that the check refuses) again.
 // Delete a line, and its reproducer, with the fix that closes it.
-#1967 | fn_value_arg_type.repro | hale can't compile this yet: __pg_fv arg #: expected T, got T
-#1967 | fn_value_arity.repro | hale can't compile this yet: __pg_fv (fn pointer): expected # args, got #
-#1968 | fallible_method_tail.repro | method `_` can reach the end of its body without a `_` or a `_`: end every path in one
-#1969 | return_unit_call.repro | hale can't compile this yet: fn declared with no return type but `_` carries a value
-#1970 | set_type_tail.repro | hale can't compile this yet: return type mismatch: declared T, got T
-#1971 | bare_variant_pattern.repro | hale can't compile this yet: constructor pattern path must be `_` (got # segments)
-#1972 | cross_pool_literal_value.repro | hale can't compile this yet: `_` is born to `_`, but `_` runs both on `_`'s thread and off it (T on main; T on the pinned thread of T; the owner T on main), so its birth is a same-tower allocation in some instances and a cross-pool post in others; a cross-pool birth is fire-and-forget, so the literal cannot be used as a value. Write it as a bare statement (`_`).
 #1978 | generic_return_decimal_scale.repro | hale can't compile this yet: binary op operands of mixed types T<#> and T
 #1978 | generic_return_fstring.repro | hale can't compile this yet: `_` not supported for type T

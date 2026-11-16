@@ -248,6 +248,14 @@ fn without_the_bubble_both_children_are_transient() {
 /// off the owner's thread its birth is a fire-and-forget post, so a
 /// value use of the literal cannot be lowered, and is refused at the
 /// literal with both instances named.
+///
+/// GH #1972: the refusal is the cross-pool-value law's now, which reads
+/// the ownership graph's mixed plans; the check says it (`hale check`
+/// passed this and `hale build` refused it) and the harness's lowering
+/// view demands it, so the build stops before lowering, located at the
+/// literal in the words lowering used. Lowering's own refusal stays as a
+/// backstop (`lower_locus_instantiation`, `UnsupportedAt` at the literal)
+/// that no program the law has judged reaches.
 #[test]
 fn a_value_use_at_a_mixed_site_is_refused_at_the_literal() {
     let src = MIXED.replace("            I { n: self.k };", "            let c = I { n: self.k };");
@@ -255,17 +263,23 @@ fn a_value_use_at_a_mixed_site_is_refused_at_the_literal() {
     let err = build_opts::build_source(&src, &bin, &build_opts::options())
         .expect_err("a value use at a mixed site must not build");
     let _ = std::fs::remove_file(&bin);
-    let hale_codegen::CodegenError::UnsupportedAt(msg, span) = &err else {
-        panic!("the refusal is located: {err:?}");
-    };
-    let at = src.find("I { n: self.k }").expect("the literal");
-    assert_eq!(span.start.0 as usize, at, "the refusal points at the literal: {msg}");
-    assert_eq!(
-        msg,
-        "`I { }` is born to `App`, but `Worker` runs both on `App`'s thread and off it (App.a on main; \
+    let expected = "`I { }` is born to `App`, but `Worker` runs both on `App`'s thread and off it (App.a on main; \
          App.o.w on the pinned thread of App.o; the owner App on main), so its birth is a same-tower \
          allocation in some instances and a cross-pool post in others; a cross-pool birth is \
          fire-and-forget, so the literal cannot be used as a value. Write it as a bare statement \
-         (`I { ... };`).",
-    );
+         (`I { ... };`).";
+    assert!(err.to_string().contains(expected), "the build is refused with the rule's words: {err:?}");
+    // Where it is refused: the lowering view's refusal, a located diagnostic.
+    let snap = build_opts::load_seed(&src, build_opts::harness_config(&build_opts::options()))
+        .unwrap_or_else(|_| panic!("the program loads"));
+    let Err(blocked) = snap.demand_lowering() else {
+        panic!("the lowering view refuses a value use at a mixed site");
+    };
+    let at = src.find("I { n: self.k }").expect("the literal");
+    let diag = blocked
+        .because
+        .iter()
+        .find(|d| d.message == expected)
+        .unwrap_or_else(|| panic!("the refusal is located: {:?}", blocked.because));
+    assert_eq!(diag.span.start.0 as usize, at, "the refusal points at the literal: {}", diag.message);
 }
