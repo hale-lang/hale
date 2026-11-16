@@ -607,7 +607,12 @@ members may not share the last segment of their names (`a::Book` and
 A member's value is the set's wherever a set is expected: a return from
 a fn returning the set (a `return`, or the body's tail, which is its
 return), an argument to a parameter of it, a `let` of its
-type, an assignment to a place of it and a field of it. Two sets may
+type, an assignment to a place of it and a field of it. The error channel
+of a `fallible(S)` fn is such a place (GH #1951): `fail m;`, `or fail
+err`, an `or raise` of a call failing with a member and a fallible
+handler's failure with one are the set's, so with `type LoadError =
+ParseError | IoError;` a `fallible(LoadError)` fn raises either
+(spec/semantics.md § "Converting a raised error"). Two sets may
 share a member; the place's type says which set the value becomes. The
 arms of an `if` or a `match` whose values are different members are not
 joined into a set: give each arm the set's type (a fn returning it).
@@ -2815,6 +2820,12 @@ so the position reports no type mismatch beside the law's error.
   in v1.) On success, passes the inner value through. The
   resulting expression's type is the success type T.
 
+  The error handed on is the enclosing fn's `E`: the call's own
+  when it is that type, else converted, as a member of `E` when
+  `E` is a set holding it, or by the one `@raise fn` from its type
+  to `E` (`spec/semantics.md` § "Converting a raised error"). An
+  error nothing converts is refused at the `or raise`.
+
   Past every enclosing `fallible(E)` frame — at the implicit
   main locus's root boundary — the runtime panics via
   `lotus_root_panic`. See `spec/semantics.md` § "Process
@@ -2832,9 +2843,10 @@ so the position reports no type mismatch beside the law's error.
   `fallible(E2)`. Its success value substitutes; its FAILURE
   propagates through the ENCLOSING fn's error path — implicit
   `or raise`, sugar for the already-legal nested spelling
-  `call() or (handler(err) or raise)`. E2 must be assignable to
-  the enclosing fn's declared payload ("handler's failure has
-  nowhere to go" / "propagated payload must match" otherwise).
+  `call() or (handler(err) or raise)`. E2 must be the enclosing
+  fn's declared payload or one that implicit `or raise` converts
+  from, as a written one does ("handler's failure has nowhere to
+  go" / "propagated payload must match" otherwise).
   The implicit `or raise` applies where lowering supports it, a
   limitation to lift rather than a rule: a fn the program declares
   (not a generic one), an imported or bundled stdlib fn written as
@@ -2910,8 +2922,8 @@ stdlib's two) as at a program's own.
 
 `fail <expr>;` is only valid inside a fallible fn body. It
 evaluates `<expr>`, requires the result type to match the fn's
-declared payload type E, and exits via the error path (the
-caller sees a `FallibleErr` value).
+declared payload type E (or to be a member of E, a set), and
+exits via the error path (the caller sees a `FallibleErr` value).
 
 ### Custom payload types
 

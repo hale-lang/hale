@@ -1269,7 +1269,7 @@ function_decl     = [ ffi_annotation | export_annotation
 contract_decorator = unbounded_annotation | bounded_by_annotation
                    | budget_annotation
                    | hot_annotation | effect_annotation
-                   | rpc_annotation ;
+                   | rpc_annotation | raise_annotation ;
 ffi_annotation    = "@" , "ffi" , "(" , STRING_LIT , ")" ;
 export_annotation = "@" , "export" ;
 unbounded_annotation = "@" , "unbounded" ;
@@ -1278,6 +1278,10 @@ bounded_by_annotation = "@" , "bounded_by" , "(" , IDENTIFIER ,
 budget_annotation = "@" , "budget" , "(" , "alloc_per_call" ,
                     "=" , INT_LIT , ")" ;
 hot_annotation    = "@" , "hot" ;
+(* GH #1951 (item 2) — on a free fn of one parameter: the conversion an
+   `or raise` applies from the parameter's type to the result's
+   (spec/semantics.md § `or` disposition). *)
+raise_annotation  = "@" , "raise" ;
 (* GH #1109, retired in R4 (GH #1417): `@gated(role: R)` is refused by the
    parser; a role requirement is a row's `requires`. *)
 (* GH #1417 — on a locus fn: the row it contributes to its seed's
