@@ -247,7 +247,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 31] = [
+const CALL_LINES_ONLY: [(&str, usize); 32] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -288,6 +288,12 @@ const CALL_LINES_ONLY: [(&str, usize); 31] = [
     // only the renames name.
     ("tests/hale/http_status_phrase_test.hl", 1),
     ("tests/hale/imported_fn_value_test.hl", 5),
+    // GH #1951 item 6: the five calls spelled through an alias
+    // (`api::make`, `st::describe`, `api::show`, `api::sell` twice) only
+    // the renames name; the bare listed names (`show`, `size`) were named
+    // already, since the seed binds them to the declaration's symbol
+    // before anything summarizes it.
+    ("tests/hale/import_list_test.hl", 5),
     // the property test of the run-appending escaper (its Rng and
     // generators are the program's own; the escapers' stdlib bodies
     // only the renames name)

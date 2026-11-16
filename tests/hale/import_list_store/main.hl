@@ -1,0 +1,14 @@
+// The declaring seed of `import_list_test.hl`: `import_list_api` lists
+// some of these names and re-exports them; the test lists others.
+type Row { id: Int; name: String; }
+type Side = enum { Buy, Sell(Int) };
+type Box<T> { v: T; }
+const LIMIT: Int = 7;
+
+fn describe(r: Row) -> String {
+    return r.name + "#" + to_string(r.id);
+}
+
+fn size(s: Side) -> Int {
+    return match s { Side::Buy -> 0, Side::Sell(n) -> n, };
+}

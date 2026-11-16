@@ -66,6 +66,27 @@ pub struct Import {
     /// an unresolvable import is about the string the author typed,
     /// so the caret belongs under it.
     pub path_span: Span,
+    /// GH #1951 item 6: the import list, `{ Name, Other as Mine }`
+    /// after the alias, in source order. Each listed name is bare in
+    /// the importing seed and re-exported through its alias (F.51).
+    /// Empty when the import has no list.
+    pub items: Vec<ImportItem>,
+}
+
+/// One entry of an import list: the imported seed's top-level `name`,
+/// bound in the importing seed as `rename` when given, else as `name`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportItem {
+    pub name: Ident,
+    pub rename: Option<Ident>,
+    pub span: Span,
+}
+
+impl ImportItem {
+    /// The name the importing seed spells it by.
+    pub fn local(&self) -> &Ident {
+        self.rename.as_ref().unwrap_or(&self.name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

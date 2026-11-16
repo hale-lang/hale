@@ -43,8 +43,16 @@ program           = { import_decl } , { top_decl } ;
    namespace at the import site so cross-seed references read as
    `alias::Name` — same forcing-function discipline as v1.x-3's
    no-default-sub-mode rule and v1.x-FORM-2's two-channel rule.
-   See spec/projects.md for resolution order + mangling scheme. *)
-import_decl       = "import" , STRING_LIT , "as" , IDENTIFIER , ";" ;
+   See spec/projects.md for resolution order + mangling scheme.
+   GH #1951 item 6 (F.51): an optional import list after the alias
+   names top-level declarations of the imported seed; each is bare
+   in the importing seed (as the `as` name when one is given) and
+   re-exported through its alias. No globs; `as` is a contextual
+   word, as it is after the path. *)
+import_decl       = "import" , STRING_LIT , "as" , IDENTIFIER ,
+                    [ "{" , import_item , { "," , import_item } , [ "," ] , "}" ] ,
+                    ";" ;
+import_item       = IDENTIFIER , [ "as" , IDENTIFIER ] ;
 
 top_decl          = locus_decl
                   | perspective_decl

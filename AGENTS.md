@@ -175,7 +175,10 @@ Filter these reflexes before they cost you time.
 
 - **No `import` / `use` syntax for stdlib.** Stdlib is called
   inline through `std::*` paths (`std::io::fs::read_file(p)`).
-  Cross-seed user libraries use `import "lib/x" as alias;`.
+  Cross-seed user libraries use `import "lib/x" as alias;`; an
+  import list (`import "lib/x" as x { Row, f as g };`) spells
+  those names bare in the seed and re-exports them to its
+  importers (`<its alias>::Row`, the same declaration). No globs.
 - **No visibility modifiers** (`pub`, `private`). Every
   top-level decl in a seed (one directory) is visible to every
   file in that seed. Decompose by concern, not visibility.

@@ -293,6 +293,39 @@ pub fn mangle_with_renames_in_seed(
     }
 }
 
+/// GH #1951 item 6 (F.51): bind the names a seed's import lists bring
+/// in, in that seed's own declarations: every reference to a listed
+/// name (`local -> mangled`) is rewritten to the listed declaration's
+/// own symbol, as an imported seed's mangling rewrites its references
+/// to its own declarations — locals shadow as they shadow any
+/// top-level name, and a path headed by one of the seed's import
+/// `aliases` is left to the rename table. Nothing else is renamed: the
+/// seed's own declarations keep their names (a listed name colliding
+/// with one is refused before this runs), and no claims block is made
+/// library-tier.
+pub fn bind_listed_imports(
+    items: &mut [TopDecl],
+    listed: &HashMap<String, String>,
+    aliases: &HashSet<String>,
+) {
+    if listed.is_empty() {
+        return;
+    }
+    let no_construct: HashMap<String, String> = HashMap::new();
+    let mut walker = Mangler {
+        renames: listed,
+        scopes: Vec::new(),
+        module_aliases: aliases.clone(),
+        alias_heads: HashMap::new(),
+        construct: &no_construct,
+        mangling: false,
+        seed: SeedBinding::default(),
+    };
+    for item in items {
+        walker.walk_top_decl(item);
+    }
+}
+
 /// GH #746: rewrite the HEAD of every `alias::Name` reference in one
 /// top-level declaration, so an import alias stops being a build-wide
 /// name.

@@ -168,7 +168,8 @@ shift_struct!(Program {
     span,
 });
 shift_struct!(EffectClasses { names, declared, defs });
-shift_struct!(Import { path, alias, span, path_span });
+shift_struct!(Import { path, alias, span, path_span, items });
+shift_struct!(ImportItem { name, rename, span });
 
 impl Shift for TopDecl {
     fn shift(&mut self, d: Move) {
