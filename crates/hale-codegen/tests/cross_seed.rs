@@ -1,4 +1,4 @@
-//! The `cross_seed` integration-test binary: 10 test files of this area, kept
+//! The `cross_seed` integration-test binary: 11 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -13,6 +13,8 @@ mod cross_locus_return_chain;
 mod cross_seed_imports;
 #[path = "cross_seed_locus_arg.rs"]
 mod cross_seed_locus_arg;
+#[path = "import_lists.rs"]
+mod import_lists;
 #[path = "imported_mark.rs"]
 mod imported_mark;
 #[path = "ws1_cross_seed_bus_decimal.rs"]

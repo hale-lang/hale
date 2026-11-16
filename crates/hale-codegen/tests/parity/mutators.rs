@@ -693,7 +693,10 @@ fn requalify(src: &str, name: &str, alias: &str) -> Option<String> {
 }
 
 /// A top-level fn, type or const moves to a seed of its own, imported
-/// under an alias; the main seed names it through the alias.
+/// under an alias; the main seed names it through the alias — or, for
+/// about half the names (GH #1951 item 6), lists it on the import and
+/// keeps naming it bare. The form is a hash of the name rather than a
+/// draw, so the RNG stream every other candidate sees is unchanged.
 fn import_alias(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     let (src, program) = parsed(files)?;
     if files.contains_key(LIB) || !program.imports.is_empty() {
@@ -713,7 +716,14 @@ fn import_alias(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     let (s, e) = decl_range(&src, decl_span(item)?);
     let moved = src.get(s..e)?.to_string();
     let rest = splice(&src, vec![(s, e, String::new())])?;
-    let rest = requalify(&rest, &name, ALIAS)?;
+    // a site either way: the main file names it
+    let qualified = requalify(&rest, &name, ALIAS)?;
+    if fnv(&name) % 2 == 1 {
+        let mut out = with_main(files, format!("import \"./pglib\" as {ALIAS} {{ {name} }};\n\n{rest}"));
+        out.insert(LIB.to_string(), format!("{}\n", moved.trim()));
+        return Some((out, format!("import_alias({name}, listed)")));
+    }
+    let rest = qualified;
     let mut out = with_main(files, format!("import \"./pglib\" as {ALIAS};\n\n{rest}"));
     out.insert(LIB.to_string(), format!("{}\n", moved.trim()));
     Some((out, format!("import_alias({name})")))

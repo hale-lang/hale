@@ -761,12 +761,56 @@ impl Parser {
         }
         self.bump();
         let alias = self.expect_ident("import alias")?.name;
+        // GH #1951 item 6: an optional import list, `{ Name, Other as
+        // Mine }` — each listed name bare in this seed, and re-exported
+        // through its alias (F.51). No globs: every name is spelled.
+        let mut items: Vec<ImportItem> = Vec::new();
+        if matches!(self.peek(), TokenKind::LBrace) {
+            self.bump();
+            loop {
+                if matches!(self.peek(), TokenKind::RBrace) {
+                    if items.is_empty() {
+                        return Err(Diag::parse(
+                            self.peek_token().span,
+                            format!(
+                                "the import list of \"{}\" names nothing: list the names to bring in bare \
+                                 (`{{ Name, Other as Mine }}`), or drop the braces",
+                                path,
+                            ),
+                        ));
+                    }
+                    break;
+                }
+                if matches!(self.peek(), TokenKind::Star) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "an import list names each name it brings in; there is no glob \
+                         (`import \"...\" as a { Name, Other };`)"
+                            .to_string(),
+                    ));
+                }
+                let name = self.expect_ident("a name in the import list")?;
+                let rename = if self.peek_is_kw_as() {
+                    self.bump();
+                    Some(self.expect_ident("the name after `as` in the import list")?)
+                } else {
+                    None
+                };
+                let end = rename.as_ref().map_or(name.span, |r| r.span);
+                items.push(ImportItem { span: name.span.merge(end), name, rename });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBrace, "}")?;
+        }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(Import {
             path,
             alias: Some(alias),
             span: kw.span.merge(semi.span),
             path_span,
+            items,
         })
     }
 
@@ -10695,6 +10739,34 @@ fn main() { }
         assert_eq!(prog.imports.len(), 1);
         assert_eq!(prog.imports[0].path, "lib/foo");
         assert_eq!(prog.imports[0].alias.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn parse_import_list_names_and_renames() {
+        let src = r#"
+import "../store" as st { ModelRow, Names as StoreNames, };
+
+fn main() { }
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let items = &prog.imports[0].items;
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].name.name, "ModelRow");
+        assert!(items[0].rename.is_none());
+        assert_eq!(items[0].local().name, "ModelRow");
+        assert_eq!(items[1].name.name, "Names");
+        assert_eq!(items[1].local().name, "StoreNames");
+        assert!(prog.imports[0].span.end.as_usize() > items[1].span.end.as_usize());
+    }
+
+    #[test]
+    fn parse_import_list_refuses_a_glob_and_an_empty_list() {
+        let glob = parse_str("import \"../store\" as st { * };\nfn main() { }\n")
+            .expect_err("a glob is refused");
+        assert!(glob.iter().any(|d| d.message.contains("there is no glob")), "{glob:?}");
+        let empty = parse_str("import \"../store\" as st { };\nfn main() { }\n")
+            .expect_err("an empty list is refused");
+        assert!(empty.iter().any(|d| d.message.contains("names nothing")), "{empty:?}");
     }
 
     #[test]

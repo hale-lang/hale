@@ -3974,6 +3974,51 @@ where a write happens. *Return through a caller-supplied place.* A
 record already returns through the caller's arena; a list returned the
 same way needs no second convention.
 
+### F.51 — An import list re-exports
+
+**Problem.** F.25 made every cross-seed reference qualified
+(`st::ModelRow`), and A4 kept an import's names inside the importing
+seed. A seed had no way to spell another seed's declaration bare, and
+none to hand a declaration it imported on to its own importers except
+a `type ModelRow = st::ModelRow;` alias per name, which covers types
+only. Moving a type from one seed to another was a rename at every use
+in every seed that reached it (GH #1951, downstream handoffs). Whether
+a name a seed brings in is reachable through that seed has to be fixed
+before 1.0: deciding it later either breaks programs that rely on it or
+makes every list a second, private kind of import.
+
+**Decision.** An import may end in a list, `import "../store" as st {
+ModelRow, Names as StoreNames };`. Each item names a top-level
+declaration of the imported seed (a type, locus, fn, const, topic,
+interface or perspective) or a name that seed's own lists bring in; an
+unknown item is refused at the item. A listed name is bare in every
+file of the importing seed, as the import is; `as` renames; locals
+shadow it as they shadow any top-level name; a listed name that is also
+a declaration of the seed, or that another list binds to a different
+declaration, is refused, naming both. **A list re-exports**: a listed
+name is reachable through the importing seed's alias (`api::ModelRow`
+when `api` lists `ModelRow` from `st`), and may be listed again by an
+importer of that seed. It is the same declaration as `st::ModelRow` —
+one mangled symbol — so a value flows between the spellings with no
+conversion. There are no globs, and the alias itself stays the
+importing seed's own (A4). Importing a file of the seed itself stays
+refused: its names are already bare.
+
+**Considered and rejected.** *A list that does not re-export.* A seed
+that wants to pass a type on would still write the alias per name, and
+the two forms would differ in a way no reader can see at the use site;
+the list is where the seed says which names it speaks, which is what
+its importers want to reach. *Globs (`st::*`).* A glob makes the set of
+bare names a function of another seed's contents, so adding a
+declaration there can break a seed that never mentions it; spelling
+every name keeps each bare name traceable to one line. *A visibility
+modifier (`pub`).* Out of scope for the same reason as before (No
+`pub` / `export`): a list chooses what the importing seed speaks, not
+what the imported seed hides. *Re-export as a separate keyword
+(`export`).* A new word for what the list already says, and the
+keyword set is frozen (STABILITY.md).
+
+## Deferred & future work
 ## Deferred & future work
 
 ### semantics — What's deferred

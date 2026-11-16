@@ -25,6 +25,7 @@ This chapter provides a quick-reference cheat sheet of Hale's syntax, decorators
 | `constitution Name [extends Base] { ... }` | Reusable set of architectural `claims` |
 | `dimension` / `unit` / `scale` / `quantity` | Compile-time dimensional analysis and unit types |
 | `import "path/to/seed" as alias;` | Cross-seed library import |
+| `import "path/to/seed" as alias { Name, Other as Mine };` | Import list: the names bare in this seed, re-exported as `alias::Name` |
 
 ### Decorator Reference
 
