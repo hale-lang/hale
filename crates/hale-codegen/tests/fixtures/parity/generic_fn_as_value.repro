@@ -1,0 +1,22 @@
+// A generic fn bound as a fn value (`let g = get;`).
+// == main/main.hl ==
+locus L {
+    params { name: String = std::str::upper("old name long enough"); }
+    fn rename() { self.name = std::str::upper("new name long enough"); }
+}
+fn get<__PgT>(l: __PgT) -> String { return l.name; }
+locus H {
+    params { l: L = L { }; }
+    fn probe() -> String {
+        let s = get(self.l);
+        return s;
+    }
+    fn via_value() -> String {
+        let g = get;
+        let s = g(self.l);
+        return s;
+    }
+}
+// == main/split.hl ==
+fn main() {
+}

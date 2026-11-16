@@ -1900,6 +1900,23 @@ jobs:
             --test refusals_are_located \
             -- --ignored --nocapture
 
+      - name: adversarial check/build parity sweep
+        # GH #1949: the agreement sweep above holds the corpus's own
+        # programs, which steer around the gaps their authors knew of.
+        # This generates programs by mutating the corpus (tail shapes,
+        # generic wraps, declarations moved across seeds, element types,
+        # call shapes, `or` plumbing) and builds every one the check
+        # accepts, about 9,000. A ratchet: a divergence not listed in
+        # tests/fixtures/parity/divergences.txt fails, and the ordinary
+        # suite's `listed_divergences_still_reproduce` fails when a
+        # listed one builds again. Deterministic (seeded by each seed
+        # program's text). The fixed sample runs in the codegen
+        # partitions; this is the whole draw.
+        run: |
+          cargo test --release -p hale-codegen --features dynamic-llvm \
+            --test parity_gate \
+            -- --ignored --nocapture sweep_
+
       - name: LOTUS_ASAN=1 cargo test (corpus_oracle under ASAN)
         # #[ignore]'d like the tsan suite; --ignored opts in.
         # LOTUS_ASAN=1 is turned into `BuildOptions::asan` by the

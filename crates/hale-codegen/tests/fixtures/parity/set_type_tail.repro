@@ -1,0 +1,19 @@
+// A fn returning a set type, ending in a tail expression of one member.
+// == main/main.hl ==
+type Book {
+    id: Int;
+}
+
+type Trade {
+    qty: Int;
+}
+
+type Inbound = Book | Trade;
+
+fn decode() -> Inbound {
+    Trade { qty: 1 }
+}
+
+fn main() {
+    let x = decode();
+}

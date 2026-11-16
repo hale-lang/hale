@@ -1,0 +1,9 @@
+// A builtin call with no value as a generic fn's argument.
+// == main/main.hl ==
+fn id<T>(x: T) -> T {
+    return x;
+}
+
+fn main() {
+    id(println("x"));
+}

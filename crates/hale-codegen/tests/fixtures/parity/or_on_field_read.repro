@@ -1,0 +1,9 @@
+// `or` addressing a field read of a record literal whose field is a fallible call.
+// == main/main.hl ==
+type Box<T> {
+    v: T;
+}
+
+fn main() {
+    let n = Box { v: std::json::find_int_field("{\"seq\": 3}", "seq") }.v or 0;
+}

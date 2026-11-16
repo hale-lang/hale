@@ -1,0 +1,13 @@
+// A call through a fn value with an argument of another type than its type takes.
+// (The fn value is named as the parity gate's mutator names it: the
+// refusal names it, outside quotes, so the name is part of the signature.)
+// == main/main.hl ==
+fn half(x: Float) -> Float {
+    return x / 2.0;
+}
+
+fn main() {
+    let __pg_fv: fn(Float) -> Float = half;
+    let n = 8;
+    println(__pg_fv(n));
+}
