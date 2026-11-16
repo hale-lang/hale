@@ -3409,6 +3409,7 @@ impl Parser {
             || name == "rpc"
             || name == "idempotent"
             || name == "not_idempotent"
+            || name == "raise"
             || Self::effect_assert_for(name).is_some()
             || Self::is_effects_form(name)
     }
@@ -3497,6 +3498,19 @@ impl Parser {
                 // GH #1530: the repo method's idempotency marker. Kept
                 // as the decorator's name; `repo_check` reads it.
                 "idempotent" | "not_idempotent" => {}
+                // GH #1951 (item 2): `@raise fn conv(e: P) -> E` declares
+                // the conversion an `or raise` applies from `P` to `E`.
+                // Kept as the decorator's name (the check reads it); what
+                // it implies of the fn's effects is an assertion like any
+                // other: a conversion runs on an error path, so it makes
+                // no syscall, publishes nothing, spawns nothing and never
+                // blocks (it may allocate the error it returns).
+                "raise" => out.effects.push(EffectAssert::Forbid(vec![
+                    EffectClass::Syscall,
+                    EffectClass::Publish,
+                    EffectClass::Spawn,
+                    EffectClass::Block,
+                ])),
                 _ => out.effects.push(
                     Self::effect_assert_for(&name)
                         .expect("is_fn_decorator admitted this name"),

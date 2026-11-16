@@ -1,0 +1,129 @@
+// GH #1951 (item 2): `or raise` converts the call's error into the
+// enclosing fn's when the two differ, in two ways and in this order:
+//
+// - R2: the fn's error is a set holding the call's error, which becomes
+//   the set's member (as it does through `fail` and `or fail err`, and
+//   through a fallible handler's failure);
+// - R3: one `@raise fn conv(e: P) -> E` converts it, declared in the seed
+//   of `P` or of `E` (this seed's, or an imported one's).
+import "./raise_conversion_lib" as lib;
+
+type ParseError2 { at: Int; text: String; }
+type FetchError { url: String; }
+type AppError = ParseError2 | FetchError;
+
+type Report { code: Int; detail: String; }
+
+fn parse(s: String) -> Int fallible(ParseError2) {
+    if s == "bad" {
+        fail ParseError2 { at: 3, text: std::str::upper(s) };
+    }
+    return len(s);
+}
+
+fn fetch(url: String) -> String fallible(FetchError) {
+    if url == "" {
+        fail FetchError { url: "<none>" };
+    }
+    return url;
+}
+
+// R2 through `or raise` and `or fail err`.
+fn load(url: String) -> Int fallible(AppError) {
+    let body = fetch(url) or raise;
+    let n = parse(body) or fail err;
+    return n;
+}
+
+// R2 through a fallible handler's failure: its implicit `or raise`.
+fn reparse(e: FetchError) -> String fallible(ParseError2) {
+    fail ParseError2 { at: 0, text: "retry " + e.url };
+}
+
+fn load_again(url: String) -> String fallible(AppError) {
+    let body = fetch(url) or reparse(err);
+    return body;
+}
+
+// R3 declared in this seed: the call's fields reach the caller's handler.
+@raise fn report_from_parse(e: ParseError2) -> Report {
+    return Report { code: 400 + e.at, detail: "parse: " + e.text };
+}
+
+fn checked(s: String) -> Int fallible(Report) {
+    let n = parse(s) or raise;
+    return n * 10;
+}
+
+// R3 declared in an imported seed, beside the error type it returns, and
+// one from a builtin error type.
+fn get(key: String) -> Int fallible(lib::ApiError) {
+    return lib::lookup(key) or raise;
+}
+
+fn read(path: String) -> String fallible(lib::ApiError) {
+    let text = std::io::fs::read_file(path) or raise;
+    return text;
+}
+
+// R3 declared in this seed, into an imported seed's error: this seed
+// declares the parameter's type.
+@raise fn api_from_fetch(e: FetchError) -> lib::ApiError {
+    return lib::ApiError { status: 502, detail: "upstream " + e.url };
+}
+
+fn proxy(url: String) -> String fallible(lib::ApiError) {
+    let body = fetch(url) or raise;
+    return body;
+}
+
+fn main() {
+    // R2: each member is matched by its type.
+    let kind = load("") or match err {
+        ParseError2(p) -> p.at,
+        FetchError(f) -> 100 + len(f.url),
+    };
+    std::test::assert_eq_int(kind, 106, "a raised member is the set's");
+    let at = load("bad") or match err {
+        ParseError2(p) -> p.at,
+        FetchError(f) -> -1,
+    };
+    std::test::assert_eq_int(at, 3, "a member failed with `or fail err` is the set's");
+    std::test::assert_eq_int(load("okay") or 0, 4, "the success passes through");
+    let mut text = "";
+    let v = load_again("") or match err {
+        ParseError2(p) -> p.text,
+        FetchError(f) -> "fetch",
+    };
+    std::test::assert_eq_str(v, "retry <none>", "a handler's failure is the set's member");
+    // R3: the converted error carries the call's fields.
+    let mut code = 0;
+    let n = checked("bad") or {
+        text = err.detail;
+        err.code
+    };
+    std::test::assert_eq_int(n, 403, "the conversion fails the call, with a converted field");
+    std::test::assert_eq_str(text, "parse: BAD", "converted field from a heap value");
+    std::test::assert_eq_int(checked("abc") or 0, 30, "no conversion on success");
+
+    // R3 across seeds.
+    let status = get("missing") or {
+        text = err.detail;
+        err.status
+    };
+    std::test::assert_eq_int(status, 404, "an imported seed's conversion");
+    std::test::assert_eq_str(text, "no key missing", "its field");
+    std::test::assert_eq_int(get("four") or 0, 4, "imported success");
+    let body = read("/nonexistent/raise_conversion") or {
+        code = err.status;
+        err.detail
+    };
+    std::test::assert_eq_int(code, 503, "a builtin error converted by the seed of its result");
+    std::test::assert_eq_str(body, "not_found", "the builtin error's kind");
+    let up = proxy("") or {
+        code = err.status;
+        err.detail
+    };
+    std::test::assert_eq_int(code, 502, "this seed's conversion into an imported type");
+    std::test::assert_eq_str(up, "upstream <none>", "its field");
+}
