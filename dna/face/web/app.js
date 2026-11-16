@@ -1031,7 +1031,22 @@ function renderShell() {
   horizon.replaceChildren();
   const name = idx.name || (S.record && "record " + S.record.record_id.slice(0, 12)) || "organization";
   horizon.append(el("span", { class: "org" }, name));
-  if (idx.organisms && parseList(idx.organisms).length) horizon.append(el("span", { class: "note" }, `habitat · ${parseList(idx.organisms).length} grafted`));
+  // every organization's UI in one list: this one, then each organization
+  // the habitat holds, each entered signed in through the habitat head's
+  // hand-in (`/organisms/<name>/face`); a child organization's face lists
+  // what its own read names
+  const orgs = parseList(S.org ? S.org.organisms : idx.organisms);
+  const list = $("orgs");
+  if (list) {
+    list.replaceChildren();
+    if (orgs.length) {
+      list.append(el("h3", {}, "organizations"), el("ul", {},
+        el("li", {}, el("a", { href: "#/org", "aria-current": "page" }, el("span", { class: "dot up" }), name, el("span", { class: "note" }, " this one"))),
+        ...orgs.map(o => el("li", {}, el("a", { href: organismFace(o), target: "_blank", rel: "noopener" },
+          el("span", { class: "dot " + (o.state === "up" ? "up" : "down") }), o.name,
+          el("span", { class: "note" }, o.state === "up" ? "" : " " + (o.state || "not answering")))))));
+    }
+  }
   const who = $("who");
   who.replaceChildren(S.principal ? el("span", {}, el("b", {}, S.principal.name), " · ", S.principal.mode) : "");
   const picker = $("theme");
