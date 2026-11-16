@@ -613,6 +613,10 @@ fn per_target_moves() {
 /// `check_build_parity_shapes_test` (GH #1967, #1968, #1970) is a new
 /// target, the same shape: one tag of a value it hands back to its caller
 /// moves into the caller's arena; no leak site goes or appears.
+///
+/// `bus_wire_type_set_test` (GH #1951 item 4) is a new target, the same
+/// shape: one tag of a value one of its fns hands back moves into the
+/// caller's arena; no leak site goes or appears.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -627,17 +631,17 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/91-module-decls: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
-    "dna/api: 1 go, 0 appear, 1 move their reason; dump 549 tags, 1340 reclaim, 1 verdicts",
-    "dna/core: 0 go, 0 appear; dump 413 tags, 1048 reclaim, 0 verdicts",
-    "dna/host: 2 go, 0 appear; dump 604 tags, 1398 reclaim, 2 verdicts",
-    "dna/host/verb: 0 go, 0 appear; dump 604 tags, 1165 reclaim, 1453 verdicts",
+    "dna/api: 1 go, 0 appear, 1 move their reason; dump 549 tags, 1348 reclaim, 1 verdicts",
+    "dna/core: 0 go, 0 appear; dump 413 tags, 1052 reclaim, 0 verdicts",
+    "dna/host: 2 go, 0 appear; dump 604 tags, 1406 reclaim, 2 verdicts",
+    "dna/host/verb: 0 go, 0 appear; dump 604 tags, 1165 reclaim, 1461 verdicts",
     "dna/oidc: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
-    "dna/operations: 0 go, 0 appear; dump 503 tags, 1269 reclaim, 0 verdicts",
-    "dna/organism: 0 go, 0 appear; dump 425 tags, 1069 reclaim, 0 verdicts",
-    "dna/organization_runtime: 0 go, 0 appear; dump 503 tags, 1269 reclaim, 0 verdicts",
-    "dna/organization_source: 0 go, 0 appear; dump 413 tags, 1048 reclaim, 0 verdicts",
+    "dna/operations: 0 go, 0 appear; dump 503 tags, 1277 reclaim, 0 verdicts",
+    "dna/organism: 0 go, 0 appear; dump 425 tags, 1073 reclaim, 0 verdicts",
+    "dna/organization_runtime: 0 go, 0 appear; dump 503 tags, 1277 reclaim, 0 verdicts",
+    "dna/organization_source: 0 go, 0 appear; dump 413 tags, 1052 reclaim, 0 verdicts",
     "dna/reflexes: 0 go, 0 appear; dump 17 tags, 26 reclaim, 0 verdicts",
-    "dna/ui: 0 go, 0 appear; dump 415 tags, 1048 reclaim, 0 verdicts",
+    "dna/ui: 0 go, 0 appear; dump 415 tags, 1052 reclaim, 0 verdicts",
     "tests/hale/api_bearer_roles_test.hl: 0 go, 0 appear; dump 3 tags, 41 reclaim, 0 verdicts",
     "tests/hale/api_big_reply_test.hl: 0 go, 0 appear; dump 1 tags, 20 reclaim, 0 verdicts",
     "tests/hale/api_binding_test.hl: 0 go, 0 appear; dump 2 tags, 28 reclaim, 0 verdicts",
@@ -654,6 +658,7 @@ const PINNED: &[&str] = &[
     "tests/hale/api_serve_test.hl: 0 go, 0 appear; dump 3 tags, 27 reclaim, 0 verdicts",
     "tests/hale/block_string_test.hl: 0 go, 0 appear; dump 1 tags, 1 reclaim, 0 verdicts",
     "tests/hale/block_tail_return_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/bus_wire_type_set_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/chains_tranche2_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/check_build_parity_shapes_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/codegen_gaps_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -674,5 +679,6 @@ const PINNED: &[&str] = &[
     "tests/hale/sigterm_no_live_drain_reader_test.hl: 0 go, 0 appear; dump 3 tags, 13 reclaim, 0 verdicts",
     "tests/hale/sigterm_runs_drain_hook_test.hl: 0 go, 0 appear; dump 1 tags, 15 reclaim, 0 verdicts",
     "tests/hale/str_index_of_from_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/string_append_test.hl: 0 go, 0 appear; dump 3 tags, 0 reclaim, 6 verdicts",
     "tests/hale/tail_value_returns_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
 ];

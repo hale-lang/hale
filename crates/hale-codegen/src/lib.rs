@@ -60,6 +60,7 @@ pub use hale_types::ownership;
 pub mod target;
 pub(crate) mod shared;
 pub(crate) mod stdlib;
+pub(crate) mod string_append;
 pub(crate) mod types;
 pub(crate) mod view_bindings;
 

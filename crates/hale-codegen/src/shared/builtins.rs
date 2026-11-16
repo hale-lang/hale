@@ -721,6 +721,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_str_concat", str_concat_ty, None);
+        // GH #1947 (`crate::string_append`): a `+` chain in one
+        // allocation, and the appending assignment to a local (its
+        // accumulator) and to a String field of `self`.
+        // declare ptr @lotus_str_concat_n(ptr arena, ptr parts, i64 n)
+        // declare ptr @lotus_str_append(ptr arena, ptr acc, ptr cur, ptr parts, i64 n)
+        // declare ptr @lotus_str_field_append(ptr arena, ptr cur, i64 cur_len, ptr now, ptr parts, i64 n)
+        self.module.add_function(
+            "lotus_str_concat_n",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_str_append",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into()], false),
+            None,
+        );
+        // declare i64 @lotus_str_field_len(ptr arena, ptr s)
+        self.module.add_function(
+            "lotus_str_field_len",
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_str_field_append",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into()], false),
+            None,
+        );
         // m49: deep-copy String into the destination arena. Used at
         // free-fn return boundaries — the body's per-call subregion
         // is about to be destroyed, so any String the body returns

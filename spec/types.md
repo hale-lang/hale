@@ -1598,9 +1598,11 @@ Semantics:
   i64 a `Duration` is and lowers inline the same way; it is not flat
   under `zero_copy`, as `[Time; N]` is not (`semantics.md` §
   Payload-shape compatibility). Pointer-shaped
-  elements (String/Bytes/struct) work in-process — push/set
-  arena-anchor the element into the receiver's owning arena — but
-  are rejected in cross-process bus payloads (post-v1 polish).
+  elements (String/Bytes/struct/an enum with payloads) work
+  in-process — push/set arena-anchor the element into the receiver's
+  owning arena — and cross the bus as a count and that many elements
+  (`semantics.md` § Payload type, GH #1951 item 4); they are not flat
+  under `zero_copy`.
 - A bounded place a locus holds (a field of its, or a field of a
   record it holds) **owns** its pointer-shaped elements, as the record
   owns its String fields: `push`, `set` and a whole assignment store

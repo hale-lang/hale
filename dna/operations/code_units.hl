@@ -207,10 +207,22 @@ fn unit_is_main(units: String, dir: String) -> Bool { return unit_field(units, d
 fn units_reach(units: String, start: String) -> String {
     let mut reached = "";
     let mut queue = unit_field(units, start, 3);
-    let mut q = 0;
-    while len(dna::nth_word(queue, q)) > 0 {
-        let d = dna::nth_word(queue, q);
-        q = q + 1;
+    // The queue's words in order, by a cursor over it: the queue only
+    // grows at its end (by " " and more words), so a word read is never
+    // changed, and the queue is read only by slices and `index_of_from`,
+    // which keep nothing of it, so each append extends it in place
+    // (GH #1947). The same words `dna::nth_word(queue, q)` gave for q = 0,
+    // 1, … until it gave "".
+    let mut at = 0;
+    while at < len(queue) {
+        if queue[at..(at + 1)] == " " {
+            at = at + 1;
+            continue;
+        }
+        let sp = std::str::index_of_from(queue, " ", at);
+        let end = if sp < 0 { len(queue) } else { sp };
+        let d = queue[at..end];
+        at = end;
         if d == start || std::str::contains(" " + reached + " ", " " + d + " ") { continue; }
         if len(unit_field(units, d, 1)) == 0 { continue; }
         reached = if len(reached) == 0 { d } else { reached + " " + d };

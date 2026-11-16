@@ -1,0 +1,242 @@
+// Every `type` crosses the bus (GH #1951 item 4): the wire format's
+// carriage table (spec/semantics.md § Payload type) has an encoding for
+// each value a record may hold, so a payload is no longer refused for a
+// list of strings or records, an enum with payloads, a tuple or a
+// `std::json::Value`. Until 2026-11-16 `hale check` refused each of these
+// fields where the topic was delivered, and a top-level enum with a
+// `String` value was refused by the build alone.
+//
+// Pinned here, through in-process delivery (the serializer and the local
+// decoder; the wire decoder's cross-process twin is
+// crates/hale-codegen/tests/bus_wire_type_set.rs):
+//   - `bounded` lists of `String`, `Bytes`, records, enums with payloads
+//     and `std::json::Value`, full, partly full and empty;
+//   - fixed arrays of `String`, `Bytes`, payload-free enums and enums
+//     with payloads;
+//   - an enum with payloads as a field, nested in a record in a list, and
+//     as a topic's whole payload, its values strings, bytes, records,
+//     lists and tuples;
+//   - a tuple field, a tuple of a string and a record;
+//   - a list taken from one delivery and kept in the subscriber's place,
+//     read again in a later delivery, after the first one's payload
+//     arena was reclaimed.
+//
+// Every String is built at run time, so a read of a freed block is one
+// ASan sees (`LOTUS_ASAN=1 hale test tests/hale/bus_wire_type_set_test.hl`).
+
+type Point { x: Int = 0; label: String = ""; }
+
+type Kind = enum { Small, Large };
+
+type Status = enum {
+    Ok,
+    Other(String),
+    Pair(String, Int),
+    Blob(Bytes),
+    At(Point),
+    Many(bounded[String; 3]),
+    Both((Int, String)),
+};
+
+type Row { name: String = ""; status: Status = Status::Ok; }
+
+type Msg {
+    seq: Int = 0;
+    tags: bounded[String; 4];
+    blobs: bounded[Bytes; 3];
+    rows: bounded[Row; 3];
+    states: bounded[Status; 6];
+    docs: bounded[std::json::Value; 2];
+    none: bounded[String; 2];
+    names: [String; 3];
+    chunks: [Bytes; 2];
+    kinds: [Kind; 2];
+    picks: [Status; 2];
+    status: Status = Status::Ok;
+    pair: (Int, String);
+    deep: (String, Point);
+    config: std::json::Value;
+    tail: Int = 0;
+}
+
+topic Events { payload: Msg; subject: "t_wire_set.events"; }
+topic Signals { payload: Status; subject: "t_wire_set.signals"; }
+
+type Seen { seq: Int = 0; got: String = ""; }
+topic Seens { payload: Seen; subject: "t_wire_set.seen"; }
+
+fn show(s: Status) -> String {
+    return match s {
+        Status::Ok -> "ok",
+        Status::Other(t) -> "other:" + t,
+        Status::Pair(t, n) -> "pair:" + t + "/" + to_string(n),
+        Status::Blob(b) -> "blob:" + bt(b),
+        Status::At(p) -> "at:" + p.label + "@" + to_string(p.x),
+        Status::Many(xs) -> "many:" + joined(xs),
+        Status::Both(t) -> "both:" + to_string(t.0) + "/" + t.1,
+    };
+}
+
+// a Bytes as its bytes' values: "X1" is `88.49`
+fn bt(b: Bytes) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(b) {
+        if i > 0 { out = out + "."; }
+        out = out + to_string(std::bytes::read_u8(b, i) or 0);
+        i = i + 1;
+    }
+    return out;
+}
+
+fn joined(xs: bounded[String; 3]) -> String {
+    let mut out = "";
+    for x in xs { out = out + x + ";"; }
+    return out;
+}
+
+fn kind(k: Kind) -> String {
+    return match k { Kind::Small -> "s", Kind::Large -> "L" };
+}
+
+fn render(m: Msg) -> String {
+    let mut out = to_string(m.seq) + "|";
+    for t in m.tags { out = out + t + ","; }
+    out = out + "|";
+    for b in m.blobs { out = out + bt(b) + ","; }
+    out = out + "|";
+    for r in m.rows { out = out + r.name + "=" + show(r.status) + ","; }
+    out = out + "|";
+    for s in m.states { out = out + show(s) + ","; }
+    out = out + "|";
+    for d in m.docs { out = out + d.text + ","; }
+    out = out + "|" + to_string(count(m.none)) + "|";
+    out = out + m.names[0] + "," + m.names[1] + "," + m.names[2] + "|";
+    out = out + bt(m.chunks[0]) + "," + bt(m.chunks[1]) + "|";
+    out = out + kind(m.kinds[0]) + kind(m.kinds[1]) + "|";
+    out = out + show(m.picks[0]) + "," + show(m.picks[1]) + "|";
+    out = out + show(m.status) + "|";
+    out = out + to_string(m.pair.0) + "/" + m.pair.1 + "|";
+    out = out + m.deep.0 + "/" + m.deep.1.label + "@" + to_string(m.deep.1.x) + "|";
+    out = out + m.config.text + "|" + to_string(m.tail);
+    return out;
+}
+
+fn up(s: String) -> String { return std::str::upper(s); }
+
+fn build(k: Int) -> Msg {
+    let n = to_string(k);
+    let mut many: bounded[String; 3] = [];
+    push(many, up("m") + n) or raise;
+    push(many, up("w") + n) or raise;
+    let mut m = Msg {
+        seq: k,
+        names: [up("a") + n, up("b") + n, up("c") + n],
+        chunks: [std::bytes::from_string(up("x") + n), std::bytes::from_string("")],
+        kinds: [Kind::Large, Kind::Small],
+        picks: [Status::Other(up("p") + n), Status::Ok],
+        status: Status::Pair(up("st") + n, k * 10),
+        pair: (k + 1, up("pr") + n),
+        deep: (up("d") + n, Point { x: k, label: up("pt") + n }),
+        config: std::json::Value::parse("{\"k\": " + n + ", \"a\": [1, 2]}") or raise,
+        tail: 7000 + k,
+    };
+    push(m.tags, up("t") + n) or raise;
+    push(m.tags, "") or raise;
+    push(m.tags, up("u") + n) or raise;
+    push(m.blobs, std::bytes::from_string(up("b") + n)) or raise;
+    push(
+        m.rows,
+        Row { name: up("r") + n, status: Status::At(Point { x: k, label: up("l") + n }) },
+    ) or raise;
+    push(m.rows, Row { name: up("q") + n }) or raise;
+    push(m.states, Status::Other(up("o") + n)) or raise;
+    push(m.states, Status::Ok) or raise;
+    push(m.states, Status::Pair(up("y") + n, k)) or raise;
+    push(m.states, Status::Blob(std::bytes::from_string(up("z") + n))) or raise;
+    push(m.states, Status::Many(many)) or raise;
+    push(m.states, Status::Both((k, up("h") + n))) or raise;
+    push(m.docs, std::json::Value::parse("[" + n + "]") or raise) or raise;
+    return m;
+}
+
+locus Worker {
+    params { kept: bounded[String; 4]; first: String = ""; }
+    bus {
+        subscribe Events as on_event;
+        subscribe Signals as on_signal;
+        publish Seens;
+    }
+    fn on_event(m: Msg) {
+        let mut got = render(m);
+        if m.seq == 1 {
+            // kept past this delivery: read again in the next one
+            self.kept = m.tags;
+            self.first = show(m.status);
+        } else {
+            got = got + "|kept:";
+            for t in self.kept { got = got + t + ","; }
+            got = got + self.first;
+        }
+        Seens <- Seen { seq: m.seq, got: got };
+    }
+    fn on_signal(s: Status) {
+        Seens <- Seen { seq: 100, got: show(s) };
+    }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+        one: String = "";
+        two: String = "";
+        sig: String = "";
+        sig2: String = "";
+    }
+    bus {
+        publish Events;
+        publish Signals;
+        subscribe Seens as on_seen;
+    }
+    fn on_seen(s: Seen) {
+        if s.seq == 1 { self.one = s.got; }
+        if s.seq == 2 { self.two = s.got; }
+        if s.seq == 100 {
+            if self.sig == "" { self.sig = s.got; } else { self.sig2 = s.got; }
+        }
+    }
+    run() {
+        Events <- build(1);
+        std::time::sleep(200ms);
+        Events <- build(2);
+        let mut xs: bounded[String; 3] = [];
+        push(xs, "x" + up("y")) or raise;
+        push(xs, up("z")) or raise;
+        Signals <- Status::Many(xs);
+        std::time::sleep(100ms);
+        Signals <- Status::Both((3, up("tri")));
+        std::time::sleep(300ms);
+        std::test::assert_eq_str(
+            self.one,
+            "1|T1,,U1,|66.49,|R1=at:L1@1,Q1=ok,|other:O1,ok,pair:Y1/1,blob:90.49,many:M1;W1;,both:1/H1,|[1],|0|A1,B1,C1|88.49,|Ls|other:P1,ok|pair:ST1/10|2/PR1|D1/PT1@1|{\"k\": 1, \"a\": [1, 2]}|7001",
+            "every shape arrived as it was sent",
+        );
+        std::test::assert_eq_str(
+            self.two,
+            "2|T2,,U2,|66.50,|R2=at:L2@2,Q2=ok,|other:O2,ok,pair:Y2/2,blob:90.50,many:M2;W2;,both:2/H2,|[2],|0|A2,B2,C2|88.50,|Ls|other:P2,ok|pair:ST2/20|3/PR2|D2/PT2@2|{\"k\": 2, \"a\": [1, 2]}|7002|kept:T1,,U1,pair:ST1/10",
+            "a second delivery, and what the first one left in the place",
+        );
+        std::test::assert_eq_str(
+            self.sig,
+            "many:xY;Z;",
+            "an enum with a list as the whole payload",
+        );
+        std::test::assert_eq_str(
+            self.sig2,
+            "both:3/TRI",
+            "an enum with a tuple as the whole payload",
+        );
+    }
+}
+
+fn main() { App { }; }

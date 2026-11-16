@@ -315,6 +315,74 @@ locus WsClient {
 Consumer reads `self.last_msg` via a contract that exposes
 `b.view()` — zero-copy across the F.14 interface.
 
+## Building a String — the append cost model
+
+A `String` is a value: a read of it is the reader's, and nothing done
+to the place it was read from later changes it. Building one by
+appending is linear in time and memory (GH #1947):
+
+| operation | cost | notes |
+| --- | --- | --- |
+| `a + b + c + d` | one allocation of the total length | A chain of `+` is one String, written once; each `+` used to be a String of its own, kept in the frame's arena until the frame returned. A printable non-String operand is rendered as `+` renders it. |
+| `s = s + e1 + … + en`, `s += e`, `s = f"{s}…"` on a local declared `let mut` | amortized O(appended bytes) | An *appending assignment*. The local grows a buffer of its own, half again as large as the text whenever it fills, so building `n` bytes allocates O(n) in all and copies each byte O(1) times. |
+| the same on a `String` field of `self`, in a method | amortized O(appended bytes), up to 16 MiB | The field's block grows through its size classes (half again as large each time it fills), the replaced block retired as a store retires it. Past the largest class (16 MiB) each append copies the value. |
+| the same on any other place (`rec.body`, `self.page.body`, an element) | O(length of the place) per append | The chain is built into a fresh String and stored: one allocation per statement, the size of the whole. |
+| `std::bytes::BytesBuilder.append_str(s)` | amortized O(len(s)) | The explicit buffer, for bytes that need not be text, or a buffer held across calls. |
+
+**What keeps the buffer the local's.** An append writes into the
+local's buffer only while that buffer is the local's alone. A read of
+the local that may keep the value — the local passed to a call, bound
+to another name, stored, returned, captured into a record — gives the
+buffer up, and the next append copies the text into a fresh buffer
+before it writes; so a copy taken before an append never sees it. The
+reads that keep nothing do not give it up: an operand of a `+` chain
+(the chain copies it), an operand of a comparison, a slice `s[lo..hi]`
+(it copies the bytes it names), the place an appending assignment
+itself reads, and an argument of a call that keeps none of its
+arguments. Those calls are `len` and the printers, the built-in
+`contains` and `starts_with`, and every `std::` function the surface
+table lists as lowered natively, classified pure (or allocating
+only), not fallible, and returning a value that cannot be an argument
+(an `Int`, `Float`, `Bool`, `Decimal`, 256-bit integer, `Duration`,
+`Time` or nothing): `std::str::contains`, `index_of`, `index_of_from`,
+`starts_with`, `ends_with` and the like. A call of a program fn, and a
+`std::` function returning a `String` (`substring`, `trim`), give the
+buffer up. A plain assignment to the local, and its `let`, start it
+afresh.
+
+So the loop that stays linear reads the growing text only in those
+ways, and hands it on after the loop:
+
+```hale
+fn page(n: Int) -> String {
+    let mut out = "[";
+    let mut i = 0;
+    while i < n {
+        if i > 0 { out += ", "; }
+        out = out + "{\"id\": " + to_string(i) + "}";
+        i = i + 1;
+    }
+    return out + "]";
+}
+```
+
+Measured on the issue's loop (a 44-byte row appended `n` times), as
+the process's peak resident set: 43 KB, 87 KB, 175 KB and 350 KB
+results peaked at 80 MB, 308 MB, 1.18 GB and 4.5 GB before; they now
+peak at 3.1, 3.2, 3.5 and 4.0 MB (a 4.5 MB result at 19 MB, an 18 MB
+one at 70 MB).
+
+**What is still quadratic, and reported.** A loop that both appends to
+a local declared outside it and reads that local in a way that keeps
+the value (`log(out)` beside `out += row`) copies the whole text on
+every iteration, and so does an append to any place but a local or a
+field of `self`. The hot-path allocation lint reports both at the
+append, the first with the read that gives the buffer up as its step
+(`spec/verification.md` § "Hot-path allocation lint"); `hale verify`
+fails on it. `len(s)` is still `strlen` (§ Linear byte scanning), so a
+loop that tests `len(out)` re-measures the text each time: linear in
+memory, quadratic in time.
+
 ## Linear byte scanning — the `String` cost model
 
 A `String` is a NUL-terminated blob with no stored length, and

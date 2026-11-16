@@ -1,0 +1,223 @@
+// tests/hale/string_append_test.hl — building a String by appending is
+// linear in time and memory, and keeps value semantics (GH #1947,
+// spec/stdlib.md § "Building a String").
+//
+// `out = out + …` used to build a fresh String per `+` in the frame's
+// arena, which kept every one until the frame returned: the loop in
+// `build` below peaked at 4.5 GB for a 350 KB result. An appending
+// assignment now appends into a buffer the local owns, so the loop
+// allocates a few dozen blocks, not tens of thousands. A value read
+// before an append keeps what it read.
+
+type Row { name: String; }
+
+fn build(n: Int) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        out = out + "row number " + to_string(i) + " with some padding text here\n";
+        i = i + 1;
+    }
+    return out;
+}
+
+// The same loop, reading the growing text through `std::` readers that
+// keep nothing of it (spec/stdlib.md § "Building a String"): still one
+// buffer.
+fn build_reading(n: Int) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        if !std::str::contains(out, "never") && std::str::index_of(out, "\t") < 0 {
+            out = out + "row number " + to_string(i) + " with some padding text here\n";
+        }
+        let head = out[0..3];
+        if head != "row" { return "wrong head"; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// What a callee is handed is its own: an append after the call does not
+// reach it.
+fn keep(s: String) -> Row {
+    return Row { name: s };
+}
+
+fn ends(s: String) -> String {
+    return std::str::substring(s, len(s) - 3, len(s));
+}
+
+locus Doc {
+    params { text: String = ""; }
+
+    fn build(n: Int) -> Int {
+        let mut i = 0;
+        while i < n {
+            self.text = self.text + "line " + to_string(i) + "\n";
+            i = i + 1;
+        }
+        return len(self.text);
+    }
+
+    // A local bound from the field before an append keeps its value.
+    fn snapshot_then_append() -> String {
+        let before = self.text;
+        self.text += "tail";
+        return before;
+    }
+
+    fn bump() -> String {
+        self.text += "x";
+        return "y";
+    }
+
+    // The field is read before the part runs, as `+` reads it: the
+    // part's own append to the field is overwritten.
+    fn append_around_a_store() -> String {
+        self.text = self.text + self.bump();
+        return self.text;
+    }
+
+    fn reset(s: String) {
+        self.text = s;
+    }
+}
+
+fn main() {
+    // The issue's loop: right, and linear. A quadratic build of this
+    // String made ~19,000 heap allocations (one arena chunk per
+    // concatenation past 64 KiB); the append makes a few dozen.
+    let before = std::diag::heap_alloc_count();
+    let text = build(8000);
+    let allocs = std::diag::heap_alloc_count() - before;
+    std::test::assert_eq_int(len(text), 350890, "the whole text");
+    std::test::assert(std::str::starts_with(text, "row number 0 with"), "in order");
+    std::test::assert(
+        std::str::ends_with(text, "row number 7999 with some padding text here\n"),
+        "to the end",
+    );
+    if before >= 0 {
+        std::test::assert(
+            allocs < 400,
+            "building 350 KB made " + to_string(allocs) + " heap allocations",
+        );
+    }
+
+    let before_reading = std::diag::heap_alloc_count();
+    let read_text = build_reading(8000);
+    let reading_allocs = std::diag::heap_alloc_count() - before_reading;
+    std::test::assert_eq_str(read_text, text, "the readers see the text as it grows");
+    if before_reading >= 0 {
+        std::test::assert(
+            reading_allocs < 400,
+            "reading while building made " + to_string(reading_allocs) + " heap allocations",
+        );
+    }
+
+    // A slice taken before an append is a copy, and keeps its bytes.
+    let mut w = "ab";
+    let first = w[0..len(w)];
+    w += "cd";
+    std::test::assert_eq_str(first, "ab", "the slice keeps what it copied");
+    std::test::assert(std::str::contains(w, "bc"), "the local has the append");
+    w += "ef";
+    std::test::assert_eq_str(w, "abcdef", "the readers did not disturb the appends");
+
+    // A copy taken before an append does not see it.
+    let mut s = "ab";
+    s += "c";
+    let copy = s;
+    s += "d";
+    s = s + "e" + "f";
+    std::test::assert_eq_str(copy, "abc", "the copy keeps its value");
+    std::test::assert_eq_str(s, "abcdef", "the local has every append");
+
+    // A copy per iteration: each keeps the prefix it was taken at.
+    let mut acc = "";
+    let mut rows: [Row; 4] = [
+        Row { name: "" },
+        Row { name: "" },
+        Row { name: "" },
+        Row { name: "" }
+    ];
+    let mut k = 0;
+    while k < 4 {
+        acc = acc + to_string(k);
+        rows[k] = keep(acc);
+        k = k + 1;
+    }
+    std::test::assert_eq_str(rows[0].name, "0", "row 0");
+    std::test::assert_eq_str(rows[1].name, "01", "row 1");
+    std::test::assert_eq_str(rows[3].name, "0123", "row 3");
+    std::test::assert_eq_str(acc, "0123", "the accumulator");
+
+    // A record built from the local in the loop keeps its own value too.
+    let mut line = "";
+    let mut held = Row { name: "" };
+    let mut q = 0;
+    while q < 3 {
+        line += "ab";
+        if q == 1 {
+            held = Row { name: line };
+        }
+        q = q + 1;
+    }
+    std::test::assert_eq_str(held.name, "abab", "the record keeps the prefix it was built with");
+    std::test::assert_eq_str(line, "ababab", "the local keeps growing");
+
+    // Reads that keep nothing do not give the buffer up, and are right.
+    let mut t = "";
+    let mut j = 0;
+    while j < 100 {
+        t += "ab";
+        if len(t) == 10 && t == "ababababab" {
+            t = t + "|";
+        }
+        j = j + 1;
+    }
+    std::test::assert_eq_int(len(t), 201, "len and == read the growing value");
+    std::test::assert_eq_str(ends(t), "bab", "a callee reads the value as it is");
+
+    // The value appended to itself.
+    let mut d = "xy";
+    d = d + d;
+    d = d + d + "!";
+    std::test::assert_eq_str(d, "xyxyxyxy!", "a part that is the value itself");
+
+    // The f-string spelling, and printable parts.
+    let mut f = "n";
+    let mut m = 0;
+    while m < 3 {
+        f = f"{f},{m}";
+        f = f + m;
+        m = m + 1;
+    }
+    std::test::assert_eq_str(f, "n,00,11,22", "f\"{f}…\" appends, and an Int part renders");
+
+    // A part that assigns the local: the append reads the value first.
+    let mut g = "a";
+    g = g + {
+        g = "zzz";
+        "b"
+    };
+    std::test::assert_eq_str(g, "ab", "the value read before the part ran");
+
+    // A String field grown in a loop, and a view of it taken before an
+    // append.
+    let doc = Doc { };
+    std::test::assert_eq_int(doc.build(2000), 18890, "the field holds every line");
+    doc.reset("head-");
+    std::test::assert_eq_str(
+        doc.snapshot_then_append(),
+        "head-",
+        "a local bound from the field keeps its value",
+    );
+    std::test::assert_eq_str(doc.text, "head-tail", "the field has the append");
+    doc.reset("q");
+    std::test::assert_eq_str(
+        doc.append_around_a_store(),
+        "qy",
+        "the field read before the part ran",
+    );
+}

@@ -2592,21 +2592,15 @@ fn a_value_where_its_place_cannot_hold_it_is_refused_by_the_check_not_the_build(
                 "k",
                 "@form(hashmap) key `Row.k` is a `Bool`",
             ),
+            // GH #1951 item 4: every value a record holds is carried but
+            // one no frame can hold, here a type that reaches itself
             (
-                "type Shape = enum { Dot, Circle(Int) };\ntype Msg { x: Shape; n: Int = 0; }\n\
+                "type Node { n: Int = 0; kids: bounded[Node; 2]; }\ntype Msg { root: Node; n: Int = 0; }\n\
                  topic Ev { payload: Msg; subject: \"ev.x\"; }\n\
                  locus Sub { bus { subscribe Ev as on_ev; } fn on_ev(m: Msg) { println(m.n); } }\n\
                  fn main() { let s = Sub { }; }\n",
                 "subscribe Ev as on_ev;",
-                "subscribe `Ev`: topic `Ev` declares `payload: Msg`, whose field `x` is an enum with payloads (`Shape`)",
-            ),
-            (
-                "type Msg { x: (Int, Int); n: Int = 0; }\n\
-                 topic Ev { payload: Msg; subject: \"ev.x\"; }\n\
-                 locus Sub { bus { subscribe Ev as on_ev; } fn on_ev(m: Msg) { println(m.n); } }\n\
-                 fn main() { let s = Sub { }; }\n",
-                "subscribe Ev as on_ev;",
-                "subscribe `Ev`: topic `Ev` declares `payload: Msg`, whose field `x` is a tuple",
+                "subscribe `Ev`: topic `Ev` declares `payload: Msg`, whose field `root.kids[]` is a recursive type",
             ),
         ],
         "place",
@@ -3821,20 +3815,12 @@ fn the_codegen_feature_gaps_at_a_boundary_are_refused_by_the_check() {
                 "`@ffi` fn `ext_c` parameter `c` has type Color — `Color` is an enum, which has no C layout at Stage 1",
             ),
             (
-                "type M { xs: [Int; 2]; t: (Int, Int); }\n\
+                "type Tree = enum { Leaf(Int), Fork(Tree) };\ntype M { xs: [String; 2]; t: Tree; }\n\
                  locus Rx { bus { subscribe \"m\" as on_m of type M; } fn on_m(m: M) { println(m.xs[0]); } }\n\
-                 locus Tx { bus { publish \"m\" of type M; } birth() { \"m\" <- M { xs: [1, 2], t: (1, 2) }; } }\n\
+                 locus Tx { bus { publish \"m\" of type M; } birth() { \"m\" <- M { xs: [\"a\", \"b\"], t: Tree::Leaf(1) }; } }\n\
                  fn main() { Rx { }; Tx { }; }\n",
                 "M",
-                "subscribe `m`: the payload `M`, whose field `t` is a tuple (`(Int, Int)`), which hale can't carry on the bus yet",
-            ),
-            (
-                "type M { xs: [String; 2]; }\n\
-                 locus Rx { bus { subscribe \"m\" as on_m of type M; } fn on_m(m: M) { println(m.xs[0]); } }\n\
-                 locus Tx { bus { publish \"m\" of type M; } birth() { \"m\" <- M { xs: [\"a\", \"b\"] }; } }\n\
-                 fn main() { Rx { }; Tx { }; }\n",
-                "M",
-                "subscribe `m`: the payload `M`, whose field `xs` is an array of other than scalars or structs (`[String; 2]`)",
+                "subscribe `m`: the payload `M`, whose field `t.Fork.0` is a recursive type",
             ),
             (
                 xpool_tuple.as_str(),

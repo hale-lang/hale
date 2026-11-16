@@ -25,8 +25,8 @@ mod build_opts;
 #[path = "support/harness.rs"]
 mod harness;
 
-/// Grows one locus's memory without bound: each iteration concatenates
-/// onto a string that lives until the method returns.
+/// Grows one locus's memory without bound: each iteration appends to a
+/// string that lives until the method returns.
 fn hog(iterations: u64) -> String {
     format!(
         r#"
@@ -93,9 +93,10 @@ fn a_refused_chunk_aborts_at_the_allocation_and_names_it() {
     );
     assert!(e.contains("requested by the call at 0x"), "gives the address of the call: {e}");
     // glibc resolves that address to the function that made the call —
-    // here the string concatenation the loop is doing.
+    // here the append the loop is doing (GH #1947: the appending
+    // assignment grows the local's buffer, `lotus_str_append`).
     #[cfg(target_env = "gnu")]
-    assert!(e.contains("lotus_str_concat"), "names the caller: {e}");
+    assert!(e.contains("lotus_str_append"), "names the caller: {e}");
 }
 
 /// The control: the same program, small enough to fit, is untouched —

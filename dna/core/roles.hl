@@ -386,9 +386,15 @@ locus HoldsReader {
             let tail = line[(t1 + 1)..len(line)];
             let t2 = std::str::index_of(tail, "\t");
             let position = tail[0..t2];
+            // `word_in(position, out)`, spelled with the readers that keep
+            // nothing, so the append extends `out` in place (GH #1947)
             if std::str::starts_with(position, "position:")
                 && std::str::contains(holders, "\n" + tail[(t2 + 1)..len(tail)] + "\n")
-                && !word_in(position, out)
+                && !(len(position) > 0
+                        && (out == position
+                                || std::str::starts_with(out, position + " ")
+                                || std::str::ends_with(out, " " + position)
+                                || std::str::contains(out, " " + position + " ")))
             {
                 out = out + (if len(out) > 0 { " " } else { "" }) + position;
             }

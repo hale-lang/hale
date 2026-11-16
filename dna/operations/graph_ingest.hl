@@ -186,7 +186,7 @@ fn ingest_compose_services(text: String, repo: String) -> String {
                         s_image,
                         s_merge,
                         s_runs_label,
-                        anchors,
+                        anchors[0..len(anchors)], // a copy: `anchors` grows in this loop (GH #1947)
                         repo,
                         ingest_program(s_entry + " " + s_cmd),
                     );
@@ -236,7 +236,7 @@ fn ingest_compose_services(text: String, repo: String) -> String {
                         s_image,
                         s_merge,
                         s_runs_label,
-                        anchors,
+                        anchors[0..len(anchors)], // a copy: `anchors` grows in this loop (GH #1947)
                         repo,
                         ingest_program(s_entry + " " + s_cmd),
                     );
@@ -382,8 +382,8 @@ fn ingest_k8s_workloads(text: String) -> String {
             continue;
         }
         if section == "spec" && (key == "command" || key == "args") && len(image) >= 0 {
-            let taken = if key == "command" { command } else { args };
-            if len(taken) == 0 {
+            let taken = if key == "command" { len(command) } else { len(args) };
+            if taken == 0 {
                 let v = ingest_command_words(ingest_value(line));
                 if len(v) > 0 {
                     if key == "command" { command = v; } else { args = v; }
@@ -2053,7 +2053,11 @@ locus GraphIngest {
             let ind = ingest_indent(line);
             let key = ingest_key(line);
             if ind == 0 {
-                if len(job) > 0 { self.gate(path, workflow, job, name, block); job = ""; }
+                if len(job) > 0 {
+                    self.gate(path, workflow, job, name, block);
+                    job = "";
+                    block = "";
+                }
                 if key == "name" { workflow = ingest_value(line); }
                 jobs = key == "jobs";
                 at = -1;

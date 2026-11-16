@@ -584,6 +584,13 @@ fn hashmap_small_value_replace_churn_recycles_stays_flat() {
 // all die at the method's per-call scratch destroy; consumed in `run`'s
 // own loop, every iteration's value stays in `run`'s arena. The model
 // says each, and RSS agrees.
+//
+// What grows in `run` is what each call leaves in its caller's arena,
+// not how it built it. Before GH #1947 every `+` of the loop was a String
+// of its own, so 20 appends a call left ~10 KB of prefixes; the append
+// now grows one buffer geometrically and a call leaves about three times
+// its result. `join_n` appends 100 times (a ~1.2 KB result) so the
+// per-call residue is still tens of MB over 10k calls.
 
 const ACCUMULATOR_IN_METHOD: &str = r#"
     type Row { text: String; }
@@ -595,7 +602,7 @@ const ACCUMULATOR_IN_METHOD: &str = r#"
     }
     locus App {
         params { n: Int = 10000; sink: Int = 0; r: Row = Row { text: "abcdefgh" }; }
-        fn record(i: Int) { self.sink = self.sink + len(join_n(self.r, 20)); }
+        fn record(i: Int) { self.sink = self.sink + len(join_n(self.r, 100)); }
         run() {
             let mut i = 0;
             while i < self.n { self.record(i); i = i + 1; }
@@ -623,7 +630,7 @@ const ACCUMULATOR_IN_RUN: &str = r#"
         run() {
             let mut held = self.r;
             let mut i = 0;
-            while i < self.n { self.sink = self.sink + len(join_n(held, 20)); held = self.r; i = i + 1; }
+            while i < self.n { self.sink = self.sink + len(join_n(held, 100)); held = self.r; i = i + 1; }
             print("sink="); println(self.sink);
             print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
@@ -646,7 +653,10 @@ fn a_returned_loop_accumulator_reclaims_with_its_activation() {
 
     // Measured self-RSS 2026-10-10: 4.6 MB consumed in a method (the
     // same as an alloc-free loop) against 100 MB consumed in run's loop,
-    // over 10k calls of 20 iterations.
+    // over 10k calls of 20 iterations, when every append copied. With the
+    // linear append (GH #1947), 20 iterations left 15 MB in run against
+    // 4 MB; 100 iterations leave 90 MB against 3 MB (peak RSS, macOS,
+    // 2026-11-15).
     let method_rss = build_and_rss("accumulator_in_method", ACCUMULATOR_IN_METHOD);
     let run_rss = build_and_rss("accumulator_in_run", ACCUMULATOR_IN_RUN);
     assert!(

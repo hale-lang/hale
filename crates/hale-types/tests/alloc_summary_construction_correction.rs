@@ -752,8 +752,10 @@ fn own_entries_run_to_exit_programs() {
     // payload String per pushed element, as `bounded_whole_assign_test.hl`'s
     // does (GH #1951 item 4);
     // 24: `tests/hale/optional_field_test.hl`, whose codec of optional fields
-    // decodes the same way (GH #1951 item 3).
-    assert_eq!(moved, 24, "the run-to-exit programs among the targets that lose a site");
+    // decodes the same way (GH #1951 item 3); 25:
+    // `tests/hale/string_append_test.hl`, whose `main` appends to Strings in
+    // its loops (GH #1947).
+    assert_eq!(moved, 25, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1087,6 +1089,15 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610628672..1610628717 InUnboundedLoop",
             "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat @1610631493..1610631537 InUnboundedLoop",
             "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat @1610631493..1610631530 InUnboundedLoop",
+            // `tests/hale/string_append_test.hl`: the appending assignments
+            // its loops make, to a local and to a field (GH #1947)
+            "tests/hale/string_append_test.hl: build StringConcat @705..774 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: build StringConcat @705..739 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: build StringConcat @705..724 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: build_reading StringConcat @1174..1243 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: build_reading StringConcat @1174..1208 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: build_reading StringConcat @1174..1193 InUnboundedLoop",
+            "tests/hale/string_append_test.hl: Doc::build StringConcat @1759..1800 InUnboundedLoop",
             // `tests/hale/u256_arith_test.hl`: the parse refusals it loops over
             // build their assertion messages in the loop (GH #1934)
             "tests/hale/u256_arith_test.hl: conversions StringConcat @9516..9542 InUnboundedLoop",
@@ -1543,11 +1554,11 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 507",
+                "dna__core: 511",
                 "dna__core__pond__pq: 16",
                 "dna__core__pond__realtime__nats: 2",
-                "dna__host: 808",
-                "dna__operations: 258",
+                "dna__host: 824",
+                "dna__operations: 262",
                 "the stdlib's copy: 1",
             ])
         )]
