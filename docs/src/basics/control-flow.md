@@ -94,6 +94,14 @@ for i in 0..=5 {
 }
 ```
 
+To take a text apart, loop over one of the text sources, `std::str::split(s, sep)`, `std::str::lines(s)` or `std::str::words(s)` (covered in [Strings](strings.md)). A `String` itself is not something to loop over: `for c in s` is refused, since a part could be a byte, a character, a line or a word.
+
+```hale,fragment
+for line in std::str::lines("a=1\nb=2\n") {
+    println(line);         // a=1, b=2
+}
+```
+
 ## Pattern Matching (`match`)
 
 `match` compares a value against a list of patterns using `->` arms and runs the first matching arm:

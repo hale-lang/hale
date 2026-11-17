@@ -339,11 +339,12 @@ fn own_scope_let_block_scope_test() {
             // 515 since `time_rfc3339.hl` came (GH #1948:
             // `std::time::parse_rfc3339` and its digit helper); 525 since
             // `str_helpers.hl` came (GH #1995: std::str's nine splits and
-            // trims and their whitespace helper)
+            // trims and their whitespace helper); 533 since the text `for`
+            // sources' eight cursor hooks came (GH #1995 S2)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 525 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 525 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 533 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 533 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -756,8 +757,9 @@ fn own_entries_run_to_exit_programs() {
     // 24: `tests/hale/optional_field_test.hl`, whose codec of optional fields
     // decodes the same way (GH #1951 item 3); 25:
     // `tests/hale/string_append_test.hl`, whose `main` appends to Strings in
-    // its loops (GH #1947).
-    assert_eq!(moved, 25, "the run-to-exit programs among the targets that lose a site");
+    // its loops (GH #1947); 26: `tests/hale/str_split_sources_test.hl`,
+    // whose loops push the parts they visit into a vec (GH #1995 S2).
+    assert_eq!(moved, 26, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1091,6 +1093,15 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610628672..1610628717 InUnboundedLoop",
             "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat @1610631493..1610631537 InUnboundedLoop",
             "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat @1610631493..1610631530 InUnboundedLoop",
+            // `tests/hale/str_split_sources_test.hl`: the vec pushes that keep
+            // each part a text source's loop visits (GH #1995 S2)
+            "tests/hale/str_split_sources_test.hl: lines_of CollectionInsert(\"vec\") @902..914 InUnboundedLoop",
+            "tests/hale/str_split_sources_test.hl: main CollectionInsert(\"vec\") @5878..5890 InUnboundedLoop",
+            "tests/hale/str_split_sources_test.hl: main CollectionInsert(\"vec\") @6814..6828 InUnboundedLoop",
+            "tests/hale/str_split_sources_test.hl: main CollectionInsert(\"vec\") @6885..6900 InUnboundedLoop",
+            "tests/hale/str_split_sources_test.hl: main CollectionInsert(\"vec\") @7770..7785 InUnboundedLoop",
+            "tests/hale/str_split_sources_test.hl: parts CollectionInsert(\"vec\") @756..765 InUnboundedLoop",
+            "tests/hale/str_split_sources_test.hl: words_of CollectionInsert(\"vec\") @1048..1057 InUnboundedLoop",
             // `tests/hale/string_append_test.hl`: the appending assignments
             // its loops make, to a local and to a field (GH #1947)
             "tests/hale/string_append_test.hl: build StringConcat @705..774 InUnboundedLoop",

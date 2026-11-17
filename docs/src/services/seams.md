@@ -16,7 +16,7 @@ locus Wire {
     fn decode(frame: String) -> Inbound fallible(WireError) {
         if frame == "cancel" { return Cancel { id: 1 }; }
         if std::str::starts_with(frame, "new ") {
-            let qty = std::str::parse_int(frame[4..len(frame)]) or { fail WireError { at: 4 }; };
+            let qty = std::str::parse_int(frame[4..]) or { fail WireError { at: 4 }; };
             return NewOrder { id: qty * 10, qty: qty };
         }
         fail WireError { at: 0 };

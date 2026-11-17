@@ -146,3 +146,94 @@ fn __str_parse_bool(s: String) -> Bool fallible(ParseError) {
     }
     fail ParseError { kind: "parse_bool", input: s };
 }
+
+// The `for` sources (GH #1995 S2). `for part in std::str::split(s, sep)`,
+// `for line in std::str::lines(s)` and `for w in std::str::words(s)` are
+// not calls: the desugar sequence (`hale_syntax::str_sources`) rewrites
+// each into one `while` over a view of `s`, measured once, with a cursor
+// these hooks move. Per part: one `end` (a find, or a scan to the next
+// boundary), one `next` (O(1) for split and lines, a scan over the
+// separating whitespace for words) and one `std::str::slice` of the part.
+// Every hook reads the view and returns an offset; none allocates.
+
+/// The first cursor of `split(s, sep)`: 0, or past the end when `sep` is
+/// empty, which splits nothing (as `split_into` pushes nothing).
+fn __str_split_first(v: std::str::ByteView, sep: String) -> Int {
+    if len(sep) == 0 {
+        return v.n + 1;
+    }
+    return 0;
+}
+
+/// The end of the part of `split` that starts at `lo`: the next `sep`,
+/// or the end of the view when there is none.
+fn __str_split_end(v: std::str::ByteView, sep: String, lo: Int) -> Int {
+    let hit = std::str::find(v, sep, lo);
+    if hit < 0 {
+        return v.n;
+    }
+    return hit;
+}
+
+/// Where the part after the one ending at `hi` starts: past the `sep`
+/// at `hi`, or past the end of the view when `hi` is the end (the part
+/// was the last).
+fn __str_split_next(v: std::str::ByteView, sep: String, hi: Int) -> Int {
+    if hi >= v.n {
+        return v.n + 1;
+    }
+    return hi + len(sep);
+}
+
+/// The end of the line of `lines` that starts at `lo`: the next `\n` or
+/// the end of the view, less one `\r` before it.
+fn __str_line_end(v: std::str::ByteView, lo: Int) -> Int {
+    let mut hi = std::str::find(v, "\n", lo);
+    if hi < 0 {
+        hi = v.n;
+    }
+    if hi > lo && std::str::byte_at_unchecked(v.text, hi - 1) == 13 {
+        hi = hi - 1;
+    }
+    return hi;
+}
+
+/// Where the line after the one ending at `hi` starts: past the `\r`
+/// `__str_line_end` left out and the `\n`. A line that ends the view
+/// leaves the cursor at its end, so a final newline starts no line.
+fn __str_line_next(v: std::str::ByteView, hi: Int) -> Int {
+    let mut at = hi;
+    if at < v.n && std::str::byte_at_unchecked(v.text, at) == 13 {
+        at = at + 1;
+    }
+    if at < v.n && std::str::byte_at_unchecked(v.text, at) == 10 {
+        at = at + 1;
+    }
+    return at;
+}
+
+/// Whether byte `c` is ASCII whitespace, what separates `words`: space,
+/// tab, LF, vertical tab, form feed or CR.
+fn __str_ascii_space(c: Int) -> Bool {
+    return c == 32 || (c >= 9 && c <= 13);
+}
+
+/// The first byte at or after `at` that is not ASCII whitespace: where
+/// the next word starts, or the end of the view when none does.
+fn __str_word_start(v: std::str::ByteView, at: Int) -> Int {
+    let mut i = at;
+    while i < v.n && __str_ascii_space(std::str::byte_at_unchecked(v.text, i)) {
+        i = i + 1;
+    }
+    return i;
+}
+
+/// The end of the word that starts at `lo`: the next ASCII whitespace,
+/// or the end of the view.
+fn __str_word_end(v: std::str::ByteView, lo: Int) -> Int {
+    let mut i = lo;
+    while i < v.n && !__str_ascii_space(std::str::byte_at_unchecked(v.text, i)) {
+        i = i + 1;
+    }
+    return i;
+}

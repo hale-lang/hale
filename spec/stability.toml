@@ -75,12 +75,15 @@ schema = 1
     "cut_last",
     "eq_ignore_case",
     "last_index_of",
+    "lines",
     "parse_bool",
+    "split",
     "trim_end",
     "trim_prefix",
     "trim_start",
     "trim_suffix",
-], why = "the splits and trims are new (#1995); promoted after one minor" }
+    "words",
+], why = "the splits and trims and the `for` sources `split`, `lines` and `words` are new (#1995); promoted after one minor" }
 "std::term" = { tier = "stable" }
 "std::test" = { tier = "stable" }
 "std::text" = { tier = "stable" }

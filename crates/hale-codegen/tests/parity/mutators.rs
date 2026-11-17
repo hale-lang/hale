@@ -414,6 +414,7 @@ pub const MUTATORS: &[Mutator] = &[
     Mutator { name: "or_vary", apply: or_vary },
     Mutator { name: "fallible_wrap", apply: fallible_wrap },
     Mutator { name: "or_pattern_merge", apply: or_pattern_merge },
+    Mutator { name: "return_in_text_source", apply: return_in_text_source },
 ];
 
 /// `return e;` ending a fn's body becomes the tail `e`.
@@ -493,6 +494,36 @@ fn return_in_loop(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     };
     let out = splice(&src, vec![(fv.start, fv.end, new)])?;
     Some((with_main(files, out), format!("return_in_loop({}, {shape})", fn_desc(site))))
+}
+
+/// A fn's final value is returned first from inside a loop over a text
+/// source (GH #1995 S2), then after it: the desugar's `while` around a
+/// `return` of every type the corpus returns, behind a `continue` and an
+/// `if`.
+fn return_in_text_source(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
+    let (src, program) = parsed(files)?;
+    let sites: Vec<_> = fns(&program)
+        .into_iter()
+        .filter(|s| rewritable(s.f))
+        .filter_map(|s| final_value(&src, s.f).map(|fv| (s, fv)))
+        .collect();
+    let (site, fv) = rng.pick(&sites)?;
+    let e = text(&src, fv.value.span())?;
+    let sources = ["split", "lines", "words"];
+    let source = *rng.pick(&sources)?;
+    let new = match source {
+        "split" => format!(
+            "for __pg_part in std::str::split(\"a,,b\", \",\") {{\n        if __pg_part == \"b\" {{\n            return {e};\n        }}\n    }}\n    return {e};"
+        ),
+        "lines" => format!(
+            "for __pg_line in std::str::lines(\"x\\r\\ny\\n\") {{\n        if __pg_line == \"x\" {{\n            continue;\n        }}\n        return {e};\n    }}\n    return {e};"
+        ),
+        _ => format!(
+            "for __pg_w in std::str::words(\" p  q \") {{\n        for __pg_v in std::str::words(__pg_w) {{\n            if __pg_v == \"q\" {{\n                return {e};\n            }}\n        }}\n    }}\n    return {e};"
+        ),
+    };
+    let out = splice(&src, vec![(fv.start, fv.end, new)])?;
+    Some((with_main(files, out), format!("return_in_text_source({}, {source})", fn_desc(site))))
 }
 
 /// `return e;` anywhere in a fn becomes `let __pg_r = e; return __pg_r;`.

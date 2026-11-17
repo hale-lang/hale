@@ -28,6 +28,9 @@
 //!    3b. tail returns: in a body with a declared return type, a trailing
 //!    `match`, `if` or block carries the value down to its leaves, each a
 //!    `return` (GH #1940, `hale_syntax::desugar::desugar_tail_returns`).
+//!    3c. text sources: `for part in std::str::split(s, sep)`, `lines(s)`
+//!    and `words(s)` become one `while` over a view of `s`
+//!    (GH #1995 S2, `hale_syntax::str_sources`).
 //! 4. construction aliases: a struct literal, variant path or
 //!    constructor pattern spelled with a type alias names the
 //!    declaration the alias chain ends at
@@ -120,6 +123,8 @@ fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]
         // After the unit returns: a `-> ()` body returns nothing, so its
         // last statement is no value.
         hale_syntax::desugar::desugar_tail_returns(p);
+        // GH #1995 S2: a loop over a text source is one `while`.
+        hale_syntax::str_sources::desugar_str_sources(p);
     }
     crate::mangle::resolve_construction_aliases(programs, context, seq.import_renames);
     // RFC #1995 E1: `E::name(v)`, `E::parse(s)`, `E::variants` and

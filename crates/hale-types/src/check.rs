@@ -17189,9 +17189,27 @@ impl<'a> Checker<'a> {
                         self.with_interfaces_named(te, want)
                     }
                     None => {
-                        // GH #911 B5: no annotation is no arguments.
-                        self.refuse_generic_literals_without_arguments(&got, value);
-                        got
+                        // GH #1995 S2: an argument of a text `for` source,
+                        // bound by the desugar. A value that is no string
+                        // is refused here, in the source's words, and the
+                        // binding reads as unknown so the scan the desugar
+                        // wrote around it says nothing more.
+                        if let Some((source, param)) = hale_syntax::str_sources::argument_of(&name.name) {
+                            let base = self.through_aliases(got.clone());
+                            if !matches!(base, Ty::Prim(PrimType::String | PrimType::StringView) | Ty::Unknown) {
+                                self.diags.push(Diag::ty(
+                                    value.span(),
+                                    hale_syntax::str_sources::argument_refusal(source, param, &got.display()),
+                                ));
+                                Ty::Unknown
+                            } else {
+                                got
+                            }
+                        } else {
+                            // GH #911 B5: no annotation is no arguments.
+                            self.refuse_generic_literals_without_arguments(&got, value);
+                            got
+                        }
                     }
                 };
                 self.note_view_binding(name, &bound, ty.as_ref());
@@ -17430,7 +17448,20 @@ impl<'a> Checker<'a> {
                 } else {
                     match self.check_expr(iter) {
                         Ty::Bounded(e, _) | Ty::Array(e, _) => *e,
-                        _ => Ty::Unknown,
+                        // GH #1995 (G12): a String is no sequence, and
+                        // the build refused the loop ("for-loop iterator
+                        // must be an array") after the check passed it.
+                        t @ Ty::Prim(PrimType::String | PrimType::StringView) => {
+                            self.diags.push(Diag::ty(iter.span(), for_over_string(&t)));
+                            Ty::Unknown
+                        }
+                        t => match self.through_aliases(t.clone()) {
+                            Ty::Prim(PrimType::String | PrimType::StringView) => {
+                                self.diags.push(Diag::ty(iter.span(), for_over_string(&t)));
+                                Ty::Unknown
+                            }
+                            _ => Ty::Unknown,
+                        },
                     }
                 };
                 self.locals.push();
@@ -23941,6 +23972,20 @@ impl<'a> Checker<'a> {
                             .iter()
                             .map(|s| s.name.as_str())
                             .collect();
+                        // GH #1995 S2: the text sources are `for` sources,
+                        // and the desugar rewrote every loop over one, so a
+                        // call left as written is a value (or has the wrong
+                        // arguments).
+                        if let Some((name, arity)) = hale_syntax::str_sources::source_of(callee) {
+                            self.diags.push(Diag::ty(
+                                *call_span,
+                                hale_syntax::str_sources::refusal(name, arity, args.len()),
+                            ));
+                            for a in args.iter() {
+                                self.check_expr(a);
+                            }
+                            return Ty::Unknown;
+                        }
                         // GH #470: a std:: path that renames to a
                         // REGISTERED Hale-source free fn checks
                         // against its real signature — full
@@ -25659,6 +25704,15 @@ impl<'a> Checker<'a> {
                 let _ = self.check_expr(index);
                 match self.through_aliases(rt.clone()) {
                     Ty::Array(elem, _) => *elem,
+                    // GH #1995 (G12): `s[i]` checked clean and the build
+                    // refused it ("indexing a non-array value"). One
+                    // index of a String has no answer to give (a byte, or
+                    // a character?), so the refusal names both.
+                    Ty::Prim(PrimType::String | PrimType::StringView) => {
+                        let recv = Self::spell_receiver(receiver);
+                        self.diags.push(Diag::ty(*span, string_index(&recv, &rt)));
+                        Ty::Unknown
+                    }
                     Ty::Bounded(elem, _) => {
                         let recv = Self::spell_receiver(receiver);
                         self.refuse_bounded_index(&recv, &rt, *elem, *span)
@@ -29098,6 +29152,29 @@ fn unnameable_generic_arg(t: &Ty) -> Option<&'static str> {
         Ty::Prim(p) if crate::ty::generic_arg_mangle_token(*p).is_none() => Some("a primitive with no generic form"),
         _ => None,
     }
+}
+
+/// GH #1995 (G12): the refusal of `for c in s` over a String (or a
+/// view of one). The build refused it; the check now says what to write.
+fn for_over_string(t: &Ty) -> String {
+    format!(
+        "`for` over a `{}`: a string is not a sequence. Iterate \
+         `std::str::split/lines/words`, or a `bytes_view` by index \
+         (`let v = std::str::bytes_view(s); for i in 0..v.n {{ … std::str::byte_at(v, i) … }}`) \
+         (spec/semantics.md § Text sources)",
+        t.display()
+    )
+}
+
+/// GH #1995 (G12): the refusal of `s[i]`, one index of a String.
+fn string_index(recv: &str, t: &Ty) -> String {
+    format!(
+        "`{recv}[i]`: a `{}` has no element to index, since one position could mean a byte or a \
+         character. Read bytes through a view (`let v = std::str::bytes_view({recv});` then \
+         `std::str::byte_at(v, i)`, an `Int`, -1 past the end), or slice the text \
+         (`{recv}[i..(i + 1)]`, `{recv}[i..]`) (spec/semantics.md § String slicing)",
+        t.display()
+    )
 }
 
 pub const BARE_BUILTIN_CALLEES: &[&str] = &[

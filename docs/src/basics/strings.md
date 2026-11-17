@@ -33,6 +33,9 @@ fn main() {
 | `std::str::index_of(s, sub)` / `index_of_from(s, sub, pos)` | `(String, String, ...) -> Int` | Byte offset of first match, or `-1` if absent |
 | `std::str::last_index_of(s, sub)` | `(String, String) -> Int` | Byte offset of the last match, or `-1` if absent |
 | `std::str::split_into(s, sep, out)` | `(String, String, VecLocus) -> ()` | Splits `s` by `sep` into a caller-owned `@form(vec)` of `String` |
+| `for p in std::str::split(s, sep)` | `for` source | Visits the parts of `s` between `sep`s, empty ones kept (one pass; not a value) |
+| `for l in std::str::lines(s)` | `for` source | Visits the lines of `s`, without `\r\n` / `\n` endings; no final empty line |
+| `for w in std::str::words(s)` | `for` source | Visits the runs of `s` between ASCII whitespace; never an empty word |
 | `std::str::join(items, sep)` | `(VecLocus, String) -> String` | Joins elements of a `@form(vec)` of `String` with `sep` |
 | `std::str::bytes_view(s)` | `(String) -> ByteView` | Measures `s` once (`v.n` bytes) for `O(1)` indexed scanning |
 | `std::str::byte_at(v, i)` | `(ByteView, Int) -> Int` | Returns byte `0..255` at `i`, or `-1` if `i` is out of bounds |
@@ -223,11 +226,59 @@ let copy = line[..];                              // "key=value"
 
 The receiver is evaluated once, so `next_line()[4..]` calls `next_line` once. Bounds are clamped, never an error: a start below 0 is 0, a bound past the end is the end, and an end before the start gives `""`. Offsets count bytes, not characters (`"né"` is three bytes long). A bound can only be left out inside the brackets: `3..` on its own is a parse error, and `s[lo..=]` is refused because `..=` needs an end to include.
 
+A `String` has no single element to index: `s[i]` is refused, because one position could mean a byte or a character. Slice one byte (`s[i..(i + 1)]`), or read it as a number through a view (`std::str::byte_at`, below). For the same reason `for c in s` is refused: say what the parts are with one of the sources below.
+
+### Splitting in a Loop: `split`, `lines` and `words`
+
+The loop that takes a text apart by re-slicing the rest is quadratic. Every turn measures the rest of the text and copies it, and the copies stay in the function's scratch until it returns:
+
+```hale,fragment
+let mut rest = list + " ";
+while len(rest) > 0 {                       // a strlen of the rest
+    let sp = std::str::index_of(rest, " ");
+    let w = rest[..sp];
+    rest = rest[(sp + 1)..];                // a copy of the rest
+}
+```
+
+Write the loop over a text source instead. `std::str::split(s, sep)`, `std::str::lines(s)` and `std::str::words(s)` visit the parts of `s` one per iteration, in one pass over the text:
+
+```hale
+fn main() {
+    for field in std::str::split("id,name,,note", ",") {
+        println("[" + field + "]");          // [id] [name] [] [note]
+    }
+    for line in std::str::lines("first\r\nsecond\n") {
+        println(line);                       // first, second
+    }
+    let mut n = 0;
+    for w in std::str::words("  any   amount of  space ") {
+        if w == "of" { continue; }
+        n = n + 1;
+    }
+    println(n);                              // 3
+}
+```
+
+| Source | The parts |
+|---|---|
+| `split(s, sep)` | The text between occurrences of `sep`, empty parts kept: `"a,,b,"` is `a`, `""`, `b`, `""`. `""` is one empty part; an empty `sep` gives none. |
+| `lines(s)` | The text between `\n`s, each without the `\r` of a CRLF ending. A final newline starts no line. |
+| `words(s)` | The runs of text between ASCII whitespace (space, tab, CR, LF, vertical tab, form feed); never an empty word. |
+
+- Each part is a new `String` for its iteration. Keep it if you need it: assign it to an outer variable, return it or store it.
+- `break` leaves the loop and `continue` goes to the next part. Loops over sources nest.
+- The arguments are evaluated once, before the first part.
+- Offsets are bytes. A UTF-8 separator never cuts a character, and a non-ASCII space is text to `words`.
+- The loop does nothing but read the text, so it is legal in `@deterministic @no_syscall` code.
+
+The sources are `for` sources, not values. Hale has no sequence value for them to return, so `let parts = std::str::split(s, ",");` is refused, and the message points at `std::str::split_into` (below), which writes the parts into storage you own. Over 1 MiB of 4 KiB words, `words` takes 0.7 ms and the re-slicing loop above takes 15 ms; four times the text costs `words` four times as long and the loop sixteen.
+
 ### Walking Large Strings with `ByteView`
 
 A `String` in Hale is a null-terminated byte pointer without an inline length header. Calling `len(s)`, slicing `s[i..(i + 1)]`, or calling `std::str::index_of_from(s, "\n", start)` inside a loop scans for the null terminator on every iteration, turning a linear scan into an `O(n²)` bottleneck on megabyte-scale inputs.
 
-To scan or tokenize a string in `O(n)` time, construct a `std::str::ByteView` **once** before the loop:
+For a scan the three sources do not cover, construct a `std::str::ByteView` **once** before the loop. It scans or tokenizes a string in `O(n)` time:
 
 ```hale
 fn count_lines(all: String) -> Int {
@@ -286,7 +337,7 @@ fn main() {
 
 ### Splitting and Joining
 
-Because collections in Hale are loci rather than garbage-collected values, `std::str::split_into` writes into a `@form(vec)` locus that you supply:
+To visit the parts once, loop over `std::str::split` (above). To keep them, remember that collections in Hale are loci rather than garbage-collected values: `std::str::split_into` writes into a `@form(vec)` locus that you supply:
 
 ```hale
 @form(vec)
@@ -326,7 +377,7 @@ fn main() {
 }
 ```
 
-`cut` splits at the first separator and keeps the rest whole; `cut_last` splits at the last one. `trim_prefix` and `trim_suffix` remove the affix once if it is there and otherwise return the string unchanged, so they replace both the `starts_with` test and the magic offset (`g[7..len(g)]`). `std::str::last_index_of` is the offset `cut_last` splits at. Offsets and comparisons are bytes: a separator matches byte for byte, and `eq_ignore_case` folds only `A`–`Z`.
+`cut` splits at the first separator and keeps the rest whole; `cut_last` splits at the last one. `trim_prefix` and `trim_suffix` remove the affix once if it is there and otherwise return the string unchanged, so they replace both the `starts_with` test and the magic offset (`g[7..]`). `std::str::last_index_of` is the offset `cut_last` splits at. Offsets and comparisons are bytes: a separator matches byte for byte, and `eq_ignore_case` folds only `A`–`Z`.
 
 ### Parsing Numbers and Binary `Bytes`
 

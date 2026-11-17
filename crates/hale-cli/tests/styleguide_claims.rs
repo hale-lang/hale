@@ -240,10 +240,12 @@ fn these_gaps_are_invisible_to_check() {
 
 // ---- sharp edges that pass `hale check` and fail at build ----------
 
-/// §7 sharp edges: "No char-level `s[i]` — and the checker doesn't
-/// say so". The slice the entry recommends must build.
+/// §7 sharp edges: "No char-level `s[i]`, and no `for c in s`". Until
+/// GH #1995 the check passed `s[i]` and the build refused it; the check
+/// refuses both now, with the way forward. The slice the entry
+/// recommends must build.
 #[test]
-fn claim_char_index_passes_check_and_fails_build() {
+fn claim_char_index_is_refused_by_check() {
     let (_, slice_failed, slice_out) = check_then_build(
         "fn main() { let s = \"hale\"; let i = 1; println(s[i..i + 1]); }",
         "char-slice",
@@ -255,24 +257,19 @@ fn claim_char_index_passes_check_and_fails_build() {
         slice_out
     );
 
-    let (checked, failed, out) = check_then_build(
-        "fn main() { let s = \"hale\"; println(s[1]); }",
-        "char-index",
-    );
-    assert!(
-        failed && out.contains("indexing a non-array value"),
-        "spec/styleguide.md §7 says `s[i]` on a String fails at build. \
-         It builds now — update the \"No char-level `s[i]`\" entry \
-         (and consider whether a `Char` type shipped with it):\n{}",
-        out
-    );
-    assert!(
-        checked,
-        "spec/styleguide.md §7 says `hale check` accepts `s[i]`. It \
-         refuses it now — reword the entry: the edge is no longer \
-         invisible to the checker:\n{}",
-        out
-    );
+    for (src, tag, said) in [
+        ("fn main() { let s = \"hale\"; println(s[1]); }", "char-index", "has no element to index"),
+        ("fn main() { let s = \"hale\"; for c in s { println(c); } }", "char-loop", "a string is not a sequence"),
+    ] {
+        let (checked, _, out) = check_then_build(src, tag);
+        assert!(
+            !checked && out.contains(said),
+            "spec/styleguide.md §7 says `hale check` refuses this on a \
+             String. It accepts it now: update the \"No char-level `s[i]`\" \
+             entry (and consider whether a `Char` type shipped with it):\n{}",
+            out
+        );
+    }
 }
 
 /// §7 sharp edges: "Write the stdlib's time types bare: `Time` and

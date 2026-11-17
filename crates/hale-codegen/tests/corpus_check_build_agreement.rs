@@ -3586,6 +3586,30 @@ fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
                 "[]",
                 "an empty array literal `[]` names no element type",
             ),
+            (
+                // GH #1995 (G12): a String is no sequence; the build said
+                // "for-loop iterator must be an array"
+                "fn main() { let s = \"abc\"; for c in s { println(c); } }\n",
+                "s",
+                "`for` over a `String`: a string is not a sequence. Iterate `std::str::split/lines/words`, or a `bytes_view` by index",
+            ),
+            (
+                // the build said "indexing a non-array value"
+                "fn main() { let s = \"abc\"; let i = 1; println(s[i]); }\n",
+                "s[i]",
+                "`s[i]`: a `String` has no element to index",
+            ),
+            (
+                // GH #1995 S2: a text source is a `for` source, not a value
+                "fn main() { let xs = std::str::split(\"a,b\", \",\"); }\n",
+                "std::str::split(\"a,b\", \",\")",
+                "`std::str::split` is a `for` source, not a value",
+            ),
+            (
+                "fn main() { for w in std::str::words(\"a\", \"b\") { println(w); } }\n",
+                "std::str::words(\"a\", \"b\")",
+                "`std::str::words(s)` takes 1 argument, got 2",
+            ),
         ],
         "codegen_gap",
     );
@@ -3594,6 +3618,12 @@ fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
     assert_built(
         "fn main() { let s = \"abcd\"; println(s[1..], s[..2], s[..=2], s[..]); }\n",
         "hale_cb_gap_string_open_slice",
+    );
+    assert_built(
+        "fn main() { let s = \"a,b\\nc d\"; let v = std::str::bytes_view(s); for i in 0..v.n { println(std::str::byte_at(v, i)); }\n\
+         for p in std::str::split(s, \",\") { println(p); } for l in std::str::lines(s) { println(l); }\n\
+         for w in std::str::words(s) { println(w); } }\n",
+        "hale_cb_gap_string_sources",
     );
     assert_built("fn main() { let a = [1, 2]; println(len(a), Int(2.5), Float(2)); }\n", "hale_cb_gap_casts");
     assert_built(

@@ -571,6 +571,9 @@ ns std::str open_prefixes=[]
   trim_prefix pure
   trim_start pure
   trim_suffix pure
+  lines pure
+  split pure
+  words pure
 ns std::term open_prefixes=[]
   __raw_disable syscall
   __raw_enable syscall
@@ -1248,6 +1251,7 @@ std::str::last_index_of | lookup=str@2 | locus=false | effects=pure | sig=(Str, 
 std::str::len | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::len` is not a stdlib function; the length of a String is the builtin `len(s)` | suggest=-
 std::str::lenght | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::str::lenght` | suggest=-
 std::str::length | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::length` is not a stdlib function; the length of a String is the builtin `len(s)` | suggest=-
+std::str::lines | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=lines
 std::str::lower | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=lower
 std::str::pad_left | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=pad_left
 std::str::pad_right | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=pad_right
@@ -1264,6 +1268,7 @@ std::str::range_parse_int | lookup=str@2 | locus=false | effects=pure | sig=(Str
 std::str::repeat | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=repeat
 std::str::replace | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=replace
 std::str::slice | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=slice
+std::str::split | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=split
 std::str::split_into | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str, Any) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=split_into
 std::str::starts_with | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=starts_with
 std::str::substring | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=substring
@@ -1276,6 +1281,7 @@ std::str::trim_suffix | lookup=str@2 | locus=false | effects=pure | sig=(Str, St
 std::str::upper | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=upper
 std::str::view_cp_at | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=view_cp_at
 std::str::view_cp_size | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=view_cp_size
+std::str::words | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=words
 std::string::len | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::string::len` is not a stdlib function; the length of a String is the builtin `len(s)`
 std::string::length | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::string::length` is not a stdlib function; the length of a String is the builtin `len(s)`
 std::tagged::Accumulator | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-

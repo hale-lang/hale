@@ -1553,6 +1553,15 @@ pub const SURFACES: &[NsSurface] = &[
             row!("trim_prefix", PURE, [Str, Str] -> Str, Renamed),
             row!("trim_start", PURE, [Str] -> Str, Renamed),
             row!("trim_suffix", PURE, [Str, Str] -> Str, Renamed),
+            // GH #1995 S2: the text `for` sources. Not functions: the
+            // desugar sequence rewrites every `for x in std::str::split(s,
+            // sep)` (`lines(s)`, `words(s)`) into one `while` over a view
+            // (`hale_syntax::str_sources`), and the checker refuses a call
+            // left as written, so nothing lowers one. No signature: there is
+            // no value to type. Pure, as every call the loop is made of.
+            row!("lines", PURE, _, Unlowered),
+            row!("split", PURE, _, Unlowered),
+            row!("words", PURE, _, Unlowered),
         ],
         open_prefixes: &[],
     },

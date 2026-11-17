@@ -575,7 +575,7 @@ locus Wire {
     fn decode(b: String) -> Inbound fallible(WireError) {
         if b == "cancel" { return Cancel { id: 1 }; }
         if std::str::starts_with(b, "new ") {
-            let qty = std::str::parse_int(b[4..len(b)]) or { fail WireError { at: 4 }; };
+            let qty = std::str::parse_int(b[4..]) or { fail WireError { at: 4 }; };
             return NewOrder { id: qty * 10, qty: qty };
         }
         fail WireError { at: 0 };
@@ -1964,12 +1964,33 @@ It now peaks at 4 MB. A chain of `+` (`a + b + c`) is one allocation.
 
 ### S16. Read a long text by position, never by slicing off the rest
 
-This rule also applies on every path. `rest = rest[(nl + 1)..len(rest)]`
+This rule also applies on every path. `rest = rest[(nl + 1)..]`
 copies the remainder for each line, and each copy stays in scratch until
-the method returns: the square an append that copies makes (S15). Walk the text by position
-instead. `std::str::bytes_view` measures it once, `byte_at` reads a byte
-against that length, and `std::str::slice(v, start, end)` copies only
-the line:
+the method returns: the square an append that copies makes (S15).
+
+To take a text apart by a separator, by line or by whitespace, loop over
+a text source (spec/semantics.md § Text sources). It is the walk by
+position below, already written: one view, one pass, a copy of each part
+and nothing else.
+
+```hale
+fn count_rows(all: String) -> Int {
+    let mut rows = 0;
+    for line in std::str::lines(all) {
+        if len(line) > 0 { rows = rows + 1; }
+    }
+    return rows;
+}
+
+fn main() { println(count_rows("a\nb\n\nc")); }
+```
+
+`std::str::split(s, sep)` keeps empty parts, and `std::str::words(s)`
+never yields one. **[convention]**
+
+For any other scan, walk the text by position. `std::str::bytes_view`
+measures it once, `byte_at` reads a byte against that length, and
+`std::str::slice(v, start, end)` copies only the part:
 
 ```hale
 fn line_end(v: std::str::ByteView, start: Int) -> Int {
@@ -2267,16 +2288,18 @@ Write the workaround knowing it's a placeholder.
 ### Sharp edges — current limitations, step around them
 
 Implementation constraints, not positions; no promise attached.
-Two of them pass `hale check` and fail only at `hale build`: know
-those cold.
+One of them passes `hale check` and fails only at `hale build`: know
+it cold.
 
-- **No char-level `s[i]`** — and the checker doesn't say so:
-  `s[1]` on a `String` typechecks, then the build fails with
-  "indexing a non-array value (type String)". Use `s[i..i + 1]`
-  slices, `std::str::index_of`, or the UTF-8 accessors
-  `std::str::cp_at` / `cp_size` / `cp_count` when you need code
-  points rather than bytes. There is still no `Char` type;
-  `cp_at` yields the code point as an `Int`.
+- **No char-level `s[i]`, and no `for c in s`.** `hale check`
+  refuses both on a `String` (GH #1995; until then the check passed
+  them and the build failed with "indexing a non-array value").
+  Use `s[i..i + 1]` slices, a view's `std::str::byte_at(v, i)`,
+  `std::str::index_of`, or the UTF-8 accessors `std::str::cp_at` /
+  `cp_size` / `cp_count` when you need code points rather than
+  bytes; to take a text apart, loop over `std::str::split`,
+  `lines` or `words` (S16). There is still no `Char` type; `cp_at`
+  yields the code point as an `Int`.
 - **Write the stdlib's time types bare: `Time` and `Duration`, not
   `std::time::Time` or `std::time::Duration`.** The qualified
   spelling typechecks as a field, a `@form` cell type or a fn
