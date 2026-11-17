@@ -6993,6 +6993,33 @@ HTTP tasks read answers only a trusted-local session; this row answers as
 the signed-in person wherever the Ledger is reached, which is what a
 hosted face's board needs. Both write nothing.
 
+**Every organization of its habitat.** The face's `Index` call through a
+project head's commands relay answers `Commands::index` with one more
+field beside the row's own, `organizations`: a JSON array, carried as a
+string as the row's other lists are, of every organization of the habitat
+the head's organism lives in, the habitat first and then each organism
+the habitat grafted, each `{name, state, face_link}`. `state` is `up` for
+the habitat (it answered) and the organism's own for an organism (`up`
+while its face accepts connections, `grafted` otherwise); `face_link` is
+the absolute address that reaches it on the habitat's face:
+`<face>/organization` for the habitat, the hand-in
+`<face>/organisms/<name>/face` for an organism (`spec/habitat.md`, A
+sapling's body). The head's own organism's entry carries one more field,
+`"current": true`, and no other entry has it: the habitat marks the
+organism whose face asked, so the head needs no name of its own. The head knows them, not the record: it asks the
+habitat's head (`GET /api/hale/v1/head/organizations` on the habitat
+face's origin it was handed, through `HALE_DNA_LOOPBACK_HOST` when that
+names the loopback) at most once every 30 s and keeps the answer between.
+The list is `[]` for the habitat's own head and an organism run outside
+one (no habitat handed it), and while the habitat does not answer or
+refuses: the dial is bounded at 2 s and the answer at 5 s, the empty list
+is kept as long as an answer would be, and the read answers either way.
+The row's own shape is unchanged: the field rides on the relay's answer,
+not on `RecordIndex`, so the standard face's `/index` client, which
+declares the row's shape for its member digest, calls it as before, and a
+call of the row on the head's surface (`…/head/surface/call/Commands::index`)
+answers without it.
+
 **The index.** `GET /index` on the face is the record's index: a static
 page, plain HTML in the shell's stylesheet and no script, generated on
 each request. Behind the head's read as the person's session (the same

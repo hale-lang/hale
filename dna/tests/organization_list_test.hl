@@ -1,0 +1,247 @@
+// dna/tests/organization_list_test.hl — every organization of a habitat,
+// as an organism's face lists them (dna/api/organization_list.hl): the
+// habitat's answer to its head's list (names and states alone), the proof
+// that opens it (a hash of the asking face's launch token, never the token),
+// the list the organism's head lays on its Index read (the habitat first,
+// then each organism, each with its absolute hand-in link on the habitat's
+// face), and that read with the list beside its fields.
+import "../api" as api;
+import "../core" as dna;
+
+const FACE: String = "http://habitat.example.test:9024";
+
+fn add(j: dna::MemJournal, kind: String, entity: String, body: String) {
+    let r = j.append(j.revision(), kind, entity, body);
+    std::test::assert(r.ok, "the record takes " + kind + " " + entity);
+}
+
+fn graft(j: dna::MemJournal, key: String, name: String, face: String, state: String) {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("child", key);
+    b.string_field("parent", "habitat");
+    if len(name) > 0 { b.string_field("name", name); }
+    b.string_field("face", face);
+    b.string_field("head", "");
+    if len(state) > 0 { b.string_field("state", state); }
+    b.end_object();
+    add(j, "habitat.grafted", key, b.result());
+}
+
+fn habitat() -> api::OrganizationHabitat {
+    return api::OrganizationHabitat { name: "home", face: FACE };
+}
+
+fn main() {
+    // ---- the proof: a hash of the token, not the token, the same for the
+    // same token, and none for none
+    let proof = api::organizations_proof("0123456789abcdef0123456789abcdef\n");
+    std::test::assert_eq_int(len(proof), 64, "a SHA-256 in hex: " + proof);
+    std::test::assert_eq_str(
+        proof,
+        api::organizations_proof("0123456789abcdef0123456789abcdef"),
+        "the token's trailing newline is the file's, not the token's",
+    );
+    std::test::assert(!std::str::contains(proof, "0123456789abcdef"), "the token is not in it");
+    std::test::assert(
+        proof != api::organizations_proof("fedcba9876543210fedcba9876543210"),
+        "another token, another proof",
+    );
+    std::test::assert_eq_str(api::organizations_proof(""), "", "no token, no proof");
+
+    // ---- the habitat's record: its name, an organism by the name it was
+    // grafted under, one by its key, and one removed
+    let j = dna::MemJournal { };
+    add(j, "habitat.profile", "local", "{\"profile\": \"local\", \"name\": \"home\"}");
+    graft(j, "0a1b2c3d4e5f", "voice", "", "");
+    graft(j, "9f8e7d6c5b4a", "", "", "");
+    graft(j, "5e5e5e5e5e5e", "gone", "", "");
+    graft(j, "5e5e5e5e5e5e", "gone", "", "removed");
+
+    // the answer: names and states, nothing else of a graft (no key, no
+    // face, no head); a face that answers no dial is `grafted`
+    std::test::assert_eq_str(
+        api::habitat_organization_list(j, 200, ""),
+        "{\"name\": \"home\", \"organisms\": [{\"name\": \"voice\", \"state\": \"grafted\"}, {\"name\": \"9f8e7d6c5b4a\", \"state\": \"grafted\"}]}",
+        "the habitat's answer",
+    );
+    std::test::assert_eq_str(
+        api::habitat_organization_list(j, 1, ""),
+        "{\"name\": \"home\", \"organisms\": [{\"name\": \"voice\", \"state\": \"grafted\"}]}",
+        "at most `cap` organisms",
+    );
+    // the asking face's own organism, by its key, is marked; no other is
+    std::test::assert_eq_str(
+        api::habitat_organization_list(j, 200, "9f8e7d6c5b4a"),
+        "{\"name\": \"home\", \"organisms\": [{\"name\": \"voice\", \"state\": \"grafted\"}, {\"name\": \"9f8e7d6c5b4a\", \"state\": \"grafted\", \"current\": true}]}",
+        "the asking face's own organism is current",
+    );
+    std::test::assert_eq_str(
+        api::habitat_organization_list(j, 200, "5e5e5e5e5e5e"),
+        api::habitat_organization_list(j, 200, ""),
+        "a removed organism is no one's current",
+    );
+    let unnamed = dna::MemJournal { };
+    add(unnamed, "habitat.profile", "local", "{\"profile\": \"local\"}");
+    std::test::assert_eq_str(
+        api::habitat_organization_list(unnamed, 200, ""),
+        "{\"name\": \"local\", \"organisms\": []}",
+        "a habitat born with no name is `local`",
+    );
+
+    // ---- whose proof opens it: the launch token of the face of an
+    // organism the habitat holds, where the habitat keeps it
+    let dir = dna::scratch_root("organization-list");
+    let token = "00112233445566778899aabbccddeeff";
+    let kept = dir + "/allocations/0a1b2c3d4e5f/face-state";
+    let made = dna::run_tool(
+        "mkdir\n-p\n" + kept + "\n" + dir + "/allocations/5e5e5e5e5e5e/face-state",
+    );
+    std::test::assert_eq_int(made.code, 0, "the face states: " + made.stderr);
+    std::io::fs::write_file(kept + "/head.token", token + "\n") or discard;
+    let removed = "ffeeddccbbaa99887766554433221100";
+    std::io::fs::write_file(
+        dir + "/allocations/5e5e5e5e5e5e/face-state/head.token",
+        removed + "\n",
+    ) or discard;
+    std::test::assert_eq_str(
+        api::organizations_proof_key(j, dir, api::organizations_proof(token)),
+        "0a1b2c3d4e5f",
+        "a kept face's proof opens the list, naming its organism",
+    );
+    std::test::assert_eq_str(
+        api::organizations_proof_key(j, dir, token),
+        "",
+        "the token itself does not",
+    );
+    std::test::assert_eq_str(
+        api::organizations_proof_key(j, dir, api::organizations_proof(removed)),
+        "",
+        "nor the face of an organism the habitat removed",
+    );
+    std::test::assert_eq_str(
+        api::organizations_proof_key(j, dir, api::organizations_proof("not-a-token")),
+        "",
+        "nor a proof of anything else",
+    );
+    std::test::assert_eq_str(api::organizations_proof_key(j, dir, ""), "", "nor nothing");
+    std::test::assert_eq_str(
+        api::organizations_proof_key(j, "", api::organizations_proof(token)),
+        "",
+        "nor anything where no habitat's directory is known",
+    );
+    dna::scratch_done(dir);
+
+    // ---- the list the organism's face shows: the habitat first, then
+    // each organism, each with its absolute link on the habitat's face
+    let answer = "{\"name\":\"home\",\"organisms\":[{\"name\":\"voice\",\"state\":\"up\"},{\"name\":\"shop floor\",\"state\":\"grafted\"}]}";
+    std::test::assert_eq_str(
+        api::organizations_for(habitat(), answer),
+        "[{\"name\": \"home\", \"state\": \"up\", \"face_link\": \"" + FACE
+            + "/organization\"}, {\"name\": \"voice\", \"state\": \"up\", \"face_link\": \"" + FACE
+            + "/organisms/voice/face\"}, {\"name\": \"shop floor\", \"state\": \"grafted\", \"face_link\": \""
+            + FACE + "/organisms/shop%20floor/face\"}]",
+        "the habitat, then its organisms, each linked",
+    );
+    // what the habitat answers is read, never trusted: a name that is no
+    // name, the habitat's own name again and a state it does not name
+    // are dropped or plain
+    let odd = "{\"organisms\":[{\"name\":\"../x\",\"state\":\"up\"},{\"name\":\"\",\"state\":\"up\"},{\"name\":\"home\",\"state\":\"up\"},{\"name\":\"voice\",\"state\":\"<b>\"},{\"name\":\"voice\",\"state\":\"up\"}]}";
+    std::test::assert_eq_str(
+        api::organizations_for(habitat(), odd),
+        "[{\"name\": \"home\", \"state\": \"up\", \"face_link\": \"" + FACE
+            + "/organization\"}, {\"name\": \"voice\", \"state\": \"grafted\", \"face_link\": \""
+            + FACE + "/organisms/voice/face\"}]",
+        "a sanitized list",
+    );
+    // the entry the habitat marked current carries `"current": true`, the
+    // others nothing more; a second mark is not taken
+    let marked = "{\"organisms\":[{\"name\":\"voice\",\"state\":\"up\"},{\"name\":\"shop\",\"state\":\"up\",\"current\":true},{\"name\":\"dormant\",\"state\":\"grafted\",\"current\":true}]}";
+    std::test::assert_eq_str(
+        api::organizations_for(habitat(), marked),
+        "[{\"name\": \"home\", \"state\": \"up\", \"face_link\": \"" + FACE
+            + "/organization\"}, {\"name\": \"voice\", \"state\": \"up\", \"face_link\": \"" + FACE
+            + "/organisms/voice/face\"}, {\"name\": \"shop\", \"state\": \"up\", \"face_link\": \""
+            + FACE
+            + "/organisms/shop/face\", \"current\": true}, {\"name\": \"dormant\", \"state\": \"grafted\", \"face_link\": \""
+            + FACE + "/organisms/dormant/face\"}]",
+        "the asking face's own entry is current",
+    );
+    std::test::assert_eq_str(
+        api::organizations_for(habitat(), "{\"why\":\"forbidden\"}"),
+        "[]",
+        "an answer with no list is none",
+    );
+    std::test::assert_eq_str(
+        api::organizations_for(habitat(), "<html>"),
+        "[]",
+        "nor is a page",
+    );
+    std::test::assert_eq_str(
+        api::organizations_for(api::OrganizationHabitat { }, answer),
+        "[]",
+        "no habitat handed, no list",
+    );
+
+    // ---- the Index read with the list beside its fields, a string as its
+    // other lists are; a read that is no object, or already carries one,
+    // as it is
+    let list = "[{\"name\":\"home\"}]";
+    std::test::assert_eq_str(
+        api::with_organizations("{\"ok\":true,\"organisms\":\"[]\"}", list),
+        "{\"ok\":true,\"organisms\":\"[]\",\"organizations\":\"[{\\\"name\\\":\\\"home\\\"}]\"}",
+        "the list beside the read's fields",
+    );
+    std::test::assert_eq_str(
+        api::with_organizations("{}", "[]"),
+        "{\"organizations\":\"[]\"}",
+        "an empty read takes it alone",
+    );
+    std::test::assert_eq_str(
+        api::with_organizations("{\"organizations\":\"[1]\"}", list),
+        "{\"organizations\":\"[1]\"}",
+        "a read that carries one keeps its own",
+    );
+    std::test::assert_eq_str(
+        api::with_organizations("[\"x\"]", list),
+        "[\"x\"]",
+        "a body that is not an object is left alone",
+    );
+
+    // ---- where the head asks: the habitat face's origin, and nothing else
+    std::test::assert_eq_str(
+        api::organizations_origin(FACE),
+        "habitat.example.test\t9024",
+        "host and port",
+    );
+    std::test::assert_eq_str(api::organizations_origin(FACE + "/x"), "", "a path");
+    std::test::assert_eq_str(
+        api::organizations_origin("https://habitat.example.test:9024"),
+        "",
+        "another scheme",
+    );
+    std::test::assert_eq_str(
+        api::organizations_origin("http://habitat.example.test"),
+        "",
+        "no port",
+    );
+    std::test::assert_eq_str(
+        api::organizations_origin("http://u@habitat.example.test:9024"),
+        "",
+        "a user",
+    );
+    // a habitat that does not answer: the list is empty, and the ask ends
+    std::test::assert_eq_str(
+        api::fetch_organizations(
+            api::OrganizationHabitat { name: "home", face: "http://127.0.0.1:1" },
+            token,
+        ),
+        "[]",
+        "an unreachable habitat lists nothing",
+    );
+    std::test::assert_eq_str(
+        api::fetch_organizations(api::OrganizationHabitat { }, token),
+        "[]",
+        "nor does no habitat",
+    );
+}

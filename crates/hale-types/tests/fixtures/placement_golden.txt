@@ -9368,6 +9368,15 @@ shared	dynamic	sites in core #8e1938c5
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/api/project_service/tests/head_organizations_test.hl
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main2	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main3	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
+shared	dynamic	sites in api/project_service/tests/fixture #06baa4c5
+shared	dynamic	sites in core #8e1938c5
+shared	dynamic	sites in core/pond/pq #39e83e0a
+shared	dynamic	sites in the stdlib #c3a51769
+
 == dna/api/project_service/tests/head_pid_test.hl
 row	__StdProcessChild@main2	__StdProcessChild	main	default
 shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
@@ -13495,6 +13504,12 @@ shared	dynamic	sites in the stdlib #919aadb4
 shared	__lib_dna__core___journal__MemJournal@main1	__lib_dna__core___journal__MemJournal #63b83e2f
 shared	__lib_dna__core___journal__MemJournal@main2	__lib_dna__core___journal__MemJournal #63b83e2f
 
+== dna/tests/organization_list_test.hl
+dynamic	__StdJsonBuilder	on main	in tests
+shared	__lib_dna__core___journal__MemJournal@main1	__lib_dna__core___journal__MemJournal #63b83e2f
+shared	__lib_dna__core___journal__MemJournal@main2	__lib_dna__core___journal__MemJournal #63b83e2f
+shared	dynamic	sites in the stdlib #919aadb4
+
 == dna/tests/organization_source_request_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -15589,7 +15604,7 @@ dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:io
-dynamic	__StdJsonBuilder	on main|pool:commands|pool:io
+dynamic	__StdJsonBuilder	on main|pool:commands|pool:io|unknown (no caller)
 dynamic	__lib_dna__core___infrastructure__ComposeProvider	on pool:commands
 dynamic	__lib_dna__core___memory_record__MemoryReceipts	on pool:commands|pool:io
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main|pool:commands|pool:io
@@ -15867,7 +15882,7 @@ row	~.relay	__StdIoTcpRelay	pool:io	inherited
 -- dynamic	sites in dna/api
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io
 dynamic	__StdIoTcpStream	on pool:io
-dynamic	__StdJsonBuilder	on main|pool:commands|pool:io
+dynamic	__StdJsonBuilder	on main|pool:commands|pool:io|unknown (no caller)
 dynamic	__lib_dna__api___commands__CommandWire	on pool:io
 dynamic	__lib_dna__api___context__ContextWire	on pool:io
 dynamic	__lib_dna__api___definition_drafts__DefinitionDraftWire	on pool:io
@@ -16402,7 +16417,7 @@ row	~.updated.catalog.stats	__lib_dna__core___workflow_definition__DefStatRows	m
 row	~.updated.catalog.workflows	__lib_dna__core___workflow_definition__WorkflowDefRows	main	inherited	built by __lib_dna__core___workflow_definition__WorkflowCatalog@main3.workflows
 shared	__lib_dna__core___workflow_definition__WorkflowCatalog@main2	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
 shared	__lib_dna__core___workflow_definition__WorkflowCatalog@main3	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
-shared	dynamic	sites in api #87e13c63
+shared	dynamic	sites in api #3b6c4861
 -- dynamic	sites in api/tests/catalog
 dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
@@ -16463,7 +16478,7 @@ shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #83c87156
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
 shared	FixtureHead@literal1.srv	__StdHttpServer #2c83e381
-shared	dynamic	sites in api #87e13c63
+shared	dynamic	sites in api #3b6c4861
 -- dynamic	sites in api/tests/commands
 dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
@@ -19863,6 +19878,64 @@ row	~	__lib_tests__hale__api__client__public___client__FillsSubscription	main	de
 row	~.ws	__lib_tests__hale__api__client__public___client__ApiWs	main	inherited
 row	~.ws.stream	__StdIoTcpStream	main	inherited
 
+== shared sites in api #3b6c4861
+dynamic	__StdBytesBytesBuilder	on pool:commands|pool:io
+dynamic	__StdIoTcpStream	on pool:io
+dynamic	__StdJsonBuilder	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__api___commands__CommandWire	on pool:io
+dynamic	__lib_dna__api___context__ContextWire	on pool:io
+dynamic	__lib_dna__api___definition_drafts__DefinitionDraftWire	on pool:io
+dynamic	__lib_dna__api___http__Http	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__api___knowledge__KnowledgeWire	on pool:io
+dynamic	__lib_dna__api___knowledge_memory__GraphHttp	on pool:io
+dynamic	__lib_dna__api___knowledge_memory__GraphItems	on pool:io
+dynamic	__lib_dna__api___main__Wire	on pool:io
+dynamic	__lib_dna__api___organization_drafts__OrganizationDraftWire	on pool:io
+dynamic	__lib_dna__api___organization_impact__OrganizationImpactWire	on pool:io
+dynamic	__lib_dna__api___organization_status__OrganizationStatusWire	on pool:commands|pool:io
+dynamic	__lib_dna__api___people__PersonWire	on pool:io
+dynamic	__lib_dna__api___source__JsonShape	on pool:commands|pool:io
+dynamic	__lib_dna__api___source__SourceReader	on pool:io
+dynamic	__lib_dna__api___tasks__TaskWire	on pool:commands|pool:io
+dynamic	__lib_dna__api___upstream__DrainWatch	on pool:io
+dynamic	__lib_dna__api___workflows__WorkflowRead	on pool:io
+dynamic	__lib_dna__api___workflows__WorkflowWire	on pool:io
+dynamic	__lib_dna__core___infrastructure__ComposeProvider	on pool:commands
+dynamic	__lib_dna__core___memory_record__MemoryReceipts	on pool:commands|pool:io
+dynamic	__lib_dna__core___memory_record__MemoryRecord	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__core___memory_record__RecordJournal	on pool:commands|pool:io
+dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on pool:io
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on pool:commands|pool:io
+dynamic	__lib_dna__core___memory_store__GraphRules	on pool:io
+dynamic	__lib_dna__core___models__HostedCredential	on pool:commands
+dynamic	__lib_dna__core___organization_launch__OrganizationLaunchCodec	on pool:commands|pool:io
+dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on pool:io
+dynamic	__lib_dna__core___placement__LatestRows	on pool:commands
+dynamic	__lib_dna__core___routing__RoutedJournal	on pool:commands|pool:io
+dynamic	__lib_dna__core___ssh_provider__SshProvider	on pool:commands
+dynamic	__lib_dna__operations___context__HatReader	on pool:io
+dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCodec	on pool:io
+dynamic	__lib_dna__operations___definition_drafts__DefinitionDrafts	on pool:io
+dynamic	__lib_dna__operations___definitions__Definitions	on pool:io
+dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on pool:commands|pool:io
+dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on pool:commands|pool:io
+dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on pool:commands|pool:io
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_policy__FixedKnowledgeAuthority	on pool:commands
+dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on pool:commands
+dynamic	__lib_dna__operations___memory_tail__KnowledgeVisibility	on pool:io
+dynamic	__lib_dna__operations___organization__Organization	on pool:io
+dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on pool:commands|pool:io
+dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on pool:io
+dynamic	__lib_dna__operations___organization_impact__OrganizationImpact	on pool:io
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on pool:commands|pool:io
+dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on pool:commands|pool:io
+dynamic	__lib_dna__operations___queries__NoReceipts	on pool:io
+dynamic	__lib_dna__operations___queries__Queries	on pool:commands|pool:io
+dynamic	__lib_dna__operations___task_projection__TaskProjection	on pool:commands|pool:io
+dynamic	__lib_dna__operations___usage__Usage	on pool:commands|pool:io
+
 == shared sites in api #446d82b3
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)
 dynamic	__StdHttpSseWriter	on main
@@ -19920,64 +19993,6 @@ dynamic	__lib_dna__operations___queries__NoReceipts	on main
 dynamic	__lib_dna__operations___queries__Queries	on main|unknown (no caller)
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main|unknown (no caller)
 dynamic	__lib_dna__operations___usage__Usage	on main
-
-== shared sites in api #87e13c63
-dynamic	__StdBytesBytesBuilder	on pool:commands|pool:io
-dynamic	__StdIoTcpStream	on pool:io
-dynamic	__StdJsonBuilder	on pool:commands|pool:io
-dynamic	__lib_dna__api___commands__CommandWire	on pool:io
-dynamic	__lib_dna__api___context__ContextWire	on pool:io
-dynamic	__lib_dna__api___definition_drafts__DefinitionDraftWire	on pool:io
-dynamic	__lib_dna__api___http__Http	on pool:commands|pool:io|unknown (no caller)
-dynamic	__lib_dna__api___knowledge__KnowledgeWire	on pool:io
-dynamic	__lib_dna__api___knowledge_memory__GraphHttp	on pool:io
-dynamic	__lib_dna__api___knowledge_memory__GraphItems	on pool:io
-dynamic	__lib_dna__api___main__Wire	on pool:io
-dynamic	__lib_dna__api___organization_drafts__OrganizationDraftWire	on pool:io
-dynamic	__lib_dna__api___organization_impact__OrganizationImpactWire	on pool:io
-dynamic	__lib_dna__api___organization_status__OrganizationStatusWire	on pool:commands|pool:io
-dynamic	__lib_dna__api___people__PersonWire	on pool:io
-dynamic	__lib_dna__api___source__JsonShape	on pool:commands|pool:io
-dynamic	__lib_dna__api___source__SourceReader	on pool:io
-dynamic	__lib_dna__api___tasks__TaskWire	on pool:commands|pool:io
-dynamic	__lib_dna__api___upstream__DrainWatch	on pool:io
-dynamic	__lib_dna__api___workflows__WorkflowRead	on pool:io
-dynamic	__lib_dna__api___workflows__WorkflowWire	on pool:io
-dynamic	__lib_dna__core___infrastructure__ComposeProvider	on pool:commands
-dynamic	__lib_dna__core___memory_record__MemoryReceipts	on pool:commands|pool:io
-dynamic	__lib_dna__core___memory_record__MemoryRecord	on pool:commands|pool:io|unknown (no caller)
-dynamic	__lib_dna__core___memory_record__RecordJournal	on pool:commands|pool:io
-dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on pool:io
-dynamic	__lib_dna__core___memory_spine__MemoryLedger	on pool:commands|pool:io
-dynamic	__lib_dna__core___memory_store__GraphRules	on pool:io
-dynamic	__lib_dna__core___models__HostedCredential	on pool:commands
-dynamic	__lib_dna__core___organization_launch__OrganizationLaunchCodec	on pool:commands|pool:io
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on pool:io
-dynamic	__lib_dna__core___placement__LatestRows	on pool:commands
-dynamic	__lib_dna__core___routing__RoutedJournal	on pool:commands|pool:io
-dynamic	__lib_dna__core___ssh_provider__SshProvider	on pool:commands
-dynamic	__lib_dna__operations___context__HatReader	on pool:io
-dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCodec	on pool:io
-dynamic	__lib_dna__operations___definition_drafts__DefinitionDrafts	on pool:io
-dynamic	__lib_dna__operations___definitions__Definitions	on pool:io
-dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on pool:commands|pool:io
-dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on pool:commands|pool:io
-dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on pool:commands|pool:io
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_policy__FixedKnowledgeAuthority	on pool:commands
-dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on pool:commands
-dynamic	__lib_dna__operations___memory_tail__KnowledgeVisibility	on pool:io
-dynamic	__lib_dna__operations___organization__Organization	on pool:io
-dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on pool:commands|pool:io
-dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on pool:io
-dynamic	__lib_dna__operations___organization_impact__OrganizationImpact	on pool:io
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on pool:commands|pool:io
-dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on pool:commands|pool:io
-dynamic	__lib_dna__operations___queries__NoReceipts	on pool:io
-dynamic	__lib_dna__operations___queries__Queries	on pool:commands|pool:io
-dynamic	__lib_dna__operations___task_projection__TaskProjection	on pool:commands|pool:io
-dynamic	__lib_dna__operations___usage__Usage	on pool:commands|pool:io
 
 == shared sites in api #a6ea2058
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)

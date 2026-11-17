@@ -128,6 +128,10 @@ locus HeadFixture {
         // (HALE_DNA_OIDC_ISSUER, _CLIENT, _MEMBER, _KEY) instead of a
         // fixture's trusted-local session; "" = trusted-local
         oidc_env: String = "";
+        // `VAR=value` per line: more of the head's environment, in either
+        // mode (a habitat's directory, the habitat an organism's head is
+        // handed); "" = none
+        env: String = "";
         // the standard face in front of the head, for a test that loads a page
         // (`start_face`): the port the browser opens, 0 = no face. The head
         // serves surfaces only, so a page comes from the face.
@@ -270,8 +274,10 @@ locus HeadFixture {
         } else {
             ""
         };
-        let envs = (if len(self.oidc_env) > 0 { dna::trim_nl(self.oidc_env) } else { "" })
-            + (if len(self.oidc_env) > 0 && len(public) > 0 { "\n" } else { "" }) + public;
+        let mut envs = if len(self.oidc_env) > 0 { dna::trim_nl(self.oidc_env) } else { "" };
+        let extra = dna::trim_nl(self.env);
+        if len(extra) > 0 { envs = envs + (if len(envs) > 0 { "\n" } else { "" }) + extra; }
+        if len(public) > 0 { envs = envs + (if len(envs) > 0 { "\n" } else { "" }) + public; }
         let argv = (if len(envs) > 0 { "env\n" + envs + "\n" } else { "" }) + "sh\n-c\n" + script
             + "\nsh\n" + self.root + "\n" + head_bin + "\n" + to_string(self.port) + "\n" + api_bin
             + "\n0\n" + project_arg + "\n"

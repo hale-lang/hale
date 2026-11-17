@@ -415,9 +415,20 @@ fn verdict_changes() {
     // which the head's plan already invokes unboundedly, so both are now;
     // nine more site verdicts move from once per invocation to reclaimed per
     // iteration, and no advisory site is added.
+    // The habitat's organizations list (organization_list.hl): 31 more call
+    // lines name what they call (the list's and the head's calls of the
+    // core's and the stdlib's helpers, through the renames); `exchange_on`,
+    // the exchange's body split out for `exchange_at`, is invoked
+    // unboundedly as `exchange` is; `token_matches` leaves the list, since
+    // the list's proof check calls it in its walk of the record, so it is
+    // invoked unboundedly with or without the correction. No site verdict
+    // moves, no advisory site is added, and the core's spans move by 11367
+    // bytes. Marking the asking face's own organism `current` names two more
+    // calls (the JSON builder's `bool_field` and the reader's
+    // `find_bool_field`) and moves the spans again; nothing else changes.
     pinned(
         "dna/api",
-        4222,
+        4255,
         &[
             "__lib_dna__core___batch__batch_diff",
             "__lib_dna__core___batch__batch_filing",
@@ -486,6 +497,7 @@ fn verdict_changes() {
             "definition_drafts_over",
             "definitions_over",
             "exchange",
+            "exchange_on",
             "graph_read",
             "listed_commands",
             "port_in",
@@ -496,7 +508,6 @@ fn verdict_changes() {
             "relay_upstream",
             "reported_port",
             "socket_live",
-            "token_matches",
             "upstream_header",
             "Api::definition_draft_handle",
             "Api::definitions_read",
@@ -677,33 +688,33 @@ fn verdict_changes() {
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 27),
         ],
         &[
-            "__lib_dna__core___memory_spine__manifest_dna_value StringConcat @1448266..1448277 InUnboundedLoop",
-            "__lib_dna__core___memory_spine__manifest_dna_value StringConcat @1448266..1448281 InUnboundedLoop",
-            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1447604..1447740 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1448138..1448203 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1448528..1448588 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1448702..1448850 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1449389..1449454 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1449608..1449625 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__record_identity_at StringConcat @1450264..1450396 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__record_identity_at StringConcat @1450725..1450972 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__record_identity_at StringConcat @1451088..1451210 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__record_identity_at StructLit(\"__lib_dna__core___memory_spine__RecordIdentity\") @1450230..1450407 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__record_identity_at StructLit(\"__lib_dna__core___memory_spine__RecordIdentity\") @1450607..1450625 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__record_identity_at StructLit(\"__lib_dna__core___memory_spine__RecordIdentity\") @1450691..1450983 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__record_identity_at StructLit(\"__lib_dna__core___memory_spine__RecordIdentity\") @1451054..1451221 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__record_identity_at StructLit(\"__lib_dna__core___memory_spine__RecordIdentity\") @1451240..1451269 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__toml_dotted StringConcat @1445250..1445259 InUnboundedLoop",
-            "__lib_dna__core___memory_spine__toml_dotted StringConcat @1445250..1445266 InUnboundedLoop",
-            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1445647..1445706 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1445741..1445793 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1445856..1445908 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1446012..1446074 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1446179..1446240 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1446326..1446385 InvokedUnboundedly",
-            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1446404..1446449 InvokedUnboundedly",
-            "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @2643672..2643751 InvokedUnboundedly",
-            "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @2644411..2644479 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__manifest_dna_value StringConcat @1460240..1460251 InUnboundedLoop",
+            "__lib_dna__core___memory_spine__manifest_dna_value StringConcat @1460240..1460255 InUnboundedLoop",
+            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1459578..1459714 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1460112..1460177 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1460502..1460562 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1460676..1460824 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1461363..1461428 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__manifest_dna_value StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1461582..1461599 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__record_identity_at StringConcat @1462238..1462370 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__record_identity_at StringConcat @1462699..1462946 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__record_identity_at StringConcat @1463062..1463184 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__record_identity_at StructLit(\"__lib_dna__core___memory_spine__RecordIdentity\") @1462204..1462381 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__record_identity_at StructLit(\"__lib_dna__core___memory_spine__RecordIdentity\") @1462581..1462599 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__record_identity_at StructLit(\"__lib_dna__core___memory_spine__RecordIdentity\") @1462665..1462957 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__record_identity_at StructLit(\"__lib_dna__core___memory_spine__RecordIdentity\") @1463028..1463195 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__record_identity_at StructLit(\"__lib_dna__core___memory_spine__RecordIdentity\") @1463214..1463243 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__toml_dotted StringConcat @1457224..1457233 InUnboundedLoop",
+            "__lib_dna__core___memory_spine__toml_dotted StringConcat @1457224..1457240 InUnboundedLoop",
+            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1457621..1457680 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1457715..1457767 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1457830..1457882 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1457986..1458048 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1458153..1458214 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1458300..1458359 InvokedUnboundedly",
+            "__lib_dna__core___memory_spine__toml_string StructLit(\"__lib_dna__core___memory_spine__ManifestValue\") @1458378..1458423 InvokedUnboundedly",
+            "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @2655646..2655725 InvokedUnboundedly",
+            "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @2656385..2656453 InvokedUnboundedly",
         ],
     );
     // The chart's personas (#1900): `habitat-forge-personas` carries out a
