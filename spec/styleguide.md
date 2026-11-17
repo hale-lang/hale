@@ -575,7 +575,7 @@ locus Wire {
     fn decode(b: String) -> Inbound fallible(WireError) {
         if b == "cancel" { return Cancel { id: 1 }; }
         if std::str::starts_with(b, "new ") {
-            let qty = std::str::parse_int(b[4..len(b)]) or { fail WireError { at: 4 }; };
+            let qty = std::str::parse_int(b[4..]) or { fail WireError { at: 4 }; };
             return NewOrder { id: qty * 10, qty: qty };
         }
         fail WireError { at: 0 };
@@ -1964,7 +1964,7 @@ It now peaks at 4 MB. A chain of `+` (`a + b + c`) is one allocation.
 
 ### S16. Read a long text by position, never by slicing off the rest
 
-This rule also applies on every path. `rest = rest[(nl + 1)..len(rest)]`
+This rule also applies on every path. `rest = rest[(nl + 1)..]`
 copies the remainder for each line, and each copy stays in scratch until
 the method returns: the square an append that copies makes (S15).
 

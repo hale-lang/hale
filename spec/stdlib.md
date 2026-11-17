@@ -402,7 +402,7 @@ O(n) ones. The costs below are the shipped ones, measured on a
 | `std::str::index_of_from(s, sub, start)` | O(n) + the search | One `strlen` of `s` per call, to refuse a `start` past the end. A line-at-a-time scan with it is quadratic: 16 MB in 32,000 lines took 4.7 s. |
 | `std::str::find(v, sub, start)` | the distance to the hit | `index_of_from` over the view, bounded by its `n`: the same 16 MB scan takes under a millisecond. |
 | `std::str::range_index_of(s, n, sub, start)` | the distance to the hit | What `find` is built on; the caller owns the bound. |
-| `for p in std::str::split(s, sep)`, `lines(s)`, `words(s)` | O(n), once, + O(part) per part | One `bytes_view`, then a search from the last part's end and a copy of the part (GH #1995, spec/semantics.md § Text sources). Over 4 KiB words: 0.69 ms at 1 MiB and 2.8 ms at 4 MiB, where the `rest = rest[(sp + 1)..len(rest)]` loop it replaces took 1.0 ms at 256 KiB and 14.7 ms at 1 MiB. |
+| `for p in std::str::split(s, sep)`, `lines(s)`, `words(s)` | O(n), once, + O(part) per part | One `bytes_view`, then a search from the last part's end and a copy of the part (GH #1995, spec/semantics.md § Text sources). Over 4 KiB words: 0.69 ms at 1 MiB and 2.8 ms at 4 MiB, where the `rest = rest[(sp + 1)..]` loop it replaces took 1.0 ms at 256 KiB and 14.7 ms at 1 MiB. |
 
 So the natural bounded-parser loop is quadratic:
 

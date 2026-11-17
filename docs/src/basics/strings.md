@@ -377,7 +377,7 @@ fn main() {
 }
 ```
 
-`cut` splits at the first separator and keeps the rest whole; `cut_last` splits at the last one. `trim_prefix` and `trim_suffix` remove the affix once if it is there and otherwise return the string unchanged, so they replace both the `starts_with` test and the magic offset (`g[7..len(g)]`). `std::str::last_index_of` is the offset `cut_last` splits at. Offsets and comparisons are bytes: a separator matches byte for byte, and `eq_ignore_case` folds only `A`–`Z`.
+`cut` splits at the first separator and keeps the rest whole; `cut_last` splits at the last one. `trim_prefix` and `trim_suffix` remove the affix once if it is there and otherwise return the string unchanged, so they replace both the `starts_with` test and the magic offset (`g[7..]`). `std::str::last_index_of` is the offset `cut_last` splits at. Offsets and comparisons are bytes: a separator matches byte for byte, and `eq_ignore_case` folds only `A`–`Z`.
 
 ### Parsing Numbers and Binary `Bytes`
 

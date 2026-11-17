@@ -534,7 +534,7 @@ fn main() {
   (spec/stdlib.md § Linear byte scanning). Each part costs a search
   from where the last one ended and a copy of the part, so a loop is
   linear in the text, where the hand loop it replaces (`rest =
-  rest[(sp + 1)..len(rest)]`, a measure and a copy of the rest per
+  rest[(sp + 1)..]`, a measure and a copy of the rest per
   part) is quadratic. `words_source_scales_linearly_where_the_hand_loop_does_not`
   in `crates/hale-codegen/tests/stdlib_str.rs` pins it.
 - **Pure.** A loop over a source has the effects of its body and no
