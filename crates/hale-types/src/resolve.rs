@@ -1482,6 +1482,7 @@ fn register_type(
                     fields: v.fields.iter().map(|t| resolve_type_expr(t, known)).collect(),
                     span: v.span,
                     member: v.member,
+                    tag: v.tag.clone(),
                 })
                 .collect();
             TypeKind::Enum(infos)

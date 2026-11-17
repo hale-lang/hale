@@ -36,6 +36,11 @@
 //!    declaration the alias chain ends at
 //!    ([`crate::mangle::resolve_construction_aliases`]), over the
 //!    whole bundle at once.
+//!    4a. enum names (RFC #1995 E1): `E::name(v)`, `E::parse(s)`,
+//!    `E::variants` and `E::index(v)` call the functions
+//!    [`hale_syntax::enum_names`] writes for `E` into the program that
+//!    declares it; a use they do not apply to stays as written, for the
+//!    checker to refuse with the reason.
 //!    4b. qualified bus subjects: `subscribe alias::Topic`,
 //!    `publish alias::Topic`, `alias::Topic <- v` and a `bindings`
 //!    entry name the single-segment topic the imported declaration
@@ -122,6 +127,10 @@ fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]
         hale_syntax::str_sources::desugar_str_sources(p);
     }
     crate::mangle::resolve_construction_aliases(programs, context, seq.import_renames);
+    // RFC #1995 E1: `E::name(v)`, `E::parse(s)`, `E::variants` and
+    // `E::index(v)` call the functions the pass writes for `E`, after the
+    // aliases, so `type C2 = Color; C2::name(c)` names `Color`'s.
+    hale_syntax::enum_names::generate_enum_names_in(programs, seq.import_renames);
     for p in programs.iter_mut() {
         crate::qualified_subjects::resolve_qualified_bus_subjects(p, seq.import_renames);
     }

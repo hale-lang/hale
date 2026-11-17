@@ -902,6 +902,62 @@ impl Parser {
                 td.span = at.span.merge(td.span);
                 return Ok(TopDecl::Type(td));
             }
+            // RFC #1995 E1b: `@wire_case(snake) type E = enum { ... };` spells
+            // every variant of the enum in one case on the wire, for the
+            // codecs and `E::name` / `E::parse` alike; a variant's own
+            // `json:` key still wins (`enum_names::apply_wire_case`). It
+            // marks an enum and stacks with nothing.
+            if matches!(&kind_tok, TokenKind::Ident(s) if s == "wire_case") {
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // `wire_case`
+                if leading_span.is_some() || form.is_some() || locality.is_some() {
+                    return Err(Diag::parse(at.span, "`@wire_case` marks an enum's `type`, and stacks with no other annotation"));
+                }
+                let cases = crate::enum_names::WireCase::WORDS.iter().map(|w| format!("`{w}`")).collect::<Vec<_>>().join(", ");
+                self.expect(TokenKind::LParen, "(")?;
+                let word = self.expect_ident("a case")?;
+                let Some(case) = crate::enum_names::WireCase::of(&word.name) else {
+                    return Err(Diag::parse(
+                        word.span,
+                        format!("`@wire_case({})`: the cases are {cases}", word.name),
+                    ));
+                };
+                self.expect(TokenKind::RParen, ")")?;
+                if !matches!(self.peek(), TokenKind::Type) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "expected `type` after `@wire_case(...)`: it marks an enum (`@wire_case(snake) type E = enum { ... };`)",
+                    ));
+                }
+                let mut td = self.parse_type_decl()?;
+                match &mut td.body {
+                    TypeDeclBody::Enum(vs) if !vs.iter().all(|v| v.member) => {
+                        crate::enum_names::apply_wire_case(vs, case);
+                    }
+                    TypeDeclBody::Enum(_) => {
+                        return Err(Diag::parse(
+                            at.span,
+                            format!(
+                                "`@wire_case` spells an enum's variants, and `{}` is a set: its members cross the \
+                                 codecs named for their types, so there is no variant name to case",
+                                td.name.name
+                            ),
+                        ));
+                    }
+                    _ => {
+                        return Err(Diag::parse(
+                            at.span,
+                            format!(
+                                "`@wire_case` spells an enum's variants on the wire, and `{}` is no enum; a record's \
+                                 field is renamed by its `json:` tag",
+                                td.name.name
+                            ),
+                        ));
+                    }
+                }
+                td.span = at.span.merge(td.span);
+                return Ok(TopDecl::Type(td));
+            }
             let is_ffi = matches!(&kind_tok, TokenKind::Ident(s) if s == "ffi");
             let is_form = matches!(&kind_tok, TokenKind::Ident(s) if s == "form");
             let is_locality =
@@ -1172,7 +1228,7 @@ impl Parser {
             return Err(Diag::parse(
                 self.peek_token().span,
                 "expected `form`, `locality`, `bounded`, `unbounded`, \
-                 `budget`, `sealed`, or `ffi` after `@`",
+                 `budget`, `sealed`, `ffi`, `positional` or `wire_case` after `@`",
             ));
         }
         if form.is_some() || locality.is_some() || export_locus || bounded_locus
@@ -8173,7 +8229,21 @@ impl Parser {
     }
 
     fn parse_match_arm(&mut self) -> Result<MatchArm, Diag> {
-        let pattern = self.parse_pattern()?;
+        // GH #1995 E2: `A | B | C -> …`, an arm of alternatives. A
+        // pattern is not an expression, so this `|` is never the bitwise
+        // operator: the guard after `if` and the body after `->` are
+        // expressions, parsed as such, where `x | y` is the operator.
+        let first = self.parse_pattern()?;
+        let pattern = if self.at(&TokenKind::Pipe) {
+            let mut alts = vec![first];
+            while self.eat(&TokenKind::Pipe) {
+                alts.push(self.parse_pattern()?);
+            }
+            let span = alts[0].span().merge(alts[alts.len() - 1].span());
+            Pattern::Or(alts, span)
+        } else {
+            first
+        };
         let guard = if self.eat(&TokenKind::If) {
             Some(self.parse_expr()?)
         } else {
@@ -8197,6 +8267,24 @@ impl Parser {
             body,
             span,
         })
+    }
+
+    /// A pattern inside a tuple pattern or a variant's values. An
+    /// or-pattern is a whole arm's, never one of these (GH #1995 E2:
+    /// "top level only", as the flat-pattern rule is), so a `|` after
+    /// one is refused here, where it is written.
+    fn parse_inner_pattern(&mut self) -> Result<Pattern, Diag> {
+        let p = self.parse_pattern()?;
+        if self.at(&TokenKind::Pipe) {
+            let bar = self.peek_token().span;
+            return Err(Diag::parse(
+                bar,
+                "`|` separates the alternatives of a whole match arm, and is not written inside a tuple or a \
+                 variant's values: write each alternative in full, `E::A(1) | E::A(2) -> …`, not `E::A(1 | 2)`"
+                    .to_string(),
+            ));
+        }
+        Ok(p)
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, Diag> {
@@ -8243,9 +8331,9 @@ impl Parser {
                 if self.eat(&TokenKind::LParen) {
                     let mut args = Vec::new();
                     if !self.at(&TokenKind::RParen) {
-                        args.push(self.parse_pattern()?);
+                        args.push(self.parse_inner_pattern()?);
                         while self.eat(&TokenKind::Comma) {
-                            args.push(self.parse_pattern()?);
+                            args.push(self.parse_inner_pattern()?);
                         }
                     }
                     let close = self.expect(TokenKind::RParen, ")")?;
@@ -8268,9 +8356,9 @@ impl Parser {
                 let lp = self.bump();
                 let mut elems = Vec::new();
                 if !self.at(&TokenKind::RParen) {
-                    elems.push(self.parse_pattern()?);
+                    elems.push(self.parse_inner_pattern()?);
                     while self.eat(&TokenKind::Comma) {
-                        elems.push(self.parse_pattern()?);
+                        elems.push(self.parse_inner_pattern()?);
                     }
                 }
                 let rp = self.expect(TokenKind::RParen, ")")?;

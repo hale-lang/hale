@@ -413,6 +413,7 @@ pub const MUTATORS: &[Mutator] = &[
     Mutator { name: "interface_dispatch", apply: interface_dispatch },
     Mutator { name: "or_vary", apply: or_vary },
     Mutator { name: "fallible_wrap", apply: fallible_wrap },
+    Mutator { name: "or_pattern_merge", apply: or_pattern_merge },
     Mutator { name: "return_in_text_source", apply: return_in_text_source },
 ];
 
@@ -1168,4 +1169,93 @@ fn fallible_wrap(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     let out = append(&out, &wrapper);
     let shown = if d.len() > 20 { "substitute" } else { d.as_str() };
     Some((with_main(files, out), format!("fallible_wrap({}, or {shown})", f.name.name)))
+}
+
+/// Every `match` in a program's bodies: the expressions `exprs` reaches,
+/// and the statements of each body and the blocks under them.
+fn match_stmts(program: &Program) -> Vec<&MatchStmt> {
+    fn block<'a>(b: &'a Block, out: &mut Vec<&'a MatchStmt>) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Match(m) => {
+                    out.push(m);
+                    for arm in &m.arms {
+                        if let MatchArmBody::Block(b) = &arm.body {
+                            block(b, out);
+                        }
+                    }
+                }
+                Stmt::If(i) => if_(i, out),
+                Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::Block(body) => block(body, out),
+                _ => {}
+            }
+        }
+    }
+    fn if_<'a>(i: &'a IfStmt, out: &mut Vec<&'a MatchStmt>) {
+        block(&i.then_block, out);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block(b, out),
+            Some(ElseBranch::ElseIf(e)) => if_(e, out),
+            None => {}
+        }
+    }
+    let mut out: Vec<&MatchStmt> = Vec::new();
+    for site in exprs(program) {
+        if let Expr::Match(m) = site.e {
+            out.push(m);
+        }
+    }
+    for (b, _) in bodies(program) {
+        block(b, &mut out);
+    }
+    out
+}
+
+/// The names a pattern binds, sorted.
+fn bound_names(p: &Pattern) -> Vec<String> {
+    fn walk(p: &Pattern, out: &mut Vec<String>) {
+        match p {
+            Pattern::Binding(id) => out.push(id.name.clone()),
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
+                args.iter().for_each(|a| walk(a, out))
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(p, &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// GH #1995 E2: two adjacent unguarded arms of a `match` that bind the
+/// same names become one arm of alternatives, `p1 | p2 -> body1` (the
+/// first arm's body; the second arm is gone). The alternatives may bind
+/// a name at different types, which the check refuses; what it accepts
+/// lowers several tests into one guard or body block.
+fn or_pattern_merge(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
+    let (src, program) = parsed(files)?;
+    let mut sites: Vec<(&MatchArm, &MatchArm)> = Vec::new();
+    for m in match_stmts(&program) {
+        for w in m.arms.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            if a.guard.is_none() && b.guard.is_none() && bound_names(&a.pattern) == bound_names(&b.pattern) {
+                sites.push((a, b));
+            }
+        }
+    }
+    let (a, b) = rng.pick(&sites)?;
+    let first = text(&src, a.pattern.span())?.to_string();
+    let second = text(&src, b.pattern.span())?.to_string();
+    // the second arm, from the end of the first's body to the end of its
+    // own (the comma between them goes with it)
+    let out = splice(
+        &src,
+        vec![
+            (a.pattern.span().end.as_usize(), a.pattern.span().end.as_usize(), format!(" | {second}")),
+            (a.span.end.as_usize(), b.span.end.as_usize(), String::new()),
+        ],
+    )?;
+    Some((with_main(files, out), format!("or_pattern_merge({first} | {second})")))
 }

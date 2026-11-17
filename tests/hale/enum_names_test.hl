@@ -1,0 +1,190 @@
+// tests/hale/enum_names_test.hl — an enum's external names (RFC #1995 E1,
+// F.53; spec/types.md § An enum's names). A variant has one external
+// name: its `json:` tag's key, else the spelling its enum's
+// `@wire_case(...)` gives it, else its declared name. `E::name(v)`,
+// `E::parse(s)`, `E::variants` and `E::index(v)` read it, as the JSON
+// codecs do, and `println` keeps rendering `Enum::Variant`. A payload
+// enum's `parse` and `variants` are refused at the call, which a program
+// that runs cannot show: `enum_names.rs` (hale-types) pins those
+// refusals.
+import "./enum_names_lib" as lib;
+
+type Lifecycle = enum { Active, Archived };
+// renamed variants
+type Side = enum { Buy `json:"buy"`, Sell `json:"sell"` };
+// a lossless catch-all: an unknown name is held, and named back
+type Venue = enum { Spot `json:"spot"`, Margin, Other(String) `json:",other"` };
+// a lossy catch-all: an unknown name is it, and it keeps its own name
+type Kind = enum { Limit, Market, Unknown `json:"unknown,other"` };
+// each case, and an explicit tag over the case
+@wire_case(snake) type Phase = enum { InProgress, HTTPError, Done `json:"finished"` };
+@wire_case(screaming_snake) type Level = enum { LowWater, High };
+@wire_case(kebab) type Tier = enum { FreeTier, ProTier };
+@wire_case(lower) type Band = enum { LowBand, High };
+// a payload enum: `name` and `index`, payloads ignored
+type Shape = enum { Circle(Float), Rect(Float, Float), Empty };
+// a variant literally named `name` keeps meaning its variant, and so do
+// `index` and `variants`; `parse` is still the enum's
+type Field = enum { name, index, variants, title };
+// an alias of an enum names the enum's
+type State = Lifecycle;
+// the codecs read the same spelling
+type Job {
+    phase: Phase `json:"phase"`;
+    tier: Tier;
+}
+
+fn read_side(s: String) -> Side fallible(ParseError) {
+    let side = Side::parse(s) or raise;
+    return side;
+}
+
+fn parse_failure(s: String) -> String {
+    let l = Lifecycle::parse(s) or {
+        return err.kind + " " + err.input;
+    };
+    return "parsed " + Lifecycle::name(l);
+}
+
+fn main() {
+    // the declared name, the index, the variants in declaration order
+    std::test::assert_eq_str(
+        Lifecycle::name(Lifecycle::Archived),
+        "Archived",
+        "an untagged variant's name",
+    );
+    std::test::assert_eq_int(Lifecycle::index(Lifecycle::Active), 0, "the first variant's index");
+    std::test::assert_eq_int(Lifecycle::index(Lifecycle::Archived), 1, "the second's");
+    std::test::assert_eq_int(len(Lifecycle::variants), 2, "every variant");
+    let mut at = 0;
+    for l in Lifecycle::variants {
+        std::test::assert_eq_int(Lifecycle::index(l), at, "in declaration order");
+        at = at + 1;
+    }
+    std::test::assert_eq_str(
+        Lifecycle::name(Lifecycle::variants[1]),
+        "Archived",
+        "the last is Archived",
+    );
+    std::test::assert_eq_str(
+        to_string(Lifecycle::Archived),
+        "Lifecycle::Archived",
+        "rendering is unchanged",
+    );
+
+    // parse: a known name, an unknown one with `or` and with `or raise`
+    let a = Lifecycle::parse("Archived") or Lifecycle::Active;
+    std::test::assert_eq_int(Lifecycle::index(a), 1, "a known name parses");
+    let b = Lifecycle::parse("archived") or Lifecycle::Active;
+    std::test::assert_eq_int(Lifecycle::index(b), 0, "names are exact: the `or` default");
+    std::test::assert_eq_str(
+        parse_failure("Gone"),
+        "unknown_variant Gone",
+        "an unknown name is unknown_variant",
+    );
+    let sold = read_side("sell") or Side::Buy;
+    std::test::assert_eq_str(Side::name(sold), "sell", "parsed through `or raise`");
+    let raised = read_side("Sell") or {
+        std::test::assert_eq_str(err.kind, "unknown_variant", "raised to the caller");
+        Side::Buy
+    };
+    std::test::assert_eq_int(Side::index(raised), 0, "the declared name is no external name");
+
+    // a rename
+    std::test::assert_eq_str(Side::name(Side::Sell), "sell", "a tag renames");
+
+    // a lossless catch-all: parse is not fallible
+    std::test::assert_eq_str(
+        Venue::name(Venue::Other("dark")),
+        "dark",
+        "the catch-all names its string",
+    );
+    std::test::assert_eq_str(Venue::name(Venue::parse("spot")), "spot", "a known name");
+    std::test::assert_eq_str(Venue::name(Venue::parse("dark")), "dark", "an unknown name is held");
+    std::test::assert_eq_str(
+        to_string(Venue::parse("dark")),
+        "Venue::Other(\"dark\")",
+        "in the catch-all",
+    );
+    std::test::assert_eq_int(
+        len(Venue::variants),
+        2,
+        "the catch-all, which needs a string, is left out",
+    );
+    std::test::assert_eq_int(Venue::index(Venue::Other("x")), 2, "but has its index");
+
+    // a lossy catch-all: an unknown name is it
+    std::test::assert_eq_int(
+        Kind::index(Kind::parse("stop")),
+        2,
+        "an unknown name is the lossy catch-all",
+    );
+    std::test::assert_eq_str(Kind::name(Kind::Unknown), "unknown", "which keeps its own name");
+    std::test::assert_eq_int(len(Kind::variants), 3, "and is a variant like any other");
+
+    // @wire_case, each mode, and an explicit tag over it
+    std::test::assert_eq_str(Phase::name(Phase::InProgress), "in_progress", "snake");
+    std::test::assert_eq_str(
+        Phase::name(Phase::HTTPError),
+        "http_error",
+        "snake splits an acronym",
+    );
+    std::test::assert_eq_str(Phase::name(Phase::Done), "finished", "an explicit tag wins");
+    std::test::assert_eq_str(Level::name(Level::LowWater), "LOW_WATER", "screaming_snake");
+    std::test::assert_eq_str(Tier::name(Tier::FreeTier), "free-tier", "kebab");
+    std::test::assert_eq_str(Band::name(Band::LowBand), "lowband", "lower");
+    let p = Phase::parse("in_progress") or Phase::Done;
+    std::test::assert_eq_int(Phase::index(p), 0, "parse reads the cased name");
+    let q = Phase::parse("InProgress") or Phase::Done;
+    std::test::assert_eq_int(Phase::index(q), 2, "and not the declared one");
+
+    // the codecs read the same spelling
+    std::test::assert_eq_str(
+        Job::to_json(Job { phase: Phase::InProgress, tier: Tier::ProTier }),
+        "{\"phase\":\"in_progress\",\"tier\":\"pro-tier\"}",
+        "to_json writes the cased names",
+    );
+    let j = Job::from_json("{\"phase\":\"finished\",\"tier\":\"free-tier\"}") or {
+        std::test::assert(false, "from_json reads the cased names: " + err.kind);
+        return;
+    };
+    std::test::assert_eq_str(
+        Phase::name(j.phase) + " " + Tier::name(j.tier),
+        "finished free-tier",
+        "from_json",
+    );
+
+    // a payload enum: name and index ignore the values
+    std::test::assert_eq_str(
+        Shape::name(Shape::Rect(1.0, 2.0)),
+        "Rect",
+        "a payload variant's name",
+    );
+    std::test::assert_eq_int(Shape::index(Shape::Empty), 2, "and index");
+
+    // variants named like the functions keep meaning the variants
+    let f = Field::name;
+    std::test::assert_eq_str(to_string(f), "Field::name", "`Field::name` is the variant");
+    std::test::assert_eq_str(to_string(Field::index), "Field::index", "so is `Field::index`");
+    std::test::assert_eq_str(
+        to_string(Field::variants),
+        "Field::variants",
+        "and `Field::variants`",
+    );
+    let t = Field::parse("title") or Field::name;
+    std::test::assert_eq_str(to_string(t), "Field::title", "`parse` is still the enum's");
+
+    // through an alias of the enum
+    std::test::assert_eq_str(State::name(State::Archived), "Archived", "an alias names the enum's");
+
+    // through an import
+    std::test::assert_eq_str(lib::Mode::name(lib::slow()), "slow", "an imported enum's name");
+    std::test::assert_eq_str(
+        lib::label(lib::Mode::FastLane),
+        "fast_lane",
+        "the library's own call",
+    );
+    std::test::assert_eq_int(len(lib::Mode::variants), 2, "an imported enum's variants");
+    let m = lib::Mode::parse("fast_lane") or lib::Mode::Slow;
+    std::test::assert_eq_int(lib::Mode::index(m), 0, "an imported enum's parse and index");
+}

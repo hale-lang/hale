@@ -236,6 +236,11 @@ pub struct Config {
     /// check --warn-hot-path` turn it on. A `@hot` fn's findings are
     /// errors whatever this says.
     pub hot_path_advisory: bool,
+    /// The string-match advisory (GH #1995 S5): a run of three or more
+    /// `if` tests comparing one String with literals, which a `match`
+    /// says once. Off by default for every verb, `hale verify`'s
+    /// included; `--warn-string-match` turns it on.
+    pub string_match_advisory: bool,
     /// Whether the lowering view waits for a check with no error. On
     /// for every entry point; off only for the test harness's snapshot
     /// ([`Config::harness`]), which lowers what it is handed.
@@ -259,6 +264,7 @@ impl Config {
             build_rules: false,
             alloc_advisory: false,
             hot_path_advisory: false,
+            string_match_advisory: false,
             check_gates_lowering: true,
             adopt: Vec::new(),
         }
@@ -278,6 +284,7 @@ impl Config {
             build_rules: true,
             alloc_advisory: false,
             hot_path_advisory: false,
+            string_match_advisory: false,
             check_gates_lowering: true,
             adopt: Vec::new(),
         }
@@ -340,6 +347,7 @@ impl Config {
         d.flag(self.build_rules);
         d.flag(self.alloc_advisory);
         d.flag(self.hot_path_advisory);
+        d.flag(self.string_match_advisory);
         d.flag(self.check_gates_lowering);
         d.finish()
     }
@@ -1360,6 +1368,7 @@ impl Snapshot {
             surfaces: self.demand_surface_rows().map_err(Clone::clone)?,
             units: self.demand_units().map_err(Clone::clone)?,
             hot_path_advisory: self.config.hot_path_advisory,
+            string_match_advisory: self.config.string_match_advisory,
         };
         let plan = &walked.plan;
         let mut diags = scope.diags.clone();

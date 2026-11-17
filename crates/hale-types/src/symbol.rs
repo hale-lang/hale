@@ -361,6 +361,10 @@ pub struct VariantInfo {
     /// A set type's member (GH #1530 step 1): named for its one field's
     /// type, which is the discriminant.
     pub member: bool,
+    /// The variant's raw backtick metadata tag (GH #1951 item 5), read
+    /// for its catch-all option by the refusals of `E::parse` and
+    /// `E::variants` (RFC #1995 E1).
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone)]

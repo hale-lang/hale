@@ -4262,6 +4262,47 @@ a field* (presence kept out of the record's slots): the codecs, the
 `.proto` and the digest already read the pair as fields, and a hidden
 slot would change every one of them.
 
+### F.53 — A variant has one external name
+
+**Problem.** A program that stores, logs or reads back an enum spells
+its variants as strings by hand, a name function and a parse function per
+enum (82 and 106 of them across two downstream handoffs and the in-tree
+`dna/` library, RFC #1995 G1), and a codec spells them again: the JSON
+codecs write the declared name, or the `json:` tag's key since GH #1951
+item 5. Each hand-written table is a second spelling that drifts from the
+first, and lowercase variants were declared to make the codec's spelling
+come out right, against the style guide (G3).
+
+**Decision.** A variant has one external name: its `json:` tag's key
+when it has one, else the spelling its enum's `@wire_case(snake |
+screaming_snake | kebab | lower)` gives it, else its declared name. The
+JSON codecs (record and api), the description, the digest, and the
+compiler-written `E::name(v)`, `E::parse(s)` all read that one name, and
+a catch-all (``Other(String) `json:",other"` ``, or a payload-free one)
+means the same to `E::parse` as to the decoder: an unknown name is the
+catch-all, so `parse` of such an enum cannot fail. `E::variants` (a
+value, `[E; N]` in declaration order) and `E::index(v)` (the ordinal)
+complete the set. They are type-path functions the desugar sequence
+writes, as `T::from_json` is, so types still have no methods, and the
+names are contextual (F.43): an enum with a variant of the name keeps its
+variant. `@wire_case` is an annotation applied where it is parsed, as
+the tags it stands for. Rendering is not a wire: `to_string` and
+`println` keep `Enum::Variant`. Protobuf keeps the variants' numbers, and
+the bus its tags, so neither reads the name.
+
+**Considered and rejected.** *Rendering the external name.* `println`
+of an enum has printed `Enum::Variant` since the start, and tests and
+logs match on it; the external name is asked for where it is meant.
+*`E::variants()` as a call.* The set is a constant of the type, not a
+computation, and a value reads as one in `for v in E::variants`; the
+call spelling is refused with the fix rather than accepted as a second
+spelling. *A keyword or a `derive`-style list.* An annotation the parser
+applies is enough, and leaves `wire_case` and its case words free as
+names. *A `wire_case` that the codecs read beside the tags.* Every reader
+of a variant's wire name would have had to learn it, and one that did
+not (a generated client, the digest) would be a second spelling again;
+applied as tags, it has one.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

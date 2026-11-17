@@ -710,7 +710,7 @@ pub fn enum_other(vs: &[EnumVariant]) -> Option<(&EnumVariant, bool)> {
 
 /// A string as the body of a Hale string literal (the codecs splice wire
 /// names into generated source): a backslash doubled, a quote escaped.
-fn hale_str(s: &str) -> String {
+pub(crate) fn hale_str(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
@@ -2668,7 +2668,7 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
 /// any file, share an offset. A span is the only key several tables have
 /// for a node (the owned-view pass's copies, the allocation survey's
 /// lookup of them), so two nodes at one offset are one node to them.
-fn next_synth_base<'p>(programs: impl IntoIterator<Item = &'p Program>) -> u32 {
+pub(crate) fn next_synth_base<'p>(programs: impl IntoIterator<Item = &'p Program>) -> u32 {
     programs
         .into_iter()
         .flat_map(|p| crate::ast::flat_decls(&p.items))
@@ -2857,7 +2857,7 @@ fn mark_synthetic(mut items: Vec<TopDecl>) -> Vec<TopDecl> {
 /// Every expression a program evaluates: the bodies, and the initializers
 /// (a `params` field's, a parameter's default, a struct field's default, a
 /// `const`'s), where a call is as much a call as in a body.
-fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Expr)) {
+pub(crate) fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Expr)) {
     fn defaults(ps: &mut [crate::ast::Param], visit: &mut dyn FnMut(&mut Expr)) {
         for p in ps {
             if let Some(d) = &mut p.default {
@@ -2998,10 +2998,15 @@ fn rewrite_match(m: &mut MatchStmt, visit: &mut dyn FnMut(&mut Expr)) {
     }
 }
 
+/// Visits every call, after its callee and arguments, and every path in
+/// value position (`E::variants`, RFC #1995 E1); a path in callee position
+/// names what is called and is seen through its call.
 fn rewrite_expr(e: &mut Expr, visit: &mut dyn FnMut(&mut Expr)) {
     match e {
         Expr::Call { callee, args, .. } => {
-            rewrite_expr(callee, visit);
+            if !matches!(callee.as_ref(), Expr::Path(_)) {
+                rewrite_expr(callee, visit);
+            }
             for a in args.iter_mut() {
                 rewrite_expr(a, visit);
             }
@@ -3048,7 +3053,8 @@ fn rewrite_expr(e: &mut Expr, visit: &mut dyn FnMut(&mut Expr)) {
                 rewrite_expr(s, visit);
             }
         }
-        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+        Expr::Path(_) => visit(e),
+        Expr::Literal(..) | Expr::Ident(_) | Expr::KwSelf(_) => {}
     }
 }
 

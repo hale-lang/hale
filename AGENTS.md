@@ -553,6 +553,29 @@ sign/keygen` + `[fleet_trust]` pin the rows a deployment admits
 renders one description per host; `hale fleet export` writes the rows
 as the old plan JSON, which nothing reads.
 
+## Enum names
+
+Never hand-write an enum's name or parse function. For every enum `E`
+the compiler writes `E::name(v) -> String`, `E::parse(s) -> E
+fallible(ParseError)` (`kind: "unknown_variant"`), `E::variants` (a
+value, `[E; N]` in declaration order, no parentheses) and `E::index(v)
+-> Int`:
+
+```hale
+type Lifecycle = enum { Active, Archived };
+let l = Lifecycle::parse(row_status) or Lifecycle::Active;
+```
+
+The name is the variant's one external name, the same one the JSON
+codecs use: its `json:` tag's key, else its enum's `@wire_case(snake |
+screaming_snake | kebab | lower)` spelling, else the declared name. So
+declare variants in the style guide's case and put `@wire_case(snake)` on
+the enum when the wire wants `in_progress`. With a catch-all
+(``Other(String) `json:",other"` ``) `parse` cannot fail. `parse` and
+`variants` need payload-free variants and are refused on an enum with
+payloads; `name` and `index` ignore payloads. `println` still renders
+`Lifecycle::Archived`.
+
 ## Matching
 
 `match` is an expression as well as a statement, so it can produce a
@@ -570,6 +593,31 @@ Arms use `->`, not `=>`.
 
 Arms may be blocks. `_` is the catch-all and is required when the
 arms don't cover the domain.
+
+Match on a `String` with string-literal patterns, and put several
+patterns on one arm with `|`. Prefer this to a ladder of
+`if s == "lit"` tests: it names the subject once and has one
+catch-all.
+
+```hale
+return match verb {
+    "assign" | "unassign" -> verb + " <name>",
+    "close" -> "close <name>",
+    _ -> "unknown verb",
+};
+
+return match e {
+    CtlError::Invalid(p) | CtlError::NotFound(p) -> p,
+    CtlError::NotReady(h) -> f"not ready: {h}",
+};
+```
+
+Every alternative binds the same names at the same types; a guard
+(`p1 | p2 if cond -> …`) covers the whole arm; exhaustiveness counts
+each alternative. `|` is top level only: `E::A(1 | 2)` is refused,
+write `E::A(1) | E::A(2)`. `hale check --warn-string-match` (or `hale
+verify --warn-string-match`) flags three
+or more `if x == "lit"` tests in a row on one string.
 
 ## Hard gotchas (codegen-v0 limits — don't fight these)
 

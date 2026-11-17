@@ -25,7 +25,7 @@ fn main() {
 | Construct | Syntax | Can Produce a Value? | Key Rules |
 |---|---|---|---|
 | Conditional | `if cond { ... } else { ... }` | Yes (when `else` is present) | Both arms must have the same type in expression position |
-| Value match | `match expr { pat -> res, _ -> def }` | Yes | Must be exhaustive; `_` is the wildcard pattern |
+| Value match | `match expr { pat -> res, _ -> def }` | Yes | Must be exhaustive; `_` is the wildcard pattern; `p1 \| p2 -> res` matches either |
 | Condition match | `match { c1 -> r1, else -> def }` | Yes | Evaluates boolean guards top-to-bottom; `else` is the catch-all |
 | Conditional loop | `while cond { ... }` | No (`()`) | Use `while true { ... }` for unbounded loops; exit with `break;` |
 | Iterator loop | `for x in 0..n { ... }` | No (`()`) | `a..b` is half-open (`[a, b)`); `a..=b` is inclusive (`[a, b]`) |
@@ -119,6 +119,41 @@ fn describe(n: Int) -> String {
 - **Exhaustiveness:** Every `match` is checked for exhaustiveness at compile time. Matching a `Bool` requires both `true` and `false`; matching an `enum` or set type ([Records & Data](../everyday/records.md)) requires covering every variant; matching open-ended types (`Int`, `String`) requires a `_` wildcard arm. Because `match` is exhaustive, a function can end with a `match` statement whose arms all `return`.
 - **Statement vs. expression:** `match` works as both a statement and an expression. Arms can be single expressions or `{ ... }` blocks (block-bodied arms still take a trailing comma).
 - **Flat patterns:** each part of a tuple pattern, like each value of a variant's pattern, is a binding, `_` or a literal (`(0, b) -> …`, `Shape::Line(l) -> …`). A nested pattern there (`((1, 2), 3)`, `(Light::Red, 3)`) is refused by `hale check`: bind the part and match the binding inside the arm.
+
+### Matching strings, and or-patterns
+
+A `String` matches against string literals, and an arm may list several patterns separated by `|`; the arm runs when any one of them matches. This is the way to dispatch on a word: one decision, the subject named once, and a `_` arm that says what happens to everything else.
+
+```hale
+fn usage(verb: String) -> String {
+    return match verb {
+        "assign" | "unassign" -> verb + " <name> reviews <kind>:<node>",
+        "close" -> "close <name>",
+        _ -> "unknown verb",
+    };
+}
+```
+
+Alternatives work for every pattern form: literals (`1 | 2 | 3`), enum variants with or without payloads, set members, tuples. When the alternatives bind names, every alternative binds the same names at the same types, so the arm's body can use them whichever one matched:
+
+```hale
+type CtlError = enum { Invalid(String), NotFound(String), Conflict(String), NotReady(Int) };
+
+fn problem(e: CtlError) -> String {
+    return match e {
+        CtlError::Invalid(p) | CtlError::NotFound(p) | CtlError::Conflict(p) -> p,
+        CtlError::NotReady(h) -> f"not ready after {h} checks",
+    };
+}
+```
+
+- **Exhaustiveness** counts each alternative, so `Color::Red | Color::Green -> …, Color::Blue -> …` covers a three-color enum without `_`.
+- **A guard** after the alternatives (`(x, _) | (_, x) if x > 0 -> x`) covers the whole arm. Alternatives are tried left to right, and when the guard is false for one alternative's bindings, the next alternative is tried.
+- **Top level only:** `|` separates a whole arm's patterns. `E::A(1 | 2)` is refused; write `E::A(1) | E::A(2)`.
+- An alternative an earlier arm or alternative already covers is never tried, and `hale check` warns about it.
+- Inside a guard or an arm's body, `|` is still the bitwise-or operator.
+
+A ladder of `if verb == "assign" { … } else if verb == "close" { … }` tests is the same decision spelled longer. `hale check --warn-string-match` (or `hale verify --warn-string-match`) points out three or more such tests in a row on one string and suggests the `match`.
 
 ### Condition `match` (Scrutinee-less `match`)
 

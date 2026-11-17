@@ -534,7 +534,7 @@ impl<'p> UseScopes<'p, '_> {
     fn pattern(&mut self, p: &'p Pattern) {
         match p {
             Pattern::Binding(i) => self.bind(&i.name, i.id),
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
                 for a in args {
                     self.pattern(a);
                 }

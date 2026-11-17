@@ -3058,6 +3058,24 @@ assume the others in a build:
   turned its own reproducer into a correct program that the advisory
   still flagged — and the fix it suggested, `@no_block`, is a compile
   error on that program.
+- **String-match advisory — opt-in** (GH #1995 S5). Three or more
+  `if` tests in a row comparing one String place (a local, or `self` and
+  its fields) with string literals by `==` — the links of one `else if`
+  chain, consecutive `if` statements, or both, each condition one
+  comparison or an `||` of comparisons on that place — get a warning at
+  the first test, naming the place and the count and showing the
+  `match` they read as (spec/semantics.md § Or-patterns, § Matching
+  strings). A link testing anything else, a final plain `else` or any
+  other statement ends the run; code that already matches is never
+  flagged. Reported only under `--warn-string-match`, on `hale check`
+  or `hale verify`; without it no verb reports it, `verify` included:
+  `verify` fails on any finding, advisories too, and this one is a
+  suggestion — over the in-tree `dna/` library it names 150 ladders,
+  which an always-on rule would turn into 150 verify failures. The
+  stdlib's source, and stdlib text an expansion appends to the program
+  (the api runtime, the streamed body readers, the TCP substrate), is
+  never reported. Syntactic, over the program as written
+  (`crate::string_if_chain`).
 - **Hot-path allocation lint — opt-in advisory** (2026-07-16; opt-in
   since GH #1948, 2026-11-15). Its warnings are reported by `hale
   verify` (the discipline gate, which fails on any finding) and by
@@ -3151,7 +3169,7 @@ assume the others in a build:
   read as "copied here in a loop" whenever a generated decoder's loop
   had a statement at exactly its offsets, which an edit anywhere earlier
   in the bundle could bring about. A diagnostic inside a generated codec
-  names it as that (`in the JSON codecs the compiler generated …`), not
+  names it as that (`in the code the compiler generated for …`), not
   a position in a file.
 - **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
   escalation between the opt-in advisory and `@budget`'s counted

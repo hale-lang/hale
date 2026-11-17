@@ -58,6 +58,7 @@ top_decl          = locus_decl
                   | perspective_decl
                   | type_decl
                   | positional_type       (* spec/api.md § Codecs *)
+                  | wire_case_type        (* spec/types.md § An enum's names *)
                   | const_decl
                   | function_decl
                   | module_decl
@@ -1042,6 +1043,16 @@ contract_fn       = "fn" , IDENTIFIER , [ generic_params ] ,
 positional_type   = "@" , "positional" , "type" , IDENTIFIER ,
                     [ generic_params ] , "{" , { struct_field } , "}" ;
 
+(* RFC #1995 E1b: `@wire_case(case)` spells every variant of an enum in
+   one case on the wire, for the JSON codecs and `E::name` / `E::parse`
+   alike; a variant's own `json:` key wins (spec/types.md § An enum's
+   names). It precedes the enum form only, not a set, and stacks with no
+   other annotation; `wire_case` and the case words are not keywords. *)
+wire_case_type    = "@" , "wire_case" , "(" , wire_case , ")" , "type" ,
+                    IDENTIFIER , [ generic_params ] , "=" , "enum" , "{" ,
+                    enum_variant , { "," , enum_variant } , "}" , ";" ;
+wire_case         = "snake" | "screaming_snake" | "kebab" | "lower" ;
+
 type_decl         = "type" , IDENTIFIER , "=" , type_expr , ";"
                   | "type" , IDENTIFIER , [ generic_params ] , "{" ,
                     { struct_field } , "}"
@@ -1433,8 +1444,18 @@ if_stmt           = "if" , expression , block ,
 
 match_stmt        = "match" , expression , "{" , match_arm ,
                     { "," , match_arm } , [ "," ] , "}" ;
-match_arm         = pattern , [ "if" , expression ] , "->" ,
-                    ( expression | block ) ;
+match_arm         = pattern , { "|" , pattern } , [ "if" , expression ] ,
+                    "->" , ( expression | block ) ;
+
+(* GH #1995 E2 — an or-pattern: an arm of two or more patterns
+   separated by `|` matches when one of them does, tried left to right.
+   Every alternative binds the same names at the same types; the guard
+   covers the whole arm and is tried with each matching alternative's
+   bindings in turn; F.18 exhaustiveness counts each alternative. `|`
+   is top level only: a pattern inside a tuple or a variant's values is
+   one pattern, and a `|` after it is a parse error. A pattern is not an
+   expression, so this `|` is never the bitwise operator, which the
+   guard and the body still use. *)
 
 pattern           = literal_pattern
                   | wildcard_pattern

@@ -2119,7 +2119,7 @@ fn pattern_names<'e>(p: &'e Pattern, out: &mut Vec<&'e Ident>) {
     match p {
         Pattern::Binding(id) => out.push(id),
         Pattern::Constructor { args, .. } => args.iter().for_each(|a| pattern_names(a, out)),
-        Pattern::Tuple(ps, _) => ps.iter().for_each(|a| pattern_names(a, out)),
+        Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => ps.iter().for_each(|a| pattern_names(a, out)),
         Pattern::Literal(..) | Pattern::Wildcard(_) => {}
     }
 }

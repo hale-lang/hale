@@ -137,17 +137,18 @@ fn match_is_exhaustive(
     known: &KnownNames,
 ) -> bool {
     let unguarded = |a: &&MatchArm| a.guard.is_none();
-    let has_catchall = arms.iter().filter(unguarded).any(|a| {
-        matches!(a.pattern, Pattern::Wildcard(_) | Pattern::Binding(_))
-    });
+    // GH #1995 E2: an or-pattern's alternatives each count, as the arms
+    // they could have been written as.
+    let alts = || arms.iter().filter(unguarded).flat_map(|a| a.pattern.alternatives());
+    let has_catchall = alts().any(|p| matches!(p, Pattern::Wildcard(_) | Pattern::Binding(_)));
     if has_catchall {
         return true;
     }
     if matches!(scrut_ty, Ty::Prim(PrimType::Bool)) {
         let mut has_true = false;
         let mut has_false = false;
-        for arm in arms.iter().filter(unguarded) {
-            if let Pattern::Literal(Literal::Bool(b), _) = &arm.pattern {
+        for pat in alts() {
+            if let Pattern::Literal(Literal::Bool(b), _) = pat {
                 if *b {
                     has_true = true;
                 } else {
@@ -187,8 +188,8 @@ fn match_is_exhaustive(
             // through), so the two compare by identity: the merged
             // name encodes the declaration's, and its text is no
             // suffix of anything the author wrote.
-            for arm in arms.iter().filter(unguarded) {
-                if let Pattern::Constructor { path, .. } = &arm.pattern {
+            for pat in alts() {
+                if let Pattern::Constructor { path, .. } = pat {
                     let segs: Vec<&str> =
                         path.segments.iter().map(|s| s.name.as_str()).collect();
                     let set = !variants.is_empty() && variants.iter().all(|v| v.member);
@@ -620,6 +621,12 @@ pub struct CheckInputs<'a> {
     /// `hale verify` and `hale check --warn-hot-path`. A `@hot` fn's
     /// findings are errors either way.
     pub hot_path_advisory: bool,
+    /// Whether the string-match advisory reports (GH #1995 S5, the
+    /// snapshot's `Config::string_match_advisory`): a run of three or
+    /// more `if` tests comparing one String with literals
+    /// (`crate::string_if_chain`). Off by default, on under
+    /// `--warn-string-match` (`hale check` or `hale verify`).
+    pub string_match_advisory: bool,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
@@ -708,6 +715,7 @@ fn check_numbered_bundle(
         units: &units,
         // The library entry reports every advisory.
         hot_path_advisory: true,
+        string_match_advisory: true,
     };
     let (mut diags, _, _) = check_bundle_rules(bundle, &inputs, &walk, allow_unowned_subscriber, &|_, _| None);
     diags.extend(typed_body_laws(bundle, &inputs, &walk.record));
@@ -1430,6 +1438,9 @@ pub fn check_bundle_rules(
     diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
     diags.extend(publish_in_default_diags(bundle));
     diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
+    if inputs.string_match_advisory {
+        diags.extend(crate::string_if_chain::string_if_chain_diags(bundle));
+    }
     diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
     diags.extend(mixed_owner_diags(inputs.alloc_summary));
     // GH #1940: a body with a declared return type that can reach its end
@@ -7414,11 +7425,41 @@ fn std_result_may_hold(segs: &[&str], arg: Option<&str>, decls: &StoreDecls<'_>)
     }
 }
 
+/// GH #1995 E2: whether pattern `a` matches every value pattern `b`
+/// does, judged by their shapes alone: a catch-all covers everything, a
+/// literal its equal, a variant (same path) with no values or only
+/// catch-all values covers that variant, and tuples and variants part by
+/// part. Conservative: two spellings of one path, or literals the check
+/// would convert, are not judged to cover, so a "never tried" warning is
+/// never wrong.
+fn pattern_covers(a: &Pattern, b: &Pattern) -> bool {
+    let irrefutable = |p: &Pattern| matches!(p, Pattern::Wildcard(_) | Pattern::Binding(_));
+    match (a, b) {
+        (Pattern::Wildcard(_) | Pattern::Binding(_), _) => true,
+        (Pattern::Or(alts, _), _) => alts.iter().any(|x| pattern_covers(x, b)),
+        (_, Pattern::Or(alts, _)) => alts.iter().all(|y| pattern_covers(a, y)),
+        (Pattern::Literal(x, _), Pattern::Literal(y, _)) => x == y,
+        (
+            Pattern::Constructor { path: pa, args: aa, .. },
+            Pattern::Constructor { path: pb, args: ab, .. },
+        ) => {
+            let same = pa.segments.len() == pb.segments.len()
+                && pa.segments.iter().zip(&pb.segments).all(|(x, y)| x.name == y.name);
+            same && (aa.iter().all(irrefutable)
+                || (aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| pattern_covers(x, y))))
+        }
+        (Pattern::Tuple(xs, _), Pattern::Tuple(ys, _)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| pattern_covers(x, y))
+        }
+        _ => false,
+    }
+}
+
 fn pattern_binders<'p>(p: &'p Pattern, out: &mut Vec<&'p str>) {
     match p {
         Pattern::Binding(id) => out.push(id.name.as_str()),
         Pattern::Constructor { args, .. } => args.iter().for_each(|a| pattern_binders(a, out)),
-        Pattern::Tuple(ps, _) => ps.iter().for_each(|a| pattern_binders(a, out)),
+        Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => ps.iter().for_each(|a| pattern_binders(a, out)),
         Pattern::Literal(..) | Pattern::Wildcard(_) => {}
     }
 }
@@ -11327,7 +11368,7 @@ fn callee_display(callee: &Expr) -> String {
     match callee {
         Expr::Ident(id) => match id.name.strip_prefix("__json_parse_") {
             Some(t) => format!("{t}::from_json"),
-            None => id.name.clone(),
+            None => hale_syntax::enum_names::generated_display(&id.name).unwrap_or_else(|| id.name.clone()),
         },
         Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
         Expr::KwSelf(_) => "self".to_string(),
@@ -17882,6 +17923,11 @@ impl<'a> Checker<'a> {
                     self.note_view_pattern(p, &t);
                 }
             }
+            Pattern::Or(alts, _) => {
+                for a in alts {
+                    self.note_view_pattern(a, ty);
+                }
+            }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
     }
@@ -17897,7 +17943,7 @@ impl<'a> Checker<'a> {
                     self.bind_pattern(a);
                 }
             }
-            Pattern::Tuple(parts, _) => {
+            Pattern::Tuple(parts, _) | Pattern::Or(parts, _) => {
                 for p in parts {
                     self.bind_pattern(p);
                 }
@@ -17931,17 +17977,24 @@ impl<'a> Checker<'a> {
             self.locals.push();
             self.bind_pattern(&arm.pattern);
             self.note_view_pattern(&arm.pattern, &scrut_ty);
-            self.check_set_pattern(&arm.pattern, &scrut_ty);
-            self.check_bare_variant_pattern(&arm.pattern, &scrut_ty);
-            self.check_pattern_literals(&arm.pattern, &scrut_ty);
-            // `Decimal<S>`: a Decimal literal pattern is a value of the
-            // scrutinee's scale, judged at it.
-            if let (Pattern::Literal(Literal::Decimal(text), span), Ty::Prim(PrimType::Decimal(scale))) =
-                (&arm.pattern, &scrut_ty)
-            {
-                if self.specializing.is_none() {
-                    self.decimal_literals.push(PendingDecimal { span: *span, text: text.clone(), scale: *scale });
+            // GH #1995 E2: each alternative of an or-pattern is checked
+            // as the arm's whole pattern would be.
+            for alt in arm.pattern.alternatives() {
+                self.check_set_pattern(alt, &scrut_ty);
+                self.check_bare_variant_pattern(alt, &scrut_ty);
+                self.check_pattern_literals(alt, &scrut_ty);
+                // `Decimal<S>`: a Decimal literal pattern is a value of the
+                // scrutinee's scale, judged at it.
+                if let (Pattern::Literal(Literal::Decimal(text), span), Ty::Prim(PrimType::Decimal(scale))) =
+                    (alt, &scrut_ty)
+                {
+                    if self.specializing.is_none() {
+                        self.decimal_literals.push(PendingDecimal { span: *span, text: text.clone(), scale: *scale });
+                    }
                 }
+            }
+            if let Pattern::Or(alts, _) = &arm.pattern {
+                self.check_or_pattern(alts, &scrut_ty);
             }
             if let Some(g) = &arm.guard {
                 let _ = self.check_expr(g);
@@ -17991,6 +18044,7 @@ impl<'a> Checker<'a> {
         if as_expr && matches!(joined, Some(Ty::Prim(PrimType::Decimal(_)))) {
             joined = Some(self.join_decimal_arms(stmt, &arm_tys, joined.take().expect("a Decimal")));
         }
+        self.warn_redundant_alternatives(&stmt.arms);
         if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top, self.known) {
             self.diags.push(Diag::ty(
                 stmt.span,
@@ -20080,6 +20134,152 @@ impl<'a> Checker<'a> {
         closest_bare_name(name, &tops).map(|h| h.to_string())
     }
 
+    /// The names a pattern binds against a value of type `ty`, each with
+    /// its type (`Unknown` where the check cannot name it) and where it is
+    /// written: a binding is the value, a variant's or a set member's
+    /// value its declared field's type, a tuple's part its element's.
+    fn pattern_binding_types(&self, pat: &Pattern, ty: &Ty, out: &mut Vec<(String, Ty, Span)>) {
+        match pat {
+            Pattern::Binding(id) => out.push((id.name.clone(), ty.clone(), id.span)),
+            Pattern::Constructor { path, args, .. } => {
+                let Some(variant) = path.segments.last() else { return };
+                let named = |n: &str| match self.top.symbols.get(n) {
+                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                        vs.iter().find(|v| v.name == variant.name).map(|v| v.fields.clone())
+                    }
+                    _ => None,
+                };
+                let fields = match ty {
+                    Ty::Named(n) => named(n),
+                    _ => None,
+                }
+                .or_else(|| {
+                    let n = path.segments.len();
+                    (n > 1).then(|| named(&path.segments[n - 2].name)).flatten()
+                })
+                .unwrap_or_default();
+                for (i, a) in args.iter().enumerate() {
+                    let t = fields.get(i).cloned().unwrap_or(Ty::Unknown);
+                    self.pattern_binding_types(a, &t, out);
+                }
+            }
+            Pattern::Tuple(ps, _) => {
+                for (i, p) in ps.iter().enumerate() {
+                    let t = match ty {
+                        Ty::Tuple(ts) => ts.get(i).cloned().unwrap_or(Ty::Unknown),
+                        _ => Ty::Unknown,
+                    };
+                    self.pattern_binding_types(p, &t, out);
+                }
+            }
+            Pattern::Or(alts, _) => {
+                if let Some(first) = alts.first() {
+                    self.pattern_binding_types(first, ty, out);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+
+    /// GH #1995 E2: every alternative of an or-pattern binds the same
+    /// names at the same types, since the guard and the body read them
+    /// whichever alternative matched. Each alternative is held to the
+    /// first: a name one binds and the other does not, or a name the two
+    /// bind at different types, is refused at the alternative.
+    fn check_or_pattern(&mut self, alts: &[Pattern], scrut: &Ty) {
+        let Some((first, rest)) = alts.split_first() else { return };
+        let mut want = Vec::new();
+        self.pattern_binding_types(first, scrut, &mut want);
+        for alt in rest {
+            let mut have = Vec::new();
+            self.pattern_binding_types(alt, scrut, &mut have);
+            for (name, t, _) in &want {
+                match have.iter().find(|(n, ..)| n == name) {
+                    None => self.diags.push(Diag::ty(
+                        alt.span(),
+                        format!(
+                            "the alternative `{}` does not bind `{name}`, which `{}` binds: every alternative of \
+                             a match arm binds the same names, because the guard and the body read them whichever \
+                             alternative matched",
+                            alt.text(),
+                            first.text()
+                        ),
+                    )),
+                    Some((_, u, span)) => {
+                        if t != u && self.ty_is_nameable(t) && self.ty_is_nameable(u) {
+                            self.diags.push(Diag::ty(
+                                *span,
+                                format!(
+                                    "`{name}` is of type `{}` in the alternative `{}`, and of type `{}` in `{}`: \
+                                     every alternative of a match arm binds each name at one type",
+                                    u.display(),
+                                    alt.text(),
+                                    t.display(),
+                                    first.text()
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            for (name, _, span) in &have {
+                if !want.iter().any(|(n, ..)| n == name) {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "the alternative `{}` binds `{name}`, which `{}` does not: every alternative of a \
+                             match arm binds the same names, because the guard and the body read them whichever \
+                             alternative matched",
+                            alt.text(),
+                            first.text()
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// GH #1995 E2: an alternative of an or-pattern that an earlier one
+    /// already covers is never tried, which is a warning: an unguarded
+    /// earlier arm's pattern (or one of its alternatives), or an earlier
+    /// alternative of the same arm. In a guarded arm that binds names an
+    /// earlier alternative does not make a later one redundant, since the
+    /// guard is tried again with the later one's bindings.
+    fn warn_redundant_alternatives(&mut self, arms: &[MatchArm]) {
+        let mut earlier: Vec<&Pattern> = Vec::new();
+        for arm in arms {
+            if let Pattern::Or(alts, _) = &arm.pattern {
+                let binds = {
+                    let mut names = Vec::new();
+                    pattern_binders(&arm.pattern, &mut names);
+                    !names.is_empty()
+                };
+                for (k, alt) in alts.iter().enumerate() {
+                    let same_arm = if arm.guard.is_some() && binds { &alts[..0] } else { &alts[..k] };
+                    let by = earlier
+                        .iter()
+                        .copied()
+                        .chain(same_arm.iter())
+                        .find(|e| pattern_covers(e, alt));
+                    if let Some(by) = by {
+                        self.diags.push(Diag::warn(
+                            alt.span(),
+                            format!(
+                                "the alternative `{}` is never tried: `{}`, earlier in this match, already matches \
+                                 every value it does; remove it",
+                                alt.text(),
+                                by.text()
+                            ),
+                        ));
+                    }
+                }
+            }
+            if arm.guard.is_none() {
+                earlier.extend(arm.pattern.alternatives());
+            }
+        }
+    }
+
     /// GH #1076 (U2): whether a value of `got`, the expression `value`,
     /// flows into a place of type `want`: assignability, and the
     /// identities' and ranges' rules (`unit_values`). An integer literal
@@ -21994,6 +22194,55 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// RFC #1995 E1: why a use of `E::name`, `E::parse`, `E::variants` or
+    /// `E::index` (`alias::E::…` through an import) is refused, or `None`
+    /// when the path is none of them: its head is no enum, or the enum
+    /// declares a variant of the name, which keeps meaning the variant (the
+    /// names are contextual, F.43 discipline). `args` is the call's
+    /// argument count, `None` for the path as a value. The desugar sequence
+    /// rewrote every use that is right to the function it wrote
+    /// (`hale_syntax::enum_names`), so one that reaches here is refused:
+    /// by its shape, by the enum's, or (checked without the sequence) for
+    /// having no function written.
+    fn enum_name_refusal(&self, qn: &QualifiedName, args: Option<usize>) -> Option<String> {
+        use hale_syntax::enum_names::{call_refusal, op_refusal, Op, VariantShape};
+        let n = qn.segments.len();
+        if n < 2 {
+            return None;
+        }
+        let op = Op::of(&qn.segments[n - 1].name)?;
+        let head: Vec<&str> = qn.segments[..n - 1].iter().map(|s| s.name.as_str()).collect();
+        let shown = head.join("::");
+        let name = if n == 2 { shown.clone() } else { self.known.import_target(&shown)?.to_string() };
+        if let Some(td) = self.generic_types.get(name.as_str()) {
+            let TypeDeclBody::Enum(vs) = &td.body else { return None };
+            if vs.iter().any(|v| v.name.name == op.word()) {
+                return None;
+            }
+            let shapes: Vec<VariantShape<'_>> =
+                vs.iter().map(|v| VariantShape { name: &v.name.name, fields: v.fields.len(), tag: v.tag.as_deref() }).collect();
+            return call_refusal(&shown, op, args).or_else(|| op_refusal(&shown, &shapes, true, op));
+        }
+        let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) = self.top.symbols.get(&name) else {
+            return None;
+        };
+        if vs.iter().any(|v| v.name == op.word()) {
+            return None;
+        }
+        if let Some(why) = call_refusal(&shown, op, args) {
+            return Some(why);
+        }
+        let shapes: Vec<VariantShape<'_>> =
+            vs.iter().map(|v| VariantShape { name: &v.name, fields: v.fields.len(), tag: v.tag.as_deref() }).collect();
+        if let Some(why) = op_refusal(&shown, &shapes, false, op) {
+            return Some(why);
+        }
+        Some(format!(
+            "`{shown}::{}` is written for the enum by the desugar sequence, which did not run over this program",
+            op.word()
+        ))
+    }
+
     fn check_qualified_path(&mut self, path: &QualifiedName) {
         if let Some(msg) = self.unresolved_qualified(path) {
             self.diags.push(Diag::ty(path.span, msg));
@@ -23470,6 +23719,15 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // RFC #1995 E1: `E::variants` of an enum it does not apply
+                // to, and `E::name` / `E::parse` / `E::index` not called
+                // (the desugar sequence rewrote every use that is right).
+                if !is_callee {
+                    if let Some(why) = self.enum_name_refusal(qn, None) {
+                        self.diags.push(Diag::ty(qn.span, why));
+                        return Ty::Unknown;
+                    }
+                }
                 // GH #1028: an imported seed's free fn, `alias::f`. It
                 // is typed like a bare fn, so a call through the path
                 // gets the arity bounds and the argument types a
@@ -23657,6 +23915,20 @@ impl<'a> Checker<'a> {
                             return self.decimal_rescale(*call_id, *call_span, from, args);
                         }
                         self.discard_since(mark);
+                    }
+                }
+                // RFC #1995 E1: `E::name(v)`, `E::parse(s)`, `E::index(v)`
+                // the desugar sequence left as written: one the functions do
+                // not apply to (a payload enum's `parse`), or of the wrong
+                // shape (`E::variants()`, two arguments). Refused with the
+                // reason; a variant of the name is the variant's, below.
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if let Some(why) = self.enum_name_refusal(qn, Some(args.len())) {
+                        self.diags.push(Diag::ty(*call_span, why));
+                        for a in args.iter() {
+                            self.check_expr(a);
+                        }
+                        return Ty::Unknown;
                     }
                 }
                 // The api codec a program calls (spec/api.md § Codecs): the
@@ -27217,6 +27489,8 @@ impl<'a> Checker<'a> {
                 }
             }
             Pattern::Wildcard(_) | Pattern::Binding(_) => {}
+            // the arm's alternatives are each checked by the caller
+            Pattern::Or(..) => {}
         }
     }
 
