@@ -3931,9 +3931,11 @@ for replay-under-a-different-plan) is the next milestone.
   use `lotus_str_range_copy` and `lotus_str_range_index_of` the same
   way. Codegen calls them for a String local or parameter whose length
   it remembers: an entry-block `{ ptr value, i64 len }` beside the
-  local's slot, read through the internal, always-inlined
-  `lotus.str_len_cached(s, cache)` (the cached length when `value` is
-  `s`, else `lotus_str_len(s)`, which refills it; a NULL `s` is 0). The
+  local's slot, read through the internal `lotus.str_len_cached(s,
+  cache)`: the cached length when `value` is `s`, else
+  `lotus_str_len(s)`, which refills it; a NULL `s` is 0. It is marked
+  `inlinehint` (never `alwaysinline`, which only seam fusion emits), and
+  the inliner places it at each call. The
   local's `let`, a parameter's binding and a plain assignment empty the
   cache; an appending assignment fills it from the accumulator's
   length. A String is still a `char *` everywhere else: nothing in the

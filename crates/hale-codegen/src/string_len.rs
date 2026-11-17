@@ -224,11 +224,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// The internal fn behind [`Self::emit_cached_str_len`], defined once
-    /// per module and inlined at each call, so the cache (an alloca no
-    /// call takes) is promoted to registers:
+    /// per module. It is a few instructions and marked `inlinehint`, so the
+    /// inliner puts it at each call and the cache (an alloca no call then
+    /// takes) is promoted to registers. Not `alwaysinline`: that mark is
+    /// seam fusion's alone (GH #1530, `inline_new_hop_calls`), and
+    /// `seam_fusion.rs` holds a program with no seam to carrying none.
     ///
     /// ```text
-    /// define internal i64 @lotus.str_len_cached(ptr %s, ptr %c) alwaysinline {
+    /// define internal i64 @lotus.str_len_cached(ptr %s, ptr %c) inlinehint {
     ///   if (%s == null) return 0;
     ///   if (%c.value == %s) return %c.len;
     ///   %n = lotus_str_len(%s); %c = { %s, %n }; return %n;
@@ -251,7 +254,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
             Some(Linkage::Internal),
         );
-        for attr in ["alwaysinline", "nounwind"] {
+        for attr in ["inlinehint", "nounwind"] {
             let kind = inkwell::attributes::Attribute::get_named_enum_kind_id(attr);
             f.add_attribute(inkwell::attributes::AttributeLoc::Function, self.context.create_enum_attribute(kind, 0));
         }
