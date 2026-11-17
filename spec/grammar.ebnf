@@ -58,6 +58,7 @@ top_decl          = locus_decl
                   | perspective_decl
                   | type_decl
                   | positional_type       (* spec/api.md § Codecs *)
+                  | wire_case_type        (* spec/types.md § An enum's names *)
                   | const_decl
                   | function_decl
                   | module_decl
@@ -1041,6 +1042,16 @@ contract_fn       = "fn" , IDENTIFIER , [ generic_params ] ,
    annotation. *)
 positional_type   = "@" , "positional" , "type" , IDENTIFIER ,
                     [ generic_params ] , "{" , { struct_field } , "}" ;
+
+(* RFC #1995 E1b: `@wire_case(case)` spells every variant of an enum in
+   one case on the wire, for the JSON codecs and `E::name` / `E::parse`
+   alike; a variant's own `json:` key wins (spec/types.md § An enum's
+   names). It precedes the enum form only, not a set, and stacks with no
+   other annotation; `wire_case` and the case words are not keywords. *)
+wire_case_type    = "@" , "wire_case" , "(" , wire_case , ")" , "type" ,
+                    IDENTIFIER , [ generic_params ] , "=" , "enum" , "{" ,
+                    enum_variant , { "," , enum_variant } , "}" , ";" ;
+wire_case         = "snake" | "screaming_snake" | "kebab" | "lower" ;
 
 type_decl         = "type" , IDENTIFIER , "=" , type_expr , ";"
                   | "type" , IDENTIFIER , [ generic_params ] , "{" ,

@@ -1957,6 +1957,8 @@ crates/hale-types/tests/effect_assertions.rs#5 b7feed6ffd7ea4b2
 crates/hale-types/tests/effect_assertions.rs#8 42861592a7c756f4
 crates/hale-types/tests/effects_through_handles.rs#4 a9f197e41cbd9c2b
 crates/hale-types/tests/effects_through_handles.rs#9 54c8265101b266ac
+crates/hale-types/tests/enum_names.rs#0 31499d20175ae823
+crates/hale-types/tests/enum_names.rs#5 384d052c1e2581fc
 crates/hale-types/tests/fn_key_identity.rs#0 7eb51560f576217e
 crates/hale-types/tests/form_rows.rs#3 c920107573355715
 crates/hale-types/tests/form_rows.rs#4 456944a0db3b9137

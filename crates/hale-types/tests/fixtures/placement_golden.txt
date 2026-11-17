@@ -6817,6 +6817,12 @@ dynamic	Pure	on main	in the seed
 row	~	Manifest	main	default
 row	~.sink	QuietEmitter	main	inherited
 
+== crates/hale-types/tests/enum_names.rs#096f9d8d
+dynamic	<hole>	on main|unresolved declaration `ParseError`	in the seed
+
+== crates/hale-types/tests/enum_names.rs#d97c0830
+dynamic	<hole>	on main|unresolved declaration `ParseError`	in the seed
+
 == crates/hale-types/tests/fn_key_identity.rs#57279317
 row	W@main1	W	main	default
 
@@ -8610,6 +8616,9 @@ row	~.b	Boom	main	inherited
 dynamic	Outer	on main
 dynamic	Pick	on main
 dynamic	Sup	on main
+
+== tests/hale/enum_names_test.hl
+dynamic	<hole>	on main|unresolved declaration `ParseError`	in the seed
 
 == tests/hale/enum_tag_storage_test.hl
 root	App	the entry

@@ -11327,7 +11327,7 @@ fn callee_display(callee: &Expr) -> String {
     match callee {
         Expr::Ident(id) => match id.name.strip_prefix("__json_parse_") {
             Some(t) => format!("{t}::from_json"),
-            None => id.name.clone(),
+            None => hale_syntax::enum_names::generated_display(&id.name).unwrap_or_else(|| id.name.clone()),
         },
         Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
         Expr::KwSelf(_) => "self".to_string(),
@@ -21963,6 +21963,55 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// RFC #1995 E1: why a use of `E::name`, `E::parse`, `E::variants` or
+    /// `E::index` (`alias::E::…` through an import) is refused, or `None`
+    /// when the path is none of them: its head is no enum, or the enum
+    /// declares a variant of the name, which keeps meaning the variant (the
+    /// names are contextual, F.43 discipline). `args` is the call's
+    /// argument count, `None` for the path as a value. The desugar sequence
+    /// rewrote every use that is right to the function it wrote
+    /// (`hale_syntax::enum_names`), so one that reaches here is refused:
+    /// by its shape, by the enum's, or (checked without the sequence) for
+    /// having no function written.
+    fn enum_name_refusal(&self, qn: &QualifiedName, args: Option<usize>) -> Option<String> {
+        use hale_syntax::enum_names::{call_refusal, op_refusal, Op, VariantShape};
+        let n = qn.segments.len();
+        if n < 2 {
+            return None;
+        }
+        let op = Op::of(&qn.segments[n - 1].name)?;
+        let head: Vec<&str> = qn.segments[..n - 1].iter().map(|s| s.name.as_str()).collect();
+        let shown = head.join("::");
+        let name = if n == 2 { shown.clone() } else { self.known.import_target(&shown)?.to_string() };
+        if let Some(td) = self.generic_types.get(name.as_str()) {
+            let TypeDeclBody::Enum(vs) = &td.body else { return None };
+            if vs.iter().any(|v| v.name.name == op.word()) {
+                return None;
+            }
+            let shapes: Vec<VariantShape<'_>> =
+                vs.iter().map(|v| VariantShape { name: &v.name.name, fields: v.fields.len(), tag: v.tag.as_deref() }).collect();
+            return call_refusal(&shown, op, args).or_else(|| op_refusal(&shown, &shapes, true, op));
+        }
+        let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) = self.top.symbols.get(&name) else {
+            return None;
+        };
+        if vs.iter().any(|v| v.name == op.word()) {
+            return None;
+        }
+        if let Some(why) = call_refusal(&shown, op, args) {
+            return Some(why);
+        }
+        let shapes: Vec<VariantShape<'_>> =
+            vs.iter().map(|v| VariantShape { name: &v.name, fields: v.fields.len(), tag: v.tag.as_deref() }).collect();
+        if let Some(why) = op_refusal(&shown, &shapes, false, op) {
+            return Some(why);
+        }
+        Some(format!(
+            "`{shown}::{}` is written for the enum by the desugar sequence, which did not run over this program",
+            op.word()
+        ))
+    }
+
     fn check_qualified_path(&mut self, path: &QualifiedName) {
         if let Some(msg) = self.unresolved_qualified(path) {
             self.diags.push(Diag::ty(path.span, msg));
@@ -23439,6 +23488,15 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // RFC #1995 E1: `E::variants` of an enum it does not apply
+                // to, and `E::name` / `E::parse` / `E::index` not called
+                // (the desugar sequence rewrote every use that is right).
+                if !is_callee {
+                    if let Some(why) = self.enum_name_refusal(qn, None) {
+                        self.diags.push(Diag::ty(qn.span, why));
+                        return Ty::Unknown;
+                    }
+                }
                 // GH #1028: an imported seed's free fn, `alias::f`. It
                 // is typed like a bare fn, so a call through the path
                 // gets the arity bounds and the argument types a
@@ -23626,6 +23684,20 @@ impl<'a> Checker<'a> {
                             return self.decimal_rescale(*call_id, *call_span, from, args);
                         }
                         self.discard_since(mark);
+                    }
+                }
+                // RFC #1995 E1: `E::name(v)`, `E::parse(s)`, `E::index(v)`
+                // the desugar sequence left as written: one the functions do
+                // not apply to (a payload enum's `parse`), or of the wrong
+                // shape (`E::variants()`, two arguments). Refused with the
+                // reason; a variant of the name is the variant's, below.
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if let Some(why) = self.enum_name_refusal(qn, Some(args.len())) {
+                        self.diags.push(Diag::ty(*call_span, why));
+                        for a in args.iter() {
+                            self.check_expr(a);
+                        }
+                        return Ty::Unknown;
                     }
                 }
                 // The api codec a program calls (spec/api.md § Codecs): the

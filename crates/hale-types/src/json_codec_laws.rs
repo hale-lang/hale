@@ -331,7 +331,8 @@ fn enum_tag_laws(enum_name: &str, vs: &[hale_syntax::ast::EnumVariant], shapes: 
                     v.span,
                     format!(
                         "`{enum_name}::{}`: `{enum_name}::{}` and `{enum_name}::{}` both cross JSON as \"{wire}\": a \
-                         variant's wire name (its `json:` tag's, else its own) names one variant; rename one",
+                         variant's wire name (its `json:` tag's, else its enum's `@wire_case` spelling, else its own) names one \
+                         variant; rename one",
                         v.name.name, first.name.name, v.name.name
                     ),
                 )

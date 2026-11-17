@@ -2751,7 +2751,9 @@ are ignored, as on a field. A lossless catch-all normalizes: it writes
 the string it holds whatever it is, so `Other("buy")` writes `"buy"`,
 which reads back as `Buy` where a variant is named so. Hold a catch-all's
 string only when it names no variant, or compare the two through the
-wire. A lossless catch-all makes the enum one with payloads, with the
+wire. `E::name` and `E::parse` (spec/types.md § An enum's names) read
+the same wire names and the same catch-all, so a name a program logs or
+stores is the name the codecs write. A lossless catch-all makes the enum one with payloads, with the
 restrictions an enum with payloads has today: it is not a list's element
 the codec carries (a `bounded` holds one, but the codec has no form for
 the list, above), a map of values' value, or a route's path or query
@@ -2760,6 +2762,17 @@ either as it carries any enum, by its variant's tag and values
 (spec/semantics.md § Payload type), so the renames do not reach it. A
 set's member takes no tag, its type being its discriminant: a tag after
 one is a parse error.
+
+**`@wire_case(case)`** on the enum's declaration (RFC #1995 E1b) gives
+every variant without a `json:` key of its own the name in that case as
+its key: ``@wire_case(snake) type Phase = enum { InProgress, Done
+`json:"finished"` };`` crosses as `"in_progress"` and `"finished"`. The
+cases are `snake`, `screaming_snake`, `kebab` and `lower` (spec/types.md §
+An enum's names gives the word rule); a variant's own key wins, a lossless
+catch-all keeps none, and the spelling is the tag's in every respect: the
+codecs, the description and its `"x-hale-variants"`, the digest, and
+`E::name` / `E::parse` all read it, and two variants it spells alike are
+refused as one wire name.
 
 The description lists the wire names: a payload-free enum's `enum` holds
 them, an object variant's property is keyed by its wire name, and an

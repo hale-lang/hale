@@ -3151,7 +3151,7 @@ assume the others in a build:
   read as "copied here in a loop" whenever a generated decoder's loop
   had a statement at exactly its offsets, which an edit anywhere earlier
   in the bundle could bring about. A diagnostic inside a generated codec
-  names it as that (`in the JSON codecs the compiler generated …`), not
+  names it as that (`in the code the compiler generated for …`), not
   a position in a file.
 - **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
   escalation between the opt-in advisory and `@budget`'s counted
