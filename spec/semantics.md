@@ -415,8 +415,93 @@ bytes, `std::str::slice` a range of a `ByteView`).
 
 Each slice measures the receiver and copies the bytes (`O(n) +
 O(hi - lo)`, spec/stdlib.md § Linear byte scanning), so walking
-a long string by re-slicing its tail is quadratic; a `ByteView` walks
-it in one pass (spec/styleguide.md S16).
+a long string by re-slicing its tail is quadratic; a text source
+(§ Text sources, below) or a `ByteView` walks it in one pass
+(spec/styleguide.md S16).
+
+An index that is not a range (`s[i]`) is refused at the check: one
+position of a `String` could mean a byte or a character, and Hale
+picks neither. The refusal names both ways to say which: "\`s[i]\`: a
+\`String\` has no element to index, since one position could mean a
+byte or a character. Read bytes through a view (\`let v =
+std::str::bytes_view(s);\` then \`std::str::byte_at(v, i)\` …), or
+slice the text (\`s[i..(i + 1)]\`, \`s[i..]\`)". Until GH #1995 the
+check passed it and the build refused it ("indexing a non-array
+value").
+
+## Text sources
+
+`std::str::split(s, sep)`, `std::str::lines(s)` and
+`std::str::words(s)` are **`for` sources**: each names the parts of a
+text for a `for` loop to visit, one per iteration (GH #1995). They are
+not values. Hale has no sequence value for them to return, which is
+also why `std::str::split_into` writes into storage the caller owns.
+
+```hale
+fn main() {
+    let row = "id,name,,note";
+    for field in std::str::split(row, ",") {
+        println("[" + field + "]");
+    }
+    for line in std::str::lines("first\r\nsecond\n") {
+        println(line);
+    }
+    for w in std::str::words("  any   amount of  space ") {
+        println(w);
+    }
+}
+```
+
+| Source | The parts |
+|---|---|
+| `split(s, sep)` | The text between occurrences of `sep`, empty parts included, as `split_into` writes them: `"a,,b,"` is `a`, an empty part, `b`, an empty part. `""` is one empty part, and `s` with no `sep` in it is `s`. An empty `sep` gives no parts. |
+| `lines(s)` | The text between `\n`s, each without one `\r` before its `\n` (or before the end of the text). A final `\n` starts no line: `"a\r\nb\n"` is `a`, `b`. `""` is no lines, and `"\n"` is one empty line. |
+| `words(s)` | The runs of bytes that are not ASCII whitespace (space, tab, LF, vertical tab, form feed, CR). There is never an empty word, so `""` and `"  "` are no words. |
+
+- **The arguments are evaluated once**, left to right, before the first
+  part. Assigning a variable the arguments were read from inside the
+  body does not change the scan.
+- **Each part is a new `String`**, bound to the loop variable for its
+  iteration and not assignable, like any loop variable. The body owns
+  it: it can keep it in an outer variable, return it or store it.
+- **`break` leaves the loop and `continue` goes to the next part**, as
+  in any `for`; `return` returns from the enclosing fn. Loops over
+  sources nest, and an inner `break` leaves only the inner loop.
+- **Bytes, not characters.** A separator is matched byte for byte, so
+  a valid UTF-8 separator never cuts a character, and a non-ASCII
+  space (U+00A0) is text to `words`.
+- **One scan.** `s` is measured and copied once into a `ByteView`
+  (spec/stdlib.md § Linear byte scanning). Each part costs a search
+  from where the last one ended and a copy of the part, so a loop is
+  linear in the text, where the hand loop it replaces (`rest =
+  rest[(sp + 1)..len(rest)]`, a measure and a copy of the rest per
+  part) is quadratic. `words_source_scales_linearly_where_the_hand_loop_does_not`
+  in `crates/hale-codegen/tests/stdlib_str.rs` pins it.
+- **Pure.** A loop over a source has the effects of its body and no
+  others, so it is legal in `@deterministic @no_syscall` code.
+
+Before anything checks it, the loop is rewritten as one `while` over a
+view of `s` (`hale_syntax::str_sources`, in the desugar sequence every
+entry point runs). The checker, the analyses and lowering see that
+loop, so `hale check` and `hale build` accept the same programs, and a
+diagnostic in the body points where the body was written.
+
+A source used as anything other than a loop's iterand is refused at
+the check, with the way to keep the parts: "\`std::str::split\` is a
+\`for\` source, not a value: write \`for part in std::str::split(s, sep)
+{ … }\`. Hale has no sequence value to return; to keep the parts, write
+them into storage you own with \`std::str::split_into(s, sep, v)\`". So
+is a call with the wrong number of arguments ("\`std::str::lines(s)\`
+takes 1 argument, got 2"), and an argument that is not a string, at
+the argument ("\`std::str::split(s, sep)\`: \`sep\` takes a \`String\`,
+not a \`Int\`"). A chain over a source (`std::str::words(s).count()`)
+is not recognized yet.
+
+A `for` over a `String` itself is refused at the check: "\`for\` over a
+\`String\`: a string is not a sequence. Iterate
+\`std::str::split/lines/words\`, or a \`bytes_view\` by index". Until GH
+#1995 the check passed it and the build refused it ("for-loop iterator
+must be an array").
 
 ## Binary data — Bytes and conversion
 

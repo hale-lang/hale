@@ -205,7 +205,19 @@ Filter these reflexes before they cost you time.
   `obj.method()` normally.
 - **A `String` slices by byte offset**, clamped: `s[lo..hi]`,
   `s[lo..]` (to the end), `s[..hi]` (from the start). Write
-  `line[(at + 1)..]`, not `line[(at + 1)..len(line)]`.
+  `line[(at + 1)..]`, not `line[(at + 1)..len(line)]`. There is no
+  `s[i]` and no `for c in s`: both are refused (a byte, or a
+  character?). Slice `s[i..(i + 1)]` or read `std::str::byte_at`.
+- **Take a text apart with a `for` source**, never a `while
+  len(rest) > 0 { … rest = rest[(sp + 1)..]; }` loop, which copies
+  the rest every turn (quadratic): `for part in std::str::split(s,
+  ",") { … }` (empty parts kept), `for line in std::str::lines(s)`
+  (CRLF stripped, no final empty line), `for w in
+  std::str::words(s)` (ASCII-whitespace runs, no empties). One pass,
+  each part a `String`, `break`/`continue` work, pure. They are not
+  values: to keep the parts, `std::str::split_into(s, sep, v)` into a
+  `@form(vec)`. For any other scan, `std::str::bytes_view` once and
+  walk it by index.
 - **No printf-style format strings.** `println(a, b, c)`
   concatenates its args. F-strings `f"hello {name}"` interpolate.
 - **String operations are `std::str` free functions**, not methods:

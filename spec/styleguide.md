@@ -1966,10 +1966,31 @@ It now peaks at 4 MB. A chain of `+` (`a + b + c`) is one allocation.
 
 This rule also applies on every path. `rest = rest[(nl + 1)..len(rest)]`
 copies the remainder for each line, and each copy stays in scratch until
-the method returns: the square an append that copies makes (S15). Walk the text by position
-instead. `std::str::bytes_view` measures it once, `byte_at` reads a byte
-against that length, and `std::str::slice(v, start, end)` copies only
-the line:
+the method returns: the square an append that copies makes (S15).
+
+To take a text apart by a separator, by line or by whitespace, loop over
+a text source (spec/semantics.md § Text sources). It is the walk by
+position below, already written: one view, one pass, a copy of each part
+and nothing else.
+
+```hale
+fn count_rows(all: String) -> Int {
+    let mut rows = 0;
+    for line in std::str::lines(all) {
+        if len(line) > 0 { rows = rows + 1; }
+    }
+    return rows;
+}
+
+fn main() { println(count_rows("a\nb\n\nc")); }
+```
+
+`std::str::split(s, sep)` keeps empty parts, and `std::str::words(s)`
+never yields one. **[convention]**
+
+For any other scan, walk the text by position. `std::str::bytes_view`
+measures it once, `byte_at` reads a byte against that length, and
+`std::str::slice(v, start, end)` copies only the part:
 
 ```hale
 fn line_end(v: std::str::ByteView, start: Int) -> Int {

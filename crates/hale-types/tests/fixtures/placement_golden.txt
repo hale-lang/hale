@@ -729,7 +729,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/source.hl#fac6c107
 
-== crates/hale-stdlib/hl/str_helpers.hl#b0ce9adc
+== crates/hale-stdlib/hl/str_helpers.hl#36459fea
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
 == crates/hale-stdlib/hl/tagged.hl#b5e9dd95
@@ -9162,6 +9162,13 @@ row	~.s	__StdSecretSigner	main	inherited
 -- App@literal1.unset	Unset
 row	~	Unset	main	default
 row	~.c	__StdSecretCredential	main	inherited
+
+== tests/hale/str_split_sources_test.hl
+row	Doc@main4	Doc	main	default
+row	Fields@main1	Fields	main	default
+row	Fields@main2	Fields	main	default
+row	Fields@main3	Fields	main	default
+dynamic	Fields	on main	in the seed
 
 == tests/hale/string_append_test.hl
 row	Doc@main1	Doc	main	default
