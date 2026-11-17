@@ -38,20 +38,21 @@ locus Hello {
 
 /// Build `src`, start it, wait for its listener, and return the child and
 /// the port.
-fn serve(tag: &str, src: &str) -> (std::process::Child, u16, std::path::PathBuf) {
+fn serve(tag: &str, src: &str) -> (child::Reaped, u16, std::path::PathBuf) {
     let bin = harness::unique_bin(tag);
     build_opts::build_source(&format!("{HELLO}{src}"), &bin, &build_opts::options()).expect("build");
-    let mut c = Command::new(&bin)
+    let c = Command::new(&bin)
         .env("LOTUS_DRAIN_GRACE_MS", "5000")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
+    let mut c = child::Reaped::new(c);
     let port = child::tcp_port(&mut c);
     (c, port, bin)
 }
 
-fn term_and_wait(mut c: std::process::Child) -> (std::process::ExitStatus, Duration, String) {
+fn term_and_wait(mut c: child::Reaped) -> (std::process::ExitStatus, Duration, String) {
     let sent = Instant::now();
     Command::new("kill").args(["-TERM", &c.id().to_string()]).status().expect("kill");
     let status = c.wait().expect("wait");
@@ -253,7 +254,7 @@ fn main() { App { }; }
     );
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let started = Instant::now();
-    let mut c = Command::new(&bin).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn");
+    let mut c = child::Reaped::new(Command::new(&bin).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn"));
     let mut err = BufReader::new(c.stdout.take().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

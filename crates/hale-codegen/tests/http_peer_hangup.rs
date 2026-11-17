@@ -59,7 +59,7 @@ fn stderr_after_a_hangup(bin: &std::path::Path, env: &[(&str, &str)]) -> String 
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let mut child = cmd.spawn().expect("spawn the server");
+    let mut child = child::Reaped::new(cmd.spawn().expect("spawn the server"));
     let stdout = child.stdout.take().unwrap();
     let mut ready = String::new();
     let _ = BufReader::new(stdout).read_line(&mut ready);
