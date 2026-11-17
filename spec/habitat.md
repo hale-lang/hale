@@ -1766,7 +1766,19 @@ grafted organism that came from a sapling the habitat pins, and a
   revision, cloned (then fetched) on the host under the login's
   `~/.local/share/hale/hosted/<organism>`, where the command runs. Its
   declaration is read from that checkout, so the command is the one the
-  pinned revision declares.
+  pinned revision declares. The host clones the repository itself, so a
+  sapling whose repository is a path (an absolute path, `./`, `../` or
+  `file://`: what a nursery added from a checkout records) reaches only
+  the machine it is on. `place` onto any other host is refused before
+  anything runs there, saying to push the commit and add the nursery as
+  `<url>#<commit>` (`hale habitat nursery add https://…#<sha>`). Only a
+  place whose scripts run on this machine takes a path (`local`, or the
+  host the habitat added that is this machine); through a pointer the
+  habitat's own machine does not, as it holds only the nursery's shipped
+  mirror, not the path (GH #2010). An
+  upgrade's re-run of a placement's `install` is refused the same way.
+  `unplace` is not: the placed command's checkout is on the host
+  already, and it only fetches.
 - **What the host is.** Before anything is touched, the verb reads the host
   over the login: its OS and architecture, its package manager (apt-get,
   dnf, Homebrew), what of the toolchain's prerequisites it has, the

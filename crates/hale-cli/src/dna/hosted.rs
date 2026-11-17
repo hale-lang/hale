@@ -374,6 +374,47 @@ echo "manifest"; cat "$d/hale.toml""#,
     )
 }
 
+/// Whether `repo` names its repository by a path on the machine that
+/// recorded it (git reads it as one): an absolute path, `./`, `../`, a
+/// bare relative path, or a `file://` URL. A URL of any other scheme
+/// (`https://`, `ssh://`, `git://`) and the scp-style `[user@]host:path`
+/// (`git@host:org/repo`, a colon before any slash) name a repository a
+/// host reaches on its own.
+pub(super) fn is_local_path(repo: &str) -> bool {
+    let r = repo.trim();
+    if r.is_empty() {
+        return false;
+    }
+    if let Some((scheme, _)) = r.split_once("://") {
+        if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) {
+            return scheme.eq_ignore_ascii_case("file");
+        }
+    }
+    match (r.find(':'), r.find('/')) {
+        (Some(colon), Some(slash)) => colon > slash,
+        (Some(_), None) => false,
+        _ => true,
+    }
+}
+
+/// Whether a sapling repository that is a path reaches the host the
+/// scripts run on (`at`): only when they run on this machine. Through a
+/// pointer the path is on the person's machine, where the nursery was
+/// added, and the habitat's own machine holds only its shipped mirror, so
+/// even the habitat's own machine is reached by URL alone.
+pub(super) fn path_reaches(at: &Target) -> bool {
+    *at == Target::Here
+}
+
+/// Why `place` refuses a sapling whose repository is a path, on a host it
+/// does not reach (`shown`): the host clones the repository itself.
+pub(super) fn local_path_refusal(organism: &str, repo: &str, revision: &str, shown: &str) -> String {
+    let commit = if revision.is_empty() { "<commit>" } else { revision };
+    format!(
+        "`{organism}`'s sapling repository is `{repo}`, a path on the machine that added its nursery, and {shown} clones the sapling's repository itself: a path on this machine reaches no other host. Push the commit and add the nursery as `<url>#<commit>` (`hale habitat nursery add https://…#{commit}`), then place again; a path places only on the machine it is on (`--host local`)"
+    )
+}
+
 /// The manifest `source_script` printed.
 pub(super) fn source(out: &str) -> String {
     out.split_once("manifest\n").map(|(_, b)| b).unwrap_or("").to_string()
@@ -953,6 +994,15 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
     let shown = super::shown_host(host);
     let id = id.map(str::to_string).unwrap_or_else(|| shown.split('.').next().unwrap_or(&shown).to_string());
 
+    // the host clones the sapling's repository itself (`source_script`): a
+    // path reaches none but the machine it is on, so refused before
+    // anything runs there (`organism upgrade`'s re-place comes here too).
+    // `unplace` goes on: a placed command's tree is there already, and
+    // only fetches.
+    if install && is_local_path(&repo) && !path_reaches(&at) {
+        return Err(local_path_refusal(organism, &repo, &revision, &shown));
+    }
+
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
 
     // what the host is, read before anything is touched
@@ -1363,6 +1413,34 @@ readers = ["api"]
         assert!(host_commands(&VOICE.replace("root = true", "root = true\nrequires = { windows = [\"gpu\"] }")).unwrap_err().contains("requires.windows"));
         assert!(host_commands(&VOICE.replace("root = true", "root = true\nrequires = { linux = [\"tpu\"] }")).unwrap_err().contains("requires `tpu`"));
         assert!(host_commands(&VOICE.replace("root = true", "root = true\nrequires = [\"tpu\"]")).unwrap_err().contains("requires `tpu`"));
+    }
+
+    /// A sapling added from a checkout records the checkout's path as its
+    /// repository, and a host clones the repository itself (GH #2010): a
+    /// path is refused on any host but the machine it is on, before
+    /// anything runs there, saying to push and add the nursery by URL.
+    #[test]
+    fn a_sapling_repository_that_is_a_path_places_only_where_it_is() {
+        for path in ["/home/dev/src/voice", "./voice", "../voice", ".", "..", "voice", "src/voice", "file:///home/dev/src/voice", "FILE:///srv/voice", "/srv/a:b"] {
+            assert!(is_local_path(path), "{path} is a path");
+        }
+        for url in ["https://github.com/hale-lang/voice", "http://git.example.test/voice.git", "ssh://git@git.example.test/voice.git", "git://git.example.test/voice", "git+ssh://git.example.test/voice", "git@git.example.test:hale-lang/voice.git", "git.example.test:voice", "", "  "] {
+            assert!(!is_local_path(url), "{url:?} is no path");
+        }
+        let ssh = Target::Ssh { host: "gpu-1.example.test".to_string(), user: None, port: None };
+        // this machine (`local` on a habitat here, or a host the habitat
+        // added that is this machine): the path is there
+        assert!(path_reaches(&Target::Here));
+        // the habitat's own machine reached through a pointer (`local` in
+        // its rows) holds only the nursery's mirror, not the path
+        assert!(!path_reaches(&Target::local_with(Some(&serde_json::json!({ "host": "habitat.example.test" })))), "the habitat's own machine through a pointer");
+        // any other host clones it, and the path is not there
+        assert!(!path_reaches(&ssh));
+        let why = local_path_refusal("voice", "/home/dev/src/voice", "0123abc", "gpu-1.example.test");
+        assert!(why.contains("`/home/dev/src/voice`") && why.contains("gpu-1.example.test clones the sapling's repository itself"), "{why}");
+        assert!(why.contains("a path on this machine reaches no other host"), "{why}");
+        assert!(why.contains("Push the commit and add the nursery as `<url>#<commit>` (`hale habitat nursery add https://…#0123abc`)"), "{why}");
+        assert!(local_path_refusal("voice", "./voice", "", "h").contains("https://…#<commit>"));
     }
 
     #[test]
