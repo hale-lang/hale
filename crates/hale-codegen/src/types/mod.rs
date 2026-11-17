@@ -345,6 +345,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     arg_tys.push(self.type_expr_to_codegen_ty(p)?);
                 }
                 let ret_ty = match ret {
+                    // `fn(Row) -> ()` returns nothing, as `fn(Row)` does:
+                    // the check reads `()` as the unit type there, and
+                    // a signature naming it was refused here as an empty
+                    // tuple
+                    Some(r) if matches!(r.as_ref(), TypeExpr::Tuple(parts, _) if parts.is_empty()) => None,
                     Some(r) => Some(Box::new(self.type_expr_to_codegen_ty(r)?)),
                     None => None,
                 };

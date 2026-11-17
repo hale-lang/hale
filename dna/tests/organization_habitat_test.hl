@@ -1,0 +1,89 @@
+// dna/tests/organization_habitat_test.hl — the habitat an organization
+// knows it lives in, as its org read answers it
+// (`api::organization_habitat_of`): the name and face the habitat handed
+// its organism's body and face (`HALE_DNA_HABITAT_NAME`,
+// `HALE_DNA_HABITAT_FACE`), the face an absolute origin with no trailing
+// `/`; both "" for the habitat's own record, and unless both were handed.
+import "../api" as api;
+import "../core" as dna;
+
+fn profile(j: dna::MemJournal) {
+    let r = j.append(
+        j.revision(),
+        "habitat.profile",
+        "local",
+        "{\"profile\": \"local\", \"name\": \"home\"}",
+    );
+}
+
+fn main() {
+    // the names the habitat hands them in
+    std::test::assert_eq_str(dna::HABITAT_NAME_ENV, "HALE_DNA_HABITAT_NAME", "the name's variable");
+    std::test::assert_eq_str(dna::HABITAT_FACE_ENV, "HALE_DNA_HABITAT_FACE", "the face's variable");
+
+    // an organism's record: the habitat it was handed
+    let child = dna::MemJournal { };
+    let h = api::organization_habitat_of(child, "home", "http://habitat.example.test:9024");
+    std::test::assert_eq_str(h.name, "home", "the habitat's name");
+    std::test::assert_eq_str(h.face, "http://habitat.example.test:9024", "the habitat's face");
+    // a trailing `/` (or space) is dropped: `<face>/organisms/<name>/face` is a URL
+    let slashed = api::organization_habitat_of(
+        child,
+        " home ",
+        "http://habitat.example.test:9024/ ",
+    );
+    std::test::assert_eq_str(slashed.name, "home", "the name trimmed");
+    std::test::assert_eq_str(
+        slashed.face,
+        "http://habitat.example.test:9024",
+        "the face's trailing / dropped",
+    );
+
+    // run outside a habitat: nothing handed, nothing known
+    let outside = api::organization_habitat_of(child, "", "");
+    std::test::assert_eq_str(outside.name, "", "no habitat's name outside a habitat");
+    std::test::assert_eq_str(outside.face, "", "no habitat's face outside a habitat");
+    // half of it handed is none of it
+    std::test::assert_eq_str(
+        api::organization_habitat_of(child, "home", "").name,
+        "",
+        "a name with no face",
+    );
+    std::test::assert_eq_str(
+        api::organization_habitat_of(child, "", "http://habitat.example.test:9024").face,
+        "",
+        "a face with no name",
+    );
+    std::test::assert_eq_str(
+        api::organization_habitat_of(child, "home", "/").face,
+        "",
+        "a face that is only a /",
+    );
+
+    // the habitat's own record names no habitat above it, whatever its
+    // process was handed
+    let habitat = dna::MemJournal { };
+    profile(habitat);
+    std::test::assert(
+        api::record_is_habitat(habitat),
+        "a record with a profile row is a habitat's",
+    );
+    std::test::assert(!api::record_is_habitat(child), "an organism's record is not");
+    let own = api::organization_habitat_of(habitat, "home", "http://habitat.example.test:9024");
+    std::test::assert_eq_str(own.name, "", "the habitat's own name is not its habitat");
+    std::test::assert_eq_str(own.face, "", "nor its face");
+
+    // the org read's shape: the field defaults to an empty habitat, and
+    // crosses the wire as an object
+    let empty = api::OrgChart { };
+    std::test::assert_eq_str(empty.habitat.name, "", "the org read's habitat defaults empty");
+    std::test::assert_eq_str(empty.habitat.face, "", "the org read's habitat face defaults empty");
+    let wire = api::OrgChart::api_encode(api::OrgChart { ok: true, habitat: h });
+    std::test::assert(
+        std::str::contains(
+            wire,
+            "\"habitat\":{\"name\":\"home\",\"face\":\"http://habitat.example.test:9024\"}",
+        ),
+        "the org read's habitat on the wire is an object: " + wire,
+    );
+}
