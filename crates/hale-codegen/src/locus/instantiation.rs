@@ -5632,6 +5632,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         let init_ref = init.as_value_ref();
         let caller_ref = caller.as_value_ref();
+        // An anchor nested in another anchor's params (a second `App`
+        // built through the first one's pinned `h`) is initialized in an
+        // init of an init: its caller is the outer init, still being
+        // lowered, and a value the inner one reads may be the outer's
+        // caller's (a binding of `fn main`, `Ear { tag: s }`). Captured
+        // here like the caller's own: the outer init stores it into this
+        // block, and the outer init's capture, when it finishes, moves
+        // it into its own block in turn, or refuses it there if it is a
+        // value of no function the chain is instantiated from.
+        let caller_is_init = {
+            let name = caller.get_name().to_string_lossy();
+            name.starts_with("__pinned_init_") || name.starts_with("__pool_init_") || name.starts_with("__pool_birth_")
+        };
         let mut captured: Vec<LLVMValueRef> = Vec::new();
         let mut uses: Vec<(LLVMValueRef, u32, usize)> = Vec::new();
         for bb in init.get_basic_blocks() {
@@ -5671,7 +5684,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if owner == init_ref {
                         continue;
                     }
-                    if owner != caller_ref {
+                    if owner != caller_ref && !caller_is_init {
                         return Err(CodegenError::LlvmEmit(format!(
                             "{} `{}`: its params-init reads a value of a function \
                              other than the one instantiating it",
