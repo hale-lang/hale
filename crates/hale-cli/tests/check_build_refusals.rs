@@ -624,3 +624,56 @@ fn a_mixed_edge_literal_used_as_a_value_is_refused_at_the_literal() {
         "`I { }` is born to `App`, but `Worker` runs both on `App`'s thread and off it (App.a on main; App.o.w on the pinned thread of App.o; the owner App on main), so its birth is a same-tower allocation in some instances and a cross-pool post in others; a cross-pool birth is fire-and-forget, so the literal cannot be used as a value.",
     );
 }
+
+/// GH #2023: a path to a variant the enum does not declare is refused by
+/// the check at the path, with the nearest variant, in every position: a
+/// value, a comparison operand, a match pattern (nested ones too) and a
+/// payload constructor's callee. Each checked clean and the build
+/// refused it (`enum `Place` has no variant `Wrok``).
+#[test]
+fn a_variant_the_enum_does_not_declare_is_refused_at_the_path() {
+    let head = "enum `Place` has no variant `Wrok` — did you mean `Work`?";
+    refused(
+        "type Place = enum { Work, Home };\n\nfn label(s: Place) -> String {\n    return match s {\n        Place::Work -> \"work\",\n        Place::Home -> \"home\",\n    };\n}\n\nfn main() {\n    let s = Place::Wrok;\n    println(label(s));\n}\n",
+        "variant_value",
+        "11:13",
+        head,
+    );
+    refused(
+        "type Place = enum { Work, Home };\nfn at_work(s: Place) -> Bool {\n    return s == Place::Wrok;\n}\nfn main() { println(at_work(Place::Home)); }\n",
+        "variant_operand",
+        "3:17",
+        head,
+    );
+    refused(
+        "type Place = enum { Work, Home };\nfn label(s: Place) -> String {\n    return match s {\n        Place::Wrok -> \"w\",\n        _ -> \"o\",\n    };\n}\nfn main() { println(label(Place::Home)); }\n",
+        "variant_pattern",
+        "4:9",
+        head,
+    );
+    refused(
+        "type Place = enum { Work(Int), Home };\nfn main() {\n    let s = Place::Wrok(1);\n    match s {\n        Place::Work(n) -> println(n),\n        Place::Home -> println(\"home\"),\n    }\n}\n",
+        "variant_ctor",
+        "3:13",
+        head,
+    );
+    // Nested in a variant's values.
+    refused(
+        "type Place = enum { Work, Home };\ntype Trip = enum { To(Place), Stay };\nfn f(t: Trip) -> Int {\n    return match t {\n        Trip::To(Place::Wrok) -> 1,\n        _ -> 0,\n    };\n}\nfn main() { println(f(Trip::Stay)); }\n",
+        "variant_nested_pattern",
+        "5:18",
+        head,
+    );
+    // No near spelling: the variants are listed.
+    refused(
+        "type Place = enum { Work, Home };\nfn main() {\n    let s = Place::Elsewhere;\n    println(s == Place::Home);\n}\n",
+        "variant_far",
+        "3:13",
+        "enum `Place` has no variant `Elsewhere`; its variants are Work, Home",
+    );
+    // The enum's own names (RFC #1995 E1) are not variants and still work.
+    let ok_src = "type Place = enum { Work, Home };\nfn main() {\n    println(Place::name(Place::Work));\n    println(Place::index(Place::Home));\n    for p in Place::variants { println(Place::name(p)); }\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(ok_src, "variant_enum_names");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}

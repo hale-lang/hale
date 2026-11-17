@@ -181,7 +181,7 @@ fn main() {
 }
 ```
 
-- **Construction and formatting:** Construct variants with `EnumName::Variant` (`Event::Halt`, `Event::Tick(3)`). Printing an enum outputs its declared name and payload (`Event::Tick(3)`), even when imported via a library alias.
+- **Construction and formatting:** Construct variants with `EnumName::Variant` (`Event::Halt`, `Event::Tick(3)`). Printing an enum outputs its declared name and payload (`Event::Tick(3)`), even when imported via a library alias. A variant the enum does not declare (`Event::Tik`) is a type error from `hale check` wherever it is written, a value, a constructor call or a `match` pattern, with the nearest variant suggested.
 - **Exhaustive matching:** `match` arms can match literal sub-patterns (`Event::Tick(0)`) before variable bindings (`Event::Tick(n)`), and must cover every variant in the `enum`.
 - **`enum` vs. `fallible(E)`:** Use `enum` for domain states and sum-type messages; use `fallible(E)` ([When a Call Can Fail](../basics/fallible.md)) for functions that can fail.
 
