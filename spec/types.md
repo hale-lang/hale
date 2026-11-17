@@ -749,7 +749,9 @@ share a member; the place's type says which set the value becomes. The
 arms of an `if` or a `match` whose values are different members are not
 joined into a set: give each arm the set's type (a fn returning it).
 
-`match` names each member by its type alone, binding the member's value:
+`match` names each member by its type alone, binding the member's value
+at the member's type (`b` below is a `Book`; spec/semantics.md, a pattern's
+bindings):
 
 ```hale
 fn handle(m: Inbound) -> Outbound {
@@ -1935,10 +1937,11 @@ error at the argument (GH #1963), naming what it is, or asking for the
 value bound to a `let` that writes its type. Inside a generic body a
 use of its own type parameter is unnamed until a call specializes it,
 so there the rule is held at each specialization: a local the body
-still cannot name at the type arguments a call makes (a `match` arm's
-binding of a recursive record, `Link::Next(n) -> id(n)`, unnamed in a
-body over the concrete type as well) is refused at the argument (GH
-#2005).
+still cannot name at the type arguments a call makes is refused at the
+argument (GH #2005). A `match` arm's binding is named there: it is of
+its variant's value type at the specialization (GH #2016; until then
+`Link::Next(n) -> id(n)` over a recursive record was refused, the binding
+unnamed).
 
 A call fills no default on a generic fn's parameter: a call that leaves
 a defaulted parameter out (`fn read<T>(n: T = 42) -> T` called as
@@ -2446,8 +2449,8 @@ A bare callee no such binding shadows names the fn or the builtin. A
 binding of a known type that is no fn leaves it so (`let max = 10;
 max(1, 2)` calls the builtin, `max` still reads 10). A binding whose
 declaration does not show it to be a fn value, while its type is one or
-is one the check cannot name (a tuple pattern's binding, a value read
-from a field or a call), would read as the callee and is not: the check
+is one the check cannot name (a tuple pattern's part, `(helper, n) ->`
+over a `(fn() -> Int, Int)`; a value read from a field or a call), would read as the callee and is not: the check
 refuses the call, and the binding is given its type, or renamed. A call
 through a value that is no fn (`let x = 3; x(2)`) is refused at the
 callee.
