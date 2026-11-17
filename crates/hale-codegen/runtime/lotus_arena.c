@@ -22861,6 +22861,114 @@ static int lotus_inet6_format(const struct sockaddr_in6 *a, char *buf,
     return 0;
 }
 
+/* `std::net::resolve(host)` (GH #1908): every address the system
+ * resolver gives for `host`, A and AAAA, in the resolver's order, each
+ * once. The answer is one text the Hale body (`net.hl`) splits:
+ *
+ *   "ok\n<addr>\n<addr>..."         the addresses, IPv6 unbracketed
+ *                                   with its zone (`lotus_inet6_format`)
+ *   "err\n<kind>\n<detail>"         why the lookup failed
+ *
+ * The kind is IoError's: "not_found" (the resolver knows no such name,
+ * or it has no address), "temporary_failure" (the resolver could not
+ * answer now: EAI_AGAIN, a DNS server down or timing out), "invalid"
+ * (an empty host, or one the resolver refuses as malformed),
+ * "unsupported" (wasm32, which has no resolver), and otherwise the
+ * errno's kind or "io"; the detail is the resolver's own message
+ * (`gai_strerror`). A literal address (`127.0.0.1`, `::1`, `[::1]`) is
+ * itself. The lookup is getaddrinfo(3) on the calling thread, unbounded,
+ * as a dial's is. */
+const char *lotus_io_error_kind(int32_t errno_val);
+const char *lotus_net_resolve(lotus_arena_t *a, const char *host) {
+    char buf[8192];
+#if defined(__wasm__)
+    (void)host;
+    snprintf(buf, sizeof buf, "err\nunsupported\nname resolution is not available under wasm32");
+    return lotus_str_clone(a, buf);
+#else
+    char hb[256];
+    const char *h = host ? host : "";
+    if (h[0] == '[') {
+        size_t n = strlen(h);
+        if (n >= 2 && h[n - 1] == ']' && n - 2 < sizeof(hb)) {
+            memcpy(hb, h + 1, n - 2);
+            hb[n - 2] = '\0';
+            h = hb;
+        }
+    }
+    if (!*h) {
+        return lotus_str_clone(a, "err\ninvalid\nan empty host names nothing");
+    }
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    /* one socket type, so each address is answered once, not once per
+     * protocol */
+    hints.ai_socktype = SOCK_STREAM;
+    int gai = getaddrinfo(h, NULL, &hints, &res);
+    if (gai != 0 || res == NULL) {
+        int saved = errno;
+        if (res) freeaddrinfo(res);
+        const char *kind = "io";
+        switch (gai) {
+            case 0: kind = "not_found"; break;      /* no error, no address */
+            case EAI_NONAME: kind = "not_found"; break;
+#if defined(EAI_NODATA) && EAI_NODATA != EAI_NONAME
+            case EAI_NODATA: kind = "not_found"; break;
+#endif
+#if defined(EAI_ADDRFAMILY)
+            case EAI_ADDRFAMILY: kind = "not_found"; break;
+#endif
+            case EAI_AGAIN: kind = "temporary_failure"; break;
+            case EAI_BADFLAGS: kind = "invalid"; break;
+            case EAI_FAMILY: kind = "invalid"; break;
+            case EAI_SERVICE: kind = "invalid"; break;
+#if defined(EAI_SYSTEM)
+            case EAI_SYSTEM: kind = lotus_io_error_kind((int32_t)saved); break;
+#endif
+            default: kind = "io"; break;
+        }
+        const char *detail = gai == 0 ? "no address" : gai_strerror(gai);
+        snprintf(buf, sizeof buf, "err\n%s\n%s", kind, detail ? detail : "");
+        return lotus_str_clone(a, buf);
+    }
+    size_t at = (size_t)snprintf(buf, sizeof buf, "ok");
+    for (struct addrinfo *r = res; r; r = r->ai_next) {
+        char text[INET6_ADDRSTRLEN + 72];
+        if (r->ai_family == AF_INET) {
+            if (!inet_ntop(AF_INET, &((struct sockaddr_in *)r->ai_addr)->sin_addr, text, sizeof text)) continue;
+        } else if (r->ai_family == AF_INET6) {
+            if (lotus_inet6_format((struct sockaddr_in6 *)r->ai_addr, text, sizeof text) < 0) continue;
+        } else {
+            continue;
+        }
+        /* each address once, whatever the resolver repeats */
+        size_t tl = strlen(text);
+        int seen = 0;
+        const char *p = buf + 2;
+        while (*p == '\n') {
+            const char *q = p + 1;
+            const char *e = strchr(q, '\n');
+            size_t ql = e ? (size_t)(e - q) : strlen(q);
+            if (ql == tl && memcmp(q, text, tl) == 0) { seen = 1; break; }
+            if (!e) break;
+            p = e;
+        }
+        if (seen) continue;
+        if (at + 1 + tl + 1 > sizeof buf) break;
+        buf[at++] = '\n';
+        memcpy(buf + at, text, tl + 1);
+        at += tl;
+    }
+    freeaddrinfo(res);
+    if (at == 2) {
+        return lotus_str_clone(a, "err\nnot_found\nno address of a known family");
+    }
+    return lotus_str_clone(a, buf);
+#endif
+}
+
 /* The port of a socket address of either family, -1 for another. */
 static int64_t lotus_inet_port(const struct sockaddr_storage *a) {
     if (a->ss_family == AF_INET) {
