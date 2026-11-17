@@ -88,7 +88,7 @@ Every idiomatic Hale program is composed from seven structural patterns (`spec/s
 | 3 | **Service locus** | Long-lived component using `birth`, `run`, and `dissolve` (and bus subscriptions). Uses sentinel defaults (such as `fd: Int = -1`) so `dissolve` safely no-ops if `birth` stops early. |
 | 4 | **Spawned child** | `let s = Child { ... };` scoped to a function, or a dynamic per-connection child attached via `accept(c: Conn)` and reclaimed via `release(c: Conn)`. |
 | 5 | **Data collection** | A `@form(vec)`, `@form(hashmap)`, `@form(ring_buffer)`, `@form(lru_cache)`, `@form(set)`, or `@form(heap)` locus managing typed storage ([Collections](./collections.md)). |
-| 6 | **Shape type** | `type Foo { a: Int; b: String; }` for pure value records ([Records & Data](./records.md)). |
+| 6 | **Shape type** | `type Player { id: String; score: Int = 0; }` for pure value records ([Records & Data](./records.md)). |
 | 7 | **Free `fn`** | Top-level function for stateless calculations; promote to a Namespace locus once 3+ functions form a domain vocabulary. |
 
 ### Example: App Locus and Namespace Locus

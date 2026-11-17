@@ -130,7 +130,7 @@ Referencing an undeclared variable, constant, or type fails `hale check` at the 
 |---|---|---|
 | Misspelled variable or constant | `return totl;` | Reports `unknown identifier` and suggests `total` if in scope |
 | Lowercase primitive type name | `fn f() -> int` | Reports `unknown type int — did you mean Int?` (`Int`, `Float`, `String`, `Bool` are PascalCase) |
-| Duplicate field or variant | `type T { a: Int; a: Int; }` | Reports duplicate declaration and cites the line of the first declaration (applies to `type`, `enum`, `params`, `contract`, and `interface`) |
+| Duplicate field or variant | `type Point { x: Int; x: Int; }` | Reports duplicate declaration and cites the line of the first declaration (applies to `type`, `enum`, `params`, `contract`, and `interface`) |
 | Single-file check in multi-file seed | `hale check main.hl` | Checks only `main.hl` and its explicit `import`s; run `hale check .` to check all sibling `.hl` files in the directory together |
 
 Cross-seed qualified type names containing `::` (such as `lib::Thing` or `std::text::Sink`) are resolved when checking the seed as a whole.
