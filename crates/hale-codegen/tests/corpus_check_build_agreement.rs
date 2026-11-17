@@ -4311,6 +4311,18 @@ fn a_match_bindings_type_and_its_arms_types_are_held_by_the_check() {
                 "match expression arms have mismatched types: `Int` vs `()`",
             ),
             (
+                "type S = enum { A, B(Int) };\n\
+                 fn main() { let s = S::B(4); let S::B(v) = s else { return; }; let t: String = v; println(t); }\n",
+                "v",
+                "let `t`: expected `String`, got `Int`",
+            ),
+            (
+                "type S = enum { A, B(Int) };\n\
+                 fn main() { let s = S::B(4); if let S::B(v) = s { let t: String = v; println(t); } }\n",
+                "v",
+                "let `t`: expected `String`, got `Int`",
+            ),
+            (
                 "fn main() { let c = 1; let x = match c { 1 -> { let k = 2; println(k); }, _ -> 5 }; println(x); }\n",
                 "match c { 1 -> { let k = 2; println(k); }, _ -> 5 }",
                 "match expression arms have mismatched types: `()` vs `Int`",
@@ -4356,5 +4368,23 @@ fn a_statement_blocks_tail_call_is_built_as_a_statement() {
          fn ping() -> Int { return 1; }\n\
          fn main() { let c = 2; while c > 3 { note(\"w\") } if c > 1 { note(\"a\") } else { ping(); } if c > 5 { ping() } }\n",
         "hale_cb_statement_tail_user_calls",
+    );
+    // a trailing `if … else …` whose arms end in calls is the block's tail
+    // (a value-shaped `if`), and in a body that returns nothing it is the
+    // statement it reads as; so is an `if let`, and a match arm's block
+    assert_built(
+        "fn main() { let c = true; if c { println(\"a\") } else { println(\"b\") } }\n",
+        "hale_cb_trailing_if_else_tail_calls",
+    );
+    assert_built(
+        "type S = enum { A, B(Int) };\n\
+         fn main() { let s = S::B(1); if let S::B(v) = s { println(v) } else { println(\"none\") } }\n",
+        "hale_cb_trailing_if_let_tail_calls",
+    );
+    assert_built(
+        "type S = enum { A, B(Int) };\n\
+         fn show(s: S) { match s { S::B(v) -> { if v > 0 { println(v) } else { println(\"neg\") } }, _ -> { println(\"a\") } } }\n\
+         fn main() { show(S::B(1)); }\n",
+        "hale_cb_nested_statement_tails",
     );
 }

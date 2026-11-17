@@ -61,9 +61,13 @@ evaluated for side effects and the value is discarded —
 semantically equivalent to having added the `;`. A call there is the
 call statement, a builtin's or a fn's that returns nothing included:
 `if c { println("x") }` and a statement `match`'s arm `P -> {
-println("x") }` build as `if c { println("x"); }` does (GH #2016;
-until then the check passed them and the build refused the call as
-having no binding).
+println("x") }` build as `if c { println("x"); }` does. An `if`, a
+`match` (an `if let` included) or a block there is the statement of
+that shape, its own arms' tails statements in turn: a value-shaped
+trailing `if c { println("a") } else { println("b") }` (below) ending a
+body that returns nothing is that `if` statement. (GH #2016; until then
+the check passed these and the build refused the call as having no
+binding.)
 
 A **fn-shaped body** (free fn, locus method, mode) with a
 declared return type treats its trailing expression as an
@@ -378,6 +382,9 @@ fn index_of(o: Outcome) -> Int {
   not parse.
 - A `let` of a pattern takes no type annotation; `let mut P = e else {
   … };` binds its names mutable.
+- The names `P` binds, in either spelling, are typed as a match arm's
+  bindings are (§ `match`, a pattern's bindings): `index` above is an
+  `Int`, and is checked as one wherever it is used (GH #2016).
 
 `if let` is the enum counterpart of `or { return …; }`, and it
 introduces no `Option` (F.52). No keyword is added.
