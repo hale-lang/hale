@@ -88,7 +88,8 @@ fn flood_src(body_expr: &str, n: u32) -> String {
 
 /// The megabytes the program reports for ITSELF, out of the
 /// `/proc/self/statm` line it prints (`harness::statm_resident_bytes`).
-/// `std::process::rss_bytes()` is `getrusage(RUSAGE_SELF).ru_maxrss`,
+/// A peak (`std::process::peak_rss_bytes()`, what `rss_bytes()`
+/// returned until GH #1906) is `getrusage(RUSAGE_SELF).ru_maxrss`,
 /// which a spawned program inherits from its parent through
 /// fork+exec: under the test harness both runs below clamped to the
 /// same harness footprint, so the gap this test asserts on was 0

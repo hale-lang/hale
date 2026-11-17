@@ -18,8 +18,9 @@
 //! the ASan corpus job covers the double-retire/UAF side.
 //!
 //! The program prints its own `/proc/self/statm` at both ends and
-//! the test does the subtraction. Not `std::process::rss_bytes()`:
-//! that is `getrusage(RUSAGE_SELF).ru_maxrss`, which a spawned
+//! the test does the subtraction. Not a peak
+//! (`std::process::peak_rss_bytes()`, what `rss_bytes()` returned
+//! until GH #1906): that is `getrusage(RUSAGE_SELF).ru_maxrss`, which a spawned
 //! program inherits from its parent through fork+exec. Under the
 //! test harness that floor sits above anything this program
 //! allocates, so both readings clamped to it and the budget was

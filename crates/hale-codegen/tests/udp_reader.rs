@@ -166,8 +166,9 @@ fn reader_recv_loop_is_rss_flat() {
     );
 
     // The samples are the program's own resident set, printed as its
-    // raw /proc/self/statm line. Not `std::process::rss_bytes()`:
-    // that is `getrusage(RUSAGE_SELF).ru_maxrss`, which a spawned
+    // raw /proc/self/statm line. Not a peak (`std::process::peak_rss_bytes()`,
+    // what `rss_bytes()` returned until GH #1906): that is
+    // `getrusage(RUSAGE_SELF).ru_maxrss`, which a spawned
     // program inherits from its parent through fork+exec, so under
     // the test harness rss0 and rss1 both clamped to the harness's
     // footprint and the growth was always 0 (GH #772).

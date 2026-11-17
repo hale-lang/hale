@@ -21,7 +21,8 @@ mod build_opts;
 
 /// The megabytes the program reports for ITSELF, out of the
 /// `/proc/self/statm` line it prints (`harness::statm_resident_bytes`).
-/// `std::process::rss_bytes()` cannot be used: a spawned program
+/// A peak (`std::process::peak_rss_bytes()`, what `rss_bytes()`
+/// returned until GH #1906) cannot be used: a spawned program
 /// inherits its parent's RSS high-water mark through fork+exec, so
 /// under `cargo test` these readings clamped to the libtest
 /// harness's own footprint (~135 MB with several in-process LLVM

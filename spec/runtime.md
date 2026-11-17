@@ -4675,7 +4675,8 @@ table, sorted by family (namespace, then name), each family's
   generation: a handle that outlives its Registry writes nothing.
 - **The runtime's own, under the `hale` namespace:**
   `hale_process_resident_memory_bytes` (a gauge: `/proc/self/statm` on
-  Linux, the task's `MACH_TASK_BASIC_INFO` resident size on macOS),
+  Linux, the task's `MACH_TASK_BASIC_INFO` resident size on macOS; the
+  number `std::process::rss_bytes()` returns),
   `hale_process_cpu_seconds_total` (a counter: the user and system CPU
   time `getrusage(RUSAGE_SELF)` reports), `hale_process_start_time_seconds`
   (a gauge: the unix time the process started, taken as the runtime is

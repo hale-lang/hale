@@ -489,6 +489,7 @@ ns std::process open_prefixes=[]
   dump_pool_residency syscall|stdio
   exit syscall
   kill syscall
+  peak_rss_bytes syscall
   pid syscall
   uid syscall
   read_stderr syscall|block
@@ -1185,6 +1186,7 @@ std::process::dump_arena_residency | lookup=process@2 | locus=false | effects=sy
 std::process::dump_pool_residency | lookup=process@2 | locus=false | effects=syscall|stdio | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_pool_residency
 std::process::exit | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=exit
 std::process::kill | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=kill
+std::process::peak_rss_bytes | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=peak_rss_bytes
 std::process::pid | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::process::read_stderr | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=read_stderr
 std::process::read_stdout | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=read_stdout
