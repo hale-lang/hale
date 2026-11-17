@@ -134,10 +134,11 @@ pub fn build_source_asan(source: &str, bin: &Path) {
 /// a memory test that silently stops measuring is worse than one
 /// that is red.
 ///
-/// ## Why not `std::process::rss_bytes()` (GH #772)
+/// ## Why not a peak (GH #772)
 ///
-/// `std::process::rss_bytes()` is `getrusage(RUSAGE_SELF).ru_maxrss`,
-/// and that number is **not** the program's own. `fork()` gives the
+/// `std::process::peak_rss_bytes()` (what `rss_bytes()` returned
+/// until GH #1906) is `getrusage(RUSAGE_SELF).ru_maxrss`, and that
+/// number is **not** the program's own. `fork()` gives the
 /// child a copy-on-write duplicate of the parent's address space, so
 /// the pre-exec child's RSS high-water mark is the *parent's* RSS;
 /// `execve` then folds that mark into the new image's `ru_maxrss`

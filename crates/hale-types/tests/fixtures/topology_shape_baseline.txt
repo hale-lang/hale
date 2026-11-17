@@ -1441,7 +1441,8 @@ crates/hale-codegen/tests/std_process_exit.rs#2 865d341109268295
 crates/hale-codegen/tests/std_process_exit.rs#3 abfa344218002e63
 crates/hale-codegen/tests/std_process_exit.rs#4 f21fbc665a9c2254
 crates/hale-codegen/tests/std_process_rss.rs#0 f21fbc665a9c2254
-crates/hale-codegen/tests/std_process_rss.rs#1 d4275fdcef4d5b13
+crates/hale-codegen/tests/std_process_rss.rs#1 f21fbc665a9c2254
+crates/hale-codegen/tests/std_process_rss.rs#2 3fc1f35598726878
 crates/hale-codegen/tests/stdlib_bytes.rs#1 d4275fdcef4d5b13
 crates/hale-codegen/tests/stdlib_cli.rs#0 0b8664820f487d34
 crates/hale-codegen/tests/stdlib_cli.rs#4 0b8664820f487d34

@@ -3236,16 +3236,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function("getpid", getpid_ty, None);
         // declare i32 @getuid(void)  — POSIX, backs std::process::uid()
         self.module.add_function("getuid", i32_t.fn_type(&[], false), None);
-        // declare i64 @lotus_process_rss_bytes(void)
-        // 2026-05-21: peak resident-set size in bytes via
-        // getrusage(RUSAGE_SELF). Observability primitive — lets
-        // Hale code measure its own memory pressure without
-        // needing the read_file-of-/proc/self/statm path
-        // (synthesized files report st_size=0 so read_file's
-        // fstat-based sizing returns empty; separate fix).
+        // declare i64 @lotus_process_rss_bytes(void) — current
+        // resident-set size in bytes (GH #1906)
         let rss_bytes_ty = i64_t.fn_type(&[], false);
         self.module
             .add_function("lotus_process_rss_bytes", rss_bytes_ty, None);
+        // declare i64 @lotus_process_peak_rss_bytes(void) — peak
+        // resident-set size in bytes, getrusage's ru_maxrss
+        self.module
+            .add_function("lotus_process_peak_rss_bytes", rss_bytes_ty, None);
         // pond P4 stage 1: terminal/raw-IO primitives.
         // declare i64 @lotus_term_is_tty(i64 fd)  — isatty(fd) -> 0/1
         let term_is_tty_ty = i64_t.fn_type(&[i64_t.into()], false);

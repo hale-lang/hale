@@ -343,8 +343,8 @@ fn main() {
     // every truncate retires the old cells and their 1 KiB payloads, so
     // 20000 rounds that leaked would grow the process by ~20 MiB. Each
     // round builds its payload in the method's own frame, so what
-    // stays is only what the place keeps. `rss_bytes` is the peak, in
-    // bytes on Linux; the assertion runs there (`/proc` answers).
+    // stays is only what the place keeps. `rss_bytes` is the current
+    // resident size; the assertion runs on Linux (`/proc` answers).
     let flat = Churn { };
     let mut i = 0;
     while i < 2000 {

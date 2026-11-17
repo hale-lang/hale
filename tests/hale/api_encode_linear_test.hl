@@ -14,9 +14,12 @@ fn main() {
         push(p.items, Item { id: i, name: "n" + to_string(i) }) or discard;
         i = i + 1;
     }
-    let before = std::process::rss_bytes();
+    // the peak, not the current size: a quadratic writer's prefixes are
+    // garbage once the text is written, so only the high-water mark
+    // still shows them
+    let before = std::process::peak_rss_bytes();
     let text = Page::api_encode(p);
-    let grew = std::process::rss_bytes() - before;
+    let grew = std::process::peak_rss_bytes() - before;
     std::test::assert(len(text) > 250000, "the page is written: " + to_string(len(text)));
     std::test::assert(
         std::str::starts_with(text, "{\"items\":[{\"id\":0,\"name\":\"n0\"},{\"id\":1,"),
