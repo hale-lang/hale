@@ -225,7 +225,7 @@ argument raw, exactly as `raw_field` / `raw_value` do, so
 `b.field("name", "alice")` writes `"name": alice`, which is not JSON.
 Each call warns `deprecated:`. Use `raw_field` / `raw_value` for JSON you
 encoded already (a number you formatted, a nested document, an array from
-`build_array`) and `string_field` / `string_value` for a string. v0.34
+`build_array`) and `string_field` / `string_value` for a string. v0.35
 makes `field` and `value` quote and escape their argument as a string.
 
 The Builder separates with `": "` and `", "`. The spacing is part of
