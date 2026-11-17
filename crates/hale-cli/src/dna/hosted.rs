@@ -397,11 +397,13 @@ pub(super) fn is_local_path(repo: &str) -> bool {
     }
 }
 
-/// Whether a sapling repository that is a path reaches the host `host` (as
-/// `host_key` resolved it) the scripts run on (`at`): only on this machine,
-/// or the habitat's own (`local`), where the path was added.
-pub(super) fn path_reaches(host: &str, at: &Target) -> bool {
-    host == LOCAL || *at == Target::Here
+/// Whether a sapling repository that is a path reaches the host the
+/// scripts run on (`at`): only when they run on this machine. Through a
+/// pointer the path is on the person's machine, where the nursery was
+/// added, and the habitat's own machine holds only its shipped mirror, so
+/// even the habitat's own machine is reached by URL alone.
+pub(super) fn path_reaches(at: &Target) -> bool {
+    *at == Target::Here
 }
 
 /// Why `place` refuses a sapling whose repository is a path, on a host it
@@ -997,7 +999,7 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
     // anything runs there (`organism upgrade`'s re-place comes here too).
     // `unplace` goes on: a placed command's tree is there already, and
     // only fetches.
-    if install && is_local_path(&repo) && !path_reaches(host, &at) {
+    if install && is_local_path(&repo) && !path_reaches(&at) {
         return Err(local_path_refusal(organism, &repo, &revision, &shown));
     }
 
@@ -1426,12 +1428,14 @@ readers = ["api"]
             assert!(!is_local_path(url), "{url:?} is no path");
         }
         let ssh = Target::Ssh { host: "gpu-1.example.test".to_string(), user: None, port: None };
-        // this machine, or the habitat's own (`local`): the path is there
-        assert!(path_reaches(LOCAL, &Target::Here));
-        assert!(path_reaches(LOCAL, &ssh), "the habitat's own machine, reached through a pointer");
-        assert!(path_reaches("laptop.example.test", &Target::Here), "a host the habitat added that is this machine");
+        // this machine (`local` on a habitat here, or a host the habitat
+        // added that is this machine): the path is there
+        assert!(path_reaches(&Target::Here));
+        // the habitat's own machine reached through a pointer (`local` in
+        // its rows) holds only the nursery's mirror, not the path
+        assert!(!path_reaches(&Target::local_with(Some(&serde_json::json!({ "host": "habitat.example.test" })))), "the habitat's own machine through a pointer");
         // any other host clones it, and the path is not there
-        assert!(!path_reaches("gpu-1.example.test", &ssh));
+        assert!(!path_reaches(&ssh));
         let why = local_path_refusal("voice", "/home/dev/src/voice", "0123abc", "gpu-1.example.test");
         assert!(why.contains("`/home/dev/src/voice`") && why.contains("gpu-1.example.test clones the sapling's repository itself"), "{why}");
         assert!(why.contains("a path on this machine reaches no other host"), "{why}");

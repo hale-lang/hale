@@ -1771,8 +1771,11 @@ grafted organism that came from a sapling the habitat pins, and a
   `file://`: what a nursery added from a checkout records) reaches only
   the machine it is on. `place` onto any other host is refused before
   anything runs there, saying to push the commit and add the nursery as
-  `<url>#<commit>` (`hale habitat nursery add https://…#<sha>`); this
-  machine (`local`) and the habitat's own take a path (GH #2010). An
+  `<url>#<commit>` (`hale habitat nursery add https://…#<sha>`). Only a
+  place whose scripts run on this machine takes a path (`local`, or the
+  host the habitat added that is this machine); through a pointer the
+  habitat's own machine does not, as it holds only the nursery's shipped
+  mirror, not the path (GH #2010). An
   upgrade's re-run of a placement's `install` is refused the same way.
   `unplace` is not: the placed command's checkout is on the host
   already, and it only fetches.
