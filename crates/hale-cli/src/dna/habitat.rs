@@ -36,6 +36,9 @@ mod reflexes;
 #[path = "hosted.rs"]
 mod hosted;
 
+#[path = "sudo.rs"]
+mod sudo;
+
 #[path = "reserved.rs"]
 mod reserved;
 
@@ -3522,7 +3525,7 @@ fn status() -> ExitCode {
     if manifest_pin(&genome.join("hale.toml")).ok().flatten().is_some() {
         if let Ok(text) = host_run("record-rows", &genome, &[]) {
             let rows: Vec<serde_json::Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-            for l in placements::status_lines(&placements::fold(&rows).0) {
+            for l in placements::status_lines(&placements::fold(&rows).0, &upgrade::organism_revisions(&rows)) {
                 println!("{l}");
             }
         }

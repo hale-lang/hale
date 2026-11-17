@@ -2959,6 +2959,7 @@ pub const CODEGEN_STD_PATH_LITERALS: &[(&str, usize, &str)] = &[(
 pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan { path: BUILD_ENV, fragment: "format!( \"target={:?};cpu={};dev={};debug=false\", o.target, o.target_cpu.identity(), o.dev", count: 1, verdict: ScanVerdict::Decides { family: "digests" } },
     DebugScan { path: BUILD_ENV, fragment: "format!(\";lto={l:?}\")", count: 1, verdict: ScanVerdict::Decides { family: "digests" } },
+    DebugScan { path: "crates/hale-cli/src/dna/sudo.rs", fragment: "format!(\"{p:?}\")", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: "crates/hale-cli/src/verbs/misc.rs", fragment: "println!(\"{:#?}\", prog)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: LSP, fragment: "format!(\"pinned({:?})\", affinity)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: LSP, fragment: "format!(\"{:?}\", ExitCode::SUCCESS)", count: 2, verdict: ScanVerdict::Renders },

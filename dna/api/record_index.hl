@@ -260,9 +260,11 @@ fn index_answers(url: String) -> Bool {
 
 // The organisms a record grafted, as the `habitat.grafted` rows give them:
 // the name, the state (`up` while its face answers, else `grafted`), the
-// face's address and the head's, its declared purpose and its pulse (the
+// face's address and the head's, its declared purpose, its pulse (the
 // worst state its allocations' providers observe now: `up`, `degraded` or
-// `down`; "" when none is observed).
+// `down`; "" when none is observed), and the revision it is at with that
+// tree's digest (its latest `habitat.organism.upgraded` row's `to`, else
+// its graft's; "" for one grafted from a directory).
 // The organism named `name` among the habitat's grafted ones: its key
 // and its face's address as `<key>\t<face>`, "" when none is so named
 // (by the name its graft row carries, else by its key).
@@ -290,6 +292,7 @@ fn index_organisms(root: String, j: dna::Journal, cap: Int, seer: Observer) -> S
     out.begin_array();
     let allocated = dna::habitat_latest(j, "habitat.allocated");
     let grafted = dna::habitat_latest(j, "habitat.grafted");
+    let upgraded = dna::habitat_latest(j, "habitat.organism.upgraded");
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() && n < cap {
@@ -310,6 +313,20 @@ fn index_organisms(root: String, j: dna::Journal, cap: Int, seer: Observer) -> S
             // pulse, the worst its allocations' providers observe now
             out.string_field("purpose", std::json::find_string_field(e.body, "purpose"));
             out.string_field("pulse", organism_pulse(root, j, allocated, e.entity, seer));
+            let u = upgraded.get(e.entity) or dna::LatestRow { };
+            let at = if u.at >= 0 { j.read(u.at).body } else { "" };
+            out.string_field(
+                "revision",
+                if u.at >= 0 {
+                    std::json::find_string_field(at, "to")
+                } else {
+                    std::json::find_string_field(e.body, "revision")
+                },
+            );
+            out.string_field(
+                "digest",
+                std::json::find_string_field(if u.at >= 0 { at } else { e.body }, "digest"),
+            );
             out.end_object();
             n = n + 1;
         }

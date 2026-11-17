@@ -1829,6 +1829,7 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 |---|---|---|---|
 | `crates/hale-cli/src/build_env.rs` | `format!( "target={:?};cpu={};dev={};debug=false", o.target, o.target_cpu.identity(), o.dev` | 1 | decides (`digests`) |
 | `crates/hale-cli/src/build_env.rs` | `format!(";lto={l:?}")` | 1 | decides (`digests`) |
+| `crates/hale-cli/src/dna/sudo.rs` | `format!("{p:?}")` | 1 | renders |
 | `crates/hale-cli/src/verbs/misc.rs` | `println!("{:#?}", prog)` | 1 | renders |
 | `crates/hale-lsp/src/lib.rs` | `format!("pinned({:?})", affinity)` | 1 | renders |
 | `crates/hale-lsp/src/lib.rs` | `format!("{:?}", ExitCode::SUCCESS)` | 2 | renders |

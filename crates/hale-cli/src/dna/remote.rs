@@ -904,6 +904,9 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
     // the organisms by their names: the habitat's own by the pointer's, each
     // grafted one by the index's (an allocation names its record's identity)
     let mut names: BTreeMap<String, String> = BTreeMap::new();
+    // each organism's revision, by its name, as the index says it: a
+    // placement at another says its own
+    let mut revisions: BTreeMap<String, (String, String)> = BTreeMap::new();
     names.insert(identity[..12.min(identity.len())].to_string(), p["name"].as_str().unwrap_or("").to_string());
     match http_surface_call(head, "Commands::index", &serde_json::json!({ "limit": 200 })) {
         Ok(v) => {
@@ -914,6 +917,9 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
             for o in organisms {
                 if let (Some(k), Some(n)) = (o["key"].as_str(), o["name"].as_str()) {
                     names.insert(k[..12.min(k.len())].to_string(), n.to_string());
+                    if let Some(r) = o["revision"].as_str().filter(|r| !r.is_empty()) {
+                        revisions.insert(n.to_string(), (r.to_string(), o["digest"].as_str().unwrap_or("").to_string()));
+                    }
                 }
             }
         }
@@ -922,7 +928,7 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
     // the services placed on its hosts, under their hosts
     if let Ok(v) = http_surface_call(head, "Commands::placements", &serde_json::json!({ "limit": 200 })) {
         if v["ok"] == serde_json::json!(true) {
-            for l in super::placements::status_lines(&super::placements::parse_rows(&v).0) {
+            for l in super::placements::status_lines(&super::placements::parse_rows(&v).0, &revisions) {
                 println!("{l}");
             }
         }

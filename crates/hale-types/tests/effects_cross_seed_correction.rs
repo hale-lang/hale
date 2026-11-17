@@ -213,6 +213,15 @@ fn api() {
     // habitat through `dna::reach_host`, which reads
     // `HALE_DNA_LOOPBACK_HOST`, so it gains `env` through the core as the
     // probes above do, which only the renames-aware walk sees.
+    // A grafted organism's revision on the index (`index_organisms`, read
+    // from its latest `habitat.organism.upgraded` row) looks it up in a map
+    // of the core's `LatestRow` with a `dna::LatestRow { }` default, which
+    // the renames-blind walk cannot resolve: there the row is
+    // `{unclassified}`, and so are `org_chart` and `record_index` that call
+    // it, the members that serve them (`Commands::index`, `::org`, their
+    // admissions and the eaters `__rpc_row_<n>_19` and `_25`). The rows as
+    // the manifest reports them do not move; the correction is what
+    // classifies them.
     pinned(
         "api",
         778,
@@ -223,6 +232,8 @@ fn api() {
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::add_nursery  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::brief  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        CommandAdmission::index  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        CommandAdmission::org  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::place_allocation  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::ratify_sapling  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
@@ -232,18 +243,24 @@ fn api() {
         Commands::__rpc_call_3  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_1_1  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_1_10  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_19  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_25  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_1_27  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_1_32  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_1_38  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_1_49  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_2_1  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_2_10  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_19  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_25  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_2_27  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_2_32  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_2_38  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_2_49  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_3_1  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_3_10  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_19  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_25  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_3_27  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_3_32  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_3_38  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
@@ -253,6 +270,8 @@ fn api() {
         Commands::__rpc_seam_3  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
         Commands::add_nursery  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::brief  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::index  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::org  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::place_allocation  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::ratify_sapling  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
@@ -283,15 +302,18 @@ fn api() {
         habitat_saplings  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         host_removal_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         index_answers  does={syscall,block,env}
+        index_organisms  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         launch_token  does={syscall,block,alloc,stdio}
         observe_row  does={syscall,block,env,alloc}
         oidc_ui  does={syscall,block,env,alloc,stdio}
+        org_chart  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         organism_root_of  does={syscall,env,alloc}
         organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placed_body  does={env,alloc}
         placement_host  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_targets_dir  does={syscall,env,alloc}
+        record_index  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ",
     );
 }
