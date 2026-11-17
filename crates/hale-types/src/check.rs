@@ -11198,6 +11198,10 @@ fn raw_frame_topics(
         .collect()
 }
 
+/// GH #2030: the longest POSIX shm object name every platform opens
+/// (macOS's `PSHMNAMLEN`, the leading `/` counted).
+const SHM_RING_NAME_MAX: usize = 31;
+
 fn check_bus_payload_carriable(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -11209,6 +11213,27 @@ fn check_bus_payload_carriable(
     // A `BytesView` topic bound to a native `shm_ring` (no `layout:`):
     // the native ring carries fixed-size struct slots, and lowering
     // refused the entry with no span.
+    // GH #2030: a ring's name is its POSIX shm object's, and macOS caps
+    // one at 31 bytes (`PSHMNAMLEN`, the leading `/` counted; Linux allows
+    // 255). The open failed at startup ("File name too long"). The check
+    // holds every program to the smaller limit, so a seed that builds on
+    // one platform builds on the other.
+    for row in bindings.rows.iter().filter(|r| !r.imported) {
+        let Some(entry) = row.entry(bundle) else { continue };
+        let TransportSpec::ShmRing { name, span, .. } = &entry.transport else { continue };
+        if name.len() > SHM_RING_NAME_MAX {
+            diags.push(Diag::ty(
+                *span,
+                format!(
+                    "`{t}: shm_ring(\"{name}\", ...)`: the ring's name is {n} bytes, and a POSIX shm name is at \
+                     most {SHM_RING_NAME_MAX} bytes on macOS, its leading `/` counted (Linux allows 255): the \
+                     open would fail at startup. Shorten the name",
+                    t = row.topic,
+                    n = name.len()
+                ),
+            ));
+        }
+    }
     for row in bindings.rows.iter().filter(|r| !r.imported && r.codec.is_none()) {
         let Some(entry) = row.entry(bundle) else { continue };
         if !matches!(entry.transport, TransportSpec::ShmRing { layout: None, .. }) {
@@ -11243,6 +11268,34 @@ fn check_bus_payload_carriable(
                      `layout: <ring_layout>`, or give the topic a user `type` \
                      payload.",
                     t = row.topic
+                ),
+            ));
+            continue;
+        }
+        // GH #2030: the native ring's publish is a raw claim + memcpy +
+        // commit of the payload struct, so a payload that is not flat
+        // (a `String`, `Bytes`, a tuple, a list of records, ...) puts a
+        // pointer into the publisher's arena in the slot: a use-after-free
+        // in process, an empty or foreign value across processes. The
+        // spec always said the payload must be flat-shapeable; only a
+        // binding that said `where zero_copy` was held to it (that rule
+        // reports such a binding at its `zero_copy`).
+        let zero_copy = entry.constraints.iter().any(|c| matches!(c.kind, BindingConstraint::ZeroCopy));
+        let payload = resolve_type_expr(&topic.payload, known);
+        // A bare primitive payload (`payload: String`) is refused at its
+        // publishes and subscriptions for the bus as a whole.
+        if !zero_copy && !matches!(payload, Ty::Unknown | Ty::Prim(_)) && !is_flat_shapeable(&payload, top) {
+            diags.push(Diag::ty(
+                row.span,
+                format!(
+                    "`{t}: shm_ring(...)`: topic `{t}`'s payload `{p}` is not flat-shapeable: it holds a String, \
+                     Bytes, fixed-size array of records, tuple, enum or list whose storage is out of line (a \
+                     pointer), and a native ring copies the payload's bytes into the slot, so the subscriber \
+                     would read a pointer into the publisher's memory. Carry only fixed-size scalar fields on \
+                     the ring, or send variable data on a `unix(...)` binding, or as a `BytesView` raw frame on \
+                     a `layout:` ring",
+                    t = row.topic,
+                    p = payload.display()
                 ),
             ));
         }

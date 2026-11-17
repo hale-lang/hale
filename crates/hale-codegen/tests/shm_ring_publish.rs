@@ -66,7 +66,7 @@ fn build_reader(tag: &str) -> PathBuf {
 #[test]
 fn hale_publisher_routes_through_shm_ring() {
     let tag = unique_tag("pub");
-    let shm_name = format!("/hale-{}", tag);
+    let shm_name = harness::shm_name("pub");
     let n_pub: i64 = 5;
     let slot_count: u64 = 8;
 
@@ -164,7 +164,7 @@ fn hale_publisher_routes_through_shm_ring() {
 #[test]
 fn shm_object_unlinked_on_clean_exit() {
     let tag = unique_tag("unlink");
-    let shm_name = format!("/hale-{}", tag);
+    let shm_name = harness::shm_name("unlink");
     let slot_count: u64 = 4;
 
     let hale_src = format!(

@@ -22,7 +22,7 @@ fn tag(label: &str) -> String {
 
 #[test]
 fn repr_accessors_round_trip_through_a_foreign_ring() {
-    let shm = format!("/hale-{}", tag("e2e"));
+    let shm = harness::shm_name("repr");
     let src = format!(
         r#"
         ring_layout ForeignRing {{

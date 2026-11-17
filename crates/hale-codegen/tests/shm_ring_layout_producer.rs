@@ -40,7 +40,7 @@ fn unique_tag(label: &str) -> String {
 
 #[test]
 fn hale_producer_roundtrips_through_foreign_layout() {
-    let shm_name = format!("/hale-{}", unique_tag("e2e"));
+    let shm_name = harness::shm_name("layout");
     let n_msgs: i64 = 6;
 
     let src = format!(

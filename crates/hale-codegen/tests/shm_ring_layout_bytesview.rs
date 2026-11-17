@@ -59,7 +59,7 @@ fn build_producer() -> PathBuf {
 
 #[test]
 fn hale_bytesview_subscriber_decodes_heterogeneous_ring() {
-    let shm_name = format!("/hale-{}", unique_tag("e2e"));
+    let shm_name = harness::shm_name("layout");
 
     // Hale consumer: one BytesView subscriber decoding both record
     // shapes via std::bytes::read_* + a `kind` discriminator.

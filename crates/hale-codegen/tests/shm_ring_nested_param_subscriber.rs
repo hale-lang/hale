@@ -97,7 +97,7 @@ const SUBSCRIBER_NESTED_PARENT: &str = r#"
 "#;
 
 fn run_case(subscriber_template: &str, label: &str) {
-    let shm_name = format!("/hale-{}", unique_tag(label));
+    let shm_name = harness::shm_name(label);
     let sub_src = subscriber_template.replace("__NAME__", &shm_name);
     let pub_src = PUBLISHER.replace("__NAME__", &shm_name);
 
