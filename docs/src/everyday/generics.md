@@ -41,6 +41,32 @@ fn main() {
 
 In `Envelope<Order>`, `data` is an `Order`, so `r.data.total` is checked as a `Decimal<2>`; in `Envelope<Customer>` it is a `Customer`. Putting a `Customer` into an `Envelope<Order>` is a type error at the value.
 
+A parameter can be the element of a list the record holds inline. A paged API reply carries up to a page of whatever the endpoint lists:
+
+```hale
+type Order {
+    id: String;
+    total: Decimal<2>;
+}
+
+type Page<T> {
+    items: bounded[T; 50];
+    next_cursor: String = "";
+}
+
+fn main() {
+    let p: Page<Order> = Page { items: [Order { id: "o-1", total: 19.99d }], next_cursor: "c-2" };
+    push(p.items, Order { id: "o-2", total: 5.25d }) or raise;
+    for o in p.items {
+        println(o.id, " ", o.total);                       // o-1 19.99, then o-2 5.25
+    }
+    let ids: Page<Int> = Page { items: [7, 8, 9] };
+    println(count(p.items), " ", count(ids.items), " ", p.next_cursor);   // 2 3 c-2
+}
+```
+
+`Page<Order>` holds a `bounded[Order; 50]` and `Page<Int>` a `bounded[Int; 50]`; a locus's `params` take `bounded[T; N]` the same way.
+
 An alias can name an instantiation you use often: `type OrderReply = Envelope<Order>;`, then `let a: OrderReply = Envelope { data: o };`. The alias itself cannot take parameters (`type Reply<T> = Envelope<T>;` is refused).
 
 ## Generic Loci
@@ -122,7 +148,7 @@ See [Functions](../basics/functions.md) for everything else about functions.
 
 - **A literal needs its type arguments from the place it is written.** `Envelope { data: 42 }` does not say what `T` is, and Hale does not work it out from the fields. Write the literal where a declared type supplies the arguments: a `let` with a type (`let e: Envelope<Int> = Envelope { data: 42 };`), a `return` from a `fn` declared `-> Envelope<Int>`, a record field or `params` default whose type is written out, or an assignment to such a place. Anywhere else (an untyped `let`, a call's argument, a method receiver, an operand) `hale check` refuses the literal and shows the `let` to write. Bind it there first, then use the name.
 - **Imported types work as arguments.** A type from another seed is an argument like a local one (`Envelope<billing::Invoice>`), and an imported template is spelled through its alias in both places: `let e: api::Envelope<billing::Invoice> = api::Envelope { ... };`.
-- **A locus cannot be a generic record's argument.** A `type` is plain data copied by value, so it cannot hold a locus: `Envelope<Worker>` is refused. Make the template a generic locus (`locus Slot<T> { params { held: T; } }` holds a `Worker`), or pass the locus as a parameter where it is used. A generic `fn` and a generic locus do take a locus as an argument.
+- **A locus cannot be a generic record's argument.** A `type` is plain data copied by value, so it cannot hold a locus: `Envelope<Worker>` is refused. Make the template a generic locus (`locus Slot<T> { params { held: T; } }` holds a `Worker`), or pass the locus as a parameter where it is used. A generic locus's instantiation is a locus too, so `Envelope<Cache<Int, String>>` is refused the same way. A generic `fn` and a generic locus do take a locus as an argument.
 - **An array, tuple, `bounded` or `fn` value cannot be a generic `fn`'s argument yet.** `first([1, 2])` is refused at the call. Wrap the value in a record (`type Pair { v: [Int; 2]; }`), or write the `fn` over the concrete type.
 
 The full rules, including every place that supplies type arguments and which types may be arguments, are in [`spec/types.md` § Generics](https://github.com/hale-lang/hale/blob/main/spec/types.md#generics).
