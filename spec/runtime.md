@@ -3923,6 +3923,23 @@ for replay-under-a-different-plan) is the next milestone.
 
 ### Text + string primitives (v1.x adds)
 
+- `lotus_str_slice_n(arena, s, n, lo, hi) -> char*`,
+  `lotus_str_cp_at_n(s, n, off)`, `lotus_str_cp_size_n(s, n, off)` —
+  GH #1947. `lotus_str_slice`, `lotus_str_cp_at` and
+  `lotus_str_cp_size` with the length of `s` given (`n`, its `strlen`),
+  so they do not measure it; `std::str::substring` and `index_of_from`
+  use `lotus_str_range_copy` and `lotus_str_range_index_of` the same
+  way. Codegen calls them for a String local or parameter whose length
+  it remembers: an entry-block `{ ptr value, i64 len }` beside the
+  local's slot, read through the internal `lotus.str_len_cached(s,
+  cache)`: the cached length when `value` is `s`, else
+  `lotus_str_len(s)`, which refills it; a NULL `s` is 0. It is marked
+  `inlinehint` (never `alwaysinline`, which only seam fusion emits), and
+  the inliner places it at each call. The
+  local's `let`, a parameter's binding and a plain assignment empty the
+  cache; an appending assignment fills it from the accumulator's
+  length. A String is still a `char *` everywhere else: nothing in the
+  runtime, the bus wire or the FFI changes.
 - `lotus_str_parse_float(s) -> double` / `lotus_str_can_parse_float(s) -> int`
   — v1.x-16. Strict trailing-NUL parse; 0.0 on failure paired
   with a bool predicate. Mirrors the parse_int contract.

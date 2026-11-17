@@ -93,6 +93,16 @@ fn render(rows: Int) -> String {
 }
 ```
 
+### Measuring a String
+
+A `String` carries no length, so measuring one walks it to its terminator. A local or parameter of type `String` that its function measures (`len(s)`, a slice `s[lo..hi]`, `std::str::substring`, `index_of_from`, `cp_at`, `cp_size`) remembers the length of the value it holds: the first measure walks the text, later ones read the length, and every assignment to the local, its `let` and each append refresh it (an append knows the new length without walking). So a byte loop over a parameter and a loop that tests `len(out)` while appending to it are linear. Before GH #1947 both were quadratic, and so was every slice's clamp:
+
+| Loop (M1) | 128 KiB | 512 KiB | Before |
+|---|---|---|---|
+| `while i < len(s) { let c = s[i..(i + 1)]; … }` | 1.1 ms | 4.2 ms | 0.71 s, 11.0 s |
+
+A String read from a field, an element or a call's result is measured on every use, as before: bind it to a local before a loop that measures it. A slice still copies the bytes it names, so re-slicing the rest of a text (`rest = rest[(nl + 1)..]`) is still quadratic.
+
 ### Zero-Copy Views (`StringView` and `BytesView`)
 
 The same quadratic trap occurs when parsing text by repeatedly slicing the remainder (`rest = rest[(nl + 1)..]`), which copies the tail on every line (Styleguide rule S16). Instead, create a `BytesView` once with `std::str::bytes_view(s)` and advance an integer cursor across it (see [Strings & Text](../basics/strings.md#walking-large-strings-with-byteview)).

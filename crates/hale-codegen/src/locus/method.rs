@@ -899,15 +899,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
                 let mut scope = Scope::default();
                 self.bind_member_params(&md.params, func, &mut scope)?;
+                self.note_param_len_caches(&md.params, &md.body, &scope)?;
 
                 // Downstream handoff: implicit block-tail return —
                 // same treatment as fn members above.
                 let end = self.in_body(md.id, |cx| {
                     Ok(if ret_ty.is_some() && md.body.tail.is_some() {
                         let mut stmts_end = BlockEnd::Open;
-                        for stmt in &md.body.stmts {
+                        for (i, stmt) in md.body.stmts.iter().enumerate() {
                             match cx.lower_stmt(stmt, &mut scope)? {
-                                BlockEnd::Open => continue,
+                                BlockEnd::Open => cx.note_string_len_cache(&md.body, i, &scope)?,
                                 BlockEnd::Terminated => {
                                     stmts_end = BlockEnd::Terminated;
                                     break;
@@ -1045,6 +1046,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         let mut scope = Scope::default();
         self.bind_member_params(&fd.params, func, &mut scope)?;
+        self.note_param_len_caches(&fd.params, &fd.body, &scope)?;
 
         // m42: gate subscribed bus-handler bodies on the
         // __quarantined flag at entry. m41b (m45-followup-2
@@ -1133,9 +1135,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let end = self.in_body(fd.id, |cx| {
             Ok(if ret_ty.is_some() && fd.body.tail.is_some() {
                 let mut stmts_end = BlockEnd::Open;
-                for stmt in &fd.body.stmts {
+                for (i, stmt) in fd.body.stmts.iter().enumerate() {
                     match cx.lower_stmt(stmt, &mut scope)? {
-                        BlockEnd::Open => continue,
+                        BlockEnd::Open => cx.note_string_len_cache(&fd.body, i, &scope)?,
                         BlockEnd::Terminated => {
                             stmts_end = BlockEnd::Terminated;
                             break;

@@ -279,6 +279,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let vals = self.lower_appended(&parts, scope)?;
                     (self.builder.build_load(ptr_t, slot, name).map_err(llvm_err)?, vals)
                 };
+                let mut appended_len = None;
                 let new_val = match acc {
                     Some(acc) => {
                         let vals = self.fit_parts(vals)?;
@@ -286,12 +287,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let arr = self.str_parts_array(&vals)?;
                         let f = self.module.get_function("lotus_str_append").expect("lotus_str_append declared");
                         let n = self.context.i64_type().const_int(vals.len() as u64, false);
-                        self.builder
+                        let v = self
+                            .builder
                             .build_call(f, &[arena.into(), acc.into(), cur.into(), arr.into(), n.into()], "str.append")
                             .map_err(llvm_err)?
                             .try_as_basic_value()
                             .left()
-                            .expect("lotus_str_append returns ptr")
+                            .expect("lotus_str_append returns ptr");
+                        // The append leaves the value's length in the
+                        // accumulator, for the local's length cache
+                        // (`crate::string_len`).
+                        if self.has_str_len_cache(slot) {
+                            let acc_ty = self.str_acc_type().into_struct_type();
+                            let len_ptr =
+                                self.builder.build_struct_gep(acc_ty, acc, 1, "str.acc.len").map_err(llvm_err)?;
+                            let len = self.builder.build_load(self.context.i64_type(), len_ptr, "str.acc.len.now").map_err(llvm_err)?;
+                            appended_len = Some(len.into_int_value());
+                        }
+                        v
                     }
                     None => {
                         let mut all = vec![cur];
@@ -300,6 +313,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 };
                 self.builder.build_store(slot, new_val).map_err(llvm_err)?;
+                match appended_len {
+                    Some(len) => self.know_str_len(slot, new_val, len)?,
+                    None => self.forget_str_len(slot)?,
+                }
                 Ok(Some(BlockEnd::Open))
             }
             AppendPlace::SelfField(_) => {

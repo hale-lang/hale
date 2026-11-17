@@ -105,7 +105,7 @@ fn main() {
 }
 ```
 
-`len(s)` still measures the text on each call, so test a counter rather than `len(out)` in a long loop.
+`len(out)` reads the length the last append left, so testing it in the loop is linear too.
 
 ## F-Strings (`f"..."`)
 
@@ -230,11 +230,11 @@ A `String` has no single element to index: `s[i]` is refused, because one positi
 
 ### Splitting in a Loop: `split`, `lines` and `words`
 
-The loop that takes a text apart by re-slicing the rest is quadratic. Every turn measures the rest of the text and copies it, and the copies stay in the function's scratch until it returns:
+The loop that takes a text apart by re-slicing the rest is quadratic. Every turn copies the rest of the text, and the copies stay in the function's scratch until it returns:
 
 ```hale,fragment
 let mut rest = list + " ";
-while len(rest) > 0 {                       // a strlen of the rest
+while len(rest) > 0 {
     let sp = std::str::index_of(rest, " ");
     let w = rest[..sp];
     rest = rest[(sp + 1)..];                // a copy of the rest
@@ -276,7 +276,7 @@ The sources are `for` sources, not values. Hale has no sequence value for them t
 
 ### Walking Large Strings with `ByteView`
 
-A `String` in Hale is a null-terminated byte pointer without an inline length header. Calling `len(s)`, slicing `s[i..(i + 1)]`, or calling `std::str::index_of_from(s, "\n", start)` inside a loop scans for the null terminator on every iteration, turning a linear scan into an `O(n²)` bottleneck on megabyte-scale inputs.
+A `String` in Hale is a null-terminated byte pointer without an inline length header. A local or parameter remembers the length of the value it holds, so `len(s)`, a slice `s[i..(i + 1)]`, `std::str::substring`, `std::str::index_of_from(s, "\n", start)` and `cp_at` / `cp_size` on it measure the text once, not on every iteration: `while i < len(s) { let c = s[i..(i + 1)]; … }` is linear. A String reached any other way (a field such as `self.text` or `rec.body`, an element, a call's result) carries no length and is measured by every one of those calls, so inside a loop bind it to a local first. Each one-byte slice is still a new String.
 
 For a scan the three sources do not cover, construct a `std::str::ByteView` **once** before the loop. It scans or tokenizes a string in `O(n)` time:
 

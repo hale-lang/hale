@@ -634,6 +634,11 @@ fn per_target_moves() {
 /// three fns that free at return (`organization_name_ok`,
 /// `organizations_origin`, `with_organizations`): three more tags and six
 /// more sites reclaimed at return; no leak site goes or appears.
+///
+/// `string_len_test` (GH #1947) is a new target: two of its loops'
+/// temporaries go, each in a fn that frees at return (the check above
+/// holds every site that goes to that), and three tags of values its fns
+/// hand back move into the caller's arena; no leak site appears.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -700,5 +705,6 @@ const PINNED: &[&str] = &[
     "tests/hale/sigterm_runs_drain_hook_test.hl: 0 go, 0 appear; dump 1 tags, 15 reclaim, 0 verdicts",
     "tests/hale/str_index_of_from_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/string_append_test.hl: 0 go, 0 appear; dump 3 tags, 0 reclaim, 6 verdicts",
+    "tests/hale/string_len_test.hl: 2 go, 0 appear; dump 3 tags, 0 reclaim, 2 verdicts",
     "tests/hale/tail_value_returns_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
 ];

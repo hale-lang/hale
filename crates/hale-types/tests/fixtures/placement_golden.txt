@@ -9182,6 +9182,10 @@ dynamic	Fields	on main	in the seed
 == tests/hale/string_append_test.hl
 row	Doc@main1	Doc	main	default
 
+== tests/hale/string_len_test.hl
+row	Listener@main1	Listener	main	default
+row	Sender@main2	Sender	main	default
+
 == tests/hale/struct_let_copies_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

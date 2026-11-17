@@ -2258,6 +2258,7 @@ fn build_resolved_lowered(
         xpool_restamp_fns: HashMap::new(),
         xpool_fresh_slots: HashSet::new(),
         str_accs: HashMap::new(),
+        str_len_caches: HashMap::new(),
         str_parts_arrays: HashMap::new(),
         borrowed_args: HashSet::new(),
         xpool_strings: HashMap::new(),
@@ -5249,6 +5250,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// alloca) of each String local an appending assignment grows, by
     /// the local's slot (`crate::string_append`).
     pub(crate) str_accs: HashMap<PointerValue<'ctx>, PointerValue<'ctx>>,
+    /// GH #1947: the length cache (`{ ptr, i64 }`, an entry-block alloca)
+    /// of each String local or parameter its scope measures, by the
+    /// local's slot (`crate::string_len`).
+    pub(crate) str_len_caches: HashMap<PointerValue<'ctx>, PointerValue<'ctx>>,
     /// GH #1947: each fn's one `[16 x ptr]` for the operands a String
     /// runtime call takes (`crate::string_append`).
     pub(crate) str_parts_arrays: HashMap<FunctionValue<'ctx>, PointerValue<'ctx>>,
@@ -13165,6 +13170,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 BlockEnd::Open => {
                     self.note_fresh_locus_local(block, i, scope);
                     self.note_string_accumulator(block, i, scope)?;
+                    self.note_string_len_cache(block, i, scope)?;
                 }
                 BlockEnd::Terminated => return Ok(BlockEnd::Terminated),
             }
@@ -13349,6 +13355,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 BlockEnd::Open => {
                     self.note_fresh_locus_local(block, i, scope);
                     self.note_string_accumulator(block, i, scope)?;
+                    self.note_string_len_cache(block, i, scope)?;
                 }
                 BlockEnd::Terminated => {
                     // Statements terminated control flow before reaching
@@ -15935,6 +15942,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             scope.locals.insert(p.name.name.clone(), (alloca, lt));
         }
+        // GH #1947: a String parameter the body measures gets a length
+        // cache (`crate::string_len`).
+        self.note_param_len_caches(&f.params, &f.body, &scope)?;
 
         // Downstream handoff: an implicit block-tail return —
         // `fn f(n: Int) -> Int { let d = n * 2; d }` — typechecks
@@ -15943,9 +15953,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // stmt-context and then rejecting the fall-through.
         let end = if sig.ret.is_some() && f.body.tail.is_some() {
             let mut stmts_end = BlockEnd::Open;
-            for stmt in &f.body.stmts {
+            for (i, stmt) in f.body.stmts.iter().enumerate() {
                 match self.lower_stmt(stmt, &mut scope)? {
-                    BlockEnd::Open => continue,
+                    BlockEnd::Open => self.note_string_len_cache(&f.body, i, &scope)?,
                     BlockEnd::Terminated => {
                         stmts_end = BlockEnd::Terminated;
                         break;
@@ -20262,10 +20272,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(slot_ptr, new_val)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     // GH #1947: the value now bound is not a buffer the
-                    // local owns.
+                    // local owns, and its length is not known.
                     if let Some(acc) = self.str_accs.get(&slot_ptr).copied() {
                         self.emit_str_acc_release(acc)?;
                     }
+                    self.forget_str_len(slot_ptr)?;
                     // A local rebound: its copy-on-write flags follow the
                     // value now bound (`crate::view_bindings`).
                     if target.tail.is_empty() {
@@ -21139,9 +21150,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         // `len` reads its argument and keeps nothing of it.
+        let cache = self.str_len_cache_of(&args[0], scope);
         let (v, ty) = self.lower_operand_borrowed(&args[0], scope)?;
         let v = self.unpack_view_if_needed(v, &ty)?;
         match ty {
+            // GH #1947: a local whose length is cached is measured once per
+            // value it holds (`crate::string_len`).
+            CodegenTy::String if cache.is_some() => {
+                let cache = cache.expect("checked");
+                let n = self.emit_cached_str_len(v.into_pointer_value(), cache)?;
+                Ok((n.into(), Self::builtin_result(sig, &ty)))
+            }
             CodegenTy::String | CodegenTy::StringView => {
                 let len_fn = self
                     .module
@@ -27329,6 +27348,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let Expr::Range { lo, hi, inclusive, .. } = index.as_ref() {
                     // The slice copies the bytes it names: the receiver is
                     // read and not kept (GH #1947).
+                    let cache = self.str_len_cache_of(receiver, scope);
                     let (recv_val, recv_ty) = self.lower_operand_borrowed(receiver, scope)?;
                     if !matches!(recv_ty, CodegenTy::String) {
                         return Err(CodegenError::Unsupported(format!(
@@ -27355,6 +27375,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         hi_v.into_int_value()
                     };
                     let arena_ptr = self.current_arena_ptr()?;
+                    // GH #1947: a receiver whose length is cached is not
+                    // measured again to clamp the range (`crate::string_len`).
+                    if let Some(cache) = cache {
+                        let s = recv_val.into_pointer_value();
+                        let n = self.emit_cached_str_len(s, cache)?;
+                        let slice_fn = self.module.get_function("lotus_str_slice_n").expect("lotus_str_slice_n declared");
+                        let v = self
+                            .builder
+                            .build_call(
+                                slice_fn,
+                                &[arena_ptr.into(), s.into(), n.into(), lo_v.into_int_value().into(), hi_final.into()],
+                                "str.slice",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .try_as_basic_value()
+                            .left()
+                            .expect("lotus_str_slice_n returns ptr");
+                        return Ok((v, CodegenTy::String));
+                    }
                     let slice_fn = self
                         .module
                         .get_function("lotus_str_slice")
@@ -31795,10 +31834,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 args.len()
             )));
         }
+        // GH #1947: `cp_at` / `cp_size` of a local whose length is cached
+        // check the offset against the length instead of scanning up to it
+        // (`crate::string_len`).
+        let cache = match sym {
+            "lotus_str_cp_at" | "lotus_str_cp_size" => self.str_len_cache_of(&args[0], scope),
+            _ => None,
+        };
         let (s, s_ty) = self.lower_expr(&args[0], scope)?;
         let s = self.unpack_view_if_needed(s, &s_ty)?;
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> =
             vec![s.into()];
+        let sym = match cache {
+            Some(cache) if s_ty == CodegenTy::String => {
+                let n = self.emit_cached_str_len(s.into_pointer_value(), cache)?;
+                call_args.push(n.into());
+                if sym == "lotus_str_cp_at" { "lotus_str_cp_at_n" } else { "lotus_str_cp_size_n" }
+            }
+            _ => sym,
+        };
         if arity == 2 {
             let (off, _) = self.lower_expr(&args[1], scope)?;
             call_args.push(off.into());

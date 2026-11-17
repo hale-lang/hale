@@ -1,0 +1,272 @@
+// tests/hale/string_len_test.hl — `len` and slicing on a String local or
+// parameter measure its text once per value it holds (GH #1947,
+// spec/stdlib.md § "Linear byte scanning"), and answer exactly what a
+// fresh `strlen` answers: bytes, not characters; 0 for ""; an embedded
+// NUL ends the String.
+//
+// A local that its scope measures keeps the length of the value it holds
+// beside its slot, and every write of the local (its `let`, `=`, an
+// append) refreshes it. These cases hold the remembered length to the
+// text: literals, concatenations, slices, `std::str` results, a String
+// from C, one decoded from JSON and one that crossed the bus, each
+// measured, sliced and walked after the writes that change it.
+
+@ffi("c") fn strerror(code: Int) -> String;
+
+type Named { name: String; n: Int; }
+
+type Note { text: String; }
+
+type Person { name: String `json:"name"`; n: Int `json:"n"`; }
+
+// The length a fresh walk of the text gives, through a path that keeps
+// no length: a record's field is measured where it is read.
+fn walked(s: String) -> Int {
+    let r = Named { name: s, n: 0 };
+    return len(r.name);
+}
+
+// A parameter measured many times, and sliced against its length.
+fn last_byte(s: String) -> String {
+    if len(s) == 0 { return ""; }
+    let a = len(s);
+    let b = len(s);
+    std::test::assert_eq_int(a, b, "a parameter measures the same twice");
+    return s[(len(s) - 1)..len(s)];
+}
+
+// The byte loop over a parameter: each step reads one byte.
+fn bytes_of(s: String) -> Int {
+    let mut i = 0;
+    let mut n = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        if len(c) == 1 { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// A code-point walk over a parameter.
+fn code_points(s: String) -> Int {
+    let mut i = 0;
+    let mut n = 0;
+    while i < len(s) {
+        let w = std::str::cp_size(s, i);
+        if w < 0 { return -1; }
+        i = i + w;
+        n = n + 1;
+    }
+    return n;
+}
+
+// Lines found with index_of_from, each copied with substring.
+fn line_lengths(s: String) -> String {
+    let mut out = "";
+    let mut at = 0;
+    while at <= len(s) {
+        let nl = std::str::index_of_from(s, "\n", at);
+        let end = if nl < 0 { len(s) } else { nl };
+        let line = std::str::substring(s, at, end);
+        out = out + to_string(len(line)) + ",";
+        if nl < 0 { return out; }
+        at = nl + 1;
+    }
+    return out;
+}
+
+locus Listener {
+    params { got: Int = -1; tail: String = ""; }
+    bus { subscribe "note.text" as on_note of type Note; }
+    fn on_note(m: Note) {
+        let t = m.text;
+        self.got = len(t);
+        self.tail = t[(len(t) - 3)..];
+    }
+}
+
+locus Sender {
+    bus { publish "note.text" of type Note; }
+    run() {
+        let mut t = "hé";
+        let mut i = 0;
+        while i < 10 {
+            t = t + t;
+            i = i + 1;
+        }
+        "note.text" <- Note { text: t + "end" };
+    }
+}
+
+fn main() {
+    // Literals, the empty String, and a literal measured twice.
+    let s = "hello";
+    std::test::assert_eq_int(len(s), 5, "a literal");
+    std::test::assert_eq_int(len(s), 5, "a literal, again");
+    std::test::assert_eq_str(s[1..3], "el", "a slice of a literal");
+    std::test::assert_eq_str(s[3..99], "lo", "a slice clamped to the end");
+    std::test::assert_eq_str(s[4..2], "", "an inverted slice is empty");
+    let e = "";
+    std::test::assert_eq_int(len(e), 0, "the empty String");
+    std::test::assert_eq_str(e[0..5], "", "a slice of the empty String");
+    std::test::assert_eq_int(len(""), 0, "an empty literal");
+    std::test::assert_eq_str(last_byte(""), "", "a parameter that is empty");
+
+    // Bytes, not characters.
+    let u = "héllo wörld ✓";
+    std::test::assert_eq_int(len(u), 17, "multibyte UTF-8 counts bytes");
+    std::test::assert_eq_int(len(u), walked(u), "the same as a fresh walk");
+    std::test::assert_eq_str(u[0..3], "hé", "a slice in bytes");
+    std::test::assert_eq_int(len(u[1..2]), 1, "half of a two-byte sequence is one byte");
+    std::test::assert_eq_int(std::str::cp_at(u, 1), 233, "é at byte 1");
+    std::test::assert_eq_int(std::str::cp_at(u, 2), -1, "a continuation byte is no code point");
+    std::test::assert_eq_int(std::str::cp_size(u, 14), 3, "✓ is three bytes");
+    std::test::assert_eq_int(std::str::cp_at(u, 17), -1, "the end is no code point");
+    std::test::assert_eq_int(std::str::cp_size(u, 18), -1, "past the end is none either");
+    std::test::assert_eq_int(code_points(u), 13, "thirteen code points");
+    std::test::assert_eq_int(bytes_of(u), 17, "seventeen one-byte slices");
+    std::test::assert_eq_str(last_byte("abc"), "c", "a parameter's last byte");
+
+    // An embedded NUL ends the String, as it always has.
+    let z = "ab\0cd";
+    std::test::assert_eq_int(len(z), 2, "the text ends at the NUL");
+    std::test::assert_eq_str(z[0..10], "ab", "a slice ends there too");
+
+    // Concatenations, and a local reassigned to a longer and a shorter
+    // value: each write is measured afresh.
+    let a = "abc";
+    let mut c = a + "-" + a;
+    std::test::assert_eq_int(len(c), 7, "a concatenation");
+    c = c + c;
+    std::test::assert_eq_int(len(c), 14, "reassigned longer");
+    std::test::assert_eq_str(c[12..20], "bc", "sliced against the new length");
+    c = "x";
+    std::test::assert_eq_int(len(c), 1, "reassigned shorter");
+    std::test::assert_eq_str(c[0..20], "x", "sliced against the shorter length");
+    c = "";
+    std::test::assert_eq_int(len(c), 0, "reassigned empty");
+
+    // Appends: the local's length follows every append.
+    let mut out = "";
+    let mut k = 0;
+    while k < 300 {
+        out += "ab";
+        std::test::assert_eq_int(len(out), 2 * (k + 1), "the length after each append");
+        if k == 150 {
+            std::test::assert_eq_str(out[300..302], "ab", "a slice at the end of the growing text");
+            let copy = out;
+            out = out + "é";
+            std::test::assert_eq_int(len(copy), 302, "the copy keeps its length");
+            std::test::assert_eq_int(len(out), 304, "the local has the append");
+            out = out[0..302];
+        }
+        k = k + 1;
+    }
+    std::test::assert_eq_int(len(out), 600, "the whole text");
+    std::test::assert_eq_int(len(out), walked(out), "the same as a fresh walk");
+
+    // A `let` in a loop body binds a new value each iteration, of a new
+    // length, where the last iteration's value may have stood.
+    let mut j = 0;
+    while j < 40 {
+        let w = std::str::repeat("é", j % 7);
+        std::test::assert_eq_int(
+            len(w),
+            2 * (j % 7),
+            "a loop body's binding, iteration by iteration",
+        );
+        std::test::assert_eq_str(w[0..2], if j % 7 == 0 { "" } else { "é" }, "its first two bytes");
+        j = j + 1;
+    }
+
+    // A shadowing binding has its own length.
+    let sh = "abc";
+    if len(sh) == 3 {
+        let sh = "abcdef";
+        std::test::assert_eq_int(len(sh), 6, "the inner binding");
+    }
+    std::test::assert_eq_int(len(sh), 3, "the outer binding after the block");
+
+    // Slices of a slice, walked down to nothing.
+    let mut rest = "one two three";
+    let mut words = 0;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        if sp < 0 {
+            rest = "";
+        } else {
+            rest = rest[(sp + 1)..];
+        }
+        words = words + 1;
+    }
+    std::test::assert_eq_int(words, 3, "three words, the rest re-measured each time");
+    std::test::assert_eq_int(len(rest), 0, "nothing left");
+
+    // Results of std::str functions.
+    let up = std::str::upper("straße");
+    std::test::assert_eq_int(len(up), walked(up), "upper's result");
+    let tr = std::str::trim("  pad  ");
+    std::test::assert_eq_int(len(tr), 3, "trim's result");
+    std::test::assert_eq_str(tr[1..], "ad", "a slice of trim's result");
+    let rep = std::str::replace("a-b-c", "-", "--");
+    std::test::assert_eq_int(len(rep), 7, "replace's result");
+    let rp = std::str::repeat("ab", 1000);
+    std::test::assert_eq_int(len(rp), 2000, "repeat's result");
+    std::test::assert_eq_str(
+        std::str::substring(rp, 1998, 5000),
+        "ab",
+        "substring clamps to the length",
+    );
+    std::test::assert_eq_str(
+        std::str::substring(rp, -4, 2),
+        "ab",
+        "substring clamps a negative start",
+    );
+    std::test::assert_eq_int(
+        std::str::index_of_from(rp, "ba", 1990),
+        1991,
+        "index_of_from finds the next",
+    );
+    std::test::assert_eq_int(
+        std::str::index_of_from(rp, "", 2000),
+        2000,
+        "an empty needle at the end",
+    );
+    std::test::assert_eq_int(std::str::index_of_from(rp, "a", 2001), -1, "a start past the end");
+    std::test::assert_eq_str(
+        line_lengths("ab\n\ncde\n"),
+        "2,0,3,0,",
+        "lines through index_of_from",
+    );
+    let mut sizes = "";
+    for part in std::str::split("x,yy,,zzz", ",") {
+        let p = part;
+        sizes = sizes + to_string(len(p)) + p[0..1];
+    }
+    std::test::assert_eq_str(sizes, "1x2y03z", "split's parts");
+
+    // A String from C: measured, sliced and walked like any other.
+    let msg = strerror(2);
+    std::test::assert_eq_int(len(msg), walked(msg), "a String C returned");
+    std::test::assert_eq_str(msg, "No such file or directory", "ENOENT's text");
+    std::test::assert_eq_int(len(msg), 25, "its length");
+    std::test::assert_eq_str(msg[(len(msg) - 9)..], "directory", "its last word");
+
+    // A String decoded from JSON.
+    let rec = Person::from_json("{\"name\":\"h\\u00e9llo w\\u00f6rld\",\"n\":1}") or {
+        std::test::assert(false, "the JSON decodes");
+        return;
+    };
+    let name = rec.name;
+    std::test::assert_eq_str(name, "héllo wörld", "the decoded text");
+    std::test::assert_eq_int(len(name), 13, "its length in bytes");
+    std::test::assert_eq_int(len(name), walked(name), "the same as a fresh walk");
+    std::test::assert_eq_str(name[8..10], "ö", "a slice of it");
+    std::test::assert_eq_int(code_points(name), 11, "its code points");
+
+    // A String that crossed the bus, measured and sliced in the handler.
+    let l = Listener { };
+    Sender { };
+    std::test::assert_eq_int(l.got, 3075, "the handler measured the whole text");
+    std::test::assert_eq_str(l.tail, "end", "and sliced its end");
+}

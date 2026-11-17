@@ -6144,10 +6144,9 @@ int64_t lotus_str_cp_size(const char *s, int64_t byte_off) {
     return lotus_utf8_width_at((const unsigned char *)s + byte_off);
 }
 
-int64_t lotus_str_cp_at(const char *s, int64_t byte_off) {
-    int64_t n = lotus_str_cp_size(s, byte_off);
-    if (n < 0) return -1;
-    const unsigned char *p = (const unsigned char *)s + byte_off;
+/* The code point of the `n`-byte sequence at `p` (`n` from
+ * lotus_utf8_width_at, so 1..=4 and checked). */
+static int64_t lotus_utf8_decode(const unsigned char *p, int64_t n) {
     switch (n) {
         case 1: return p[0];
         case 2: return ((int64_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
@@ -6157,6 +6156,29 @@ int64_t lotus_str_cp_at(const char *s, int64_t byte_off) {
                       | ((int64_t)(p[1] & 0x3F) << 12)
                       | ((int64_t)(p[2] & 0x3F) << 6) | (p[3] & 0x3F);
     }
+}
+
+int64_t lotus_str_cp_at(const char *s, int64_t byte_off) {
+    int64_t n = lotus_str_cp_size(s, byte_off);
+    if (n < 0) return -1;
+    return lotus_utf8_decode((const unsigned char *)s + byte_off, n);
+}
+
+/* GH #1947: cp_size / cp_at where codegen knows the length of `s` (`n`,
+ * its strlen: `crate::string_len`). An offset is inside the String when
+ * it is at most `n` (the terminator's offset), which is what
+ * lotus_str_offset_inside finds with a memchr over the offset; with the
+ * length known the check is one compare, so a code-point walk is linear
+ * in the text instead of quadratic. */
+int64_t lotus_str_cp_size_n(const char *s, int64_t n, int64_t byte_off) {
+    if (!s || byte_off < 0 || byte_off > n) return -1;
+    return lotus_utf8_width_at((const unsigned char *)s + byte_off);
+}
+
+int64_t lotus_str_cp_at_n(const char *s, int64_t n, int64_t byte_off) {
+    int64_t w = lotus_str_cp_size_n(s, n, byte_off);
+    if (w < 0) return -1;
+    return lotus_utf8_decode((const unsigned char *)s + byte_off, w);
 }
 
 int64_t lotus_str_cp_count(const char *s) {
@@ -20538,6 +20560,26 @@ int64_t lotus_str_byte_at_unchecked(const char *s, int64_t i) {
 char *lotus_str_slice(lotus_arena_t *a, const char *s,
                       int64_t lo, int64_t hi) {
     int64_t n = (int64_t)strlen(s);
+    if (lo < 0) lo = 0;
+    if (lo > n) lo = n;
+    if (hi < lo) hi = lo;
+    if (hi > n) hi = n;
+    int64_t len = hi - lo;
+    char *out = (char *)lotus_arena_alloc(a, (size_t)len + 1, 1);
+    if (!out) return NULL;
+    if (len > 0) {
+        memcpy(out, s + lo, (size_t)len);
+    }
+    out[len] = '\0';
+    return out;
+}
+
+/* GH #1947: `s[lo..hi]` where codegen knows the length of `s` (`n`, its
+ * strlen, from the receiver's length cache: `crate::string_len`). The
+ * same clamp and copy as lotus_str_slice, without measuring `s`, so a
+ * slice costs the bytes it copies and not the length of the String. */
+char *lotus_str_slice_n(lotus_arena_t *a, const char *s, int64_t n,
+                        int64_t lo, int64_t hi) {
     if (lo < 0) lo = 0;
     if (lo > n) lo = n;
     if (hi < lo) hi = lo;
