@@ -302,11 +302,13 @@ fn main() {
 - **`std::str::slice(v, lo, hi)`** copies `v[lo..hi]` in `O(hi - lo)` time and clamps out-of-range bounds to `0..v.n`.
 - **`std::str::find(v, needle, start)`** searches from byte offset `start` using `v.n` without re-measuring the string.
 
+A byte is an `Int`, and a **byte literal** writes one by its character: `b'/'` is `47`, `b'\n'` is `10`. It takes one printable ASCII character or one escape (`\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0`, `\xNN`), and it is an integer literal everywhere one is legal, so it compares with `byte_at`, matches in an arm's pattern (`b'a' | b'A' -> …`), and initializes a constant or an array element. `b''`, `b'ab'` and `b'é'` are refused where they are written: a byte literal is exactly one byte, so a non-ASCII character takes `\xNN` or a `b"…"` `Bytes` literal.
+
 ```hale
 fn line_end(v: std::str::ByteView, start: Int) -> Int {
     let mut i = start;
     while i < v.n {
-        if std::str::byte_at(v, i) == 10 { return i; }   // 10 is '\n'
+        if std::str::byte_at(v, i) == b'\n' { return i; }
         i = i + 1;
     }
     return v.n;

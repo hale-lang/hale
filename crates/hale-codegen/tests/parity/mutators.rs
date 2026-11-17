@@ -415,6 +415,7 @@ pub const MUTATORS: &[Mutator] = &[
     Mutator { name: "fallible_wrap", apply: fallible_wrap },
     Mutator { name: "or_pattern_merge", apply: or_pattern_merge },
     Mutator { name: "return_in_text_source", apply: return_in_text_source },
+    Mutator { name: "byte_literal_spelling", apply: byte_literal_spelling },
 ];
 
 /// `return e;` ending a fn's body becomes the tail `e`.
@@ -1258,4 +1259,45 @@ fn or_pattern_merge(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
         ],
     )?;
     Some((with_main(files, out), format!("or_pattern_merge({first} | {second})")))
+}
+
+/// GH #1995 S6: a decimal Int literal of a printable ASCII value, in an
+/// expression or an arm's pattern, is spelled as the byte literal of that
+/// value (`47` becomes `b'/'`, `39` becomes `b'\''`). The value is the
+/// same Int, reached through the byte literal's lexing.
+fn byte_literal_spelling(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
+    fn pattern_sites(p: &Pattern, out: &mut Vec<(Span, i64)>) {
+        match p {
+            Pattern::Literal(Literal::Int(n), span) => out.push((*span, *n)),
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
+                args.iter().for_each(|a| pattern_sites(a, out))
+            }
+            _ => {}
+        }
+    }
+    let (src, program) = parsed(files)?;
+    let mut sites: Vec<(Span, i64)> = Vec::new();
+    for site in exprs(&program) {
+        if let Expr::Literal(Literal::Int(n), span) = site.e {
+            sites.push((*span, *n));
+        }
+    }
+    for m in match_stmts(&program) {
+        for arm in &m.arms {
+            pattern_sites(&arm.pattern, &mut sites);
+        }
+    }
+    // written as decimal digits, so a mutation never respells a byte
+    // literal or a radix literal, and the value is a printable byte
+    sites.retain(|(span, n)| {
+        (32..=126).contains(n) && text(&src, *span).is_some_and(|t| t.bytes().all(|b| b.is_ascii_digit()))
+    });
+    let (span, n) = rng.pick(&sites)?;
+    let spelled = match *n as u8 {
+        b'\'' => "b'\\''".to_string(),
+        b'\\' => "b'\\\\'".to_string(),
+        c => format!("b'{}'", c as char),
+    };
+    let out = splice(&src, vec![(span.start.as_usize(), span.end.as_usize(), spelled.clone())])?;
+    Some((with_main(files, out), format!("byte_literal_spelling({n} as {spelled})")))
 }

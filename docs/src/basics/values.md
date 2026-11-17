@@ -21,7 +21,7 @@ Hale provides eight built-in scalar types and two inline sequence types. `Decima
 
 | Type | Description | Literal / Syntax Examples | Notes & Defaults |
 |---|---|---|---|
-| `Int` | 64-bit signed integer | `0`, `42`, `1_000_000`, `0xFF`, `0b1010` | Default type for integer literals |
+| `Int` | 64-bit signed integer | `0`, `42`, `1_000_000`, `0xFF`, `0b1010`, `b'/'` | Default type for integer literals |
 | `Float` | 64-bit IEEE-754 float | `3.14`, `1.0e-3`, `2.5` | Default type for fractional literals |
 | `Decimal` | Exact fixed-point number (`Decimal<9>`) | `1.50d`, `0.00d` | `d` suffix; parameterized as `Decimal<S>` (`S` in `0..=18`) |
 | `U256`, `I256` | 256-bit unsigned / signed integer | `U256::from_int(5)`, `U256::parse("0xff") or ...` | No literal; checked arithmetic (see [Numbers, Money & Time](./math.md)) |
@@ -33,7 +33,7 @@ Hale provides eight built-in scalar types and two inline sequence types. `Decima
 | `[T; N]` | Fixed-length array | `[1, 2, 3]`, `[0; 8]`, `[0; 0]` | `N` is an integer literal, `0` included. There is no unsized `[T]`; an empty `[]` needs its type written: `let xs: [Int; 0] = [];` |
 | `bounded[T; N]` | Fixed-capacity dynamic list | `tags: bounded[String; 32];` | Inline in `type` structs; starts empty (`count = 0`) |
 
-Numeric literals accept underscores (`1_000_000`) as visual separators. Integer literals default to `Int`, fractional literals default to `Float`, and the `d` suffix produces an exact `Decimal` (covered in [Math, Money & Time](./math.md)).
+Numeric literals accept underscores (`1_000_000`) as visual separators. A byte literal, `b'/'`, is the `Int` value of one ASCII byte (see [Strings & Text](./strings.md)). Integer literals default to `Int`, fractional literals default to `Float`, and the `d` suffix produces an exact `Decimal` (covered in [Math, Money & Time](./math.md)).
 
 ## Variables (`let` and `let mut`)
 
