@@ -120,6 +120,46 @@ fn footprints_match(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
             .all(|(x, y)| x.name == y.name && x.ty == y.ty)
 }
 
+/// GH #1995 E3: the statement written at `span` in `b` or a block under
+/// it, if any: what a `let … else`'s completing path ends with.
+fn stmt_at(b: &Block, span: Span) -> Option<&Stmt> {
+    fn in_if(i: &IfStmt, span: Span) -> Option<&Stmt> {
+        stmt_at(&i.then_block, span).or_else(|| match i.else_block.as_deref() {
+            Some(ElseBranch::Else(e)) => stmt_at(e, span),
+            Some(ElseBranch::ElseIf(n)) => in_if(n, span),
+            None => None,
+        })
+    }
+    b.stmts.iter().find_map(|s| {
+        if s.span() == span {
+            return Some(s);
+        }
+        match s {
+            Stmt::Block(inner) => stmt_at(inner, span),
+            Stmt::If(i) => in_if(i, span),
+            Stmt::Match(m) => m.arms.iter().find_map(|a| match &a.body {
+                MatchArmBody::Block(inner) => stmt_at(inner, span),
+                MatchArmBody::Expr(_) => None,
+            }),
+            _ => None,
+        }
+    })
+}
+
+/// GH #1995 E3: does this pattern match every value of the type it is
+/// matched against, whatever that type? A name, `_`, and a tuple of such
+/// patterns (a tuple's arity is the checker's other rule). Whether a
+/// constructor or a literal does is the scrutinee's type's question
+/// ([`match_is_exhaustive`]).
+fn pattern_always_matches(p: &Pattern) -> bool {
+    match p {
+        Pattern::Binding(_) | Pattern::Wildcard(_) => true,
+        Pattern::Tuple(elems, _) => elems.iter().all(pattern_always_matches),
+        Pattern::Or(alts, _) => alts.iter().any(pattern_always_matches),
+        Pattern::Literal(..) | Pattern::Constructor { .. } => false,
+    }
+}
+
 /// True if the match arms cover every possible scrutinee
 /// value. v0 rules:
 ///   - Any arm without a guard whose pattern is wildcard `_`
@@ -18031,8 +18071,10 @@ impl<'a> Checker<'a> {
                 // a diverging arm, beside the arms that supply the value
                 // (or none, when the whole match expression diverges, as
                 // one whose every arm returns does), and is checked as a
-                // statement; so is every arm of a statement `match`.
-                MatchArmBody::Block(b) if as_expr && !block_leaves(b) => {
+                // statement; so is every arm of a statement `match`, and a
+                // `let … else`'s `else` (`check_pattern_let` holds it to
+                // leaving, by F.48's judgment).
+                MatchArmBody::Block(b) if as_expr && !block_leaves(b) && stmt.form != MatchForm::LetElse => {
                     let t = self.check_block_as_expr(b);
                     arm_tys.push(t.clone());
                     t
@@ -18055,15 +18097,22 @@ impl<'a> Checker<'a> {
                             // is typed.
                         } else if arm_ty != Ty::Unknown && arm_ty != *prev {
                             mismatched = true;
-                            self.diags.push(Diag::ty(
-                                stmt.span,
+                            let message = if matches!(stmt.form, MatchForm::IfLet | MatchForm::IfLetElse) {
+                                // GH #1995 E3: worded as an `if`'s arms are
+                                format!(
+                                    "`if let` arms have mismatched types: then=`{}`, else=`{}`",
+                                    prev.display(),
+                                    arm_ty.display()
+                                )
+                            } else {
                                 format!(
                                     "match expression arms have \
                                      mismatched types: `{}` vs `{}`",
                                     prev.display(),
                                     arm_ty.display()
-                                ),
-                            ));
+                                )
+                            };
+                            self.diags.push(Diag::ty(stmt.span, message));
                         }
                     }
                 }
@@ -18073,7 +18122,9 @@ impl<'a> Checker<'a> {
             joined = Some(self.join_decimal_arms(stmt, &arm_tys, joined.take().expect("a Decimal")));
         }
         self.warn_redundant_alternatives(&stmt.arms);
-        if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top, self.known) {
+        if matches!(stmt.form, MatchForm::Let | MatchForm::LetElse) {
+            self.check_pattern_let(stmt, &scrut_ty);
+        } else if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top, self.known) {
             self.diags.push(Diag::ty(
                 stmt.span,
                 format!(
@@ -20266,6 +20317,76 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
+        }
+    }
+
+    /// GH #1995 E3: the rules of a `let` of a pattern, desugared to the
+    /// match `stmt` (spec/semantics.md, "`if let` and `let … else`" under
+    /// `match`). Without `else` (`MatchForm::Let`) the pattern must match
+    /// every value of its type, or the `let` is refused with "add `else {
+    /// … }`". With one (`MatchForm::LetElse`) the `else` block must leave,
+    /// as F.48 judges a path (`definite_return::completes`): the pattern's
+    /// names are bound after the statement, and have no value when it does
+    /// not match. A pattern that always matches makes the `else` dead,
+    /// which is a warning.
+    fn check_pattern_let(&mut self, stmt: &MatchStmt, scrut_ty: &Ty) {
+        if self.specializing.is_some() {
+            return;
+        }
+        let Some(first) = stmt.arms.first() else { return };
+        let pattern = &first.pattern;
+        let always = pattern_always_matches(pattern)
+            || match_is_exhaustive(scrut_ty, &stmt.arms[..1], self.top, self.known);
+        match stmt.form {
+            MatchForm::Let if !always => {
+                let shown = pattern.text();
+                let of = if *scrut_ty == Ty::Unknown { String::new() } else { format!(" a `{}`", scrut_ty.display()) };
+                self.diags.push(Diag::ty(
+                    pattern.span(),
+                    format!(
+                        "`{shown}` can fail to match{of}, so a plain `let` cannot bind it: add `else {{ … }}` \
+                         that leaves when it does not match (`let {shown} = … else {{ return …; }};`), or test it \
+                         with `if let` or `match`"
+                    ),
+                ));
+            }
+            MatchForm::LetElse => {
+                let Some(MatchArmBody::Block(else_block)) = stmt.arms.get(1).map(|a| &a.body) else { return };
+                if always && *scrut_ty != Ty::Unknown {
+                    self.diags.push(Diag::warn(
+                        else_block.span,
+                        format!(
+                            "`{}` matches every `{}`, so this `else` never runs: remove it",
+                            pattern.text(),
+                            scrut_ty.display()
+                        ),
+                    ));
+                }
+                if let Some(fall) = crate::definite_return::completes(else_block) {
+                    let why = fall.why.replace("the body ends", "the `else` block ends");
+                    // F.48: a call completes, even one that never returns
+                    let call_hint = match stmt_at(else_block, fall.span) {
+                        Some(Stmt::Expr(Expr::Call { .. })) => {
+                            "; a call completes as far as this rule goes, `std::process::exit` included, so write \
+                             `return` after it"
+                        }
+                        _ => "",
+                    };
+                    self.diags.push(
+                        Diag::ty(
+                            else_block.span,
+                            format!(
+                                "the `else` of a `let … else` must leave (`return`, `fail`, `break`, `continue`, \
+                                 `terminate` or `violate`): what follows the statement runs only when `{}` matches; \
+                                 this `else` can complete: {why}{call_hint}",
+                                pattern.text()
+                            ),
+                        )
+                        .with_related(fall.span, "the path that completes"),
+                    );
+                }
+            }
+            _ => {}
         }
     }
 

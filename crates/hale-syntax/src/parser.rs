@@ -7849,12 +7849,14 @@ impl Parser {
         // program bundles the stdlib (full of side-effect trailing
         // ifs), that would break all compilation. (`match` keeps the
         // old statement-only behavior — see WS3.2 note.)
+        // GH #1995 E3: an `if let` link follows the same rule, as the
+        // match it is.
         if matches!(self.peek(), TokenKind::If) {
-            let if_stmt = self.parse_if_stmt()?;
-            if self.at(&TokenKind::RBrace) && if_is_value_producing(&if_stmt) {
-                return Ok(Some(Expr::If(Box::new(if_stmt))));
+            let chain = self.parse_if_chain()?;
+            if self.at(&TokenKind::RBrace) && chain.value_producing() {
+                return Ok(Some(chain.realize(true).into_expr()));
             }
-            stmts.push(Stmt::If(if_stmt));
+            stmts.push(chain.realize(false).into_stmt());
             return Ok(None);
         }
         match self.peek() {
@@ -7998,10 +8000,7 @@ impl Parser {
     fn parse_stmt(&mut self) -> Result<Stmt, Diag> {
         match self.peek() {
             TokenKind::Let => self.parse_let_stmt(),
-            TokenKind::If => {
-                let s = self.parse_if_stmt()?;
-                Ok(Stmt::If(s))
-            }
+            TokenKind::If => Ok(self.parse_if_chain()?.realize(false).into_stmt()),
             TokenKind::Match => {
                 let s = self.parse_match_stmt()?;
                 Ok(Stmt::Match(s))
@@ -8066,6 +8065,21 @@ impl Parser {
     fn parse_let_stmt(&mut self) -> Result<Stmt, Diag> {
         let kw = self.expect(TokenKind::Let, "let")?;
         let is_mut = self.eat(&TokenKind::Mut);
+        // GH #1995 E3: `let PATTERN = e else { … };` and `let PATTERN =
+        // e;` with a pattern that is not a name or a flat tuple of names.
+        if self.let_is_pattern_led() {
+            let pattern = self.parse_arm_pattern()?;
+            if self.at(&TokenKind::Colon) {
+                return Err(Diag::parse(
+                    self.peek_token().span,
+                    "a `let` with a pattern takes no type: the pattern is matched against the value's own type"
+                        .to_string(),
+                ));
+            }
+            self.expect(TokenKind::Eq, "=")?;
+            let value = self.parse_expr()?;
+            return self.finish_pattern_let(kw.span, is_mut, pattern, None, value);
+        }
         // Tuple destructure form: `let (a, b) = expr;`.
         if self.at(&TokenKind::LParen) {
             self.bump();
@@ -8076,7 +8090,7 @@ impl Parser {
                 }
                 names.push(self.expect_decl_name("variable name")?);
             }
-            self.expect(TokenKind::RParen, ")")?;
+            let rp = self.expect(TokenKind::RParen, ")")?;
             let ty = if self.eat(&TokenKind::Colon) {
                 Some(self.parse_type_expr()?)
             } else {
@@ -8084,6 +8098,11 @@ impl Parser {
             };
             self.expect(TokenKind::Eq, "=")?;
             let value = self.parse_expr()?;
+            if self.at(&TokenKind::Else) {
+                let span = names[0].span.merge(rp.span);
+                let elems = names.into_iter().map(name_pattern).collect();
+                return self.finish_pattern_let(kw.span, is_mut, Pattern::Tuple(elems, span), ty, value);
+            }
             let semi = self.expect(TokenKind::Semi, ";")?;
             return Ok(Stmt::LetTuple {
                 is_mut,
@@ -8103,6 +8122,9 @@ impl Parser {
         };
         self.expect(TokenKind::Eq, "=")?;
         let value = self.parse_expr()?;
+        if self.at(&TokenKind::Else) {
+            return self.finish_pattern_let(kw.span, is_mut, name_pattern(name), ty, value);
+        }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(Stmt::Let {
             is_mut,
@@ -8114,32 +8136,137 @@ impl Parser {
         })
     }
 
-    fn parse_if_stmt(&mut self) -> Result<IfStmt, Diag> {
+    /// After `let [mut]`: does a pattern follow that is not a name (`let
+    /// x`) or a flat tuple of names (`let (a, b)`), the two forms a
+    /// `let` always took? A constructor (`Side::Other(raw)`, `Book(b)`),
+    /// a literal, or a tuple with anything but names in it.
+    fn let_is_pattern_led(&self) -> bool {
+        match self.peek() {
+            TokenKind::Ident(_) => matches!(self.peek_at(1), TokenKind::ColonColon | TokenKind::LParen),
+            TokenKind::IntLit(_)
+            | TokenKind::FloatLit(_)
+            | TokenKind::DecimalLit(_)
+            | TokenKind::QuantityLit(..)
+            | TokenKind::StringLit(_)
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Nil => true,
+            TokenKind::LParen => {
+                // `(` name { `,` name } [ `,` ] `)` is the tuple form
+                let mut i = 1;
+                loop {
+                    let name = matches!(self.peek_at(i), TokenKind::Ident(_)) || self.peek_at(i).keyword_lexeme().is_some();
+                    if !name {
+                        return true;
+                    }
+                    i += 1;
+                    match self.peek_at(i) {
+                        TokenKind::RParen => return false,
+                        TokenKind::Comma if matches!(self.peek_at(i + 1), TokenKind::RParen) => return false,
+                        TokenKind::Comma => i += 1,
+                        _ => return true,
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// GH #1995 E3: a `let` of a pattern, with or without `else`, after
+    /// its value: the `else` block if there is one, then `;`. Desugared
+    /// here to the match it means, binding the pattern's names in the
+    /// enclosing block (spec/semantics.md, "`if let` and `let … else`"
+    /// under `match`):
+    ///
+    /// ```text
+    /// let P = e else { B };   one name x:  let x = match e { P -> x, _ -> { B } };
+    ///                         names a, b:  let (a, b) = match e { P -> (a, b), _ -> { B } };
+    ///                         no name:     match e { P -> { }, _ -> { B } }
+    /// let P = e;              the same with no `_` arm
+    /// ```
+    ///
+    /// The match carries its form, so the check holds the `else` block
+    /// to F.48's judgment (it must leave) and words a pattern `let` that
+    /// can fail to match as "add `else { … }`".
+    fn finish_pattern_let(
+        &mut self,
+        kw: Span,
+        is_mut: bool,
+        pattern: Pattern,
+        ty: Option<TypeExpr>,
+        value: Expr,
+    ) -> Result<Stmt, Diag> {
+        let else_block = if self.eat(&TokenKind::Else) { Some(self.parse_block()?) } else { None };
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        let span = kw.merge(semi.span);
+        let names = pattern_binders(&pattern);
+        let form = if else_block.is_some() { MatchForm::LetElse } else { MatchForm::Let };
+        let pattern_span = pattern.span();
+        let bound = match names.as_slice() {
+            [] => None,
+            [one] => Some(Expr::Ident(one.clone())),
+            many => Some(Expr::Tuple(many.iter().cloned().map(Expr::Ident).collect(), pattern_span)),
+        };
+        let mut arms = vec![MatchArm {
+            pattern,
+            guard: None,
+            body: match &bound {
+                Some(e) => MatchArmBody::Expr(e.clone()),
+                None => MatchArmBody::Block(Block { stmts: Vec::new(), tail: None, span: pattern_span }),
+            },
+            span: pattern_span,
+        }];
+        if let Some(b) = else_block {
+            arms.push(MatchArm { pattern: Pattern::Wildcard(b.span), guard: None, span: b.span, body: MatchArmBody::Block(b) });
+        }
+        let m = MatchStmt { scrutinee: value, arms, span, form };
+        Ok(match bound {
+            None => Stmt::Match(m),
+            Some(Expr::Ident(_)) => Stmt::Let {
+                is_mut,
+                name: names.into_iter().next().expect("one name"),
+                ty,
+                value: Expr::Match(Box::new(m)),
+                span,
+                id: NodeId::NONE,
+            },
+            Some(_) => Stmt::LetTuple { is_mut, names, ty, value: Expr::Match(Box::new(m)), span, id: NodeId::NONE },
+        })
+    }
+
+    /// An `if` chain, each link a plain `if` or an `if let` (GH #1995
+    /// E3), as parsed. [`IfLink::realize`] makes it the statement or the
+    /// value it is used as; a chain with no `if let` realizes as the
+    /// `IfStmt` this always parsed.
+    fn parse_if_chain(&mut self) -> Result<IfLink, Diag> {
         let kw = self.expect(TokenKind::If, "if")?;
-        let cond = self.parse_expr()?;
+        let head = if self.eat(&TokenKind::Let) {
+            let pattern = self.parse_arm_pattern()?;
+            self.expect(TokenKind::Eq, "=")?;
+            let scrutinee = self.parse_expr()?;
+            IfHead::Let { pattern, scrutinee }
+        } else {
+            IfHead::Cond(self.parse_expr()?)
+        };
         let then_block = self.parse_block()?;
-        let else_block = if self.eat(&TokenKind::Else) {
+        let else_branch = if self.eat(&TokenKind::Else) {
             if self.at(&TokenKind::If) {
-                let elif = self.parse_if_stmt()?;
-                Some(Box::new(ElseBranch::ElseIf(elif)))
+                Some(IfElse::Link(Box::new(self.parse_if_chain()?)))
             } else {
-                let block = self.parse_block()?;
-                Some(Box::new(ElseBranch::Else(block)))
+                Some(IfElse::Block(self.parse_block()?))
             }
         } else {
             None
         };
-        let span_end = match &else_block {
-            Some(b) => match b.as_ref() {
-                ElseBranch::Else(blk) => blk.span,
-                ElseBranch::ElseIf(if_) => if_.span,
-            },
+        let span_end = match &else_branch {
+            Some(IfElse::Block(blk)) => blk.span,
+            Some(IfElse::Link(link)) => link.span,
             None => then_block.span,
         };
-        Ok(IfStmt {
-            cond,
+        Ok(IfLink {
+            head,
             then_block,
-            else_block,
+            else_branch,
             span: kw.span.merge(span_end),
         })
     }
@@ -8185,6 +8312,7 @@ impl Parser {
             scrutinee,
             arms,
             span: kw.span.merge(close.span),
+            form: MatchForm::Match,
         })
     }
 
@@ -8233,17 +8361,7 @@ impl Parser {
         // pattern is not an expression, so this `|` is never the bitwise
         // operator: the guard after `if` and the body after `->` are
         // expressions, parsed as such, where `x | y` is the operator.
-        let first = self.parse_pattern()?;
-        let pattern = if self.at(&TokenKind::Pipe) {
-            let mut alts = vec![first];
-            while self.eat(&TokenKind::Pipe) {
-                alts.push(self.parse_pattern()?);
-            }
-            let span = alts[0].span().merge(alts[alts.len() - 1].span());
-            Pattern::Or(alts, span)
-        } else {
-            first
-        };
+        let pattern = self.parse_arm_pattern()?;
         let guard = if self.eat(&TokenKind::If) {
             Some(self.parse_expr()?)
         } else {
@@ -8267,6 +8385,22 @@ impl Parser {
             body,
             span,
         })
+    }
+
+    /// An arm's whole pattern: one pattern, or two or more alternatives
+    /// separated by `|` (GH #1995 E2). Also the pattern of an `if let`
+    /// and a pattern `let` (E3), which take any arm's pattern.
+    fn parse_arm_pattern(&mut self) -> Result<Pattern, Diag> {
+        let first = self.parse_pattern()?;
+        if !self.at(&TokenKind::Pipe) {
+            return Ok(first);
+        }
+        let mut alts = vec![first];
+        while self.eat(&TokenKind::Pipe) {
+            alts.push(self.parse_pattern()?);
+        }
+        let span = alts[0].span().merge(alts[alts.len() - 1].span());
+        Ok(Pattern::Or(alts, span))
     }
 
     /// A pattern inside a tuple pattern or a variant's values. An
@@ -9140,10 +9274,7 @@ impl Parser {
                 let block = self.parse_block()?;
                 Ok(Expr::Block(block))
             }
-            TokenKind::If => {
-                let if_ = self.parse_if_stmt()?;
-                Ok(Expr::If(Box::new(if_)))
-            }
+            TokenKind::If => Ok(self.parse_if_chain()?.realize(true).into_expr()),
             TokenKind::Match => {
                 let m = self.parse_match_stmt()?;
                 Ok(Expr::Match(Box::new(m)))
@@ -9531,6 +9662,170 @@ impl Parser {
     }
 }
 
+/// GH #1995 E3: one link of an `if` chain as parsed: a plain `if` or an
+/// `if let`, its then-block, and what follows its `else`.
+struct IfLink {
+    head: IfHead,
+    then_block: Block,
+    else_branch: Option<IfElse>,
+    span: Span,
+}
+
+enum IfHead {
+    Cond(Expr),
+    /// `if let PATTERN = SCRUTINEE`
+    Let { pattern: Pattern, scrutinee: Expr },
+}
+
+enum IfElse {
+    Block(Block),
+    Link(Box<IfLink>),
+}
+
+/// A realized link: the `if` it always was, or the match an `if let` is.
+enum IfRealized {
+    If(IfStmt),
+    Match(MatchStmt),
+}
+
+impl IfRealized {
+    fn into_stmt(self) -> Stmt {
+        match self {
+            IfRealized::If(i) => Stmt::If(i),
+            IfRealized::Match(m) => Stmt::Match(m),
+        }
+    }
+
+    fn into_expr(self) -> Expr {
+        match self {
+            IfRealized::If(i) => Expr::If(Box::new(i)),
+            IfRealized::Match(m) => Expr::Match(Box::new(m)),
+        }
+    }
+
+    fn span(&self) -> Span {
+        match self {
+            IfRealized::If(i) => i.span,
+            IfRealized::Match(m) => m.span,
+        }
+    }
+
+    /// The block an `else` holds when what follows it is not an `if`
+    /// the `IfStmt` can chain: the link as the block's value, or as its
+    /// one statement.
+    fn into_block(self, value: bool) -> Block {
+        let span = self.span();
+        if value {
+            Block { stmts: Vec::new(), tail: Some(Box::new(self.into_expr())), span }
+        } else {
+            Block { stmts: vec![self.into_stmt()], tail: None, span }
+        }
+    }
+}
+
+impl IfLink {
+    /// WS3.2: is this chain value-producing — does every reachable arm
+    /// end in a tail expression? Only such an `if` may become a block's
+    /// tail; a side-effect `if` (any arm tail-less, or no `else`) stays a
+    /// statement so codegen never lowers a tail-less arm as a value. An
+    /// `if let` link is held to the same rule.
+    fn value_producing(&self) -> bool {
+        if self.then_block.tail.is_none() {
+            return false;
+        }
+        match &self.else_branch {
+            Some(IfElse::Block(blk)) => blk.tail.is_some(),
+            Some(IfElse::Link(nested)) => nested.value_producing(),
+            None => false,
+        }
+    }
+
+    /// The statement (`value == false`) or the value this chain is. A
+    /// plain link is an `IfStmt`; an `if let` link is the two-arm match
+    /// it means, `match e { P -> { A }, _ -> { B } }` (`{ }` with no
+    /// `else`), whose arms are blocks as a statement and block values
+    /// as a value, so the check types each arm as an `if`'s arms are
+    /// typed. A link after `else` that the `IfStmt` cannot chain (an
+    /// `if let`, or anything after one) is the `else` block's statement
+    /// or value.
+    fn realize(self, value: bool) -> IfRealized {
+        let IfLink { head, then_block, else_branch, span } = self;
+        match head {
+            IfHead::Cond(cond) => {
+                let else_block = else_branch.map(|e| {
+                    Box::new(match e {
+                        IfElse::Block(b) => ElseBranch::Else(b),
+                        IfElse::Link(link) => match link.realize(value) {
+                            IfRealized::If(i) => ElseBranch::ElseIf(i),
+                            other => ElseBranch::Else(other.into_block(value)),
+                        },
+                    })
+                });
+                IfRealized::If(IfStmt { cond, then_block, else_block, span })
+            }
+            IfHead::Let { pattern, scrutinee } => {
+                let form = if else_branch.is_some() { MatchForm::IfLetElse } else { MatchForm::IfLet };
+                let else_block = match else_branch {
+                    Some(IfElse::Block(b)) => b,
+                    Some(IfElse::Link(link)) => link.realize(value).into_block(value),
+                    // no `else`: an empty block where the `else` would be
+                    None => Block {
+                        stmts: Vec::new(),
+                        tail: None,
+                        span: Span::new(then_block.span.end.as_usize(), then_block.span.end.as_usize()),
+                    },
+                };
+                let arm = |pattern: Pattern, body: Block| {
+                    let span = body.span;
+                    let body = if value { MatchArmBody::Expr(Expr::Block(body)) } else { MatchArmBody::Block(body) };
+                    MatchArm { pattern, guard: None, body, span }
+                };
+                let wildcard = Pattern::Wildcard(else_block.span);
+                IfRealized::Match(MatchStmt {
+                    scrutinee,
+                    arms: vec![arm(pattern, then_block), arm(wildcard, else_block)],
+                    span,
+                    form,
+                })
+            }
+        }
+    }
+}
+
+/// GH #1995 E3: a name as the binding pattern it is in a `let … else`.
+fn name_pattern(name: Ident) -> Pattern {
+    if name.name == "_" {
+        Pattern::Wildcard(name.span)
+    } else {
+        Pattern::Binding(name)
+    }
+}
+
+/// The names a pattern binds, in the order written, each once. An
+/// or-pattern's alternatives bind the same names (the checker's rule), so
+/// its first alternative's are its names.
+fn pattern_binders(p: &Pattern) -> Vec<Ident> {
+    fn walk(p: &Pattern, out: &mut Vec<Ident>) {
+        match p {
+            Pattern::Binding(id) => {
+                if !out.iter().any(|o| o.name == id.name) {
+                    out.push(id.clone());
+                }
+            }
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => args.iter().for_each(|a| walk(a, out)),
+            Pattern::Or(alts, _) => {
+                if let Some(first) = alts.first() {
+                    walk(first, out);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(p, &mut out);
+    out
+}
+
 /// Convert an expression we just parsed (in a stmt position) to an
 /// LValue if possible; else error.
 ///
@@ -9538,24 +9833,6 @@ impl Parser {
 /// (synthetic Ident with the name "self"). The downstream type
 /// checker is responsible for resolving the synthetic head against
 /// the enclosing locus's params.
-/// WS3.2: is this `if` value-producing — does every reachable arm
-/// end in a tail expression? Only such an `if` may become a block's
-/// tail `Expr::If`; a side-effect `if` (any arm tail-less, or no
-/// `else`) stays a statement so codegen never lowers a tail-less arm
-/// as a value. Walks the `else if` chain.
-fn if_is_value_producing(if_stmt: &IfStmt) -> bool {
-    if if_stmt.then_block.tail.is_none() {
-        return false;
-    }
-    match &if_stmt.else_block {
-        Some(b) => match b.as_ref() {
-            ElseBranch::Else(blk) => blk.tail.is_some(),
-            ElseBranch::ElseIf(nested) => if_is_value_producing(nested),
-        },
-        None => false,
-    }
-}
-
 fn expr_to_lvalue(expr: Expr, op_span: Span) -> Result<LValue, Diag> {
     match expr {
         Expr::Ident(i) => Ok(LValue {
@@ -10112,7 +10389,10 @@ fn main() {
 
     #[test]
     fn let_with_non_keyword_token_keeps_debug_fallback() {
-        let errs = parse_str("fn main() { let 5 = 1; }").unwrap_err();
+        // `let 5 = 1;` parses since GH #1995 E3 (a literal is a pattern,
+        // which the check refuses as one that can fail to match); a token
+        // that begins no pattern still takes the fallback
+        let errs = parse_str("fn main() { let + = 1; }").unwrap_err();
         let msg = &errs[0].message;
         assert!(msg.contains("got"), "got: {msg}");
         assert!(!msg.contains("reserved"), "got: {msg}");

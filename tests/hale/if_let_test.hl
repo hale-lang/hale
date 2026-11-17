@@ -1,0 +1,229 @@
+// `if let` and `let … else` (GH #1995 E3). `if let P = e { A } else { B }`
+// is the match `match e { P -> { A }, _ -> { B } }`: an expression as `if`
+// is, its bindings scoped to the then-block. `let P = e else { B };`
+// binds P's names after the statement, and its `else` must leave.
+
+type Side = enum { Buy, Sell, Other(String) };
+type Outcome = enum { Result(Int), Refused(String), Pending };
+type CtlError = enum { Invalid(String), NotFound(String), NotReady(Int) };
+type Err = enum { Bad(String) };
+
+// a statement `if let` with no `else`: the binding is the payload
+fn note(side: Side) -> String {
+    let mut out = "-";
+    if let Side::Other(raw) = side {
+        out = "other:" + raw;
+    }
+    return out;
+}
+
+// the expression form, both arms yielding a value
+fn index_or(o: Outcome, fallback: Int) -> Int {
+    let i = if let Outcome::Result(index) = o { index } else { fallback };
+    return i;
+}
+
+// a trailing `if let` is the body's value, as a trailing `if` is
+fn describe(o: Outcome) -> String {
+    if let Outcome::Refused(why) = o { "refused: " + why } else { "ok" }
+}
+
+// a chain: `if let … else if let … else`, and a plain `else if` beside one
+fn classify(o: Outcome) -> String {
+    if let Outcome::Result(n) = o {
+        return f"result {n}";
+    } else if let Outcome::Refused(why) = o {
+        return "refused " + why;
+    } else {
+        return "pending";
+    }
+}
+
+fn mixed(n: Int, o: Outcome) -> Int {
+    if n < 0 {
+        return -1;
+    } else if let Outcome::Result(v) = o {
+        return v;
+    } else if n == 0 {
+        return 0;
+    }
+    return 100;
+}
+
+// a chain used as a value, a plain `if` first
+fn chain_value(n: Int, o: Outcome) -> Int {
+    let v = if n > 10 { 10 } else if let Outcome::Result(r) = o { r } else { 0 };
+    return v;
+}
+
+// a tuple pattern and a String literal pattern
+fn first_when_zero(p: (Int, Int)) -> Int {
+    if let (x, 0) = p { x } else { -1 }
+}
+
+fn greeting(word: String) -> String {
+    if let "hello" = word { "hi" } else { "?" }
+}
+
+// an or-pattern: every alternative binds the same names
+fn problem(e: CtlError) -> String {
+    if let CtlError::Invalid(p) | CtlError::NotFound(p) = e { p } else { "not ready" }
+}
+
+// `let … else` with `return`
+fn head_index(o: Outcome) -> Int {
+    let Outcome::Result(index) = o else {
+        return -1;
+    };
+    return index * 2;
+}
+
+// several names: bound together after the statement
+fn swap_when_set(p: (Int, Int, Int)) -> (Int, Int) {
+    let (a, b, 1) = p else {
+        return (0, 0);
+    };
+    return (b, a);
+}
+
+// `let … else` with `continue` and `break`
+fn total(outs: [Outcome; 5]) -> Int {
+    let mut t = 0;
+    for o in outs {
+        let Outcome::Result(n) = o else {
+            continue;
+        };
+        t = t + n;
+    }
+    let mut i = 0;
+    while i < 5 {
+        let Outcome::Refused(why) = outs[i] else {
+            break;
+        };
+        t = t + len(std::str::upper(why));
+        i = i + 1;
+    }
+    return t;
+}
+
+// `let … else` with `fail`
+fn need(o: Outcome) -> Int fallible(Err) {
+    let Outcome::Result(n) = o else {
+        fail Err::Bad("no result");
+    };
+    return n + 1;
+}
+
+// a pattern that binds no name
+fn is_buy(s: Side) -> Bool {
+    let Side::Buy = s else {
+        return false;
+    };
+    return true;
+}
+
+// an or-pattern in `let … else`, binding a heap string that outlives it
+fn reason(e: CtlError) -> String {
+    let CtlError::Invalid(p) | CtlError::NotFound(p) = e else {
+        return "none";
+    };
+    let loud = std::str::upper(p);
+    return loud + "!";
+}
+
+// a pattern `let` that always matches needs no `else`: a one-variant enum
+type Meters = enum { M(Int) };
+
+fn meters(m: Meters) -> Int {
+    let Meters::M(n) = m;
+    return n;
+}
+
+fn main() {
+    std::test::assert_eq_str(note(Side::Other("x")), "other:x", "if let binds the payload");
+    std::test::assert_eq_str(note(Side::Buy), "-", "no else: nothing runs");
+
+    std::test::assert_eq_int(index_or(Outcome::Result(7), 0), 7, "the then-arm's value");
+    std::test::assert_eq_int(index_or(Outcome::Pending, 3), 3, "the else-arm's value");
+
+    std::test::assert_eq_str(
+        describe(Outcome::Refused("busy")),
+        "refused: busy",
+        "a trailing if let",
+    );
+    std::test::assert_eq_str(describe(Outcome::Result(1)), "ok", "its else");
+
+    std::test::assert_eq_str(classify(Outcome::Result(4)), "result 4", "the first link");
+    std::test::assert_eq_str(classify(Outcome::Refused("no")), "refused no", "else if let");
+    std::test::assert_eq_str(classify(Outcome::Pending), "pending", "the final else");
+
+    std::test::assert_eq_int(mixed(-5, Outcome::Result(9)), -1, "a plain if first");
+    std::test::assert_eq_int(mixed(5, Outcome::Result(9)), 9, "then else if let");
+    std::test::assert_eq_int(mixed(0, Outcome::Pending), 0, "then a plain else if");
+    std::test::assert_eq_int(mixed(5, Outcome::Pending), 100, "no arm taken");
+
+    std::test::assert_eq_int(chain_value(20, Outcome::Result(3)), 10, "a chain value, plain arm");
+    std::test::assert_eq_int(chain_value(1, Outcome::Result(3)), 3, "a chain value, if let arm");
+    std::test::assert_eq_int(chain_value(1, Outcome::Pending), 0, "a chain value, else");
+
+    std::test::assert_eq_int(first_when_zero((8, 0)), 8, "a tuple pattern matches");
+    std::test::assert_eq_int(first_when_zero((8, 1)), -1, "and does not");
+    std::test::assert_eq_str(greeting("hello"), "hi", "a String literal pattern");
+    std::test::assert_eq_str(greeting("bye"), "?", "a String literal pattern misses");
+
+    std::test::assert_eq_str(
+        problem(CtlError::Invalid("bad")),
+        "bad",
+        "or-pattern, first alternative",
+    );
+    std::test::assert_eq_str(
+        problem(CtlError::NotFound("gone")),
+        "gone",
+        "or-pattern, second alternative",
+    );
+    std::test::assert_eq_str(problem(CtlError::NotReady(2)), "not ready", "or-pattern misses");
+
+    std::test::assert_eq_int(
+        head_index(Outcome::Result(21)),
+        42,
+        "let else binds after the statement",
+    );
+    std::test::assert_eq_int(head_index(Outcome::Pending), -1, "let else returns");
+
+    let (x, y) = swap_when_set((4, 5, 1));
+    std::test::assert_eq_int(x * 10 + y, 54, "several names bound together");
+    let (z, w) = swap_when_set((4, 5, 2));
+    std::test::assert_eq_int(z + w, 0, "the literal misses and the else returns");
+
+    let outs = [
+        Outcome::Result(1),
+        Outcome::Pending,
+        Outcome::Result(2),
+        Outcome::Refused("x"),
+        Outcome::Result(4)
+    ];
+    std::test::assert_eq_int(total(outs), 7, "continue skips; the first non-Refused breaks");
+    let refusals = [
+        Outcome::Refused("ab"),
+        Outcome::Refused("c"),
+        Outcome::Pending,
+        Outcome::Pending,
+        Outcome::Pending
+    ];
+    std::test::assert_eq_int(total(refusals), 3, "break leaves the while loop");
+
+    std::test::assert_eq_int(need(Outcome::Result(1)) or 0, 2, "let else falls through on a match");
+    std::test::assert_eq_int(need(Outcome::Pending) or 0, 0, "let else fails");
+
+    std::test::assert(is_buy(Side::Buy), "a pattern with no names");
+    std::test::assert(!is_buy(Side::Sell), "and its else");
+
+    std::test::assert_eq_str(
+        reason(CtlError::NotFound("gone")),
+        "GONE!",
+        "a heap string from an or-pattern",
+    );
+    std::test::assert_eq_str(reason(CtlError::NotReady(1)), "none", "its else");
+
+    std::test::assert_eq_int(meters(Meters::M(12)), 12, "a pattern let that always matches");
+}

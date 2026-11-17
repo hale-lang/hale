@@ -415,6 +415,7 @@ pub const MUTATORS: &[Mutator] = &[
     Mutator { name: "fallible_wrap", apply: fallible_wrap },
     Mutator { name: "or_pattern_merge", apply: or_pattern_merge },
     Mutator { name: "return_in_text_source", apply: return_in_text_source },
+    Mutator { name: "match_to_if_let", apply: match_to_if_let },
     Mutator { name: "byte_literal_spelling", apply: byte_literal_spelling },
 ];
 
@@ -1259,6 +1260,49 @@ fn or_pattern_merge(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
         ],
     )?;
     Some((with_main(files, out), format!("or_pattern_merge({first} | {second})")))
+}
+
+/// GH #1995 E3: a written `match` of two unguarded arms, the second `_`,
+/// becomes the `if let` it reads as: `match e { P -> a, _ -> b }` is
+/// `if let P = e { a } else { b }`, which the parser makes the match back
+/// (an expression arm becomes a block's value). The check judges the
+/// `if let` as an `if`: one whose arms have values becomes a block's tail,
+/// and its arms are typed as an `if`'s are. A statement `match`'s
+/// expression arm is evaluated for its effect, so it becomes a statement
+/// of its block (`{ a; }`), as it reads.
+fn match_to_if_let(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
+    let (src, program) = parsed(files)?;
+    let values: Vec<&MatchStmt> = exprs(&program)
+        .into_iter()
+        .filter_map(|site| match site.e {
+            Expr::Match(m) => Some(&**m),
+            _ => None,
+        })
+        .collect();
+    let sites: Vec<(&MatchStmt, bool)> = match_stmts(&program)
+        .into_iter()
+        .filter(|m| {
+            m.form == MatchForm::Match
+                && m.arms.len() == 2
+                && m.arms.iter().all(|a| a.guard.is_none())
+                && !matches!(m.arms[0].pattern, Pattern::Wildcard(_))
+                && matches!(m.arms[1].pattern, Pattern::Wildcard(_))
+        })
+        .map(|m| (m, values.iter().any(|v| std::ptr::eq(*v, m))))
+        .collect();
+    let (m, value) = *rng.pick(&sites)?;
+    let body = |b: &MatchArmBody| -> Option<String> {
+        match b {
+            MatchArmBody::Expr(e) if value => Some(format!("{{ {} }}", text(&src, e.span())?)),
+            MatchArmBody::Expr(e) => Some(format!("{{ {}; }}", text(&src, e.span())?)),
+            MatchArmBody::Block(b) => Some(text(&src, b.span)?.to_string()),
+        }
+    };
+    let pattern = text(&src, m.arms[0].pattern.span())?.to_string();
+    let scrutinee = text(&src, m.scrutinee.span())?;
+    let new = format!("if let {pattern} = {scrutinee} {} else {}", body(&m.arms[0].body)?, body(&m.arms[1].body)?);
+    let out = splice(&src, vec![(m.span.start.as_usize(), m.span.end.as_usize(), new)])?;
+    Some((with_main(files, out), format!("match_to_if_let({pattern})")))
 }
 
 /// GH #1995 S6: a decimal Int literal of a printable ASCII value, in an

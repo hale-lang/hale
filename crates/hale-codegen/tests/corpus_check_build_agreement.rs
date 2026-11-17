@@ -837,6 +837,66 @@ fn a_nested_pattern_in_a_variants_pattern_is_refused_by_the_check() {
     );
 }
 
+/// GH #1995 E3: `if let` and `let … else` are matches the parser writes,
+/// so the check judges them before any build: an `else` that can complete
+/// (F.48's judgment), a pattern a plain `let` cannot always bind, an
+/// or-pattern whose alternatives bind other names, and an `if let` value
+/// with no `else`. Before this a plain `let` of a pattern did not parse.
+#[test]
+fn if_let_and_let_else_are_judged_by_the_check() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type S = enum { A, B(Int) };
+                 fn f(s: S) -> Int { let S::B(n) = s else { let k = 1; }; return n; }
+                 fn main() { println(f(S::A)); }
+",
+                "{ let k = 1; }",
+                "the `else` of a `let … else` must leave",
+            ),
+            (
+                "type S = enum { A, B(Int) };
+                 fn f(s: S) -> Int { let S::B(n) = s; return n; }
+                 fn main() { println(f(S::A)); }
+",
+                "S::B(n)",
+                "`S::B(n)` can fail to match a `S`, so a plain `let` cannot bind it: add `else { … }`",
+            ),
+            (
+                "type S = enum { A, B(Int) };
+                 fn f(s: S) -> Int { if let S::B(n) | S::A = s { return 1; } return 0; }
+                 fn main() { println(f(S::A)); }
+",
+                "S::A",
+                "the alternative `S::A` does not bind `n`",
+            ),
+            (
+                "type S = enum { A, B(Int) };
+                 fn f(s: S) -> Int { let n = if let S::B(v) = s { 1 }; return n; }
+                 fn main() { println(f(S::A)); }
+",
+                "if let S::B(v) = s { 1 }",
+                "`if let` arms have mismatched types: then=`Int`, else=`()`",
+            ),
+        ],
+        "if_let",
+    );
+    assert_built(
+        "type S = enum { A, B(Int) };
+         type M = enum { M(Int) };
+         fn f(s: S, m: M) -> Int {
+             let M::M(k) = m;
+             let S::B(n) = s else { return k; };
+             let v = if let S::B(w) = s { w } else { 0 };
+             if let S::A = s { return 0; }
+             return n + v;
+         }
+         fn main() { println(f(S::B(2), M::M(1))); }
+",
+        "hale_cb_if_let_neighbour",
+    );
+}
+
 /// GH #1995 S6: a byte literal is an Int literal, so every place one is
 /// legal builds; and what it refuses (no byte, several, a non-ASCII
 /// character) is refused by the lexer, which `hale check` and `hale

@@ -622,6 +622,24 @@ write `E::A(1) | E::A(2)`. `hale check --warn-string-match` (or `hale
 verify --warn-string-match`) flags three
 or more `if x == "lit"` tests in a row on one string.
 
+When one pattern is the question, use `if let` (an expression with an
+`else`, its names scoped to the first block) or `let … else` (the names
+bound after it; the `else` block must leave with `return`, `fail`,
+`break` or `continue`, and a call such as `std::process::exit` does not
+count):
+
+```hale
+if let Side::Other(raw) = side { self.note_unknown(raw); }
+
+let Outcome::Result(index) = self.head.index(ask) else {
+    return RecordIndex { why: "the head refused the read" };
+};
+```
+
+A plain `let` of a pattern that can fail to match (`let E::A(x) = e;`)
+is refused with "add `else { … }`". There is no `Option`; this is the
+enum form of `or { return …; }`.
+
 ## Hard gotchas (codegen-v0 limits — don't fight these)
 
 These are the ones that bite on a first attempt. Each is a real

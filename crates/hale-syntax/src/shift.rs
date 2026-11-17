@@ -822,7 +822,8 @@ impl Shift for ElseBranch {
     }
 }
 
-shift_struct!(MatchStmt { scrutinee, arms, span });
+shift_struct!(MatchStmt { scrutinee, arms, span, form });
+shift_unit_enum!(MatchForm { Match, IfLet, IfLetElse, LetElse, Let });
 shift_struct!(MatchArm { pattern, guard, body, span });
 
 impl Shift for MatchArmBody {
