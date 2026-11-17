@@ -27,8 +27,7 @@ fn main() {
 | **Record (`type`)** | `type Player { id: String; score: Int = 0; }` | Fixed-layout product type with optional field defaults |
 | **Enum (`enum`)** | `type Event = enum { Tick(Int), Halt };` | Tagged union with unit or payload-carrying variants |
 | **Set union (`\|`)** | `type Inbound = Book \| Trade \| Unknown;` | Union of existing struct/enum types where the member type is the tag |
-| **Type alias** | `type Cents = Int;` / `type IntBox = Box<Int>;` | Transparent synonym for an existing type or concrete generic instantiation |
-| **Generic record** | `type Box<T> { value: T = 0; }` | Template monomorphized per concrete type argument (`Box<Int>`) |
+| **Type alias** | `type Cents = Int;` / `type UserId = String;` | Transparent synonym for an existing type |
 | **Fixed array / slice** | `[Int; 8]` / `[Player]` | Inline fixed-length array (`[0; 8]`) or slice view |
 | **Tuple** | `let pair = (1, "one");` | Lightweight anonymous grouping |
 
@@ -154,7 +153,7 @@ Because `Cents` is transparent, it is completely interchangeable with `Int` (inc
 
 1. **Literal construction requires a record or locus target:** If `type Cents = Int;`, writing `Cents { }` is a compile error.
 2. **No cyclic aliases:** `type A = B; type B = A;` is rejected.
-3. **Concrete generic aliases only:** Generic aliases (`type Twin<T> = Pair<T>;`) are not supported, but aliasing a concrete instantiation (`type IntBox = Box<Int>;`) is supported and supplies the type arguments for `let b: IntBox = Box { value: 1 };` (for both generic records and generic loci).
+3. **Concrete generic aliases only:** An alias can name one instantiation of a [generic](./generics.md) record or locus (`type OrderReply = Envelope<Order>;`), and `let r: OrderReply = Envelope { data: o };` then takes its type arguments from the alias. An alias cannot take parameters itself: `type Reply<T> = Envelope<T>;` is refused.
 
 ## Enums (`enum`) and Exhaustive `match`
 
@@ -243,33 +242,8 @@ fn describe(m: Inbound) -> String {
 - **Members must be declared structs or enums:** Primitive types like `Int` cannot appear directly in a set; wrap them in a struct (`type Count { n: Int; }`).
 - **Wire representation and seams:** Across JSON APIs, a set serializes as a tagged object keyed by the member's type name (`{"Trade": {"qty": 2, "px": 1.5}}`). At the service layer, a [seam](../services/seams.md) can dispatch each member of a set to a dedicated handler method and verify exhaustiveness at compile time.
 
-## Generic Records and Loci (`<T>`)
+## Generic Records
 
-Both `type` records and `locus` declarations can be parameterized by type arguments:
+A record can take type parameters (`type Envelope<T> { data: T; request_id: String = ""; }`), and so can a locus or a `fn`. See [Generics](./generics.md).
 
-```hale
-type Box<T> {
-    value: T = 0;
-}
-
-locus Cache<K, V> {
-    params {
-        cap: Int = 1;
-    }
-}
-
-fn main() {
-    let b: Box<Int> = Box { value: 1 };
-    let c: Cache<Int, String> = Cache { cap: 2 };
-    println(b.value, " ", c.cap);
-}
-```
-
-### Monomorphization and Type-Argument Rules
-
-- **Explicit type context required:** In `let b: Box<Int> = Box { value: 1 };`, the struct literal spells the template name `Box` while the concrete type argument `<Int>` comes from the surrounding type context (a `let` annotation, function return type `-> Box<Int>` at a `return` or the body's tail, enclosing struct field, assignment target, or `[Box<Int>; 2]` array annotation). Anywhere else the literal is a compile error at the literal: `let b = Box { value: 1 };` without a type annotation, and also `Box { value: 1 }.value`, `id(Box { value: 1 })`, or a literal as an operand, a condition or an `if` arm. Bind it to an annotated `let` first.
-- **Imported templates and types:** A generic record from another seed takes its arguments the same way (`let b: lib::Box<String> = lib::Box { v: "x" };`), and an imported type is a type argument like a local one (`let x: Box<lib::Scalar> = Box { v: 17 };`).
-- **Supported type arguments:** Any user-defined `type` record and all built-in types (`Int`, `Float`, `Bool`, `String`, `Duration`, `Decimal`, `Time`, `Bytes`, `BytesView`, `BytesMut`, `StringView`) are valid type arguments. (`Uint` has no lowered representation and is rejected; use `Int`.) A generic `type` cannot take a locus (`Box<L>` would make a plain-data `type` hold the locus), a generic locus's instantiation (`Box<Cache<Int, String>>`) included; make the template a generic locus instead. Nor can it take the value of a `perspective(P)` slot yet: hold that in a `type` whose field is declared `perspective(P)`.
-- **Name mangling:** Each instantiation compiles to a distinct specialized type named `Template_Arg1_Arg2` (such as `Box_Int` or `Cache_Int_String`). Inside `Box<T>`, the identifier `T` always resolves to the type parameter even if the seed also declares a top-level type named `T`.
-
-Next: [Files](./files.md).
+Next: [Generics](./generics.md).

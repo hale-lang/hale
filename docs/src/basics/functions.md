@@ -86,9 +86,9 @@ fn main() {
 | **Locus construction & bus sends** | A default that constructs a locus builds it in the caller's pool context (which can trigger cross-pool spawn checks). Publishing (`<-`) is forbidden inside a default expression; call a helper method instead. |
 | **Locus method support** | User-defined `fn` methods on a locus support default parameters. Bus-subscribed handlers and mode bodies (`bulk`, `harmonic`, `resolution`) do not allow defaults. |
 
-## Generics and the `Numeric` Bound
+## Generic Functions and the `Numeric` Bound
 
-Generic functions and types can constrain a type parameter with `: Numeric`, which accepts `Int`, `Float`, `Decimal`, and `Duration`:
+A function can take type parameters, and `<T: Numeric>` admits `Int`, `Float`, `Decimal` and `Duration`:
 
 ```hale
 fn twice<T: Numeric>(x: T) -> T {
@@ -102,17 +102,7 @@ fn main() {
 }
 ```
 
-`Numeric` is the only type parameter bound in Hale; there is no user-defined trait bound syntax (declarations like `<T: Eq>` are rejected).
-
-A type argument is a primitive or a declared type: a record, an enum, an alias, a locus, an interface or a perspective (`id(Counter { n: 3 })` specializes `id` at the locus). Each specialization is compiled under a name its arguments spell, and an array, a tuple or a fn type spells none yet, so `hale check` refuses a call like `id([1, 2])` at the callee; wrap the value in a record (`type Pair { v: [Int; 2]; }`). A locus method cannot be generic itself (`fn twice<T>(…)` inside a locus is refused at its name): declare it as a free generic fn.
-
-A call takes each type argument from the argument in the position that names it. A generic fn from an imported seed is called through its alias (`lib::id(3)`), and a generic `fallible(E)` fn is addressed with `or` like any fallible call (`parse(s) or 0`). An argument whose type the compiler can't name pins nothing, so `hale check` refuses `id(self.slot)` (a capacity slot is used through its operations) and `id(println("x"))` (no value) at the argument. A generic fn has no single type, so its name is not a value: `let g = id;` is refused; call it, or pass a fn written over the concrete types that calls it. A call fills no default on a generic fn's parameter yet, so `read()` for `fn read<T>(n: T = 42) -> T` is refused at the callee: pass the argument.
-
-A generic body is checked once as written and again for each set of type arguments its calls make, so what only one specialization gets wrong is refused where it is written, naming the specialization: `fn scale<T>(x: T) -> T { return x * 1.5; }` called with an `Int` returns a `Float` where an `Int` is due. The same goes for an argument the body still can't name at those types, such as a `match` arm's binding handed to another generic fn.
-
-A generic function that returns a generic type of its parameter (`fn box_of<T>(x: T) -> Box<T>`) returns, at each call, the instantiation its arguments name: `box_of(7)` is a `Box<Int>`, so `box_of(7).v` is an `Int` and is checked as one.
-
-When a generic locus (such as `Holder<T>`) calls a generic function with `self.value` (or a local bound from `self.value`), the compiler monomorphizes the call for each concrete instantiation (`Holder<Int>`, `Holder<String>`). Default expressions in `params` use the declaring locus's type arguments.
+`Numeric` is the only type parameter bound in Hale; there is no user-defined trait bound syntax (declarations like `<T: Eq>` are rejected). A call takes each type argument from the argument in the position that names it, so `twice(2)` is the `Int` version and `twice(1.5)` the `Float` one. Generic records and loci, and the rules a generic call follows, are on the [Generics](../everyday/generics.md) page.
 
 ## Function Pointers (`fn(T) -> U`)
 

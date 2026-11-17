@@ -1997,7 +1997,10 @@ generic surface; runtime is full-speed.
 
 A monomorph has to be NAMED before it can be declared — `Box<Int>`
 is lowered as `Box_Int` — so each argument must contribute a token
-to that name. The primitive vocabulary is:
+to that name. The name is the template's, then each argument's token
+in declaration order, joined by `_` (`Template_Arg1_Arg2`:
+`Cache<Int, String>` is `Cache_Int_String`, `Box<Pair<Int, Bool>>` is
+`Box_Pair_Int_Bool`). The primitive vocabulary is:
 
 ```
 Int  Float  Bool  String  Duration  Decimal  U256  I256  Time
@@ -2017,8 +2020,8 @@ argument's span and names the supported set:
 ```
 main.hl:6:12: type error: `Uint` cannot be a generic argument: no
 monomorph name exists for it (supported: Int / Float / Bool /
-String / Duration / Decimal / Time / Bytes / BytesView / BytesMut
-/ StringView)
+String / Duration / Decimal / U256 / I256 / Time / Bytes / BytesView
+/ BytesMut / StringView)
 ```
 
 A non-primitive argument is a single-segment named type (a user
