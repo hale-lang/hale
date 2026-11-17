@@ -2288,16 +2288,18 @@ Write the workaround knowing it's a placeholder.
 ### Sharp edges — current limitations, step around them
 
 Implementation constraints, not positions; no promise attached.
-Two of them pass `hale check` and fail only at `hale build`: know
-those cold.
+One of them passes `hale check` and fails only at `hale build`: know
+it cold.
 
-- **No char-level `s[i]`** — and the checker doesn't say so:
-  `s[1]` on a `String` typechecks, then the build fails with
-  "indexing a non-array value (type String)". Use `s[i..i + 1]`
-  slices, `std::str::index_of`, or the UTF-8 accessors
-  `std::str::cp_at` / `cp_size` / `cp_count` when you need code
-  points rather than bytes. There is still no `Char` type;
-  `cp_at` yields the code point as an `Int`.
+- **No char-level `s[i]`, and no `for c in s`.** `hale check`
+  refuses both on a `String` (GH #1995; until then the check passed
+  them and the build failed with "indexing a non-array value").
+  Use `s[i..i + 1]` slices, a view's `std::str::byte_at(v, i)`,
+  `std::str::index_of`, or the UTF-8 accessors `std::str::cp_at` /
+  `cp_size` / `cp_count` when you need code points rather than
+  bytes; to take a text apart, loop over `std::str::split`,
+  `lines` or `words` (S16). There is still no `Char` type; `cp_at`
+  yields the code point as an `Int`.
 - **Write the stdlib's time types bare: `Time` and `Duration`, not
   `std::time::Time` or `std::time::Duration`.** The qualified
   spelling typechecks as a field, a `@form` cell type or a fn
