@@ -330,3 +330,54 @@ fn quiesce_does_not_stall_exit_on_a_silent_peer() {
     let _ = std::fs::remove_file(&sub_bin);
     let _ = std::fs::remove_file(&holder_bin);
 }
+
+/// 4. GH #1991: the quiesce ends the reader on every platform. It used
+///    to half-close the listener with shutdown(), which wakes a reader
+///    parked in poll on Linux only: Darwin answers ENOTCONN for a
+///    listening socket and wakes nobody, so on macOS every unix
+///    listener, served or not, waited out the 500 ms bound at each exit
+///    point and said so ("ingress quiesce: reader(s) still draining").
+///    The stop is a byte on the reader's pipe now, as UDP's is. This
+///    file runs in the macOS workflow, the platform that had the bug.
+#[test]
+fn a_unix_listener_quiesces_at_exit_served_or_not() {
+    for served in [false, true] {
+        let tag = if served { "served" } else { "idle" };
+        // short: macOS caps a socket path at 104 bytes, and its temp dir is long
+        let sock = unique_socket_path(if served { "qs" } else { "qi" });
+        // served: the subscriber waits for the burst, so its peer has
+        // connected, written and gone before the exit
+        let sub_src = if served { waiting_sub_src(&sock, 3) } else { exiting_sub_src(&sock) };
+        let sub_bin = build(&format!("quiesce_{tag}_sub"), &sub_src);
+        let pub_bin = build(&format!("quiesce_{tag}_pub"), &burst_pub_src(&sock));
+
+        let start = Instant::now();
+        let sub = Command::new(&sub_bin)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn subscriber");
+        if served {
+            let p = Command::new(&pub_bin).output().expect("run publisher");
+            assert!(p.status.success(), "publisher failed: {}", String::from_utf8_lossy(&p.stderr));
+        }
+        let out = sub.wait_with_output().expect("subscriber exit");
+        let elapsed = start.elapsed();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "[{tag}] subscriber failed: {:?}\n{stdout}\n{stderr}", out.status);
+        assert!(
+            !stderr.contains("ingress quiesce"),
+            "[{tag}] the reader did not end at the quiesce's stop:\n{stderr}"
+        );
+        if served {
+            assert!(stdout.contains("total=41"), "[{tag}] the burst is delivered (7+11+23):\n{stdout}");
+        }
+        // the run is 120 ms, or the burst; two bounds waited out were 1 s more
+        assert!(elapsed < Duration::from_secs(5), "[{tag}] exit took {elapsed:?}");
+
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_file(&sub_bin);
+        let _ = std::fs::remove_file(&pub_bin);
+    }
+}
