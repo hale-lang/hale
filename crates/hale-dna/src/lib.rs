@@ -378,6 +378,7 @@ pub const HEAD_FILES: &[EmbeddedFile] = at![
     "dna/api/organization_candidate.hl",
     "dna/api/organization_drafts.hl",
     "dna/api/organization_impact.hl",
+    "dna/api/organization_list.hl",
     "dna/api/organization_status.hl",
     "dna/api/people.hl",
     "dna/api/record_index.hl",

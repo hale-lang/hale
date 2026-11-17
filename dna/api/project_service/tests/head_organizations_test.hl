@@ -1,0 +1,171 @@
+// dna/api/project_service/tests/head_organizations_test.hl — an organism's
+// head lists every organization of its habitat on the face's Index read,
+// from the habitat's head (dna/api/organization_list.hl).
+//
+// Two heads: the habitat's, over a record holding its profile and two
+// grafted organisms, its directory named (`HALE_DNA_HABITAT`), and an
+// organism's, handed that habitat (`HALE_DNA_HABITAT_NAME`,
+// `HALE_DNA_HABITAT_FACE`) and keeping its face's state where the habitat
+// keeps it (its launch token under `allocations/<key>/face-state`). The
+// habitat's list opens to the proof of that token alone, and answers names
+// and states; the organism's Index read, as the face's relay answers it,
+// carries the habitat first and then each organism, each linked on the
+// habitat's face, its own marked current; it keeps the list it read while the habitat is gone; and
+// a head whose habitat never answers still answers the read, its list empty.
+
+import "./fixture" as fixture;
+import "../../../api" as api;
+import "../../../core" as dna;
+
+const KEY: String = "0a1b2c3d4e5f";
+
+fn add(j: dna::Journal, kind: String, entity: String, body: String) {
+    let r = j.append(j.revision(), kind, entity, body);
+    std::test::assert(r.ok, "the record takes " + kind + " " + entity + ": " + r.error);
+}
+
+fn graft(j: dna::Journal, key: String, name: String, face: String) {
+    add(
+        j,
+        "habitat.grafted",
+        key,
+        "{\"child\": \"" + key + "\", \"parent\": \"habitat\", \"name\": \"" + name
+            + "\", \"face\": \"" + face + "\", \"head\": \"\"}",
+    );
+}
+
+// The face's Index read on the head of `f`, through its relay, once the
+// head's API child answers it (`"ok":true`), within a minute.
+fn index_read(f: fixture::HeadFixture) -> String {
+    let path = "/api/hale/v1/applications/" + f.identity + "/commands";
+    let mut body = "";
+    let deadline = std::time::now() + dna::wait_secs(60);
+    while std::time::now() <= deadline && !std::str::contains(body, "\"ok\":true") {
+        body = f.http(
+            "POST",
+            path,
+            f.command_headers(),
+            "{\"call\":\"Index\",\"payload\":{\"limit\":200}}",
+        ).body;
+        if !std::str::contains(body, "\"ok\":true") { std::time::sleep(250ms); }
+    }
+    std::test::assert(
+        std::str::contains(body, "\"ok\":true"),
+        "the Index read answers: " + body + f.log(),
+    );
+    return body;
+}
+
+fn organizations_of(body: String) -> String {
+    return std::json::find_string_field(body, "organizations");
+}
+
+fn main() {
+    let habitat_root = dna::scratch_root("head-orgs-habitat");
+    let child_root = dna::scratch_root("head-orgs-child");
+    let orphan_root = dna::scratch_root("head-orgs-orphan");
+    let habitat_dir = habitat_root + "/habitat";
+    let habitat_port = dna::free_port(1);
+    let child_port = dna::free_port(2);
+    let nobody = dna::free_port(3);
+    let face = "http://127.0.0.1:" + to_string(habitat_port);
+
+    let habitat = fixture::HeadFixture {
+        root: habitat_root,
+        port: habitat_port,
+        env: "HALE_DNA_HABITAT=" + habitat_dir,
+    };
+    // the organism's head is handed the habitat's face with a trailing `/`,
+    // as a hand-written one might be
+    let child = fixture::HeadFixture {
+        root: child_root,
+        port: child_port,
+        env: "HALE_DNA_HABITAT_NAME=home\nHALE_DNA_HABITAT_FACE=" + face + "/",
+    };
+    // the habitat's record: its name, the organism whose face answers, and
+    // one whose face does not
+    add(
+        habitat.journal,
+        "habitat.profile",
+        "local",
+        "{\"profile\": \"local\", \"name\": \"home\"}",
+    );
+    graft(habitat.journal, KEY, "shop", "http://127.0.0.1:" + to_string(child_port));
+    graft(habitat.journal, "9f8e7d6c5b4a", "dormant", "http://127.0.0.1:" + to_string(nobody));
+
+    habitat.start_with_project(habitat.project, 0);
+    child.start_with_project(child.project, 0);
+    // the habitat keeps the organism's face state: its launch token is there
+    let kept = habitat_dir + "/allocations/" + KEY + "/face-state";
+    std::test::assert_eq_int(dna::run_tool("mkdir\n-p\n" + kept).code, 0, "the face state");
+    std::io::fs::write_file(kept + "/head.token", child.token() + "\n") or discard;
+    std::test::assert_eq_int(len(child.token()), 32, "the organism's head drew its token");
+
+    // ---- the habitat's list: for the proof of a kept face's token alone
+    let bare = habitat.http("GET", api::ORGANIZATIONS_PATH, "", "");
+    std::test::assert_eq_int(bare.status, 401, "no proof, no list: " + bare.body);
+    let raw = habitat.http(
+        "GET",
+        api::ORGANIZATIONS_PATH,
+        "Authorization: Bearer " + child.token(),
+        "",
+    );
+    std::test::assert_eq_int(raw.status, 401, "the token itself opens nothing: " + raw.body);
+    let own = habitat.http(
+        "GET",
+        api::ORGANIZATIONS_PATH,
+        "Authorization: Bearer " + api::organizations_proof(habitat.token()),
+        "",
+    );
+    std::test::assert_eq_int(
+        own.status,
+        401,
+        "nor the proof of a token no kept face holds: " + own.body,
+    );
+    let listed = habitat.http(
+        "GET",
+        api::ORGANIZATIONS_PATH,
+        "Authorization: Bearer " + api::organizations_proof(child.token()),
+        "",
+    );
+    std::test::assert_eq_int(listed.status, 200, "a kept face's proof reads it: " + listed.body);
+    std::test::assert_eq_str(
+        listed.body,
+        "{\"name\": \"home\", \"organisms\": [{\"name\": \"shop\", \"state\": \"up\", \"current\": true}, {\"name\": \"dormant\", \"state\": \"grafted\"}]}",
+        "names and states, nothing else of a graft, the asking face's own current",
+    );
+
+    // ---- the organism's Index read carries every organization, the
+    // habitat first, each linked on the habitat's face
+    let expected = "[{\"name\": \"home\", \"state\": \"up\", \"face_link\": \"" + face
+        + "/organization\"}, {\"name\": \"shop\", \"state\": \"up\", \"face_link\": \"" + face
+        + "/organisms/shop/face\", \"current\": true}, {\"name\": \"dormant\", \"state\": \"grafted\", \"face_link\": \""
+        + face + "/organisms/dormant/face\"}]";
+    let read = index_read(child);
+    std::test::assert_eq_str(organizations_of(read), expected, "the list on the read: " + read);
+    // the habitat's own read lists none: its face lists its UIs instead
+    std::test::assert_eq_str(
+        organizations_of(index_read(habitat)),
+        "[]",
+        "the habitat's own read carries an empty list",
+    );
+
+    // ---- the list is kept: the habitat gone, the read answers as before
+    habitat.stop_head();
+    std::test::assert_eq_str(
+        organizations_of(index_read(child)),
+        expected,
+        "the list read within its cache's life",
+    );
+
+    // ---- a head whose habitat never answers: the read answers, its list empty
+    let orphan = fixture::HeadFixture {
+        root: orphan_root,
+        port: dna::free_port(4),
+        env: "HALE_DNA_HABITAT_NAME=home\nHALE_DNA_HABITAT_FACE=http://127.0.0.1:"
+            + to_string(nobody),
+    };
+    orphan.start_with_project(orphan.project, 0);
+    let alone = index_read(orphan);
+    std::test::assert_eq_str(organizations_of(alone), "[]", "no habitat answered: " + alone);
+}
