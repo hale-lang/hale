@@ -8,6 +8,145 @@ behavior.
 
 ## Unreleased
 
+## v0.34.0 — enums and strings, written the short way (2026-11-17)
+
+This release is mostly RFC #1995: the enum and string code a program writes every day, made short. It also closes the 17 check/build divergences the parity gate surfaced once its draw stopped moving, gives a `match` arm's bindings their types, and puts every organization of a habitat in one list. One change makes a program that built behave differently, and two refuse programs that built; each is listed under Breaking with its migration. The `std::json::Builder` quoting change v0.33.0 announced for this release moves to v0.35.
+
+**Enums and strings, the short way (RFC #1995).** A string slices open-ended: `s[a..]`, `s[..b]`, `s[..]` (#1998). `std::str` gains the helpers that were being written by hand: `cut` and `cut_last`, `trim_prefix` and `trim_suffix`, `trim_start` and `trim_end`, `last_index_of`, `eq_ignore_case` and `parse_bool`, and `ends_with` can be called bare (#2001). `for part in std::str::split(s, sep)`, `lines(s)` and `words(s)` walk a text in one linear pass, in pure code too (#2009). Every enum gets `E::name`, `E::parse`, `E::variants` and `E::index`, and `@wire_case` spells its variants on the wire (#2007). A variant takes a `json:` tag that renames it, and a catch-all variant keeps any string no variant names, across the JSON codecs, the api description and its clients (#1994). A match arm takes or-patterns, `"assign" | "unassign" -> …` (#2008). `b'/'` is one byte's `Int` value (#2014). `if let` and `let … else` test one pattern without a two-arm `match`, and a plain `let` destructures a pattern that cannot fail (#2015). `len(s)` and a slice of a String local measure its text once per value, not on every call, so a byte loop over 512 KiB went from 11 s to 4 ms (#2018). The new `std::str` helpers and the text sources are experimental for one minor.
+
+**What you check is what builds, continued.** The parity gate now draws each mutator's candidates on a key of its own, so adding a mutator no longer re-deals the others' (#2006). The reshuffle that prompted the change had surfaced divergences that were there all along, and sweeping it found 17 root causes (GH #2005). All of them are closed. Shapes the build refused are refused by the check at your line, with what to write instead, and shapes the build could compile now compile: `Time ± Duration` in a generic body, `fn(T) -> ()` in a signature, an `or` called as a fn value, among others. A `match` arm's binding has a type where it is used, as any local does, and a match expression's arms must agree on one type (#2017, GH #2016). That closes a hole: a binding used at the wrong type passed both the check and the build. A `bounded[T; N]` whose element is a generic template's parameter builds, and a generic locus used as a `type`'s argument or field is refused by the check (#2021).
+
+**The habitat and its organizations.** Every organization face lists all of the habitat's organizations and the UIs each declares, in its rail, each entered signed in (#2000). A grafted organism knows its habitat's name and face, and its face lists the habitat's organizations too (#2002, #2004). The face draws a knowledge graph, the board creates tasks and hands them to someone, and every action is worded for what it does (#1999). `hale habitat organism place` and `upgrade` ask for a remote host's sudo password on the terminal instead of hanging, and an interrupted upgrade resumes where it stopped, because each placement records the revision it installed (#1939). A sapling whose repository is a path on this machine is refused before it is placed on another host, naming the `<url>#<commit>` nursery to add instead (#2012).
+
+**Runtime, stdlib and tooling fixes.** `std::process::rss_bytes()` returns the current resident memory, the number the process metrics report, where it returned the peak (on macOS, a number 1024 times too large); `peak_rss_bytes()` is the peak (#2011). `scripts/warm-and-build.sh` runs under macOS's `/bin/bash` 3.2 (#2013). CI pins Ubuntu's archive at an address that answers (#2003), and the wire decoder table test waits for its subscription instead of failing on a loaded runner (#1997).
+
+**Docs.** The book has a Generics page in Part I: a generic record, a generic locus, generic fns, and the rules a program meets, each with what to write instead (#2019). The seams chapter describes a seam as a typed pipeline of hops, of which decode → handle → encode is one use (#2020).
+
+### Breaking
+
+Measured against v0.33.0. The first group changes what a program that built does; the second refuses programs that built; the third moves refusals `hale build` already made into `hale check`, so a program that built is unaffected; the last is the deprecation carried over from v0.33.0.
+
+*Programs that built and now behave differently*
+
+- **`std::process::rss_bytes()` returns the current resident memory, not the peak** (#2011, GH #1906). It read `getrusage`'s `ru_maxrss`, the peak, as the spec documented, and on macOS the number was 1024 times too large. It now reads `/proc/self/statm` on Linux and mach `task_info` on macOS, the number `hale_process_resident_memory_bytes` reports. Migration: call `std::process::peak_rss_bytes()` where you meant the peak.
+- **`hale api import` writes a string enum whose values are not all identifiers as an enum** (#1994). Such a property used to import as `String`. It now imports as PascalCase variants tagged with their wire values (``StopLimit `json:"stop-limit"` ``), so code written against a file imported earlier meets an enum where it had a `String`. A document whose enum values are all identifiers imports as before, and the api binding is experimental. Migration: match on the variants, or take the wire string with `E::name(v)`; or keep the earlier generated file.
+
+*Programs that built and are now refused*
+
+- **A `match` arm's binding used at another type** (#2017, GH #2016). A binding had no type, so `let t: String = v`, with `v` bound to an `Int`, passed both the check and the build. A bare binding now has the scrutinee's type, a variant's value its declared field type, and a tuple pattern's part its element's type; the names an `if let` or a `let … else` binds are typed the same way. Migration: use the binding at its own type: fix the annotation (`let t: Int = v`) or convert the value (`f"{v}"`).
+- **An interface shape inside a generic fn that nothing instantiates** (#2006, GH #2005). A value of one interface passed where another is expected, or a locus assigned to a place declared as an interface, is now refused by the check (next group). Inside a generic fn that nothing instantiates, such a shape was never compiled, so the program built. Migration: write the shape as the diagnostic says, or delete the unused template.
+
+*Refused by `hale check` instead of `hale build` (a program that built is unaffected)*
+
+- **The shapes GH #2005 found** (#2006): a value of one interface passed where another is expected, read from an array or tuple element, a `let` or a stdlib interface's parameter (`h: std::http::Handler`); a locus assigned to an interface place; a generic `type` instantiated at a perspective slot's value or at a generic locus's instantiation through a generic fn; a `return` or a `()` value that is wrong only at one specialization, which the diagnostic names; a match arm's binding passed to a generic fn in a generic body; a generic fn's defaulted parameter left out in another fn's parameter default; and an argument of the wrong type for a parameter typed by a builtin error type. Migration: write the shape as the diagnostic says.
+- **A match expression whose arms have different types** (#2017): `match s { S::B(v) -> v, _ -> "s" }`, or `match c { 1 -> 5, _ -> {} }`, whose block arm's value is `()`. Migration: give every arm the one type; an arm that `return`s or `break`s may stay beside them.
+- **A generic locus's instantiation as a generic `type`'s argument or as a `type`'s field** (#2021): `Box<Cache<Int, String>>`, `w: Cache<Int, String>`. The build failed on it with no location. Migration: a `type` never holds a locus, generic or not; write it as the diagnostic says.
+- **Iterating a `String`, and indexing one byte of it** (#2009): `for c in s` and `s[i]`. Migration: iterate `std::str::split`, `lines` or `words`, or a `bytes_view` by index; read one byte with `std::str::byte_at`, or slice `s[i..(i + 1)]`.
+- **A slice bound that is not an `Int`** (#1998). Migration: pass an `Int`.
+- **`E::variants()` called as a fn** (#2007). Migration: `E::variants` is a value; drop the parentheses.
+
+*Deprecated*
+
+- Deprecated: **`std::json::Builder`'s `field(name, value)` and `value(v)`** (#1954, #1959): still deprecated; the quoting change moves to v0.35. v0.33.0 said this release would make them quote their argument as a string. It does not: they still write their argument raw, so `b.field("name", "alice")` still writes `"name": alice`, and each call still warns `deprecated:`, the warning now naming v0.35. Migration: unchanged: hand encoded JSON to `raw_field(name, json)` / `raw_value(json)`, and a string to `string_field` / `string_value`.
+
+The item-level notes follow.
+
+### Fixed
+- `hale habitat organism place` / `upgrade` no longer hang silently when a host's sudo needs a password and the remote prompt never reaches the screen. The login is first asked whether its sudo needs one (`sudo -n true`). At a terminal the password is asked for on the terminal itself (`sudo password for <user>@<host>: `, not echoed), checked (three tries), and handed to the remote `sudo -k -S` as the first line of its stdin, never in an argument, a variable or a file. Off a terminal the command is refused at once, naming the host. With no password needed it runs as before, now off a terminal too. Each host's install is announced before it starts (#1937).
+- An interrupted `hale habitat organism upgrade` is no longer recorded as done for every placement. A placement records the revision it installed (`revision`, `digest` on `Commands::record_placed`) once its own install succeeds, and `organism upgrade` re-places every placement behind the pinned revision, also when the organism is already at it, so running it again resumes the upgrade. `--plan` lists the placements behind, and `hale habitat status` shows a placement's revision when it is not its organism's. A placement recorded before this release is re-placed when the organism moves, and otherwise named with the `place` that re-places it (#1938).
+
+### Added
+- An enum variant takes a `json:` tag (GH #1951): ``Sell `json:"sell"` `` renames it on the JSON wire, in the api codecs and `from_json` / `to_json` alike, and ``Other(String) `json:",other"` `` (or a payload-free variant tagged `other`) catches any string no variant names, keeping it or not. The description lists the wire names, with `x-hale-variants` and `x-hale-other`; the contract digest folds the tags in; the Hale client declares them and the TypeScript client types `"buy" | "sell" | (string & {})`. Protobuf keeps the variant identifiers, and a payload-free catch-all takes an enum number no variant has. `hale api import` writes a string enum whose values are not all identifiers as PascalCase variants tagged with the values, where it wrote `String`.
+
+### Fixed
+- The wire decoder table test resends its first valid frame until the subscription is live, so a loaded CI runner no longer fails it with an empty stdout.
+
+### Added
+
+- Open-ended slices (#1995): `s[a..]` runs to the end of the string, `s[..b]` and `s[..=b]` start at 0, and `s[..]` is the whole string. Each is the closed slice it reads as, with the receiver evaluated once and the bounds clamped as `s[a..b]` clamps them. A bound can be left out only inside an index's brackets: a bare `3..` is still a parse error, and so is `s[a..=]`. `hale check` now also refuses a slice bound that is not an `Int`, which it used to pass and the build refused.
+
+### Added
+- The face draws a knowledge graph (every entry by kind, or the selected entry and what it relates to, two steps out), the board creates tasks and hands them to someone, and every action is worded for what it does ("Assign someone", "Preview", "Submit for approval", "Approve", "Hand off", "Mark done").
+
+### Added
+- Every organization face lists all of the habitat's organizations and the UIs each declares in one place, its rail, each entered signed in.
+
+### Added
+
+- `std::str` gains the splits and trims that were being written by hand (#1995, experimental for one minor): `cut(s, sep)` and `cut_last(s, sep)` return the text before and after the first or last `sep` as a `(String, String)`, and fail with `ParseError { kind: "not_found" }` when there is none. `trim_prefix` and `trim_suffix` remove one affix if it is present. `trim_start` and `trim_end` trim one end. `last_index_of` returns the offset of the last match, or `-1`. `eq_ignore_case` compares ASCII letters without case. `parse_bool` accepts exactly `"true"` and `"false"`.
+- `ends_with(s, suffix)` can be called bare, like `contains` and `starts_with`. A program's own `fn ends_with` keeps the name.
+- `s.trim()` and every other method spelling of a `std::str` function on a `String` now name the call to write, for example `std::str::trim(s)`.
+
+### Added
+- A grafted organism's own organization knows the habitat it lives in. The habitat hands the body and the face of every organism it keeps (`body-<key>`, `face-<key>`) its name and the absolute origin of its face, `HALE_DNA_HABITAT_NAME` and `HALE_DNA_HABITAT_FACE` (`http://<address>:<port>`, as `hale habitat status` prints it), and the organism's head answers them on `Commands::org` as `habitat: {name, face}`, both `""` on the habitat's own record and for an organism run outside a habitat. The face can then link back to the habitat's face and, through `<face>/organisms/<name>/face`, to the habitat's other organisms.
+
+### Fixed
+
+- CI pins Ubuntu's archive at the first of its addresses that answers from the runner, not the first one a public resolver returns, so an unreachable mirror address no longer fails every Linux job.
+
+### Added
+- A grafted organism's face lists every organization of its habitat. The face's `Index` read through the head's commands relay carries `organizations`: the habitat first, then each organism it grafted, each `{name, state, face_link}` (the organism's own entry also `current: true`), the link being the habitat face's hand-in (`<face>/organisms/<name>/face`; the habitat's own is `<face>/organization`). The organism's head reads the list from the habitat's head (`GET /api/hale/v1/head/organizations`) at most once every 30 seconds, presenting a proof of its own launch token that only the faces the habitat keeps hold. The list is empty on the habitat's own face, outside a habitat, and while the habitat does not answer; the read answers either way. The habitat answers names and states only.
+
+### Fixed
+- `hale check` refuses shapes `hale build` already refused, now at the user's line and saying what to write instead (GH #2005): a value of one interface passed where another interface is expected, read from an array or tuple element, a `let` or a stdlib interface's parameter (`h: std::http::Handler`), all of which the check had typed as unknown; a locus assigned to a place declared as an interface (`g = Hey { };` for `let mut g: Greeter`); a generic `type` instantiated at a perspective slot's value or at a generic locus's instantiation through a generic fn (`bx(self.router)`, `bx(cs[0])` with `cs: [Cache<Int, String>; 2]`); a `return`, or a value that is `()`, that is wrong only at the type arguments a call makes (`fn scale<T>(x: T) -> T { return x * 1.5; }` called with an `Int`), the diagnostic naming the specialization; a match arm's binding passed to a generic fn in a generic body; a call that leaves out a generic fn's defaulted parameter in another fn's parameter default; and an argument of the wrong type for a parameter typed by a builtin error type (`fn default_port(e: ParseError)` handed a `String` error's `err`), which a signature had resolved to unknown.
+- Shapes `hale check` accepted and `hale build` refused now compile (GH #2005): `Time ± Duration`, `Time - Time` and a Decimal literal beside a `Decimal<S>` operand in a generic body; an array literal for a `bounded[T; N]` parameter through a fn value; `fn(T) -> ()` in a signature; the success of an `or` called as a fn value (`(pick() or raise)(4)`); a `() fallible(E)` body whose tail is an `or`; a pinned anchor nested in another anchor's params that reads a binding of `fn main`; and a generic fn first specialized inside a locus literal's field.
+- The parity gate draws each mutator's candidates on a key of its own (the seed's text, the mutator's name and the salt), so adding a mutator no longer re-deals every other mutator's candidates.
+
+### Added
+- Every enum gets four functions the compiler writes (RFC #1995 E1, F.53): `E::name(v) -> String`, `E::parse(s) -> E fallible(ParseError)` (`kind: "unknown_variant"`), `E::variants` (a value, `[E; N]` in declaration order) and `E::index(v) -> Int`. A variant has one external name, used by these and by the JSON codecs: its `json:` tag's key, else its enum's `@wire_case` spelling, else its declared name. With a catch-all (``Other(String) `json:",other"` ``), `parse` cannot fail: an unknown name becomes the catch-all, and `name(Other(s))` is `s`. `name` and `index` ignore payloads. `parse` and `variants` work on payload-free enums (plus one catch-all), and anything else is refused at the call with the reason. So is `E::variants()`, which used to pass `hale check` and then fail the build. An enum that declares a variant named `name`, `parse`, `variants` or `index` keeps meaning its variant. `println` still renders `Enum::Variant`.
+- `@wire_case(snake | screaming_snake | kebab | lower)` on an enum declaration spells every variant in that case on the wire, for the codecs, the description, the digest and `E::name` / `E::parse` alike. A variant's own `json:` tag still wins.
+
+### Added
+
+- Or-patterns in `match` arms: `"assign" | "unassign" -> …`, `E::A(p) | E::B(p) -> p`. Every alternative binds the same names at the same types, a guard covers the whole arm (retried with each matching alternative's bindings), and exhaustiveness counts each alternative. `|` is top level only; `E::A(1 | 2)` is refused with a fix. An alternative an earlier arm or alternative already covers is warned as never tried. `hale fmt` wraps a long arm one alternative a line, led by `|` (#1995).
+- `--warn-string-match` (on `hale check` or `hale verify`) suggests a `match` for three or more `if` tests in a row comparing one String with literals. Off by default, `hale verify` included, and never reports stdlib source. String `match` is now shown in AGENTS.md and the control-flow chapter (#1995).
+
+### Added
+
+- `for part in std::str::split(s, sep)`, `for line in std::str::lines(s)` and `for w in std::str::words(s)` visit the parts of a text, one per iteration, in one linear pass (#1995, experimental for one minor). `split` keeps empty parts, as `split_into` does, and an empty `sep` gives none; `lines` drops the `\r` of a CRLF ending and starts no line after a final newline; `words` splits on runs of ASCII whitespace and never yields an empty word. Each part is a `String` for its iteration, `break` and `continue` work, and the loop is pure, so it runs in `@deterministic @no_syscall` code. They are `for` sources, not values: `let xs = std::str::split(s, ",");` is refused, pointing at `std::str::split_into` to keep the parts. Over 4 KiB words, `words` takes 0.7 ms for 1 MiB and grows 4x with 4x the text; the `while len(rest) > 0 { … rest = rest[(sp + 1)..len(rest)]; }` loop it replaces takes 15 ms for 1 MiB and grows 15x.
+- `hale check` refuses `for c in s` over a `String` ("iterate `std::str::split/lines/words`, or a `bytes_view` by index") and `s[i]`, one index of a `String` (read a byte through `std::str::bytes_view` and `byte_at`, or slice `s[i..(i + 1)]`). Both passed the check and failed the build. Ranges, `s[a..b]` and the open `s[a..]`, are unchanged.
+
+### Added
+- `std::process::peak_rss_bytes() -> Int`: the process's peak resident memory in bytes, `ru_maxrss` in the platform's unit made bytes (bytes on macOS, KiB on Linux) (GH #1906).
+
+### Fixed
+- `hale habitat organism place` onto any host but this machine (the habitat's own machine through a pointer included, which holds only the nursery's mirror) refuses a sapling whose repository is a local path (a nursery added from a checkout), before anything runs on the host. It says that the host clones the sapling's repository itself, so a path on this machine reaches no other host, and that you should push the commit and add the nursery as `<url>#<commit>` (`hale habitat nursery add https://…#<sha>`). Before, the host's `git clone` failed with "repository '<path>' does not exist". `organism upgrade`'s re-run of a placement's install is refused the same way (GH #2010).
+
+### Fixed
+- `scripts/warm-and-build.sh` runs under macOS's `/bin/bash` 3.2. Without `--target-cpu`, every build failed there with "`build_flags[@]`: unbound variable", and a run with no seeds stopped at `seeds[@]`.
+
+### Added
+
+- Byte literals (#1995): `b'/'` is the `Int` value of one byte, so a scanner reads `std::str::byte_at(v, i) == b'/'` instead of `== 47`. The body is one printable ASCII character or one escape, `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0` or `\xNN` (any byte). A byte literal is an integer literal everywhere one is legal: an operand, an arm's pattern (`b'a' | b'A' -> …`), a constant, an array element. `b''`, `b'ab'` and `b'é'` are refused at the literal, the last pointing at `\xNN` or a `b"…"` Bytes literal, and a lone `'` now says that Hale has no character literals.
+
+### Added
+
+- `if let` and `let … else` (#1995). `if let Side::Other(raw) = side { … } else { … }` tests one pattern, any arm's pattern including an or-pattern, with its names in scope in the first block; it is an expression as `if` is, and chains with `else if let` and plain `else if` links. `let Outcome::Result(index) = o else { return -1; };` binds the pattern's names for the rest of the block; the `else` block must leave (`return`, `fail`, `break`, `continue`, `terminate` or `violate`), and `hale check` refuses one that can complete, naming the path (a call completes, `std::process::exit` included). Both are the two-arm `match` they read as.
+- A plain `let` takes a pattern that matches every value of its type, such as a one-variant enum's constructor (`let Meters::M(n) = m;`). One that can fail to match is refused with "add `else { … }`"; such a `let` used to be a parse error.
+
+### Fixed
+
+- A `match` arm's binding is typed where it is used, as any other local is: a bare binding is of the scrutinee's type, a variant's value of the variant's declared field type, a tuple pattern's part of the element's type. `let t: String = v`, with `v` bound to an `Int`, passed both `hale check` and `hale build`; the check now refuses it at `v`. The names an `if let` or a `let … else` binds are typed the same way (GH #2016).
+- A match expression's arms must all have one type, and a block arm's value is its tail (`()` when it has none). `match s { S::B(v) -> v, _ -> "s" }` and `match c { 1 -> 5, _ -> {} }` passed `hale check`, and then `hale build` refused them. The check now refuses them at the match ("match expression arms have mismatched types: `Int` vs `()`"), the same way it refuses an `if` expression's mismatched arms. An arm that `return`s or `break`s is still allowed beside the arms that give the value (GH #2016).
+- A block used as a statement that ends in a call with no `;` builds as the call statement, as the spec says. `if c { println("x") }`, a statement `match` arm `P -> { println("x") }`, and a trailing `if c { println("a") } else { println("b") }` (or `if let`) at the end of a body that returns nothing passed the check, and then the build refused them ("call to `println`: no … binding") (GH #2016).
+- A generic body's specialization can pass a `match` arm's binding to a generic fn: `Link::Next(n) -> id(n)` over a recursive record builds. Until now the check refused it because the binding had no type (GH #2016).
+
+### Changed
+
+- `len(s)`, a slice `s[lo..hi]`, `std::str::substring`, `std::str::index_of_from` and `std::str::cp_at` / `cp_size` on a String local or parameter measure its text once per value it holds instead of on every call, so the byte loop `while i < len(s) { let c = s[i..(i + 1)]; … }` and a loop that tests `len(out)` while appending to `out` are linear (GH #1947). The byte loop over 512 KiB took 11.0 s and now takes 4.2 ms. A String read from a field, an element or a call's result is measured as before; bind it to a local before a loop that measures it. The length is `strlen`'s, so an embedded NUL still ends the String, and nothing changes for FFI, the bus wire or the runtime.
+
+### Docs
+
+- The book has a Generics page (Part I, after Records): a generic record, a generic locus whose params and methods use its type parameter, generic fns, and the rules a program hits, each with what to write instead. The records chapter drops its `Box<T>` section, whose example gave a generic field a `0` default and whose rules were compiler internals; those (monomorph naming, the `Uint` gap, perspective slots) are in `spec/types.md` § Generics, which now states the naming rule outright.
+
+### Docs
+
+- The seams chapter describes a seam as a typed pipeline of hops, of which decode → handle → encode is one use, matching spec/semantics.md § Seams.
+
+### Fixed
+- A `bounded[T; N]` whose element is a generic template's parameter builds: `type Page<T> { items: bounded[T; 50]; }` at `Page<Int>`, and the same field in a generic locus's `params`, passed `hale check` and failed `hale build` ("generic-type dependency cycle …" / "unknown type name `T` in signature"). An element spelled with the template's name in a list literal at such a site (`[Row { v: 7 }]` at `bounded[Row<Int>; 4]`) takes the element's arguments, as at an array site.
+- A generic locus's instantiation as a generic `type`'s argument (`Box<Cache<Int, String>>`) or a `type`'s field (`w: Cache<Int, String>`) is refused by `hale check` at the argument or the field, with the wording a plain locus gets; the build failed on it with no location.
+
 ## v0.33.0 — what you check is what builds (2026-11-16)
 
 This is the first release under [`STABILITY.md`](./STABILITY.md), and its theme is the language settling toward 1.0. What `hale check` accepts, `hale build` now compiles, and a generator keeps it that way. Strings and `bounded` lists behave as values at a value's cost. What a release may change from here is written down, and every break below comes with its migration.
