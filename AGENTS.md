@@ -582,6 +582,31 @@ Arms use `->`, not `=>`.
 Arms may be blocks. `_` is the catch-all and is required when the
 arms don't cover the domain.
 
+Match on a `String` with string-literal patterns, and put several
+patterns on one arm with `|`. Prefer this to a ladder of
+`if s == "lit"` tests: it names the subject once and has one
+catch-all.
+
+```hale
+return match verb {
+    "assign" | "unassign" -> verb + " <name>",
+    "close" -> "close <name>",
+    _ -> "unknown verb",
+};
+
+return match e {
+    CtlError::Invalid(p) | CtlError::NotFound(p) -> p,
+    CtlError::NotReady(h) -> f"not ready: {h}",
+};
+```
+
+Every alternative binds the same names at the same types; a guard
+(`p1 | p2 if cond -> …`) covers the whole arm; exhaustiveness counts
+each alternative. `|` is top level only: `E::A(1 | 2)` is refused,
+write `E::A(1) | E::A(2)`. `hale check --warn-string-match` (or `hale
+verify --warn-string-match`) flags three
+or more `if x == "lit"` tests in a row on one string.
+
 ## Hard gotchas (codegen-v0 limits — don't fight these)
 
 These are the ones that bite on a first attempt. Each is a real

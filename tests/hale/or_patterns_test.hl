@@ -1,0 +1,166 @@
+// Or-patterns (GH #1995 E2): an arm's pattern may be two or more
+// alternatives separated by `|`, and the arm matches when one of them
+// does. Every alternative binds the same names at the same types, a
+// guard covers the whole arm, and exhaustiveness counts each
+// alternative as the arm it could have been written as.
+
+type CtlError = enum { Invalid(String), NotFound(String), Conflict(String), NotReady(Int) };
+type Color = enum { Red, Green, Blue, Black };
+
+type Book { title: String; pages: Int; }
+type Film { title: String; minutes: Int; }
+type Song { title: String; }
+type Item = Book | Film | Song;
+
+// enum alternatives with a payload binding, merged into one name
+fn problem(e: CtlError) -> String {
+    return match e {
+        CtlError::Invalid(p) | CtlError::NotFound(p) | CtlError::Conflict(p) -> p,
+        CtlError::NotReady(h) -> f"not ready: {h}",
+    };
+}
+
+// string literal alternatives
+fn usage(verb: String) -> String {
+    return match verb {
+        "assign" | "unassign" -> verb + " <name> reviews <kind>:<node>",
+        "close" -> "close <name>",
+        _ -> "unknown",
+    };
+}
+
+// enum alternatives without a payload, exhaustive with no `_`
+fn warm(c: Color) -> Bool {
+    return match c {
+        Color::Red | Color::Green -> true,
+        Color::Blue | Color::Black -> false,
+    };
+}
+
+// Bool alternatives: exhaustive in one arm
+fn either(b: Bool) -> Int {
+    return match b {
+        true | false -> 1,
+    };
+}
+
+// Int literal alternatives beside a guarded binding
+fn size(n: Int) -> String {
+    return match n {
+        1 | 2 | 3 -> "small",
+        x if x > 100 -> "big",
+        _ -> "mid",
+    };
+}
+
+// set-member alternatives
+fn kind(i: Item) -> String {
+    return match i {
+        Book(_) | Film(_) -> "long",
+        Song(s) -> s.title,
+    };
+}
+
+// tuple alternatives, the binding at a different place in each
+fn nonzero(p: (Int, Int)) -> Int {
+    return match p {
+        (x, 0) | (0, x) -> x,
+        _ -> -1,
+    };
+}
+
+// a guard covers the arm, and is tried with each alternative's bindings
+fn positive(p: (Int, Int)) -> Int {
+    return match p {
+        (x, _) | (_, x) if x > 0 -> x,
+        _ -> 0,
+    };
+}
+
+// a statement match, alternatives with a block body
+fn count_vowels(s: String) -> Int {
+    let mut n = 0;
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        match c {
+            "a" | "e" | "i" | "o" | "u" -> {
+                n = n + 1;
+            },
+            _ -> { },
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+// `|` in a guard and in a body is the bitwise operator
+fn bits(flags: Int) -> Int {
+    return match flags {
+        1 | 5 if (flags | 2) == 7 -> flags | 8,
+        _ -> 0,
+    };
+}
+
+fn main() {
+    std::test::assert_eq_str(problem(CtlError::Invalid("bad")), "bad", "first alternative binds p");
+    std::test::assert_eq_str(
+        problem(CtlError::NotFound("gone")),
+        "gone",
+        "second alternative binds p",
+    );
+    std::test::assert_eq_str(
+        problem(CtlError::Conflict("clash")),
+        "clash",
+        "third alternative binds p",
+    );
+    std::test::assert_eq_str(problem(CtlError::NotReady(3)), "not ready: 3", "the other arm");
+
+    std::test::assert_eq_str(
+        usage("assign"),
+        "assign <name> reviews <kind>:<node>",
+        "string alternative one",
+    );
+    std::test::assert_eq_str(
+        usage("unassign"),
+        "unassign <name> reviews <kind>:<node>",
+        "string alternative two",
+    );
+    std::test::assert_eq_str(usage("close"), "close <name>", "a single-pattern arm");
+    std::test::assert_eq_str(usage("open"), "unknown", "the catch-all");
+
+    std::test::assert(warm(Color::Red), "Red is warm");
+    std::test::assert(warm(Color::Green), "Green is warm");
+    std::test::assert(!warm(Color::Blue), "Blue is not");
+    std::test::assert(!warm(Color::Black), "Black is not");
+
+    std::test::assert_eq_int(either(true), 1, "true | false covers true");
+    std::test::assert_eq_int(either(false), 1, "and false");
+
+    std::test::assert_eq_str(size(2), "small", "Int alternatives");
+    std::test::assert_eq_str(size(3), "small", "the last Int alternative");
+    std::test::assert_eq_str(size(200), "big", "the guarded arm after them");
+    std::test::assert_eq_str(size(50), "mid", "the catch-all");
+
+    std::test::assert_eq_str(kind(Book { title: "Dune", pages: 412 }), "long", "set member one");
+    std::test::assert_eq_str(kind(Film { title: "Alien", minutes: 117 }), "long", "set member two");
+    std::test::assert_eq_str(kind(Song { title: "Lark" }), "Lark", "the member's own arm");
+
+    std::test::assert_eq_int(nonzero((5, 0)), 5, "x from the first alternative");
+    std::test::assert_eq_int(nonzero((0, 7)), 7, "x from the second alternative");
+    std::test::assert_eq_int(nonzero((2, 3)), -1, "neither alternative");
+
+    std::test::assert_eq_int(positive((4, -2)), 4, "the guard holds for the first alternative");
+    std::test::assert_eq_int(
+        positive((-1, 5)),
+        5,
+        "the guard fails for the first, holds for the second",
+    );
+    std::test::assert_eq_int(positive((-1, -2)), 0, "the guard fails for both");
+
+    std::test::assert_eq_int(count_vowels("or patterns"), 3, "a statement match with alternatives");
+
+    std::test::assert_eq_int(bits(5), 13, "bitwise `|` in the guard and the body");
+    std::test::assert_eq_int(bits(1), 0, "the guard is false for 1");
+    std::test::assert_eq_int(bits(4), 0, "no alternative matches 4");
+}

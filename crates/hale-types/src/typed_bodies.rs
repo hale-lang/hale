@@ -1131,7 +1131,9 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
         use hale_syntax::ast::Pattern;
         match p {
             Pattern::Binding(id) => out.push(node(id)),
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => args.iter().for_each(|a| pattern(a, out)),
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
+                args.iter().for_each(|a| pattern(a, out))
+            }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
     }

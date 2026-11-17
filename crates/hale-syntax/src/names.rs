@@ -870,7 +870,7 @@ fn pattern<'a>(p: &'a Pattern, f: &mut Visit<'_, 'a>) {
                 pattern(a, f);
             }
         }
-        Pattern::Tuple(args, _) => {
+        Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
             for a in args {
                 pattern(a, f);
             }

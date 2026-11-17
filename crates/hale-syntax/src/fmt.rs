@@ -1402,6 +1402,19 @@ impl<'a> Emitter<'a> {
         let ops = |want: fn(&TokenKind) -> bool| -> Vec<usize> {
             (1..n).filter(|&p| top(p) && want(kind(p))).collect()
         };
+        // An or-pattern's alternatives (GH #1995 E2): a match arm's `|`s
+        // before its guard's `if` or its `->`, one alternative a line,
+        // each after the first led by its `|`, as a `||` chain is.
+        if let Some(r) = (1..n).find(|&p| top(p) && matches!(kind(p), Arrow)) {
+            let end = (1..r).find(|&p| top(p) && matches!(kind(p), If)).unwrap_or(r);
+            let alts: Vec<usize> = (1..end).filter(|&p| top(p) && matches!(kind(p), Pipe)).collect();
+            if !alts.is_empty() {
+                brk.extend(alts.iter().map(|&p| toks[p].0));
+                if apply_breaks(line, a, b, &brk, &commas) {
+                    return true;
+                }
+            }
+        }
         let mut chain = ops(|k| matches!(k, OrOr));
         if chain.is_empty() {
             chain = ops(|k| matches!(k, AndAnd));
@@ -1786,6 +1799,18 @@ mod tests {
     fn wrap_an_or_chain() {
         let src = "fn f(a: Int, b: Int) -> Bool {\n    let ok = first_long_predicate(a) || second_long_predicate(b) && third_long_predicate(a, b) || fourth(a);\n    return ok;\n}\n";
         let want = "fn f(a: Int, b: Int) -> Bool {\n    let ok = first_long_predicate(a)\n        || second_long_predicate(b) && third_long_predicate(a, b)\n        || fourth(a);\n    return ok;\n}\n";
+        assert_eq!(wrap(src), want);
+    }
+
+    /// A match arm's alternatives (GH #1995 E2): one a line, each after
+    /// the first led by its `|`, one level in, as a `||` chain's terms;
+    /// the guard and the `->` stay on the last alternative's line. A `|`
+    /// in the guard is the operator, and is not broken at. An arm that
+    /// fits is left alone.
+    #[test]
+    fn wrap_an_or_pattern() {
+        let src = "fn f(e: CtlError) -> String {\n    return match e {\n        CtlError::InvalidRequestPayload(p) | CtlError::ResourceNotFoundAnywhere(p) | CtlError::Conflict(p) if (n | 1) > 0 -> p,\n        \"a\" | \"b\" -> \"x\",\n        _ -> \"y\",\n    };\n}\n";
+        let want = "fn f(e: CtlError) -> String {\n    return match e {\n        CtlError::InvalidRequestPayload(p)\n            | CtlError::ResourceNotFoundAnywhere(p)\n            | CtlError::Conflict(p) if (n | 1) > 0 -> p,\n        \"a\" | \"b\" -> \"x\",\n        _ -> \"y\",\n    };\n}\n";
         assert_eq!(wrap(src), want);
     }
 

@@ -211,6 +211,12 @@ impl Walk<'_> {
                     self.bind_pattern(a, held.path());
                 }
             }
+            // each alternative binds of the same value
+            Pattern::Or(alts, _) => {
+                for a in alts {
+                    self.bind_pattern(a, held);
+                }
+            }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
     }
@@ -664,6 +670,7 @@ mod tests {
             match p {
                 Pattern::Binding(_) => "installed",
                 Pattern::Constructor { .. } | Pattern::Tuple(..) => "its parts, installed",
+                Pattern::Or(alts, _) => alts.first().map_or("binds nothing", pattern_binds),
                 Pattern::Literal(..) | Pattern::Wildcard(_) => "binds nothing",
             }
         }

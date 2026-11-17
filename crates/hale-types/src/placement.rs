@@ -2891,7 +2891,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
     fn pattern(&mut self, p: &Pattern) {
         match p {
             Pattern::Binding(i) => self.bind(&i.name, None),
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
                 for a in args {
                     self.pattern(a);
                 }

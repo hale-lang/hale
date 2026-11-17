@@ -1444,8 +1444,18 @@ if_stmt           = "if" , expression , block ,
 
 match_stmt        = "match" , expression , "{" , match_arm ,
                     { "," , match_arm } , [ "," ] , "}" ;
-match_arm         = pattern , [ "if" , expression ] , "->" ,
-                    ( expression | block ) ;
+match_arm         = pattern , { "|" , pattern } , [ "if" , expression ] ,
+                    "->" , ( expression | block ) ;
+
+(* GH #1995 E2 — an or-pattern: an arm of two or more patterns
+   separated by `|` matches when one of them does, tried left to right.
+   Every alternative binds the same names at the same types; the guard
+   covers the whole arm and is tried with each matching alternative's
+   bindings in turn; F.18 exhaustiveness counts each alternative. `|`
+   is top level only: a pattern inside a tuple or a variant's values is
+   one pattern, and a `|` after it is a parse error. A pattern is not an
+   expression, so this `|` is never the bitwise operator, which the
+   guard and the body still use. *)
 
 pattern           = literal_pattern
                   | wildcard_pattern

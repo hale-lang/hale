@@ -2500,7 +2500,7 @@ impl<'a> Mangler<'a> {
                     self.walk_pattern(a);
                 }
             }
-            Pattern::Tuple(ps, _) => {
+            Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => {
                 for p in ps {
                     self.walk_pattern(p);
                 }
