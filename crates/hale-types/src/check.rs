@@ -624,8 +624,8 @@ pub struct CheckInputs<'a> {
     /// Whether the string-match advisory reports (GH #1995 S5, the
     /// snapshot's `Config::string_match_advisory`): a run of three or
     /// more `if` tests comparing one String with literals
-    /// (`crate::string_if_chain`). Off by default, on under `hale
-    /// verify` and `hale check --warn-string-match`.
+    /// (`crate::string_if_chain`). Off by default, on under
+    /// `--warn-string-match` (`hale check` or `hale verify`).
     pub string_match_advisory: bool,
 }
 

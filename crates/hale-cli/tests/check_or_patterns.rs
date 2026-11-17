@@ -164,9 +164,10 @@ const LADDER: &str = "type Action = enum { Create, Update, Delete, Archive };\nf
 
 /// GH #1995 S5: three or more `if` tests in a row comparing one String
 /// with literals, as sibling statements or `else if` links, are named
-/// with the `match` they read as, when asked for (`--warn-string-match`,
-/// or `hale verify`). Two tests, tests on different places, and a
-/// `match` are not.
+/// with the `match` they read as, only when asked for
+/// (`--warn-string-match`, on `hale check` or `hale verify`: verify fails
+/// on any finding, so it must not report a suggestion unasked). Two
+/// tests, tests on different places, and a `match` are not.
 #[test]
 fn a_string_if_ladder_is_advised_when_asked_for() {
     let s = Scratch::new(LADDER, "ladder");
@@ -183,6 +184,19 @@ fn a_string_if_ladder_is_advised_when_asked_for() {
         "an else-if chain: {out}"
     );
     assert_eq!(out.matches("warning:").count(), 2, "not two tests, other places or a match: {out}");
-    let (ok, out) = hale(&["verify", &s.file()]);
-    assert!(out.contains("is compared with a string literal by 3 `if` tests"), "verify reports it ({ok}): {out}");
+    let (_, out) = hale(&["verify", &s.file()]);
+    assert!(!out.contains("is compared with a string literal"), "verify does not report it unasked: {out}");
+    let (ok, out) = hale(&["verify", "--warn-string-match", &s.file()]);
+    assert!(!ok && out.contains("is compared with a string literal by 3 `if` tests"), "verify, asked: {out}");
+}
+
+/// The advisory reads the program's own source: the stdlib's, and stdlib
+/// text an expansion appends to the program (the streamed body readers,
+/// whose SSE field dispatch is such a ladder), is never reported.
+#[test]
+fn the_string_match_advisory_never_reports_the_stdlib() {
+    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.extend(["tests", "fixtures", "run-loop-reclaim", "reclaimed.hl"]);
+    let (_, out) = hale(&["check", "--warn-string-match", &p.to_string_lossy()]);
+    assert!(!out.contains("is compared with a string literal"), "a stdlib ladder reported: {out}");
 }

@@ -238,8 +238,8 @@ pub struct Config {
     pub hot_path_advisory: bool,
     /// The string-match advisory (GH #1995 S5): a run of three or more
     /// `if` tests comparing one String with literals, which a `match`
-    /// says once. Off by default, as the hot-path advisory is; `hale
-    /// verify` and `hale check --warn-string-match` turn it on.
+    /// says once. Off by default for every verb, `hale verify`'s
+    /// included; `--warn-string-match` turns it on.
     pub string_match_advisory: bool,
     /// Whether the lowering view waits for a check with no error. On
     /// for every entry point; off only for the test harness's snapshot

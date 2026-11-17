@@ -145,7 +145,7 @@ fn problem(e: CtlError) -> String {
 - An alternative an earlier arm or alternative already covers is never tried, and `hale check` warns about it.
 - Inside a guard or an arm's body, `|` is still the bitwise-or operator.
 
-A ladder of `if verb == "assign" { … } else if verb == "close" { … }` tests is the same decision spelled longer. `hale check --warn-string-match` (and `hale verify`) points out three or more such tests in a row on one string and suggests the `match`.
+A ladder of `if verb == "assign" { … } else if verb == "close" { … }` tests is the same decision spelled longer. `hale check --warn-string-match` (or `hale verify --warn-string-match`) points out three or more such tests in a row on one string and suggests the `match`.
 
 ### Condition `match` (Scrutinee-less `match`)
 

@@ -514,8 +514,8 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 allocation per loop iteration or bus message;");
     println!("                                 `hale verify` and `@hot` fns always check it)");
     println!("  --warn-string-match             suggest a `match` for three or more `if` tests");
-    println!("                                 comparing one String with literals (`hale");
-    println!("                                 verify` always reports it)");
+    println!("                                 comparing one String with literals (off by");
+    println!("                                 default, for `hale verify` too)");
     println!("  --strict-secret                 fail-closed `@secret` containment check");
     println!("  --sealable                      report which loci could be `@sealed`");
     println!("  --flows                         report which locus types are flows, and the");

@@ -3577,6 +3577,23 @@ pub enum Pattern {
     Or(Vec<Pattern>, Span),
 }
 
+/// A string literal's text as written between its quotes: the escapes
+/// a reader needs (`\"`, `\\`, `\n`, `\t`, `\r`), everything else as is.
+fn quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 impl Pattern {
     /// The alternatives an arm's pattern tries: an or-pattern's, or the
     /// pattern alone.
@@ -3595,13 +3612,14 @@ impl Pattern {
         match self {
             Pattern::Literal(lit, _) => match lit {
                 Literal::Int(n) => n.to_string(),
-                Literal::Float(f) => format!("{f:?}"),
+                Literal::Float(f) if f.fract() == 0.0 && f.is_finite() => format!("{f}.0"),
+                Literal::Float(f) => f.to_string(),
                 Literal::Decimal(d) => format!("{d}d"),
-                Literal::String(s) => format!("{s:?}"),
+                Literal::String(s) => format!("\"{}\"", quoted(s)),
                 Literal::Bool(b) => b.to_string(),
                 Literal::Nil => "nil".to_string(),
                 Literal::Time(t) => t.clone(),
-                Literal::Bytes(b) => format!("b{:?}", String::from_utf8_lossy(b)),
+                Literal::Bytes(b) => format!("b\"{}\"", quoted(&String::from_utf8_lossy(b))),
                 Literal::Quantity { value, unit } => format!("{value}{unit}"),
             },
             Pattern::Wildcard(_) => "_".to_string(),

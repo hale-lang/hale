@@ -18,9 +18,12 @@
 //! run. A trailing `if` used as a value is held to the same rule over its
 //! links. Code that already matches has no such ladder and is never warned.
 //!
-//! Syntactic, over the program as written, and run once per check. Only
-//! when asked for: `hale verify` reports it, and `hale check
-//! --warn-string-match` shows it (`Config::string_match_advisory`).
+//! Syntactic, over the program's own source as written (never the
+//! stdlib's, nor stdlib text an expansion appends), and run once per
+//! check. Only when asked for, by `--warn-string-match` on `hale check` or
+//! `hale verify` (`Config::string_match_advisory`): `verify` fails on any
+//! finding, advisories included, so a suggestion it always reported would
+//! fail every program that has such a ladder.
 
 use hale_syntax::ast::{flat_decls, BinOp, Block, ElseBranch, Expr, IfStmt, Literal, LocusMember, PerspectiveMember, Stmt, TopDecl};
 use hale_syntax::error::Diag;
@@ -36,7 +39,10 @@ const LADDER: usize = 3;
 /// bodies.
 pub(crate) fn string_if_chain_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     let mut out = Vec::new();
-    for p in bundle.programs.values() {
+    for (seed, p) in &bundle.programs {
+        if seed == crate::snapshot::STDLIB_SEED {
+            continue;
+        }
         for d in flat_decls(&p.items) {
             match d {
                 TopDecl::Fn(f) => body(&f.body, &mut out),
@@ -62,7 +68,18 @@ pub(crate) fn string_if_chain_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
             }
         }
     }
+    // The program's own source only: stdlib text an expansion appended
+    // to it (the api runtime, the streamed body readers, the TCP
+    // substrate, …) is the stdlib's to write, not the author's to fix.
+    out.retain(|d| !stdlib_text(d.span.start.0));
     out
+}
+
+/// Whether a parse-space offset is stdlib source appended to the program.
+fn stdlib_text(pos: u32) -> bool {
+    crate::rpc_expand::runtime_source_at(pos).is_some()
+        || crate::rpc_expand::is_appended_stdlib_pos(pos)
+        || crate::rpc_expand::is_tcp_serve_appended_pos(pos)
 }
 
 /// A place spelled as a local or `self` and its fields (`verb`,

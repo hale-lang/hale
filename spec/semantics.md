@@ -265,9 +265,10 @@ one guard or body block, its bindings merged there.
 patterns by value (`"assign" | "unassign" -> …`). A ladder of three or
 more `if` tests comparing one String place with literals, chained with
 `else if` or as consecutive `if` statements, is the same decision, and
-`hale check --warn-string-match` (and `hale verify`) warns at its first
-test with the `match` it reads as. The advisory is off by default, as
-the hot-path allocation advisory is.
+`--warn-string-match` (on `hale check` or `hale verify`) warns at its
+first test with the `match` it reads as. The advisory is off by default
+for every verb, `hale verify` included, and never reports stdlib
+source.
 
 **Scrutinee-less form.** `match { cond -> body, else -> body }`
 omits the scrutinee and tests guards directly:

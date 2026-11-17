@@ -3067,12 +3067,15 @@ assume the others in a build:
   `match` they read as (spec/semantics.md § Or-patterns, § Matching
   strings). A link testing anything else, a final plain `else` or any
   other statement ends the run; code that already matches is never
-  flagged. Reported by `hale verify` and `hale check
-  --warn-string-match`; `hale check`, `build`, `run`, `test` and the
-  editor report none. Opt-in as the hot-path lint is, because over the
-  in-tree `dna/` library it names a hundred-odd ladders: a suggestion to
-  ask for, not a warning on every first build. Syntactic, over the
-  program as written (`crate::string_if_chain`).
+  flagged. Reported only under `--warn-string-match`, on `hale check`
+  or `hale verify`; without it no verb reports it, `verify` included:
+  `verify` fails on any finding, advisories too, and this one is a
+  suggestion — over the in-tree `dna/` library it names 150 ladders,
+  which an always-on rule would turn into 150 verify failures. The
+  stdlib's source, and stdlib text an expansion appends to the program
+  (the api runtime, the streamed body readers, the TCP substrate), is
+  never reported. Syntactic, over the program as written
+  (`crate::string_if_chain`).
 - **Hot-path allocation lint — opt-in advisory** (2026-07-16; opt-in
   since GH #1948, 2026-11-15). Its warnings are reported by `hale
   verify` (the discipline gate, which fails on any finding) and by
