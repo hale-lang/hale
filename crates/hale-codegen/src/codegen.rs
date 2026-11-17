@@ -13189,7 +13189,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     lowered?;
                 }
                 _ => {
-                    let _ = self.lower_expr(tail, scope)?;
+                    if self.lower_discarded(tail, scope)? == BlockEnd::Terminated {
+                        return Ok(BlockEnd::Terminated);
+                    }
                 }
             }
             if self.seal_dead()? {
@@ -13197,6 +13199,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         Ok(BlockEnd::Open)
+    }
+
+    /// An expression whose value nothing reads — the tail of a block used
+    /// as a statement, a statement `match`'s expression arm — lowered as
+    /// the statement it is equivalent to (spec/semantics.md §
+    /// "Expressions — `if` and block tails"): a call as the call
+    /// statement, so a builtin or a fn that returns nothing is the call
+    /// statement's dispatch; an `if`, a `match` (an `if let` among them)
+    /// or a block as the statement of that shape, so its own arms and
+    /// tails are statements in turn. Anything else is lowered as a value
+    /// and dropped. Until GH #2016 a block's tail went through `lower_expr`
+    /// whatever it was, which has no value to give for `println("x")`
+    /// ("call to `println`: no … binding"), so `if c { println("x") }`
+    /// and a trailing `if c { println("a") } else { println("b") }` checked
+    /// and the build refused them.
+    fn lower_discarded(&mut self, e: &Expr, scope: &mut Scope<'ctx>) -> Result<BlockEnd, CodegenError> {
+        match e {
+            Expr::Call { .. } => self.lower_stmt(&Stmt::Expr(e.clone()), scope),
+            Expr::If(ifs) => self.lower_stmt(&Stmt::If((**ifs).clone()), scope),
+            Expr::Match(m) => self.lower_stmt(&Stmt::Match((**m).clone()), scope),
+            Expr::Block(b) => self.lower_block(b, scope),
+            _ => {
+                let _ = self.lower_expr(e, scope)?;
+                Ok(if self.seal_dead()? { BlockEnd::Terminated } else { BlockEnd::Open })
+            }
+        }
     }
 
     /// GH #1566: `block.stmts[i]` just lowered; a `let` of a locus
@@ -23282,22 +23310,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 arm_end
             } else {
                 match &arm.body {
-                    MatchArmBody::Expr(e) => {
-                        // Statement-position match: arm body is treated
-                        // like a Stmt::Expr (value discarded). Route
-                        // call exprs through `lower_stmt` so calls to
-                        // builtins (println) and void-returning user
-                        // fns are handled by the existing dispatch
-                        // table; other expressions go through
-                        // `lower_expr` and have their value dropped.
-                        if matches!(e, Expr::Call { .. }) {
-                            let s = Stmt::Expr(e.clone());
-                            self.lower_stmt(&s, scope)?
-                        } else {
-                            let _ = self.lower_expr(e, scope)?;
-                            if self.seal_dead()? { BlockEnd::Terminated } else { BlockEnd::Open }
-                        }
-                    }
+                    // Statement-position match: the arm's value is
+                    // discarded, so the arm is the statement it reads as
+                    // (`lower_discarded`).
+                    MatchArmBody::Expr(e) => self.lower_discarded(e, scope)?,
                     MatchArmBody::Block(b) => self.lower_block(b, scope)?,
                 }
             };

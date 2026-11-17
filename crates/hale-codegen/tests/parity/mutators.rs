@@ -1267,19 +1267,14 @@ fn or_pattern_merge(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
 /// `if let P = e { a } else { b }`, which the parser makes the match back
 /// (an expression arm becomes a block's value). The check judges the
 /// `if let` as an `if`: one whose arms have values becomes a block's tail,
-/// and its arms are typed as an `if`'s are. A statement `match`'s
-/// expression arm is evaluated for its effect, so it becomes a statement
-/// of its block (`{ a; }`), as it reads.
+/// and its arms are typed as an `if`'s are. An expression arm becomes the
+/// block `{ a }` in either position: in a statement `match` that block's
+/// tail is the statement `a;` (spec/semantics.md, block tails), which the
+/// build lowers as one since GH #2016 (until then a tail call such as
+/// `println(…)` was written `{ a; }` here, the build refusing `{ a }`).
 fn match_to_if_let(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     let (src, program) = parsed(files)?;
-    let values: Vec<&MatchStmt> = exprs(&program)
-        .into_iter()
-        .filter_map(|site| match site.e {
-            Expr::Match(m) => Some(&**m),
-            _ => None,
-        })
-        .collect();
-    let sites: Vec<(&MatchStmt, bool)> = match_stmts(&program)
+    let sites: Vec<&MatchStmt> = match_stmts(&program)
         .into_iter()
         .filter(|m| {
             m.form == MatchForm::Match
@@ -1288,13 +1283,11 @@ fn match_to_if_let(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
                 && !matches!(m.arms[0].pattern, Pattern::Wildcard(_))
                 && matches!(m.arms[1].pattern, Pattern::Wildcard(_))
         })
-        .map(|m| (m, values.iter().any(|v| std::ptr::eq(*v, m))))
         .collect();
-    let (m, value) = *rng.pick(&sites)?;
+    let m = *rng.pick(&sites)?;
     let body = |b: &MatchArmBody| -> Option<String> {
         match b {
-            MatchArmBody::Expr(e) if value => Some(format!("{{ {} }}", text(&src, e.span())?)),
-            MatchArmBody::Expr(e) => Some(format!("{{ {}; }}", text(&src, e.span())?)),
+            MatchArmBody::Expr(e) => Some(format!("{{ {} }}", text(&src, e.span())?)),
             MatchArmBody::Block(b) => Some(text(&src, b.span)?.to_string()),
         }
     };
