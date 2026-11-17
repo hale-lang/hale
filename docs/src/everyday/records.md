@@ -186,6 +186,32 @@ fn main() {
 - **Exhaustive matching:** `match` arms can match literal sub-patterns (`Event::Tick(0)`) before variable bindings (`Event::Tick(n)`), and must cover every variant in the `enum`.
 - **`enum` vs. `fallible(E)`:** Use `enum` for domain states and sum-type messages; use `fallible(E)` ([When a Call Can Fail](../basics/fallible.md)) for functions that can fail.
 
+### Names, Parsing and the Variant List
+
+Don't write a name function and a parse function for each enum. The compiler writes four for every enum `E`:
+
+```hale
+type Lifecycle = enum { Active, Archived };
+
+fn load(status: String) -> Lifecycle {
+    // an unknown name fails with ParseError { kind: "unknown_variant", input }
+    return Lifecycle::parse(status) or Lifecycle::Active;
+}
+
+fn main() {
+    for l in Lifecycle::variants {                      // [Lifecycle; 2], declaration order
+        println(Lifecycle::index(l), " ", Lifecycle::name(l)); // 0 Active, 1 Archived
+    }
+}
+```
+
+- **`E::name(v)`** is the variant's external name, its values ignored. **`E::index(v)`** is its position in the declaration, from 0. Both work on any enum but a generic one.
+- **`E::parse(s)`** is the variant `s` names exactly, and fails with `ParseError { kind: "unknown_variant", input: s }` otherwise; write `or raise`, or `or` a default. **`E::variants`** is a value (no parentheses) holding every variant in declaration order. Both need variants that carry no values: on an enum like `Event` above, `hale check` refuses them and names the variant that carries values.
+- **One external name:** a variant's name is its `json:` tag's when it has one (``Sell `json:"sell"` ``), so `name`, `parse` and the [JSON codecs](./json.md) always agree. With a catch-all, ``Other(String) `json:",other"` ``, `parse` cannot fail: an unknown name becomes `Other(s)`, and `name(Other(s))` is `s`. `E::variants` leaves that catch-all out.
+- **`@wire_case`:** spell every variant in one case without tagging each: `@wire_case(snake) type Phase = enum { InProgress, Done };` makes the names `in_progress` and `done`. The cases are `snake`, `screaming_snake` (`IN_PROGRESS`), `kebab` (`in-progress`) and `lower` (`inprogress`), and a variant's own `json:` tag still wins.
+- **Printing is unchanged:** `println(Lifecycle::Archived)` still shows `Lifecycle::Archived`; ask for `Lifecycle::name(v)` where you want the external name.
+- **A variant named `name` keeps its meaning:** if an enum declares a variant called `name`, `parse`, `variants` or `index`, `E::name` is that variant, and the other three are still the enum's.
+
 ## Set Types (`A | B | C`)
 
 When each alternative is already a standalone `type` record or `enum`, declare a **set type** using `|` instead of wrapping each record in a redundant enum variant:

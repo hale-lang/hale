@@ -13,6 +13,7 @@ pub mod ast;
 pub mod chains;
 pub mod decimal_literal;
 pub mod desugar;
+pub mod enum_names;
 pub mod error;
 pub mod fmt;
 pub mod fstring;

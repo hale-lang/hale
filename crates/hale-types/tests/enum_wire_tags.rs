@@ -32,7 +32,7 @@ fn tagged_variants_check_clean() {
 #[test]
 fn two_variants_one_wire_name_are_refused_naming_both() {
     let msgs = check(r#"type Side = enum { Buy `json:"Sell"`, Sell };"#);
-    let want = "`Side::Sell`: `Side::Buy` and `Side::Sell` both cross JSON as \"Sell\": a variant's wire name (its `json:` tag's, else its own) names one variant; rename one";
+    let want = "`Side::Sell`: `Side::Buy` and `Side::Sell` both cross JSON as \"Sell\": a variant's wire name (its `json:` tag's, else its enum's `@wire_case` spelling, else its own) names one variant; rename one";
     assert!(msgs.iter().any(|m| m == want), "want {want}; got: {msgs:?}");
     // a payload variant's key shares the names
     let msgs = check(r#"type E = enum { Fill(Int) `json:"x"`, Gone `json:"x"` };"#);

@@ -356,6 +356,75 @@ Missing`, one of `@not_found`, `@conflict`, `@invalid`, `@forbidden` and
 is answered with (spec/api.md § Error classes), and any other word is a
 type error.
 
+### An enum's names (RFC #1995 E1, F.53)
+
+A variant has one external name: its `json:` tag's key when it has one
+(``Sell `json:"sell"` ``, spec/api.md § Codecs), else the spelling its
+enum's `@wire_case(...)` gives it, else its declared name. The JSON
+codecs read and write it, and so do four functions the compiler writes
+for every enum `E`:
+
+| Spelling | Type | What it is |
+|---|---|---|
+| `E::name(v)` | `String` | `v`'s external name. Payloads are ignored (`Shape::name(Shape::Circle(2.0))` is `"Circle"`); a lossless catch-all (``Other(String) `json:",other"` ``) names the string it holds. |
+| `E::parse(s)` | `E fallible(ParseError)` | The variant `s` names, compared exactly against each external name; any other string fails with `ParseError { kind: "unknown_variant", input: s }`. With a catch-all it is plain `E`, never failing: an unknown name is the catch-all, holding the string when it is lossless, as the JSON codec reads one. |
+| `E::variants` | `[E; N]` | A value, not a call: every variant in declaration order, the lossless catch-all left out (it needs a string). |
+| `E::index(v)` | `Int` | `v`'s declaration ordinal, from 0, payloads ignored. |
+
+```hale
+type Lifecycle = enum { Active, Archived };
+
+fn status(row: String) -> Lifecycle {
+    return Lifecycle::parse(row) or Lifecycle::Active;
+}
+
+fn main() {
+    for l in Lifecycle::variants {
+        println(Lifecycle::index(l), " ", Lifecycle::name(l));
+    }
+}
+```
+
+`parse` and `variants` apply to an enum whose variants carry no values,
+with at most one lossless catch-all; on any other enum the call is
+refused, naming the variant that carries values ("\`Shape::parse\` builds
+a variant from its name alone, so it applies to an enum whose variants
+carry no values (…), and \`Shape::Circle\` carries 1 value; match on the
+name and build the variant yourself"). None of the four is written for a
+generic enum yet, and each is refused there with that reason.
+`E::variants()` is refused ("\`E::variants\` is a value, … not a
+function: write \`E::variants\`, without the parentheses"), as is `E::name`,
+`E::parse` or `E::index` used as a value or called with other than one
+argument. An imported enum's are spelled through its alias,
+`lib::E::name(v)`, and an alias of an enum names the enum's.
+
+The four names are contextual, as framework vocabulary is (F.43): an
+enum that declares a variant named `name`, `parse`, `variants` or `index`
+keeps meaning its variant (`Field::name` is the variant `name`), and the
+other three are still the enum's.
+
+`to_string`, `println` and an f-string keep rendering a variant as
+`Enum::Variant` (`Lifecycle::Archived`); the external name is what
+crosses a wire, a store or a log line that asks for it.
+
+**`@wire_case(case)`** on an enum's declaration spells every variant in
+one case: `snake` (`InProgress` is `in_progress`, `HTTPError` is
+`http_error`), `screaming_snake` (`IN_PROGRESS`), `kebab` (`in-progress`)
+or `lower` (`inprogress`, the name in lower case). Words break at `_`, at
+a lower-case letter or digit followed by a capital, and before the last
+capital of a run that a lower-case letter follows; a digit stays with
+its word (`Http2Error` is `http2_error`). A variant's own `json:` key
+still wins, and a lossless catch-all keeps none (it writes the string it
+holds). It is an annotation, not a keyword: it marks an enum and stacks
+with nothing, and on a record, a set or with any other case it is a
+parse error. Two variants whose spellings meet (`FooBar` and `Foo_Bar`
+under `snake`) are refused as two variants of one wire name are.
+
+```hale
+@wire_case(snake) type Phase = enum { InProgress, HTTPError, Done `json:"finished"` };
+// Phase::name(Phase::InProgress) is "in_progress", Phase::name(Phase::Done) "finished"
+```
+
 ### One name, one field (GH #1141)
 
 A struct declares each field once, and an enum declares each variant

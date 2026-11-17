@@ -541,6 +541,29 @@ sign/keygen` + `[fleet_trust]` pin the rows a deployment admits
 renders one description per host; `hale fleet export` writes the rows
 as the old plan JSON, which nothing reads.
 
+## Enum names
+
+Never hand-write an enum's name or parse function. For every enum `E`
+the compiler writes `E::name(v) -> String`, `E::parse(s) -> E
+fallible(ParseError)` (`kind: "unknown_variant"`), `E::variants` (a
+value, `[E; N]` in declaration order, no parentheses) and `E::index(v)
+-> Int`:
+
+```hale
+type Lifecycle = enum { Active, Archived };
+let l = Lifecycle::parse(row_status) or Lifecycle::Active;
+```
+
+The name is the variant's one external name, the same one the JSON
+codecs use: its `json:` tag's key, else its enum's `@wire_case(snake |
+screaming_snake | kebab | lower)` spelling, else the declared name. So
+declare variants in the style guide's case and put `@wire_case(snake)` on
+the enum when the wire wants `in_progress`. With a catch-all
+(``Other(String) `json:",other"` ``) `parse` cannot fail. `parse` and
+`variants` need payload-free variants and are refused on an enum with
+payloads; `name` and `index` ignore payloads. `println` still renders
+`Lifecycle::Archived`.
+
 ## Matching
 
 `match` is an expression as well as a statement, so it can produce a

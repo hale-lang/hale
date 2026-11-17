@@ -236,7 +236,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 39 targets below are the only ones the correction changes.
+/// The 54 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -247,7 +247,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 34] = [
+const CALL_LINES_ONLY: [(&str, usize); 35] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -285,6 +285,11 @@ const CALL_LINES_ONLY: [(&str, usize); 34] = [
     // the program that names it, so only the two native calls of its
     // `std::crypto::sha256` comparisons are the renames'
     ("tests/hale/crypto_sha256_stream_test.hl", 2),
+    // RFC #1995 E1's test: the library's `slow` and `label`, called
+    // through the alias, which only the renames name (an imported enum's
+    // `lib::Mode::name(v)` calls the function written for it, by its own
+    // name)
+    ("tests/hale/enum_names_test.hl", 2),
     // 5: the generics parity test (GH #1964): an imported seed's generic
     // fns and their specializations, called through the alias, which
     // only the renames name
