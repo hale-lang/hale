@@ -1054,7 +1054,12 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                 args.len()
             )));
         }
+        // GH #1947: `s` a local whose length is cached: the search is
+        // bounded by the length instead of measuring `s` on every call
+        // (`crate::string_len`), as `range_index_of` is.
+        let cache = self.str_len_cache_of(&args[0], scope);
         let mut strs = Vec::with_capacity(2);
+        let mut s_len = None;
         for (i, what) in ["s", "sub"].iter().enumerate() {
             let (v, ty) = self.lower_expr(&args[i], scope)?;
             if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
@@ -1062,13 +1067,31 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                     "std::str::index_of_from: {what} must be String, got {ty}"
                 )));
             }
-            strs.push(self.unpack_view_if_needed(v, &ty)?);
+            let v = self.unpack_view_if_needed(v, &ty)?;
+            if let (0, Some(cache), CodegenTy::String) = (i, cache, &ty) {
+                s_len = Some(self.emit_cached_str_len(v.into_pointer_value(), cache)?);
+            }
+            strs.push(v);
         }
         let (start, start_ty) = self.lower_expr(&args[2], scope)?;
         if !matches!(start_ty, CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::index_of_from: start must be Int, got {start_ty}"
             )));
+        }
+        if let Some(n) = s_len {
+            let f = self
+                .module
+                .get_function("lotus_str_range_index_of")
+                .expect("lotus_str_range_index_of declared");
+            let v = self
+                .builder
+                .build_call(f, &[strs[0].into(), n.into(), strs[1].into(), start.into()], "str.index_of_from.ret")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns i64");
+            return Ok((v, CodegenTy::Int));
         }
         let f = self
             .module
@@ -1286,6 +1309,10 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                 args.len()
             )));
         }
+        // GH #1947: `s` a local whose length is cached is clamped against
+        // the length instead of measured (`crate::string_len`), as
+        // `range_copy` is.
+        let cache = self.str_len_cache_of(&args[0], scope);
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -1294,6 +1321,10 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
+        let s_len = match cache {
+            Some(cache) if s_ty == CodegenTy::String => Some(self.emit_cached_str_len(s_val.into_pointer_value(), cache)?),
+            _ => None,
+        };
         let (lo_val, lo_ty) = self.lower_expr(&args[1], scope)?;
         if lo_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -1308,19 +1339,18 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                 hi_ty
             )));
         }
-        let f = self
-            .module
-            .get_function("lotus_str_substring")
-            .expect("lotus_str_substring declared");
         self.emit_set_caller_arena()?;
-        let call = self
-            .builder
-            .build_call(
-                f,
-                &[s_val.into(), lo_val.into(), hi_val.into()],
-                "str.substring.ret",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let call = match s_len {
+            Some(n) => {
+                let f = self.module.get_function("lotus_str_range_copy").expect("lotus_str_range_copy declared");
+                self.builder.build_call(f, &[s_val.into(), n.into(), lo_val.into(), hi_val.into()], "str.substring.ret")
+            }
+            None => {
+                let f = self.module.get_function("lotus_str_substring").expect("lotus_str_substring declared");
+                self.builder.build_call(f, &[s_val.into(), lo_val.into(), hi_val.into()], "str.substring.ret")
+            }
+        }
+        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let v = call.try_as_basic_value().left().expect("returns ptr");
         Ok((v, CodegenTy::String))
     }

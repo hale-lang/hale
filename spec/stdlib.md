@@ -379,43 +379,65 @@ every iteration, and so does an append to any place but a local or a
 field of `self`. The hot-path allocation lint reports both at the
 append, the first with the read that gives the buffer up as its step
 (`spec/verification.md` § "Hot-path allocation lint"); `hale verify`
-fails on it. `len(s)` is still `strlen` (§ Linear byte scanning), so a
-loop that tests `len(out)` re-measures the text each time: linear in
-memory, quadratic in time.
+fails on it. `len(out)` of the local reads the length the last append
+left (§ Linear byte scanning), so a loop that tests it while appending
+stays linear in time as well as memory.
 
 ## Linear byte scanning — the `String` cost model
 
-A `String` is a NUL-terminated blob with no stored length, and
-the operations a hand-written parser reaches for first are the
-O(n) ones. The costs below are the shipped ones, measured on a
+A `String` is a NUL-terminated blob with no stored length
+(spec/types.md), so measuring one walks it to the terminator. What a
+measure costs depends on where the String is read from:
+
+- **A local or parameter** of type `String` that its function
+  measures remembers the length of the value it holds (GH #1947): the
+  first measure of each value walks the text, every later one reads
+  the length. Its `let` (each time it runs), a parameter's binding and
+  a plain assignment forget the length; an appending assignment
+  (§ Building a String) records the length it built. The measures are
+  `len(s)`, a slice `s[lo..hi]`, `std::str::substring`, `index_of_from`,
+  `cp_at` and `cp_size`, with `s` the local itself.
+- **Anything else** (a field, `rec.body`, an element, a call's result,
+  a `for` variable) carries no length and is walked by every measure.
+
+The remembered length is `strlen`'s, so it is the length every other
+reader sees: bytes, not characters, and an embedded NUL still ends
+the String. It relies on a String's bytes not changing while a name
+holds it, which value semantics already promises (a String an `@ffi`
+fn returns included: spec/ffi.md). The costs below are measured on a
 1 MiB input (GH #720):
 
 | operation | cost | notes |
 | --- | --- | --- |
-| `len(s)` | O(n) — `strlen` | The call is `memory(read)`, so LLVM hoists it out of a loop whose body writes no memory. Put an allocating call in that body — a slice, a concat, a builder append — and the hoist fails and every iteration re-walks the input. Measured: the same 1 MiB slice loop took 13.2 s with `len(s)` in the condition and 7.7 s with the length in a local. |
-| `s[lo..hi]`, `std::str::substring(s, lo, hi)` | O(n) + O(hi-lo) | The clamp does its own `strlen`, so the cost does not depend on how few bytes were asked for. One-byte slices in a bounded loop are the quadratic shape: 1 Mi of them cost 7.7 s. |
+| `len(s)`, `s` a local or parameter | O(1), after one O(n) walk per value `s` holds | The local's remembered length. |
+| `len(s)`, any other `s` | O(n) — `strlen` | The call is `memory(read)`, so LLVM hoists it out of a loop whose body writes no memory; a body that allocates (a slice, a concat, a builder append) re-walks the input on every iteration. Bind the String to a local first. |
+| `s[lo..hi]`, `std::str::substring(s, lo, hi)`, `s` a local or parameter | O(hi-lo) | Clamped against the remembered length. The byte loop `while i < len(s) { let c = s[i..(i + 1)]; … }` over a parameter: 4.2 ms at 512 KiB, 1.1 ms at 128 KiB (it took 11.0 s and 0.71 s when every slice and every `len` walked the text). |
+| `s[lo..hi]`, `std::str::substring(s, lo, hi)`, any other `s` | O(n) + O(hi-lo) | The clamp does its own `strlen`, so the cost does not depend on how few bytes were asked for. |
 | `std::str::byte_at_unchecked(s, i)` | O(1) — one load | No bounds check at all. Correct only while the caller's bound is; an out-of-range `i` is an out-of-bounds read. |
 | `std::str::bytes_view(s)` | O(n), once | One `strlen` for `n`, plus one copy of the text into the caller's arena (a `String` field of a returned struct is deep-copied at the fn boundary). Hoist it out of the loop that uses it. |
 | `std::str::byte_at(v, i)` | O(1) — compare + load | Checked against the view's `n`. |
 | `std::str::slice(v, lo, hi)` | O(hi-lo) | Clamped into `[0, n]`; no `strlen`. |
 | `std::str::range_copy(s, n, lo, hi)` | O(hi-lo) | What `slice` is built on, for a caller that already tracks its own length. |
-| `std::str::index_of_from(s, sub, start)` | O(n) + the search | One `strlen` of `s` per call, to refuse a `start` past the end. A line-at-a-time scan with it is quadratic: 16 MB in 32,000 lines took 4.7 s. |
+| `std::str::index_of_from(s, sub, start)`, `s` a local or parameter | the distance to the hit | `range_index_of` over the remembered length. |
+| `std::str::index_of_from(s, sub, start)`, any other `s` | O(n) + the search | One `strlen` of `s` per call, to refuse a `start` past the end. A line-at-a-time scan with it is quadratic: 16 MB in 32,000 lines took 4.7 s. |
+| `std::str::cp_at(s, i)`, `cp_size(s, i)` | O(1) for a local or parameter `s`; O(i) otherwise | The offset is checked against the remembered length, or else by a scan for a NUL before it. |
 | `std::str::find(v, sub, start)` | the distance to the hit | `index_of_from` over the view, bounded by its `n`: the same 16 MB scan takes under a millisecond. |
 | `std::str::range_index_of(s, n, sub, start)` | the distance to the hit | What `find` is built on; the caller owns the bound. |
 | `for p in std::str::split(s, sep)`, `lines(s)`, `words(s)` | O(n), once, + O(part) per part | One `bytes_view`, then a search from the last part's end and a copy of the part (GH #1995, spec/semantics.md § Text sources). Over 4 KiB words: 0.69 ms at 1 MiB and 2.8 ms at 4 MiB, where the `rest = rest[(sp + 1)..]` loop it replaces took 1.0 ms at 256 KiB and 14.7 ms at 1 MiB. |
 
-So the natural bounded-parser loop is quadratic:
+So the natural bounded-parser loop is linear when `s` is a local or
+parameter, though it still allocates a String per byte:
 
 ```hale
 let mut i = 0;
-while i < len(s) {            // hoisted, but see above
-    let c = s[i..(i + 1)];    // O(n) EVERY iteration
+while i < len(s) {            // the remembered length
+    let c = s[i..(i + 1)];    // a one-byte copy
     i = i + 1;
 }
 ```
 
-and the view is the linear form of the same loop, with the bound
-kept in a register and every read checked against it:
+and the view is the allocation-free form of the same loop, with the
+bound kept in a register and every read checked against it:
 
 ```hale
 let v = std::str::bytes_view(s);   // one strlen + one copy
@@ -428,6 +450,7 @@ while i < v.n {
 ```
 
 Measured on the same 1 MiB input: **13.2 s → 29 µs** for the scan
+before lengths were remembered (the slice loop now takes milliseconds)
 (the loop vectorizes, because the bound is loop-invariant), and
 the whole program including construction runs in 2 ms. At 1 / 2 /
 4 MiB the scan costs 29 / 57 / 114 µs — linear, pinned by

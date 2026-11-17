@@ -974,6 +974,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_str_slice", str_slice_ty, None);
+        // GH #1947: the slice of a String whose length codegen knows.
+        // declare ptr @lotus_str_slice_n(ptr arena, ptr s, i64 n, i64 lo, i64 hi)
+        let str_slice_n_ty = ptr_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i64_t.into(), i64_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_str_slice_n", str_slice_n_ty, None);
 
         // m37: to_string runtime helpers. Each renders one
         // primitive into a fresh arena-owned NUL-terminated
@@ -1129,6 +1137,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let cp_at_ty = i64_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
         for name in ["lotus_str_cp_at", "lotus_str_cp_size"] {
             let f = self.module.add_function(name, cp_at_ty, None);
+            self.mark_pure_read(f);
+        }
+        // GH #1947: the same over a String whose length codegen knows.
+        let cp_at_n_ty = i64_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
+        for name in ["lotus_str_cp_at_n", "lotus_str_cp_size_n"] {
+            let f = self.module.add_function(name, cp_at_n_ty, None);
             self.mark_pure_read(f);
         }
         let cp_count_ty = i64_t.fn_type(&[ptr_t.into()], false);

@@ -421,6 +421,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // caller's arena, not this call's scratch (GH #1832).
         let mut scope = Scope::default();
         self.bind_member_params(&fd.params, func, &mut scope)?;
+        self.note_param_len_caches(&fd.params, &fd.body, &scope)?;
 
         // A body's tail is its return (spec/semantics.md, the definite-
         // return rule takes it as one): lowered as one, as an infallible
@@ -429,11 +430,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Ok(match fd.body.tail.as_deref() {
                 Some(tail) if ret_ty.is_some() => {
                     let mut stmts_end = BlockEnd::Open;
-                    for stmt in &fd.body.stmts {
+                    for (i, stmt) in fd.body.stmts.iter().enumerate() {
                         if cx.lower_stmt(stmt, &mut scope)? == BlockEnd::Terminated {
                             stmts_end = BlockEnd::Terminated;
                             break;
                         }
+                        cx.note_string_len_cache(&fd.body, i, &scope)?;
                     }
                     match stmts_end {
                         BlockEnd::Open => cx.lower_return(Some(tail), &scope)?,
