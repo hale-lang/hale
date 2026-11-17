@@ -1385,7 +1385,7 @@ although this section long described them as taking a string, so
 `b.field("name", "alice")` writes `"name": alice`, which is not
 JSON. Every call warns (`deprecated:`, at the call, STABILITY.md §
 Deprecation), naming `raw_field` / `raw_value` for JSON already
-encoded and `string_field` / `string_value` for a string. v0.34
+encoded and `string_field` / `string_value` for a string. v0.35
 makes `field` and `value` quote and escape their argument as a
 string; a program that has moved to the explicit variants is
 unaffected. The warning comes from the table of deprecated stdlib

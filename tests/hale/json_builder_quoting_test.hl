@@ -3,7 +3,7 @@
 // quote and escape a string, it writes exactly those bytes. `raw_field` /
 // `raw_value` write JSON the caller encoded already, as given. `field` and
 // `value` still write raw, as they always have, and are deprecated (a call
-// warns `deprecated:`): v0.33 makes them quote. The separators are `": "`
+// warns `deprecated:`): v0.35 makes them quote. The separators are `": "`
 // and `", "`, pinned: documents the Builder wrote are stored and matched as
 // text.
 
