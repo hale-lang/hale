@@ -30638,6 +30638,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::ProcessPid => self.lower_std_process_pid(args),
             Id::ProcessUid => self.lower_std_process_uid(args),
             Id::ProcessRssBytes => self.lower_std_process_rss_bytes(args),
+            Id::ProcessPeakRssBytes => self.lower_std_process_peak_rss_bytes(args),
             Id::ProcessDumpArenaResidency => {
                 self.lower_std_process_dump_arena_residency(args)
             }
@@ -31363,6 +31364,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::ProcessDumpArenaResidency
             | Id::ProcessDumpPoolResidency
             | Id::ProcessExit
+            | Id::ProcessPeakRssBytes
             | Id::ProcessPid
             | Id::ProcessRssBytes
             | Id::ProcessUid

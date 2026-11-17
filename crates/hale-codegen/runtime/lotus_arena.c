@@ -296,10 +296,9 @@ const char *__tsan_default_suppressions(void) {
 #if defined(__GLIBC__) || defined(__APPLE__)
 #include <execinfo.h>
 #endif
-/* std::process::rss_bytes (2026-05-21): getrusage for the
- * process's resident-set high-water mark. Backs the
- * observability primitive used to verify
- * the Phase-4 method-scratch reclaim actually bounds memory. */
+/* std::process::peak_rss_bytes: getrusage for the process's
+ * resident-set high-water mark (std::process::rss_bytes reads the
+ * current resident size, see lotus_process_rss_bytes). */
 #ifndef __wasm__
 #include <sys/resource.h>
 #endif
@@ -23662,27 +23661,11 @@ int64_t lotus_obs_live_loci(void) __attribute__((weak));
 int lotus_obs_topic_counts(int64_t i, const char **subject, uint64_t *published,
                                uint64_t *delivered, uint64_t *bytes) __attribute__((weak));
 
-/* The process's resident memory: Linux's /proc/self/statm; on macOS,
- * which has no /proc, the task's own basic info from mach. */
-#if defined(__APPLE__)
-#include <mach/mach.h>
-#endif
+/* The process's resident memory, the same number
+ * std::process::rss_bytes() returns (lotus_process_rss_bytes, below). */
+int64_t lotus_process_rss_bytes(void);
 static double lotus_observe_rss_bytes(void) {
-#if defined(__APPLE__)
-    mach_task_basic_info_data_t info;
-    mach_msg_type_number_t n = MACH_TASK_BASIC_INFO_COUNT;
-    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &n) != KERN_SUCCESS)
-        return 0.0;
-    return (double)info.resident_size;
-#else
-    FILE *f = fopen("/proc/self/statm", "r");
-    if (!f) return 0.0;
-    long size = 0, resident = 0;
-    int got = fscanf(f, "%ld %ld", &size, &resident);
-    fclose(f);
-    if (got != 2) return 0.0;
-    return (double)resident * (double)sysconf(_SC_PAGESIZE);
-#endif
+    return (double)lotus_process_rss_bytes();
 }
 
 /* The CPU time the process has used, user and system, in seconds
@@ -31456,31 +31439,66 @@ static int lotus_process_split_argv(
  * failure. ENOENT if the executable isn't found, EACCES if it's
  * not executable, ENOMEM on allocation failure, etc.
  */
-/* std::process::rss_bytes (2026-05-21): the calling process's
- * peak resident-set size in bytes. Wraps getrusage(RUSAGE_SELF).
+/* std::process::rss_bytes (GH #1906): the calling process's CURRENT
+ * resident-set size in bytes. Linux reads /proc/self/statm's second
+ * field (resident pages) times the page size; macOS, which has no
+ * /proc, asks mach for the task's resident size. Both read the
+ * post-exec address space, so a spawned program reports its own
+ * memory, not its parent's. A wasm instance's resident memory is its
+ * linear memory. 0 when the platform cannot say (another OS, or the
+ * read fails), never negative. hale_process_resident_memory_bytes
+ * (std::observe's scrape) reports this same number.
  *
- * Linux reports ru_maxrss in KiB (the kernel's `struct rusage`
- * comment says "maximum resident set size (in kilobytes)"; man
- * getrusage confirms `ru_maxrss` is "in kilobytes" on Linux).
- * BSD / macOS report it in bytes. We're targeting Linux for v1
- * so we multiply by 1024 unconditionally. If we ever care about
- * BSD parity, this is one #ifdef away.
- *
- * The "peak" framing (high-water mark, not current RSS) is what
- * `getrusage` actually exposes — there's no syscall for current
- * RSS that doesn't go through /proc. For observability the peak
- * is usually what matters (alarm thresholds key off worst-case);
- * a future `current_rss_bytes()` could parse /proc/self/statm
- * once the read_file fix lands.
- *
- * On failure (getrusage rejects, vanishingly rare) returns 0 so
- * the caller doesn't get a negative value through the i64 ABI. */
+ * Until GH #1906 this returned getrusage's ru_maxrss * 1024: the peak,
+ * not the current size, and 1024x too large on macOS, which reports
+ * ru_maxrss in bytes. The peak is std::process::peak_rss_bytes. */
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#endif
 int64_t lotus_process_rss_bytes(void) {
+#if defined(__wasm__)
+    return (int64_t)__builtin_wasm_memory_size(0) * 65536;
+#elif defined(__APPLE__)
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t n = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &n) != KERN_SUCCESS)
+        return 0;
+    return (int64_t)info.resident_size;
+#else
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (!f) return 0;
+    long size = 0, resident = 0;
+    int got = fscanf(f, "%ld %ld", &size, &resident);
+    fclose(f);
+    if (got != 2 || resident < 0) return 0;
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) return 0;
+    return (int64_t)resident * (int64_t)page;
+#endif
+}
+
+/* std::process::peak_rss_bytes (GH #1906): the calling process's PEAK
+ * resident-set size in bytes, getrusage(RUSAGE_SELF).ru_maxrss. The
+ * unit is the platform's: macOS reports bytes, Linux (and the other
+ * BSDs) KiB. A peak survives exec: fork hands the child a copy of the
+ * parent's address space, and execve folds that high-water mark into
+ * the new image's ru_maxrss, so a spawned program's peak is at least
+ * its parent's RSS at the fork. A wasm instance's linear memory never
+ * shrinks, so its peak is its current size. 0 if getrusage fails. */
+int64_t lotus_process_peak_rss_bytes(void) {
+#if defined(__wasm__)
+    return (int64_t)__builtin_wasm_memory_size(0) * 65536;
+#else
     struct rusage ru;
-    if (getrusage(RUSAGE_SELF, &ru) != 0) {
+    if (getrusage(RUSAGE_SELF, &ru) != 0 || ru.ru_maxrss < 0) {
         return 0;
     }
+#if defined(__APPLE__)
+    return (int64_t)ru.ru_maxrss;
+#else
     return (int64_t)ru.ru_maxrss * 1024;
+#endif
+#endif
 }
 
 /* pond P4 stage 1 (std::term + std::io::stdout). Generic OS surface

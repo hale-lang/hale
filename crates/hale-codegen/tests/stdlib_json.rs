@@ -331,8 +331,9 @@ fn valid_scans_a_megabyte_within_a_wall_bound() {
         }
     "#;
     // The growth is a difference between the program's own
-    // /proc/self/statm reads, not `std::process::rss_bytes()`: that
-    // one is `getrusage(RUSAGE_SELF).ru_maxrss`, which a spawned
+    // /proc/self/statm reads, not a peak (`std::process::peak_rss_bytes()`,
+    // what `rss_bytes()` returned until GH #1906): that one is
+    // `getrusage(RUSAGE_SELF).ru_maxrss`, which a spawned
     // program inherits from its parent through fork+exec, so under
     // the test harness both readings clamped to the harness's own
     // footprint and the difference was always 0 (GH #772).

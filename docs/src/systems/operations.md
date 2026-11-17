@@ -5,7 +5,7 @@ Hale binaries include built-in, zero-overhead hooks for diagnosing message drops
 ```hale
 fn on_tick() {
     std::process::dump_arena_residency(); // Emits live arena sizes when LOTUS_ARENA_RESIDENCY=1
-    println("peak rss = ", std::process::rss_bytes() / 1048576, " MB");
+    println("rss = ", std::process::rss_bytes() / 1048576, " MB, peak = ", std::process::peak_rss_bytes() / 1048576, " MB");
 }
 ```
 
@@ -72,7 +72,7 @@ Each line printed by `dump_arena_residency()` reports:
 - `chunks=`, `parent=`, `label=`, and the construction backtrace identifying the locus and birth site.
 
 > [!NOTE]
-> `std::process::rss_bytes()` returns peak RSS (`getrusage.ru_maxrss`), which a child process inherits from its parent across `fork` + `exec`. Track the delta over time rather than the initial value, or read field 2 of `/proc/self/statm` on Linux for current instantaneous RSS.
+> `std::process::rss_bytes()` returns the current resident memory in bytes (`/proc/self/statm` on Linux, the task's resident size on macOS), the same number `hale_process_resident_memory_bytes` scrapes, and it falls when the process gives memory back. `std::process::peak_rss_bytes()` returns the high-water mark (`getrusage`'s `ru_maxrss`, in bytes on every platform). A spawned process inherits its parent's peak across `fork` + `exec`, so use the current size for anything spawned, and for leak checks and heartbeat gauges. Through v0.33 `rss_bytes()` returned the peak (1024 times too large on macOS); call `peak_rss_bytes()` for that number.
 
 ### Compile-Time Allocation & Resource Flags
 

@@ -35,6 +35,7 @@ fn main() {
     std::process::pid();
     std::process::uid();
     std::process::rss_bytes();
+    std::process::peak_rss_bytes();
     let pools = std::process::dump_pool_residency();
     let n = child_primitives() or 0;
     println(pools + n);

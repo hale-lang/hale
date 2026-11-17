@@ -42,7 +42,8 @@ fn model_has_unbounded_site(src: &str) -> bool {
 /// reported for ITSELF (the `/proc/self/statm` line it prints; see
 /// `harness::statm_resident_bytes`).
 ///
-/// `std::process::rss_bytes()` cannot be used for this: a spawned
+/// A peak (`std::process::peak_rss_bytes()`, what `rss_bytes()`
+/// returned until GH #1906) cannot be used for this: a spawned
 /// program inherits its parent's RSS high-water mark through
 /// fork+exec, so every reading below clamped to the libtest
 /// harness's own footprint — which under `cargo test` is several
