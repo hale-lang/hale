@@ -85,7 +85,7 @@ exact enough to certify.
 
 > GitHub can't syntax-highlight Hale yet, so the snippets here render in a
 > single color. For highlighted, runnable Hale, open the
-> [playground](https://play.hale-lang.org/).
+> [example gallery](https://hale-lang.org/play/).
 
 ## Six scales, one model
 
@@ -451,13 +451,12 @@ system.
 
 ## Try it
 
-**No install, [write and run Hale in your browser](https://play.hale-lang.org/).**
-Your source is compiled to WebAssembly by a compile service written in
-Hale itself, and the result runs fully client-side, the same compiler
-you install locally. Prefer a guided start? The
-[example gallery](https://hale-lang.org/play/) walks curated programs,
-each precompiled from real Hale (the gallery UI is itself a Hale
-`@export locus`, the same `.hl` source runs native or in the browser).
+**No install, [run Hale examples in your browser](https://hale-lang.org/play/).**
+The example gallery walks curated programs, each precompiled from real
+Hale to WebAssembly and run fully client-side (the gallery UI is itself a
+Hale `@export locus`, the same `.hl` source runs native or in the
+browser). It runs the examples as written; editing your own source in the
+browser waits on the compile service, which is offline for now.
 
 **Prebuilt Linux and macOS binaries** are on the
 [releases page](https://github.com/hale-lang/hale/releases), download,

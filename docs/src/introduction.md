@@ -9,7 +9,7 @@ Hale compiles directly to native machine code (or WebAssembly) with no garbage c
 - **Deployment separated from logic:** Thread assignment (`placement`), cross-process transports (`bindings`), and architectural invariants (`claims`) are declared on the entrypoint (`main locus` or `fleet locus`) rather than hardcoded inside components.
 - **Whole-program static verification:** Because component ownership, message routing, and side effects are first-class syntax, `hale check` derives a complete graph of the program (`ApplicationModel`) and checks reachability laws, effect budgets, and memory bounds at compile time.
 
-> **Interactive Playground:** Run and edit Hale programs directly in your browser at [play.hale-lang.org](https://play.hale-lang.org/), or browse runnable examples in the [example gallery](https://hale-lang.org/play/).
+> **In your browser:** Run Hale examples directly in your browser in the [example gallery](https://hale-lang.org/play/): curated programs, precompiled to WebAssembly (the gallery runs them as written; in-browser editing waits on the compile service, which is offline for now).
 
 ---
 
