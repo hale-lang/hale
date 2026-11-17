@@ -1,0 +1,98 @@
+// Byte literals (GH #1995 S6): `b'/'` is an `Int`, the byte's value.
+// The body is one printable ASCII character or one escape (`\n \t \r
+// \\ \' \" \0 \xNN`), and the literal is an Int literal wherever one
+// is legal: an operand, an arm's pattern (or-patterns included), a
+// constant, an array element.
+
+const SLASH: Int = b'/';
+const SEPARATORS: [Int; 3] = [b',', b';', b' '];
+
+// a comparison against `byte_at` over a ByteView
+fn count_slashes(path: String) -> Int {
+    let v = std::str::bytes_view(path);
+    let mut n = 0;
+    let mut i = 0;
+    while i < v.n {
+        if std::str::byte_at(v, i) == b'/' {
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+// arm patterns, an or-pattern of byte literals among them
+fn class(c: Int) -> String {
+    return match c {
+        b'a' | b'e' | b'i' | b'o' | b'u' | b'A' | b'E' | b'I' | b'O' | b'U' -> "vowel",
+        b' ' | b'\t' | b'\n' | b'\r' -> "space",
+        b'\'' | b'"' -> "quote",
+        b'\\' -> "backslash",
+        b'\0' -> "nul",
+        _ -> "other",
+    };
+}
+
+// a range test, the way a hand-written scanner reads
+fn is_digit(c: Int) -> Bool {
+    return c >= b'0' && c <= b'9';
+}
+
+fn is_separator(c: Int) -> Bool {
+    for s in SEPARATORS {
+        if c == s {
+            return true;
+        }
+    }
+    return false;
+}
+
+// arithmetic on the value: a decimal number from its digits
+fn parse_digits(s: String) -> Int {
+    let v = std::str::bytes_view(s);
+    let mut n = 0;
+    let mut i = 0;
+    while i < v.n {
+        n = n * 10 + (std::str::byte_at(v, i) - b'0');
+        i = i + 1;
+    }
+    return n;
+}
+
+fn main() {
+    std::test::assert_eq_int(b'/', 47, "b'/' is 47");
+    std::test::assert_eq_int(b'A', 65, "an upper-case letter");
+    std::test::assert_eq_int(b' ', 32, "a space");
+    std::test::assert_eq_int(b'~', 126, "the last printable byte");
+    std::test::assert_eq_int(b'"', 34, "a double quote needs no escape");
+    std::test::assert_eq_int(b'\"', 34, "and may have one");
+    std::test::assert_eq_int(b'\'', 39, "a single quote");
+    std::test::assert_eq_int(b'\\', 92, "a backslash");
+    std::test::assert_eq_int(b'\n', 10, "newline");
+    std::test::assert_eq_int(b'\t', 9, "tab");
+    std::test::assert_eq_int(b'\r', 13, "carriage return");
+    std::test::assert_eq_int(b'\0', 0, "nul");
+    std::test::assert_eq_int(b'\x7f', 127, "a hex escape");
+    std::test::assert_eq_int(b'\xff', 255, "a hex escape above 0x7f");
+    std::test::assert_eq_int(SLASH, 47, "in a constant");
+    std::test::assert_eq_int(-b'a', -97, "an operand of unary minus");
+    std::test::assert_eq_int(b'a' - b'A', 32, "the case distance");
+
+    std::test::assert_eq_int(count_slashes("/usr/local/bin"), 3, "against byte_at");
+    std::test::assert_eq_int(count_slashes("relative"), 0, "no slash");
+
+    std::test::assert_eq_str(class(b'e'), "vowel", "an or-pattern alternative");
+    std::test::assert_eq_str(class(b'U'), "vowel", "its last alternative");
+    std::test::assert_eq_str(class(9), "space", "an escape in a pattern");
+    std::test::assert_eq_str(class(39), "quote", "an escaped quote in a pattern");
+    std::test::assert_eq_str(class(34), "quote", "a bare double quote in a pattern");
+    std::test::assert_eq_str(class(92), "backslash", "a backslash in a pattern");
+    std::test::assert_eq_str(class(0), "nul", "nul in a pattern");
+    std::test::assert_eq_str(class(b'z'), "other", "the catch-all");
+
+    std::test::assert(is_digit(b'7'), "7 is a digit");
+    std::test::assert(!is_digit(b'x'), "x is not");
+    std::test::assert(is_separator(b';'), "in an array literal");
+    std::test::assert(!is_separator(b'.'), "not in it");
+    std::test::assert_eq_int(parse_digits("2048"), 2048, "digits by their distance from b'0'");
+}

@@ -207,7 +207,10 @@ Filter these reflexes before they cost you time.
   `s[lo..]` (to the end), `s[..hi]` (from the start). Write
   `line[(at + 1)..]`, not `line[(at + 1)..len(line)]`. There is no
   `s[i]` and no `for c in s`: both are refused (a byte, or a
-  character?). Slice `s[i..(i + 1)]` or read `std::str::byte_at`.
+  character?). Slice `s[i..(i + 1)]` or read `std::str::byte_at`,
+  and compare the byte with a byte literal, never a bare number:
+  `b'/'` is the `Int` 47 (`std::str::byte_at(v, i) == b'/'`, an arm
+  `b'a' | b'A' -> …`).
 - **Take a text apart with a `for` source**, never a `while
   len(rest) > 0 { … rest = rest[(sp + 1)..]; }` loop, which copies
   the rest every turn (quadratic): `for part in std::str::split(s,

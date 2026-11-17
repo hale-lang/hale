@@ -837,6 +837,33 @@ fn a_nested_pattern_in_a_variants_pattern_is_refused_by_the_check() {
     );
 }
 
+/// GH #1995 S6: a byte literal is an Int literal, so every place one is
+/// legal builds; and what it refuses (no byte, several, a non-ASCII
+/// character) is refused by the lexer, which `hale check` and `hale
+/// build` share, so neither verb ever sees the program.
+#[test]
+fn a_byte_literal_builds_where_an_int_literal_does_and_its_refusals_are_the_lexers() {
+    for (src, head) in [
+        ("fn main() { println(b''); }\n", "a byte literal holds exactly one byte, and `b''` holds none"),
+        ("fn main() { println(b'ab'); }\n", "a byte literal holds exactly one byte, and `b'ab'` holds 2"),
+        ("fn main() { println(b'é'); }\n", "`é` is not one byte (2 in UTF-8)"),
+    ] {
+        let errors = hale_syntax::parse_source(src).expect_err("the lexer refuses it");
+        assert!(errors.iter().any(|d| d.message.starts_with(head)), "{errors:?}\n{src}");
+        assert_eq!(sweep_verdict(src, "hale_cb_byte_literal_refused"), Verdict::Skipped("does not parse"));
+    }
+    assert_built(
+        "const SLASH: Int = b'/';\n\
+         fn class(c: Int) -> Int { return match c { b'a' | b'A' -> 1, b'\\n' -> 2, _ -> 0, }; }\n\
+         fn main() {\n\
+             let v = std::str::bytes_view(\"a/b\");\n\
+             let seps = [b',', b'\\'', b'\\xff'];\n\
+             println(std::str::byte_at(v, 1) == SLASH, class(b'A'), seps[1], b'z' - b'a');\n\
+         }\n",
+        "hale_cb_byte_literal_neighbour",
+    );
+}
+
 /// The check refuses, before any build, what a default would read of the
 /// scope that leaves it (spec/types.md § Locus params: a default reads
 /// only its own fields and constants): each program's errors carry the

@@ -626,6 +626,10 @@ fn per_target_moves() {
 /// tag of a value its locus method hands back moves into the caller's
 /// arena; no leak site goes or appears.
 ///
+/// `byte_literals_test` (GH #1995 S6) is a new target, the same shape:
+/// one tag of a value one of its fns hands back moves into the caller's
+/// arena; no leak site goes or appears.
+///
 /// `dna/api`'s habitat organizations list (organization_list.hl) adds
 /// three fns that free at return (`organization_name_ok`,
 /// `organizations_origin`, `with_organizations`): three more tags and six
@@ -672,6 +676,7 @@ const PINNED: &[&str] = &[
     "tests/hale/block_string_test.hl: 0 go, 0 appear; dump 1 tags, 1 reclaim, 0 verdicts",
     "tests/hale/block_tail_return_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/bus_wire_type_set_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/byte_literals_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/chains_tranche2_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/check_build_parity_shapes_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/codegen_gaps_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
