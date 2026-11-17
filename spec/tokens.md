@@ -661,6 +661,20 @@ Anywhere else, after a type (`T?`) included, it is a parse error.
   is a decimal literal (`d`) or a quantity literal (any other name,
   the time units among them), below; a radix integer followed by a
   name is a parse error.
+- Byte: `b'/'`, `b'a'`, `b'\n'`, `b'\xff'` (GH #1995). One byte
+  between single quotes, after a `b`, is an integer literal of the
+  byte's value: `b'/'` is `47`, and it is an `Int` wherever an
+  integer literal is legal (an operand, an arm's pattern, a
+  constant, an array element). The body is one printable ASCII
+  character (`0x20..=0x7e`; `b'"'` needs no escape) or one escape:
+  `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0`, or `\xNN` for any
+  byte `0x00..=0xff` (the `b"..."` table, below, plus `\'`). The
+  lexer refuses, at the literal, an empty `b''`, a body of more
+  than one byte (`b'ab'`, `b'\n\t'`), a non-ASCII character
+  (`b'é'` is two bytes in UTF-8: write `\xNN`, or `b"é"` for a
+  `Bytes` of its encoding), a raw control character, an unknown
+  escape, and an unescaped quote (`b'''`). Outside a byte literal
+  `'` is not a token: there are no character literals.
 
 ### Float literals
 
@@ -1105,6 +1119,7 @@ lexer errors if encountered outside a string or comment:
 
 ```
 ` (outside time literal)    \   (vertical bar mid-token, not || or |=)
+' (outside a byte literal)
 ```
 
 (Backticks are reserved for time literals only; bare backslash

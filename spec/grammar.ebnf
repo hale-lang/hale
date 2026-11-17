@@ -1770,6 +1770,10 @@ identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 
 (* IDENTIFIER     = ?[a-zA-Z_][a-zA-Z0-9_]*?  excluding keywords *)
 (* INT_LIT        = ?decimal | 0x... | 0o... | 0b...?            *)
+(*                 | ?byte: `b'`, one printable ASCII character *)
+(*                   or an escape (`\n \t \r \\ \' \" \0 \xNN`), *)
+(*                   `'`; the byte's value (tokens.md § Integer *)
+(*                   literals, GH #1995)?                        *)
 (* FLOAT_LIT      = ?<digits>.<digits>, optional exponent, no    *)
 (*                   suffix?                                     *)
 (* DECIMAL_LIT    = ?... 'd' suffix?                             *)

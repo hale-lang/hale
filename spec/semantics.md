@@ -489,6 +489,16 @@ slice the text (\`s[i..(i + 1)]\`, \`s[i..]\`)". Until GH #1995 the
 check passed it and the build refused it ("indexing a non-array
 value").
 
+A byte read that way is an `Int` (0..=255), and a **byte literal**
+names one by its character: `b'/'` is `47`, so
+`std::str::byte_at(v, i) == b'/'` reads as the test it is (GH #1995,
+spec/tokens.md § Integer literals). A byte literal is an integer
+literal in every respect: it types as `Int`, folds in a constant,
+and matches in an arm's pattern, or-patterns included
+(`b'a' | b'A' -> …`). It is the lexer's, so `hale check` and the
+build accept exactly the same ones, and refuse the same ones (no
+byte, several bytes, a non-ASCII character) at the literal.
+
 ## Text sources
 
 `std::str::split(s, sep)`, `std::str::lines(s)` and
