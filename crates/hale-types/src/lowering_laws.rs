@@ -1698,6 +1698,7 @@ fn substitute(te: &TypeExpr, subst: &BTreeMap<String, TypeExpr>) -> TypeExpr {
         TypeExpr::Array { elem, size, span } => {
             TypeExpr::Array { elem: Box::new(substitute(elem, subst)), size: size.clone(), span: *span }
         }
+        TypeExpr::Bounded { elem, cap, span } => TypeExpr::Bounded { elem: Box::new(substitute(elem, subst)), cap: *cap, span: *span },
         other => other.clone(),
     }
 }

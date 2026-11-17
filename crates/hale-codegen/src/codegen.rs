@@ -13646,6 +13646,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 size: size.clone(),
                 span: span.clone(),
             },
+            // `bounded[T; N]`: the element is substituted like an
+            // array's (`type Page<T> { items: bounded[T; 50]; }` at
+            // `Page<Int>`); passing it through left `T` for the
+            // monomorph to resolve, which it never could.
+            TypeExpr::Bounded { elem, cap, span } => TypeExpr::Bounded {
+                elem: Box::new(Self::substitute_type_expr(elem, subst)),
+                cap: *cap,
+                span: *span,
+            },
+            TypeExpr::Function { params, ret, span } => TypeExpr::Function {
+                params: params
+                    .iter()
+                    .map(|p| Self::substitute_type_expr(p, subst))
+                    .collect(),
+                ret: ret
+                    .as_ref()
+                    .map(|r| Box::new(Self::substitute_type_expr(r, subst))),
+                span: *span,
+            },
             TypeExpr::Tuple(parts, span) => TypeExpr::Tuple(
                 parts
                     .iter()
@@ -27730,6 +27749,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let mut vals = Vec::with_capacity(parts.len());
         for p in parts {
+            // a literal spelled with a generic template's name takes the
+            // element type's arguments (`[Row { v: 7 }]` at `bounded[Row<Int>;
+            // 4]`), as the check admits it
+            let rewritten = self.rewrite_generic_literal(p, elem);
+            let p = rewritten.as_ref().unwrap_or(p);
             let (v, got) = self.lower_expr_into(p, scope, Some(elem))?;
             let v = if *elem == CodegenTy::Float && got == CodegenTy::Int {
                 self.coerce_to_float(v, &got, "bounded literal element")?.into()

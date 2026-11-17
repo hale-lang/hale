@@ -2206,6 +2206,13 @@ fn a_locus_in_a_type_is_refused_by_the_check_not_the_build() {
                 "M",
                 "`type Pick`: variant `One` holds the locus `M`.",
             ),
+            (
+                "locus M<T> { params { n: Int = 1; } }\n\
+                 type Layer { w: M<Int>; }\n\
+                 fn main() { println(\"x\"); }\n",
+                "M<Int>",
+                "`type Layer`: field `w` holds the locus `M<Int>`.",
+            ),
         ],
         "locus_in_type",
     );
@@ -3882,6 +3889,15 @@ fn the_generics_divergences_are_refused_by_the_check_not_the_build() {
                 "`Box<L>` would make `type Box` hold the locus `L`",
             ),
             (
+                // a generic locus's instantiation is a locus too: the build
+                // failed on `Box_Cache_Int_String` with no location
+                "locus Cache<K, V> { params { cap: Int = 1; } }\n\
+                 type Box<T> { value: T; }\n\
+                 fn main() { let b: Box<Cache<Int, String>> = Box { value: Cache { cap: 2 } }; }\n",
+                "Cache<Int, String>",
+                "`Box<Cache<Int, String>>` would make `type Box` hold the locus `Cache<Int, String>`",
+            ),
+            (
                 "locus L { params { n: Int = 1; } }\n\
                  type Box<T> { v: T; }\n\
                  fn bx<T>(x: T) -> Box<T> { return Box { v: x }; }\n\
@@ -3904,6 +3920,58 @@ fn the_generics_divergences_are_refused_by_the_check_not_the_build() {
          fn main() { std::time::sleep(1ms); let n = id(3); println(n); }\n",
         "hale_cb_generics_typed_argument",
     );
+}
+
+/// A `bounded[T; N]` whose element is a type parameter: the monomorph's
+/// synthesis substituted `T` in an array's element but passed a
+/// `bounded`'s through, so a generic `type`'s field failed the build
+/// ("generic-type dependency cycle or unresolvable dep among synthesized
+/// monomorphs: Page_Int") and a generic locus's param did too ("unknown
+/// type name `T` in signature"), after a clean check. A literal spelled
+/// with a template's name as an element of such a list takes the
+/// element's arguments, as an array's element does.
+#[test]
+fn a_bounded_of_a_type_parameter_checks_builds_and_runs() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "type Page<T> { items: bounded[T; 50]; }\n\
+             fn main() { let p: Page<Int> = Page { }; push(p.items, 3) or raise; push(p.items, 4) or raise; \
+             let q: Page<String> = Page { items: [\"a\", \"b\", \"c\"] }; \
+             println(count(p.items), \" \", at(p.items, 1) or 0, \" \", count(q.items), at(q.items, 2) or \"\"); }\n",
+            "record_field",
+            "2 4 3c\n",
+        ),
+        (
+            "locus Ring<T> { params { items: bounded[T; 8]; } run() { push(self.items, 5) or discard; println(count(self.items), \" \", at(self.items, 0) or 0); } }\n\
+             fn main() { let r: Ring<Int> = Ring { }; }\n",
+            "locus_param",
+            "1 5\n",
+        ),
+        (
+            "type Row<T> { v: T; }\n\
+             type Page<T> { rows: bounded[Row<T>; 4]; }\n\
+             fn main() { let p: Page<Int> = Page { rows: [Row { v: 7 }] }; for r in p.rows { println(r.v); } }\n",
+            "nested_instantiation",
+            "7\n",
+        ),
+        (
+            // a literal spelled with the template's name in an array literal
+            // at a `bounded` site takes the element's arguments, as it does
+            // at an array site (the check refused it, naming `Row` and
+            // `Row_Int`)
+            "type Row<T> { v: T; }\n\
+             type Page { rows: bounded[Row<Int>; 4]; }\n\
+             fn total(rs: bounded[Row<Int>; 4]) -> Int { let mut n = 0; for r in rs { n = n + r.v; } return n; }\n\
+             fn main() { let p: Page = Page { rows: [Row { v: 7 }] }; let a: bounded[Row<Int>; 4] = [Row { v: 1 }, Row { v: 2 }]; \
+             println(total(p.rows), \" \", total(a), \" \", total([Row { v: 5 }])); }\n",
+            "template_literal_elements",
+            "7 3 5\n",
+        ),
+    ];
+    for (src, tag, want) in cases {
+        let out = build_and_run_probe(src, &format!("bounded_param_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
+        assert_eq!(out, *want, "{tag}: what it computed\n{src}");
+    }
 }
 
 /// The latent gaps the parity gate's stable draw surfaced (GH #2005),

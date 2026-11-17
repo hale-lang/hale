@@ -19073,6 +19073,19 @@ impl<'a> Checker<'a> {
                     _ => None,
                 }
             }
+            // A generic locus's instantiation (`Cache<Int, String>`) is a
+            // locus too: a `type` holding it, or a generic `type` taking
+            // it as an argument (`Box<Cache<Int, String>>`), is refused
+            // as a plain locus is; the build failed on the monomorph
+            // with no location.
+            TypeExpr::Named { path, .. } => {
+                let written: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                let key = match written.as_slice() {
+                    [one] => one.to_string(),
+                    _ => self.known.import_target(&written.join("::"))?.to_string(),
+                };
+                self.generic_loci.contains_key(key.as_str()).then(|| type_expr_text(te))
+            }
             _ => None,
         }
     }
@@ -19612,14 +19625,20 @@ impl<'a> Checker<'a> {
     /// of fields stopped at the first: `self.h.s` in `Outer_Signer` read
     /// no `Signer`, and a sealed param behind it was read unjudged.
     fn monomorph_field_ty(&self, te: &TypeExpr, bindings: &BTreeMap<String, Ty>) -> Ty {
-        if let TypeExpr::Named { generic_args, .. } = te {
-            if !generic_args.is_empty() {
+        match te {
+            TypeExpr::Named { generic_args, .. } if !generic_args.is_empty() => {
                 if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, self.known, bindings) {
                     if self.typed.monomorphs.named(&n).is_some() {
                         return Ty::Named(n);
                     }
                 }
             }
+            // an instantiation as a `bounded`'s element (`bounded[Row<T>;
+            // 4]`) is that monomorph too, not the template with `T` unknown
+            TypeExpr::Bounded { elem, cap, .. } => {
+                return Ty::Bounded(Box::new(self.monomorph_field_ty(elem, bindings)), *cap);
+            }
+            _ => {}
         }
         substitute_generic_ty(te, bindings, self.known)
     }
@@ -20808,6 +20827,11 @@ impl<'a> Checker<'a> {
             for (i, e) in elems.iter().enumerate() {
                 let t = own.as_ref().map_or(first.clone(), |tys| tys[i].clone());
                 let widen = matches!((we.as_ref(), &t), (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::Int)));
+                // a literal spelled with a generic template's name takes the
+                // element type's arguments, as an array literal's element does
+                if matches!(e, Expr::Struct { .. }) && self.admit_monomorph_literal(we, &t, e, false) {
+                    continue;
+                }
                 if !widen && !self.flows_into(we, &t, e) {
                     self.diags.push(Diag::ty(
                         e.span(),
@@ -23605,7 +23629,7 @@ impl<'a> Checker<'a> {
     /// and a tuple literal hand each element the element type.
     fn meet_monomorph_literal(&mut self, want: &Ty, value: &Expr) {
         match (want, value) {
-            (Ty::Array(elem, _), Expr::Array(parts, _)) => {
+            (Ty::Array(elem, _) | Ty::Bounded(elem, _), Expr::Array(parts, _)) => {
                 for p in parts {
                     self.meet_monomorph_literal(elem, p);
                 }

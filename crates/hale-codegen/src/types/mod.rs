@@ -627,7 +627,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let path = self.resolve_generic_struct_path_for_codegen_ty(path, target)?;
                 Some(Expr::Struct { id: *id, path, inits: inits.clone(), span: *span })
             }
-            (Expr::Array(parts, span), CodegenTy::Array(elem, _)) => {
+            // an array literal at a `bounded[T; N]` site is that bounded
+            // (GH #1951): its elements take `T`'s arguments as an array's do
+            (Expr::Array(parts, span), CodegenTy::Array(elem, _) | CodegenTy::Bounded(elem, _)) => {
                 Some(Expr::Array(each(parts, &mut std::iter::repeat(&**elem))?, *span))
             }
             (Expr::ArrayRepeat { val, count, span }, CodegenTy::Array(elem, _)) => Some(Expr::ArrayRepeat {
