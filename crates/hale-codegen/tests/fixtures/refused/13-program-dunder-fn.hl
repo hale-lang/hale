@@ -1,0 +1,13 @@
+// refused at line 8: constructor pattern path must be `Enum::Variant`
+// A program's own fn named with a `__` prefix is not the stdlib's: a
+// refusal in its body is placed in the program, not rendered as a line of
+// the stdlib (GH #1969, #1971). The check refuses the bare pattern; a
+// build that lowers without the check meets lowering's refusal here.
+type E = enum { A(Int), B };
+fn __own(e: E) -> Int {
+    return match e { A(x) -> x, E::B -> 0 };
+}
+
+fn main() {
+    println(__own(E::A(3)));
+}

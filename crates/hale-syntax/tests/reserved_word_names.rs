@@ -302,7 +302,9 @@ fn a_keyword_in_expression_position_keeps_its_own_error() {
 
 #[test]
 fn a_non_keyword_token_keeps_the_debug_fallback() {
-    let src = "fn main() { let 5 = 1; }\n";
+    // not `let 5 = 1;`, which parses since GH #1995 E3 (a literal is a
+    // pattern; the check refuses it as one that can fail to match)
+    let src = "fn main() { let + = 1; }\n";
     let d = only_diag(src);
     assert!(d.contains("expected variable name, got"), "got: {d}");
     assert!(!d.contains("reserved"), "got: {d}");

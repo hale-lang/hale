@@ -191,6 +191,16 @@ fn main() {
     assert_eq!(once, expected);
 }
 
+/// GH #1942: a call through a tuple's fn part reads like any call,
+/// `t.0(4)`, tight after the part's number as after a name.
+#[test]
+fn a_call_through_a_tuple_part_is_tight() {
+    let src = "fn main() { let t = (dbl, 1); println(t.0 (4), t.0(5)); }\n";
+    let once = format_source(src).expect("gate");
+    assert_eq!(format_source(&once).expect("gate, 2nd pass"), once, "not a fixed point");
+    assert!(once.contains("t.0(4), t.0(5)"), "{once}");
+}
+
 /// Every `.hl` file `hale fmt .` visits from the repository root:
 /// `vendor/`, dot-directories and build output skipped.
 fn tree_files() -> Vec<PathBuf> {

@@ -1,0 +1,372 @@
+// A `bounded[T; N]` holds an enum with payloads (spec/types.md §
+// bounded[T; N], GH #1951 item 4). Each slot is a pointer to the
+// element's cell; the place owns the cell and everything its variant
+// carries, as a record element's block: a store copies it in, an
+// overwrite, a `clear` or a `truncate` retires it. Until 2026-11-15 the
+// check refused the element type ("an enum with payloads, which a
+// bounded buffer cannot hold inline").
+//
+// Pinned here:
+//   - payload-free and payload-bearing variants mixed, read back with
+//     `at`, `for` and `match` after the frame that pushed them returned;
+//   - a String, a Bytes, a record and a nested enum as a payload;
+//   - a locus's place: `set` replaces, `clear` and `truncate` drop, and a
+//     read taken before the overwrite still reads the old value;
+//   - a whole copy of the list between records is a copy, not a view;
+//   - a `@form(hashmap)` cell holding such a list;
+//   - a list as a value (#1961): a literal of mixed variants, an owned
+//     local, a fn and a locus method returning one by value, its cells
+//     the caller's to read after the callee returned;
+//   - a locus field rewritten many times stays flat in memory.
+//
+// Every payload String is built at run time (`std::str::upper`, a
+// concatenation), so a read after its block was freed is one ASan sees.
+
+type Point { x: Int = 0; label: String = ""; }
+
+type Inner = enum { Bare, Named(String) };
+
+type Status = enum {
+    Ok,
+    Other(String),
+    Pair(String, Int),
+    Blob(Bytes),
+    At(Point),
+    Wrap(Inner),
+};
+
+type Bag { items: bounded[Status; 6]; }
+
+fn show(s: Status) -> String {
+    return match s {
+        Status::Ok -> "ok",
+        Status::Other(t) -> "other:" + t,
+        Status::Pair(t, n) -> "pair:" + t + "/" + to_string(n),
+        Status::Blob(b) -> "blob:" + to_string(len(b)),
+        Status::At(p) -> "at:" + p.label + "@" + to_string(p.x),
+        Status::Wrap(i) -> match i {
+            Inner::Bare -> "wrap:bare",
+            Inner::Named(n) -> "wrap:" + n,
+        },
+    };
+}
+
+fn fill(k: Int) -> Bag {
+    let mut b = Bag { };
+    push(b.items, Status::Other(std::str::upper("abc") + to_string(k))) or raise;
+    push(b.items, Status::Ok) or raise;
+    push(b.items, Status::Pair("x" + to_string(k), k)) or raise;
+    push(b.items, Status::Blob(std::bytes::from_string("q" + to_string(k)))) or raise;
+    push(b.items, Status::At(Point { x: k, label: std::str::upper("p") })) or raise;
+    push(b.items, Status::Wrap(Inner::Named("n" + to_string(k)))) or raise;
+    return b;
+}
+
+locus Store {
+    params {
+        held: bounded[Status; 4];
+        bag: Bag = Bag { };
+    }
+
+    fn put(i: Int, s: Status) {
+        if i < count(self.held) {
+            set(self.held, i, s) or discard;
+        } else {
+            push(self.held, s) or discard;
+        }
+    }
+
+    // the element is built in this method's frame, which its return
+    // frees: the place keeps its own copy
+    fn put_built(i: Int, k: Int) {
+        let t = std::str::upper("b") + to_string(k);
+        self.put(i, Status::Pair(t, k));
+    }
+
+    // and a method returning a cell built from its own locals
+    fn built(k: Int) -> Status {
+        let t = "m" + to_string(k);
+        return Status::Wrap(Inner::Named(t));
+    }
+
+    fn get(i: Int) -> String {
+        return show(at(self.held, i) or Status::Ok);
+    }
+
+    // a read held across the overwrite of its slot
+    fn swap_and_show_old(i: Int, s: Status) -> String {
+        let old = at(self.held, i) or Status::Ok;
+        set(self.held, i, s) or discard;
+        return show(old);
+    }
+
+    fn take(b: Bag) {
+        self.bag.items = b.items;
+    }
+
+    fn joined() -> String {
+        let mut out = "";
+        for s in self.held {
+            out = out + show(s) + ";";
+        }
+        return out;
+    }
+
+    fn drop_to(n: Int) -> Int {
+        return truncate(self.held, n);
+    }
+
+    fn empty() {
+        clear(self.held);
+    }
+}
+
+locus Churn {
+    params { held: bounded[Status; 4]; }
+
+    fn round(i: Int) {
+        let s = match i % 3 {
+            0 -> Status::Other(std::str::repeat("x", 1024) + to_string(i)),
+            1 -> Status::Pair(std::str::repeat("y", 1024) + to_string(i), i),
+            _ -> Status::Wrap(Inner::Named(std::str::repeat("z", 1024) + to_string(i))),
+        };
+        let at_ = i % 4;
+        if at_ < count(self.held) {
+            set(self.held, at_, s) or discard;
+        } else {
+            push(self.held, s) or discard;
+        }
+        if i % 1000 == 999 {
+            truncate(self.held, 2);
+        }
+    }
+
+    fn kept() -> Int {
+        return count(self.held);
+    }
+
+    fn head() -> String {
+        return show(at(self.held, 0) or Status::Ok);
+    }
+}
+
+type Slot { id: String = ""; seen: bounded[Status; 2]; }
+
+@form(hashmap)
+locus Slots { capacity { pool rows of Slot indexed_by id; } }
+
+main locus App {
+    params { slots: Slots = Slots { }; }
+}
+
+fn statuses(k: Int) -> bounded[Status; 6] {
+    let t = "v" + to_string(k);
+    let mut out: bounded[Status; 6] = [
+        Status::Ok,
+        Status::Other(t),
+        Status::Wrap(Inner::Named(t + "!"))
+    ];
+    push(out, Status::Pair(std::str::upper(t), k)) or raise;
+    return out;
+}
+
+locus Maker {
+    params { tag: String = "m"; held: bounded[Status; 6]; }
+
+    fn made(k: Int) -> bounded[Status; 6] {
+        let t = self.tag + to_string(k);
+        return [Status::Other(t), Status::Ok];
+    }
+
+    fn keep(k: Int) {
+        self.held = statuses(k);
+    }
+
+    fn first_kept() -> String {
+        return show(at(self.held, 1) or Status::Ok);
+    }
+}
+
+fn tags(b: Bag) -> String {
+    let mut out = "";
+    for s in b.items {
+        out = out + match s {
+            Status::Ok -> "O",
+            Status::Other(_) -> "S",
+            Status::Pair(_, _) -> "P",
+            Status::Blob(_) -> "B",
+            Status::At(_) -> "A",
+            Status::Wrap(_) -> "W",
+        };
+    }
+    return out;
+}
+
+fn main() {
+    // read back after the producing frame returned
+    let b = fill(7);
+    std::test::assert_eq_int(count(b.items), 6, "six elements came back");
+    std::test::assert_eq_str(show(at(b.items, 0) or Status::Ok), "other:ABC7", "a String payload");
+    std::test::assert_eq_str(
+        show(at(b.items, 1) or Status::Other("x")),
+        "ok",
+        "a payload-free variant",
+    );
+    std::test::assert_eq_str(show(at(b.items, 2) or Status::Ok), "pair:x7/7", "two payload values");
+    std::test::assert_eq_str(show(at(b.items, 3) or Status::Ok), "blob:2", "a Bytes payload");
+    std::test::assert_eq_str(show(at(b.items, 4) or Status::Ok), "at:P@7", "a record payload");
+    std::test::assert_eq_str(
+        show(at(b.items, 5) or Status::Ok),
+        "wrap:n7",
+        "a nested enum payload",
+    );
+    std::test::assert_eq_str(tags(b), "SOPBAW", "match on each element of a for");
+    let other = fill(8);
+    std::test::assert_eq_str(
+        show(at(b.items, 0) or Status::Ok),
+        "other:ABC7",
+        "a later frame does not reach it",
+    );
+    std::test::assert_eq_str(
+        show(at(other.items, 5) or Status::Ok),
+        "wrap:n8",
+        "nor the other way",
+    );
+
+    // a record's list grows after the call, and is copied whole
+    let mut c = fill(1);
+    push(c.items, Status::Ok) or discard;
+    std::test::assert_eq_int(count(c.items), 6, "the list is full at six");
+    let mut d = Bag { };
+    d.items = c.items;
+    set(c.items, 0, Status::Other("changed" + to_string(2))) or raise;
+    std::test::assert_eq_str(
+        show(at(d.items, 0) or Status::Ok),
+        "other:ABC1",
+        "a whole copy is not a view",
+    );
+    std::test::assert_eq_str(
+        show(at(c.items, 0) or Status::Ok),
+        "other:changed2",
+        "the source took the set",
+    );
+
+    // a locus's place
+    let st = Store { };
+    st.put(0, Status::Other("q" + to_string(1)));
+    st.put(1, Status::Pair(std::str::upper("zz"), 9));
+    st.put(2, Status::Ok);
+    st.put(0, Status::Other("r" + to_string(2)));
+    std::test::assert_eq_str(st.get(0), "other:r2", "set replaced the element");
+    st.put_built(2, 5);
+    std::test::assert_eq_str(st.get(2), "pair:B5/5", "a cell built in a frame that returned");
+    std::test::assert_eq_str(show(st.built(4)), "wrap:m4", "a cell a method returns");
+    st.put(2, st.built(6));
+    std::test::assert_eq_str(st.get(2), "wrap:m6", "stored from a method's return");
+    st.put(2, Status::Ok);
+    std::test::assert_eq_str(st.get(1), "pair:ZZ/9", "its neighbour is untouched");
+    std::test::assert_eq_str(st.joined(), "other:r2;pair:ZZ/9;ok;", "a for over the place");
+    std::test::assert_eq_str(
+        st.swap_and_show_old(1, Status::Wrap(Inner::Bare)),
+        "pair:ZZ/9",
+        "a read taken before the overwrite keeps the old value",
+    );
+    std::test::assert_eq_str(st.get(1), "wrap:bare", "and the slot holds the new one");
+    std::test::assert_eq_int(st.drop_to(1), 1, "truncate drops the tail");
+    std::test::assert_eq_str(st.joined(), "other:r2;", "only the head is left");
+    st.put(1, Status::At(Point { x: 3, label: "l" + to_string(3) }));
+    std::test::assert_eq_str(st.get(1), "at:l3@3", "a push after the truncate");
+    st.empty();
+    std::test::assert_eq_str(st.joined(), "", "clear empties it");
+    st.take(fill(5));
+    let later = fill(6);
+    std::test::assert_eq_int(count(later.items), 6, "a later frame's list");
+    st.put(0, Status::Ok);
+    std::test::assert_eq_str(st.joined(), "ok;", "the place is usable after clear");
+
+    // lists as values: a literal, an owned local, return by value
+    let v = statuses(3);
+    std::test::assert_eq_int(count(v), 4, "a returned list's count");
+    std::test::assert_eq_str(show(at(v, 1) or Status::Ok), "other:v3", "a literal's payload");
+    std::test::assert_eq_str(show(at(v, 2) or Status::Ok), "wrap:v3!", "a nested payload");
+    std::test::assert_eq_str(show(at(v, 3) or Status::Ok), "pair:V3/3", "a pushed payload");
+    let mut own = v;
+    set(own, 1, Status::Other("own" + to_string(1))) or raise;
+    std::test::assert_eq_str(
+        show(at(v, 1) or Status::Ok),
+        "other:v3",
+        "a local bound from a local is a copy",
+    );
+    std::test::assert_eq_str(show(at(own, 1) or Status::Ok), "other:own1", "the copy took the set");
+    let mk = Maker { };
+    let made = mk.made(9);
+    std::test::assert_eq_str(
+        show(at(made, 0) or Status::Ok),
+        "other:m9",
+        "a method returns a list by value",
+    );
+    mk.keep(4);
+    let later2 = statuses(5);
+    std::test::assert_eq_int(count(later2), 4, "a later list");
+    std::test::assert_eq_str(mk.first_kept(), "other:v4", "a locus field assigned a returned list");
+    mk.keep(6);
+    std::test::assert_eq_str(mk.first_kept(), "other:v6", "and assigned again");
+
+    // a hashmap cell holding a list of them
+    let app = App { };
+    let mut s = Slot { id: "a" };
+    push(s.seen, Status::Other(std::str::upper("seen"))) or raise;
+    push(s.seen, Status::Ok) or raise;
+    app.slots.set(s);
+    let mut s2 = Slot { id: "b" };
+    push(s2.seen, Status::Pair("b" + to_string(2), 2)) or raise;
+    app.slots.set(s2);
+    let got = app.slots.get("a") or Slot { };
+    std::test::assert_eq_int(count(got.seen), 2, "the cell's list came back");
+    std::test::assert_eq_str(show(at(got.seen, 0) or Status::Ok), "other:SEEN", "with its payload");
+    let mut s3 = Slot { id: "a" };
+    push(s3.seen, Status::Wrap(Inner::Named("again" + to_string(1)))) or raise;
+    app.slots.set(s3);
+    let again = app.slots.get("a") or Slot { };
+    std::test::assert_eq_str(
+        show(at(again.seen, 0) or Status::Ok),
+        "wrap:again1",
+        "a replaced cell's list",
+    );
+    std::test::assert_eq_str(
+        show(at(got.seen, 0) or Status::Ok),
+        "other:SEEN",
+        "an earlier read is its own",
+    );
+
+    // a locus field rewritten many times stays flat: every overwrite and
+    // every truncate retires the old cells and their 1 KiB payloads, so
+    // 20000 rounds that leaked would grow the process by ~20 MiB. Each
+    // round builds its payload in the method's own frame, so what
+    // stays is only what the place keeps. `rss_bytes` is the current
+    // resident size; the assertion runs on Linux (`/proc` answers).
+    let flat = Churn { };
+    let mut i = 0;
+    while i < 2000 {
+        flat.round(i);
+        i = i + 1;
+    }
+    let before = std::process::rss_bytes();
+    while i < 22000 {
+        flat.round(i);
+        i = i + 1;
+    }
+    let grew = std::process::rss_bytes() - before;
+    std::test::assert_eq_int(flat.kept(), 2, "the last round truncated the churned place to two");
+    std::test::assert(
+        std::str::ends_with(flat.head(), "x21996"),
+        "the churned head is the last round to land there",
+    );
+    if (std::io::fs::read_file("/proc/self/statm") or "") != "" {
+        std::test::assert(
+            grew < 8 * 1048576,
+            "20000 overwrites grew the process by " + to_string(grew / 1024) + " KiB",
+        );
+    }
+    std::test::assert_eq_str(st.get(0), "ok", "the other store is untouched");
+}

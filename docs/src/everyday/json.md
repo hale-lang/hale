@@ -71,15 +71,17 @@ let roundtrip = Person::from_json(encoded) or raise;
 
 - **Single-pass scanning**: `Type::from_json(s) -> Type fallible(JsonError)` walks the JSON object once, dispatches matched keys to their target fields, and skips unknown keys (including nested objects or arrays under unknown keys).
 - **Required vs. optional fields**: A missing field raises `JsonError { kind: "missing_field", field }` (naming the missing field) unless the field declaration includes a default value, of any shape a field default may have: a literal (`role: String = "member"`, `n: Int = -1`), an enum variant (`side: Side = Side::Buy`), a record literal (`inst: Instrument = Instrument { sym: "Y", tick: 2 }`, its own fields' defaults filling what it leaves out). The codec builds the default when the key is absent, exactly as the record's own literal would. A key sent as `null` is a key absent: the field takes that same default, whatever its shape (`"n": null` reads `-1`, `"side": null` reads `Side::Buy`, `"inst": null` reads the declared `Instrument { sym: "Y", tick: 2 }`), and a field with no default is `missing_field`. Only a `std::json::Value` field holds `null` as its text.
+- **Optional fields**: a field declared `x?: T` ([Records](records.md), Optional Fields) may be left out or sent as `null`: its `has_x` flag says which. The encoder writes `x` only when `has_x` is set, and an optional `std::json::Value` holding `null` is left out rather than written as `null`. `x?: T clearable` reads `null` as its `clear_x` flag and writes it back as `null`.
 - **Error handling**: Because `from_json` is `fallible(JsonError)`, callers must address errors with `or raise`, `or <fallback>`, or an error handler. `Type::to_json(value)` is infallible and always returns a `String`.
 - **Supported field types**: what an api surface's JSON codec carries of a field ([The API surface](../services/api.md)):
   - **Scalars**: `Int`, `Float`, `Bool`, `String`, and `Decimal<S>`; a unit-dialect scalar (an identity, a range, a quantity) as its `Int`; a `Time` as its RFC 3339 text; a `Duration` as its nanoseconds; a `std::json::Value` as its text.
   - **Exact decimals**: `Decimal<S>` serializes as an exact JSON number (`19.99`, without float approximation) and parses at scale `S`, any JSON number spelling included: an exponent is applied exactly (`1e-7` at scale 8 is `0.0000001`, `1.50E+1` is `15`). A JSON string holding a number parses the same way, so an API that quotes its prices (`{"price": "97000.50"}`) and one that sends numbers both decode, with no float on the way. Numbers with more fractional digits than `S` (the exponent applied), a mantissa past i128, and spellings that are not JSON numbers (`+1`, `.5`, `1.`, `01`, or a string holding one of those, a space or anything but the number) are rejected with `wrong_type` rather than truncated or read as zero. To *write* a Decimal as a string, tag the field `` `json:"price,string"` `` (or `` `json:",string"` `` to keep the field's name): `to_json` then writes `"97000.5"`. The `string` option is a Decimal's (a field or a list of them).
   - **256-bit integers**: a `U256` or `I256` field reads a JSON string of decimal digits or `0x` hex (either case; an `I256`'s with a leading `-`), or a JSON integer that fits, and writes a JSON string of its decimal digits. Tagged `` `json:",hex"` `` it writes `0x` hex instead (`"0xde0b6b3a7640000"`). A fraction, an exponent, a value out of range or a string with anything else in it is `wrong_type`.
   - **Hex quantities**: an `Int` field tagged `` `json:"gasUsed,hex"` `` reads JSON-RPC's quoted hex (`"0x4dc"`) as well as a plain number, and writes `"0x4dc"`; a list of `Int`s takes the option for each element. No `0x`, no digits, a sign, a space or a value past `Int`'s range is `wrong_type`. A negative `Int` has no hex text, so it is written as its JSON number, which reads back. The options are `string` and `hex`; the check refuses any other, and either one on a field it is not for.
-  - **Enums**: a payload-free variant is its name as a JSON string (`"Buy"`), read back by name; a name no variant has is `wrong_type` for the field. A variant with values is written as the api codec writes it (`{"Circle": 1.5}`).
+  - **Enums**: a payload-free variant is its name as a JSON string (`"Buy"`), read back by name; a name no variant has is `wrong_type` for the field. A variant with values is written as the api codec writes it (`{"Circle": 1.5}`). A variant takes a tag too: `` Buy `json:"buy"` `` crosses as `"buy"` (and `"Buy"` is no longer read), `` Fill(Int) `json:"fill"` `` as `{"fill": 3}`; `` Other(String) `json:",other"` `` catches any string no variant names and writes it back, and a payload-free `` Unknown `json:",other"` `` catches it without keeping it. `@wire_case(snake)` on the enum's declaration (or `screaming_snake`, `kebab`, `lower`) spells every untagged variant that way, and `E::name` / `E::parse` read the same names ([Records & Data](./records.md#names-parsing-and-the-variant-list)). See [Wire names and the catch-all](../services/api.md#wire-names-and-the-catch-all).
   - **Nested records**: Any field whose type is another record of the seed is parsed and serialized recursively, by that record's own codec (its keys its fields' tags, else their names), whether or not it declares a `json:` tag of its own.
   - **Lists**: a `bounded[T; N]` or `[T; N]` of any of those is a JSON array; more elements than `N` is `too_long`, fewer than a fixed array's `too_short`, and an absent `bounded` field is empty.
+  - **Maps**: a `bounded[T; N] indexed_by k` of records is a JSON object keyed by each record's `k`, the record without its key as the value (`{"AAPL": {"rows": []}}`). A map that is not an object, or a member that is not a record (an array where the record's object belongs), is `wrong_type` for the field, never an empty map.
 - **Positional rows**: many APIs send a table's rows as arrays (`[[1688666400, "2990.5", "3010", 100.5], ...]`). Mark the row's record `@positional` and it crosses as an array of its fields in declaration order, as a field, a list's element or a whole value; `@positional` gives the record `from_json` / `to_json` without a tag:
 
   ```hale,fragment
@@ -211,9 +213,24 @@ let out = b.result();   // {"name": "Ada", "age": 36, "active": true}
 | `string_field(name, value)` | Writes `"name": "escaped_value"` |
 | `int_field(name, value)` | Writes `"name": 123` |
 | `bool_field(name, value)` | Writes `"name": true` or `false` |
-| `string_value(value)` | Writes a quoted, escaped string element inside an array |
-| `field(name, raw_json)` | Writes `"name": <raw_json>` for pre-formatted JSON fragments |
+| `null_field(name)` | Writes `"name": null` |
+| `string_value(v)` | Writes a quoted, escaped string element inside an array |
+| `int_value(n)` / `bool_value(b)` / `null_value()` | Writes a number, `true`/`false` or `null` element inside an array |
+| `raw_field(name, json)` | Writes `"name": <json>`, the value as given, for JSON you encoded already |
+| `raw_value(json)` | Writes an array element as given, for JSON you encoded already |
 | `result() -> String` | Returns an independent copy of the accumulated JSON string |
+
+`field(name, value)` and `value(v)` are deprecated. They write their
+argument raw, exactly as `raw_field` / `raw_value` do, so
+`b.field("name", "alice")` writes `"name": alice`, which is not JSON.
+Each call warns `deprecated:`. Use `raw_field` / `raw_value` for JSON you
+encoded already (a number you formatted, a nested document, an array from
+`build_array`) and `string_field` / `string_value` for a string. v0.34
+makes `field` and `value` quote and escape their argument as a string.
+
+The Builder separates with `": "` and `", "`. The spacing is part of
+what it writes, and programs that store its documents and match them as
+text rely on it, so it does not change.
 
 ### String Escaping and Unescaping
 

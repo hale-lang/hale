@@ -46,7 +46,7 @@ impl<'ctx, 'p> IoUnixStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::unix::listen_socket: path must be String, got {:?}",
+                "std::io::unix::listen_socket: path must be String, got {}",
                 path_ty
             )));
         }
@@ -123,7 +123,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::unix::peer_{}: fd must be Int, got {:?}",
+                "std::io::unix::peer_{}: fd must be Int, got {}",
                 which, fd_ty
             )));
         }
@@ -164,7 +164,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (name_val, name_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(name_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::unix::{}: name must be String, got {:?}",
+                "std::io::unix::{}: name must be String, got {}",
                 which, name_ty
             )));
         }
@@ -201,7 +201,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (i_val, i_ty) = self.lower_expr(&args[1], scope)?;
         if fd_ty != CodegenTy::Int || i_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::unix::peer_group_at: fd and i must be Int, got {:?} and {:?}",
+                "std::io::unix::peer_group_at: fd and i must be Int, got {} and {}",
                 fd_ty, i_ty
             )));
         }
@@ -245,7 +245,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::unix::{}: path must be String, got {:?}",
+                "std::io::unix::{}: path must be String, got {}",
                 name, path_ty
             )));
         }
@@ -255,7 +255,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (w, wty) = self.lower_expr(&args[1], scope)?;
             if !matches!(wty, CodegenTy::Duration | CodegenTy::Int) {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::io::unix::connect_wait: wait must be a Duration, got {:?}",
+                    "std::io::unix::connect_wait: wait must be a Duration, got {}",
                     wty
                 )));
             }

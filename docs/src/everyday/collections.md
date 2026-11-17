@@ -34,9 +34,11 @@ Each `@form` locus manages a single collection (one `@form` per locus). Use `@fo
 | **`@form(lru_cache, cap = N)`** (Bounded LRU cache) | `capacity { pool entries of T indexed_by k; }` | `put(v)`, `get(k)`*, `contains(k) -> Bool`, `remove(k)`*, `len()`, optional `fn on_evict(k, v)` | Evicts least-recently-used entry when exceeding `N` |
 | **`@form(heap)`** (Priority queue) | `capacity { heap jobs of T ordered_by min\|max f; }` | `push(v)`, `pop()`*, `peek()`*, `len()`, `is_empty()`, `clear()` | Drain with `while !q.is_empty() { let x = q.pop() or ...; }` |
 | **`bounded[T; N]`** (Inline bounded list) | `tags: bounded[String; 32];` (field on `type`) | `push(f, x)`*, `at(f, i)`*, `set(f, i, x)`*, `count(f)`, `clear(f)`, `truncate(f, n)` | `for x in f { ... }`; starts empty (`count = 0`) |
-| **`[T; N]`** (Fixed array) | `let xs: [Int; 4] = [0; 4];` | `xs[i]`, `len(xs)` | `for x in xs { ... }`; fixed size `N` |
+| **`[T; N]`** (Fixed array) | `let xs: [Int; 4] = [0; 4];` | `xs[i]`, `len(xs)` | `for x in xs { ... }`; fixed size `N`, an integer literal (`0` included: `[x; 0]`, or `let xs: [Int; 0] = [];`) |
 
 *\*Operations marked with `*` are `fallible` (out-of-bounds, missing key, empty, or at capacity) and require an `or` clause.*
+
+A vec's `sort()` orders `Int`, `Float` and `String` cells by themselves; a vec of any other cell (a `Bool`, a record) has no default ordering, and `hale check` refuses `v.sort()` there, pointing at `v.sort_by(less_than)` with a comparator `fn less_than(a: T, b: T) -> Bool`.
 
 A `bounded` is not indexed with `[i]`: read an element with `at(f, i) or …` and write one with `set(f, i, x) or …`, each fallible past the live count (`hale check` refuses `f[i]` and names both).
 
@@ -112,7 +114,7 @@ fn main() {
 
 ### `@form(lru_cache, cap = N)`
 
-`@form(lru_cache, cap = N)` is a fixed-capacity keyed table that automatically evicts the least-recently-used entry when `put` exceeds `cap`:
+`@form(lru_cache, cap = N)` is a fixed-capacity keyed table that automatically evicts the least-recently-used entry when `put` exceeds `cap`. Its key, like a hashmap's, is an `Int` or a `String` field (an identity, range or quantity counts as its `Int`); `hale check` refuses any other key at the `indexed_by` name:
 
 ```hale
 type Entry { key: String; fd: Int; }
@@ -190,7 +192,7 @@ type Message {
 }
 
 fn main() {
-    let msg = Message { id: "msg1" };   // `tags` starts empty (cannot be set in literal)
+    let msg = Message { id: "msg1" };   // `tags` left out: it starts empty
     push(msg.tags, "urgent") or raise;
     push(msg.tags, "billing") or raise;
 
@@ -200,6 +202,29 @@ fn main() {
     println(count(msg.tags));           // 2
 }
 ```
+
+A `bounded` is a value. An array literal written where a `bounded[T; N]` is declared (a `let` with that type, a `return` from a fn returning one, an argument, an assignment, a record literal's field) is that list, its count the literal's length; `[]` is empty. A literal longer than `N` is a check error where you wrote it. A function returns one by value, and the caller owns what it gets back:
+
+```hale
+type Doc { title: String; tags: bounded[String; 8]; }
+
+fn hashtags(d: Doc) -> bounded[String; 8] {
+    let mut out: bounded[String; 8] = [];
+    for t in d.tags {
+        push(out, "#" + t) or raise;
+    }
+    return out;
+}
+
+fn main() {
+    let ids: bounded[Int; 4] = [1, 2, 3];          // count 3
+    let d = Doc { title: "notes", tags: ["a", "b"] };
+    let tags = hashtags(d);
+    println(count(ids), " ", count(tags), " ", count(hashtags(d)));   // 3 2 2
+}
+```
+
+A local bound from a place is a copy, as a record or a string is: `let mut mine = self.row.tags; push(mine, "x") or raise;` leaves `self.row.tags` as it was, and a later write to `self.row.tags` does not reach `mine`. To change the place, name it (`push(self.row.tags, "x")`), or store the local back whole (`self.row.tags = mine;`). Writing a local with an intrinsic needs `let mut`.
 
 ### `bounded[T; N]` Intrinsics and Rules
 
@@ -212,9 +237,9 @@ fn main() {
 | `clear(b)` | `(bounded[T; N]) -> ()` | Resets live count to `0` |
 | `truncate(b, n)` | `(bounded[T; N], Int) -> ()` | Shrinks live count to `n` (never grows) |
 
-- **Supported element types:** Scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, unit types), payload-free enums, `String`, `Bytes`, and structs. Wrap tuples, fixed arrays, or payload-carrying enums in a struct to store them in a `bounded`.
-- **Copying and returning:** Assigning `row.tags = msg.tags;` between two `bounded[T; N]` fields of the exact same type copies all live elements and the count. A function cannot return a bare `bounded[T; N]` directly; wrap it in a `type` record and return the record.
-- **Memory:** A `bounded` a locus holds owns its `String`, `Bytes` and struct elements. Whatever stops being an element is reclaimed: the element `set` overwrites, the ones `clear` and `truncate` drop, and every element of a record you replace whole (`self.row = fresh;`). So a locus that keeps rewriting such a field stays the same size. `at(b, i)` gives you the element itself, and a local you keep across a call that rewrites the field gets its own copy automatically.
+- **Supported element types:** Scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, unit types), enums (payload-free or carrying values: `bounded[Status; 8]` with `type Status = enum { Ok, Other(String) };`), `String`, `Bytes`, and structs. Wrap tuples or fixed arrays in a struct to store them in a `bounded`.
+- **Copying and returning:** Assigning `row.tags = msg.tags;` between two `bounded[T; N]` of the exact same type, fields or locals, copies all live elements and the count; so does binding a local from a field. A function, a locus method and an interface method return a `bounded[T; N]` by value, its elements copied into the caller's arena. A call's result is a temporary: `count(make())` reads it, and `push(make(), x)` is refused (bind it with `let mut` first). A field takes no default: it starts empty, and a record literal that wants elements spells them (`Doc { tags: ["a"] }`).
+- **Memory:** A `bounded` a locus holds owns its `String`, `Bytes`, struct and payload-carrying enum elements, with everything they carry (an enum element's `String`, `Bytes`, record or nested enum). Whatever stops being an element is reclaimed: the element `set` overwrites, the ones `clear` and `truncate` drop, and every element of a record you replace whole (`self.row = fresh;`). So a locus that keeps rewriting such a field stays the same size. `at(b, i)` gives you the element itself, and a local you keep across a call that rewrites the field gets its own copy automatically.
 - **Value semantics:** Every `bounded`, a local record's too, holds its own elements. After `push(l.items, item)`, writing `item.k = 2` does not change the element, and writing a copy read with `at` and `set` back does not change `item`. `push` and `set` keep the value without copying it when nothing else names it: a literal, a call's result, a local you do not use after the store, or an element read with `at` and set back to its own slot (`let mut x = at(l.items, i) or …; x.k = 2; set(l.items, i, x) or …;`). Otherwise they store a copy, which `hale verify` reports on a hot path.
 - **Populating via helper functions:** A helper function `fn fill(r: Row)` that pushes `String`, `Bytes`, or structs into `r` allocates those elements in the caller's frame. Passing a locus field directly (`fill(self.row)`) is rejected because those frame-allocated elements would be freed when the caller returns; instead, populate a local record and assign it whole (`let mut mine = Row { }; fill(mine); self.row = mine;`), which copies the elements into the locus's arena.
 - **Printing:** `bounded` of scalar elements (`Int`, `Float`, `Bool`, `Decimal`, `Duration`) prints its live slice (`[7, 8]`). `bounded[String; N]` (and structs containing one) cannot be printed directly—iterate over it or print `count(b)`.
@@ -230,6 +255,8 @@ let active_count = users.filter(it.active).count();
 let total_age    = users.filter(it.active).map(it.age).sum();
 users.filter(it.active).into(active_users_vec);
 ```
+
+A chain over a `bounded` or array field walks it by its type, whatever the field is called and however you reach it: `b.tags.filter(it > 1).count()`, `o.inner.tags.map(it * 2).sum()`, or a field named `items` or `entries`. Only on a `@form` locus are `.items` and `.entries` the form's own iteration surface.
 
 Every chain is lowered by the compiler into a single inline loop with **zero heap allocations**, making chains legal inside `@budget(alloc_per_call = 0)` and `@hot` functions. Within stage expressions, `it` refers to the current element (and `idx` refers to the 0-based position after `.enumerate()`).
 

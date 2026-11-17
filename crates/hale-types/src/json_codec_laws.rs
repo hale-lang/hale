@@ -159,6 +159,10 @@ pub fn json_tag_laws(programs: &[&Program]) -> Vec<Diag> {
     for p in programs {
         for d in flat_decls(&p.items) {
             let TopDecl::Type(td) = d else { continue };
+            if let TypeDeclBody::Enum(vs) = &td.body {
+                enum_tag_laws(&td.name.name, vs, &shapes, &mut diags);
+                continue;
+            }
             let TypeDeclBody::Struct(fields) = &td.body else { continue };
             for f in fields {
                 let Some(tag) = f.tag.as_deref() else { continue };
@@ -231,4 +235,111 @@ pub fn json_tag_laws(programs: &[&Program]) -> Vec<Diag> {
         }
     }
     diags
+}
+
+/// GH #1951 item 5: the `json:` tags of an enum's variants (spec/api.md §
+/// Codecs, spec/semantics.md § Metadata tags). A tag's key renames the
+/// variant on the JSON wire and its one option, `other`, makes the variant
+/// the enum's catch-all. Refused, each at the variant: an option that is
+/// not `other` (`string` and `hex` are a field's), a second catch-all, a
+/// catch-all with values other than one `String`, a key on a catch-all
+/// that holds the string (it writes what it holds, so a name of its own is
+/// never on the wire), and two variants one wire name.
+fn enum_tag_laws(enum_name: &str, vs: &[hale_syntax::ast::EnumVariant], shapes: &Shapes<'_>, diags: &mut Vec<Diag>) {
+    use hale_syntax::json_gen::{json_tag_key, json_tag_options, variant_is_other, variant_wire_name};
+    let json_of = |v: &hale_syntax::ast::EnumVariant| v.tag.as_deref().and_then(|t| hale_syntax::desugar::tag_value(t, "json"));
+    if !vs.iter().any(|v| json_of(v).is_some()) {
+        return;
+    }
+    let mut other: Option<&hale_syntax::ast::EnumVariant> = None;
+    for v in vs {
+        let Some(_) = json_of(v) else { continue };
+        let at = format!("`{enum_name}::{}`", v.name.name);
+        for opt in json_tag_options(v.tag.as_deref()) {
+            if opt != "other" {
+                diags.push(Diag::ty(
+                    v.span,
+                    format!(
+                        "{at}: `json:` tag option `{opt}` is not a variant's: a variant's tag takes a wire name \
+                         (`json:\"sell\"`) and the option `other`, which makes it the enum's catch-all \
+                         (`json:\",other\"`)"
+                    ),
+                ));
+            }
+        }
+        if !variant_is_other(v) {
+            continue;
+        }
+        if let Some(first) = other {
+            diags.push(
+                Diag::ty(
+                    v.span,
+                    format!(
+                        "{at}: `{enum_name}` has two catch-all variants, `{}` and `{}`: an unknown string decodes to \
+                         one, so an enum has at most one `json:\",other\"`",
+                        first.name.name, v.name.name
+                    ),
+                )
+                .with_related(first.span, "the first catch-all"),
+            );
+            continue;
+        }
+        other = Some(v);
+        let string = |te: &hale_syntax::ast::TypeExpr| {
+            matches!(shapes.dealias(te), hale_syntax::ast::TypeExpr::Primitive(hale_syntax::ast::PrimType::String, _))
+        };
+        match v.fields.as_slice() {
+            [] => {}
+            [one] if string(one) => {
+                if let Some(key) = json_tag_key(v.tag.as_deref()) {
+                    diags.push(Diag::ty(
+                        v.span,
+                        format!(
+                            "{at}: a catch-all that holds the string writes the string it holds, so it has no wire \
+                             name of its own and `json:\"{key},other\"` names none; drop the name \
+                             (`json:\",other\"`)"
+                        ),
+                    ));
+                }
+            }
+            values => {
+                let tys: Vec<String> = values.iter().map(crate::surfaces::type_text).collect();
+                diags.push(Diag::ty(
+                    v.span,
+                    format!(
+                        "{at}: a catch-all variant (`json:\",other\"`) is payload-free, keeping only that the string \
+                         was unknown, or holds the one `String` it caught, and `{}` holds `({})`; declare \
+                         `{}(String)` or `{}`",
+                        v.name.name,
+                        tys.join(", "),
+                        v.name.name,
+                        v.name.name
+                    ),
+                ));
+            }
+        }
+    }
+    // the wire names, after renaming, are distinct: a lossless catch-all
+    // has none
+    let lossless = |v: &hale_syntax::ast::EnumVariant| variant_is_other(v) && !v.fields.is_empty();
+    let mut seen: Vec<(String, &hale_syntax::ast::EnumVariant)> = Vec::new();
+    for v in vs.iter().filter(|v| !lossless(v)) {
+        let wire = variant_wire_name(v);
+        if let Some((_, first)) = seen.iter().find(|(w, _)| *w == wire) {
+            diags.push(
+                Diag::ty(
+                    v.span,
+                    format!(
+                        "`{enum_name}::{}`: `{enum_name}::{}` and `{enum_name}::{}` both cross JSON as \"{wire}\": a \
+                         variant's wire name (its `json:` tag's, else its enum's `@wire_case` spelling, else its own) names one \
+                         variant; rename one",
+                        v.name.name, first.name.name, v.name.name
+                    ),
+                )
+                .with_related(first.span, "the variant that has the name first"),
+            );
+            continue;
+        }
+        seen.push((wire, v));
+    }
 }

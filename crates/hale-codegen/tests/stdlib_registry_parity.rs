@@ -49,9 +49,18 @@ use crate::stdlib_dispatch_coverage::{scrape, ArmCall, ArmKind, Position};
 
 /// The rows no dispatcher lowers and no rename reaches, each with its
 /// reason. A new one is a public name that cannot be lowered, so it is
-/// named here deliberately. None since F.40 phase 4, S5 removed the one
-/// there was (`std::io::file::close`, a signature and nothing else).
-const UNLOWERED: &[(&str, &str)] = &[];
+/// named here deliberately. F.40 phase 4, S5 removed the one there was
+/// (`std::io::file::close`, a signature and nothing else); the text `for`
+/// sources (GH #1995) are the ones since, names the checker never accepts
+/// as a call.
+const UNLOWERED: &[(&str, &str)] = &[
+    // GH #1995 S2: `for` sources. The desugar sequence rewrites every loop
+    // over one into a `while` over the ByteView hooks, and the checker
+    // refuses a call left as written, so no call reaches lowering.
+    ("std::str::lines", "a `for` source: rewritten before the check, refused there as a value"),
+    ("std::str::split", "a `for` source: rewritten before the check, refused there as a value"),
+    ("std::str::words", "a `for` source: rewritten before the check, refused there as a value"),
+];
 
 /// What the arms of the given positions do with each path: for every
 /// arm that lowers it, the call that arm makes; and whether some arm
@@ -354,7 +363,9 @@ fn rename_targets_exist() {
     // Compiler-SYNTHESIZED types: declared by codegen at lowering
     // time (`declare_builtin_types`), not by Hale source,
     // so they are legitimately absent from AP_SOURCE.
-    const SYNTHESIZED: &[&str] = &["ParseError"];
+    // GH #1945: the stdlib error types the shadowing law names by path
+    // are builtins of the same kind (`builtin_types.rs`).
+    const SYNTHESIZED: &[&str] = &["ParseError", "IndexError", "KeyError", "EmptyError", "CryptoError"];
     let missing: Vec<String> = hale_stdlib::PATH_RENAMES
         .iter()
         .filter(|(_, target)| {

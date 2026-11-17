@@ -685,7 +685,7 @@ locus HeadJournal {
         } else {
             b.null_field("run");
         }
-        b.field("outcome", if std::json::valid(r.outcome) { r.outcome } else { "{}" });
+        b.raw_field("outcome", if std::json::valid(r.outcome) { r.outcome } else { "{}" });
         b.end_object();
         return b.result();
     }

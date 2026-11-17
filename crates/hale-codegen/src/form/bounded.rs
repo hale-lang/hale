@@ -121,15 +121,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     None => self.call_returned_ty(callee, scope),
                 }
             }
+            // A generic fn's call (GH #1966: `push(id(r).xs, 1) or …`):
+            // its specialization's return type, from the type arguments
+            // the call's row binds, as lowering specializes it.
+            Expr::Call { callee, id, .. }
+                if self.generic_template_of_callee(callee).is_some() =>
+            {
+                let name = self.generic_template_of_callee(callee)?;
+                let (type_args, _, _) = self.generic_call_instance(&name, *id, callee.span()).ok()?;
+                let template = self.generic_fn_templates.get(&name)?;
+                let subst: std::collections::BTreeMap<String, hale_syntax::ast::TypeExpr> =
+                    template.generics.iter().map(|g| g.name.name.clone()).zip(type_args).collect();
+                let ret = Self::substitute_type_expr(template.ret.as_ref()?, &subst);
+                self.type_expr_to_codegen_ty(&ret).ok()
+            }
             // A call's success type: a locus method on a receiver the
             // walk types, else a free fn, a fn-pointer local or a
             // qualified path (`call_returned_ty`).
             Expr::Call { callee, .. } => {
                 if let Expr::Field { receiver, name, .. } = callee.as_ref() {
-                    if let Some(CodegenTy::LocusRef(locus)) =
-                        self.static_expr_codegen_ty(receiver, scope)
-                    {
-                        return self.static_locus_method_ret(&locus, &name.name);
+                    match self.static_expr_codegen_ty(receiver, scope) {
+                        Some(CodegenTy::LocusRef(locus)) => {
+                            return self.static_locus_method_ret(&locus, &name.name);
+                        }
+                        // A method through an interface: its declared
+                        // return (`count(s.names())`, GH #1951).
+                        Some(CodegenTy::Interface(iface)) => {
+                            return self
+                                .iface_method_sig(&iface, &name.name)
+                                .and_then(|m| m.ret)
+                                .and_then(|t| self.type_expr_to_codegen_ty(&t).ok());
+                        }
+                        _ => {}
                     }
                 }
                 self.call_returned_ty(callee, scope)
@@ -239,6 +262,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )
     }
 
+    /// GH #1951: before an intrinsic that writes the bounded local
+    /// `recv` (`push(xs, …)`, `clear(xs)`), a local bound from a place
+    /// takes its own copy, unless its flag says the frame owns it already
+    /// (`OwnedViews::cow_write`, keyed by the receiver's identifier): the
+    /// write never reaches the place it was read from (spec/types.md § A
+    /// local bound from a place is yours). Any other receiver, and a read
+    /// (`count`, `at`), has no row and emits nothing.
+    pub(crate) fn bounded_receiver_cow(&mut self, recv: &Expr, scope: &Scope<'ctx>) -> Result<(), CodegenError> {
+        if let Expr::Ident(i) = recv {
+            if self.owned_views.cow_write(i.id).is_some() {
+                self.emit_local_cow(&i.name, scope)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Lower args[0] to the storage pointer (SSA of a bounded value
     /// IS the storage address) and return (len_ptr, data_base_ptr).
     fn bounded_storage_ptrs(
@@ -251,10 +290,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         (PointerValue<'ctx>, PointerValue<'ctx>, PointerValue<'ctx>),
         CodegenError,
     > {
+        self.bounded_receiver_cow(recv, scope)?;
         let (v, ty) = self.lower_expr(recv, scope)?;
         if !matches!(ty, CodegenTy::Bounded(_, _)) {
             return Err(CodegenError::Unsupported(format!(
-                "bounded intrinsic receiver lowered to {:?}, expected \
+                "bounded intrinsic receiver lowered to {}, expected \
                  bounded[T; N]",
                 ty
             )));
@@ -322,7 +362,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         cap: u64,
         scope: &Scope<'ctx>,
     ) -> Result<(PointerValue<'ctx>, PointerValue<'ctx>, Option<PointerValue<'ctx>>), CodegenError> {
-        if !Self::bounded_elem_is_ptr(elem) {
+        if !self.bounded_elem_is_ptr(elem) {
             let (storage, len_ptr, _) = self.bounded_storage_ptrs(recv, elem, cap, scope)?;
             return Ok((storage, len_ptr, None));
         }
@@ -407,7 +447,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (nv, nty) = self.lower_expr(&args[1], scope)?;
         if nty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "truncate(f, n): n must be Int, got {:?}",
+                "truncate(f, n): n must be Int, got {}",
                 nty
             )));
         }
@@ -507,7 +547,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (iv, ity) = self.lower_expr(&args[0], scope)?;
         if ity != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "get(i) on an array: index must be Int, got {:?}",
+                "get(i) on an array: index must be Int, got {}",
                 ity
             )));
         }
@@ -605,7 +645,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if self.user_fn_shadows_bounded_intrinsic(name, args, scope) {
             return Ok(None);
         }
-        self.lower_bounded_fallible_intrinsic(name, args, scope, call)
+        let r = self.lower_bounded_fallible_intrinsic(name, args, scope, call)?;
+        // GH #1951 item 3 (F.52): a `push` or `set` into a declared
+        // optional list (`tags?: bounded[T; N]`) writes it, so its record's
+        // `has_tags` is set (and `clear_tags` cleared) where the call joins,
+        // after the receiver's copy-on-write.
+        if r.is_some() && matches!(name, "push" | "set") {
+            if let Some(place) = Self::expr_place_lvalue(&args[0]) {
+                self.mark_optional_written(&place, scope)?;
+            }
+        }
+        Ok(r)
     }
 
     /// The intrinsic itself, with no shadow check.
@@ -676,7 +726,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // clone skip / lotus_arena_contains_ptr gate), so
                 // an already-anchored value is identity.
                 self.refuse_element_through_member_param("push", &args[0], &elem, scope)?;
-                let xv = if Self::bounded_elem_is_ptr(&elem) {
+                let xv = if self.bounded_elem_is_ptr(&elem) {
                     let owned = self.bounded_store_owns(&args[0], &place_owner, &args[1], call, scope)?;
                     let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
                     self.emit_bounded_elem_store_copy(xv, &elem, target, owned, "bounded.push")?
@@ -762,7 +812,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (iv, ity) = self.lower_expr(&args[1], scope)?;
                 if ity != CodegenTy::Int {
                     return Err(CodegenError::Unsupported(format!(
-                        "at(f, i): index must be Int, got {:?}",
+                        "at(f, i): index must be Int, got {}",
                         ity
                     )));
                 }
@@ -853,7 +903,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (iv, ity) = self.lower_expr(&args[1], scope)?;
                 if ity != CodegenTy::Int {
                     return Err(CodegenError::Unsupported(format!(
-                        "set(f, i, x): index must be Int, got {:?}",
+                        "set(f, i, x): index must be Int, got {}",
                         ity
                     )));
                 }
@@ -908,7 +958,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // receiver's owning arena, same as push.
                 self.refuse_element_through_member_param("set", &args[0], &elem, scope)?;
                 let mut retire_into = None;
-                let xv = if Self::bounded_elem_is_ptr(&elem) {
+                let xv = if self.bounded_elem_is_ptr(&elem) {
                     let owned = self.bounded_store_owns(&args[0], &place_owner, &args[2], call, scope)?;
                     let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
                     // A place a locus holds owns its elements: the one
@@ -1042,7 +1092,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 _ => None,
             }
         }
-        if !Self::bounded_elem_is_ptr(elem) {
+        if !self.bounded_elem_is_ptr(elem) {
             return Ok(());
         }
         match root(recv) {
@@ -1220,12 +1270,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// Pointer-shaped bounded element? (String/Bytes/TypeRef slots
     /// hold heap pointers that need arena anchoring; scalars are
-    /// inline bytes.)
-    pub(crate) fn bounded_elem_is_ptr(elem: &CodegenTy) -> bool {
-        matches!(
-            elem,
-            CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_)
-        )
+    /// inline bytes.) An enum with payloads is a pointer to its cell
+    /// (`{ i32 tag, body }`), anchored and retired by its tag as a record
+    /// field of it is (GH #1951); a payload-free enum is its inline `i32`
+    /// tag.
+    pub(crate) fn bounded_elem_is_ptr(&self, elem: &CodegenTy) -> bool {
+        match elem {
+            CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_) => true,
+            CodegenTy::Enum(n) => self.user_enums.get(n.as_str()).is_some_and(|i| i.has_payload),
+            _ => false,
+        }
     }
 
     /// Anchor every LIVE slot of a bounded storage in place — a
@@ -1243,7 +1297,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         dest_arena: PointerValue<'ctx>,
         site: &str,
     ) -> Result<(), CodegenError> {
-        if !Self::bounded_elem_is_ptr(elem) {
+        if !self.bounded_elem_is_ptr(elem) {
             return Ok(());
         }
         let i64_t = self.context.i64_type();
@@ -1266,10 +1320,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let elem_llvm = self.llvm_basic_type(elem);
 
-        let i_slot = self
-            .builder
-            .build_alloca(i64_t, &format!("{}.i", site))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // In the entry block: a copy inside a loop (a bounded local
+        // bound, or returned, once per iteration) reuses one slot.
+        let i_slot = self.alloca_in_entry(i64_t.into(), &format!("{}.i", site))?;
         self.builder
             .build_store(i_slot, i64_t.const_int(0, false))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

@@ -18,7 +18,7 @@ fn question_document(question: String, linear: Bool) -> String {
     let q = std::json::Builder { };
     q.begin_object();
     if linear {
-        q.field("question", dna::record_json_quote(question));
+        q.raw_field("question", dna::record_json_quote(question));
     } else {
         q.string_field("question", question);
     }

@@ -21,7 +21,8 @@ Inside any locus method or bus handler, a scratch sub-region opens on entry and 
 | Scalar field or array-element write (`self.x = v`, `self.arr[i] = v`) | Overwritten in place | Zero |
 | Whole-field replace in a method or handler (`self.latest = Thing { ... }`) | Old `String`/`Bytes` and nested records/tuples/arrays retire at return and recycle | Bounded by peak value size |
 | Fixed scalar scratch array (`let mut t: [Int; 16] = [0; 16];` indexed via `t[i]`) | Allocated on CPU stack frame (up to 8 KiB per function) | Zero |
-| String concatenation in a loop (`out = out + row`) | Allocates and copies prefix on every iteration | Quadratic within scratch |
+| Appending to a local or a `self` field in a loop (`out = out + row`, `out += row`) | Appends into a buffer the place owns, grown by half again when full | Linear in the text |
+| Appending in a loop that also hands the text to a call, or to another place (`rec.body = rec.body + row`) | Copies the whole text on every iteration | Quadratic within scratch (flagged by `hale check`) |
 | Growing `@form(vec)` / `@form(hashmap)` in an unbounded loop or handler | Appends to locus capacity slot until dissolve | Unbounded (flagged by `hale check`) |
 | `let`-bound locus or `BytesBuilder` constructed inside a loop or handler | Allocates a new region or heap buffer per iteration | Unbounded in loops / high churn |
 | `accept(c: Conn)` without `release(c: Conn)` on a daemon | Accepted child arena stays resident until parent dissolves | Unbounded with connection count |
@@ -64,17 +65,17 @@ Because a non-scratch free `fn` allocates from its caller's region, stack placem
 
 ## Avoiding Loop Accumulation
 
-### Building Strings and Buffers Incrementally (`BytesBuilder`)
+### Building Strings and Buffers Incrementally
 
-Concatenating strings in a loop (`out = out + render_row(i)`) allocates a fresh string on every iteration while keeping all previous intermediates alive in scratch until the function returns. This produces quadratic memory usage even in a single call:
+An appending assignment (`out = out + render_row(i)`, `out += …`, `out = f"{out}…"`) on a local declared `let mut`, or on a `String` field of `self`, appends into a buffer that place owns and grows geometrically, so it is linear in time and memory (spec/stdlib.md § "Building a String"). Before GH #1947 every `+` made a new String that stayed in scratch until the function returned, and the issue's loop of 44-byte rows peaked as follows; it now holds the text once:
 
-| Output Size | Rows (500 B each) | `out = out + row` Peak RSS | `BytesBuilder` Peak RSS |
+| Output Size | Appends | Before (peak RSS) | Now (peak RSS) |
 |---|---|---|---|
-| 500 KB | 1,000 | +250 MB | +2 MB |
-| 1 MB | 2,000 | +990 MB | +4 MB |
-| 2 MB | 4,000 | +3.9 GB | +8 MB |
+| 43 KB | 1,000 | 80 MB | 3.1 MB |
+| 175 KB | 4,000 | 1.18 GB | 3.5 MB |
+| 350 KB | 8,000 | 4.5 GB | 4.0 MB |
 
-Use `std::bytes::BytesBuilder` (or `std::json::Builder` for JSON) to grow a single extensible buffer in place (Styleguide rule S15):
+The buffer is the local's only while nothing else holds the text: a read that may keep the value (the local passed to a call, bound, stored or returned) gives it up, and the next append copies the text first. Inside the loop, read the growing text only as an operand of `+` or a comparison, in a slice, or as an argument of a `std::` reader returning a number or a `Bool` (`len`, `std::str::contains`), and hand it on after the loop. A loop that appends and also hands the text to a call, and an append to any place but a local or a `self` field, copy the whole text each iteration; the hot-path lint flags both (`hale verify`, or `hale check --warn-hot-path`). For those, and for a buffer held across calls, use `std::bytes::BytesBuilder` (or `std::json::Builder` for JSON) to grow a single extensible buffer in place (Styleguide rule S15):
 
 ```hale
 fn render_row(i: Int) -> String {
@@ -92,9 +93,19 @@ fn render(rows: Int) -> String {
 }
 ```
 
+### Measuring a String
+
+A `String` carries no length, so measuring one walks it to its terminator. A local or parameter of type `String` that its function measures (`len(s)`, a slice `s[lo..hi]`, `std::str::substring`, `index_of_from`, `cp_at`, `cp_size`) remembers the length of the value it holds: the first measure walks the text, later ones read the length, and every assignment to the local, its `let` and each append refresh it (an append knows the new length without walking). So a byte loop over a parameter and a loop that tests `len(out)` while appending to it are linear. Before GH #1947 both were quadratic, and so was every slice's clamp:
+
+| Loop (M1) | 128 KiB | 512 KiB | Before |
+|---|---|---|---|
+| `while i < len(s) { let c = s[i..(i + 1)]; … }` | 1.1 ms | 4.2 ms | 0.71 s, 11.0 s |
+
+A String read from a field, an element or a call's result is measured on every use, as before: bind it to a local before a loop that measures it. A slice still copies the bytes it names, so re-slicing the rest of a text (`rest = rest[(nl + 1)..]`) is still quadratic.
+
 ### Zero-Copy Views (`StringView` and `BytesView`)
 
-The same quadratic trap occurs when parsing text by repeatedly slicing the remainder (`rest = rest[(nl + 1)..len(rest)]`), which copies the tail on every line (Styleguide rule S16). Instead, create a `BytesView` once with `std::str::bytes_view(s)` and advance an integer cursor across it (see [Strings & Text](../basics/strings.md#walking-large-strings-with-byteview)).
+The same quadratic trap occurs when parsing text by repeatedly slicing the remainder (`rest = rest[(nl + 1)..]`), which copies the tail on every line (Styleguide rule S16). Instead, create a `BytesView` once with `std::str::bytes_view(s)` and advance an integer cursor across it (see [Strings & Text](../basics/strings.md#walking-large-strings-with-byteview)).
 
 `StringView` and `BytesView` (and `BytesBuilder.view()` / `.text_view()`) borrow underlying storage without copying:
 - A view over a reused buffer or `BytesBuilder` is valid only until the buffer is next modified, reset, or overwritten. Accessing a stale view traps immediately at runtime.
@@ -140,9 +151,9 @@ Hale enforces memory and hot-path discipline through a five-stage opt-in ladder:
 
 | Stage | Mechanism | Severity | What It Enforces |
 |---|---|---|---|
-| 1. Default survey | `hale check` / `hale build` | Advisory warning | Flags values escaping to `self` in unbounded loops, growing `@form(vec)`/`@form(hashmap)` inserts, `let`-bound loci/builders/factories in loops or handlers, allocating `recv` in loops, and `accept` without `release` on daemons. |
+| 1. Default survey | `hale check` / `hale build` | Advisory warning | Flags values escaping to `self` in unbounded loops, growing `@form(vec)`/`@form(hashmap)` inserts, and `accept` without `release` on daemons. With `hale check --warn-hot-path` (and always under `hale verify`), also `let`-bound loci/builders/factories in loops or handlers and allocating `recv` in loops. |
 | 2. Bound annotations | `@bounded_by(<name>)` / `@unbounded` | Silences warning | Documents that an accumulation is intentionally bounded by an external input (`@bounded_by(open_requests)`) or operator-sized (`@unbounded`). |
-| 3. Hot-path mode | `@hot` | Compile error | Promotes all Stage 1 advisories in the function to hard errors, and rejects `.snapshot()`/`.finish()` in loops and whole-struct `self` field replacements. |
+| 3. Hot-path mode | `@hot` | Compile error | Promotes the hot-path lint's findings in the function to hard errors, and rejects `.snapshot()`/`.finish()` in loops and whole-struct `self` field replacements. |
 | 4. Allocation budget | `@budget(alloc_per_call = N)` | Compile error | Statically verifies that the function performs at most `N` heap/arena allocations per invocation. |
 | 5. Effect contracts | `@effects(none: { ... })` / `@no_block` / `@no_syscall` / `@deterministic` / `@no_recursion` | Compile error | Proves transitively across the call graph that the function cannot block, invoke syscalls, read non-deterministic sources, or recurse. |
 
@@ -153,9 +164,12 @@ By default, `hale check` analyzes all long-lived programs (any binary with a `ru
 The default survey warns on:
 - **Unbounded escapes into `self`**: Allocations inside a runtime-bounded loop that accumulate in `self` without retirement.
 - **Unbounded collection growth**: Calling `.push(x)` on `@form(vec)` or `.set(x)` on `@form(hashmap)` in an unbounded loop or handler (where the receiver has a declared type). Replace with capacity-bounded `@form(ring_buffer)` or `@form(lru_cache)`.
+- **Missing `release` on daemon parents**: Declaring `accept(c: C)` without `release(c: C)` on a locus whose `run()` loops indefinitely.
+
+The **hot-path lint** is asked for, not default: `hale check --warn-hot-path` shows it, `hale verify` always reports it, and inside a `@hot` fn its findings are errors. An ordinary loop in `fn main` or a child born in a handler is not a path anyone certified hot, so a first program is not buried in these. When asked, it warns on:
 - **Per-iteration / per-message heavy allocations**: Instantiating a `let`-bound locus literal, calling a factory function that returns a locus (`let m = zeros(r, c)` or `mat::zeros(r, c)`), or creating a `std::bytes::BytesBuilder` inside a loop or bus handler. (Unbound statement-level calls reclaim immediately and do not warn.)
 - **Allocating socket reads in loops**: Calling `recv`, `recv_bytes`, or `recv_with_source` inside a loop. Use `recv_into` with a hoisted `BytesBuilder` instead.
-- **Missing `release` on daemon parents**: Declaring `accept(c: C)` without `release(c: C)` on a locus whose `run()` loops indefinitely.
+- **Appends that copy the whole text**: An appending assignment (`out += row`) in a loop that also passes `out` to a call, binds, stores or returns it, or an append to a place other than a local or a `self` field (`rec.body = rec.body + row`). Each iteration copies the whole String; read the local after the loop, build in a local, or use a `BytesBuilder`.
 
 > [!NOTE]
 > `module { ... }` blocks are purely namespace boundaries; functions and locus methods inside modules undergo the exact same escape and `@hot` analysis as top-level declarations.
@@ -210,6 +224,21 @@ By default, `hale build` and every other verb compile native binaries at `-O3` t
 | `--target-cpu portable` | Targets the portable baseline: `x86-64-v3` (AVX2 + BMI2 + FMA) on x86-64, generic on aarch64. `baseline` and `x86-64-v3` are accepted spellings. | A published image or any artifact whose machine is unknown: it then runs on any machine of its architecture that meets the floor. |
 | `--target-cpu <cpu>` | One CPU by LLVM's name (`znver4`, `neoverse-v2`, `apple-m3`, `x86-64-v4`). A name the compiler's LLVM does not know is refused before codegen, listing the CPUs it knows. | A binary built here for a known machine elsewhere. |
 | `LOTUS_LTO=1` | Enables full Link-Time Optimization across generated code and the C runtime (requires `lld` on `PATH`; links ~3–4x slower). | Release and benchmark builds (`LOTUS_LTO=1 hale build myservice/`). |
+
+### Building a container image
+
+An image runs on whatever machine pulls it, so build the binary it holds with `--target-cpu portable`. A host-tuned build inside a container build or on CI prints a `warning:` saying so, because the runner's CPU is rarely the one the image lands on, and a binary that uses an extension that CPU lacks dies with `SIGILL`:
+
+```dockerfile
+FROM ubuntu:24.04 AS build
+# … install the hale toolchain …
+COPY . /src
+RUN hale build /src -o /out/app --target-cpu portable
+
+FROM ubuntu:24.04
+COPY --from=build /out/app /app
+ENTRYPOINT ["/app"]
+```
 
 ## Runtime Performance Profile
 

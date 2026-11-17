@@ -422,12 +422,16 @@ fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
         while round < 3 {
             round = round + 1;
             let snapshot = ids;
+            // the round's ids grow in a local of the round's own, read only
+            // by `std::str::contains` (`has`), so each append extends it in
+            // place (GH #1947)
+            let mut grown = ids;
             let mut i = 0;
             while i < n {
                 let e = p.row(i);
                 if mentioned_by_any(e, snapshot) {
                     let se = strip_prefixes(e.entity);
-                    if !has(ids, se) { ids = ids + se + "\n"; }
+                    if !std::str::contains(grown, "\n" + se + "\n") { grown = grown + se + "\n"; }
                     let mut tok = "";
                     let mut k = 0;
                     while k <= len(e.body) {
@@ -439,7 +443,9 @@ fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
                             || ch == ","
                             || ch == "\""
                         {
-                            if looks_like_id(tok) && !has(ids, tok) { ids = ids + tok + "\n"; }
+                            if looks_like_id(tok) && !std::str::contains(grown, "\n" + tok + "\n") {
+                                grown = grown + tok + "\n";
+                            }
                             tok = "";
                         } else {
                             tok = tok + ch;
@@ -449,6 +455,7 @@ fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
                 }
                 i = i + 1;
             }
+            ids = grown;
         }
     }
     let mut out = "record " + short(record_identity(root)) + " — " + to_string(n) + " event(s), "

@@ -142,7 +142,7 @@ locus DefinitionDraftWire {
         b.string_field("name", name);
         b.end_object();
         b.string_field("base_id", request.base_id);
-        b.field("basis", result.basis_json);
+        b.raw_field("basis", result.basis_json);
         b.string_field("candidate_digest", result.candidate_digest);
         b.begin_object_field("validation");
         b.bool_field("valid", result.valid);
@@ -151,7 +151,7 @@ locus DefinitionDraftWire {
         b.string_field("catalog_digest", result.catalog_digest);
         b.end_object();
         b.begin_object_field("impact");
-        b.field("direct_dependents", result.dependents_json);
+        b.raw_field("direct_dependents", result.dependents_json);
         b.bool_field("existing_revisions_preserved", true);
         b.end_object();
         if result.valid {
@@ -160,10 +160,10 @@ locus DefinitionDraftWire {
             b.string_field("name", "workflows.generated.hl");
             b.string_field("digest", result.artifact_digest);
             // Source export may be large; this codec quotes in linear space.
-            b.field("text", codec.quote_json(result.artifact_text));
+            b.raw_field("text", codec.quote_json(result.artifact_text));
             b.string_field("scope", "captured_catalog");
             b.end_object();
-        } else { b.field("artifact", "null"); }
+        } else { b.raw_field("artifact", "null"); }
         b.string_field("publication", "unavailable"); b.end_object();
         return b.result();
     }

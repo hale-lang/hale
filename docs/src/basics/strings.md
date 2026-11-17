@@ -1,6 +1,6 @@
 # Strings & Text
 
-`String` in Hale is an immutable UTF-8 byte sequence, while `Bytes` holds arbitrary binary data (including null bytes). For text processing, Hale provides string interpolation (`f"..."`), multi-line raw block strings (`"""`), `BytesBuilder` for linear-time buffer construction, and `ByteView` for zero-rescan parsing.
+`String` in Hale is an immutable UTF-8 byte sequence, while `Bytes` holds arbitrary binary data (including null bytes). For text processing, Hale provides string interpolation (`f"..."`), multi-line raw block strings (`"""`), one-line raw strings (`r"..."`), `BytesBuilder` for linear-time buffer construction, and `ByteView` for zero-rescan parsing.
 
 ```hale
 fn main() {
@@ -21,13 +21,21 @@ fn main() {
 | `len(s)` | `(String \| Bytes) -> Int` | Builtin: byte length of `s` |
 | `to_string(x)` | `(T) -> String` | Builtin: formats scalar or printable composite `x` as `String` |
 | `std::str::upper(s)` / `lower(s)` | `(String) -> String` | ASCII case conversion |
-| `std::str::trim(s)` | `(String) -> String` | Strips leading and trailing ASCII whitespace |
+| `std::str::trim(s)` | `(String) -> String` | Strips leading and trailing ASCII whitespace (space, tab, CR, LF) |
+| `std::str::trim_start(s)` / `trim_end(s)` | `(String) -> String` | Strips the same whitespace from one end only |
+| `std::str::trim_prefix(s, pre)` / `trim_suffix(s, suf)` | `(String, String) -> String` | Removes one leading `pre` / trailing `suf`; `s` unchanged when it is absent |
+| `std::str::cut(s, sep)` / `cut_last(s, sep)` | `(String, String) -> (String, String) fallible(ParseError)` | The text before and after the first / last `sep`; `kind: "not_found"` when `s` has none |
+| `std::str::eq_ignore_case(a, b)` | `(String, String) -> Bool` | Equal with ASCII letters compared without case |
 | `std::str::replace(s, old, new)` | `(String, String, String) -> String` | Replaces all occurrences of `old` with `new` |
 | `std::str::contains(s, sub)` | `(String, String) -> Bool` | True if `s` contains `sub` (also available as builtin `contains`) |
-| `std::str::starts_with(s, pre)` / `ends_with(s, suf)` | `(String, String) -> Bool` | Prefix / suffix test (`starts_with` is also a builtin) |
+| `std::str::starts_with(s, pre)` / `ends_with(s, suf)` | `(String, String) -> Bool` | Prefix / suffix test (both are also builtins) |
 | `std::str::substring(s, lo, hi)` | `(String, Int, Int) -> String` | The bytes from offset `lo` up to, not including, `hi` (the same slice as `s[lo..hi]`; both ends are clamped into the string) |
 | `std::str::index_of(s, sub)` / `index_of_from(s, sub, pos)` | `(String, String, ...) -> Int` | Byte offset of first match, or `-1` if absent |
+| `std::str::last_index_of(s, sub)` | `(String, String) -> Int` | Byte offset of the last match, or `-1` if absent |
 | `std::str::split_into(s, sep, out)` | `(String, String, VecLocus) -> ()` | Splits `s` by `sep` into a caller-owned `@form(vec)` of `String` |
+| `for p in std::str::split(s, sep)` | `for` source | Visits the parts of `s` between `sep`s, empty ones kept (one pass; not a value) |
+| `for l in std::str::lines(s)` | `for` source | Visits the lines of `s`, without `\r\n` / `\n` endings; no final empty line |
+| `for w in std::str::words(s)` | `for` source | Visits the runs of `s` between ASCII whitespace; never an empty word |
 | `std::str::join(items, sep)` | `(VecLocus, String) -> String` | Joins elements of a `@form(vec)` of `String` with `sep` |
 | `std::str::bytes_view(s)` | `(String) -> ByteView` | Measures `s` once (`v.n` bytes) for `O(1)` indexed scanning |
 | `std::str::byte_at(v, i)` | `(ByteView, Int) -> Int` | Returns byte `0..255` at `i`, or `-1` if `i` is out of bounds |
@@ -37,6 +45,7 @@ fn main() {
 | `std::str::cp_at(s, i)` / `cp_size(s, i)` | `(String, Int) -> Int` | Code point value or byte width (`1..4`) at byte offset `i` (`-1` if invalid) |
 | `std::str::view_cp_at(v, i)` / `view_cp_size(v, i)` | `(ByteView, Int) -> Int` | `O(1)` code point value or byte width at offset `i` on a `ByteView` |
 | `std::str::parse_int(s)` / `parse_float(s)` / `parse_decimal(s)` | `(String) -> T fallible(ParseError)` | Parses text into `Int`, `Float`, or `Decimal<S>` |
+| `std::str::parse_bool(s)` | `(String) -> Bool fallible(ParseError)` | `"true"` or `"false"`, exactly; anything else fails with `kind: "parse_bool"` |
 | `std::str::can_parse_int(s)` | `(String) -> Bool` | Non-failing check for valid integer syntax |
 | `std::str::from_bytes(b)` / `std::bytes::from_string(s)` | `(Bytes) -> String` / `(String) -> Bytes` | Converts between `Bytes` and `String` |
 | `std::bytes::at(b, i)` | `(Bytes, Int) -> Int fallible(IndexError)` | Reads single byte (`0..255`) at index `i` |
@@ -45,7 +54,7 @@ fn main() {
 
 ## Concatenation and `BytesBuilder`
 
-Use `+` to join a fixed number of strings, and `to_string(x)` to convert numbers, booleans, or durations into strings:
+Use `+` to join strings, and `to_string(x)` to convert numbers, booleans, or durations into strings:
 
 ```hale,fragment
 let first = "alice";
@@ -54,11 +63,30 @@ let full  = first + " " + last;
 let label = "n=" + to_string(42);
 ```
 
-### Building Strings in a Loop (`BytesBuilder`)
+### Building Strings in a Loop
 
-Do not accumulate strings with `out = out + chunk` inside a loop. Because `out + chunk` allocates a new string and copies the prefix on every iteration while old prefixes remain in the function's arena until return, loop concatenation uses `O(n²)` time and memory.
+Appending to a local declared `let mut` is linear: `out = out + chunk`, `out += chunk` and `out = f"{out}…"` append into a buffer the local owns, which grows by half again whenever it fills, so building `n` bytes costs `O(n)` time and memory. A chain of `+` such as `a + b + c` is one allocation, not one per `+`. The same holds for a `String` field of `self` grown inside a method.
 
-Instead, append into a single `std::bytes::BytesBuilder` (or use `std::str::join` when you already have a collection of strings):
+```hale
+fn page(n: Int) -> String {
+    let mut out = "[";
+    let mut i = 0;
+    while i < n {
+        if i > 0 { out += ", "; }
+        out = out + "{\"id\": " + to_string(i) + "}";
+        i = i + 1;
+    }
+    return out + "]";
+}
+
+fn main() {
+    println(page(3));   // [{"id": 0}, {"id": 1}, {"id": 2}]
+}
+```
+
+The buffer stays the local's only while nothing else holds the text. Strings are values, so a read that may keep the local's value (passing it to a function, binding it to another name, storing it, returning it) gives the buffer up, and the next append copies the whole text first; a copy taken before an append never sees it. Reading the text as an operand of `+` or of a comparison, in a slice (`s[lo..hi]` copies), or as an argument of a `std::` reader that returns a number or a `Bool` (`len`, `std::str::contains`, `index_of`, `starts_with`) keeps the buffer; passing it to a function of your own does not, since the compiler does not know what that function keeps. So inside the loop, use the growing text only in those ways, and hand it on after the loop. A loop that appends and also passes the text to a call (`out += row; log(out);`) copies the text on every iteration, and so does appending to any other place (`rec.body = rec.body + row`); `hale verify` reports both (and `hale check --warn-hot-path` shows them).
+
+For those cases, or for a buffer that outlives one call, append into a `std::bytes::BytesBuilder` (or use `std::str::join` when you already have a collection of strings):
 
 ```hale
 fn page(n: Int) -> String {
@@ -76,6 +104,8 @@ fn main() {
     println(page(3));   // [{"id": 0}, {"id": 1}, {"id": 2}]
 }
 ```
+
+`len(out)` reads the length the last append left, so testing it in the loop is linear too.
 
 ## F-Strings (`f"..."`)
 
@@ -149,6 +179,20 @@ Block strings obey four lexical rules (`spec/tokens.md` § Block strings):
 3. **Boundary newlines excluded:** The newline immediately following the opening `"""` and the newline immediately preceding the closing `"""` are not included in the string. Add a blank line before the closing `"""` if you want a trailing newline.
 4. **Extended fences (`""""`):** If a line inside the block string starts with `"""`, open and close the block string with four or more quotes (`""""`). `hale fmt` re-indents block strings alongside surrounding code without changing their contents.
 
+## Raw Strings
+
+A one-line text whose backslashes are its own, such as a regular expression or a Windows path, is a **raw string**: `r` before the opening quote. Nothing in it is an escape and `{` is plain text. When the text holds a `"`, put `#` between the `r` and the quote and close with `"#` (add more `#` if the text holds `"#`):
+
+```hale
+fn main() {
+    println(r"C:\temp\new");        // C:\temp\new
+    println(r"^\d+\.\d+$");        // ^\d+\.\d+$
+    println(r#"say "hi" {x}"#);    // say "hi" {x}
+}
+```
+
+A raw string is an ordinary `String` literal and goes wherever one does (`spec/tokens.md` § Raw strings).
+
 ## Slicing, Scanning, and `ByteView`
 
 ### Basic Slicing and Search
@@ -161,11 +205,80 @@ let h = s[0..5];                                  // "hello"
 let i = std::str::index_of(s, "world");           // 6
 ```
 
+Leave out a bound to run from the start or to the end:
+
+```hale,fragment
+let line = "key=value";
+let at = std::str::index_of(line, "=");           // 3
+let key = line[..at];                             // "key", the same as line[0..at]
+let value = line[(at + 1)..];                     // "value", the same as line[(at + 1)..len(line)]
+let first = line[..=2];                           // "key", bytes 0 through 2
+let copy = line[..];                              // "key=value"
+```
+
+| Form | Bytes |
+|---|---|
+| `s[lo..hi]` | `lo` up to, not including, `hi` |
+| `s[lo..=hi]` | `lo` through `hi` |
+| `s[lo..]` | `lo` to the end |
+| `s[..hi]` / `s[..=hi]` | from the start |
+| `s[..]` | all of them |
+
+The receiver is evaluated once, so `next_line()[4..]` calls `next_line` once. Bounds are clamped, never an error: a start below 0 is 0, a bound past the end is the end, and an end before the start gives `""`. Offsets count bytes, not characters (`"né"` is three bytes long). A bound can only be left out inside the brackets: `3..` on its own is a parse error, and `s[lo..=]` is refused because `..=` needs an end to include.
+
+A `String` has no single element to index: `s[i]` is refused, because one position could mean a byte or a character. Slice one byte (`s[i..(i + 1)]`), or read it as a number through a view (`std::str::byte_at`, below). For the same reason `for c in s` is refused: say what the parts are with one of the sources below.
+
+### Splitting in a Loop: `split`, `lines` and `words`
+
+The loop that takes a text apart by re-slicing the rest is quadratic. Every turn copies the rest of the text, and the copies stay in the function's scratch until it returns:
+
+```hale,fragment
+let mut rest = list + " ";
+while len(rest) > 0 {
+    let sp = std::str::index_of(rest, " ");
+    let w = rest[..sp];
+    rest = rest[(sp + 1)..];                // a copy of the rest
+}
+```
+
+Write the loop over a text source instead. `std::str::split(s, sep)`, `std::str::lines(s)` and `std::str::words(s)` visit the parts of `s` one per iteration, in one pass over the text:
+
+```hale
+fn main() {
+    for field in std::str::split("id,name,,note", ",") {
+        println("[" + field + "]");          // [id] [name] [] [note]
+    }
+    for line in std::str::lines("first\r\nsecond\n") {
+        println(line);                       // first, second
+    }
+    let mut n = 0;
+    for w in std::str::words("  any   amount of  space ") {
+        if w == "of" { continue; }
+        n = n + 1;
+    }
+    println(n);                              // 3
+}
+```
+
+| Source | The parts |
+|---|---|
+| `split(s, sep)` | The text between occurrences of `sep`, empty parts kept: `"a,,b,"` is `a`, `""`, `b`, `""`. `""` is one empty part; an empty `sep` gives none. |
+| `lines(s)` | The text between `\n`s, each without the `\r` of a CRLF ending. A final newline starts no line. |
+| `words(s)` | The runs of text between ASCII whitespace (space, tab, CR, LF, vertical tab, form feed); never an empty word. |
+
+- Each part is a new `String` for its iteration. Keep it if you need it: assign it to an outer variable, return it or store it.
+- `break` leaves the loop and `continue` goes to the next part. Loops over sources nest.
+- The arguments are evaluated once, before the first part.
+- Offsets are bytes. A UTF-8 separator never cuts a character, and a non-ASCII space is text to `words`.
+- The loop does nothing but read the text, so it is legal in `@deterministic @no_syscall` code.
+
+The sources are `for` sources, not values. Hale has no sequence value for them to return, so `let parts = std::str::split(s, ",");` is refused, and the message points at `std::str::split_into` (below), which writes the parts into storage you own. Over 1 MiB of 4 KiB words, `words` takes 0.7 ms and the re-slicing loop above takes 15 ms; four times the text costs `words` four times as long and the loop sixteen.
+
 ### Walking Large Strings with `ByteView`
 
-A `String` in Hale is a null-terminated byte pointer without an inline length header. Calling `len(s)`, slicing `s[i..(i + 1)]`, or calling `std::str::index_of_from(s, "\n", start)` inside a loop scans for the null terminator on every iteration, turning a linear scan into an `O(n²)` bottleneck on megabyte-scale inputs.
+A `String` in Hale is a null-terminated byte pointer without an inline length header. A local or parameter remembers the length of the value it holds, so `len(s)`, a slice `s[i..(i + 1)]`, `std::str::substring`, `std::str::index_of_from(s, "\n", start)` and `cp_at` / `cp_size` on it measure the text once, not on every iteration: `while i < len(s) { let c = s[i..(i + 1)]; … }` is linear. A String reached any other way (a field such as `self.text` or `rec.body`, an element, a call's result) carries no length and is measured by every one of those calls, so inside a loop bind it to a local first. Each one-byte slice is still a new String.
 
-To scan or tokenize a string in `O(n)` time, construct a `std::str::ByteView` **once** before the loop:
+For a scan the three sources do not cover, construct a `std::str::ByteView` **once** before the loop. It scans or tokenizes a string in `O(n)` time:
 
 ```hale
 fn count_lines(all: String) -> Int {
@@ -189,11 +302,13 @@ fn main() {
 - **`std::str::slice(v, lo, hi)`** copies `v[lo..hi]` in `O(hi - lo)` time and clamps out-of-range bounds to `0..v.n`.
 - **`std::str::find(v, needle, start)`** searches from byte offset `start` using `v.n` without re-measuring the string.
 
+A byte is an `Int`, and a **byte literal** writes one by its character: `b'/'` is `47`, `b'\n'` is `10`. It takes one printable ASCII character or one escape (`\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0`, `\xNN`), and it is an integer literal everywhere one is legal, so it compares with `byte_at`, matches in an arm's pattern (`b'a' | b'A' -> …`), and initializes a constant or an array element. `b''`, `b'ab'` and `b'é'` are refused where they are written: a byte literal is exactly one byte, so a non-ASCII character takes `\xNN` or a `b"…"` `Bytes` literal.
+
 ```hale
 fn line_end(v: std::str::ByteView, start: Int) -> Int {
     let mut i = start;
     while i < v.n {
-        if std::str::byte_at(v, i) == 10 { return i; }   // 10 is '\n'
+        if std::str::byte_at(v, i) == b'\n' { return i; }
         i = i + 1;
     }
     return v.n;
@@ -224,7 +339,7 @@ fn main() {
 
 ### Splitting and Joining
 
-Because collections in Hale are loci rather than garbage-collected values, `std::str::split_into` writes into a `@form(vec)` locus that you supply:
+To visit the parts once, loop over `std::str::split` (above). To keep them, remember that collections in Hale are loci rather than garbage-collected values: `std::str::split_into` writes into a `@form(vec)` locus that you supply:
 
 ```hale
 @form(vec)
@@ -242,6 +357,30 @@ fn main() {
 - **Reusable storage:** A message handler can keep a single `Fields` locus in its `params` and call `f.clear()` before each `split_into` call for zero steady-state allocations.
 - **Preserves empty fields:** `"a,,b,"` splits into 4 elements (`"a"`, `""`, `"b"`, `""`), preserving column alignment in CSV/TSV data.
 
+### Splitting Once and Trimming
+
+To split a line once, at a separator, `std::str::cut` returns the text on each side of it as a tuple. A line without the separator fails with `ParseError { kind: "not_found", input: s }`, so the `or` says what to do then:
+
+```hale
+fn setting(line: String) -> String {
+    let (key, value) = std::str::cut(line, "=") or { return "no setting in " + line; };
+    return key + " -> " + value;
+}
+
+fn main() {
+    println(setting("timeout=30s"));                      // timeout -> 30s
+    println(setting("a=b=c"));                            // a -> b=c
+    println(setting("verbose"));                          // no setting in verbose
+    let (dir, file) = std::str::cut_last("a/b/c.txt", "/") or { return; };
+    println(dir, " | ", file);                            // a/b | c.txt
+    println(std::str::trim_prefix("sha256:ab12", "sha256:")); // ab12
+    println(std::str::trim_suffix("report.csv", ".csv")); // report
+    println(std::str::eq_ignore_case("Content-Type", "content-type")); // true
+}
+```
+
+`cut` splits at the first separator and keeps the rest whole; `cut_last` splits at the last one. `trim_prefix` and `trim_suffix` remove the affix once if it is there and otherwise return the string unchanged, so they replace both the `starts_with` test and the magic offset (`g[7..]`). `std::str::last_index_of` is the offset `cut_last` splits at. Offsets and comparisons are bytes: a separator matches byte for byte, and `eq_ignore_case` folds only `A`–`Z`.
+
 ### Parsing Numbers and Binary `Bytes`
 
 Number parsers return `fallible(ParseError)` and must be addressed with `or` (covered in [When a Call Can Fail](./fallible.md)):
@@ -249,6 +388,7 @@ Number parsers return `fallible(ParseError)` and must be addressed with `or` (co
 ```hale,fragment
 let n = std::str::parse_int("42") or 0;
 let ok = std::str::can_parse_int("42");        // true (non-failing check)
+let on = std::str::parse_bool("true") or false; // only "true" and "false" parse
 ```
 
 Use `b"..."` literals and `std::bytes` when working with raw binary payloads:

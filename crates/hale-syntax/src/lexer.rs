@@ -382,6 +382,25 @@ impl<'a> Lexer<'a> {
             return self.lex_bytes(start).map(Some);
         }
 
+        // GH #1995 S6: byte literal `b'/'`, one byte as an `Int`. It
+        // lexes to an `IntLit` (its span keeps the spelling, which is
+        // what `hale fmt` writes back), so it is an Int literal wherever
+        // one is legal: an operand, an arm's pattern, a constant, an
+        // array element. `'` was no token, so no program changes meaning.
+        if b == b'b' && self.bytes.get(self.pos + 1) == Some(&b'\'') {
+            self.pos += 1; // consume the leading `b`
+            return self.lex_byte_char(start).map(Some);
+        }
+
+        // GH #1948: raw string literal `r"..."` / `r#"..."#`. Must
+        // precede the generic ident path for the same reason as `f"`.
+        if b == b'r' {
+            let hashes = self.bytes[self.pos + 1..].iter().take_while(|&&c| c == b'#').count();
+            if self.bytes.get(self.pos + 1 + hashes) == Some(&b'"') {
+                return self.lex_raw_string(start, hashes).map(Some);
+            }
+        }
+
         // Identifier or keyword
         if b.is_ascii_alphabetic() || b == b'_' {
             return Ok(Some(self.lex_ident_or_keyword(start)));
@@ -764,6 +783,39 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Lex a raw string (spec/tokens.md § Raw strings, GH #1948): `r`,
+    /// `hashes` `#`, a `"`, the body as written — no escape is read, a
+    /// `\` is a backslash and `{` is text — and a `"` followed by the
+    /// same number of `#`. A body holding `"` takes one or more `#`.
+    fn lex_raw_string(&mut self, start: usize, hashes: usize) -> Result<Token, Diag> {
+        let body_start = start + 1 + hashes + 1;
+        let len = self.bytes.len();
+        let mut p = body_start;
+        while p < len {
+            if self.bytes[p] == b'"'
+                && self.bytes[p + 1..].iter().take(hashes).filter(|&&c| c == b'#').count() == hashes
+            {
+                let value = self.source[body_start..p].to_string();
+                self.pos = p + 1 + hashes;
+                return Ok(Token::new(TokenKind::StringLit(value), Span::new(start, self.pos)));
+            }
+            p += 1;
+        }
+        self.pos = len;
+        let close = format!("\"{}", "#".repeat(hashes));
+        Err(Diag::lex(
+            Span::new(start, len),
+            format!(
+                "unterminated raw string literal: nothing closes it with `{close}`{}",
+                if hashes == 0 {
+                    " (a raw string holding a `\"` opens with `r#\"` and closes with `\"#`)"
+                } else {
+                    ""
+                }
+            ),
+        ))
+    }
+
     /// Lex a block string (spec/tokens.md § Block strings): a fence of
     /// `fence` (three or more) quotes alone at the end of its line, the
     /// body's lines, and a closing line of whitespace and the same
@@ -951,6 +1003,163 @@ impl<'a> Lexer<'a> {
                     bytes.push(b);
                     self.pos += 1;
                 }
+            }
+        }
+    }
+
+    /// GH #1995 S6: lex a `b'…'` byte literal into an `IntLit` holding
+    /// the byte's value. The body is one printable ASCII character
+    /// (`b'/'`, `b'"'`) or one escape from the `b"…"` table plus `\'`:
+    /// `\n \t \r \\ \' \" \0 \xNN` (`\xNN` reaches the whole
+    /// `0x00..=0xFF`). An empty body, more than one byte, a non-ASCII
+    /// character and a raw control character are refused at the
+    /// literal. On an error `pos` is left ON the closing quote, so the
+    /// recovery step (`skip_one`) resumes just past the literal.
+    fn lex_byte_char(&mut self, start: usize) -> Result<Token, Diag> {
+        /// One unit of the body as written.
+        enum Unit {
+            Byte(u8),
+            Control(u8),
+            NonAscii(char),
+        }
+        self.pos += 1; // the opening `'`
+        let mut units: Vec<Unit> = Vec::new();
+        let mut bad_escape: Option<Diag> = None;
+        loop {
+            match self.peek() {
+                None | Some(b'\n') => {
+                    return Err(Diag::lex(
+                        Span::new(start, self.pos),
+                        "unterminated byte literal: a byte literal is one character between \
+                         single quotes, like `b'a'` or `b'\\n'`",
+                    ));
+                }
+                Some(b'\'') => break,
+                Some(b'\\') => {
+                    let at = self.pos;
+                    self.pos += 1;
+                    let byte = match self.peek() {
+                        Some(b'n') => Some(b'\n'),
+                        Some(b't') => Some(b'\t'),
+                        Some(b'r') => Some(b'\r'),
+                        Some(b'\\') => Some(b'\\'),
+                        Some(b'\'') => Some(b'\''),
+                        Some(b'"') => Some(b'"'),
+                        Some(b'0') => Some(0),
+                        Some(b'x') => {
+                            let h1 = self.peek_at(1).and_then(hex_digit);
+                            let h2 = self.peek_at(2).and_then(hex_digit);
+                            match (h1, h2) {
+                                (Some(a), Some(b)) => {
+                                    self.pos += 2;
+                                    Some((a << 4) | b)
+                                }
+                                _ => {
+                                    bad_escape.get_or_insert_with(|| {
+                                        Diag::lex(
+                                            Span::new(at, self.pos + 1),
+                                            "\\x escape needs two hex digits (e.g. \\x01, \\xff)",
+                                        )
+                                    });
+                                    None
+                                }
+                            }
+                        }
+                        None | Some(b'\n') => continue, // unterminated, above
+                        Some(_) => {
+                            let shown = self.source[self.pos..].chars().next().unwrap_or('?');
+                            bad_escape.get_or_insert_with(|| {
+                                Diag::lex(
+                                    Span::new(at, self.pos + shown.len_utf8()),
+                                    format!(
+                                        "unknown byte literal escape `\\{shown}`: a byte literal \
+                                         takes `\\n`, `\\t`, `\\r`, `\\\\`, `\\'`, `\\\"`, `\\0` \
+                                         and `\\xNN`"
+                                    ),
+                                )
+                            });
+                            self.pos += shown.len_utf8() - 1;
+                            None
+                        }
+                    };
+                    self.pos += 1;
+                    if let Some(b) = byte {
+                        units.push(Unit::Byte(b));
+                    }
+                }
+                Some(b) if b >= 0x80 => {
+                    let ch = self.source[self.pos..]
+                        .chars()
+                        .next()
+                        .expect("non-ASCII leading byte implies a char");
+                    self.pos += ch.len_utf8();
+                    units.push(Unit::NonAscii(ch));
+                }
+                Some(b) if b < 0x20 || b == 0x7f => {
+                    self.pos += 1;
+                    units.push(Unit::Control(b));
+                }
+                Some(b) => {
+                    self.pos += 1;
+                    units.push(Unit::Byte(b));
+                }
+            }
+        }
+        // `pos` is on the closing quote.
+        let literal = Span::new(start, self.pos + 1);
+        if let Some(d) = bad_escape {
+            return Err(d);
+        }
+        match units.as_slice() {
+            [Unit::Byte(b)] => {
+                self.pos += 1;
+                Ok(Token::new(TokenKind::IntLit(*b as i64), literal))
+            }
+            [] if self.peek_at(1) == Some(b'\'') => {
+                // `b'''`: the quote itself, unescaped
+                self.pos += 1;
+                Err(Diag::lex(
+                    Span::new(start, self.pos + 1),
+                    "a byte literal of a single quote escapes it: write `b'\\''`",
+                ))
+            }
+            [] => Err(Diag::lex(
+                literal,
+                "a byte literal holds exactly one byte, and `b''` holds none",
+            )),
+            [Unit::NonAscii(ch)] => Err(Diag::lex(
+                literal,
+                format!(
+                    "`{ch}` is not one byte ({} in UTF-8): a byte literal holds one ASCII \
+                     character; write `\\xNN` for a single byte, or `b\"{ch}\"` for a Bytes \
+                     literal of its encoding",
+                    ch.len_utf8()
+                ),
+            )),
+            [Unit::Control(b)] => Err(Diag::lex(
+                literal,
+                format!(
+                    "a byte literal takes a printable ASCII character, and this one is the \
+                     control byte 0x{b:02x}; write it as an escape (`\\n`, `\\t`, `\\r`, `\\0` \
+                     or `\\x{b:02x}`)"
+                ),
+            )),
+            many => {
+                let bytes: usize = many
+                    .iter()
+                    .map(|u| match u {
+                        Unit::NonAscii(ch) => ch.len_utf8(),
+                        _ => 1,
+                    })
+                    .sum();
+                let text = &self.source[start..self.pos + 1];
+                Err(Diag::lex(
+                    literal,
+                    format!(
+                        "a byte literal holds exactly one byte, and `{text}` holds {bytes}; \
+                         write one byte per literal, or a `b\"…\"` Bytes literal for several"
+                    ),
+                ))
             }
         }
     }
@@ -1285,6 +1494,11 @@ impl<'a> Lexer<'a> {
             b'@' => emit!(TokenKind::At, 1),
             b'#' => emit!(TokenKind::Hash, 1),
             b'$' => emit!(TokenKind::Dollar, 1),
+            b'\'' => Err(Diag::lex(
+                Span::new(self.pos, self.pos + 1),
+                "unexpected `'`: Hale has no character literals; a byte is `b'a'` (an `Int`) \
+                 and text is `\"a\"`",
+            )),
             other => {
                 let span = Span::new(self.pos, self.pos + 1);
                 Err(Diag::lex(
@@ -1362,6 +1576,26 @@ mod tests {
         );
     }
 
+    /// GH #1948: `r"…"` reads no escape; `r#"…"#` carries a `"`.
+    #[test]
+    fn lex_raw_string() {
+        let ks = kinds(r####"r"a\b{c}" r#"say "hi"\n"# r"" r##"x"#y"## r x"####);
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::StringLit(r"a\b{c}".into()),
+                TokenKind::StringLit(r#"say "hi"\n"#.into()),
+                TokenKind::StringLit(String::new()),
+                TokenKind::StringLit(r##"x"#y"##.into()),
+                TokenKind::Ident("r".into()),
+                TokenKind::Ident("x".into()),
+                TokenKind::Eof,
+            ]
+        );
+        let err = lex(r##"let s = r#"open"; "##).unwrap_err();
+        assert!(err[0].message.contains("unterminated raw string"), "{:?}", err);
+    }
+
     #[test]
     fn lex_int() {
         let ks = kinds("42 0xff 0b1010 0o17");
@@ -1375,6 +1609,59 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn lex_byte_literal() {
+        // GH #1995 S6: `b'…'` is an IntLit of the byte's value
+        let ks = kinds(r#"b'/' b'a' b'"' b' ' b'\n' b'\t' b'\r' b'\\' b'\'' b'\"' b'\0' b'\x7f' b'\xFF' b"x" b"#);
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::IntLit(47),
+                TokenKind::IntLit(97),
+                TokenKind::IntLit(34),
+                TokenKind::IntLit(32),
+                TokenKind::IntLit(10),
+                TokenKind::IntLit(9),
+                TokenKind::IntLit(13),
+                TokenKind::IntLit(92),
+                TokenKind::IntLit(39),
+                TokenKind::IntLit(34),
+                TokenKind::IntLit(0),
+                TokenKind::IntLit(127),
+                TokenKind::IntLit(255),
+                TokenKind::BytesLit(b"x".to_vec()),
+                TokenKind::Ident("b".into()),
+                TokenKind::Eof,
+            ]
+        );
+        // the span is the whole literal, which is what fmt writes back
+        let toks = lex("x == b'/'").unwrap();
+        assert_eq!(toks[2].span, Span::new(5, 9));
+    }
+
+    #[test]
+    fn byte_literal_refusals() {
+        let one = |src: &str| {
+            let err = lex(src).unwrap_err();
+            assert_eq!(err.len(), 1, "one diagnostic for {src:?}: {err:?}");
+            err[0].message.clone()
+        };
+        assert!(one("let c = b'';").contains("holds exactly one byte, and `b''` holds none"));
+        assert!(one("let c = b'ab';").contains("`b'ab'` holds 2"));
+        assert!(one("let c = b'\\n\\t';").contains("holds 2"));
+        let m = one("let c = b'é';");
+        assert!(m.contains("`é` is not one byte (2 in UTF-8)") && m.contains("\\xNN"), "{m}");
+        assert!(m.contains("b\"é\""), "{m}");
+        assert!(one("let c = b'\t';").contains("control byte 0x09"));
+        assert!(one("let c = b'\\q';").contains("unknown byte literal escape `\\q`"));
+        assert!(one("let c = b'\\x4';").contains("two hex digits"));
+        assert!(one("let c = b''';").contains("write `b'\\''`"));
+        assert!(one("let c = b'a\nlet d = 1;").contains("unterminated byte literal"));
+        // a lone quote: no character literals (the second `'` is its own error)
+        let err = lex("let c = 'a';").unwrap_err();
+        assert!(err[0].message.contains("no character literals"), "{err:?}");
     }
 
     #[test]

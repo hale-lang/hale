@@ -308,7 +308,9 @@ struct's fields in declaration order as `<field>:<tag>` joined by `;`
 (`order:i;notional:q(cent)`, the tags of `spec/units.md` § Layout and
 the wire), a nested struct or enum tagged by its own contract shape
 hash (`#<hash>`), an enum `=enum(<variants>)` (a variant's declared
-error class after it, `Missing@not_found`, § Error classes), and any other type `=`
+error class after it, `Missing@not_found`, § Error classes, then its
+`json:` wire name, `Sell="sell"`, and the catch-all mark, `!other`, §
+Codecs), and any other type `=`
 and its tag. The form is deep, so a field changed inside a nested type,
 or a variant added to an enum error type, moves every digest built on
 it. A flat struct's contract shape is its payload contract's shape, so
@@ -402,7 +404,11 @@ site**; it pairs one surface with one transport instance:
   holds exactly one instance of a type, its binding may be elided and is
   inferred (both of `admin`'s above); two instances and no binding is an
   error naming both. Two serve sites may bind one surface to different
-  instances;
+  instances. One exposure dispatches to at most 100 receiver types
+  (each is a slot of the exposure, numbered within its key); a serve
+  site whose surface's rows name more is refused at its `receivers:`,
+  and the surface is served as two (GH #1946: the limit was 16, and a
+  17th type passed the check and failed the build);
 - the param is the **handle**: what the holder holds, waits on and stops
   (`self.public.wait()`, `self.public.stop()`, the `std::api::Handle`
   methods; `std::api::run_until_stopped(self.public)` is the wait).
@@ -2615,7 +2621,11 @@ for what a page says beside its items.
 
 **An optional field** is a presence pair (2026-10-17): a field `x` beside
 a field `has_x` of the same record whose type is `Bool` (an alias of it
-included). Hale has no optional type; the flag is the presence. On the
+included). Hale has no optional type; the flag is the presence. `x?: T`
+declares the pair (spec/types.md § Optional fields, F.52): the flag is a
+real field synthesized after `x`, so the codecs, the description,
+protobuf and the digest are byte for byte the hand-written `x` then
+`has_x`, and a write of `x` sets the flag. On the
 JSON wire `x` is a key that may be left out, and `null` is its absence
 as well: a payload carrying `x` with a value other than `null` sets
 `has_x`, one that leaves it out or sends `null` leaves `has_x` false and
@@ -2626,7 +2636,11 @@ is absent; a `bounded` list's is empty). The last of a key sent twice wins:
 a `null` after a value is an absence, the earlier value gone. `has_x` is no key: the decoder skips one a payload sends, as it
 skips any unknown key, and the encoder never writes it. The encoder writes
 `x` only when `has_x` is set. The value is as strict as any field's: `"x":
-5` for a `String` is `wrong_type`. Any shape a field may have may be
+5` for a `String` is `wrong_type`. An optional `std::json::Value` that
+holds `null` is written as absent, its key left out, never as `null`
+(GH #1951 item 3): read back, an optional field's `null` is its absence,
+and a triple's is its clear flag, so writing it would change what it
+reads as. Any shape a field may have may be
 optional, a list included (JSON tells a present empty list, `[]`, from an
 absent one). A description gives `x` the schema `{"anyOf": [<its schema>,
 {"type": "null"}]}`, lists it under no `required`, and has no property for
@@ -2637,7 +2651,9 @@ carrying neither reads as an absence, `x` at its default or zero. The
 digest is the record's shape, which already holds both fields.
 
 **A three-way field** is a presence triple (2026-10-19): a presence pair
-and a third field `clear_x` of the same record whose type is `Bool`. It
+and a third field `clear_x` of the same record whose type is `Bool`.
+`x?: T clearable` declares the triple, `clear_x` synthesized after
+`has_x`, and a write of `x` clears it. It
 is the field of a PATCH, where leaving `x` out keeps what the server
 holds, `null` clears it, and a value sets it. On the JSON wire `null` is
 then a value of its own: a payload that sends `"x": null` sets `clear_x`
@@ -2663,8 +2679,9 @@ field of its type is (a scalar, an identity, a range or a quantity by its
 count, a `Time`, a record, a payload-free enum); a list, and an enum with
 payloads of its own, are not a variant's value, and law 5 refuses the
 row naming the variant. An enum may be a field, a list's element when it
-is payload-free (a `bounded` holds no enum with payloads, `spec/types.md`),
-a row's whole request or response, and its error type. Decoding is
+is payload-free (a `bounded` of an enum with payloads, which
+`spec/types.md` admits, is no list the codec carries), a row's whole
+request or response, and its error type. Decoding is
 strict, and every refusal is `wrong_type` for the field the enum is read
 for (`payload` for a row's whole value): an unknown variant, a payload
 variant sent as a bare name, a payload-free one sent as an object, an
@@ -2701,6 +2718,87 @@ each member a variant of one value named for its type: `type Inbound =
 NewOrder | Cancel;` is `{"Cancel": {"id": 1}}`, and its description the
 `oneof` above.
 
+**A variant's wire name and the catch-all** (GH #1951 item 5). A variant
+takes a metadata tag after its values, as a field does, and the codecs
+read its `json:` key: ``type Side = enum { Buy `json:"buy"`, Sell
+`json:"sell"` };``. The key renames the variant on the JSON wire, in the
+api codecs and the record codecs (`from_json` / `to_json`) alike: a
+payload-free variant is written and read as it (`"sell"`), a variant with
+values is the key of the object holding them (``Fill(Int) `json:"fill"` ``
+is `{"fill": 3}`), and the declared name is no longer read (`"Sell"` is
+`wrong_type`, as any unknown name). An untagged variant keeps its name.
+Wire names are distinct after renaming: two variants that would cross as
+one name are refused at the second, naming both. The tag's one option is
+`other`, which makes the variant the enum's **catch-all**, at most one per
+enum:
+
+- A lossless catch-all holds the string: ``Other(String) `json:",other"` ``
+  (its one value a `String`, an alias of one included). A JSON string that
+  names no payload-free variant decodes to it holding the string, its
+  escapes read; it writes the string back as a JSON string. It has no wire
+  name of its own, so a name in its tag is refused, and its name is never
+  an object key (`{"Other": "x"}` is `wrong_type`).
+- A lossy catch-all is payload-free: ``Unknown `json:",other"` `` (or
+  `json:"unknown,other"`, renamed too). Such a string decodes to it, which
+  keeps only that the string was unknown, and it writes its own wire name.
+
+Only a string is caught: an object whose key names no variant with values
+stays `wrong_type`, and a payload variant's name sent as a bare string is
+the catch-all's. A catch-all holding anything else (`Other(Int)`, two
+values), a second catch-all, and any option but `other` (`string` and
+`hex` are a field's) are refused at the variant; other keys of the tag
+are ignored, as on a field. A lossless catch-all normalizes: it writes
+the string it holds whatever it is, so `Other("buy")` writes `"buy"`,
+which reads back as `Buy` where a variant is named so. Hold a catch-all's
+string only when it names no variant, or compare the two through the
+wire. `E::name` and `E::parse` (spec/types.md § An enum's names) read
+the same wire names and the same catch-all, so a name a program logs or
+stores is the name the codecs write. A lossless catch-all makes the enum one with payloads, with the
+restrictions an enum with payloads has today: it is not a list's element
+the codec carries (a `bounded` holds one, but the codec has no form for
+the list, above), a map of values' value, or a route's path or query
+parameter; a lossy one keeps the enum payload-free. The bus carries
+either as it carries any enum, by its variant's tag and values
+(spec/semantics.md § Payload type), so the renames do not reach it. A
+set's member takes no tag, its type being its discriminant: a tag after
+one is a parse error.
+
+**`@wire_case(case)`** on the enum's declaration (RFC #1995 E1b) gives
+every variant without a `json:` key of its own the name in that case as
+its key: ``@wire_case(snake) type Phase = enum { InProgress, Done
+`json:"finished"` };`` crosses as `"in_progress"` and `"finished"`. The
+cases are `snake`, `screaming_snake`, `kebab` and `lower` (spec/types.md §
+An enum's names gives the word rule); a variant's own key wins, a lossless
+catch-all keeps none, and the spelling is the tag's in every respect: the
+codecs, the description and its `"x-hale-variants"`, the digest, and
+`E::name` / `E::parse` all read it, and two variants it spells alike are
+refused as one wire name.
+
+The description lists the wire names: a payload-free enum's `enum` holds
+them, an object variant's property is keyed by its wire name, and an
+enum whose variants are tagged adds `"x-hale-variants"`, an object of each
+variant's declared name and its wire name in declaration order (a lossless
+catch-all, which has none, is left out of `enum` and of the map), and
+`"x-hale-other": "<Variant>"` naming the catch-all, which says that a
+string outside `enum` is accepted rather than refused: ``{"type":
+"string", "enum": ["spot", "Margin"], "x-hale-type": "Venue",
+"x-hale-variants": {"Spot": "spot", "Margin": "Margin"}, "x-hale-other":
+"Other"}``. An enum with no tag is described as before. The renames are
+the JSON wire's: protobuf keeps the variants' numbers and the `.proto` its
+`<Enum>_<Variant>` identifiers and `oneof` member names, so a renamed
+variant crosses protobuf as it did before the tag. A lossy catch-all makes
+a number no variant has decode to it (the `.proto` notes it on the
+enum, `// Hale: a number no value has reads as Kind_Unknown`), where such
+a number is otherwise `wrong_type`; a lossless one is the `oneof`'s
+`string` member, as any variant of one `String`. The digest folds the tags
+in: a renamed variant is `<Variant>="<wire>"` in its enum's contract shape
+and the catch-all is marked `!other` (`=enum(Buy="buy"|Other(s)!other)`),
+so retagging a variant moves the hash, and an enum whose variants carry no
+`json:` tag keeps the shape it had. The generated Hale client declares the
+same tags, so its codec speaks the server's wire; the TypeScript and
+JavaScript clients type the wire names (`"spot" | "Margin"`) and add
+`(string & {})` (`string` in JavaScript) where the enum has a catch-all.
+
 **A map** is a list keyed by one of its records' fields (2026-10-17):
 `checks: bounded[Check; 16] indexed_by name;`, the `@form(hashmap)` model
 projected onto a value (spec/forms.md), no new type. The clause's rules
@@ -2710,8 +2808,16 @@ it is an object keyed by each record's `name`, the record without its
 key as the value (`{"db": {"status": "up"}, "cache": {"status":
 "down"}}`): the key lifted out on encode, in the list's order, and
 restored on decode, where a value's own key field, if a payload sends
-one, is not read. A key the object repeats is refused `malformed`,
-`duplicate_key`; more entries than the list holds is `too_long`; an
+one, is not read. A map sent as anything but an object, or a member
+whose value is not the record's JSON (an object, or a positional
+record's array), is `wrong_type` naming the map's field, never a map
+read as empty or a record read as its defaults (GH #1944: an array
+member decoded as a record with nothing in it). The same rules hold in
+a record's own `from_json` / `to_json` (spec/semantics.md § Metadata
+tags), whether the record is `json:`-tagged or `@positional`, and no
+finding of the hot-path lint is reported inside the generated codecs,
+where nothing written can act on it. A key the object repeats is
+refused `malformed`, `duplicate_key`; more entries than the list holds is `too_long`; an
 absent map is empty, as an absent `bounded` list is. A map may be
 optional (a presence pair, above): an absent key and `null` are its
 absence, `{}` a present empty map, and its schema is the map's or `null`;
@@ -3131,8 +3237,10 @@ client:
   presence pair in Hale and an optional property (`text?: string`), left
   out of the object when absent, in TypeScript, and a presence triple's
   `text?: string | null`, its `null` sent as `null`; an enum is the server's
-  enum in Hale and in TypeScript the union of its variants as the wire
-  writes them (`"Empty" | { Circle: number } | { Rect: [number, number] }`);
+  enum in Hale, its variants' `json:` tags with it, and in TypeScript the
+  union of its variants as the wire writes them (`"Empty" | { Circle:
+  number } | { Rect: [number, number] }`), by their wire names, with
+  `(string & {})` beside them where the enum has a catch-all (§ Codecs);
   a wire map is its records in either, `bounded[T; N] indexed_by <key>` in
   Hale and an array in TypeScript, keyed into the wire's object and back
   by the client; any shape the JSON codec does not carry is refused, never
@@ -3233,8 +3341,7 @@ api Shelf from openapi "../shelf.json" {
 
 type ShelfNewItem {
     name: String;
-    has_note: Bool = false;
-    note: String = "";
+    note?: String;
 }
 ```
 
@@ -3291,9 +3398,17 @@ as one when it serves one by `GET`, and as an MCP endpoint otherwise
   by the key in snake case with a `json:"key"` tag when the two differ (a
   key that would name a field `has_…` or `clear_…`, which reads as another
   field's presence flag, is `key_has_…`, its key in the tag); a
-  property the object does not require, or that admits `null`, is a
-  presence pair (§ Codecs); a string enum whose values are all names is an
-  enum; `integer`, `number`, `boolean` and `string` are `Int`, `Float`,
+  property the object does not require, or that admits `null`, is an
+  optional field, `name?: T;` (§ Codecs, spec/types.md § Optional
+  fields: the presence pair, its flag synthesized after the field, its
+  absent value its type's zero); a string enum is an enum, its variants
+  the values when every value is a name, and otherwise (GH #1951 item 5)
+  a PascalCase variant per value with the value as its `json:` wire name
+  where the two differ (``StopLimit `json:"stop-limit"` ``, ``V1m
+  `json:"1m"` ``, a name taken twice numbered), so the codec reads and
+  writes the values (§ Codecs); one whose values a tag cannot hold (an
+  empty value, or one with a quote, a backtick, a backslash or a comma)
+  stays a `String`, as does a value not a string; `integer`, `number`, `boolean` and `string` are `Int`, `Float`,
   `Bool` and `String`; an array with a `maxItems` of at most 1024 is a
   `bounded` list; a `$ref` inside the document is the type it names,
   declared once. What the codec cannot carry is a `std::json::Value`,

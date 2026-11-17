@@ -153,7 +153,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     .ok_or_else(|| {
                         CodegenError::Unsupported(format!(
                             "subscribe `{}`: `where key == EXPR` RHS \
-                             of type {:?} is not a supported key type \
+                             of type {} is not a supported key type \
                              (must be Int / Decimal / Time / Duration \
                              / Bool / no-payload enum / String)",
                             subject, ty
@@ -355,7 +355,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
         let (subj_val, subj_ty) = self.lower_expr(subject, scope)?;
         if !matches!(subj_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "bus send subject must be String; got {:?}",
+                "bus send subject must be String; got {}",
                 subj_ty
             )));
         }
@@ -759,7 +759,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "bus send payload must be a user-type or has-payload \
-                     enum value; got {:?}",
+                     enum value; got {}",
                     other
                 )));
             }
@@ -1017,7 +1017,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                 self.key_value_to_i64_pair(field_val, &field_ty)
                     .ok_or_else(|| {
                         CodegenError::Unsupported(format!(
-                            "keyed_by field `{}.{}` of type {:?} is not \
+                            "keyed_by field `{}.{}` of type {} is not \
                              a supported key type (typecheck should \
                              have caught this)",
                             info.payload_type_name,
@@ -2080,7 +2080,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     _ => {
                         return Err(CodegenError::Unsupported(format!(
                             "shm_ring send for subject `{}`: payload must be a \
-                             struct, Bytes, or BytesView value; got {:?}",
+                             struct, Bytes, or BytesView value; got {}",
                             subject, ty
                         )));
                     }

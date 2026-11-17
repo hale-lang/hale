@@ -200,7 +200,7 @@ fn pattern_names_call_or_struct(p: &Pattern) -> bool {
     match p {
         Pattern::Literal(l, _) => literal_spells_call_or_struct(l),
         Pattern::Wildcard(_) | Pattern::Binding(_) => false,
-        Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+        Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
             args.iter().any(pattern_names_call_or_struct)
         }
     }
@@ -997,7 +997,13 @@ fn nonalloc_free_fns(
     // keyed by the bare name the call site spells.
     let fns: Vec<&FnDecl> = hale_syntax::ast::flat_decls(items)
         .filter_map(|it| match it {
-            TopDecl::Fn(f) if f.fallible.is_none() && f.ffi.is_none() => Some(f),
+            // GH #1951: a fn returning a `bounded` list copies it into its
+            // caller's arena, an allocation whatever its body does.
+            TopDecl::Fn(f)
+                if f.fallible.is_none() && f.ffi.is_none() && !matches!(f.ret, Some(TypeExpr::Bounded { .. })) =>
+            {
+                Some(f)
+            }
             _ => None,
         })
         .collect();

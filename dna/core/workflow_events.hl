@@ -418,7 +418,7 @@ fn encode_admission(a: AdmittedWorkflow) -> String {
     // escaped string it would be escaped and unescaped character by
     // character, which is quadratic in its size, and a bound tree of a few
     // hundred nodes took whole seconds to admit
-    b.field("recipe", if len(a.recipe) > 0 { a.recipe } else { "null" });
+    b.raw_field("recipe", if len(a.recipe) > 0 { a.recipe } else { "null" });
     limits_json(b, a.limits);
     b.int_field("works", a.works);
     b.int_field("tasks", a.tasks);

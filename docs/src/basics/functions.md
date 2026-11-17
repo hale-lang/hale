@@ -33,6 +33,31 @@ fn double(n: Int) -> Int {
 }
 ```
 
+The final expression is checked exactly as `return` would check it: against the return type (the success type of a `fallible(E)` function or method), with the same conversions — a set member becomes its set, an `Int` widens to a `Float`.
+
+In a function with no return type, including a `() fallible(E)` one, `return` carries no value, not even a call that returns nothing: write `touch() or fail err;` and then `return;`, not `return touch() or fail err;`.
+
+The last statement of a body that returns a value is its value too when it is a `match`, an `if … else` or a block: each arm's value is returned, whatever the type (an `Int`, a `String`, a record, an enum, a `Decimal`):
+
+```hale
+fn word(n: Int) -> String {
+    match n { 1 -> "one", 2 -> "two", _ -> "many" }
+}
+
+fn sign(n: Int) -> Int {
+    if n > 0 { return 1; } else if n < 0 { -1 } else { 0 }
+}
+```
+
+- **Every path returns:** a body that returns a value must return one on every path that reaches its end. `hale check` refuses one that can fall off the end, at the function's name, and points at the path: an `if` with no `else`, a `while` loop that can finish, the `break` that leaves a `while true`, an arm whose last statement is not a value. A `while true` loop with no `break` never reaches the end, and neither does a path that ends in `return` or `fail`:
+
+```text
+main.hl:1:4: type error: fn `sign` returns `Int`, and its body can reach its end
+without a value: this `if` has no `else`, so when its condition is false the body
+ends after it. Return a value on that path, or end the body with its value (…)
+    note: the path that reaches the end without a value at main.hl:2:5
+```
+
 ## Default Parameter Values
 
 Parameters may declare default values using `= expr`, allowing callers to omit trailing arguments:
@@ -61,9 +86,9 @@ fn main() {
 | **Locus construction & bus sends** | A default that constructs a locus builds it in the caller's pool context (which can trigger cross-pool spawn checks). Publishing (`<-`) is forbidden inside a default expression; call a helper method instead. |
 | **Locus method support** | User-defined `fn` methods on a locus support default parameters. Bus-subscribed handlers and mode bodies (`bulk`, `harmonic`, `resolution`) do not allow defaults. |
 
-## Generics and the `Numeric` Bound
+## Generic Functions and the `Numeric` Bound
 
-Generic functions and types can constrain a type parameter with `: Numeric`, which accepts `Int`, `Float`, `Decimal`, and `Duration`:
+A function can take type parameters, and `<T: Numeric>` admits `Int`, `Float`, `Decimal` and `Duration`:
 
 ```hale
 fn twice<T: Numeric>(x: T) -> T {
@@ -77,9 +102,7 @@ fn main() {
 }
 ```
 
-`Numeric` is the only type parameter bound in Hale; there is no user-defined trait bound syntax (declarations like `<T: Eq>` are rejected).
-
-When a generic locus (such as `Holder<T>`) calls a generic function with `self.value` (or a local bound from `self.value`), the compiler monomorphizes the call for each concrete instantiation (`Holder<Int>`, `Holder<String>`). Default expressions in `params` use the declaring locus's type arguments.
+`Numeric` is the only type parameter bound in Hale; there is no user-defined trait bound syntax (declarations like `<T: Eq>` are rejected). A call takes each type argument from the argument in the position that names it, so `twice(2)` is the `Int` version and `twice(1.5)` the `Float` one. Generic records and loci, and the rules a generic call follows, are on the [Generics](../everyday/generics.md) page.
 
 ## Function Pointers (`fn(T) -> U`)
 
@@ -97,6 +120,8 @@ fn main() {
 }
 ```
 
+Any expression that evaluates to a fn value can be called directly: a call that returns one (`pick()(2)`), an array element (`handlers[i](req)`), a tuple part (`pair.0(x)`), or an `if` that picks one (`(if fast { dbl } else { tri })(5)`). A fn value can return any type, a `StringView` included, and so can an interface or perspective method.
+
 ### Function Value Capabilities and Restrictions
 
 Hale function values are thin function pointers with no environment capture. There is no inline closure syntax (`|x| x + captured`).
@@ -111,6 +136,8 @@ Hale function values are thin function pointers with no environment capture. The
 | Fallible function (`-> T fallible(E)`) | No | Indirect calls cannot attach an `or` clause; wrap in an infallible helper (`fn parse_or(s: String) -> Int { return parse(s) or 0; }`). |
 | Function returning a fresh locus (`fn make() -> Worker { return Worker { }; }`) | Yes | Caller owns the newly constructed locus. If the return value is discarded (`f();`), the locus dissolves immediately at `;`. |
 | Function returning a passed-in locus (`fn pick(w: Worker) -> Worker { return w; }`) | No | Cannot alias or forward an existing locus through a function pointer; call directly instead. |
+
+A call through a function value is checked against its type as a direct call is checked against the function: each argument against its parameter (an `Int` argument widens to a `Float` parameter), and the argument count. A function type has no defaults, so a call through `f: fn(Int, Int) -> Int` passes both arguments.
 
 ### Identifier Shadowing in Calls
 

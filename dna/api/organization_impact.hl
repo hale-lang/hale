@@ -70,7 +70,7 @@ locus OrganizationImpactWire {
             b.string_field("pending_effects", to_string(assessment.pending_effects));
             b.string_field("unknown_effects", to_string(assessment.unknown_effects));
             b.end_object();
-        } else { b.field("counts", "null"); }
+        } else { b.raw_field("counts", "null"); }
         b.end_object(); return b.result();
     }
     fn read(

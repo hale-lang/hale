@@ -150,9 +150,9 @@ the model: runtime is automatic; stdlib is explicit.
   an enclosing locus has instances on both sides of its owner's
   thread and the owner is a `main locus`, a bare `I{};` tests
   `lotus_on_main_thread()` at the literal and takes the same-tower
-  birth on main, the handoff off it; a value use there, or such an
-  edge to an owner with several instances, is refused at the
-  literal.
+  birth on main, the handoff off it; a value use there (refused by
+  the typechecker, under the cross-pool rule), or such an edge to an
+  owner with several instances, is refused at the literal.
 - **Order by construction, with latches.** A locus can't run
   before its birth completed, can't be torn down twice, etc.
   There is no runtime state machine: the order is the order the
@@ -2488,7 +2488,8 @@ its `KNOWN_OPEN` table, which is empty today.
   instantiating thread waits, an anchor among them included, whose own
   params are built in an init of that init, at any depth (each init
   reads the scope through its argument block, from the function that
-  starts it; #1555), each of a replicated field's (`replicas = K`) K
+  starts it, a binding of an outer function included, which each init
+  between passes on through its own block; #1555, #2005), each of a replicated field's (`replicas = K`) K
   instances, an anchor apiece, a keyed subscription's, its key applied
   (`where key == replica` claims its own replica's shard) — then
   claims its copy
@@ -3922,6 +3923,23 @@ for replay-under-a-different-plan) is the next milestone.
 
 ### Text + string primitives (v1.x adds)
 
+- `lotus_str_slice_n(arena, s, n, lo, hi) -> char*`,
+  `lotus_str_cp_at_n(s, n, off)`, `lotus_str_cp_size_n(s, n, off)` —
+  GH #1947. `lotus_str_slice`, `lotus_str_cp_at` and
+  `lotus_str_cp_size` with the length of `s` given (`n`, its `strlen`),
+  so they do not measure it; `std::str::substring` and `index_of_from`
+  use `lotus_str_range_copy` and `lotus_str_range_index_of` the same
+  way. Codegen calls them for a String local or parameter whose length
+  it remembers: an entry-block `{ ptr value, i64 len }` beside the
+  local's slot, read through the internal `lotus.str_len_cached(s,
+  cache)`: the cached length when `value` is `s`, else
+  `lotus_str_len(s)`, which refills it; a NULL `s` is 0. It is marked
+  `inlinehint` (never `alwaysinline`, which only seam fusion emits), and
+  the inliner places it at each call. The
+  local's `let`, a parameter's binding and a plain assignment empty the
+  cache; an appending assignment fills it from the accumulator's
+  length. A String is still a `char *` everywhere else: nothing in the
+  runtime, the bus wire or the FFI changes.
 - `lotus_str_parse_float(s) -> double` / `lotus_str_can_parse_float(s) -> int`
   — v1.x-16. Strict trailing-NUL parse; 0.0 on failure paired
   with a bool predicate. Mirrors the parse_int contract.
@@ -4466,7 +4484,14 @@ What the compiler emits for a native `hale build`:
   the toolchain's own cache, `hale iris` and the DNA host, run
   what they build), or for a machine the builder names. `hale
   build` says on its `built:` line which CPU the binary is tuned
-  for. (From 2026-11-02 to 2026-11-07 `hale build` defaulted to
+  for, and where its binary is likely shipped — in a container (a
+  `/.dockerenv` or `/run/.containerenv`, or an overlay root file
+  system, as a BuildKit `RUN` has) or on CI (`CI` set) — a host-tuned
+  build adds a `warning:` line naming the SIGILL risk and
+  `--target-cpu portable` (GH #1948; the default does not change).
+  The `hale init` next steps, the Kubernetes manifests `hale deploy
+  render` writes and the book's image example build with
+  `--target-cpu portable`. (From 2026-11-02 to 2026-11-07 `hale build` defaulted to
   the portable baseline below, after an image built on a CI
   runner's Arm CPU took that CPU's extensions with it and died
   with SIGILL under Docker on another; the one build whose machine
@@ -4581,7 +4606,7 @@ build.
 | `HALE_ZIG` | `zig` | The `zig` binary a cross build (`--target`) compiles and links with. | `zig` on PATH |
 | `HALE_TARGET_GLIBC` | `target_glibc` | The glibc version a cross build's Linux gnu binary asks for. | `2.31` |
 | `HALE_TARGET_SYSROOT` | `target_sysroot` | The sysroot a cross build finds OpenSSL, zlib and the shim in. | `<cache>/hale/sysroot/<triple>` |
-| `XDG_CACHE_HOME`, `HOME` | `cache_dir` | Where compiled runtime objects are cached, content-addressed: `$XDG_CACHE_HOME/hale/runtime`, else `~/.cache/hale/runtime`. An empty value is skipped. | else `<tmp>/hale-runtime-cache-<pid>`, a directory of that process's own |
+| `XDG_CACHE_HOME`, `HOME` | `cache_dir` | Where compiled runtime objects are cached, content-addressed: `$XDG_CACHE_HOME/hale/runtime`, else `~/.cache/hale/runtime`. An empty value is skipped. An object is keyed by its C source, its flags and the compiler; the host `clang`'s release (`clang --version`) is part of the key of a sanitizer or LTO object, which binds to the clang that links it (a sanitizer's runtime checks its version by symbol name), so a toolchain update never links an object the clang it replaced compiled (GH #1952). | else `<tmp>/hale-runtime-cache-<pid>`, a directory of that process's own |
 | `LOTUS_OPENSSL_PREFIX`, `OPENSSL_ROOT_DIR` | `openssl_prefix` | macOS: a Homebrew OpenSSL prefix (the first whose `include/openssl/ssl.h` exists) for the link. | the standard brew locations |
 | `SDKROOT` | `macos_sdkroot` | macOS: the SDK the host clang compiles and links against. Set, it is used as given; unset, the CLI picks one the selected linker reads (see *Native codegen defaults*), and the SDKs it found unreadable go in `macos_sdks_unreadable` for the link's failure to name. | clang's default, unless the linker cannot read it |
 | `LOTUS_NO_DEBUGINFO` | none: the CLI supplies no `debug` sources | Opt out of DWARF line tables for the Hale code (the runtime C always carries `-g`). | off |
@@ -4667,7 +4692,8 @@ table, sorted by family (namespace, then name), each family's
   generation: a handle that outlives its Registry writes nothing.
 - **The runtime's own, under the `hale` namespace:**
   `hale_process_resident_memory_bytes` (a gauge: `/proc/self/statm` on
-  Linux, the task's `MACH_TASK_BASIC_INFO` resident size on macOS),
+  Linux, the task's `MACH_TASK_BASIC_INFO` resident size on macOS; the
+  number `std::process::rss_bytes()` returns),
   `hale_process_cpu_seconds_total` (a counter: the user and system CPU
   time `getrusage(RUSAGE_SELF)` reports), `hale_process_start_time_seconds`
   (a gauge: the unix time the process started, taken as the runtime is

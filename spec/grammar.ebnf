@@ -43,13 +43,22 @@ program           = { import_decl } , { top_decl } ;
    namespace at the import site so cross-seed references read as
    `alias::Name` — same forcing-function discipline as v1.x-3's
    no-default-sub-mode rule and v1.x-FORM-2's two-channel rule.
-   See spec/projects.md for resolution order + mangling scheme. *)
-import_decl       = "import" , STRING_LIT , "as" , IDENTIFIER , ";" ;
+   See spec/projects.md for resolution order + mangling scheme.
+   GH #1951 item 6 (F.51): an optional import list after the alias
+   names top-level declarations of the imported seed; each is bare
+   in the importing seed (as the `as` name when one is given) and
+   re-exported through its alias. No globs; `as` is a contextual
+   word, as it is after the path. *)
+import_decl       = "import" , STRING_LIT , "as" , IDENTIFIER ,
+                    [ "{" , import_item , { "," , import_item } , [ "," ] , "}" ] ,
+                    ";" ;
+import_item       = IDENTIFIER , [ "as" , IDENTIFIER ] ;
 
 top_decl          = locus_decl
                   | perspective_decl
                   | type_decl
                   | positional_type       (* spec/api.md § Codecs *)
+                  | wire_case_type        (* spec/types.md § An enum's names *)
                   | const_decl
                   | function_decl
                   | module_decl
@@ -1034,6 +1043,16 @@ contract_fn       = "fn" , IDENTIFIER , [ generic_params ] ,
 positional_type   = "@" , "positional" , "type" , IDENTIFIER ,
                     [ generic_params ] , "{" , { struct_field } , "}" ;
 
+(* RFC #1995 E1b: `@wire_case(case)` spells every variant of an enum in
+   one case on the wire, for the JSON codecs and `E::name` / `E::parse`
+   alike; a variant's own `json:` key wins (spec/types.md § An enum's
+   names). It precedes the enum form only, not a set, and stacks with no
+   other annotation; `wire_case` and the case words are not keywords. *)
+wire_case_type    = "@" , "wire_case" , "(" , wire_case , ")" , "type" ,
+                    IDENTIFIER , [ generic_params ] , "=" , "enum" , "{" ,
+                    enum_variant , { "," , enum_variant } , "}" , ";" ;
+wire_case         = "snake" | "screaming_snake" | "kebab" | "lower" ;
+
 type_decl         = "type" , IDENTIFIER , "=" , type_expr , ";"
                   | "type" , IDENTIFIER , [ generic_params ] , "{" ,
                     { struct_field } , "}"
@@ -1089,8 +1108,20 @@ scalar_clause     = "range" , ":" , range_expr
    concrete type expression (it may be a generic *instantiation*,
    `type Names = Vec<String>;`). GH #759. *)
 
-struct_field      = IDENTIFIER , ":" , type_expr , [ "indexed_by" , IDENTIFIER , [ "->" , IDENTIFIER ] ] ,
+struct_field      = IDENTIFIER , [ "?" ] , ":" , type_expr , [ "clearable" ] ,
+                    [ "indexed_by" , IDENTIFIER , [ "->" , IDENTIFIER ] ] ,
                     [ "=" , expression ] , [ field_tag ] , ";" ;
+(* `x?: T` is an optional field (GH #1951 item 3, F.52): it declares `x`
+   and a presence flag `has_x: Bool = false` right after it, and
+   `clearable` (contextual, only after an optional field's type) a clear
+   flag `clear_x: Bool = false` after that: the presence pair and triple
+   of spec/api.md § Codecs. `clearable` without the `?` is a parse error,
+   as is a `has_x` (or a clearable field's `clear_x`) the record declares
+   itself, and a `?` on a `@positional` record's field. Only a field of a
+   `type` takes the `?`: on a parameter, a locus param or a local it is a
+   parse error, and after any type expression (`T?`, a return, an enum
+   payload) too, since Hale has no optional type (spec/types.md §
+   Optional fields). *)
 (* `indexed_by` on a `bounded[T; N]` of records names the `String` field
    of `T` that keys a wire map: the api codecs carry the list as an object
    keyed by it (spec/api.md § Codecs), the value-level projection of the
@@ -1101,10 +1132,20 @@ struct_field      = IDENTIFIER , ":" , type_expr , [ "indexed_by" , IDENTIFIER ,
    pairs that downstream features parse (the binary-pack layer reads a
    `wire:` key; ignored otherwise). Shares the backtick lexing with time
    literals — a time literal only appears in expression position, a tag
-   only in field-declaration position. *)
+   only after a field's or an enum variant's declaration. On a field
+   the tag is the last thing before the `;`, after any `= default`; a
+   tag written before the default is a parse error at the `=` that says
+   to write the default first (GH #1948). *)
 field_tag         = "`" , { ? any char except backtick ? } , "`" ;
 
-enum_variant      = IDENTIFIER , [ "(" , type_expr , { "," , type_expr } , ")" ] ;
+enum_variant      = [ "@" , IDENTIFIER ] , IDENTIFIER ,
+                    [ "(" , type_expr , { "," , type_expr } , ")" ] , [ field_tag ] ;
+(* `@not_found Missing`: the variant's error class (spec/api.md § Error
+   classes). GH #1951 item 5: a variant takes one metadata tag after its
+   values, as a field does; the codecs read its `json:` key, a wire name
+   (``Sell `json:"sell"` ``) and the option `other`, the enum's catch-all
+   (``Other(String) `json:",other"` ``, spec/api.md § Codecs). A set's
+   member takes none: a tag after one is a parse error naming the rule. *)
 
 generic_params    = "<" , generic_param , { "," , generic_param } , ">" ;
 generic_param     = IDENTIFIER , [ ":" , type_expr ] ;
@@ -1258,7 +1299,7 @@ function_decl     = [ ffi_annotation | export_annotation
 contract_decorator = unbounded_annotation | bounded_by_annotation
                    | budget_annotation
                    | hot_annotation | effect_annotation
-                   | rpc_annotation ;
+                   | rpc_annotation | raise_annotation ;
 ffi_annotation    = "@" , "ffi" , "(" , STRING_LIT , ")" ;
 export_annotation = "@" , "export" ;
 unbounded_annotation = "@" , "unbounded" ;
@@ -1267,6 +1308,10 @@ bounded_by_annotation = "@" , "bounded_by" , "(" , IDENTIFIER ,
 budget_annotation = "@" , "budget" , "(" , "alloc_per_call" ,
                     "=" , INT_LIT , ")" ;
 hot_annotation    = "@" , "hot" ;
+(* GH #1951 (item 2) — on a free fn of one parameter: the conversion an
+   `or raise` applies from the parameter's type to the result's
+   (spec/semantics.md § `or` disposition). *)
+raise_annotation  = "@" , "raise" ;
 (* GH #1109, retired in R4 (GH #1417): `@gated(role: R)` is refused by the
    parser; a role requirement is a row's `requires`. *)
 (* GH #1417 — on a locus fn: the row it contributes to its seed's
@@ -1363,8 +1408,24 @@ statement         = let_stmt
 reperspective_stmt = "reperspective" , "self" , "." , IDENTIFIER ,
                      "as" , qualified_name , ";" ;
 
+(* GH #1995 E3: a `let` of a pattern, or with `else`. `let P = e else
+   { … };` binds P's names after the statement, and its block must leave
+   (semantics.md, "`if let` and `let … else`" under `match`); a `let`
+   of a pattern with no `else` takes one that matches every value of its
+   type. The parser
+   writes each as the match it means. A `let_pattern` is one that is not
+   a name or a tuple of names (those are the first two forms), and takes
+   no type. *)
 let_stmt          = "let" , [ "mut" ] , IDENTIFIER ,
-                    [ ":" , type_expr ] , "=" , expression , ";" ;
+                    [ ":" , type_expr ] , "=" , expression ,
+                    [ "else" , block ] , ";"
+                  | "let" , [ "mut" ] , "(" , IDENTIFIER ,
+                    { "," , IDENTIFIER } , [ "," ] , ")" ,
+                    [ ":" , type_expr ] , "=" , expression ,
+                    [ "else" , block ] , ";"
+                  | "let" , [ "mut" ] , let_pattern , "=" , expression ,
+                    [ "else" , block ] , ";" ;
+let_pattern       = pattern , { "|" , pattern } ;
 
 assign_stmt       = lvalue , assign_op , expression , ";" ;
 assign_op         = "=" | "+=" | "-=" | "*=" | "/=" | "%="
@@ -1393,14 +1454,29 @@ shm_write_stmt    = expression , "." , "write" , "(" , expression , ")" ,
                     "{" , IDENTIFIER , "=>" , { statement } ,
                     [ expression ] , "}" ;
 
-if_stmt           = "if" , expression , block ,
-                    { "else" , "if" , expression , block } ,
+(* GH #1995 E3: `if let P = e { A } else { B }` is the match
+   `match e { P -> { A }, _ -> { B } }`; P is any arm's pattern, its
+   names in scope in A only. *)
+if_stmt           = "if" , if_head , block ,
+                    { "else" , "if" , if_head , block } ,
                     [ "else" , block ] ;
+if_head           = expression
+                  | "let" , pattern , { "|" , pattern } , "=" , expression ;
 
 match_stmt        = "match" , expression , "{" , match_arm ,
                     { "," , match_arm } , [ "," ] , "}" ;
-match_arm         = pattern , [ "if" , expression ] , "->" ,
-                    ( expression | block ) ;
+match_arm         = pattern , { "|" , pattern } , [ "if" , expression ] ,
+                    "->" , ( expression | block ) ;
+
+(* GH #1995 E2 — an or-pattern: an arm of two or more patterns
+   separated by `|` matches when one of them does, tried left to right.
+   Every alternative binds the same names at the same types; the guard
+   covers the whole arm and is tried with each matching alternative's
+   bindings in turn; F.18 exhaustiveness counts each alternative. `|`
+   is top level only: a pattern inside a tuple or a variant's values is
+   one pattern, and a `|` after it is a parse error. A pattern is not an
+   expression, so this `|` is never the bitwise operator, which the
+   guard and the body still use. *)
 
 pattern           = literal_pattern
                   | wildcard_pattern
@@ -1487,9 +1563,11 @@ expression        = range_expr ;
 
 (* Range is the lowest-precedence expression form, non-associative
    (one `..` / `..=` per chain). It parses in ANY expression
-   position; v1 restricts its *use* to `for x in lo..hi` at
-   typecheck / codegen, so a range elsewhere is a typecheck error,
-   NOT a parse error. `..` is exclusive, `..=` inclusive. *)
+   position; v1 restricts its *use* to `for x in lo..hi` and a
+   `String` slice's index at typecheck / codegen, so a range
+   elsewhere is a typecheck error, NOT a parse error. `..` is
+   exclusive, `..=` inclusive. Only an index may leave a bound out
+   (`index_expr`). *)
 range_expr        = assignment_expr , [ ( ".." | "..=" ) , assignment_expr ] ;
 
 assignment_expr   = or_disposition_expr , [ assign_op , assignment_expr ] ;
@@ -1569,8 +1647,19 @@ postfix_expr      = primary_expr , { postfix_op } ;
 postfix_op        = "." , member_name
                   | "::" , member_name
                   | "(" , [ argument_list ] , ")"
-                  | "[" , expression , "]"
+                  | "[" , index_expr , "]"
                   ;
+
+(* GH #1995 S1: inside an index's brackets a range may leave a bound
+   out — `s[lo..]` (to the end), `s[..hi]` / `s[..=hi]` (from 0),
+   `s[..]` (the whole string). It is the closed slice it reads as,
+   with the receiver evaluated once (spec/semantics.md § String
+   slicing). `..=` needs its end, and a range missing a bound is a
+   parse error anywhere but here: a bare `3..` does not parse. *)
+index_expr        = expression
+                  | assignment_expr , ".."
+                  | ( ".." | "..=" ) , assignment_expr
+                  | ".." ;
 
 (* GH #1417 — a call of the path `api::serve` takes, after its
    surface and its transport instance, the named arguments of a serve
@@ -1679,7 +1768,7 @@ block_expr        = block ;
    branch with a trailing value, and the then- and else-arms'
    trailing-expression types must match; codegen phi-merges
    them at the join. *)
-if_expr           = "if" , expression , block , "else" ,
+if_expr           = "if" , if_head , block , "else" ,
                     ( if_expr | block ) ;
 match_expr        = match_stmt ;
 
@@ -1702,6 +1791,10 @@ identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 
 (* IDENTIFIER     = ?[a-zA-Z_][a-zA-Z0-9_]*?  excluding keywords *)
 (* INT_LIT        = ?decimal | 0x... | 0o... | 0b...?            *)
+(*                 | ?byte: `b'`, one printable ASCII character *)
+(*                   or an escape (`\n \t \r \\ \' \" \0 \xNN`), *)
+(*                   `'`; the byte's value (tokens.md § Integer *)
+(*                   literals, GH #1995)?                        *)
 (* FLOAT_LIT      = ?<digits>.<digits>, optional exponent, no    *)
 (*                   suffix?                                     *)
 (* DECIMAL_LIT    = ?... 'd' suffix?                             *)
@@ -1712,6 +1805,9 @@ identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 (*                   closing line's whitespace is stripped from *)
 (*                   every line, no escapes (tokens.md § Block  *)
 (*                   strings)?                                   *)
+(*                 | ?raw string: `r`, N `#` (N >= 0), `"`, the  *)
+(*                   text as written (no escapes), `"`, N `#`    *)
+(*                   (tokens.md § Raw strings, GH #1948)?        *)
 (* FSTRING_LIT    = ?f"... {expr} ..."?                          *)
 (* BYTES_LIT      = ?b"..."?                                     *)
 (* QUANTITY_LIT   = ?<decimal int><identifier>, no space: the    *)

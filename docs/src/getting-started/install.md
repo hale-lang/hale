@@ -13,7 +13,7 @@ curl -fsSL https://hale-lang.org/install.sh | sh
 ```
 
 - Set `HALE_INSTALL=/custom/dir` to change the installation directory.
-- Set `HALE_VERSION=v0.32.13` to pin a specific version.
+- Set `HALE_VERSION=v0.33.0` to pin a specific version.
 
 ### Manual Archive Installation
 
@@ -140,7 +140,9 @@ scripts/target-sysroot.sh x86_64-unknown-linux-musl
 # Cross-compile for glibc >= 2.31:
 hale build --target x86_64-unknown-linux-gnu app.hl
 
-# Cross-compile a fully static binary for Alpine / scratch containers:
+# Cross-compile a fully static binary for Alpine / scratch containers
+# (a cross build at the default CPU is generic; for a container you
+# build natively, say `--target-cpu portable`):
 hale build --target x86_64-unknown-linux-musl app.hl
 ```
 

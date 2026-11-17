@@ -1,4 +1,4 @@
-//! The `check_cli` integration-test binary: 27 test files of this area, kept
+//! The `check_cli` integration-test binary: 32 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -13,6 +13,10 @@ mod check_adopt;
 mod check_arg_parsing;
 #[path = "check_build_refusals.rs"]
 mod check_build_refusals;
+#[path = "check_or_patterns.rs"]
+mod check_or_patterns;
+#[path = "check_if_let.rs"]
+mod check_if_let;
 #[path = "check_borrow_lifetime.rs"]
 mod check_borrow_lifetime;
 #[path = "check_entry_decisions.rs"]

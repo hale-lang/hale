@@ -1,0 +1,242 @@
+// tests/hale/str_split_sources_test.hl — the text `for` sources (GH #1995
+// S2): `for part in std::str::split(s, sep)`, `for line in
+// std::str::lines(s)` and `for w in std::str::words(s)`. Each is one scan
+// of `s` (spec/semantics.md § Text sources); the scaling is pinned in
+// `crates/hale-codegen/tests/stdlib_str.rs`.
+
+@form(vec)
+locus Fields {
+    capacity { heap items of String; }
+}
+
+// The parts a loop saw, as a count and the parts joined by `|`: `""` is
+// "0:", one empty part "1:". Kept in a vec, so no loop concatenates.
+fn render(f: Fields) -> String {
+    return to_string(f.len()) + ":" + std::str::join(f, "|");
+}
+
+fn parts(s: String, sep: String) -> String {
+    let f = Fields { };
+    for p in std::str::split(s, sep) {
+        f.push(p);
+    }
+    return render(f);
+}
+
+fn lines_of(s: String) -> String {
+    let f = Fields { };
+    for line in std::str::lines(s) {
+        f.push(line);
+    }
+    return render(f);
+}
+
+fn words_of(s: String) -> String {
+    let f = Fields { };
+    for w in std::str::words(s) {
+        f.push(w);
+    }
+    return render(f);
+}
+
+// What `split_into` writes, rendered the same way.
+fn split_into_parts(s: String, sep: String) -> String {
+    let f = Fields { };
+    std::str::split_into(s, sep, f);
+    return render(f);
+}
+
+// Pure: a source is legal in a deterministic, syscall-free fn.
+@deterministic
+@no_syscall
+fn count_set_fields(row: String) -> Int {
+    let mut n = 0;
+    for f in std::str::split(row, ";") {
+        if f == "" {
+            continue;
+        }
+        n = n + 1;
+    }
+    return n;
+}
+
+// `return` from inside the loop.
+fn first_word(s: String) -> String {
+    for w in std::str::words(s) {
+        return w;
+    }
+    return "<none>";
+}
+
+locus Doc {
+    params { text: String = "alpha beta\ngamma\n"; }
+
+    fn word_count() -> Int {
+        let mut n = 0;
+        for line in std::str::lines(self.text) {
+            for w in std::str::words(line) {
+                n = n + 1;
+            }
+        }
+        return n;
+    }
+}
+
+fn main() {
+    // split: empty fields kept, as split_into keeps them.
+    std::test::assert_eq_str(parts("a,b,c", ","), "3:a|b|c", "split");
+    std::test::assert_eq_str(parts("", ","), "1:", "the empty string is one empty part");
+    std::test::assert_eq_str(parts("abc", ","), "1:abc", "no separator is one part");
+    std::test::assert_eq_str(parts(",a,", ","), "3:|a|", "a separator at each end");
+    std::test::assert_eq_str(parts(",", ","), "2:|", "a lone separator is two empty parts");
+    std::test::assert_eq_str(parts("a,,b", ","), "3:a||b", "consecutive separators");
+    std::test::assert_eq_str(parts("a::b::::c", "::"), "4:a|b||c", "a separator of two bytes");
+    std::test::assert_eq_str(parts("a:b", "::"), "1:a:b", "a partial separator is text");
+    std::test::assert_eq_str(parts("abc", ""), "0:", "an empty separator splits nothing");
+    std::test::assert_eq_str(
+        parts("a,,b,", ","),
+        split_into_parts("a,,b,", ","),
+        "split is split_into's",
+    );
+    std::test::assert_eq_str(
+        parts("", ","),
+        split_into_parts("", ","),
+        "split_into's empty string",
+    );
+    std::test::assert_eq_str(
+        parts("abc", ""),
+        split_into_parts("abc", ""),
+        "split_into's empty separator",
+    );
+
+    // lines: `\n` ends a line, a `\r` before it goes, a final newline
+    // starts no line.
+    std::test::assert_eq_str(lines_of("one\ntwo"), "2:one|two", "lines");
+    std::test::assert_eq_str(lines_of(""), "0:", "no text is no lines");
+    std::test::assert_eq_str(lines_of("one\n"), "1:one", "a trailing newline starts no line");
+    std::test::assert_eq_str(lines_of("one\n\n"), "2:one|", "but a blank line before it is one");
+    std::test::assert_eq_str(lines_of("\n"), "1:", "a lone newline is one empty line");
+    std::test::assert_eq_str(lines_of("\nx"), "2:|x", "a leading newline");
+    std::test::assert_eq_str(lines_of("one\r\ntwo\r\n"), "2:one|two", "CRLF lines");
+    std::test::assert_eq_str(lines_of("one\r\n\r\ntwo"), "3:one||two", "a blank CRLF line");
+    std::test::assert_eq_str(lines_of("one\r"), "1:one", "a trailing CR at the end");
+    std::test::assert_eq_str(lines_of("a\rb\n"), "1:a\rb", "a CR inside a line stays");
+    std::test::assert_eq_str(lines_of("a\r\r\n"), "1:a\r", "only one CR goes");
+
+    // words: runs of ASCII whitespace separate, no empty word.
+    std::test::assert_eq_str(words_of("a b c"), "3:a|b|c", "words");
+    std::test::assert_eq_str(words_of(""), "0:", "no text is no words");
+    std::test::assert_eq_str(words_of(" \t\n "), "0:", "only whitespace is no words");
+    std::test::assert_eq_str(
+        words_of("  lead and trail  "),
+        "3:lead|and|trail",
+        "whitespace at the ends",
+    );
+    std::test::assert_eq_str(
+        words_of("a \t\r\n\x0B\x0Cb"),
+        "2:a|b",
+        "every ASCII whitespace byte, in a run",
+    );
+    std::test::assert_eq_str(words_of("one"), "1:one", "one word");
+
+    // UTF-8: offsets are bytes, and an ASCII separator never cuts a
+    // character.
+    std::test::assert_eq_str(parts("é,日本,ü", ","), "3:é|日本|ü", "multibyte parts");
+    std::test::assert_eq_str(parts("a→b→c", "→"), "3:a|b|c", "a multibyte separator");
+    std::test::assert_eq_str(lines_of("grüße\r\nсвет\n"), "2:grüße|свет", "multibyte lines");
+    std::test::assert_eq_str(
+        words_of("  héllo\twörld  日本 "),
+        "3:héllo|wörld|日本",
+        "multibyte words",
+    );
+    // U+00A0 (no-break space) is not ASCII whitespace: it is text.
+    std::test::assert_eq_str(words_of("a b c"), "2:a b|c", "non-ASCII space is text");
+
+    // break and continue.
+    let kept = Fields { };
+    for w in std::str::words("keep skip keep stop never") {
+        if w == "skip" {
+            continue;
+        }
+        if w == "stop" {
+            break;
+        }
+        kept.push(w);
+    }
+    std::test::assert_eq_str(
+        render(kept),
+        "2:keep|keep",
+        "continue skips one, break leaves the loop",
+    );
+    let mut after_break = 0;
+    for line in std::str::lines("a\nb\nc\n") {
+        after_break = after_break + 1;
+        if line == "b" {
+            break;
+        }
+    }
+    std::test::assert_eq_int(after_break, 2, "break in lines");
+    let mut nonempty = 0;
+    for p in std::str::split("x,,y,", ",") {
+        if p == "" {
+            continue;
+        }
+        nonempty = nonempty + 1;
+    }
+    std::test::assert_eq_int(nonempty, 2, "continue in split");
+
+    // Nested loops, each with its own scan; an inner `break` leaves only
+    // the inner loop.
+    let table = "a=1;b=2\nc=3\n";
+    let cells = Fields { };
+    for row in std::str::lines(table) {
+        for cell in std::str::split(row, ";") {
+            for kv in std::str::split(cell, "=") {
+                cells.push(kv);
+                break;
+            }
+        }
+        cells.push("/");
+    }
+    std::test::assert_eq_str(render(cells), "5:a|b|/|c|/", "nested sources");
+
+    // The same source nested in itself, over its own element.
+    let mut pairs = 0;
+    for x in std::str::words("p q r") {
+        for y in std::str::words(std::str::replace("_ _", "_", x)) {
+            if y == x {
+                pairs = pairs + 1;
+            }
+        }
+    }
+    std::test::assert_eq_int(pairs, 6, "a source over the outer element");
+
+    // The element is the body's to keep: a String that outlives the
+    // iteration, and a `let` of the same name shadows it.
+    let mut last = "";
+    for w in std::str::words("first second third") {
+        last = w;
+    }
+    std::test::assert_eq_str(last, "third", "the element outlives its iteration");
+    let shouted = Fields { };
+    for w in std::str::words("a b") {
+        let w = std::str::upper(w);
+        shouted.push(w);
+    }
+    std::test::assert_eq_str(render(shouted), "2:A|B", "a let in the body shadows the element");
+
+    // The arguments are evaluated once, before the scan.
+    let mut sep = ",";
+    let mut seen = 0;
+    for p in std::str::split("a,b;c", sep) {
+        sep = ";";
+        seen = seen + 1;
+    }
+    std::test::assert_eq_int(seen, 2, "the separator is read once");
+
+    std::test::assert_eq_int(count_set_fields("a;;b;c;"), 3, "a source in a pure fn");
+    std::test::assert_eq_str(first_word("  hi there"), "hi", "return from the loop");
+    std::test::assert_eq_str(first_word("   "), "<none>", "no word, no iteration");
+    let d = Doc { };
+    std::test::assert_eq_int(d.word_count(), 3, "sources over a field, in a method");
+}

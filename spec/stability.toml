@@ -1,0 +1,225 @@
+# Stability tiers: what the compatibility promise covers.
+#
+# STABILITY.md states the policy; this file is its table. Every stdlib
+# namespace the stdlib table lists (`hale_types::stdlib_surface::SURFACES`,
+# the namespaces of crates/hale-codegen/tests/fixtures/stdlib_table_answers.txt)
+# and every file under spec/ carries a tier:
+#
+#   stable        a change that breaks a correct program waits for a minor
+#                 release, is warned about for one minor release first
+#                 (a `deprecated` diagnostic), and is listed under the
+#                 release's Breaking heading. At 1.0 this tier is the
+#                 source-compatibility promise of 1.x.
+#   experimental  may change in any minor release, still listed under
+#                 Breaking when it does. No deprecation window; no 1.x
+#                 promise until it is promoted to stable.
+#
+# A patch release changes neither tier's behaviour for correct programs.
+# A function whose name begins with `__` is a compiler hook, never
+# surface, whatever its namespace's tier.
+#
+# crates/hale-types/tests/stability_tiers.rs holds this file to the
+# stdlib table, the spec directory, the graph registry's Reserved
+# families and the book's generated table (docs/src/stability.md), so a
+# new namespace or spec file cannot land without a tier. Changing a
+# tier regenerates the book's table:
+#
+#   HALE_REGEN_STABILITY=1 cargo test -p hale-types --test stability_tiers
+#
+# An experimental entry says why (`why`); promoting one to stable is a
+# Changed entry in that release's CHANGELOG.
+
+schema = 1
+
+# ---------------------------------------------------------------------
+# The standard library, one row per namespace of the stdlib table.
+# `experimental_fns` marks newer functions inside a stable namespace.
+# ---------------------------------------------------------------------
+[stdlib]
+"std::bus" = { tier = "stable" }
+"std::bytes" = { tier = "stable" }
+"std::bytes::builder" = { tier = "stable" }
+"std::compress" = { tier = "stable" }
+"std::crypto" = { tier = "stable", experimental_fns = [
+    "keccak256",
+    "rsa_pss_sha256_sign",
+    "rsa_pss_sha256_verify",
+    "secp256k1_public_key",
+    "secp256k1_sign",
+    "secp256k1_verify",
+    "secp256k1_recover",
+], why = "the chain-signing primitives are new (#1935)" }
+"std::decimal" = { tier = "stable" }
+"std::env" = { tier = "stable" }
+"std::hex" = { tier = "stable" }
+"std::http" = { tier = "stable" }
+"std::io::file" = { tier = "stable" }
+"std::io::fs" = { tier = "stable" }
+"std::io::sockopt" = { tier = "stable" }
+"std::io::stdin" = { tier = "stable" }
+"std::io::stdout" = { tier = "stable" }
+"std::io::tcp" = { tier = "stable" }
+"std::io::tls" = { tier = "stable" }
+"std::io::udp" = { tier = "stable" }
+"std::io::unix" = { tier = "stable" }
+"std::json" = { tier = "stable" }
+"std::json::Value" = { tier = "stable" }
+"std::log" = { tier = "stable" }
+"std::math" = { tier = "stable" }
+"std::os" = { tier = "stable" }
+"std::process" = { tier = "stable" }
+"std::rand" = { tier = "stable" }
+"std::regex" = { tier = "stable" }
+"std::str" = { tier = "stable", experimental_fns = [
+    "cut",
+    "cut_last",
+    "eq_ignore_case",
+    "last_index_of",
+    "lines",
+    "parse_bool",
+    "split",
+    "trim_end",
+    "trim_prefix",
+    "trim_start",
+    "trim_suffix",
+    "words",
+], why = "the splits and trims and the `for` sources `split`, `lines` and `words` are new (#1995); promoted after one minor" }
+"std::term" = { tier = "stable" }
+"std::test" = { tier = "stable" }
+"std::text" = { tier = "stable" }
+"std::text::base64" = { tier = "stable" }
+"std::time" = { tier = "stable" }
+"std::url" = { tier = "stable" }
+
+"std::api" = { tier = "experimental", why = "the api binding's surface rows are still converging (GH #1417, R-series)" }
+"std::diag" = { tier = "experimental", why = "counters for tests and leak hunts, not a program's interface" }
+"std::i256" = { tier = "experimental", why = "new (GH #1934)" }
+"std::io::h2" = { tier = "experimental", why = "the HTTP/2 transport is young and its hooks are all internal" }
+"std::io::mirror" = { tier = "experimental", why = "the double-mapped receive ring's hooks; internal to the transports" }
+"std::metrics" = { tier = "experimental", why = "observability is becoming pluggable; the metric API will move with it" }
+"std::observe" = { tier = "experimental", why = "the observe backends are new (GH #1592) and pluggable observability is in progress" }
+"std::ring" = { tier = "experimental", why = "the SPSC ring's hooks; internal to the shared-memory bus" }
+"std::secret" = { tier = "experimental", why = "the local vault serves DNA and the habitat, whose shape still moves" }
+"std::shm" = { tier = "experimental", why = "timestamps of the zero-copy bus's last record; tied to the shm_ring layout" }
+"std::tar" = { tier = "experimental", why = "added for DNA's packaging; the API is the minimum DNA needed" }
+"std::ts" = { tier = "experimental", why = "the tree-sitter shim parses Go only, for DNA's ingest" }
+"std::u256" = { tier = "experimental", why = "new (GH #1934)" }
+
+# ---------------------------------------------------------------------
+# The spec, one row per file. `experimental_sections` names `## `
+# headings inside a stable file whose contract is experimental (the
+# test checks each heading exists). `normative = false` marks a record
+# that states no contract of its own (a log, a rationale, a glossary).
+# ---------------------------------------------------------------------
+[spec."tokens.md"]
+tier = "stable"
+
+[spec."grammar.ebnf"]
+tier = "stable"
+
+[spec."keywords.txt"]
+tier = "stable"
+
+[spec."precedence.md"]
+tier = "stable"
+
+[spec."types.md"]
+tier = "stable"
+experimental_sections = [
+    "U256 and I256 — 256-bit integers",
+    "Scalar types (GH #1076)",
+    "Roles (GH #1109, #1417)",
+    "Working-set estimator (F.32-2)",
+]
+
+[spec."semantics.md"]
+tier = "stable"
+experimental_sections = [
+    "Probes",
+    "Observe backends (GH #1592)",
+    "Perspective hot-load",
+]
+
+[spec."memory.md"]
+tier = "stable"
+experimental_sections = ["Allocator implementation outline", "What the compiler emits", "Codegen ABI (v0)"]
+
+[spec."forms.md"]
+tier = "stable"
+
+[spec."stdlib.md"]
+tier = "stable"
+
+[spec."ffi.md"]
+tier = "stable"
+experimental_sections = ["WASM host interface", "C→Hale re-entry: `@export fn` on native (Crumb batch 2, 2026-07-27)"]
+
+[spec."projects.md"]
+tier = "stable"
+
+[spec."testing.md"]
+tier = "stable"
+experimental_sections = ["Property-based testing"]
+
+[spec."styleguide.md"]
+tier = "stable"
+
+[spec."verification.md"]
+tier = "stable"
+experimental_sections = ["Fleet composition (GH #408 Phase 1)", "The requirements artifact (GH #1835)"]
+
+[spec."runtime.md"]
+tier = "stable"
+experimental_sections = ["Observe backends", "Diagnostic + tuning env vars", "Runtime size budget"]
+
+[spec."packages.md"]
+tier = "experimental"
+why = "the manifest, the lockfile and `hale fetch` are a first cut; registries and version resolution are not designed"
+
+[spec."units.md"]
+tier = "experimental"
+why = "the unit dialect is new (GH #1076) and its rows are still growing"
+
+[spec."api.md"]
+tier = "experimental"
+why = "the api binding's surfaces, transports and clients are still converging (GH #1417)"
+
+[spec."model.md"]
+tier = "experimental"
+why = "the canonical model's tables grow with every judgment family; its Reserved families have no producer"
+
+[spec."registry.md"]
+tier = "experimental"
+why = "a generated index of the compiler's own families; it describes the implementation, not the language"
+
+[spec."api-description.schema.json"]
+tier = "experimental"
+why = "the api description's schema moves with spec/api.md"
+
+[spec."dna.md"]
+tier = "experimental"
+why = "DNA is a library built on the language, and its surfaces move with its delivery"
+
+[spec."habitat.md"]
+tier = "experimental"
+why = "the habitat's verbs, rows and backends move with DNA"
+
+[spec."decisions.md"]
+tier = "stable"
+normative = false
+
+[spec."design-rationale.md"]
+tier = "stable"
+normative = false
+
+[spec."glossary.md"]
+tier = "stable"
+normative = false
+
+# ---------------------------------------------------------------------
+# The graph registry's Reserved families (spec/registry.md): named,
+# with no producer and no syntax. Each is experimental until it ships;
+# the test holds this list equal to the registry's Reserved rows.
+# ---------------------------------------------------------------------
+[registry]
+experimental_families = ["runs_under", "transitions", "view"]

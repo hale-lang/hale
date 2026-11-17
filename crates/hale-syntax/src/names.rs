@@ -650,7 +650,7 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
         TypeDeclBody::Alias(a) => ty(a, f),
         TypeDeclBody::Struct(fields) => {
             for sf in fields {
-                let StructField { name: n, ty: t, default, tag, indexed_by, map_value, span: _ } = sf;
+                let StructField { name: n, ty: t, default, tag, indexed_by, map_value, optional: _, span: _ } = sf;
                 name(n, f);
                 opt_name(indexed_by, f);
                 opt_name(map_value, f);
@@ -661,7 +661,7 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
         }
         TypeDeclBody::Enum(variants) => {
             for v in variants {
-                let EnumVariant { name: n, fields, class: _, span: _, member: _ } = v;
+                let EnumVariant { name: n, fields, class: _, span: _, member: _, tag: _ } = v;
                 name(n, f);
                 for t in fields {
                     ty(t, f);
@@ -846,7 +846,7 @@ fn if_stmt<'a>(i: &'a IfStmt, f: &mut Visit<'_, 'a>) {
 }
 
 fn match_stmt<'a>(ms: &'a MatchStmt, f: &mut Visit<'_, 'a>) {
-    let MatchStmt { scrutinee, arms, span: _ } = ms;
+    let MatchStmt { scrutinee, arms, span: _, form: _ } = ms;
     expr(scrutinee, f);
     for arm in arms {
         let MatchArm { pattern: p, guard, body, span: _ } = arm;
@@ -870,7 +870,7 @@ fn pattern<'a>(p: &'a Pattern, f: &mut Visit<'_, 'a>) {
                 pattern(a, f);
             }
         }
-        Pattern::Tuple(args, _) => {
+        Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
             for a in args {
                 pattern(a, f);
             }

@@ -25,8 +25,10 @@ fn main() {
 | Construct | Syntax | Can Produce a Value? | Key Rules |
 |---|---|---|---|
 | Conditional | `if cond { ... } else { ... }` | Yes (when `else` is present) | Both arms must have the same type in expression position |
-| Value match | `match expr { pat -> res, _ -> def }` | Yes | Must be exhaustive; `_` is the wildcard pattern |
+| Value match | `match expr { pat -> res, _ -> def }` | Yes | Must be exhaustive; `_` is the wildcard pattern; `p1 \| p2 -> res` matches either |
 | Condition match | `match { c1 -> r1, else -> def }` | Yes | Evaluates boolean guards top-to-bottom; `else` is the catch-all |
+| One-pattern test | `if let P = expr { ... } else { ... }` | Yes (when `else` is present) | A two-arm `match`; `P`'s names are in scope in the first block only |
+| Bind or leave | `let P = expr else { ... };` | No | `P`'s names are bound after the statement; the `else` block must leave (`return`, `fail`, `break`, `continue`) |
 | Conditional loop | `while cond { ... }` | No (`()`) | Use `while true { ... }` for unbounded loops; exit with `break;` |
 | Iterator loop | `for x in 0..n { ... }` | No (`()`) | `a..b` is half-open (`[a, b)`); `a..=b` is inclusive (`[a, b]`) |
 | Block expression | `{ stmt; expr }` | Yes (if final expression omits `;`) | Final expression without `;` becomes the block's value |
@@ -94,6 +96,14 @@ for i in 0..=5 {
 }
 ```
 
+To take a text apart, loop over one of the text sources, `std::str::split(s, sep)`, `std::str::lines(s)` or `std::str::words(s)` (covered in [Strings](strings.md)). A `String` itself is not something to loop over: `for c in s` is refused, since a part could be a byte, a character, a line or a word.
+
+```hale,fragment
+for line in std::str::lines("a=1\nb=2\n") {
+    println(line);         // a=1, b=2
+}
+```
+
 ## Pattern Matching (`match`)
 
 `match` compares a value against a list of patterns using `->` arms and runs the first matching arm:
@@ -109,7 +119,44 @@ fn describe(n: Int) -> String {
 ```
 
 - **Exhaustiveness:** Every `match` is checked for exhaustiveness at compile time. Matching a `Bool` requires both `true` and `false`; matching an `enum` or set type ([Records & Data](../everyday/records.md)) requires covering every variant; matching open-ended types (`Int`, `String`) requires a `_` wildcard arm. Because `match` is exhaustive, a function can end with a `match` statement whose arms all `return`.
-- **Statement vs. expression:** `match` works as both a statement and an expression. Arms can be single expressions or `{ ... }` blocks (block-bodied arms still take a trailing comma).
+- **Statement vs. expression:** `match` works as both a statement and an expression. Arms can be single expressions or `{ ... }` blocks (block-bodied arms still take a trailing comma). In expression position every arm's value has one type: a block arm's value is its final expression, and a block arm with none produces no value, so `match c { 1 -> 5, _ -> {} }` is refused by `hale check` (an arm that `return`s or `break`s is fine beside the arms that give the value). In statement position a block's final expression is just evaluated, so `P -> { println("x") }` needs no `;`.
+- **Typed bindings:** a name a pattern binds is a local of the arm with the type of what it binds: the matched value's type for a bare binding, the variant's declared value type for `Shape::Line(l)`, the element's type for a tuple part. It is checked wherever it is used, like any other local.
+- **Flat patterns:** each part of a tuple pattern, like each value of a variant's pattern, is a binding, `_` or a literal (`(0, b) -> …`, `Shape::Line(l) -> …`). A nested pattern there (`((1, 2), 3)`, `(Light::Red, 3)`) is refused by `hale check`: bind the part and match the binding inside the arm.
+
+### Matching strings, and or-patterns
+
+A `String` matches against string literals, and an arm may list several patterns separated by `|`; the arm runs when any one of them matches. This is the way to dispatch on a word: one decision, the subject named once, and a `_` arm that says what happens to everything else.
+
+```hale
+fn usage(verb: String) -> String {
+    return match verb {
+        "assign" | "unassign" -> verb + " <name> reviews <kind>:<node>",
+        "close" -> "close <name>",
+        _ -> "unknown verb",
+    };
+}
+```
+
+Alternatives work for every pattern form: literals (`1 | 2 | 3`), enum variants with or without payloads, set members, tuples. When the alternatives bind names, every alternative binds the same names at the same types, so the arm's body can use them whichever one matched:
+
+```hale
+type CtlError = enum { Invalid(String), NotFound(String), Conflict(String), NotReady(Int) };
+
+fn problem(e: CtlError) -> String {
+    return match e {
+        CtlError::Invalid(p) | CtlError::NotFound(p) | CtlError::Conflict(p) -> p,
+        CtlError::NotReady(h) -> f"not ready after {h} checks",
+    };
+}
+```
+
+- **Exhaustiveness** counts each alternative, so `Color::Red | Color::Green -> …, Color::Blue -> …` covers a three-color enum without `_`.
+- **A guard** after the alternatives (`(x, _) | (_, x) if x > 0 -> x`) covers the whole arm. Alternatives are tried left to right, and when the guard is false for one alternative's bindings, the next alternative is tried.
+- **Top level only:** `|` separates a whole arm's patterns. `E::A(1 | 2)` is refused; write `E::A(1) | E::A(2)`.
+- An alternative an earlier arm or alternative already covers is never tried, and `hale check` warns about it.
+- Inside a guard or an arm's body, `|` is still the bitwise-or operator.
+
+A ladder of `if verb == "assign" { … } else if verb == "close" { … }` tests is the same decision spelled longer. `hale check --warn-string-match` (or `hale verify --warn-string-match`) points out three or more such tests in a row on one string and suggests the `match`.
 
 ### Condition `match` (Scrutinee-less `match`)
 
@@ -133,6 +180,43 @@ return match {
 };
 ```
 
+### `if let` and `let … else`
+
+When one pattern is the whole question, `if let` tests it without writing the `_` arm. It is the two-arm `match` `match e { P -> { … }, _ -> { … } }`, and like `if` it is an expression when it has an `else`:
+
+```hale
+type Side = enum { Buy, Sell, Other(String) };
+
+fn label(side: Side) -> String {
+    if let Side::Other(raw) = side { "other: " + raw } else { "known" }
+}
+
+fn note(side: Side) {
+    if let Side::Other(raw) = side {
+        println("unrecognized side ", raw);
+    }
+}
+```
+
+The pattern is any arm's pattern, alternatives included (`if let E::A(p) | E::B(p) = e { … }`), and its names exist only inside the first block. Links chain with plain ones: `if let … { } else if let … { } else if n > 0 { } else { }`.
+
+`let … else` is the other way round: bind the pattern's names for the rest of the block, or leave. The `else` block runs when the pattern does not match, and it must leave, with `return`, `fail`, `break` or `continue` (or `terminate` / `violate` in a locus):
+
+```hale
+type Outcome = enum { Result(Int), Refused(String) };
+
+fn doubled(o: Outcome) -> Int {
+    let Outcome::Result(index) = o else {
+        return -1;
+    };
+    return index * 2;
+}
+```
+
+- An `else` that can finish is refused, and `hale check` names the path that does. A call finishes as far as this rule goes, even `std::process::exit(1)`: write `return` after it.
+- A plain `let` takes a pattern that always matches, such as a tuple of names or a one-variant enum (`let Meters::M(n) = m;`). One that can fail to match is refused with "add `else { … }`".
+- This is the enum counterpart of `or { return …; }` for a fallible call; Hale has no `Option` type to unwrap.
+
 ## Block Values and Statement Rules
 
 A `{ ... }` block evaluates to its final expression when that expression omits the trailing semicolon `;`:
@@ -146,7 +230,7 @@ let label = {
 
 A block whose final item ends with `;` has no value (`()`) and cannot be used where a value is expected.
 
-A block whose last item is a `match` (no `;` after its closing brace) takes the match's value where the block is used as one — a `let`'s block, an arm of a `match` or `if` expression — so an arm can bind a local and then match on it. A trailing `match` whose every arm `return`s makes the block a diverging one: fine as a match arm, as an `if` arm beside one that yields the value, or as an `or { … }` substitute, but where the block alone must supply a value (a `let`'s block, a call argument, a condition, an operand of `&&`), `hale check` refuses it, as it refuses `let x = { return 1; };`:
+A block whose last item is a `match` (no `;` after its closing brace) takes the match's value where the block is used as one — a `let`'s block, an arm of a `match` or `if` expression, the body of a function that returns a value ([Functions](./functions.md#function-declarations-and-return-values)) — so an arm can bind a local and then match on it. A trailing `match` whose every arm `return`s makes the block a diverging one: fine as a match arm, as an `if` arm beside one that yields the value, or as an `or { … }` substitute, but where the block alone must supply a value (a `let`'s block, a call argument, a condition, an operand of `&&`), `hale check` refuses it, as it refuses `let x = { return 1; };`:
 
 ```hale,fragment
 let label = match kind {

@@ -24,6 +24,7 @@ pub mod alloc_routing;
 pub mod arrangement;
 pub mod alloc_summary;
 pub mod iteration_reclaim;
+pub mod string_append;
 pub mod binding_rows;
 pub mod borrow_lifetime;
 pub mod bare_fallible;
@@ -34,6 +35,7 @@ pub mod bus_graph;
 pub mod bus_inert;
 pub mod callgraph;
 pub mod capability;
+pub mod definite_return;
 pub mod effect_classes;
 pub mod effect_rows;
 pub mod effects;
@@ -42,6 +44,7 @@ pub mod fleet;
 pub mod evidence;
 pub mod frontier;
 pub mod check;
+pub mod deprecations;
 pub mod closure_events;
 pub mod correspondence;
 pub mod handler_routing;
@@ -62,6 +65,7 @@ mod placement_claim;
 pub mod route_loss;
 pub mod api_names;
 mod route_params_copy;
+mod string_if_chain;
 mod param_place_writes;
 pub mod topic_identity;
 pub mod topology;
@@ -83,6 +87,7 @@ pub mod probes;
 pub mod printable;
 pub mod purity;
 pub mod quantitative;
+pub mod raise_conversion;
 pub mod resolve;
 pub mod resolved;
 pub mod roles;
@@ -90,6 +95,7 @@ pub mod hub_expand;
 pub mod proto_gen;
 pub mod surface_doc;
 pub mod observe_expand;
+pub mod optional_fields;
 pub mod rest_routes;
 pub mod rpc_expand;
 pub mod client_expand;
@@ -103,7 +109,7 @@ pub(crate) mod listener_window;
 /// program holds, for a reader outside the crate that needs the node
 /// under a position (the LSP's goto-definition).
 pub mod expr_walk {
-    pub use crate::listener_window::{for_each_expression_root, visit_block, visit_expr, Root, Visited};
+    pub use crate::listener_window::{for_each_expression_root, visit_block, visit_expr, visit_stmt, Root, Visited};
 }
 pub mod unit_graph;
 pub mod units;
@@ -126,6 +132,7 @@ pub mod target;
 pub mod typed_bodies;
 pub mod ty;
 pub mod violate_fallible;
+pub mod wire_carriage;
 pub mod working_set;
 
 /// m94: subject wildcard matching used by the type checker

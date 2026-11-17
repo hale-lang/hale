@@ -11,12 +11,16 @@
 // concatenation operations that show up in app code when
 // glueing JSON output together.
 //
-// Quoting note: v0 `quote` is a placeholder — it wraps the
-// value in `"` without escaping embedded `"` or `\`. App
-// values today (Go identifiers, paths, log strings) don't
-// contain those characters, so the no-op is functionally
-// correct for current consumers. The hook exists so a future
-// escaping pass lands without touching every call site.
+// Quoting: `quote` escapes per RFC 8259 (2026-05-16).
+// `string_field` and `string_value` quote the string they are
+// given; `raw_field` and `raw_value` write JSON the caller
+// encoded already. `field` and `value` write raw too, and are
+// deprecated: v0.34 makes them quote (GH #1943).
+//
+// Separators are `": "` and `", "`, pinned: documents the
+// Builder wrote are kept in journals and matched as text by the
+// programs that read them back, so the spacing is part of the
+// wire (GH #1943 kept it rather than move every stored row).
 /// Streaming JSON output assembly: `obj_open`/`key`/`value`
 /// family appends into an internal buffer, `finish()` returns
 /// the document. No intermediate tree.
@@ -187,10 +191,20 @@ locus __StdJsonBuilder {
         }
     }
 
-    // Inside an object: emit `"name": value`. `value` is the raw
-    // wire bytes (already quoted / formatted). For the common
-    // shapes use the typed helpers below.
+    // Inside an object: emit `"name": value`, `value` the wire
+    // bytes as given. Deprecated (GH #1943): the spec has always
+    // said `field` takes a string, and v0.34 makes it quote and
+    // escape one; a call warns `deprecated:` until then. Write
+    // `raw_field` for JSON already encoded, `string_field` for a
+    // string.
     fn field(name: String, value: String) {
+        self.raw_field(name, value);
+    }
+
+    // Inside an object: emit `"name": value`, `value` the wire
+    // bytes as given: JSON the caller encoded already (a number,
+    // a nested document, a `wrap_array`). Nothing checks it.
+    fn raw_field(name: String, value: String) {
         self.__bump_separator();
         self.buf.append_str(self.quote(name));
         self.buf.append_str(": ");
@@ -201,17 +215,17 @@ locus __StdJsonBuilder {
     // with the right wire shape — string fields are quoted +
     // escaped, ints / bools render directly.
     fn string_field(name: String, value: String) {
-        self.field(name, self.quote(value));
+        self.raw_field(name, self.quote(value));
     }
     fn int_field(name: String, value: Int) {
-        self.field(name, to_string(value));
+        self.raw_field(name, to_string(value));
     }
     fn bool_field(name: String, value: Bool) {
         let s: String = if value { "true" } else { "false" };
-        self.field(name, s);
+        self.raw_field(name, s);
     }
     fn null_field(name: String) {
-        self.field(name, "null");
+        self.raw_field(name, "null");
     }
 
     // Open a nested object as a field on the current object.
@@ -235,19 +249,24 @@ locus __StdJsonBuilder {
         self.ctx = self.ctx + "a";
     }
 
-    // Inside an array: emit one element. Mirror of `field` for
-    // arrays — no name, just the value.
-    fn value(v: String) {
+    // Inside an array: emit one element as given. Deprecated
+    // (GH #1943), as `field` is: v0.34 makes `value` quote its
+    // string. Write `raw_value` for JSON already encoded,
+    // `string_value` for a string.
+    fn value(v: String) { self.raw_value(v); }
+    // Inside an array: emit one element as given, JSON the caller
+    // encoded already. Mirror of `raw_field`.
+    fn raw_value(v: String) {
         self.__bump_separator();
         self.buf.append_str(v);
     }
-    fn string_value(s: String) { self.value(self.quote(s)); }
-    fn int_value(n: Int) { self.value(to_string(n)); }
+    fn string_value(s: String) { self.raw_value(self.quote(s)); }
+    fn int_value(n: Int) { self.raw_value(to_string(n)); }
     fn bool_value(b: Bool) {
         let s: String = if b { "true" } else { "false" };
-        self.value(s);
+        self.raw_value(s);
     }
-    fn null_value() { self.value("null"); }
+    fn null_value() { self.raw_value("null"); }
 
     // Read the accumulated wire bytes. Doesn't reset state, so
     // a Builder is "snapshot the wire so far" — callers that

@@ -458,7 +458,8 @@ fn stack_tables_compute_the_right_values() {
 /// holding a `[0; 1024]` table grew RSS by 1.69 GB before this; the
 /// table is now a frame slot and RSS is flat.
 ///
-/// The bound is read INSIDE the child (`std::process::rss_bytes`), not
+/// The bound is read INSIDE the child (`std::process::rss_bytes`, its
+/// current resident size since GH #1906), not
 /// from the test process — measuring the harness would report cargo's
 /// own footprint and the assertion would mean nothing (GH #810).
 #[test]

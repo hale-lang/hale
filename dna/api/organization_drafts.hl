@@ -46,8 +46,8 @@ locus OrganizationDraftWire {
         let b = std::json::Builder { };
         b.begin_object(); b.begin_array_field("items");
         let mut i = 0;
-        while i < q.count() { b.value(q.row_json(q.at(i))); i = i + 1; }
-        b.end_array(); b.field("basis", q.basis_json()); b.end_object();
+        while i < q.count() { b.raw_value(q.row_json(q.at(i))); i = i + 1; }
+        b.end_array(); b.raw_field("basis", q.basis_json()); b.end_object();
         return b.result();
     }
     fn handle(
@@ -220,13 +220,13 @@ locus OrganizationDraftWire {
         b.string_field("mode", context.principal_mode);
         b.string_field("name", context.principal_name);
         b.end_object();
-        b.field("base", self.base(original, context.source));
+        b.raw_field("base", self.base(original, context.source));
         b.begin_object_field("module");
         b.string_field("path", "dna/org/main.hl");
-        b.field("text", codec.quote_json(text));
+        b.raw_field("text", codec.quote_json(text));
         b.string_field("digest", dna::digest_of(text));
         b.end_object();
-        b.field("projection", projected);
+        b.raw_field("projection", projected);
         b.string_field("validation", if drafting { "valid_draft" } else { "checked_source" });
         b.string_field("publication", "unavailable");
         b.end_object();

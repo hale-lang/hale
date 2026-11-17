@@ -18,7 +18,9 @@
 //! DIAGNOSTIC tests, which assert on compiler output rather than
 //! program behaviour — and, since GH #720, the ByteView SCALING
 //! test, which needs a clock and megabytes of input (the behaviour
-//! of the view lives in `tests/hale/str_byte_view_test.hl`).
+//! of the view lives in `tests/hale/str_byte_view_test.hl`), with the
+//! text `for` sources' (GH #1995, behaviour in
+//! `tests/hale/str_split_sources_test.hl`).
 
 use std::process::Command;
 
@@ -262,6 +264,200 @@ fn a_find_line_scan_scales_linearly() {
     // Quadratic, 4x the text is 16x the time, and 16 MB took seconds.
     assert!(ns16 < 1_000_000_000, "a 16 MB line scan took {ns16} ns: the quadratic shape");
     assert!(ns16 < 10 * ns4.max(100_000), "4x the text took {ns16} ns against {ns4} ns: not linear");
+}
+
+/// GH #1995 S2: `for w in std::str::words(s)` is one scan, linear in the
+/// text, where the hand loop it replaces is quadratic: each turn of
+/// `while len(rest) > 0 { … rest = rest[(sp + 1)..len(rest)]; }` measures
+/// the rest of the text and copies it, so 4x the text is 16x the work
+/// (and the copies stay in the frame's arena until it returns).
+///
+/// Ratios, not absolute times: each form is timed at two sizes 4x apart,
+/// best of several runs, and the source's growth is held under 10x (4x
+/// is linear, 16x quadratic) and under the hand loop's, measured beside
+/// it in the same process. The source runs at 1 and 4 MiB, the hand loop
+/// at 256 KiB and 1 MiB, so neither takes long and the hand loop's
+/// copies stay near 128 MiB; words are 4 KiB for the same reason.
+/// Measured on an M1: the source 0.69 / 2.8 ms (4.0x), the hand loop
+/// 1.0 / 14.7 ms (14.5x).
+#[test]
+fn words_source_scales_linearly_where_the_hand_loop_does_not() {
+    let src = r#"
+        fn hand(s: String) -> Int {
+            let mut rest = s;
+            let mut n = 0;
+            while len(rest) > 0 {
+                let sp = std::str::index_of(rest, " ");
+                let w = if sp < 0 { rest } else { rest[0..sp] };
+                if len(w) > 0 { n = n + 1; }
+                if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
+            }
+            return n;
+        }
+        fn source(s: String) -> Int {
+            let mut n = 0;
+            for w in std::str::words(s) {
+                if len(w) > 0 { n = n + 1; }
+            }
+            return n;
+        }
+        fn best(s: String, by_hand: Bool, rounds: Int, label: String) {
+            let mut best = -1;
+            let mut counted = 0;
+            let mut k = 0;
+            while k < rounds {
+                let t0 = std::time::monotonic_ns();
+                let c = if by_hand { hand(s) } else { source(s) };
+                let ns = std::time::monotonic_ns() - t0;
+                counted = c;
+                if best < 0 || ns < best { best = ns; }
+                k = k + 1;
+            }
+            println(label, " count=", counted, " ns=", best);
+        }
+        fn main() {
+            let word = std::str::repeat("x", 4095) + " ";
+            let quarter = std::str::repeat(word, 64);
+            let one = std::str::repeat(word, 256);
+            let four = std::str::repeat(word, 1024);
+            best(one, false, 9, "source1m");
+            best(four, false, 9, "source4m");
+            best(quarter, true, 5, "hand256k");
+            best(one, true, 5, "hand1m");
+        }
+    "#;
+    let (stdout, status) = build_and_run("words_source_scaling", src);
+    assert!(status.success(), "build/run failed: {:?}", stdout);
+    let read = |label: &str, key: &str| -> i64 {
+        let line = stdout.lines().find(|l| l.starts_with(label)).unwrap_or_else(|| panic!("no {label} line in:\n{stdout}"));
+        line.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no {key} in {line:?}"))
+    };
+    assert_eq!(read("source1m", "count="), 256, "every word of 1 MiB");
+    assert_eq!(read("source4m", "count="), 1024, "every word of 4 MiB");
+    assert_eq!(read("hand256k", "count="), 64, "the hand loop's words of 256 KiB");
+    assert_eq!(read("hand1m", "count="), 256, "the hand loop's words of 1 MiB");
+    let (s1, s4) = (read("source1m", "ns=").max(1), read("source4m", "ns=").max(1));
+    let (h1, h4) = (read("hand256k", "ns=").max(1), read("hand1m", "ns=").max(1));
+    let source_growth = s4 as f64 / s1.max(100_000) as f64;
+    let hand_growth = h4 as f64 / h1 as f64;
+    println!("source 1 MiB {s1} ns, 4 MiB {s4} ns ({source_growth:.1}x); hand 256 KiB {h1} ns, 1 MiB {h4} ns ({hand_growth:.1}x)");
+    assert!(
+        source_growth < 10.0,
+        "4x the text took {source_growth:.1}x the time through `words` ({s1} -> {s4} ns): not linear"
+    );
+    assert!(
+        source_growth < hand_growth,
+        "`words` grew {source_growth:.1}x over 4x the text, the quadratic hand loop {hand_growth:.1}x \
+         ({h1} -> {h4} ns): the source should grow slower"
+    );
+    assert!(s1 < h4, "`words` over 1 MiB took {s1} ns, the hand loop {h4} ns: the source should be faster");
+}
+
+/// GH #1947: `len` and slicing on a String local or parameter measure its
+/// text once per value it holds, so the byte loop `while i < len(s) {
+/// s[i..(i + 1)] … }` and the build loop `while len(out) < n { out += …
+/// }` are linear. Both were quadratic: the condition's `strlen` and the
+/// slice's clamp walked the whole text on every iteration (13.2 s on
+/// 1 MiB, spec/stdlib.md § Linear byte scanning), and so did `len(out)`
+/// over a text the appends had grown.
+///
+/// Ratios, not absolute times, as `words_source_scales_linearly…` above:
+/// each loop runs at two sizes 4x apart, best of several runs, and its
+/// growth is held under 10x (4x is linear, 16x quadratic) and under the
+/// growth of a control measured beside it in the same process: the same
+/// byte loop over a String read from a record's field on every use, which
+/// keeps no length and still pays the walk. A run past half a second ends
+/// the repeats, so a regression costs seconds, not minutes. Measured on an
+/// M1: the byte loop 1.3 / 5.2 ms at 128 / 512 KiB (4.0x), the build loop
+/// 0.6 / 2.4 ms to 256 KiB / 1 MiB (4.0x), the control 9.5 / 150 ms at
+/// 16 / 64 KiB (15.8x).
+#[test]
+fn len_and_slice_of_a_local_scale_linearly() {
+    let src = r#"
+        type Held { text: String; }
+        fn scan(s: String) -> Int {
+            let mut count = 0;
+            let mut i = 0;
+            while i < len(s) {
+                let c = s[i..(i + 1)];
+                if c == "e" { count = count + 1; }
+                i = i + 1;
+            }
+            return count;
+        }
+        fn scan_field(h: Held) -> Int {
+            let mut count = 0;
+            let mut i = 0;
+            while i < len(h.text) {
+                let c = h.text[i..(i + 1)];
+                if c == "e" { count = count + 1; }
+                i = i + 1;
+            }
+            return count;
+        }
+        fn grow(n: Int) -> Int {
+            let mut out = "";
+            while len(out) < n {
+                out += "abcdefgh";
+            }
+            return len(out);
+        }
+        fn best(kind: Int, s: String, n: Int, label: String) {
+            let mut best = -1;
+            let mut got = 0;
+            let mut k = 0;
+            while k < 7 {
+                let t0 = std::time::monotonic_ns();
+                let c = if kind == 0 { scan(s) } else if kind == 1 { scan_field(Held { text: s }) } else { grow(n) };
+                let ns = std::time::monotonic_ns() - t0;
+                got = c;
+                if best < 0 || ns < best { best = ns; }
+                if ns > 500000000 { k = 7; }
+                k = k + 1;
+            }
+            println(label, " got=", got, " ns=", best);
+        }
+        fn main() {
+            best(0, std::str::repeat("abcdefgh", 16384), 0, "scan128k");
+            best(0, std::str::repeat("abcdefgh", 65536), 0, "scan512k");
+            best(2, "", 262144, "grow256k");
+            best(2, "", 1048576, "grow1m");
+            best(1, std::str::repeat("abcdefgh", 2048), 0, "field16k");
+            best(1, std::str::repeat("abcdefgh", 8192), 0, "field64k");
+        }
+    "#;
+    let (stdout, status) = build_and_run("len_slice_scaling", src);
+    assert!(status.success(), "build/run failed: {:?}", stdout);
+    let read = |label: &str, key: &str| -> i64 {
+        let line = stdout.lines().find(|l| l.starts_with(label)).unwrap_or_else(|| panic!("no {label} line in:\n{stdout}"));
+        line.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no {key} in {line:?}"))
+    };
+    assert_eq!(read("scan128k", "got="), 16384, "every byte of 128 KiB was read");
+    assert_eq!(read("scan512k", "got="), 65536, "every byte of 512 KiB was read");
+    assert_eq!(read("grow256k", "got="), 262144, "the build stopped at 256 KiB");
+    assert_eq!(read("grow1m", "got="), 1048576, "the build stopped at 1 MiB");
+    assert_eq!(read("field16k", "got="), 2048, "the control read every byte of 16 KiB");
+    assert_eq!(read("field64k", "got="), 8192, "the control read every byte of 64 KiB");
+    let growth = |small: &str, large: &str| {
+        let (a, b) = (read(small, "ns=").max(1), read(large, "ns=").max(1));
+        (a, b, b as f64 / a.max(100_000) as f64)
+    };
+    let (s1, s4, scan_growth) = growth("scan128k", "scan512k");
+    let (g1, g4, grow_growth) = growth("grow256k", "grow1m");
+    let (f1, f4, field_growth) = growth("field16k", "field64k");
+    println!(
+        "scan {s1} -> {s4} ns ({scan_growth:.1}x); grow {g1} -> {g4} ns ({grow_growth:.1}x); \
+         control {f1} -> {f4} ns ({field_growth:.1}x)"
+    );
+    assert!(scan_growth < 10.0, "4x the text took {scan_growth:.1}x the time in the byte loop ({s1} -> {s4} ns): not linear");
+    assert!(grow_growth < 10.0, "4x the text took {grow_growth:.1}x the time in the build loop ({g1} -> {g4} ns): not linear");
+    assert!(
+        scan_growth < field_growth && grow_growth < field_growth,
+        "the byte loop grew {scan_growth:.1}x and the build loop {grow_growth:.1}x, the control that measures on \
+         every use {field_growth:.1}x ({f1} -> {f4} ns): a local's length should be measured once"
+    );
 }
 
 /// `cp_at` / `cp_size` at an offset past the end of a String answer -1 and

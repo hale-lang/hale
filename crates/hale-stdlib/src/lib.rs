@@ -288,6 +288,14 @@ pub const AP_SOURCE: &str = concat!(
     // integers that can fail, over native primitives. Last, so no other
     // file's spans move.
     include_str!("../hl/wide.hl"),
+    "\n",
+    // std::time::parse_rfc3339 (GH #1948): an offset-aware parse over
+    // `parse_time`.
+    include_str!("../hl/time_rfc3339.hl"),
+    "\n",
+    // std::str's splits and trims (GH #1995 S3): free fns over the
+    // ByteView primitives. Last, so no other file's spans move.
+    include_str!("../hl/str_helpers.hl"),
 );
 
 /// `std::law`: the standard constitutions, loaded only when a program
@@ -342,6 +350,8 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("crypto.hl", include_str!("../hl/crypto.hl")),
     ("probes.hl", include_str!("../hl/probes.hl")),
     ("wide.hl", include_str!("../hl/wide.hl")),
+    ("time_rfc3339.hl", include_str!("../hl/time_rfc3339.hl")),
+    ("str_helpers.hl", include_str!("../hl/str_helpers.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -474,6 +484,8 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "crypto", "secp256k1_sign"], "__std_crypto_secp256k1_sign"),
     (&["std", "crypto", "Sha256"], "__StdCryptoSha256"),
     // std::hex (hex.hl): base16 text of bytes.
+    // std::time (time_rfc3339.hl): the offset-aware RFC 3339 parse.
+    (&["std", "time", "parse_rfc3339"], "__std_time_parse_rfc3339"),
     (&["std", "hex", "decode"], "__std_hex_decode"),
     (&["std", "hex", "digit"], "__std_hex_digit"),
     (&["std", "hex", "encode"], "__std_hex_encode"),
@@ -656,6 +668,17 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // bindings — useful when a project also has its own
     // local error types.
     (&["std", "str", "ParseError"], "ParseError"),
+    // GH #1945: the other stdlib error types, in the spellings the
+    // checker's shadowing law suggests (`resolve.rs`,
+    // `check_stdlib_error_shadowing`), resolve to the same bare builtins
+    // the stdlib's fallible fns fail with, so `fallible(std::crypto::
+    // CryptoError)` builds wherever `fallible(CryptoError)` does. Before,
+    // the check admitted the path and the build refused it, unlocated.
+    (&["std", "io", "IoError"], "IoError"),
+    (&["std", "index", "IndexError"], "IndexError"),
+    (&["std", "form", "hashmap", "KeyError"], "KeyError"),
+    (&["std", "form", "ring_buffer", "EmptyError"], "EmptyError"),
+    (&["std", "crypto", "CryptoError"], "CryptoError"),
     // GH #720 — the byte-view surface. `ByteView` is the struct in
     // str_view.hl; the three fns are its constructor and accessors,
     // routed to their bare Hale implementations like the
@@ -667,6 +690,16 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "str", "find"], "__str_find"),
     (&["std", "str", "view_cp_at"], "__str_view_cp_at"),
     (&["std", "str", "view_cp_size"], "__str_view_cp_size"),
+    // str_helpers.hl (GH #1995 S3): the splits and trims.
+    (&["std", "str", "cut"], "__str_cut"),
+    (&["std", "str", "cut_last"], "__str_cut_last"),
+    (&["std", "str", "eq_ignore_case"], "__str_eq_ignore_case"),
+    (&["std", "str", "last_index_of"], "__str_last_index_of"),
+    (&["std", "str", "parse_bool"], "__str_parse_bool"),
+    (&["std", "str", "trim_end"], "__str_trim_end"),
+    (&["std", "str", "trim_prefix"], "__str_trim_prefix"),
+    (&["std", "str", "trim_start"], "__str_trim_start"),
+    (&["std", "str", "trim_suffix"], "__str_trim_suffix"),
     (&["std", "tagged", "Accumulator"], "__StdTaggedAccumulator"),
     (&["std", "text", "Sink"], "__StdTextSink"),
     (&["std", "text", "StdoutSink"], "__StdTextStdoutSink"),

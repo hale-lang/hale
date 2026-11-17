@@ -1,6 +1,8 @@
 # Seams
 
-A **seam** is a declarative pipeline inside a locus that connects a wire decoder, a domain handler locus, and an encoder over [set types](../everyday/records.md#set-types-a--b--c) (`type Inbound = A | B;`). Instead of writing manual `match` dispatch glue with catch-all `_` arms, you write a single `->` chain and the compiler generates statically inlined dispatch while verifying that every message variant and error type is handled by exactly one target.
+A **seam** is a declarative pipeline inside a locus: a chain of hops, each taking what the one before it produces. A hop is one method, or a whole locus: when a hop produces a [set type](../everyday/records.md#set-types-a--b--c) (`type Inbound = A | B;`), the next hop can be a locus, and the compiler sends each member of the set to the one method that takes it. Instead of writing `match` dispatch glue with catch-all `_` arms, you write a single `->` chain, and the compiler generates statically inlined dispatch while verifying that every member and every error type reaches exactly one target.
+
+A seam is not tied to any protocol: a classifier feeding per-kind handlers, a stage that splits a producer's set across consumers, or a decoder, a domain handler and an encoder are all seams. The example below is that last, most common shape, a protocol edge; the decoder and encoder are ordinary hops like any other.
 
 ```hale,fragment
 type NewOrder  { id: Int; qty: Int; }
@@ -16,7 +18,7 @@ locus Wire {
     fn decode(frame: String) -> Inbound fallible(WireError) {
         if frame == "cancel" { return Cancel { id: 1 }; }
         if std::str::starts_with(frame, "new ") {
-            let qty = std::str::parse_int(frame[4..len(frame)]) or { fail WireError { at: 4 }; };
+            let qty = std::str::parse_int(frame[4..]) or { fail WireError { at: 4 }; };
             return NewOrder { id: qty * 10, qty: qty };
         }
         fail WireError { at: 0 };
@@ -149,11 +151,11 @@ locus Gateway {
 
 - **Loop lifecycle**: While `!self.draining` is true, the generated `run()` pulls one item from `self.feed.next()` and executes the chain. When the source fails (`fail Ended`), the loop exits cleanly. (`or end;` and `or violate` apply to failures in hops *after* the source.)
 - **Mutually exclusive with `run()`**: Because a closed seam *is* the locus's `run()` phase, declaring both a closed `seam { ... }` and an explicit `run()` on the same locus is a compile error.
-- **Flat per-frame memory**: The compiler extracts a single turn of the closed seam (source pull, decode, dispatch, encode, sink write) into a helper method called inside the `run()` loop. Any scratch memory allocated while processing a frame is reclaimed at the end of that frame, keeping memory usage flat across long-running streams.
+- **Flat per-frame memory**: The compiler extracts a single turn of the closed seam (source pull, every hop, sink write) into a helper method called inside the `run()` loop. Any scratch memory allocated while processing a frame is reclaimed at the end of that frame, keeping memory usage flat across long-running streams.
 
 ## Single-Tower Constraints & API Integration
 
-Every hop in a seam is compiled as a direct, statically inlined call within a single locus tower: each variant retains its concrete static type from the decoder through to the encoder without boxing into an unrequested runtime union.
+Every hop in a seam is compiled as a direct, statically inlined call within a single locus tower: each variant keeps its concrete static type from the hop that produces it to the hop that takes it, without boxing into an unrequested runtime union.
 
 To preserve static single-thread lowering, `hale check` rejects two hop targets:
 

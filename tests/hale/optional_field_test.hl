@@ -1,0 +1,146 @@
+// tests/hale/optional_field_test.hl — optional fields, `x?: T` (GH #1951
+// item 3, spec/types.md § Optional fields, F.52). The mark declares `x` and a
+// real presence flag `has_x: Bool` beside it (`clear_x: Bool` too for
+// `clearable`), the presence pair or triple a record could always spell by
+// hand, so the JSON codec reads and writes it as it reads that pair
+// (spec/api.md § Codecs). What the mark adds: a write of `x` sets `has_x`
+// and clears `clear_x` (a literal that spells it, an assignment through any
+// path, a `push` or `set` into an optional list), and a literal that leaves
+// `x` out builds it absent, `x` at its default or its type's zero.
+
+type Inner { n: Int; label: String; }
+type Ticker {
+    symbol: String;
+    last?: Decimal<8>;
+    raw?: std::json::Value;
+    expires_at?: Time clearable;
+    note?: String clearable;
+    count?: Int = 7;
+    inner?: Inner;
+    tags?: bounded[String; 4];
+}
+type Holder { t: Ticker; }
+
+locus Desk {
+    params { t: Ticker = Ticker { symbol: "d" }; }
+    fn mark() {
+        self.t.count = 3;
+        push(self.t.tags, "fresh") or { };
+    }
+    fn seen() -> String {
+        return f"{self.t.has_count} {self.t.count} {self.t.has_tags} {count(self.t.tags)}";
+    }
+}
+
+fn read(text: String) -> Ticker {
+    let t = Ticker::api_decode(text) or {
+        std::test::assert(false, text + ": " + err.kind + " " + err.field);
+        return Ticker { symbol: "?" };
+    };
+    return t;
+}
+
+fn main() {
+    // a literal that leaves a field out builds it absent, at its default or zero
+    let bare = Ticker { symbol: "a" };
+    std::test::assert(!bare.has_last, "left out is absent");
+    std::test::assert(!bare.has_count, "a defaulted field left out is absent");
+    std::test::assert_eq_int(bare.count, 7, "an absent field holds its default");
+    std::test::assert_eq_int(bare.inner.n, 0, "an absent record holds its zero");
+    std::test::assert_eq_str(bare.inner.label, "", "a zero's string is empty");
+    std::test::assert(
+        !bare.has_expires_at && !bare.clear_expires_at,
+        "a triple left out is neither",
+    );
+    std::test::assert_eq_str(
+        Ticker::api_encode(bare),
+        "{\"symbol\":\"a\"}",
+        "an absent field is no key",
+    );
+
+    // a literal that spells a field sets its flag
+    let lit = Ticker { symbol: "b", last: 1.5d, count: 7 };
+    std::test::assert(lit.has_last, "a spelled field is present");
+    std::test::assert(lit.has_count, "a spelled field is present even at its default");
+    std::test::assert(!lit.has_note, "an unspelled neighbour stays absent");
+    std::test::assert_eq_str(
+        Ticker::api_encode(lit),
+        "{\"symbol\":\"b\",\"last\":1.5,\"count\":7}",
+        "present fields are written",
+    );
+    // the flag spelled beside it is what the literal says
+    let spelled = Ticker { symbol: "c", last: 2d, has_last: false };
+    std::test::assert(!spelled.has_last, "a spelled flag wins");
+
+    // an assignment sets the flag, through any path
+    let mut t = Ticker { symbol: "e" };
+    t.last = 3.25d;
+    std::test::assert(t.has_last, "an assignment sets the flag");
+    t.inner.n = 4;
+    std::test::assert(t.has_inner, "writing a part of a field writes the field");
+    let mut h = Holder { t: Ticker { symbol: "f" } };
+    h.t.note = "n";
+    std::test::assert(h.t.has_note, "a nested path sets the flag");
+    push(h.t.tags, "x") or { };
+    std::test::assert(h.t.has_tags, "a push into an optional list sets its flag");
+    // writing a value after a clear: the value wins
+    h.t.clear_note = true;
+    h.t.note = "m";
+    std::test::assert(h.t.has_note && !h.t.clear_note, "a write clears the clear flag");
+    // the flag is a real field: written by hand, it says what the program says
+    t.has_last = false;
+    std::test::assert_eq_str(
+        Ticker::api_encode(t),
+        "{\"symbol\":\"e\",\"inner\":{\"n\":4,\"label\":\"\"}}",
+        "an unset flag omits",
+    );
+
+    // a locus's record field
+    let desk = Desk { };
+    std::test::assert_eq_str(desk.seen(), "false 7 false 0", "a locus's field starts absent");
+    desk.mark();
+    std::test::assert_eq_str(desk.seen(), "true 3 true 1", "a method's writes set the flags");
+
+    // decoding: presence sets the flag, absence and `null` leave it
+    let sent = read("{\"symbol\":\"g\",\"last\":\"9.5\",\"tags\":[\"a\",\"b\"]}");
+    std::test::assert(sent.has_last && sent.has_tags, "a sent key sets its flag");
+    std::test::assert(!sent.has_count, "a left-out key leaves its flag");
+    std::test::assert_eq_int(sent.count, 7, "a left-out key takes its default");
+    std::test::assert_eq_str(
+        Ticker::api_encode(sent),
+        "{\"symbol\":\"g\",\"last\":9.5,\"tags\":[\"a\",\"b\"]}",
+        "a round trip omits what was absent",
+    );
+    let nulled = read("{\"symbol\":\"h\",\"last\":null,\"raw\":null}");
+    std::test::assert(!nulled.has_last, "a null is an absence");
+    std::test::assert(!nulled.has_raw, "a JSON value's null is its absence");
+
+    // a JSON value holding null is never written as null
+    let mut v = Ticker { symbol: "i" };
+    v.raw = std::json::Value::null();
+    std::test::assert(v.has_raw, "an assigned null is present in the program");
+    std::test::assert_eq_str(
+        Ticker::api_encode(v),
+        "{\"symbol\":\"i\"}",
+        "a JSON value's null is written as absent",
+    );
+    let kept = read("{\"symbol\":\"j\",\"raw\":{\"a\":[1,2]}}");
+    std::test::assert(kept.has_raw, "a JSON value sent is present");
+    std::test::assert_eq_str(
+        Ticker::api_encode(kept),
+        "{\"symbol\":\"j\",\"raw\":{\"a\":[1,2]}}",
+        "its text crosses as sent",
+    );
+
+    // a clearable field: leave out keeps, null clears, a value sets
+    let patch = read("{\"symbol\":\"k\",\"note\":null,\"expires_at\":\"2026-10-12T03:04:05Z\"}");
+    std::test::assert(patch.clear_note && !patch.has_note, "a null clears");
+    std::test::assert(patch.has_expires_at && !patch.clear_expires_at, "a value sets");
+    std::test::assert_eq_str(
+        Ticker::api_encode(patch),
+        "{\"symbol\":\"k\",\"expires_at\":\"2026-10-12T03:04:05Z\",\"note\":null}",
+        "a PATCH round trip keeps null as null",
+    );
+    let keep = read("{\"symbol\":\"l\"}");
+    std::test::assert(!keep.clear_note && !keep.has_note, "left out is neither");
+}

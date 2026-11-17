@@ -1979,7 +1979,7 @@ else the call made is reclaimed at return. Every other free fn
 keeps the caller-arena routing.
 
 The case it closes: a helper that walks a String by re-slicing a
-loop-carried local (`rest = rest[(nl + 1)..len(rest)]`) makes one
+loop-carried local (`rest = rest[(nl + 1)..]`) makes one
 suffix copy per iteration. In the caller's arena those copies
 lived until the caller's scope ended, so a method asking such a
 helper for each line of an N-line text in turn held O(N³) bytes

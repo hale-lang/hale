@@ -1,0 +1,257 @@
+// tests/hale/enum_wire_names_test.hl — an enum variant's `json:` tag
+// (GH #1951 item 5, spec/api.md § Codecs). ``Sell `json:"sell"` `` renames
+// the variant on the JSON wire: a payload-free one is written and read as
+// the new name, one with values is the key of the object holding them, and
+// the declared name is no longer read. ``Other(String) `json:",other"` ``
+// is the enum's lossless catch-all: a string no payload-free variant names
+// decodes to it holding the string, and it writes the string back. A
+// payload-free catch-all is lossy: it keeps only that the string was
+// unknown, and writes its own wire name. Both codec families carry the tags:
+// `T::api_decode` / `T::api_encode` and a tagged record's `T::from_json` /
+// `T::to_json`.
+
+type Side = enum { Buy `json:"buy"`, Sell `json:"sell"` };
+// lossy, and renamed itself
+type Kind = enum { Limit `json:"limit"`, Market `json:"market"`, Unknown `json:"unknown,other"` };
+// lossless; an untagged variant keeps its name
+type Venue = enum { Spot `json:"spot"`, Margin, Other(String) `json:",other"` };
+// renamed variants with values, beside a renamed payload-free one
+type Event = enum {
+    Fill(Int) `json:"fill"`,
+    Cancel `json:"cancel"`,
+    Note(String, Int) `json:"note"`
+};
+// a catch-all in an enum with values: a string only
+type Signal = enum { Quiet `json:"quiet"`, Level(Int) `json:"level"`, Unheard `json:",other"` };
+
+type Order {
+    side: Side `json:"side"`;
+    kind: Kind;
+    venue: Venue;
+    ev: Event;
+}
+
+fn side_name(s: Side) -> String {
+    match s {
+        Side::Buy -> { return "Buy"; },
+        Side::Sell -> { return "Sell"; },
+    }
+}
+
+fn kind_name(k: Kind) -> String {
+    match k {
+        Kind::Limit -> { return "Limit"; },
+        Kind::Market -> { return "Market"; },
+        Kind::Unknown -> { return "Unknown"; },
+    }
+}
+
+fn venue_name(v: Venue) -> String {
+    match v {
+        Venue::Spot -> { return "Spot"; },
+        Venue::Margin -> { return "Margin"; },
+        Venue::Other(s) -> { return "Other(" + s + ")"; },
+    }
+}
+
+fn event_name(e: Event) -> String {
+    match e {
+        Event::Fill(n) -> { return "Fill(" + to_string(n) + ")"; },
+        Event::Cancel -> { return "Cancel"; },
+        Event::Note(s, n) -> { return "Note(" + s + ", " + to_string(n) + ")"; },
+    }
+}
+
+fn signal_name(s: Signal) -> String {
+    match s {
+        Signal::Quiet -> { return "Quiet"; },
+        Signal::Level(n) -> { return "Level(" + to_string(n) + ")"; },
+        Signal::Unheard -> { return "Unheard"; },
+    }
+}
+
+fn side_of(text: String) -> String {
+    let s = Side::api_decode(text) or { return err.kind + ": " + err.field; };
+    return side_name(s);
+}
+
+fn kind_of(text: String) -> String {
+    let k = Kind::api_decode(text) or { return err.kind + ": " + err.field; };
+    return kind_name(k);
+}
+
+fn venue_of(text: String) -> String {
+    let v = Venue::api_decode(text) or { return err.kind + ": " + err.field; };
+    return venue_name(v);
+}
+
+fn event_of(text: String) -> String {
+    let e = Event::api_decode(text) or { return err.kind + ": " + err.field; };
+    return event_name(e);
+}
+
+fn signal_of(text: String) -> String {
+    let s = Signal::api_decode(text) or { return err.kind + ": " + err.field; };
+    return signal_name(s);
+}
+
+fn main() {
+    // a rename: written and read as the wire name, the declared name refused
+    std::test::assert_eq_str(
+        Side::api_encode(Side::Sell),
+        "\"sell\"",
+        "a renamed variant is written as its wire name",
+    );
+    std::test::assert_eq_str(side_of("\"buy\""), "Buy", "and read as it");
+    std::test::assert_eq_str(
+        side_of("\"Buy\""),
+        "wrong_type: payload",
+        "the declared name is no wire name",
+    );
+    std::test::assert_eq_str(
+        side_of("\"hold\""),
+        "wrong_type: payload",
+        "an unknown name, with no catch-all",
+    );
+
+    // a lossy catch-all: any other string is it, and it writes its own name
+    std::test::assert_eq_str(kind_of("\"limit\""), "Limit", "a known name");
+    std::test::assert_eq_str(
+        kind_of("\"stop\""),
+        "Unknown",
+        "an unknown name is the lossy catch-all",
+    );
+    std::test::assert_eq_str(kind_of("\"unknown\""), "Unknown", "its own wire name too");
+    std::test::assert_eq_str(
+        Kind::api_encode(Kind::Unknown),
+        "\"unknown\"",
+        "the lossy catch-all writes its wire name",
+    );
+    std::test::assert_eq_str(
+        kind_of("{\"stop\":1}"),
+        "wrong_type: payload",
+        "an object is no string",
+    );
+
+    // a lossless catch-all: the string kept, and written back
+    std::test::assert_eq_str(venue_of("\"spot\""), "Spot", "a renamed name");
+    std::test::assert_eq_str(
+        venue_of("\"Margin\""),
+        "Margin",
+        "an untagged variant keeps its name",
+    );
+    std::test::assert_eq_str(venue_of("\"dark\""), "Other(dark)", "an unknown name, held");
+    std::test::assert_eq_str(
+        venue_of("\"Spot\""),
+        "Other(Spot)",
+        "the declared name of a renamed variant is unknown",
+    );
+    std::test::assert_eq_str(venue_of("\"a\\\"b\""), "Other(a\"b)", "an escaped string, unescaped");
+    std::test::assert_eq_str(
+        Venue::api_encode(Venue::Other("dark")),
+        "\"dark\"",
+        "the lossless catch-all writes its string",
+    );
+    std::test::assert_eq_str(
+        Venue::api_encode(Venue::Other("a\"b")),
+        "\"a\\\"b\"",
+        "escaped as any string",
+    );
+    std::test::assert_eq_str(
+        venue_of("{\"Other\":\"x\"}"),
+        "wrong_type: payload",
+        "the catch-all is no object key",
+    );
+    // normalization: a string a variant names re-reads as that variant
+    let norm = Venue::api_encode(Venue::Other("spot"));
+    std::test::assert_eq_str(norm, "\"spot\"", "Other(\"spot\") writes spot");
+    std::test::assert_eq_str(venue_of(norm), "Spot", "which re-reads as Spot");
+
+    // renamed variants with values: the object's key
+    std::test::assert_eq_str(
+        Event::api_encode(Event::Fill(3)),
+        "{\"fill\":3}",
+        "one value, keyed by the wire name",
+    );
+    std::test::assert_eq_str(
+        Event::api_encode(Event::Note("x", 2)),
+        "{\"note\":[\"x\",2]}",
+        "several values",
+    );
+    std::test::assert_eq_str(
+        Event::api_encode(Event::Cancel),
+        "\"cancel\"",
+        "a payload-free one beside them",
+    );
+    std::test::assert_eq_str(event_of("{\"fill\":5}"), "Fill(5)", "read by the wire name");
+    std::test::assert_eq_str(event_of("{\"note\":[\"y\",1]}"), "Note(y, 1)", "several values read");
+    std::test::assert_eq_str(event_of("\"cancel\""), "Cancel", "the payload-free one read");
+    std::test::assert_eq_str(
+        event_of("{\"Fill\":5}"),
+        "wrong_type: payload",
+        "the declared name is no key",
+    );
+
+    // a catch-all among variants with values takes strings only
+    std::test::assert_eq_str(signal_of("\"quiet\""), "Quiet", "a known name");
+    std::test::assert_eq_str(signal_of("\"loud\""), "Unheard", "an unknown string");
+    std::test::assert_eq_str(
+        signal_of("\"level\""),
+        "Unheard",
+        "a payload variant's name sent bare is unknown",
+    );
+    std::test::assert_eq_str(signal_of("{\"level\":4}"), "Level(4)", "its object read");
+    std::test::assert_eq_str(
+        signal_of("{\"loud\":4}"),
+        "wrong_type: payload",
+        "an unknown object key stays refused",
+    );
+    std::test::assert_eq_str(
+        Signal::api_encode(Signal::Unheard),
+        "\"Unheard\"",
+        "an unrenamed lossy catch-all writes its name",
+    );
+
+    // both codec families, through a record's fields
+    let text = "{\"side\":\"sell\",\"kind\":\"market\",\"venue\":\"dark\",\"ev\":{\"fill\":7}}";
+    let a = Order::api_decode(text) or {
+        std::test::assert(false, "api_decode: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_str(side_name(a.side), "Sell", "api_decode: the field's rename");
+    std::test::assert_eq_str(
+        venue_name(a.venue),
+        "Other(dark)",
+        "api_decode: the field's catch-all",
+    );
+    std::test::assert_eq_str(Order::api_encode(a), text, "api_encode writes it back");
+    let j = Order::from_json(text) or {
+        std::test::assert(false, "from_json: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_str(event_name(j.ev), "Fill(7)", "from_json: a payload variant's rename");
+    std::test::assert_eq_str(kind_name(j.kind), "Market", "from_json: a lossy enum's known name");
+    std::test::assert_eq_str(Order::to_json(j), text, "to_json writes it back");
+    let lossy = Order::from_json(
+        "{\"side\":\"buy\",\"kind\":\"iceberg\",\"venue\":\"spot\",\"ev\":\"cancel\"}",
+    ) or {
+        std::test::assert(false, "from_json, lossy: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_str(
+        Order::to_json(lossy),
+        "{\"side\":\"buy\",\"kind\":\"unknown\",\"venue\":\"spot\",\"ev\":\"cancel\"}",
+        "to_json: the lossy catch-all writes its own name",
+    );
+    let bad = Order::from_json(
+        "{\"side\":\"Sell\",\"kind\":\"limit\",\"venue\":\"spot\",\"ev\":\"cancel\"}",
+    ) or {
+        std::test::assert_eq_str(
+            err.kind + ": " + err.field,
+            "wrong_type: side",
+            "from_json: the declared name refused",
+        );
+        return;
+    };
+    std::test::assert(false, "from_json read a declared name: " + side_name(bad.side));
+}

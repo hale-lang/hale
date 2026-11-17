@@ -38,7 +38,7 @@
 use std::collections::HashSet;
 
 use crate::ast::{
-    Block, ElseBranch, Expr, Ident, IfStmt, Literal, LocusMember, MatchArmBody,
+    Block, ElseBranch, EnumVariant, Expr, Ident, IfStmt, Literal, LocusMember, MatchArmBody,
     MatchStmt, OrDisposition, PrimType, Program, Stmt, TopDecl, TypeDeclBody,
     TypeExpr,
 };
@@ -253,6 +253,51 @@ pub fn uncarried_wire_maps(programs: &[&Program]) -> Vec<(String, String, Span, 
         }
     }
     out
+}
+
+/// The value of a wire map of `t` keyed by its field `k` (`bounded[T; N]
+/// indexed_by k`, spec/api.md § Codecs): the record without its key, the
+/// key's presence flag and its clear flag, which are the map's. Its codecs
+/// are `<prefix><T>__by_<k>`, the decoder taking the map's key as `__key`.
+fn lifted_value_type(t: &JsonType, k: &str) -> JsonType {
+    let flag = t
+        .fields
+        .iter()
+        .find(|f| matches!(&f.presence, Presence::Flag(of) if of == k))
+        .map(|f| f.name.clone());
+    let clear = clear_flag(t, k).map(str::to_string);
+    JsonType {
+        name: t.name.clone(),
+        fields: t
+            .fields
+            .iter()
+            .filter(|f| f.name != k && Some(&f.name) != flag.as_ref() && Some(&f.name) != clear.as_ref())
+            .cloned()
+            .collect(),
+        lifted: Some(k.to_string()),
+        lifted_flag: flag,
+        lifted_clear: clear,
+        // a positional record's map value is its fields but the key, in
+        // order
+        positional: t.positional.clone(),
+    }
+}
+
+/// The (record, key) pairs the wire maps of `types` are keyed by, each
+/// once, in the order first met: the records whose `__by_<key>` codecs
+/// the maps' reads and writes call. A map of values names no such codec.
+fn wire_map_keys(types: &[JsonType]) -> Vec<(String, String)> {
+    let mut lifted: Vec<(String, String)> = Vec::new();
+    for t in types {
+        for f in &t.fields {
+            if let FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: None, .. } = &f.kind {
+                if !lifted.contains(&(tn.clone(), k.clone())) {
+                    lifted.push((tn.clone(), k.clone()));
+                }
+            }
+        }
+    }
+    lifted
 }
 
 /// The record a map of values crosses protobuf as, an entry of its
@@ -640,6 +685,54 @@ fn tag_hex(tag: &Option<String>) -> bool {
     json_tag_options(tag.as_deref()).iter().any(|o| o == "hex")
 }
 
+/// GH #1951 item 5: a variant's name on the JSON wire: its `json:` tag's
+/// key (``Sell `json:"sell"` `` crosses as `"sell"`), else its declared
+/// name. A payload-free variant is written as it; one with values is the
+/// key of the object holding them (spec/api.md § Codecs).
+pub fn variant_wire_name(v: &EnumVariant) -> String {
+    json_tag_key(v.tag.as_deref()).unwrap_or_else(|| v.name.name.clone())
+}
+
+/// Whether a variant's `json:` tag makes it its enum's catch-all
+/// (``Other(String) `json:",other"` ``): a JSON string that names no
+/// payload-free variant decodes to it.
+pub fn variant_is_other(v: &EnumVariant) -> bool {
+    json_tag_options(v.tag.as_deref()).iter().any(|o| o == "other")
+}
+
+/// An enum's catch-all, the first variant tagged `other` (the check refuses
+/// a second), and whether it is lossless: it holds the string it caught
+/// (its one value, a `String`, the check refuses any other), where a
+/// payload-free one keeps no more than that the string was unknown.
+pub fn enum_other(vs: &[EnumVariant]) -> Option<(&EnumVariant, bool)> {
+    vs.iter().find(|v| variant_is_other(v)).map(|v| (v, !v.fields.is_empty()))
+}
+
+/// A string as the body of a Hale string literal (the codecs splice wire
+/// names into generated source): a backslash doubled, a quote escaped.
+pub(crate) fn hale_str(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// A string as the body of a Hale string literal holding its JSON token:
+/// `sell` gives `\"sell\"`, the text `"sell"`.
+fn json_token_lit(s: &str) -> String {
+    let mut j = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => j.push_str("\\\""),
+            '\\' => j.push_str("\\\\"),
+            '\n' => j.push_str("\\n"),
+            '\r' => j.push_str("\\r"),
+            '\t' => j.push_str("\\t"),
+            c if (c as u32) < 0x20 => j.push_str(&format!("\\u{:04x}", c as u32)),
+            c => j.push(c),
+        }
+    }
+    j.push('"');
+    hale_str(&j)
+}
+
 /// A single-segment named type (`Inner`, not `mod::Inner` or `Box<T>`).
 fn named_single(te: &TypeExpr) -> Option<&str> {
     match te {
@@ -755,7 +848,7 @@ fn collect_tier2(program: &Program) -> Tier2 {
                             None => ok = false,
                         }
                     }
-                    out.insert(td.name.name.clone(), ok.then(|| JsonEnum { name: td.name.name.clone(), variants }));
+                    out.insert(td.name.name.clone(), ok.then(|| JsonEnum::of(&td.name.name, vs, variants)));
                 }
                 TopDecl::Module(m) => walk_enums(&m.items, scalars, aliases, kinds, out),
                 _ => {}
@@ -1307,7 +1400,7 @@ fn field_read(t: &JsonType, f: &JsonField, prefix: &str, strict: bool, rows: &Ro
         FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: Some(v), .. } => {
             b.push_str(&json_value_map_read(f, tn, k, v, prefix, rows))
         }
-        FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } => b.push_str(&json_map_read(f, tn, k, prefix)),
+        FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } => b.push_str(&json_map_read(f, tn, k, prefix, rows)),
         FieldKind::List { elem, .. } => b.push_str(&json_list_read(f, elem, prefix, rows)),
     }
     if f.tracks() {
@@ -1693,16 +1786,25 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str, ro
 /// key (`<prefix><T>__by_<key>`, the value's own key field, if it sends
 /// one, skipped as an unknown key); a key already read is `duplicate_key`,
 /// more members than the holder holds `too_long`.
-fn json_map_read(f: &JsonField, tn: &str, k: &str, prefix: &str) -> String {
+fn json_map_read(f: &JsonField, tn: &str, k: &str, prefix: &str, rows: &Rows) -> String {
     let ind = "                    ";
     let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}", f.key);
     let dup = format!("fail JsonError {{ kind: \"duplicate_key\", field: \"{}\" }}", f.key);
     let mut b = String::new();
     b.push_str(&format!("{ind}let __ma = __s[__vs..__ve];\n"));
-    b.push_str(&format!("{ind}if !std::json::valid(__ma) {{ {wrong}; }}\n"));
+    // GH #1944: the map is an object, and each member's value the record
+    // without its key (an object, a positional record's array): anything
+    // else is the field's `wrong_type`, never a map read as empty (the
+    // object cursor walks no member of an array) or a record read as its
+    // defaults
+    b.push_str(&format!("{ind}if !std::json::valid(__ma) || std::str::byte_at_unchecked(__ma, 0) != 123 {{ {wrong}; }}\n"));
     b.push_str(&format!("{ind}clear(__h_{}.b);\n", f.name));
     b.push_str(&format!("{ind}let mut __mi = std::json::object_first(__ma);\n"));
     b.push_str(&format!("{ind}while !__mi.done {{\n"));
+    b.push_str(&format!(
+        "{ind}    let __e0 = if __mi.val_start < __mi.val_end {{ std::str::byte_at_unchecked(__ma, __mi.val_start) }} else {{ 0 }};\n"
+    ));
+    b.push_str(&format!("{ind}    if !({}) {{ {wrong}; }}\n", open_check("__e0", tn, rows)));
     b.push_str(&format!("{ind}    let __mk = std::json::unescape_string(__ma[__mi.key_start..__mi.key_end]);\n"));
     b.push_str(&format!("{ind}    for __mx in __h_{}.b {{ if __mx.{k} == __mk {{ {dup}; }} }}\n", f.name));
     b.push_str(&format!(
@@ -1730,7 +1832,8 @@ fn json_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, prefix: &
     let dup = format!("fail JsonError {{ kind: \"duplicate_key\", field: \"{}\" }}", f.key);
     let mut b = String::new();
     b.push_str(&format!("{ind}let __ma = __s[__vs..__ve];\n"));
-    b.push_str(&format!("{ind}if !std::json::valid(__ma) {{ {wrong}; }}\n"));
+    // the map is an object (GH #1944: never an array read as empty)
+    b.push_str(&format!("{ind}if !std::json::valid(__ma) || std::str::byte_at_unchecked(__ma, 0) != 123 {{ {wrong}; }}\n"));
     b.push_str(&format!("{ind}clear(__h_{}.b);\n", f.name));
     b.push_str(&format!("{ind}let mut __mi = std::json::object_first(__ma);\n"));
     b.push_str(&format!("{ind}while !__mi.done {{\n"));
@@ -1931,7 +2034,15 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             prefix_lit(sep, &f.key)
         };
         if let Presence::Tracked(flag) = &f.presence {
-            b.push_str(&format!("    if __v.{flag} {{\n"));
+            // an optional `std::json::Value` holding `null` is written as
+            // absent, never as `null`: a reader takes an optional field's
+            // `null` as its absence, and a triple's as its clear flag
+            // (GH #1951 item 3)
+            if matches!(f.kind, FieldKind::Raw) {
+                b.push_str(&format!("    if __v.{flag} && __v.{}.text != \"null\" {{\n", f.name));
+            } else {
+                b.push_str(&format!("    if __v.{flag} {{\n"));
+            }
         }
         let value = match &f.kind {
             FieldKind::Scalar(ScalarTy::Str) => format!(
@@ -2557,7 +2668,7 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
 /// any file, share an offset. A span is the only key several tables have
 /// for a node (the owned-view pass's copies, the allocation survey's
 /// lookup of them), so two nodes at one offset are one node to them.
-fn next_synth_base<'p>(programs: impl IntoIterator<Item = &'p Program>) -> u32 {
+pub(crate) fn next_synth_base<'p>(programs: impl IntoIterator<Item = &'p Program>) -> u32 {
     programs
         .into_iter()
         .flat_map(|p| crate::ast::flat_decls(&p.items))
@@ -2666,6 +2777,19 @@ fn generate_json_parsers_at(program: &mut Program, base: u32) -> HashSet<String>
             src.push_str(&generate_enum_json_src(e, TIER2, &rows));
         }
     }
+    // GH #1944: a wire map's value codecs, `__json_parse_<T>__by_<key>` and
+    // `__json_to_json_<T>__by_<key>`, as the api codec has its own. Without
+    // them a `json:`-tagged or `@positional` record with an `indexed_by`
+    // field had codecs that called helpers nothing declared, refused with
+    // their generated names and no location.
+    for (tn, k) in wire_map_keys(&types) {
+        let Some(t) = types.iter().find(|t| t.name == tn) else { continue };
+        let value = lifted_value_type(t, &k);
+        if existing_fns.insert(format!("{}{tn}__by_{k}", TIER2.decode)) {
+            src.push_str(&generate_parser_src_mode(&value, TIER2.decode, false, &rows));
+            src.push_str(&generate_emit_src_mode(&value, TIER2.encode));
+        }
+    }
     if !src.trim().is_empty() {
         match parse_source_at(&src, base) {
             Ok(generated) => {
@@ -2733,7 +2857,7 @@ fn mark_synthetic(mut items: Vec<TopDecl>) -> Vec<TopDecl> {
 /// Every expression a program evaluates: the bodies, and the initializers
 /// (a `params` field's, a parameter's default, a struct field's default, a
 /// `const`'s), where a call is as much a call as in a body.
-fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Expr)) {
+pub(crate) fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Expr)) {
     fn defaults(ps: &mut [crate::ast::Param], visit: &mut dyn FnMut(&mut Expr)) {
         for p in ps {
             if let Some(d) = &mut p.default {
@@ -2874,10 +2998,15 @@ fn rewrite_match(m: &mut MatchStmt, visit: &mut dyn FnMut(&mut Expr)) {
     }
 }
 
+/// Visits every call, after its callee and arguments, and every path in
+/// value position (`E::variants`, RFC #1995 E1); a path in callee position
+/// names what is called and is seen through its call.
 fn rewrite_expr(e: &mut Expr, visit: &mut dyn FnMut(&mut Expr)) {
     match e {
         Expr::Call { callee, args, .. } => {
-            rewrite_expr(callee, visit);
+            if !matches!(callee.as_ref(), Expr::Path(_)) {
+                rewrite_expr(callee, visit);
+            }
             for a in args.iter_mut() {
                 rewrite_expr(a, visit);
             }
@@ -2924,7 +3053,8 @@ fn rewrite_expr(e: &mut Expr, visit: &mut dyn FnMut(&mut Expr)) {
                 rewrite_expr(s, visit);
             }
         }
-        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+        Expr::Path(_) => visit(e),
+        Expr::Literal(..) | Expr::Ident(_) | Expr::KwSelf(_) => {}
     }
 }
 
@@ -3268,23 +3398,15 @@ fn generate_codecs(
         }
     }
     // the wire maps' value codecs: each (record, key) a map is keyed by
-    let mut lifted: Vec<(String, String)> = Vec::new();
+    let lifted = wire_map_keys(&types);
     // and the maps of values', which protobuf carries as entry records
     let mut entries: Vec<(String, String, MapValue)> = Vec::new();
     for t in &types {
         for f in &t.fields {
-            match &f.kind {
-                FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: None, .. } => {
-                    if !lifted.contains(&(tn.clone(), k.clone())) {
-                        lifted.push((tn.clone(), k.clone()));
-                    }
+            if let FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: Some(v), .. } = &f.kind {
+                if !entries.iter().any(|(a, b, _)| a == tn && b == k) {
+                    entries.push((tn.clone(), k.clone(), v.clone()));
                 }
-                FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value: Some(v), .. } => {
-                    if !entries.iter().any(|(a, b, _)| a == tn && b == k) {
-                        entries.push((tn.clone(), k.clone(), v.clone()));
-                    }
-                }
-                _ => {}
             }
         }
     }
@@ -3316,29 +3438,7 @@ fn generate_codecs(
             }
             continue;
         }
-        // the key and its presence flag and clear flag, if it has them,
-        // are the map's
-        let flag = t
-            .fields
-            .iter()
-            .find(|f| matches!(&f.presence, Presence::Flag(of) if of == k))
-            .map(|f| f.name.clone());
-        let clear = clear_flag(t, k).map(str::to_string);
-        let value = JsonType {
-            name: t.name.clone(),
-            fields: t
-                .fields
-                .iter()
-                .filter(|f| &f.name != k && Some(&f.name) != flag.as_ref() && Some(&f.name) != clear.as_ref())
-                .cloned()
-                .collect(),
-            lifted: Some(k.clone()),
-            lifted_flag: flag,
-            lifted_clear: clear,
-            // a positional record's map value is its fields but the key,
-            // in order
-            positional: t.positional.clone(),
-        };
+        let value = lifted_value_type(t, k);
         if existing_fns.insert(format!("__api_decode_{tn}__by_{k}")) {
             src.push_str(&generate_parser_src_mode(&value, "__api_decode_", true, &rows));
             src.push_str(&generate_emit_src_mode(&value, "__api_encode_"));
@@ -3398,11 +3498,41 @@ fn splice_defaults(items: &mut [TopDecl], types: &[JsonType]) {
 struct JsonEnum {
     name: String,
     variants: Vec<(String, Vec<(Elem, String)>)>,
+    /// GH #1951 item 5: the variants a `json:` tag renames, by declared
+    /// name: their wire names (spec/api.md § Codecs).
+    wires: std::collections::BTreeMap<String, String>,
+    /// The catch-all variant (`json:",other"`), and whether it is lossless
+    /// (holds the string).
+    other: Option<(String, bool)>,
 }
 
 impl JsonEnum {
+    /// The enum as the codecs read its declaration: `variants` the values of
+    /// each variant they carry, and the wire names and catch-all its tags
+    /// give.
+    fn of(name: &str, vs: &[EnumVariant], variants: Vec<(String, Vec<(Elem, String)>)>) -> JsonEnum {
+        let wires = vs
+            .iter()
+            .filter(|v| json_tag_key(v.tag.as_deref()).is_some())
+            .map(|v| (v.name.name.clone(), variant_wire_name(v)))
+            .collect();
+        let other = enum_other(vs).map(|(v, lossless)| (v.name.name.clone(), lossless));
+        JsonEnum { name: name.to_string(), variants, wires, other }
+    }
+
     fn unit_only(&self) -> bool {
         self.variants.iter().all(|(_, v)| v.is_empty())
+    }
+
+    /// A variant's name on the JSON wire.
+    fn wire<'a>(&'a self, v: &'a str) -> &'a str {
+        self.wires.get(v).map_or(v, String::as_str)
+    }
+
+    /// Whether `v` is the lossless catch-all, which crosses as the string it
+    /// holds rather than as an object keyed by its name.
+    fn is_lossless_other(&self, v: &str) -> bool {
+        matches!(&self.other, Some((o, true)) if o == v)
     }
 }
 
@@ -3445,7 +3575,7 @@ fn collect_api_enums(
                     let Some(values) = values else { continue };
                     variants.push((v.name.name.clone(), values));
                 }
-                out.push(JsonEnum { name: td.name.name.clone(), variants });
+                out.push(JsonEnum::of(&td.name.name, vs, variants));
             }
             TopDecl::Module(m) => collect_api_enums(&m.items, wanted, scalars, aliases, enums, out),
             _ => {}
@@ -3488,13 +3618,18 @@ fn variant_record(e: &str, v: &str) -> String {
 /// (spec/api.md § Codecs): a payload-free variant is its name as a string;
 /// a variant with one value `{"<Variant>": <value>}`, with several
 /// `{"<Variant>": [<value>, ...]}`, exactly as many; anything else, an
-/// unknown variant among it, is `wrong_type` for the field read.
+/// unknown variant among it, is `wrong_type` for the field read. A
+/// variant's `json:` tag renames it on the wire (GH #1951 item 5), and a
+/// catch-all (`json:",other"`) takes every string no payload-free variant
+/// names: a lossless one (`Other(String)`) holds the string and writes it
+/// back, a lossy one writes its own wire name.
 fn generate_enum_json_src(e: &JsonEnum, p: Prefixes, rows: &Rows) -> String {
     let n = &e.name;
     let wrong = "fail JsonError { kind: \"wrong_type\", field: __k };";
     let mut b = String::new();
     // one reader per value: a JSON value span of `__src` read as its type
-    for (v, values) in &e.variants {
+    // (the lossless catch-all's string is the JSON string itself)
+    for (v, values) in e.variants.iter().filter(|(v, _)| !e.is_lossless_other(v)) {
         for (i, (elem, ty)) in values.iter().enumerate() {
             b.push_str(&format!(
                 "fn {}(__src: String, __es: Int, __ee0: Int, __k: String) -> {ty} fallible(JsonError) {{\n",
@@ -3519,11 +3654,21 @@ fn generate_enum_json_src(e: &JsonEnum, p: Prefixes, rows: &Rows) -> String {
     b.push_str("        let __name = std::json::unescape_string(__t[1..(__tn - 1)]);\n");
     for (v, values) in &e.variants {
         if values.is_empty() {
-            b.push_str(&format!("        if __name == \"{v}\" {{ return {n}::{v}; }}\n"));
+            b.push_str(&format!("        if __name == \"{}\" {{ return {n}::{v}; }}\n", hale_str(e.wire(v))));
         }
     }
-    b.push_str(&format!("        {wrong}\n    }}\n"));
-    if !e.unit_only() {
+    // GH #1951 item 5: a string no payload-free variant names is the
+    // catch-all's: the string itself for a lossless one, and the variant
+    // alone for a lossy one
+    match &e.other {
+        Some((o, true)) => b.push_str(&format!("        return {n}::{o}(__name);\n    }}\n")),
+        Some((o, false)) => b.push_str(&format!("        return {n}::{o};\n    }}\n")),
+        None => b.push_str(&format!("        {wrong}\n    }}\n")),
+    }
+    // the variants an object carries: those with values, but the lossless
+    // catch-all, which is a string
+    let objects = e.variants.iter().any(|(v, values)| !values.is_empty() && !e.is_lossless_other(v));
+    if objects {
         b.push_str("    if __c == 123 {\n");
         b.push_str("        let __it = std::json::object_first(__t);\n");
         b.push_str(&format!("        if __it.done {{ {wrong} }}\n"));
@@ -3531,10 +3676,10 @@ fn generate_enum_json_src(e: &JsonEnum, p: Prefixes, rows: &Rows) -> String {
         b.push_str("        let __vs = __it.val_start;\n");
         b.push_str("        let __ve = __it.val_end;\n");
         for (v, values) in &e.variants {
-            if values.is_empty() {
+            if values.is_empty() || e.is_lossless_other(v) {
                 continue;
             }
-            b.push_str(&format!("        if std::json::obj_key_eq(__it, __t, \"{v}\") {{\n"));
+            b.push_str(&format!("        if std::json::obj_key_eq(__it, __t, \"{}\") {{\n", hale_str(e.wire(v))));
             if values.len() == 1 {
                 b.push_str(&format!("            let __a0 = {}(__t, __vs, __ve, __k) or raise;\n", json_value_reader(p, n, v, 0)));
                 b.push_str(&format!("            return {n}::{v}(__a0);\n"));
@@ -3564,7 +3709,14 @@ fn generate_enum_json_src(e: &JsonEnum, p: Prefixes, rows: &Rows) -> String {
     b.push_str(&format!("fn {}{n}(__v: {n}) -> String {{\n    match __v {{\n", p.encode));
     for (v, values) in &e.variants {
         if values.is_empty() {
-            b.push_str(&format!("        {n}::{v} -> {{ return \"\\\"{v}\\\"\"; }},\n"));
+            b.push_str(&format!("        {n}::{v} -> {{ return \"{}\"; }},\n", json_token_lit(e.wire(v))));
+            continue;
+        }
+        // the lossless catch-all writes the string it holds
+        if e.is_lossless_other(v) {
+            b.push_str(&format!("        {n}::{v}(__a0) -> {{\n"));
+            b.push_str("            let __x0: String = __a0;\n");
+            b.push_str(&format!("            return {};\n        }},\n", json_elem_write(&Elem::Scalar(ScalarTy::Str, None), "__x0", p.encode)));
             continue;
         }
         let binds: Vec<String> = (0..values.len()).map(|i| format!("__a{i}")).collect();
@@ -3579,7 +3731,8 @@ fn generate_enum_json_src(e: &JsonEnum, p: Prefixes, rows: &Rows) -> String {
         } else {
             format!("\"[\" + {} + \"]\"", parts.join(" + \",\" + "))
         };
-        b.push_str(&format!("            return \"{{\\\"{v}\\\":\" + {body} + \"}}\";\n        }},\n"));
+        let key = json_token_lit(e.wire(v));
+        b.push_str(&format!("            return \"{{{key}:\" + {body} + \"}}\";\n        }},\n"));
     }
     b.push_str("    }\n}\n");
     b
@@ -3614,7 +3767,9 @@ fn generate_enum_zero_src(e: &JsonEnum, protobuf: bool) -> String {
 
 /// The protobuf codec of an enum. A payload-free enum is its variant's
 /// number from 0 in declaration order: `__api_pb_enum_<E>(n, key)` and
-/// `__api_pb_enum_no_<E>(v)`, a number no variant has `wrong_type`. An enum
+/// `__api_pb_enum_no_<E>(v)`, a number no variant has `wrong_type`, or its
+/// catch-all when it has one (`json:",other"`; a `json:` rename is the JSON
+/// wire's alone, the protobuf one keeps the variants' numbers). An enum
 /// with payloads is a message of one `oneof`, its members numbered from 1 in
 /// declaration order (a payload-free variant a `bool`, a variant of one value
 /// that value's field, one of several the record `__ApiVariant_<E>_<V>` of
@@ -3631,7 +3786,12 @@ fn generate_enum_pb_src(e: &JsonEnum) -> String {
         for (i, (v, _)) in e.variants.iter().enumerate() {
             b.push_str(&format!("    if __no == {i} {{ return {n}::{v}; }}\n"));
         }
-        b.push_str(&format!("    {wrong}\n}}\n"));
+        // GH #1951 item 5: a number no variant has is the lossy catch-all,
+        // as an unknown name is on the JSON wire
+        match &e.other {
+            Some((o, false)) => b.push_str(&format!("    return {n}::{o};\n}}\n")),
+            _ => b.push_str(&format!("    {wrong}\n}}\n")),
+        }
         b.push_str(&format!("fn __api_pb_enum_no_{n}(__v: {n}) -> Int {{\n    match __v {{\n"));
         for (i, (v, _)) in e.variants.iter().enumerate() {
             b.push_str(&format!("        {n}::{v} -> {{ return {i}; }},\n"));

@@ -129,7 +129,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, ty) = lowered;
         if !is_quantity_repr(&ty) {
             return Err(CodegenError::UnsupportedAt(
-                format!("the conversion into `{}` converts an `Int`; its value lowered as {ty:?}", row.target),
+                format!("the conversion into `{}` converts an `Int`; its value lowered as {ty}", row.target),
                 e.span(),
             ));
         }
@@ -289,7 +289,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(arg, scope)?;
         if !is_quantity_repr(&ty) && !matches!(ty, CodegenTy::Decimal(_)) {
             return Err(CodegenError::UnsupportedAt(
-                format!("`{}(…)` converts an `Int`; its value lowered as {ty:?}", row.target),
+                format!("`{}(…)` converts an `Int`; its value lowered as {ty}", row.target),
                 arg.span(),
             ));
         }

@@ -45,7 +45,7 @@ impl<'ctx, 'p> CompressStdlib<'ctx> for Cx<'ctx, 'p> {
         let (src_val, src_ty) = self.lower_expr(&args[0], scope)?;
         if src_ty != CodegenTy::Bytes {
             return Err(CodegenError::Unsupported(format!(
-                "{}: arg must be Bytes, got {:?} \
+                "{}: arg must be Bytes, got {} \
                  (use `std::bytes::from_string(s)` to convert)",
                 surface, src_ty
             )));
@@ -142,7 +142,7 @@ impl<'ctx, 'p> TarStdlib<'ctx> for Cx<'ctx, 'p> {
                 TarArg::Bytes => {
                     if ty != CodegenTy::Bytes {
                         return Err(CodegenError::Unsupported(format!(
-                            "{}: arg {} must be Bytes, got {:?}",
+                            "{}: arg {} must be Bytes, got {}",
                             surface,
                             i + 1,
                             ty
@@ -156,7 +156,7 @@ impl<'ctx, 'p> TarStdlib<'ctx> for Cx<'ctx, 'p> {
                         CodegenTy::String | CodegenTy::StringView
                     ) {
                         return Err(CodegenError::Unsupported(format!(
-                            "{}: arg {} must be String, got {:?}",
+                            "{}: arg {} must be String, got {}",
                             surface,
                             i + 1,
                             ty
@@ -167,7 +167,7 @@ impl<'ctx, 'p> TarStdlib<'ctx> for Cx<'ctx, 'p> {
                 TarArg::Int => {
                     if ty != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(
-                            "{}: arg {} must be Int, got {:?}",
+                            "{}: arg {} must be Int, got {}",
                             surface,
                             i + 1,
                             ty

@@ -489,6 +489,7 @@ ns std::process open_prefixes=[]
   dump_pool_residency syscall|stdio
   exit syscall
   kill syscall
+  peak_rss_bytes syscall
   pid syscall
   uid syscall
   read_stderr syscall|block
@@ -562,6 +563,18 @@ ns std::str open_prefixes=[]
   substring pure
   trim pure
   upper pure
+  cut pure
+  cut_last pure
+  eq_ignore_case pure
+  last_index_of pure
+  parse_bool pure
+  trim_end pure
+  trim_prefix pure
+  trim_start pure
+  trim_suffix pure
+  lines pure
+  split pure
+  words pure
 ns std::term open_prefixes=[]
   __raw_disable syscall
   __raw_enable syscall
@@ -595,6 +608,7 @@ ns std::time open_prefixes=[]
   current time
   iso8601 pure
   parse_time pure
+  parse_rfc3339 pure
   unix pure
   nanos pure
   from_nanos pure
@@ -739,6 +753,7 @@ std::compress::gunzip | lookup=compress@2 | locus=false | effects=pure | sig=(By
 std::compress::gzip | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=gzip
 std::compress::unzstd | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=unzstd
 std::compress::zstd | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=zstd
+std::crypto::CryptoError | lookup=crypto@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::crypto::CryptoError` | suggest=-
 std::crypto::Sha256 | lookup=crypto@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=sha256
 std::crypto::__ed25519_public_key | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=__ed25519_public_key
 std::crypto::__secp256k1_public_key | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=__secp256k1_public_key
@@ -781,6 +796,8 @@ std::env::var | lookup=env@2 | locus=false | effects=env | sig=(Str) -> Str | re
 std::env::var_exists | lookup=env@2 | locus=false | effects=env | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=var_exists
 std::fmt::print | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::fmt::print` is not a stdlib function; writing to stdout is the builtin `print(x)`
 std::fmt::println | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::fmt::println` is not a stdlib function; writing a line to stdout is the builtin `println(x)`
+std::form::hashmap::KeyError | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::form::hashmap`
+std::form::ring_buffer::EmptyError | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::form::ring_buffer`
 std::hex::decode | lookup=hex@2 | locus=false | effects=pure | sig=(Str) -> Bytes ! ParseError | ret_ty=? | or=(Bytes, ParseError) | parks=false | holds=false | unknown=- | suggest=decode
 std::hex::digit | lookup=hex@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=digit
 std::hex::encode | lookup=hex@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=encode
@@ -841,7 +858,9 @@ std::i256::parse | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=fa
 std::i256::to_be_bytes | lookup=i256@2 | locus=false | effects=pure | sig=(I256) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=to_be_bytes
 std::i256::to_hex | lookup=i256@2 | locus=false | effects=pure | sig=(I256) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=to_hex
 std::i256::to_int | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=to_int
+std::index::IndexError | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::index`
 std::io | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std`
+std::io::IoError | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::io`
 std::io::MirrorRing | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::io::file::File | lookup=io::file@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::file::__at_eof | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__at_eof
@@ -1170,11 +1189,12 @@ std::process::dump_arena_residency | lookup=process@2 | locus=false | effects=sy
 std::process::dump_pool_residency | lookup=process@2 | locus=false | effects=syscall|stdio | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_pool_residency
 std::process::exit | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=exit
 std::process::kill | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=kill
+std::process::peak_rss_bytes | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=peak_rss_bytes
 std::process::pid | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::process::read_stderr | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=read_stderr
 std::process::read_stdout | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=read_stdout
 std::process::rss_bytes | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=rss_bytes
-std::process::run | lookup=process@2 | locus=false | effects=syscall|block | sig=(Str) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=-
+std::process::run | lookup=process@2 | locus=false | effects=syscall|block | sig=(Str) -> Named(__StdProcessOutput) ! IoError | ret_ty=? | or=(__StdProcessOutput, IoError) | parks=false | holds=true | unknown=- | suggest=-
 std::process::run_with | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=run_with
 std::process::signal | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=signal
 std::process::spawn | lookup=process@2 | locus=false | effects=syscall | sig=(Str) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=spawn
@@ -1219,19 +1239,25 @@ std::str::contains | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) 
 std::str::cp_at | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=cp_at
 std::str::cp_count | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=cp_count
 std::str::cp_size | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=cp_size
+std::str::cut | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::str::cut_last | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=cut_last
 std::str::ends_with | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=ends_with
+std::str::eq_ignore_case | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=eq_ignore_case
 std::str::find | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find
 std::str::from_bytes | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=from_bytes
 std::str::from_int | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::from_int` is not a stdlib function; rendering a value as a String is the builtin `to_string(x)` | suggest=-
 std::str::index_of | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=index_of
 std::str::index_of_from | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=index_of_from
 std::str::join | lookup=str@2 | locus=false | effects=pure | sig=(Any, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=join
+std::str::last_index_of | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_index_of
 std::str::len | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::len` is not a stdlib function; the length of a String is the builtin `len(s)` | suggest=-
 std::str::lenght | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::str::lenght` | suggest=-
 std::str::length | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::length` is not a stdlib function; the length of a String is the builtin `len(s)` | suggest=-
+std::str::lines | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=lines
 std::str::lower | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=lower
 std::str::pad_left | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=pad_left
 std::str::pad_right | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=pad_right
+std::str::parse_bool | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Bool ! ParseError | ret_ty=? | or=(Bool, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_bool
 std::str::parse_decimal | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Decimal ! ParseError | ret_ty=? | or=(Decimal, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_decimal
 std::str::parse_float | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Float ! ParseError | ret_ty=? | or=(Float, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_float
 std::str::parse_in | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::str::parse_in` — did you mean `std::str::parse_int`? | suggest=parse_int
@@ -1244,14 +1270,20 @@ std::str::range_parse_int | lookup=str@2 | locus=false | effects=pure | sig=(Str
 std::str::repeat | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=repeat
 std::str::replace | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=replace
 std::str::slice | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=slice
+std::str::split | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=split
 std::str::split_into | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str, Any) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=split_into
 std::str::starts_with | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=starts_with
 std::str::substring | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=substring
 std::str::to_string | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::to_string` is not a stdlib function; rendering a value as a String is the builtin `to_string(x)` | suggest=-
 std::str::trim | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim
+std::str::trim_end | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim_end
+std::str::trim_prefix | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim_prefix
+std::str::trim_start | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim_start
+std::str::trim_suffix | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim_suffix
 std::str::upper | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=upper
 std::str::view_cp_at | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=view_cp_at
 std::str::view_cp_size | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=view_cp_size
+std::str::words | lookup=str@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=words
 std::string::len | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::string::len` is not a stdlib function; the length of a String is the builtin `len(s)`
 std::string::length | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::string::length` is not a stdlib function; the length of a String is the builtin `len(s)`
 std::tagged::Accumulator | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
@@ -1303,6 +1335,7 @@ std::time::monotonic_ns | lookup=time@2 | locus=false | effects=time | sig=() ->
 std::time::nanos | lookup=time@2 | locus=false | effects=pure | sig=(Time) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=nanos
 std::time::now | lookup=time@2 | locus=false | effects=time | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::time::parse_iso8601 | lookup=time@2 | locus=false | effects=pure | sig=(Str) -> Int ! ParseError | ret_ty=? | or=(Int, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_iso8601
+std::time::parse_rfc3339 | lookup=time@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=parse_rfc3339
 std::time::parse_time | lookup=time@2 | locus=false | effects=pure | sig=(Str) -> Time ! ParseError | ret_ty=? | or=(Time, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_time
 std::time::sleep | lookup=time@2 | locus=false | effects=syscall|block|time | sig=(Duration) -> Unit | ret_ty=() | or=- | parks=true | holds=false | unknown=- | suggest=sleep
 std::time::slep | lookup=time@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::time::slep` — did you mean `std::time::sleep`? | suggest=sleep

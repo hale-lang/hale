@@ -25,6 +25,12 @@
 # The warm reads its own environment (HALE_WARM_SKIP_IRIS and the rest);
 # the builds share the runtime object cache with it, which is
 # content-addressed and safe to fill from several processes at once.
+#
+# Runs under macOS's /bin/bash 3.2 as well as a current bash. Under
+# `set -u`, bash before 4.4 calls an empty array's "${a[@]}" an unbound
+# variable, so an array that may be empty (no --target-cpu, no seeds) is
+# expanded as ${a[@]+"${a[@]}"}: nothing when it is empty, each element
+# quoted when it is not.
 set -euo pipefail
 hale=${1:?the hale binary}
 shift
@@ -43,7 +49,7 @@ while (($#)); do
   esac
 done
 names=()
-for seed in "${seeds[@]}"; do
+for seed in ${seeds[@]+"${seeds[@]}"}; do
   name=$(basename -- "$seed")
   for other in ${names[@]+"${names[@]}"}; do
     [[ "$other" != "$name" ]] || { echo "warm-and-build: two seeds are named $name; each needs its own <name>/<name>" >&2; exit 2; }
@@ -59,7 +65,7 @@ for i in "${!seeds[@]}"; do
     set -e
     start=$SECONDS
     if [[ -n "$check" ]]; then "$hale" check "$seed"; fi
-    "$hale" build "$seed" -o "$out_dir/${names[$i]}/${names[$i]}" "${build_flags[@]}"
+    "$hale" build "$seed" -o "$out_dir/${names[$i]}/${names[$i]}" ${build_flags[@]+"${build_flags[@]}"}
     echo "($seed: $((SECONDS - start)) s)"
   ) > "$logs/$i.log" 2>&1 &
   pids+=("$!")

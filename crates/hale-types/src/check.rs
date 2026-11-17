@@ -120,6 +120,46 @@ fn footprints_match(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
             .all(|(x, y)| x.name == y.name && x.ty == y.ty)
 }
 
+/// GH #1995 E3: the statement written at `span` in `b` or a block under
+/// it, if any: what a `let … else`'s completing path ends with.
+fn stmt_at(b: &Block, span: Span) -> Option<&Stmt> {
+    fn in_if(i: &IfStmt, span: Span) -> Option<&Stmt> {
+        stmt_at(&i.then_block, span).or_else(|| match i.else_block.as_deref() {
+            Some(ElseBranch::Else(e)) => stmt_at(e, span),
+            Some(ElseBranch::ElseIf(n)) => in_if(n, span),
+            None => None,
+        })
+    }
+    b.stmts.iter().find_map(|s| {
+        if s.span() == span {
+            return Some(s);
+        }
+        match s {
+            Stmt::Block(inner) => stmt_at(inner, span),
+            Stmt::If(i) => in_if(i, span),
+            Stmt::Match(m) => m.arms.iter().find_map(|a| match &a.body {
+                MatchArmBody::Block(inner) => stmt_at(inner, span),
+                MatchArmBody::Expr(_) => None,
+            }),
+            _ => None,
+        }
+    })
+}
+
+/// GH #1995 E3: does this pattern match every value of the type it is
+/// matched against, whatever that type? A name, `_`, and a tuple of such
+/// patterns (a tuple's arity is the checker's other rule). Whether a
+/// constructor or a literal does is the scrutinee's type's question
+/// ([`match_is_exhaustive`]).
+fn pattern_always_matches(p: &Pattern) -> bool {
+    match p {
+        Pattern::Binding(_) | Pattern::Wildcard(_) => true,
+        Pattern::Tuple(elems, _) => elems.iter().all(pattern_always_matches),
+        Pattern::Or(alts, _) => alts.iter().any(pattern_always_matches),
+        Pattern::Literal(..) | Pattern::Constructor { .. } => false,
+    }
+}
+
 /// True if the match arms cover every possible scrutinee
 /// value. v0 rules:
 ///   - Any arm without a guard whose pattern is wildcard `_`
@@ -137,17 +177,18 @@ fn match_is_exhaustive(
     known: &KnownNames,
 ) -> bool {
     let unguarded = |a: &&MatchArm| a.guard.is_none();
-    let has_catchall = arms.iter().filter(unguarded).any(|a| {
-        matches!(a.pattern, Pattern::Wildcard(_) | Pattern::Binding(_))
-    });
+    // GH #1995 E2: an or-pattern's alternatives each count, as the arms
+    // they could have been written as.
+    let alts = || arms.iter().filter(unguarded).flat_map(|a| a.pattern.alternatives());
+    let has_catchall = alts().any(|p| matches!(p, Pattern::Wildcard(_) | Pattern::Binding(_)));
     if has_catchall {
         return true;
     }
     if matches!(scrut_ty, Ty::Prim(PrimType::Bool)) {
         let mut has_true = false;
         let mut has_false = false;
-        for arm in arms.iter().filter(unguarded) {
-            if let Pattern::Literal(Literal::Bool(b), _) = &arm.pattern {
+        for pat in alts() {
+            if let Pattern::Literal(Literal::Bool(b), _) = pat {
                 if *b {
                     has_true = true;
                 } else {
@@ -187,8 +228,8 @@ fn match_is_exhaustive(
             // through), so the two compare by identity: the merged
             // name encodes the declaration's, and its text is no
             // suffix of anything the author wrote.
-            for arm in arms.iter().filter(unguarded) {
-                if let Pattern::Constructor { path, .. } = &arm.pattern {
+            for pat in alts() {
+                if let Pattern::Constructor { path, .. } = pat {
                     let segs: Vec<&str> =
                         path.segments.iter().map(|s| s.name.as_str()).collect();
                     let set = !variants.is_empty() && variants.iter().all(|v| v.member);
@@ -615,6 +656,17 @@ pub struct CheckInputs<'a> {
     /// reads which type names are the dialect's. They read declarations
     /// only, so they are total over a program that does not typecheck.
     pub units: &'a crate::units::UnitRows,
+    /// Whether the hot-path lint reports its warnings (GH #1948, the
+    /// snapshot's `Config::hot_path_advisory`): off by default, on under
+    /// `hale verify` and `hale check --warn-hot-path`. A `@hot` fn's
+    /// findings are errors either way.
+    pub hot_path_advisory: bool,
+    /// Whether the string-match advisory reports (GH #1995 S5, the
+    /// snapshot's `Config::string_match_advisory`): a run of three or
+    /// more `if` tests comparing one String with literals
+    /// (`crate::string_if_chain`). Off by default, on under
+    /// `--warn-string-match` (`hale check` or `hale verify`).
+    pub string_match_advisory: bool,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
@@ -665,6 +717,7 @@ fn check_numbered_bundle(
         &walk.record.mono_shapes,
         &intra_locus,
         top,
+        &walk.record.checked_calls(),
     ));
     let rows = std::cell::OnceCell::new();
     let effects = || {
@@ -700,6 +753,9 @@ fn check_numbered_bundle(
         roles: &roles,
         surfaces: &surfaces,
         units: &units,
+        // The library entry reports every advisory.
+        hot_path_advisory: true,
+        string_match_advisory: true,
     };
     let (mut diags, _, _) = check_bundle_rules(bundle, &inputs, &walk, allow_unowned_subscriber, &|_, _| None);
     diags.extend(typed_body_laws(bundle, &inputs, &walk.record));
@@ -795,81 +851,6 @@ fn unfresh_fn_value_message(shown: &str, l: &str) -> String {
          builds one, or call `{shown}` directly"
     )
 }
-
-/// A fn, a method or an interface's method declared to return a `bounded`
-/// (written, or through an alias): the build cannot return one by value
-/// (it lives inline in its containing type, so it has no value of its own
-/// to hand back), and the check says so where the build would refuse it,
-/// with no file or line. A record holding the `bounded` returns it.
-fn bounded_return_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> Vec<Diag> {
-    // a declaration's type parameters are its own, opaque, whatever global
-    // type shares a name with one (`fn identity<T>(x: T) -> T` beside a
-    // `type T = bounded[...]` returns a T, not a bounded)
-    let returns_bounded = |te: &TypeExpr, generics: &[&GenericParam]| {
-        let opaque: BTreeMap<String, Ty> = generics.iter().map(|g| (g.name.name.clone(), Ty::Unknown)).collect();
-        let mut t = crate::resolve::resolve_type_expr_with(te, &top.names, &opaque);
-        for _ in 0..16 {
-            match t {
-                Ty::Named(ref n) => match top.lookup(n) {
-                    Some(TopSymbol::Type(info)) => match &info.kind {
-                        TypeKind::Alias(a) => t = a.clone(),
-                        _ => return None,
-                    },
-                    _ => return None,
-                },
-                Ty::Bounded(..) => return Some(t),
-                _ => return None,
-            }
-        }
-        None
-    };
-    let mut out = Vec::new();
-    let mut refuse = |what: String, te: &TypeExpr, generics: &[&GenericParam]| {
-        if let Some(t) = returns_bounded(te, generics) {
-            out.push(Diag::ty(
-                te.span(),
-                format!(
-                    "{what} returns a `{}`, and bounded[T; N] cannot be returned by value — it lives inline in its \
-                     containing type; return a record holding it (`type Names {{ items: {}; }}`), or fill a place \
-                     the caller passes",
-                    t.display(),
-                    t.display()
-                ),
-            ));
-        }
-    };
-    for program in bundle.programs.values() {
-        for item in flat_decls(&program.items) {
-            match item {
-                TopDecl::Fn(f) => {
-                    if let Some(te) = &f.ret {
-                        refuse(format!("`{}`", f.name.name), te, &f.generics.iter().collect::<Vec<_>>());
-                    }
-                }
-                TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        if let LocusMember::Fn(f) = m {
-                            if let Some(te) = &f.ret {
-                                let generics: Vec<&GenericParam> = l.generics.iter().chain(&f.generics).collect();
-                                refuse(format!("`{}::{}`", l.name.name, f.name.name), te, &generics);
-                            }
-                        }
-                    }
-                }
-                TopDecl::Interface(i) => {
-                    for m in &i.methods {
-                        if let Some(te) = &m.ret {
-                            refuse(format!("`{}::{}`", i.name.name, m.name.name), te, &[]);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    out
-}
-
 
 /// A record literal in a default that leaves out a field with no default
 /// of its own (`budget: BudgetSet = BudgetSet { }` where `BudgetSet` has a
@@ -1325,6 +1306,7 @@ fn walk_bundle(
     }
     let mut cx = Checker {
         unfresh_builders,
+        raise_fns: crate::raise_conversion::raise_fns(bundle, top).0,
         top,
         target_class,
         known,
@@ -1333,11 +1315,13 @@ fn walk_bundle(
         params_default: None,
         in_accept_params: false,
         callee_position: false,
+        cursor_anchor: None,
         this_is_callee: false,
         callee_unshadowed: false,
         current_locus: None,
         in_lifecycle: false,
         in_closure: false,
+        empty_array_typed: false,
         in_on_failure: false,
         fallible_ctx: None,
         return_ctx: None,
@@ -1346,6 +1330,10 @@ fn walk_bundle(
         strict_idents,
         or_value_discarded: false,
         generic_params: Vec::new(),
+        template_literals: BTreeMap::new(),
+        admitted_template_literals: BTreeSet::new(),
+        kept_specialization_diags: Vec::new(),
+        walk_decl_span: None,
         generic_fns,
         fn_decls,
         locus_decls,
@@ -1396,7 +1384,10 @@ fn walk_bundle(
                 None => {
                     let start = cx.diags.len();
                     cx.decl_diags_start = start;
+                    cx.walk_decl_span = Some(item.span());
                     cx.check_top_decl(item);
+                    cx.refuse_unadmitted_template_literals();
+                    cx.walk_decl_span = None;
                     cx.settle_decimal_literals();
                     cx.settle_param_accesses(start);
                     (cx.diags.split_off(start), std::sync::Arc::new(std::mem::take(&mut cx.views)))
@@ -1417,6 +1408,8 @@ fn walk_bundle(
         by_decl.insert(key.clone(), per);
     }
     cx.specialize_generic_bodies();
+    let kept = std::mem::take(&mut cx.kept_specialization_diags);
+    cx.diags.extend(kept);
     cx.settle_decimal_literals();
     // The walks per monomorph keep their param accesses alone: an access
     // through a value of a parameter type is judged there, against every
@@ -1485,9 +1478,14 @@ pub fn check_bundle_rules(
     diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
     diags.extend(publish_in_default_diags(bundle));
     diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
+    if inputs.string_match_advisory {
+        diags.extend(crate::string_if_chain::string_if_chain_diags(bundle));
+    }
     diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
     diags.extend(mixed_owner_diags(inputs.alloc_summary));
-    diags.extend(bounded_return_diags(bundle, top));
+    // GH #1940: a body with a declared return type that can reach its end
+    // without a value (`definite_return`).
+    diags.extend(crate::definite_return::definite_return_diags(bundle));
     diags.extend(literal_default_missing_field_diags(bundle, top));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
@@ -1583,7 +1581,7 @@ pub fn check_bundle_rules(
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
     // (hoisted field / `recv_into`).
-    let rows = HotPathRows { summary: inputs.alloc_summary, top, stdlib: false };
+    let rows = HotPathRows { summary: inputs.alloc_summary, top, stdlib: false, advisory: inputs.hot_path_advisory };
     diags.extend(Law { rule: HOT_PATH, eval: check_hot_path_alloc }.diags(&rows));
     // A subscriber built and dissolved inside one call on a classic
     // cooperative pool: its deliveries are always dropped (spec/runtime.md
@@ -1608,6 +1606,8 @@ pub fn check_bundle_rules(
     // be incoherent — the same decorator twice, or `@unbounded` against
     // a contract that forbids allocation.
     check_decorator_stacks(bundle, &mut diags);
+    // GH #1951 (item 2): a `@raise` fn that converts nothing.
+    diags.extend(crate::raise_conversion::raise_fns(bundle, top).1);
     diags.extend(crate::repo::laws(&bundle.programs.values().copied().collect::<Vec<_>>()));
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
@@ -2877,6 +2877,34 @@ fn hot_cell_copy_message(reason: &str, in_loop: bool) -> String {
     )
 }
 
+/// GH #1947: an appending assignment in a loop that copies the String it
+/// extends on every iteration (`crate::string_append`).
+fn hot_append_message(q: &crate::string_append::QuadraticAppend) -> String {
+    use crate::string_append::QuadraticWhy;
+    match q.why {
+        QuadraticWhy::SharedInLoop { .. } => format!(
+            "hot-path allocation: `{p}` is appended to in a loop that also \
+             reads it in a way that may keep the value (passed to a call, \
+             bound, stored or returned), so every append first copies the \
+             whole String: the loop is quadratic in time and memory. Read it \
+             after the loop, or only as an operand of `+` or a comparison, in \
+             a slice, or as an argument of a `std::` reader that returns a \
+             number or a `Bool` (`len`, `std::str::contains`); start it afresh \
+             after handing it on; or build the text in a `std::bytes::BytesBuilder` \
+             (`append_str`) and `finish()` it once.",
+            p = q.place
+        ),
+        QuadraticWhy::Place => format!(
+            "hot-path allocation: appending to `{p}` in a loop copies the \
+             whole String on every iteration: only a local or a field of \
+             `self` grows in place. Build the text in a local (`let mut s = \
+             {p}; … s += …; {p} = s;`) or a `std::bytes::BytesBuilder`, and \
+             store it once.",
+            p = q.place
+        ),
+    }
+}
+
 const HOT_SELF_REPLACE: &str = "hot-path store: whole-struct replace of a \
      self-field — every store re-anchors the struct's \
      heap fields (clone + retire per String field). \
@@ -2984,11 +3012,28 @@ fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
 fn check_hot_path_alloc(rows: &HotPathRows<'_>, out: &mut Vec<Violation>) {
     for (f, found) in hot_path_findings(rows) {
         for (span, msg) in found {
-            if f.hot {
-                out.push(Violation::error(HOT_PATH, span, format!("@hot: {}", msg)));
-            } else if !rows.summary.unbounded_fns.contains(&f.key) {
-                out.push(Violation::warning(HOT_PATH, span, msg));
+            // GH #1944: a finding in the JSON codecs the compiler wrote
+            // (`json_gen`'s parse space) is nothing the program can act
+            // on: no file holds the code, and no `@unbounded` reaches it.
+            if !f.hot && hale_syntax::api_names::is_json_synth_pos(span.start.0) {
+                continue;
             }
+            let v = if f.hot {
+                Violation::error(HOT_PATH, span, format!("@hot: {}", msg))
+            } else if rows.advisory && !rows.summary.unbounded_fns.contains(&f.key) {
+                Violation::warning(HOT_PATH, span, msg)
+            } else {
+                continue;
+            };
+            // GH #1947: a quadratic append names the read that shares it.
+            let read = f.quadratic_appends.iter().find(|q| q.span == span).and_then(|q| match q.why {
+                crate::string_append::QuadraticWhy::SharedInLoop { read } => Some(read),
+                crate::string_append::QuadraticWhy::Place => None,
+            });
+            out.push(match read {
+                Some(r) => v.step(r, "this read may keep the value, so the next append copies it"),
+                None => v,
+            });
         }
     }
 }
@@ -3007,7 +3052,7 @@ pub fn hot_path_silenced(
     top: &TopScope,
     stdlib: bool,
 ) -> BTreeMap<crate::alloc_summary::FnKey, usize> {
-    hot_path_findings(&HotPathRows { summary, top, stdlib })
+    hot_path_findings(&HotPathRows { summary, top, stdlib, advisory: true })
         .into_iter()
         .filter(|(f, found)| !f.hot && !found.is_empty() && summary.unbounded_fns.contains(&f.key))
         .map(|(f, found)| (f.key.clone(), found.len()))
@@ -3077,6 +3122,11 @@ fn hot_path_findings<'s>(
                 }
             }
         }
+        // GH #1947: an appending assignment that copies the whole String
+        // on every iteration.
+        for q in &f.quadratic_appends {
+            found.push((q.span, hot_append_message(q)));
+        }
         // As written: an inner finding before the one that encloses it,
         // left to right. A dispatch's alternatives are one call.
         found.sort_by_key(|(span, _)| (span.end, std::cmp::Reverse(span.start)));
@@ -3098,6 +3148,12 @@ struct HotPathRows<'r> {
     /// [`hot_path_silenced`] asks, for `--report-unbounded-use`; the lint
     /// reports the program's own.
     stdlib: bool,
+    /// Whether a finding outside a `@hot` fn is reported, as a warning
+    /// (GH #1948): only when asked for, `hale verify` or `hale check
+    /// --warn-hot-path`. A first program's ordinary loop or handler is
+    /// not a path anyone certified hot, and a warning on every one of
+    /// them buried the rest.
+    advisory: bool,
 }
 
 // === GH #723: decorator stacks =====================================
@@ -7409,11 +7465,41 @@ fn std_result_may_hold(segs: &[&str], arg: Option<&str>, decls: &StoreDecls<'_>)
     }
 }
 
+/// GH #1995 E2: whether pattern `a` matches every value pattern `b`
+/// does, judged by their shapes alone: a catch-all covers everything, a
+/// literal its equal, a variant (same path) with no values or only
+/// catch-all values covers that variant, and tuples and variants part by
+/// part. Conservative: two spellings of one path, or literals the check
+/// would convert, are not judged to cover, so a "never tried" warning is
+/// never wrong.
+fn pattern_covers(a: &Pattern, b: &Pattern) -> bool {
+    let irrefutable = |p: &Pattern| matches!(p, Pattern::Wildcard(_) | Pattern::Binding(_));
+    match (a, b) {
+        (Pattern::Wildcard(_) | Pattern::Binding(_), _) => true,
+        (Pattern::Or(alts, _), _) => alts.iter().any(|x| pattern_covers(x, b)),
+        (_, Pattern::Or(alts, _)) => alts.iter().all(|y| pattern_covers(a, y)),
+        (Pattern::Literal(x, _), Pattern::Literal(y, _)) => x == y,
+        (
+            Pattern::Constructor { path: pa, args: aa, .. },
+            Pattern::Constructor { path: pb, args: ab, .. },
+        ) => {
+            let same = pa.segments.len() == pb.segments.len()
+                && pa.segments.iter().zip(&pb.segments).all(|(x, y)| x.name == y.name);
+            same && (aa.iter().all(irrefutable)
+                || (aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| pattern_covers(x, y))))
+        }
+        (Pattern::Tuple(xs, _), Pattern::Tuple(ys, _)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| pattern_covers(x, y))
+        }
+        _ => false,
+    }
+}
+
 fn pattern_binders<'p>(p: &'p Pattern, out: &mut Vec<&'p str>) {
     match p {
         Pattern::Binding(id) => out.push(id.name.as_str()),
         Pattern::Constructor { args, .. } => args.iter().for_each(|a| pattern_binders(a, out)),
-        Pattern::Tuple(ps, _) => ps.iter().for_each(|a| pattern_binders(a, out)),
+        Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => ps.iter().for_each(|a| pattern_binders(a, out)),
         Pattern::Literal(..) | Pattern::Wildcard(_) => {}
     }
 }
@@ -9001,8 +9087,9 @@ fn check_binding_constraints(
                     format!(
                         "binding for topic `{}` requires `zero_copy` but \
                          payload type `{}` is not flat-shapeable — it \
-                         contains a String, Bytes, or fixed-size array \
-                         field, whose storage is out-of-line (a pointer), \
+                         contains a String, Bytes, fixed-size array, tuple, \
+                         enum or list-of-pointers field, whose storage is \
+                         out-of-line (a pointer), \
                          so a raw memcpy would share a pointer that dangles \
                          across the zero-copy boundary. Use only fixed-size \
                          scalar fields in a `zero_copy` payload",
@@ -9881,6 +9968,15 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
                         fields.iter().map(|f| (f.name.name.clone(), f.name.span)),
                         diags,
                     );
+                    // F.52: an optional field with no default and no zero
+                    // (`optional_fields::fill_optional_zeros`)
+                    for f in fields {
+                        if let Some(d) =
+                            crate::optional_fields::missing_zero_diag(&t.name.name, f, &type_expr_text(&f.ty))
+                        {
+                            diags.push(d);
+                        }
+                    }
                 }
                 // a set's members are judged by `check_set_members`
                 TypeDeclBody::Enum(_) if t.is_set() => {}
@@ -11026,14 +11122,13 @@ fn topic_payload_not_carried(
         Carriage::NotCarried(repair) => repair,
         Carriage::Carried => {
             let ty = resolve_type_expr(&row.payload, known);
-            let field = struct_field_not_carried(&ty, top, 0)?;
+            let part = payload_part_not_carried(&ty, top)?;
             return Some(format!(
-                "topic `{topic}` declares `payload: {}`, {field}, which the wire format does not \
-                 carry: a delivery serializes each field, and carries scalars (`Int`, `Float`, \
-                 `Bool`, `Decimal`, `U256`, `I256`, `Duration`, `Time`, a unit type), payload-free enums, `String`, \
-                 `Bytes`, structs of those, `bounded` buffers of scalars, and arrays of scalars or structs. Carry it as \
-                 a value the wire takes (a payload-free enum's tag, a tuple as a struct).",
-                ty.display()
+                "topic `{topic}` declares `payload: {}`, {part}, which the wire format does not carry: a delivery \
+                 serializes each value, and carries {}. Give that part a type the wire carries (send what a handle \
+                 or a fn names, an id or a `String`, instead of it).",
+                ty.display(),
+                crate::wire_carriage::carried_list(),
             ));
         }
         Carriage::Unresolved => return None,
@@ -11050,71 +11145,32 @@ fn topic_payload_not_carried(
     ))
 }
 
-/// A struct payload whose field the wire format has no encoding for
-/// (`bus/wire.rs`, `emit_per_field_serialize`): an enum with payloads,
-/// a tuple, a `bounded` buffer of pointers, an array of strings or
-/// arrays. A payload-free enum travels as its tag. The
-/// topic's declaration checked clean and lowering refused the field
-/// ("bus payload field `x: Enum(..)` — m70 wire format supports …").
-/// Names the first such field, through nested structs; `None` when
-/// every field is carried or not judged here.
-fn struct_field_not_carried(ty: &Ty, top: &TopScope, depth: u32) -> Option<String> {
-    if depth > 8 {
-        return None;
-    }
+/// The part of a payload the wire format has no encoding for, as the tail
+/// of a refusal: "whose field `x` is a fn value (`fn(Int) -> Int`)".
+/// Every value the carriage table (`wire_carriage::WIRE_TABLE`) names is
+/// carried at any depth — scalars, enums with payloads or without,
+/// `String`, `Bytes`, records, `bounded` lists, fixed arrays, tuples and
+/// `std::json::Value` (GH #1951 item 4); what is left is a value that
+/// names something no frame can hold (a fn, a locus handle, a view, a
+/// projection) or a type that reaches itself. The topic's declaration
+/// used to check clean and lowering refused the field with no place.
+/// `None` when every part is carried or not judged here.
+fn payload_part_not_carried(ty: &Ty, top: &TopScope) -> Option<String> {
+    // the payload itself is `payload_carriage`'s to judge (a `BytesView` is
+    // the raw-frame opt-out, a primitive is refused there): this walks the
+    // parts of a record or an enum
     let Ty::Named(n) = ty else { return None };
-    let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(fields), .. })) = top.symbols.get(n) else {
-        return None;
+    let enum_payload = match top.symbols.get(n) {
+        Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. })) => true,
+        Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_), .. })) => false,
+        _ => return None,
     };
-    // A scalar, or a payload-free enum's tag: fixed bytes on the wire.
-    let scalar = |t: &Ty| match t {
-        Ty::Prim(
-            PrimType::Int
-            | PrimType::Float
-            | PrimType::Bool
-            | PrimType::Decimal(_)
-            | PrimType::U256
-            | PrimType::I256
-            | PrimType::Duration
-            | PrimType::Time,
-        ) => true,
-        Ty::Named(m) => match top.symbols.get(m) {
-            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Scalar(_), .. })) => true,
-            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => vs.iter().all(|v| v.fields.is_empty()),
-            _ => false,
-        },
-        _ => false,
-    };
-    let is_struct = |t: &Ty| match t {
-        Ty::Named(m) => matches!(top.symbols.get(m), Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_), .. }))),
-        _ => false,
-    };
-    for f in fields {
-        let shown = f.ty.display();
-        let bad = match &f.ty {
-            t if scalar(t) => None,
-            Ty::Prim(PrimType::String | PrimType::Bytes) => None,
-            t if is_struct(t) => {
-                if let Some(inner) = struct_field_not_carried(t, top, depth + 1) {
-                    // `whose field `c` is …` of the nested struct, as a path
-                    return Some(inner.replacen("whose field `", &format!("whose field `{}.", f.name), 1));
-                }
-                None
-            }
-            Ty::Named(m) => match top.symbols.get(m) {
-                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. })) => Some("an enum with payloads"),
-                _ => None,
-            },
-            Ty::Tuple(_) => Some("a tuple"),
-            Ty::Bounded(e, _) if !scalar(e) => Some("a `bounded` buffer of other than scalars"),
-            Ty::Array(e, Some(_)) if !scalar(e) && !is_struct(e) => Some("an array of other than scalars or structs"),
-            _ => None,
-        };
-        if let Some(what) = bad {
-            return Some(format!("whose field `{}` is {what} (`{shown}`)", f.name));
-        }
-    }
-    None
+    let u = crate::wire_carriage::ty_uncarried(ty, top)?;
+    Some(match (u.path.is_empty(), enum_payload) {
+        (true, _) => format!("which is {} (`{}`)", u.what, u.ty),
+        (false, true) => format!("whose variant value `{}` is {} (`{}`)", u.path, u.what, u.ty),
+        (false, false) => format!("whose field `{}` is {} (`{}`)", u.path, u.what, u.ty),
+    })
 }
 
 /// The topics a raw `BytesView` payload can travel on: a binding entry
@@ -11159,6 +11215,23 @@ fn check_bus_payload_carriable(
             continue;
         }
         let Some(topic) = top.topics.named(&row.topic) else { continue };
+        // GH #1942: the native ring's slot is a fixed-size struct; an enum
+        // payload (one with payloads is carried on the bus otherwise) has
+        // none, and the build refused the entry with no place.
+        if let Ty::Named(n) = resolve_type_expr(&topic.payload, known) {
+            if let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. })) = top.lookup(&n) {
+                diags.push(Diag::ty(
+                    row.span,
+                    format!(
+                        "`{t}: shm_ring(...)`: topic `{t}` carries the enum `{n}`, and hale can't put an enum in a \
+                         native ring yet: a ring slot is a fixed-size struct. Wrap the enum in a `type` and give \
+                         the topic that payload",
+                        t = row.topic
+                    ),
+                ));
+                continue;
+            }
+        }
         if matches!(resolve_type_expr(&topic.payload, known), Ty::Prim(PrimType::BytesView)) {
             diags.push(Diag::ty(
                 row.span,
@@ -11173,6 +11246,69 @@ fn check_bus_payload_carriable(
                 ),
             ));
         }
+    }
+    // GH #1942: a struct named by a literal subject's `of type` clause is
+    // serialized field by field like a topic's payload, each field one the
+    // wire format carries (`payload_part_not_carried`, which judges a
+    // topic's at each delivery); the build refused any other, with no
+    // place. Said once per payload type, at the first clause naming it.
+    let mut wire_reported: BTreeSet<String> = BTreeSet::new();
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
+            for m in &l.members {
+                let LocusMember::Bus(bb) = m else { continue };
+                for bm in &bb.members {
+                    let (verb, subject, written) = match bm {
+                        BusMember::Subscribe { subject, ty, .. } => ("subscribe", subject, ty),
+                        BusMember::Publish { subject, ty, .. } => ("publish", subject, ty),
+                    };
+                    // A `layout:`-bound ring hands its subscriber one record
+                    // at a time; a `Drain<T>` batch handler on one checked
+                    // clean and the build refused it.
+                    if let (BusMember::Subscribe { handler, span, .. }, BusSubject::Topic(t)) = (bm, subject) {
+                        let layout_bound = bindings.rows.iter().filter(|r| !r.imported && r.topic == t.name).any(|r| {
+                            r.entry(bundle).is_some_and(|e| matches!(e.transport, TransportSpec::ShmRing { layout: Some(_), .. }))
+                        });
+                        let batch = l.members.iter().any(|m| match m {
+                            LocusMember::Fn(f) if f.name.name == handler.name => f.params.first().is_some_and(|p| {
+                                matches!(&p.ty, TypeExpr::Named { path, .. }
+                                    if path.segments.last().is_some_and(|s| s.name == "Drain"))
+                            }),
+                            _ => false,
+                        });
+                        if layout_bound && batch {
+                            diags.push(Diag::ty(
+                                *span,
+                                format!(
+                                    "subscribe `{}`: the topic is bound to a `layout:` ring, which hands its subscriber \
+                                     one record at a time, and hale can't compile a `Drain<T>` batch handler on one yet: \
+                                     take one record per call (`fn {}(v: T)`)",
+                                    t.name, handler.name
+                                ),
+                            ));
+                        }
+                    }
+                    let (BusSubject::Literal { .. }, Some(te)) = (subject, written) else { continue };
+                    let ty = resolve_type_expr(te, known);
+                    let Some(part) = payload_part_not_carried(&ty, top) else { continue };
+                    if !wire_reported.insert(ty.display()) {
+                        continue;
+                    }
+                    diags.push(Diag::ty(
+                        te.span(),
+                        format!(
+                            "{verb} `{}`: the payload `{}`, {part}, which hale can't carry on the bus: a delivery \
+                             serializes each value, and carries {}. Give that part a type the wire carries (send what \
+                             a handle or a fn names, an id or a `String`, instead of it)",
+                            subject.canonical(),
+                            ty.display(),
+                            crate::wire_carriage::carried_list(),
+                        ),
+                    ));
+                }
+            }
+        });
     }
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
@@ -11272,7 +11408,7 @@ fn callee_display(callee: &Expr) -> String {
     match callee {
         Expr::Ident(id) => match id.name.strip_prefix("__json_parse_") {
             Some(t) => format!("{t}::from_json"),
-            None => id.name.clone(),
+            None => hale_syntax::enum_names::generated_display(&id.name).unwrap_or_else(|| id.name.clone()),
         },
         Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
         Expr::KwSelf(_) => "self".to_string(),
@@ -11303,6 +11439,12 @@ struct Checker<'a> {
     /// (read by the field arm) the one it is walking is.
     callee_position: bool,
     this_is_callee: bool,
+    /// The callee `check_expr` walks next is an element chain's cursor
+    /// (`src.get(__hale_chain_i3_items)`) whose source was anchored on
+    /// this pseudo-field (`hale_syntax::chains::cursor_anchor`): read by
+    /// the field arm, which walks a real field of the anchor's name where
+    /// the receiver has no accessor of its own (GH #1984).
+    cursor_anchor: Option<&'static str>,
     /// The identifier `check_ident_expr` is typing is a bare callee the
     /// shadowing desugar left as written: it names the program's fn or
     /// builtin, whatever binding of the name is in scope.
@@ -11310,6 +11452,10 @@ struct Checker<'a> {
     current_locus: Option<&'a LocusInfo>,
     in_lifecycle: bool,
     in_closure: bool,
+    /// GH #1942: the expression being walked is `[]` as the value of a
+    /// `let` that declares its type, the one place lowering knows the
+    /// element type of an empty array literal.
+    empty_array_typed: bool,
     /// v1.x-VIOLATE (F.27): true while typechecking an
     /// `on_failure` body. Gates the rejection of `violate`
     /// inside `on_failure` (use `bubble(err)` instead).
@@ -11356,6 +11502,9 @@ struct Checker<'a> {
     /// call through a fn value hands back a fresh instance its caller
     /// owns, so one of these is refused as a value (`fn_value`).
     unfresh_builders: BTreeMap<String, String>,
+    /// GH #1951 (item 2): the bundle's `@raise` conversions, which an `or
+    /// raise` of an error that is not the enclosing fn's applies.
+    raise_fns: Vec<crate::raise_conversion::RaiseFn>,
     locus_decls: BTreeMap<String, &'a LocusDecl>,
     /// The bundle's types, whose field defaults are evaluated at each
     /// literal that leaves the field (GH #1076).
@@ -11378,6 +11527,22 @@ struct Checker<'a> {
     /// so the unknown-bare-type-name rule has to know them to avoid
     /// reporting `T` as a typo.
     generic_params: Vec<String>,
+    /// GH #1965: every literal spelled with a generic template's name
+    /// the ordinary walk typed (by span: the template's name), and the
+    /// ones a site that declares their type admitted or a site with none
+    /// already refused. The rest are refused when the walk ends
+    /// (`refuse_unadmitted_template_literals`).
+    template_literals: BTreeMap<(u32, u32), (Span, String)>,
+    admitted_template_literals: BTreeSet<(u32, u32)>,
+    /// What a walk of a generic body for one of its monomorphs finds that
+    /// the template's own walk cannot (its parameters are `Unknown`
+    /// there): an argument with no nameable type, an unadmitted template
+    /// literal (GH #1963, #1965). That walk's diagnostics are dropped;
+    /// these are kept, once each, and reported after every walk.
+    kept_specialization_diags: Vec<Diag>,
+    /// The declaration the walk is in (a top declaration, or the generic
+    /// template a monomorph walk re-walks), for GH #1965's literals.
+    walk_decl_span: Option<Span>,
     /// M3 stage 3 tranche 2: generic TYPE templates (name → decl).
     /// Mangled monomorph literals (`Box_Int { ... }`) resolve
     /// against these — previously "unknown type" at typecheck,
@@ -11763,6 +11928,12 @@ impl<'a> Checker<'a> {
                         let defaults: Vec<&'a Expr> = fields.iter().filter_map(|f| f.default.as_ref()).collect();
                         let typed = self.judge_defaults_where_declared(&defaults, &t.generics);
                         self.refuse_valueless_field_defaults(&t.name.name, fields, &typed);
+                        // a field's declared type supplies a template
+                        // literal's arguments (GH #1965)
+                        for d in &defaults {
+                            self.mark_declared_site(d);
+                        }
+                        self.refuse_bounded_field_defaults(&t.name.name, fields);
                         // A field default is not typed here, but lowering
                         // emits it at every literal of the type that
                         // leaves the field, so the defaults its calls
@@ -14303,6 +14474,30 @@ impl<'a> Checker<'a> {
                     .to_string(),
             ));
         }
+        // GH #1942: the cache hashes its key as an `Int` or a `String`, as
+        // a hashmap does (an identity, a range or a quantity is its
+        // `Int`); any other key field checked clean and the build refused
+        // the locus.
+        let key_ok = match &key_ty {
+            Ty::Prim(PrimType::Int | PrimType::String) | Ty::Unknown => true,
+            Ty::Named(n) => !matches!(
+                self.top.lookup(n),
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_) | TypeKind::Enum(_), .. }))
+            ),
+            _ => false,
+        };
+        if !key_ok {
+            self.diags.push(Diag::ty(
+                field_ident.span,
+                format!(
+                    "@form(lru_cache) key `{}.{}` is a `{}`: a cache's key is an `Int` or a `String` (an \
+                     identity, a range or a quantity is its `Int`); key the cell by one of those",
+                    cell_name,
+                    field_ident.name,
+                    key_ty.display()
+                ),
+            ));
+        }
         // The eviction hook (friction sweep 2026-10-12): a method
         // `on_evict(k: K, v: S)` the cache calls with each entry it
         // evicts over `cap`, before it reclaims the cell.
@@ -15151,6 +15346,10 @@ impl<'a> Checker<'a> {
                     let got = self.check_expr(init);
                     self.params_default = prev_default;
                     let Some(te) = &p.ty else { continue };
+                    // the param's declared type supplies a template
+                    // literal's arguments (GH #1965), a generic locus's
+                    // `Box<T>` included
+                    self.mark_declared_site(init);
                     let want = self.resolve_te(te);
                     // `Unknown` on either side is an unresolved
                     // type, already diagnosed (or deliberately
@@ -15403,6 +15602,17 @@ impl<'a> Checker<'a> {
                 );
                 self.check_block(&md.body);
                 self.return_ctx = prev_return;
+                // GH #1965: a mode's tail is its return, and lowering
+                // rewrites a template literal there against the declared
+                // return type. Admitted by that type; the walk above
+                // typed it.
+                if let (Some(te), Some(tail)) = (&md.ret, md.body.tail.as_deref()) {
+                    let want = self.resolve_te(te);
+                    let mark = self.walk_mark();
+                    let got = self.check_expr(tail);
+                    self.discard_since(mark);
+                    let _ = self.admit_monomorph_literal(&want, &got, tail, true);
+                }
                 self.locals.pop();
                 self.in_lifecycle = false;
             }
@@ -15656,7 +15866,46 @@ impl<'a> Checker<'a> {
                             ),
                         ));
                     }
-                    let _ = self.check_expr(&assertion.tolerance);
+                    let tt = self.check_expr(&assertion.tolerance);
+                    // GH #1942: the band is computed in one type, so an
+                    // `Int` beside a `Float` (`mean(self.n) ~~ 1`, `mean` is
+                    // a `Float`) checked clean as a widening and the build
+                    // refused the closure. Refused at the `Int` side.
+                    let num = |this: &Self, t: &Ty| this.through_aliases(this.scalars.representation(&this.through_aliases(t.clone())));
+                    // `mean(…)` is a `Float` whatever it samples (the
+                    // accumulator's row), though the walk types the call as
+                    // no builtin's.
+                    let is_mean = |e: &Expr| {
+                        matches!(e, Expr::Call { callee, args, .. }
+                            if args.len() == 1 && matches!(callee.as_ref(), Expr::Ident(i) if i.name == "mean"))
+                    };
+                    let float_ty = Ty::Prim(PrimType::Float);
+                    let side = |this: &Self, e: &Expr, t: &Ty| if is_mean(e) { float_ty.clone() } else { num(this, t) };
+                    let (ln, rn, tn) =
+                        (side(self, &assertion.left, &lt), side(self, &assertion.right, &rt), num(self, &tt));
+                    let int = Ty::Prim(PrimType::Int);
+                    let float = Ty::Prim(PrimType::Float);
+                    let band = if ln == float || rn == float { Some(&float) } else { None };
+                    if let Some(float) = band {
+                        for (side, t, what) in [
+                            (&assertion.left, &ln, "left side"),
+                            (&assertion.right, &rn, "right side"),
+                            (&assertion.tolerance, &tn, "tolerance"),
+                        ] {
+                            if *t == int {
+                                self.diags.push(Diag::ty(
+                                    side.span(),
+                                    format!(
+                                        "closure `{}`: the band is a `{}` (the other side is one), and its {what} \
+                                         is an `Int`; a closure compares in one type, so write it as a `Float` \
+                                         (`1.0`, or `Float(x)`)",
+                                        cd.name.name,
+                                        float.display()
+                                    ),
+                                ));
+                            }
+                        }
+                    }
                     let seen = self.expr_types.take().unwrap_or_default();
                     self.record_accumulators(assertion, &seen);
                 }
@@ -15959,6 +16208,25 @@ impl<'a> Checker<'a> {
         self.generic_params
             .extend(decl.generics.iter().map(|g| g.name.name.clone()));
         self.check_generic_bound_names("fn", &decl.name.name, &decl.generics);
+        // GH #1942: a locus method is declared once, on the locus, and
+        // hale can't compile one specialized per call yet; the build
+        // refused it, with no place.
+        if let (Some(l), false) = (locus, decl.generics.is_empty()) {
+            let params: Vec<&str> = decl.generics.iter().map(|g| g.name.name.as_str()).collect();
+            self.diags.push(Diag::ty(
+                decl.name.span,
+                format!(
+                    "locus `{}` method `{}` is generic (`<{}>`), and hale can't compile a generic locus method \
+                     yet: declare it as a free generic fn that takes what it needs from the locus \
+                     (`fn {}<{}>(...)`), or give the method concrete types",
+                    l.name,
+                    decl.name.name,
+                    params.join(", "),
+                    decl.name.name,
+                    params.join(", ")
+                ),
+            ));
+        }
         for p in &decl.params {
             self.check_type_annotation(&p.ty);
         }
@@ -16061,7 +16329,8 @@ impl<'a> Checker<'a> {
             };
             for p in &decl.params {
                 let ty = self.resolve_te(&p.ty);
-                if let Some(reason) = cell(self, &ty) {
+                let reason = cell(self, &ty).map(str::to_string).or_else(|| self.ffi_named_refusal(&ty, 0));
+                if let Some(reason) = reason {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
                         format!(
@@ -16073,10 +16342,25 @@ impl<'a> Checker<'a> {
                         ),
                     ));
                 }
+                // GH #1942: a C function has a fixed arity, so a default
+                // has nothing to fill in at the boundary; the build
+                // refused it.
+                if let Some(d) = &p.default {
+                    self.diags.push(Diag::ty(
+                        d.span(),
+                        format!(
+                            "`@ffi` fn `{}`: parameter `{}` has a default, and a C function has a fixed \
+                             arity, so nothing fills it in at the boundary. Drop the default, and wrap the \
+                             import in a Hale fn that supplies it (`fn {}_or(…) {{ return {}(…, value); }}`)",
+                            decl.name.name, p.name.name, decl.name.name, decl.name.name
+                        ),
+                    ));
+                }
             }
             if let Some(ret_te) = &decl.ret {
                 let ret_ty = self.resolve_te(ret_te);
-                if let Some(reason) = cell(self, &ret_ty) {
+                let reason = cell(self, &ret_ty).map(str::to_string).or_else(|| self.ffi_named_refusal(&ret_ty, 0));
+                if let Some(reason) = reason {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
                         format!(
@@ -16127,11 +16411,98 @@ impl<'a> Checker<'a> {
         self.generic_params = prev_generics;
     }
 
-    /// A fn's body: its block, and its tail is the returned value, which
-    /// flows into the declared return type where a Decimal's scale is
-    /// concerned (`Decimal<S>`: a scale-less tail takes the return type's
-    /// scale, and another scale is refused). The rest of a tail's
-    /// agreement with the return type is lowering's to check.
+    /// A value leaving the body as its return: a `return e;`, or the body's
+    /// tail (GH #1970), which lowering lowers as that `return`. Held to the
+    /// declared return type (the fallible success type in a fallible
+    /// body), a member flowing into its set as the set's variant, as at
+    /// any place of the set. `said` opens the mismatch's message.
+    fn judge_returned(&mut self, e: &Expr, got: &Ty, said: &str) {
+        let got = got.clone();
+        if self.return_ctx.is_none() && !self.in_fn_main {
+            // A body that returns nothing: its `return e;` is refused at
+            // the statement, and its tail is a statement.
+        } else if let Some((expected_ret, _)) = self.fallible_ctx.clone() {
+            let expected_ret = &expected_ret;
+            // GH #911 B5: the return slot is the other
+            // site codegen rewrites a bare generic
+            // template name at — `fn make() -> Box<Int> {
+            // return Box { value: 4 }; }` builds and runs.
+            let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
+            // The Int -> Float widening lowering applies at every return,
+            // a fallible body's success value included.
+            let widening = matches!((expected_ret, &got), (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::Int)));
+            if !widening && !monomorph && !self.flows_into(expected_ret, &got, e) {
+                let message = format!(
+                    "{said} `{}`, got `{}`{}",
+                    expected_ret.display(),
+                    got.display(),
+                    wide_conversion_hint(expected_ret, &got)
+                );
+                self.returned_mismatch(e.span(), message);
+            }
+        } else if let Some(expected_ret) = self.return_ctx.clone() {
+            let expected_ret = &expected_ret;
+            // #335: the non-fallible case, which had no
+            // check. Same Unknown-permissive rule, and the
+            // same Int -> Float widening a call site
+            // allows.
+            let widening = matches!(
+                (expected_ret, &got),
+                (
+                    Ty::Prim(PrimType::Float),
+                    Ty::Prim(PrimType::Int)
+                )
+            );
+            // GH #911 B5: the same return-slot rewrite as
+            // the fallible branch above.
+            let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
+            if !widening
+                && !monomorph
+                && !self.flows_into(expected_ret, &got, e)
+            {
+                let message = format!(
+                    "{said} `{}`, got `{}`{}",
+                    expected_ret.display(),
+                    got.display(),
+                    wide_conversion_hint(expected_ret, &got)
+                );
+                self.returned_mismatch(e.span(), message);
+            }
+        }
+    }
+
+    /// A returned value of another type than the body's. In a generic
+    /// body walked for one of its monomorphs, the walk's diagnostics are
+    /// dropped (the template's own walk judged it), so a mismatch only a
+    /// specialization has (`fn scale<T>(x: T) -> T { return x * 1.5; }`
+    /// at `Int`) passed the check and the build refused the specialized
+    /// return. It is kept, and says which specialization it is.
+    fn returned_mismatch(&mut self, at: Span, message: String) {
+        if self.specializing.is_none() {
+            self.diags.push(Diag::ty(at, message));
+            return;
+        }
+        // (the template's own walk already said it, for every monomorph)
+        if self.diags.iter().any(|d| d.span == at && d.message == message) {
+            return;
+        }
+        let note = self.specialization_note();
+        self.push_or_keep(Diag::ty(
+            at,
+            format!(
+                "{message}{note}: hale compiles a generic body once for each set of type arguments its calls \
+                 make, and this one does not type-check at those. Convert the value to the return type, or \
+                 write the fn over the concrete type"
+            ),
+        ));
+    }
+
+    /// A fn's body: its block, and its tail, in a body with a declared
+    /// return type, is the returned value, judged as the `return` lowering
+    /// lowers it as ([`Self::judge_returned`]): held to the return type, a
+    /// member flowing into its set (GH #1970, where the build refused the
+    /// member the check had passed), a scale-less Decimal taking the return
+    /// type's scale.
     fn check_fn_body(&mut self, block: &Block) {
         self.locals.push();
         for stmt in &block.stmts {
@@ -16139,8 +16510,15 @@ impl<'a> Checker<'a> {
         }
         if let Some(tail) = &block.tail {
             let got = self.check_expr(tail);
-            if let Some(want) = self.return_ctx.clone() {
-                let _ = self.decimal_flow(&want, &got, tail);
+            if self.return_ctx.is_some() {
+                self.judge_returned(tail, &got, "this is the body's value (its tail): expected");
+            }
+            // GH #1965: the body's tail is its return, and lowering
+            // rewrites a template literal there against the declared
+            // return type as it does a `return`'s.
+            let want = self.fallible_ctx.as_ref().map(|(s, _)| s.clone()).or_else(|| self.return_ctx.clone());
+            if let Some(want) = want {
+                let _ = self.admit_monomorph_literal(&want, &got, tail, true);
             }
         }
         self.locals.pop();
@@ -16343,17 +16721,34 @@ impl<'a> Checker<'a> {
         if !matches!(ty, Ty::Unit) {
             return false;
         }
-        self.diags.push(Diag::ty(
+        // In a generic body walked for one of its monomorphs (whose
+        // diagnostics are dropped) a `()` only that specialization has
+        // (`id(self.child.go())` in `Supervisor<T>` at a `T` whose `go`
+        // returns nothing) is kept, naming the specialization: the build
+        // refused the specialized call.
+        let at = self.specialization_note();
+        self.push_or_keep(Diag::ty(
             value.span(),
             format!(
                 "{place} needs a value, and this expression produces none \
-                 (its type is `()`): a call to a fn that returns nothing, an \
+                 (its type is `()`{at}): a call to a fn that returns nothing, an \
                  `or` on a `() fallible(E)` call, or an `if` / `match` / \
                  block with no tail value. Write it as a statement of its \
                  own (`call() or {{ ... }};`), or give it a value to produce."
             ),
         ));
         true
+    }
+
+    /// `, where a call makes `T` = `Int`` while a generic body is walked
+    /// for one of its monomorphs, else nothing.
+    fn specialization_note(&self) -> String {
+        if self.specializing.is_none() {
+            return String::new();
+        }
+        let at_args: Vec<String> =
+            self.generic_bindings.iter().map(|(g, t)| format!("`{g}` = `{}`", t.display())).collect();
+        format!(", where a call makes {}", at_args.join(", "))
     }
 
     /// A fn's name (a program's own, an imported seed's `alias::f`, a
@@ -16416,6 +16811,24 @@ impl<'a> Checker<'a> {
             ),
         ));
         ty
+    }
+
+    /// GH #1976: a generic fn's name read as a value (`let g = get;`). A
+    /// generic fn has no single type: each call specializes it at its
+    /// arguments' types, and a value is one fn pointer of one type, so
+    /// there is nothing to hand. The build refused it as an unknown
+    /// identifier after a clean check; the check refuses it at the name.
+    fn generic_fn_value(&mut self, shown: &str, span: Span) -> Ty {
+        let last = shown.rsplit("::").next().unwrap_or(shown);
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "`{shown}` is a generic fn, and a generic fn has no single type to be a value: each call \
+                 specializes it at its arguments' types. Call it (`{shown}(x)`), or pass a fn written over \
+                 the concrete types that calls it (`fn {last}_of(x: Int) -> Int {{ return {shown}(x); }}`)"
+            ),
+        ));
+        Ty::Unknown
     }
 
     /// A `std::` path read as a value (`apply(std::url::encode, s)`). A
@@ -16764,7 +17177,8 @@ impl<'a> Checker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
-                let got = self.check_expr(value);
+                let declared = ty.as_ref().map(|te| crate::resolve::resolve_type_expr(te, &self.top.names));
+                let got = self.check_expr_expecting_in(value, declared.as_ref(), true);
                 self.refuse_unit_value(&got, value, &format!("let `{}`", name.name));
                 let bound = match ty {
                     Some(te) => {
@@ -16810,17 +17224,39 @@ impl<'a> Checker<'a> {
                                 ),
                             ));
                         }
-                        want
+                        // read as the interface it declares, as a
+                        // parameter is (`resolve_param_te`)
+                        self.with_interfaces_named(te, want)
                     }
                     None => {
-                        // GH #911 B5: no annotation is no arguments.
-                        self.refuse_generic_literals_without_arguments(&got, value);
-                        got
+                        // GH #1995 S2: an argument of a text `for` source,
+                        // bound by the desugar. A value that is no string
+                        // is refused here, in the source's words, and the
+                        // binding reads as unknown so the scan the desugar
+                        // wrote around it says nothing more.
+                        if let Some((source, param)) = hale_syntax::str_sources::argument_of(&name.name) {
+                            let base = self.through_aliases(got.clone());
+                            if !matches!(base, Ty::Prim(PrimType::String | PrimType::StringView) | Ty::Unknown) {
+                                self.diags.push(Diag::ty(
+                                    value.span(),
+                                    hale_syntax::str_sources::argument_refusal(source, param, &got.display()),
+                                ));
+                                Ty::Unknown
+                            } else {
+                                got
+                            }
+                        } else {
+                            // GH #911 B5: no annotation is no arguments.
+                            self.refuse_generic_literals_without_arguments(&got, value);
+                            got
+                        }
                     }
                 };
                 self.note_view_binding(name, &bound, ty.as_ref());
                 let cell = self.cell_of(value);
-                let param_place = matches!(bound, Ty::Bounded(_, _)) && self.under_param_place(value);
+                // A bounded local bound from a place under a parameter is
+                // the frame's own copy (decisions F.49), no view of it.
+                let param_place = false;
                 self.locals.insert(
                     &name.name,
                     LocalSym { ty: bound, is_mut: *is_mut, cell, param_place },
@@ -16874,8 +17310,15 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::Assign { target, op, value, span, .. } => {
-                let mut got = self.check_expr(value);
-                let want = self.lvalue_ty(target);
+                // An empty `[]` takes its element type from the place, so the
+                // place is typed first for it (and only for it, keeping the
+                // order of every other assignment's diagnostics).
+                let early = matches!(value, Expr::Array(parts, _) if parts.is_empty()).then(|| self.lvalue_ty(target));
+                let mut got = self.check_expr_expecting(value, early.as_ref());
+                let want = match early {
+                    Some(w) => w,
+                    None => self.lvalue_ty(target),
+                };
                 // GH #1076 (U2): `x += v` is the operator over the target
                 // and the value, stored back: no arithmetic on an
                 // identity, and a range's sum is an `Int` storing it
@@ -16930,39 +17373,22 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let stored = stored.as_ref().unwrap_or(value);
-                // A bounded[T; N] place is assigned whole only from
-                // another bounded value: the slots and the count are
-                // copied, as a whole-struct copy carries them
-                // (`spec/types.md` § bounded). Any other value (a
-                // literal, an array) has no bounded shape to copy;
-                // the intrinsics build one.
-                // A bounded local is a view of the place it was bound from
-                // (`spec/types.md` § bounded), whose owner a whole
-                // assignment needs, to anchor the elements where the place
-                // lives: the place is assigned instead.
-                let bounded_local = matches!(want, Ty::Bounded(_, _))
-                    && target.tail.is_empty()
-                    && matches!(op, AssignOp::Eq);
-                if bounded_local {
+                // A bounded[T; N] place, a field or a local (GH #1951: a
+                // bounded local is the frame's own list), is assigned
+                // whole only from another bounded value of its type, or
+                // from an array literal (`flows_into`): the slots and the
+                // count are copied, as a whole-struct copy carries them
+                // (`spec/types.md` § bounded). Any other value has no
+                // bounded shape to copy.
+                let bounded_refused = matches!(want, Ty::Bounded(_, _))
+                    && !matches!(got, Ty::Bounded(_, _) | Ty::Unknown)
+                    && !matches!(stored, Expr::Array(..));
+                if bounded_refused {
                     self.diags.push(Diag::ty(
                         *span,
                         format!(
-                            "`{0}` is a `{1}` local, a view of the place it was bound from, and a whole \
-                             assignment through it would keep its elements in this frame, not where that \
-                             place lives; assign the place itself (`self.xs = …`, `row.xs = …`)",
-                            target.head.name,
-                            want.display()
-                        ),
-                    ));
-                }
-                let bounded_refused =
-                    bounded_local || (matches!(want, Ty::Bounded(_, _)) && !matches!(got, Ty::Bounded(_, _) | Ty::Unknown));
-                if bounded_refused && !bounded_local {
-                    self.diags.push(Diag::ty(
-                        *span,
-                        format!(
-                            "a `{}` is assigned whole only from another `{}`; build one \
-                             through push(...) / set(...) / clear(...)",
+                            "a `{}` is assigned whole only from another `{}` or an array literal \
+                             (`[a, b]`, `[]`); build one through push(...) / set(...) / clear(...)",
                             want.display(),
                             want.display()
                         ),
@@ -16973,10 +17399,25 @@ impl<'a> Checker<'a> {
                 // `self.cfg = Cfg { .. }` against the place's type.
                 let monomorph = matches!(op, AssignOp::Eq) && self.admit_monomorph_literal(&want, &got, value, true);
                 if !monomorph && !bounded_refused && !self.flows_into(&want, &got, stored) {
+                    // A locus into a place declared as an interface it
+                    // satisfies: the build converts a locus into an
+                    // interface where the place is declared (a `let`, a
+                    // field's initializer, an argument, a return), not
+                    // at an assignment, and refused it there (GH
+                    // #2005: `let mut g: Greeter = Hi { }; g = Hey { };`)
+                    let hint = if self.locus_meets_interface(&want, &got) {
+                        format!(
+                            ": hale can't assign a locus to a place of an interface yet (it converts one where \
+                             the place is declared). Bind a new `let` of `{}`, or pass the locus where it is used",
+                            want.display()
+                        )
+                    } else {
+                        String::new()
+                    };
                     self.diags.push(Diag::ty(
                         value.span(),
                         format!(
-                            "assignment: target type `{}` not assignable from `{}`",
+                            "assignment: target type `{}` not assignable from `{}`{hint}",
                             want.display(),
                             got.display()
                         ),
@@ -17047,7 +17488,20 @@ impl<'a> Checker<'a> {
                 } else {
                     match self.check_expr(iter) {
                         Ty::Bounded(e, _) | Ty::Array(e, _) => *e,
-                        _ => Ty::Unknown,
+                        // GH #1995 (G12): a String is no sequence, and
+                        // the build refused the loop ("for-loop iterator
+                        // must be an array") after the check passed it.
+                        t @ Ty::Prim(PrimType::String | PrimType::StringView) => {
+                            self.diags.push(Diag::ty(iter.span(), for_over_string(&t)));
+                            Ty::Unknown
+                        }
+                        t => match self.through_aliases(t.clone()) {
+                            Ty::Prim(PrimType::String | PrimType::StringView) => {
+                                self.diags.push(Diag::ty(iter.span(), for_over_string(&t)));
+                                Ty::Unknown
+                            }
+                            _ => Ty::Unknown,
+                        },
                     }
                 };
                 self.locals.push();
@@ -17069,9 +17523,18 @@ impl<'a> Checker<'a> {
                 }
                 self.check_block(body);
             }
-            Stmt::Return(expr, _) => {
+            Stmt::Return(expr, ret_span) => {
                 if let Some(e) = expr {
-                    let got = self.check_expr(e);
+                    let expected = self.fallible_ctx.as_ref().map(|(t, _)| t.clone()).or_else(|| self.return_ctx.clone());
+                    let got = self.check_expr_expecting(e, expected.as_ref());
+                    // GH #1940: a `return` the tail-return desugar wrote for a
+                    // value in the body's result position carries the value's
+                    // own span; one the author wrote spans its keyword.
+                    let said = if *ret_span == e.span() {
+                        "this is the body's value (its last statement's arm or tail): expected"
+                    } else {
+                        "return: expected"
+                    };
                     // A handler returns nothing: `return;` ends it
                     // early (lowered as its fall-through exit), and a
                     // value has nowhere to go.
@@ -17084,14 +17547,17 @@ impl<'a> Checker<'a> {
                                 .to_string(),
                         ));
                     } else if self.return_ctx.is_none()
-                        && self.fallible_ctx.is_none()
+                        && self.fallible_ctx.as_ref().is_none_or(|(success, _)| *success == Ty::Unit)
                         && !self.in_fn_main
                     {
                         // A body that declares no return type returns
                         // nothing: a lifecycle hook, or a fn or mode
-                        // with no `-> T`. Lowering refused the value
-                        // with no span; `fn main`'s `return n;` is the
-                        // exit code and is not this.
+                        // with no `-> T`, a `() fallible(E)` one
+                        // included (GH #1969: its `return <a call with
+                        // no value>;` passed as a `()` returned, and
+                        // lowering refused it). Lowering refused the
+                        // value with no span; `fn main`'s `return n;`
+                        // is the exit code and is not this.
                         self.diags.push(Diag::ty(
                             e.span(),
                             "`return` carries a value, but this body returns \
@@ -17108,55 +17574,7 @@ impl<'a> Checker<'a> {
                     // Check that the returned type matches the fn's
                     // declared success return type when in a
                     // fallible body.
-                    if let Some((expected_ret, _)) = self.fallible_ctx.clone() {
-                        let expected_ret = &expected_ret;
-                        // GH #911 B5: the return slot is the other
-                        // site codegen rewrites a bare generic
-                        // template name at — `fn make() -> Box<Int> {
-                        // return Box { value: 4 }; }` builds and runs.
-                        let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
-                        if !monomorph && !self.flows_into(expected_ret, &got, e) {
-                            self.diags.push(Diag::ty(
-                                e.span(),
-                                format!(
-                                    "return: expected `{}`, got `{}`{}",
-                                    expected_ret.display(),
-                                    got.display(),
-                                    wide_conversion_hint(expected_ret, &got)
-                                ),
-                            ));
-                        }
-                    } else if let Some(expected_ret) = self.return_ctx.clone() {
-                        let expected_ret = &expected_ret;
-                        // #335: the non-fallible case, which had no
-                        // check. Same Unknown-permissive rule, and the
-                        // same Int -> Float widening a call site
-                        // allows.
-                        let widening = matches!(
-                            (expected_ret, &got),
-                            (
-                                Ty::Prim(PrimType::Float),
-                                Ty::Prim(PrimType::Int)
-                            )
-                        );
-                        // GH #911 B5: the same return-slot rewrite as
-                        // the fallible branch above.
-                        let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
-                        if !widening
-                            && !monomorph
-                            && !self.flows_into(expected_ret, &got, e)
-                        {
-                            self.diags.push(Diag::ty(
-                                e.span(),
-                                format!(
-                                    "return: expected `{}`, got `{}`{}",
-                                    expected_ret.display(),
-                                    got.display(),
-                                    wide_conversion_hint(expected_ret, &got)
-                                ),
-                            ));
-                        }
-                    }
+                    self.judge_returned(e, &got, said);
                 }
             }
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) => {}
@@ -17207,6 +17625,10 @@ impl<'a> Checker<'a> {
                         let injected = self.set_injection(&expected_payload, &payload_ty).is_some()
                             && self.flows_into(&expected_payload, &payload_ty, value);
                         if !injected && !expected_payload.assignable_from(&payload_ty) {
+                            // Said here, once (GH #1965).
+                            if let Expr::Struct { span, .. } = value {
+                                self.admitted_template_literals.insert((span.start.0, span.end.0));
+                            }
                             self.diags.push(Diag::ty(
                                 value.span(),
                                 format!(
@@ -17497,19 +17919,11 @@ impl<'a> Checker<'a> {
         let _ = self.check_match_core(stmt, false);
     }
 
-    /// Enter a match arm's pattern binders into the current scope.
-    ///
-    /// Typed `Unknown` deliberately: the binders' types are already
-    /// resolved by codegen (scrutinee for a bare binder, element type
-    /// for a tuple sub-pattern, payload field for a constructor arg),
-    /// and inventing a narrower type here would turn a scope fix into
-    /// a new class of type error on programs that compile today. What
-    /// this establishes is that the NAME exists.
     /// The `views` rows of a pattern's bindings matched against a value of
     /// type `ty` (GH #1554): a binding is the value it binds, a variant's
     /// payload its declared field's type, a tuple's element its element's.
-    /// The checker's own locals stay as `bind_pattern` binds them (its
-    /// diagnostics are unchanged); only the owned-view pass reads these.
+    /// Only the owned-view pass reads these; the checker's own locals are
+    /// `bind_arm_pattern`'s.
     fn note_view_pattern(&mut self, pat: &Pattern, ty: &Ty) {
         match pat {
             Pattern::Binding(id) => self.note_view_binding(id, ty, None),
@@ -17541,7 +17955,32 @@ impl<'a> Checker<'a> {
                     self.note_view_pattern(p, &t);
                 }
             }
+            Pattern::Or(alts, _) => {
+                for a in alts {
+                    self.note_view_pattern(a, ty);
+                }
+            }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+
+    /// Enter a match arm's pattern binders into the current scope, each
+    /// at the type of what it binds against a scrutinee of type `scrut`
+    /// (`pattern_binding_types`: a bare binding is the scrutinee, a
+    /// variant's value its declared field's type, a tuple's part its
+    /// element's), so a binding is typed at its uses as any other local
+    /// is (GH #2016). A name the check cannot type (an alternative's
+    /// name the first alternative does not bind, which
+    /// `check_or_pattern` refuses; a variant it cannot find) is entered
+    /// as `Unknown`, so the name exists. Until GH #2016 every binder was
+    /// `Unknown`, and `let t: String = v` with `v` an `Int` checked and
+    /// built.
+    fn bind_arm_pattern(&mut self, pat: &Pattern, scrut: &Ty) {
+        self.bind_pattern(pat);
+        let mut typed = Vec::new();
+        self.pattern_binding_types(pat, scrut, &mut typed);
+        for (name, ty, _) in typed {
+            self.locals.insert(&name, LocalSym { ty, is_mut: false, cell: None, param_place: false });
         }
     }
 
@@ -17556,7 +17995,7 @@ impl<'a> Checker<'a> {
                     self.bind_pattern(a);
                 }
             }
-            Pattern::Tuple(parts, _) => {
+            Pattern::Tuple(parts, _) | Pattern::Or(parts, _) => {
                 for p in parts {
                     self.bind_pattern(p);
                 }
@@ -17572,13 +18011,16 @@ impl<'a> Checker<'a> {
     /// join of its arm-body types: every value arm must agree
     /// (`Unknown` is lenient in either direction), and a mismatch
     /// diags here with the match's span rather than surfacing as a
-    /// codegen error. Block arm bodies type as `Unknown` at v0.1
-    /// (no block-tail typing helper yet); codegen's phi-build
-    /// still validates them.
+    /// codegen error. A block arm body types as a block used as a
+    /// value (its tail's type, or `()`), unless it leaves, when it
+    /// is a diverging arm and types as `Unknown` (GH #2016).
     fn check_match_core(&mut self, stmt: &MatchStmt, as_expr: bool) -> Ty {
         let scrut_ty = self.check_expr(&stmt.scrutinee);
         let mut joined: Option<Ty> = None;
         let mut arm_tys: Vec<Ty> = Vec::with_capacity(stmt.arms.len());
+        // Arms that disagree make the match's type unknown, as an `if`
+        // expression's do, so its consumer adds no refusal of its own.
+        let mut mismatched = false;
         for arm in &stmt.arms {
             // GH #721: an arm's pattern BINDS — `v`, `(a, b)`,
             // `Event::Tick(n)` — and the binders are in scope for the
@@ -17588,18 +18030,26 @@ impl<'a> Checker<'a> {
             // `Unknown` and became a false "unknown identifier" the
             // moment that stopped being free.
             self.locals.push();
-            self.bind_pattern(&arm.pattern);
+            self.bind_arm_pattern(&arm.pattern, &scrut_ty);
             self.note_view_pattern(&arm.pattern, &scrut_ty);
-            self.check_set_pattern(&arm.pattern, &scrut_ty);
-            self.check_pattern_literals(&arm.pattern, &scrut_ty);
-            // `Decimal<S>`: a Decimal literal pattern is a value of the
-            // scrutinee's scale, judged at it.
-            if let (Pattern::Literal(Literal::Decimal(text), span), Ty::Prim(PrimType::Decimal(scale))) =
-                (&arm.pattern, &scrut_ty)
-            {
-                if self.specializing.is_none() {
-                    self.decimal_literals.push(PendingDecimal { span: *span, text: text.clone(), scale: *scale });
+            // GH #1995 E2: each alternative of an or-pattern is checked
+            // as the arm's whole pattern would be.
+            for alt in arm.pattern.alternatives() {
+                self.check_set_pattern(alt, &scrut_ty);
+                self.check_bare_variant_pattern(alt, &scrut_ty);
+                self.check_pattern_literals(alt, &scrut_ty);
+                // `Decimal<S>`: a Decimal literal pattern is a value of the
+                // scrutinee's scale, judged at it.
+                if let (Pattern::Literal(Literal::Decimal(text), span), Ty::Prim(PrimType::Decimal(scale))) =
+                    (alt, &scrut_ty)
+                {
+                    if self.specializing.is_none() {
+                        self.decimal_literals.push(PendingDecimal { span: *span, text: text.clone(), scale: *scale });
+                    }
                 }
+            }
+            if let Pattern::Or(alts, _) = &arm.pattern {
+                self.check_or_pattern(alts, &scrut_ty);
             }
             if let Some(g) = &arm.guard {
                 let _ = self.check_expr(g);
@@ -17610,13 +18060,27 @@ impl<'a> Checker<'a> {
                     arm_tys.push(t.clone());
                     t
                 }
+                // A block arm of a match expression that does not leave
+                // is a block used as a value (`check_block_as_expr`): its
+                // tail's type, its trailing `match`'s as a match
+                // expression, or `()` when it ends in anything else, as
+                // the build lowers it (`lower_block_as_expr`), so `1 -> 5,
+                // _ -> {}` is the mismatch below and not a build refusal
+                // (GH #2016). One that leaves (its last statement returns,
+                // fails, breaks …, or is a `match` whose every arm does) is
+                // a diverging arm, beside the arms that supply the value
+                // (or none, when the whole match expression diverges, as
+                // one whose every arm returns does), and is checked as a
+                // statement; so is every arm of a statement `match`, and a
+                // `let … else`'s `else` (`check_pattern_let` holds it to
+                // leaving, by F.48's judgment).
+                MatchArmBody::Block(b) if as_expr && !block_leaves(b) && stmt.form != MatchForm::LetElse => {
+                    let t = self.check_block_as_expr(b);
+                    arm_tys.push(t.clone());
+                    t
+                }
                 MatchArmBody::Block(b) => {
                     arm_tys.push(Ty::Unknown);
-                    // A block arm is checked as a statement: one ending
-                    // in a `match` whose every arm leaves is a diverging
-                    // arm, beside the arms that supply the value (or
-                    // none, when the whole match expression diverges, as
-                    // one whose every arm returns does).
                     self.check_block(b);
                     Ty::Unknown
                 }
@@ -17632,15 +18096,23 @@ impl<'a> Checker<'a> {
                             // `Decimal<S>`: joined below, once every arm
                             // is typed.
                         } else if arm_ty != Ty::Unknown && arm_ty != *prev {
-                            self.diags.push(Diag::ty(
-                                stmt.span,
+                            mismatched = true;
+                            let message = if matches!(stmt.form, MatchForm::IfLet | MatchForm::IfLetElse) {
+                                // GH #1995 E3: worded as an `if`'s arms are
+                                format!(
+                                    "`if let` arms have mismatched types: then=`{}`, else=`{}`",
+                                    prev.display(),
+                                    arm_ty.display()
+                                )
+                            } else {
                                 format!(
                                     "match expression arms have \
                                      mismatched types: `{}` vs `{}`",
                                     prev.display(),
                                     arm_ty.display()
-                                ),
-                            ));
+                                )
+                            };
+                            self.diags.push(Diag::ty(stmt.span, message));
                         }
                     }
                 }
@@ -17649,7 +18121,10 @@ impl<'a> Checker<'a> {
         if as_expr && matches!(joined, Some(Ty::Prim(PrimType::Decimal(_)))) {
             joined = Some(self.join_decimal_arms(stmt, &arm_tys, joined.take().expect("a Decimal")));
         }
-        if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top, self.known) {
+        self.warn_redundant_alternatives(&stmt.arms);
+        if matches!(stmt.form, MatchForm::Let | MatchForm::LetElse) {
+            self.check_pattern_let(stmt, &scrut_ty);
+        } else if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top, self.known) {
             self.diags.push(Diag::ty(
                 stmt.span,
                 format!(
@@ -17659,8 +18134,10 @@ impl<'a> Checker<'a> {
                 ),
             ));
         }
-        if as_expr {
+        if as_expr && !mismatched {
             joined.unwrap_or(Ty::Unknown)
+        } else if as_expr {
+            Ty::Unknown
         } else {
             Ty::Unit
         }
@@ -18520,23 +18997,49 @@ impl<'a> Checker<'a> {
     /// (friction sweep 2026-10-12). Typed as the interface, the local
     /// offers exactly the interface's methods (`field_ty`'s interface
     /// arm), and a field read or an undeclared method is refused here.
+    ///
+    /// The same holds for a `let` that declares its type, and at any
+    /// depth of an array, a `bounded` or a tuple (`[Greeter; 2]`), and
+    /// for a stdlib interface written as its path (`std::http::Handler`):
+    /// a value read from there is a value of the interface, so passing it
+    /// where ANOTHER interface is expected is refused at the argument as
+    /// the build refuses it (it converts a locus into an interface, never
+    /// one interface's value into another's; GH #2005).
     fn resolve_param_te(&self, te: &TypeExpr) -> Ty {
         let ty = self.resolve_te(te);
-        if !matches!(ty, Ty::Unknown) {
-            return ty;
-        }
-        if let TypeExpr::Named { path, generic_args, .. } = te {
-            if path.segments.len() == 1 && generic_args.is_empty() {
-                let n = &path.segments[0].name;
-                if !self.generic_params.contains(n)
-                    && !self.generic_bindings.contains_key(n)
-                    && matches!(self.top.lookup(n), Some(TopSymbol::Interface(_)))
-                {
-                    return Ty::Named(n.clone());
+        self.with_interfaces_named(te, ty)
+    }
+
+    /// `ty`, `te` resolved, with each place an interface name left
+    /// `Unknown` typed as the interface (see [`Self::resolve_param_te`]).
+    fn with_interfaces_named(&self, te: &TypeExpr, ty: Ty) -> Ty {
+        match (te, ty) {
+            (TypeExpr::Named { path, generic_args, .. }, Ty::Unknown) if generic_args.is_empty() => {
+                let written: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                let name = match written.as_slice() {
+                    [n] if !self.generic_params.iter().any(|g| g == n) && !self.generic_bindings.contains_key(*n) => {
+                        n.to_string()
+                    }
+                    [_] => return Ty::Unknown,
+                    _ => match hale_stdlib::PATH_RENAMES.iter().find(|(p, _)| *p == written.as_slice()) {
+                        Some((_, m)) => m.to_string(),
+                        None => return Ty::Unknown,
+                    },
+                };
+                match self.top.lookup(&name) {
+                    Some(TopSymbol::Interface(_)) => Ty::Named(name),
+                    _ => Ty::Unknown,
                 }
             }
+            (TypeExpr::Array { elem, .. }, Ty::Array(e, n)) => Ty::Array(Box::new(self.with_interfaces_named(elem, *e)), n),
+            (TypeExpr::Bounded { elem, .. }, Ty::Bounded(e, n)) => {
+                Ty::Bounded(Box::new(self.with_interfaces_named(elem, *e)), n)
+            }
+            (TypeExpr::Tuple(parts, _), Ty::Tuple(tys)) if parts.len() == tys.len() => {
+                Ty::Tuple(parts.iter().zip(tys).map(|(p, t)| self.with_interfaces_named(p, t)).collect())
+            }
+            (_, ty) => ty,
         }
-        ty
     }
 
 
@@ -18786,6 +19289,10 @@ impl<'a> Checker<'a> {
             let prev_locus = self.current_locus.take();
             let prev_decl = self.locus_decl.take();
             let prev_body = self.body;
+            self.walk_decl_span = Some(match template {
+                GenericBody::Fn(f) => f.span,
+                GenericBody::Locus(l) => l.span,
+            });
             match template {
                 GenericBody::Fn(f) => self.check_fn(f, None),
                 GenericBody::Locus(l) => {
@@ -18794,6 +19301,8 @@ impl<'a> Checker<'a> {
                     self.check_locus(l);
                 }
             }
+            self.refuse_unadmitted_template_literals();
+            self.walk_decl_span = None;
             self.body = prev_body;
             self.locus_decl = prev_decl;
             self.current_locus = prev_locus;
@@ -19055,6 +19564,45 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #1984: the callee at `callee` reads an element of a value of
+    /// `collection`: when that is a `bounded[T; N]` or a fixed array, the
+    /// call is the collection's own cursor, recorded for the allocation
+    /// summary's walk, which cannot type the receiver itself.
+    fn note_cursor(&mut self, collection: &Ty, callee: Span) {
+        if self.specializing.is_some() {
+            return;
+        }
+        if matches!(self.through_aliases(collection.clone()), Ty::Bounded(..) | Ty::Array(..)) {
+            self.typed.cursor(self.body, callee);
+        }
+    }
+
+    /// GH #1978: a generic fn's declared result at one call, its
+    /// parameters bound by the call: an application of them (`Box<T>`)
+    /// is the monomorph its arguments name (`Box_Blob`), recorded in the
+    /// table with the rows its fields instantiate, as lowering builds it,
+    /// so the call's value, and a field read of it, type as the
+    /// substituted template. The substitution alone kept the template's
+    /// unbound view, `Unknown`, which took anything: a record no f-string
+    /// renders, a scale-less Decimal beside a `Decimal<4>`. An argument
+    /// the call leaves unknown keeps that view.
+    fn instantiated_ty(&mut self, te: &TypeExpr, bindings: &BTreeMap<String, Ty>) -> Ty {
+        let mut rows = Vec::new();
+        if let Some(row) = self.templates.instantiation(te, self.known, bindings, &mut rows) {
+            rows.push(row);
+            if rows.iter().all(|r| !r.args.iter().any(|t| matches!(t, Ty::Unknown))) {
+                let name = rows.last().map(|r| r.name.clone()).expect("pushed above");
+                let from = self.typed.monomorphs.rows().len();
+                for row in rows {
+                    self.typed.monomorphs.insert(row);
+                }
+                self.templates.close_over_fields(self.known, &mut self.typed.monomorphs, from);
+                return Ty::Named(name);
+            }
+        }
+        substitute_generic_ty(te, bindings, self.known)
+    }
+
     /// A template field's declared type in one of its monomorphs: the
     /// template's parameters substituted, and an application of them
     /// (`Holder<T>`) the row it names (`Holder_Signer`), which the table
@@ -19259,6 +19807,71 @@ impl<'a> Checker<'a> {
     }
 
     /// `t` with its `type` aliases followed (a bounded number of times).
+    /// GH #1942: a `@form(vec)`'s `sort()` orders its cells by the
+    /// default ordering of an `Int`, a `Float` or a `String` (an identity,
+    /// a range or a quantity is its `Int`); a vec of any other cell has
+    /// none, and the build refused the call. Refused here, at the method.
+    fn refuse_unordered_vec_sort(&mut self, callee: &Expr) {
+        let Expr::Field { receiver, name, span } = callee else { return };
+        if name.name != "sort" {
+            return;
+        }
+        let rt = match self.view_expr_ty(receiver) {
+            Ty::Projection(_, inner) => *inner,
+            t => t,
+        };
+        let Ty::Named(owner) = &rt else { return };
+        let Some(decl) = self.locus_decls.get(owner.as_str()).copied() else { return };
+        if decl.form.as_ref().is_none_or(|f| f.name.name != "vec")
+            || decl.members.iter().any(|m| matches!(m, LocusMember::Fn(f) if f.name.name == "sort"))
+        {
+            return;
+        }
+        let Some(cell) = decl.members.iter().find_map(|m| match m {
+            LocusMember::Capacity(cb) => cb.slots.first().map(|s| &s.elem_ty),
+            _ => None,
+        }) else {
+            return;
+        };
+        let cell_ty = self.resolve_te(cell);
+        let repr = self.through_aliases(self.scalars.representation(&self.through_aliases(cell_ty.clone())));
+        if matches!(repr, Ty::Prim(PrimType::Int | PrimType::Float | PrimType::String) | Ty::Unknown) {
+            return;
+        }
+        let recv = Self::spell_receiver(receiver);
+        self.diags.push(Diag::ty(
+            *span,
+            format!(
+                "`{recv}.sort()`: `{owner}` holds `{}` cells, which have no default ordering (a vec sorts an \
+                 `Int`, a `Float` or a `String` by itself); sort with a comparator, \
+                 `{recv}.sort_by(less_than)` where `fn less_than(a: {}, b: {}) -> Bool` says whether `a` comes \
+                 first",
+                cell_ty.display(),
+                cell_ty.display(),
+                cell_ty.display()
+            ),
+        ));
+    }
+
+    /// GH #1942: an accumulator inside a closure assertion samples one
+    /// field each epoch (`sum(self.x)`, `mean(self.x)`); a wider expression
+    /// checked clean and the build refused the closure.
+    fn refuse_accumulated_non_field(&mut self, what: &str, inner: &Expr) {
+        if let Expr::Field { receiver, .. } = inner {
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                return;
+            }
+        }
+        self.diags.push(Diag::ty(
+            inner.span(),
+            format!(
+                "`{what}(…)` accumulates one field of the locus (`{what}(self.x)`), and hale can't compile an \
+                 accumulator over a wider expression yet: keep the value in a field the locus updates \
+                 (`self.total = self.a + self.b;`), and accumulate that"
+            ),
+        ));
+    }
+
     fn through_aliases(&self, mut t: Ty) -> Ty {
         for _ in 0..16 {
             let Ty::Named(n) = &t else { break };
@@ -19602,6 +20215,222 @@ impl<'a> Checker<'a> {
         closest_bare_name(name, &tops).map(|h| h.to_string())
     }
 
+    /// The names a pattern binds against a value of type `ty`, each with
+    /// its type (`Unknown` where the check cannot name it) and where it is
+    /// written: a binding is the value, a variant's or a set member's
+    /// value its declared field's type, a tuple's part its element's.
+    fn pattern_binding_types(&self, pat: &Pattern, ty: &Ty, out: &mut Vec<(String, Ty, Span)>) {
+        match pat {
+            Pattern::Binding(id) => out.push((id.name.clone(), ty.clone(), id.span)),
+            Pattern::Constructor { path, args, .. } => {
+                let Some(variant) = path.segments.last() else { return };
+                let named = |n: &str| match self.top.symbols.get(n) {
+                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                        vs.iter().find(|v| v.name == variant.name).map(|v| v.fields.clone())
+                    }
+                    _ => None,
+                };
+                let fields = match ty {
+                    Ty::Named(n) => named(n),
+                    _ => None,
+                }
+                .or_else(|| {
+                    let n = path.segments.len();
+                    (n > 1).then(|| named(&path.segments[n - 2].name)).flatten()
+                })
+                .unwrap_or_default();
+                for (i, a) in args.iter().enumerate() {
+                    let t = fields.get(i).cloned().unwrap_or(Ty::Unknown);
+                    self.pattern_binding_types(a, &t, out);
+                }
+            }
+            Pattern::Tuple(ps, _) => {
+                for (i, p) in ps.iter().enumerate() {
+                    let t = match ty {
+                        Ty::Tuple(ts) => ts.get(i).cloned().unwrap_or(Ty::Unknown),
+                        _ => Ty::Unknown,
+                    };
+                    self.pattern_binding_types(p, &t, out);
+                }
+            }
+            Pattern::Or(alts, _) => {
+                if let Some(first) = alts.first() {
+                    self.pattern_binding_types(first, ty, out);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+
+    /// GH #1995 E2: every alternative of an or-pattern binds the same
+    /// names at the same types, since the guard and the body read them
+    /// whichever alternative matched. Each alternative is held to the
+    /// first: a name one binds and the other does not, or a name the two
+    /// bind at different types, is refused at the alternative.
+    fn check_or_pattern(&mut self, alts: &[Pattern], scrut: &Ty) {
+        let Some((first, rest)) = alts.split_first() else { return };
+        let mut want = Vec::new();
+        self.pattern_binding_types(first, scrut, &mut want);
+        for alt in rest {
+            let mut have = Vec::new();
+            self.pattern_binding_types(alt, scrut, &mut have);
+            for (name, t, _) in &want {
+                match have.iter().find(|(n, ..)| n == name) {
+                    None => self.diags.push(Diag::ty(
+                        alt.span(),
+                        format!(
+                            "the alternative `{}` does not bind `{name}`, which `{}` binds: every alternative of \
+                             a match arm binds the same names, because the guard and the body read them whichever \
+                             alternative matched",
+                            alt.text(),
+                            first.text()
+                        ),
+                    )),
+                    Some((_, u, span)) => {
+                        if t != u && self.ty_is_nameable(t) && self.ty_is_nameable(u) {
+                            self.diags.push(Diag::ty(
+                                *span,
+                                format!(
+                                    "`{name}` is of type `{}` in the alternative `{}`, and of type `{}` in `{}`: \
+                                     every alternative of a match arm binds each name at one type",
+                                    u.display(),
+                                    alt.text(),
+                                    t.display(),
+                                    first.text()
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            for (name, _, span) in &have {
+                if !want.iter().any(|(n, ..)| n == name) {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "the alternative `{}` binds `{name}`, which `{}` does not: every alternative of a \
+                             match arm binds the same names, because the guard and the body read them whichever \
+                             alternative matched",
+                            alt.text(),
+                            first.text()
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// GH #1995 E3: the rules of a `let` of a pattern, desugared to the
+    /// match `stmt` (spec/semantics.md, "`if let` and `let … else`" under
+    /// `match`). Without `else` (`MatchForm::Let`) the pattern must match
+    /// every value of its type, or the `let` is refused with "add `else {
+    /// … }`". With one (`MatchForm::LetElse`) the `else` block must leave,
+    /// as F.48 judges a path (`definite_return::completes`): the pattern's
+    /// names are bound after the statement, and have no value when it does
+    /// not match. A pattern that always matches makes the `else` dead,
+    /// which is a warning.
+    fn check_pattern_let(&mut self, stmt: &MatchStmt, scrut_ty: &Ty) {
+        if self.specializing.is_some() {
+            return;
+        }
+        let Some(first) = stmt.arms.first() else { return };
+        let pattern = &first.pattern;
+        let always = pattern_always_matches(pattern)
+            || match_is_exhaustive(scrut_ty, &stmt.arms[..1], self.top, self.known);
+        match stmt.form {
+            MatchForm::Let if !always => {
+                let shown = pattern.text();
+                let of = if *scrut_ty == Ty::Unknown { String::new() } else { format!(" a `{}`", scrut_ty.display()) };
+                self.diags.push(Diag::ty(
+                    pattern.span(),
+                    format!(
+                        "`{shown}` can fail to match{of}, so a plain `let` cannot bind it: add `else {{ … }}` \
+                         that leaves when it does not match (`let {shown} = … else {{ return …; }};`), or test it \
+                         with `if let` or `match`"
+                    ),
+                ));
+            }
+            MatchForm::LetElse => {
+                let Some(MatchArmBody::Block(else_block)) = stmt.arms.get(1).map(|a| &a.body) else { return };
+                if always && *scrut_ty != Ty::Unknown {
+                    self.diags.push(Diag::warn(
+                        else_block.span,
+                        format!(
+                            "`{}` matches every `{}`, so this `else` never runs: remove it",
+                            pattern.text(),
+                            scrut_ty.display()
+                        ),
+                    ));
+                }
+                if let Some(fall) = crate::definite_return::completes(else_block) {
+                    let why = fall.why.replace("the body ends", "the `else` block ends");
+                    // F.48: a call completes, even one that never returns
+                    let call_hint = match stmt_at(else_block, fall.span) {
+                        Some(Stmt::Expr(Expr::Call { .. })) => {
+                            "; a call completes as far as this rule goes, `std::process::exit` included, so write \
+                             `return` after it"
+                        }
+                        _ => "",
+                    };
+                    self.diags.push(
+                        Diag::ty(
+                            else_block.span,
+                            format!(
+                                "the `else` of a `let … else` must leave (`return`, `fail`, `break`, `continue`, \
+                                 `terminate` or `violate`): what follows the statement runs only when `{}` matches; \
+                                 this `else` can complete: {why}{call_hint}",
+                                pattern.text()
+                            ),
+                        )
+                        .with_related(fall.span, "the path that completes"),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// GH #1995 E2: an alternative of an or-pattern that an earlier one
+    /// already covers is never tried, which is a warning: an unguarded
+    /// earlier arm's pattern (or one of its alternatives), or an earlier
+    /// alternative of the same arm. In a guarded arm that binds names an
+    /// earlier alternative does not make a later one redundant, since the
+    /// guard is tried again with the later one's bindings.
+    fn warn_redundant_alternatives(&mut self, arms: &[MatchArm]) {
+        let mut earlier: Vec<&Pattern> = Vec::new();
+        for arm in arms {
+            if let Pattern::Or(alts, _) = &arm.pattern {
+                let binds = {
+                    let mut names = Vec::new();
+                    pattern_binders(&arm.pattern, &mut names);
+                    !names.is_empty()
+                };
+                for (k, alt) in alts.iter().enumerate() {
+                    let same_arm = if arm.guard.is_some() && binds { &alts[..0] } else { &alts[..k] };
+                    let by = earlier
+                        .iter()
+                        .copied()
+                        .chain(same_arm.iter())
+                        .find(|e| pattern_covers(e, alt));
+                    if let Some(by) = by {
+                        self.diags.push(Diag::warn(
+                            alt.span(),
+                            format!(
+                                "the alternative `{}` is never tried: `{}`, earlier in this match, already matches \
+                                 every value it does; remove it",
+                                alt.text(),
+                                by.text()
+                            ),
+                        ));
+                    }
+                }
+            }
+            if arm.guard.is_none() {
+                earlier.extend(arm.pattern.alternatives());
+            }
+        }
+    }
+
     /// GH #1076 (U2): whether a value of `got`, the expression `value`,
     /// flows into a place of type `want`: assignability, and the
     /// identities' and ranges' rules (`unit_values`). An integer literal
@@ -19644,6 +20473,65 @@ impl<'a> Checker<'a> {
             *span,
             format!("`{}` is not a member of the set `{set}`, whose members are {}", member.name, members.join(", ")),
         ));
+    }
+
+    /// GH #1971: a constructor pattern on an enum names its enum
+    /// (`E::A(x)`); only a set's member is named by its type alone
+    /// (`check_set_pattern`). The bare form passed the check, and the
+    /// build refused it with no place in the program. A bare `A` with no
+    /// parentheses is a binding, not this.
+    fn check_bare_variant_pattern(&mut self, pat: &Pattern, scrut: &Ty) {
+        let Pattern::Constructor { path, span, .. } = pat else { return };
+        let [variant] = path.segments.as_slice() else { return };
+        let v = &variant.name;
+        let shown = scrut.display();
+        // Structural: lowering lowers a one-segment constructor pattern
+        // against a set only, so anything else the scrutinee is (an enum,
+        // a generic parameter, a type the check cannot name) is refused
+        // here, where lowering refused it unlocated.
+        let what = match scrut {
+            Ty::Named(n) if self.generic_params.iter().any(|g| g == n) => format!(
+                "`{v}(…)` names a variant without its enum, and the scrutinee is of the type parameter `{shown}`: \
+                 a pattern names its enum, `Enum::{v}(…)` (only a set's member is named by its type alone, \
+                 against a value of the set's own type)"
+            ),
+            Ty::Named(n) => match self.top.symbols.get(n) {
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                    if !vs.is_empty() && vs.iter().all(|x| x.member) {
+                        return;
+                    }
+                    if vs.iter().any(|x| x.name == *v) {
+                        format!(
+                            "`{v}(…)` names a variant of the enum `{shown}` without its enum: a pattern on an enum \
+                             names it, `{shown}::{v}(…)` (only a set's member is named by its type alone)"
+                        )
+                    } else {
+                        let names: Vec<&str> = vs.iter().map(|x| x.name.as_str()).collect();
+                        format!(
+                            "`{v}(…)` is no variant of the enum `{shown}`, whose variants are {}; a pattern on an \
+                             enum names its enum, `{shown}::Variant(…)`",
+                            names.join(", ")
+                        )
+                    }
+                }
+                _ => format!(
+                    "`{v}(…)` is a constructor pattern without its enum against a value of `{shown}`, which is no \
+                     enum or set: a pattern names its enum, `Enum::{v}(…)`, and only a set's member is named by \
+                     its type alone"
+                ),
+            },
+            Ty::Unknown => format!(
+                "`{v}(…)` names a variant without its enum, against a value whose type is not known here: a \
+                 pattern names its enum, `Enum::{v}(…)` (only a set's member is named by its type alone, against \
+                 a value known to be of the set)"
+            ),
+            _ => format!(
+                "`{v}(…)` is a constructor pattern without its enum against a value of `{shown}`, which is no \
+                 enum or set: a pattern names its enum, `Enum::{v}(…)`, and only a set's member is named by its \
+                 type alone"
+            ),
+        };
+        self.diags.push(Diag::ty(*span, what));
     }
 
     /// GH #1530 step 1: a set's members are distinct structs or enums the
@@ -19729,6 +20617,110 @@ impl<'a> Checker<'a> {
         Some(crate::typed_bodies::Injection { set: set.clone(), member: v.name.clone() })
     }
 
+    /// The members of the set `t`, when it is one (GH #1530).
+    fn set_members(&self, t: &Ty) -> Option<Vec<String>> {
+        let Ty::Named(set) = t else { return None };
+        let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) = self.top.symbols.get(set) else {
+            return None;
+        };
+        (!vs.is_empty() && vs.iter().all(|v| v.member)).then(|| vs.iter().map(|v| v.name.clone()).collect())
+    }
+
+    /// GH #1951 (item 2): whether an error of type `got`, raised at `at`
+    /// where the enclosing fn fails with `want`, becomes the fn's error:
+    /// it is that type; it is a member of `want`, a set (R2); or one
+    /// `@raise fn` converts it (R3), tried in that order. A conversion is
+    /// recorded at `at` for lowering, which writes the raise as the `or
+    /// fail` it stands for. Two conversions are refused at `at`, naming
+    /// both; `false` is no route at all, which the caller words.
+    fn judge_raise(&mut self, want: &Ty, got: &Ty, at: Span) -> bool {
+        use crate::typed_bodies::RaiseConversion;
+        if want.assignable_from(got) {
+            return true;
+        }
+        let conversion = match self.set_injection(want, got) {
+            Some(injection) => RaiseConversion::Member(injection),
+            None => {
+                let found: Vec<&crate::raise_conversion::RaiseFn> =
+                    self.raise_fns.iter().filter(|f| &f.from == got && &f.to == want).collect();
+                match found.as_slice() {
+                    [] => return false,
+                    [one] => RaiseConversion::Convert(one.name.clone()),
+                    [a, b, ..] => {
+                        let (a, b) = ((*a).clone(), (*b).clone());
+                        self.diags.push(
+                            Diag::ty(
+                                at,
+                                format!(
+                                    "`or raise` converts the call's error, of type `{}`, into the enclosing fn's \
+                                     `{}`, and two `@raise` fns convert it: `{}` and `{}`. Keep one, or translate \
+                                     here, `or fail {} {{ … }}`",
+                                    got.display(),
+                                    want.display(),
+                                    a.name,
+                                    b.name,
+                                    want.display()
+                                ),
+                            )
+                            .with_related(a.span, "one conversion")
+                            .with_related(b.span, "the other"),
+                        );
+                        return true;
+                    }
+                }
+            }
+        };
+        if self.specializing.is_none() {
+            let site = self.site(SiteKind::value(at));
+            self.typed.raise(self.body, site, conversion);
+        }
+        true
+    }
+
+    /// Does a value expected as `want` (an alias resolved) take its
+    /// element type from it: a `bounded[T; N]` anywhere, a fixed array
+    /// only where `arrays` says so (a `let`'s ascription, the one array
+    /// site lowering builds an empty literal at)?
+    fn expects_list(&self, want: &Ty, arrays: bool) -> bool {
+        let mut cur = want.clone();
+        for _ in 0..16 {
+            match cur {
+                Ty::Bounded(..) => return true,
+                Ty::Array(..) => return arrays,
+                Ty::Named(ref n) => match self.top.lookup(n) {
+                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Alias(a), .. })) => cur = a.clone(),
+                    _ => return false,
+                },
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// `check_expr` of a value whose site declares the type `want` (a
+    /// `let` ascription, a `return`, an argument, an assignment, a record
+    /// literal's field): an empty array literal there takes its element
+    /// type from that type, so the empty-`[]` rule (GH #1942) sees it
+    /// typed (GH #1951). A site with no list type expected checks the
+    /// value as `check_expr` does.
+    fn check_expr_expecting(&mut self, value: &Expr, want: Option<&Ty>) -> Ty {
+        self.check_expr_expecting_in(value, want, false)
+    }
+
+    /// [`Self::check_expr_expecting`], with `arrays`: whether a fixed
+    /// array type declared at the site types an empty literal too.
+    fn check_expr_expecting_in(&mut self, value: &Expr, want: Option<&Ty>, arrays: bool) -> Ty {
+        let typed = matches!(value, Expr::Array(parts, _) if parts.is_empty())
+            && want.is_some_and(|w| self.expects_list(w, arrays));
+        if !typed {
+            return self.check_expr(value);
+        }
+        self.empty_array_typed = true;
+        let got = self.check_expr(value);
+        self.empty_array_typed = false;
+        got
+    }
+
     fn flows_into(&mut self, want: &Ty, got: &Ty, value: &Expr) -> bool {
         // GH #1530 step 1: a member's value flows into its set, as the
         // set's variant for it (built where it stands).
@@ -19785,6 +20777,53 @@ impl<'a> Checker<'a> {
                     return true;
                 }
             }
+        }
+        // GH #1951: an array literal at a declared `bounded[T; N]` site is
+        // that bounded, its count the literal's length (`[]` is empty).
+        // A literal longer than the capacity is refused where it stands;
+        // each element flows into `T` from its own type.
+        if let (Ty::Bounded(we, cap), Expr::Array(elems, _)) = (want, value) {
+            if elems.len() as u64 > *cap {
+                self.diags.push(Diag::ty(
+                    value.span(),
+                    format!(
+                        "a `{}` holds at most {cap} element{}, and this literal has {}",
+                        want.display(),
+                        if *cap == 1 { "" } else { "s" },
+                        elems.len()
+                    ),
+                ));
+                return true;
+            }
+            let own = self
+                .array_elements
+                .get(&(value as *const Expr))
+                .map(|a| a.tys.clone())
+                .filter(|tys| tys.len() == elems.len());
+            let first = match got {
+                Ty::Array(ge, _) => (**ge).clone(),
+                _ => Ty::Unknown,
+            };
+            let mut all = true;
+            for (i, e) in elems.iter().enumerate() {
+                let t = own.as_ref().map_or(first.clone(), |tys| tys[i].clone());
+                let widen = matches!((we.as_ref(), &t), (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::Int)));
+                if !widen && !self.flows_into(we, &t, e) {
+                    self.diags.push(Diag::ty(
+                        e.span(),
+                        format!(
+                            "an element of `{}` in a literal of `{}`, whose elements are `{}`",
+                            t.display(),
+                            want.display(),
+                            we.display()
+                        ),
+                    ));
+                    all = false;
+                }
+            }
+            // Each refusal is reported at its element.
+            let _ = all;
+            return true;
         }
         if want.assignable_from(got) || self.scalars.is_empty() {
             return want.assignable_from(got);
@@ -20680,6 +21719,7 @@ impl<'a> Checker<'a> {
         // multi-file seed reads as well as the whole bundle does.
         self.check_generic_arity(te);
         self.check_bounded_element(te);
+        self.check_array_size(te);
         self.check_bare_perspective_type(te);
         if !self.strict_idents {
             return;
@@ -20752,10 +21792,12 @@ impl<'a> Checker<'a> {
     /// `bounded[T; N]` holds its elements inline, so `T` is one lowering
     /// lays out in a slot: a scalar (`Int`, `Float`, `Bool`, `Decimal<S>`,
     /// `Duration`, `Time`, an identity, a range or a quantity), a payload-
-    /// free enum (its tag), a `String`, `Bytes` or a struct. A tuple, an
-    /// array, another `bounded`, an enum with payloads or an interface
-    /// checked clean and the build refused the element type; refused here,
-    /// at the annotation. A type this bundle cannot name stays permissive.
+    /// free enum (its tag), a `String`, `Bytes`, a struct or an enum with
+    /// payloads (a pointer to its cell, which the slots' anchoring and
+    /// retire walk follow by its tag, GH #1951). A tuple, an array, another
+    /// `bounded` or an interface checked clean and the build refused the
+    /// element type; refused here, at the annotation. A type this bundle
+    /// cannot name stays permissive.
     fn check_bounded_element(&mut self, te: &TypeExpr) {
         let TypeExpr::Bounded { elem, span, .. } = te else { return };
         let ty = self.resolve_te(elem);
@@ -20778,10 +21820,71 @@ impl<'a> Checker<'a> {
                 *span,
                 format!(
                     "`bounded[{shown}; N]`: {what}, which a bounded buffer cannot hold inline. Its elements \
-                     are scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, a unit type), enums \
-                     without payloads, `String`, `Bytes` or structs; wrap the element in a struct"
+                     are scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, a unit type), enums, \
+                     `String`, `Bytes` or structs; wrap the element in a struct"
                 ),
             ));
+        }
+    }
+
+    /// GH #1942: why a named type does not cross an `@ffi` boundary,
+    /// beyond the matrix's `Named` cell (which admits a user struct, its
+    /// C struct kept layout-compatible by the library author): an enum,
+    /// a locus, an interface or a perspective has no C layout at Stage 1,
+    /// and the build refused it. `None` for a struct, an identity, a
+    /// range or a quantity (its `Int`), and a name this bundle cannot
+    /// resolve.
+    fn ffi_named_refusal(&self, t: &Ty, depth: u32) -> Option<String> {
+        let Ty::Named(n) = t else { return None };
+        if depth > 8 {
+            return None;
+        }
+        match self.top.lookup(n) {
+            Some(TopSymbol::Type(info)) => match &info.kind {
+                TypeKind::Enum(_) => Some(format!(
+                    "`{n}` is an enum, which has no C layout at Stage 1; pass its variant as an `Int` you \
+                     map on each side, or a struct that carries it"
+                )),
+                TypeKind::Alias(inner) => self.ffi_named_refusal(inner, depth + 1),
+                TypeKind::Struct(_) | TypeKind::Scalar(_) => None,
+            },
+            Some(TopSymbol::Locus(_)) => Some(format!(
+                "`{n}` is a locus, which does not cross the C ABI; pass the values the foreign side needs"
+            )),
+            Some(TopSymbol::Interface(_)) | Some(TopSymbol::Perspective(_)) => Some(format!(
+                "`{n}` dispatches to a locus, which does not cross the C ABI; pass the values the foreign \
+                 side needs"
+            )),
+            _ => None,
+        }
+    }
+
+    /// GH #1942: an array's type carries its length, an integer literal
+    /// (`[Int; 3]`, `[Int; 0]`). An unsized `[T]`, or a length spelled by
+    /// a name (`[Int; N]`), checked clean in a signature or a field and
+    /// the build refused it; refused here, at the annotation. Nested
+    /// annotations are walked by their own `check_type_annotation`.
+    fn check_array_size(&mut self, te: &TypeExpr) {
+        let TypeExpr::Array { elem, size, span } = te else { return };
+        let shown = type_expr_text(elem);
+        match size {
+            None => self.diags.push(Diag::ty(
+                *span,
+                format!(
+                    "`[{shown}]` has no length, and hale can't compile an unsized array yet: an array's type \
+                     carries its length, `[{shown}; N]` with `N` an integer literal. Size it, or hold a varying \
+                     number of elements in a `bounded[{shown}; N]` (a fixed capacity with a live count) or a \
+                     `@form(vec)` locus"
+                ),
+            )),
+            Some(Expr::Literal(Literal::Int(n), _)) if *n >= 0 => {}
+            Some(e) => self.diags.push(Diag::ty(
+                e.span(),
+                format!(
+                    "`[{shown}; …]`: an array's length is an integer literal (`[{shown}; 3]`), and hale can't \
+                     compile a length spelled by an expression yet; write the number"
+                ),
+            )),
         }
     }
 
@@ -20802,9 +21905,7 @@ impl<'a> Checker<'a> {
             Ty::Function { .. } => Some("a fn value".into()),
             Ty::Named(n) => match self.top.symbols.get(n) {
                 Some(TopSymbol::Type(ti)) => match &ti.kind {
-                    TypeKind::Struct(_) | TypeKind::Scalar(_) => None,
-                    TypeKind::Enum(vs) if vs.iter().all(|v| v.fields.is_empty()) => None,
-                    TypeKind::Enum(_) => Some(format!("`{n}` is an enum with payloads")),
+                    TypeKind::Struct(_) | TypeKind::Scalar(_) | TypeKind::Enum(_) => None,
                     TypeKind::Alias(inner) => self.bounded_element_refusal(inner, depth + 1),
                 },
                 Some(TopSymbol::Interface(_)) => Some(format!("`{n}` is an interface")),
@@ -21040,6 +22141,148 @@ impl<'a> Checker<'a> {
     /// declaration's, read by that identity. The second value is the
     /// path as the author wrote it, unscoped (GH #746's `u$0` head
     /// reads `u`), for diagnostics.
+    /// A generic `type` instantiation inside `te` whose argument is a type
+    /// parameter `bindings` binds to a locus: the type's name, the
+    /// parameter and the locus (`perspective(P)` for a perspective `P`,
+    /// whose slot holds a locus).
+    fn generic_type_holding_locus(&self, te: &TypeExpr, bindings: &BTreeMap<String, Ty>) -> Option<(String, String, String)> {
+        match te {
+            TypeExpr::Named { path, generic_args, .. } => {
+                if path.segments.len() == 1 && self.generic_types.contains_key(path.segments[0].name.as_str()) {
+                    for a in generic_args {
+                        if let TypeExpr::Named { path: ap, generic_args: aa, .. } = a {
+                            if ap.segments.len() == 1 && aa.is_empty() {
+                                let g = &ap.segments[0].name;
+                                if let Some(Ty::Named(n)) = bindings.get(g) {
+                                    if matches!(self.top.lookup(n), Some(TopSymbol::Locus(_))) {
+                                        return Some((path.segments[0].name.clone(), g.clone(), n.clone()));
+                                    }
+                                    // a generic locus's monomorph is a locus too
+                                    if let Some(shown) = self.locus_monomorph_shown(n) {
+                                        return Some((path.segments[0].name.clone(), g.clone(), shown));
+                                    }
+                                    // a perspective's value is the slot that
+                                    // holds a locus behind it; the build has
+                                    // no monomorph for it either
+                                    if matches!(self.top.lookup(n), Some(TopSymbol::Perspective(_))) {
+                                        return Some((path.segments[0].name.clone(), g.clone(), format!("perspective({n})")));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                generic_args.iter().find_map(|a| self.generic_type_holding_locus(a, bindings))
+            }
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.generic_type_holding_locus(elem, bindings),
+            TypeExpr::Tuple(parts, _) => parts.iter().find_map(|p| self.generic_type_holding_locus(p, bindings)),
+            _ => None,
+        }
+    }
+
+    /// When `n` names a monomorph of a generic locus (`Cache_Int_String`),
+    /// the locus as written (`Cache<Int, String>`): a locus too, though the
+    /// scope declares none by that name.
+    fn locus_monomorph_shown(&self, n: &str) -> Option<String> {
+        let m = self
+            .typed
+            .monomorphs
+            .rows()
+            .iter()
+            .find(|m| m.name == n && matches!(m.kind, crate::typed_bodies::TemplateKind::Locus))?;
+        let template = self.generic_loci.iter().find(|(_, l)| l.id.0 == m.template.0).map(|(name, _)| name.clone())?;
+        let args: Vec<String> = m.args.iter().map(Ty::display).collect();
+        Some(format!("{template}<{}>", args.join(", ")))
+    }
+
+    /// GH #1963: an argument with no value whatever a template's
+    /// parameters are: a capacity slot of `self`, a printing builtin's
+    /// call, a stdlib path written without `std::`.
+    fn valueless_whatever_the_parameters(&self, arg: &Expr) -> bool {
+        match arg {
+            Expr::Field { receiver, name, .. } => {
+                matches!(receiver.as_ref(), Expr::KwSelf(_))
+                    && self.current_locus.is_some_and(|li| li.capacity_slot_names.iter().any(|n| n == &name.name))
+            }
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Ident(id) => {
+                    matches!(id.name.as_str(), "println" | "print" | "eprintln" | "eprint")
+                        && self.locals.lookup(&id.name).is_none()
+                        && self.top.lookup(&id.name).is_none()
+                }
+                Expr::Path(qn) => {
+                    let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                    segs.len() >= 2
+                        && ["env", "process", "time", "str", "bytes", "math", "io", "term", "text", "log", "http", "test"]
+                            .contains(&segs[0])
+                        && self.known.import_target(&segs.join("::")).is_none()
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// GH #1963: why an argument the checker gives no type cannot pin
+    /// generic fn `shown`'s parameter `g`, in the program's terms.
+    fn untyped_generic_arg_message(&self, shown: &str, g: &str, arg: &Expr) -> String {
+        // A capacity slot is used through its operations; it has no
+        // value of its own to hand anywhere.
+        if let Expr::Field { receiver, name, .. } = arg {
+            let slot = matches!(receiver.as_ref(), Expr::KwSelf(_))
+                && self.current_locus.is_some_and(|li| li.capacity_slot_names.iter().any(|n| n == &name.name));
+            if slot {
+                return format!(
+                    "`self.{0}` is a capacity slot, not a value: a slot is used through its operations \
+                     (`self.{0}.acquire()`, `self.{0}.free(c)`), so it cannot be generic fn `{shown}`'s argument",
+                    name.name
+                );
+            }
+        }
+        if let Expr::Call { callee, .. } = arg {
+            // `time::sleep(..)`: the stdlib lives under `std::`.
+            if let Expr::Path(qn) = callee.as_ref() {
+                const STDLIB_ROOTS: &[&str] =
+                    &["env", "process", "time", "str", "bytes", "math", "io", "term", "text", "log", "http", "test"];
+                let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                if segs.len() >= 2
+                    && STDLIB_ROOTS.contains(&segs[0])
+                    && self.known.import_target(&segs.join("::")).is_none()
+                {
+                    return format!(
+                        "path call `{0}` is unresolved: the stdlib lives under the `std::` prefix \
+                         (`std::{0}`), and generic fn `{shown}` takes the type of a value it is given",
+                        segs.join("::")
+                    );
+                }
+            }
+            return format!(
+                "generic fn `{shown}` takes `{g}` from this argument, and hale can't name the type of this \
+                 call's result. If the call returns nothing there is no value to pass: write it as a statement \
+                 of its own. Otherwise bind it to a `let` that writes its type (`let v: <type> = …;`) and pass `v`"
+            );
+        }
+        format!(
+            "generic fn `{shown}` takes `{g}` from this argument, and hale can't name its type here, so nothing \
+             in this call says what `{g}` is. Bind it to a `let` that writes its type (`let v: <type> = …;`) and \
+             pass `v`, or write the fn over the concrete type"
+        )
+    }
+
+    /// GH #1964: an imported seed's generic fn, `alias::id`: its name in
+    /// the merged program (the template's key, which names its
+    /// monomorphs), the path as written, and the template.
+    fn imported_generic_fn(&self, path: &QualifiedName) -> Option<(String, String, &'a FnDecl)> {
+        if path.segments.len() < 2 {
+            return None;
+        }
+        let key: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let mangled = self.known.import_target(&key.join("::"))?;
+        let template = self.generic_fns.get(mangled).copied()?;
+        let written: Vec<&str> = std::iter::once(unscoped_alias(key[0])).chain(key[1..].iter().copied()).collect();
+        Some((mangled.to_string(), written.join("::"), template))
+    }
+
     fn imported_fn(&self, path: &QualifiedName) -> Option<(String, FnSig)> {
         if path.segments.len() < 2 {
             return None;
@@ -21100,6 +22343,55 @@ impl<'a> Checker<'a> {
                  of this seed, so no `topic {topic}` declaration is in scope)"
             )
         })
+    }
+
+    /// RFC #1995 E1: why a use of `E::name`, `E::parse`, `E::variants` or
+    /// `E::index` (`alias::E::…` through an import) is refused, or `None`
+    /// when the path is none of them: its head is no enum, or the enum
+    /// declares a variant of the name, which keeps meaning the variant (the
+    /// names are contextual, F.43 discipline). `args` is the call's
+    /// argument count, `None` for the path as a value. The desugar sequence
+    /// rewrote every use that is right to the function it wrote
+    /// (`hale_syntax::enum_names`), so one that reaches here is refused:
+    /// by its shape, by the enum's, or (checked without the sequence) for
+    /// having no function written.
+    fn enum_name_refusal(&self, qn: &QualifiedName, args: Option<usize>) -> Option<String> {
+        use hale_syntax::enum_names::{call_refusal, op_refusal, Op, VariantShape};
+        let n = qn.segments.len();
+        if n < 2 {
+            return None;
+        }
+        let op = Op::of(&qn.segments[n - 1].name)?;
+        let head: Vec<&str> = qn.segments[..n - 1].iter().map(|s| s.name.as_str()).collect();
+        let shown = head.join("::");
+        let name = if n == 2 { shown.clone() } else { self.known.import_target(&shown)?.to_string() };
+        if let Some(td) = self.generic_types.get(name.as_str()) {
+            let TypeDeclBody::Enum(vs) = &td.body else { return None };
+            if vs.iter().any(|v| v.name.name == op.word()) {
+                return None;
+            }
+            let shapes: Vec<VariantShape<'_>> =
+                vs.iter().map(|v| VariantShape { name: &v.name.name, fields: v.fields.len(), tag: v.tag.as_deref() }).collect();
+            return call_refusal(&shown, op, args).or_else(|| op_refusal(&shown, &shapes, true, op));
+        }
+        let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) = self.top.symbols.get(&name) else {
+            return None;
+        };
+        if vs.iter().any(|v| v.name == op.word()) {
+            return None;
+        }
+        if let Some(why) = call_refusal(&shown, op, args) {
+            return Some(why);
+        }
+        let shapes: Vec<VariantShape<'_>> =
+            vs.iter().map(|v| VariantShape { name: &v.name, fields: v.fields.len(), tag: v.tag.as_deref() }).collect();
+        if let Some(why) = op_refusal(&shown, &shapes, false, op) {
+            return Some(why);
+        }
+        Some(format!(
+            "`{shown}::{}` is written for the enum by the desugar sequence, which did not run over this program",
+            op.word()
+        ))
     }
 
     fn check_qualified_path(&mut self, path: &QualifiedName) {
@@ -21460,6 +22752,39 @@ impl<'a> Checker<'a> {
     /// default is a value of the field's type, so one of type `()` is
     /// refused here, at the default, with the record literal spelled out
     /// when the field holds a record.
+    /// A `bounded[T; N]` field starts empty and takes no default (GH
+    /// #1951 keeps the rule): an absent list decodes as empty, and a
+    /// literal that wants elements spells them (`Doc { tags: ["a"] }`).
+    /// Lowering never evaluated such a default, so a program that wrote
+    /// one got an empty list whatever it said.
+    fn refuse_bounded_field_defaults(&mut self, type_name: &str, fields: &[hale_syntax::ast::StructField]) {
+        for f in fields {
+            let Some(d) = &f.default else { continue };
+            let mut t = crate::resolve::resolve_type_expr(&f.ty, &self.top.names);
+            for _ in 0..16 {
+                match t {
+                    Ty::Named(ref n) => match self.top.lookup(n) {
+                        Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Alias(a), .. })) => t = a.clone(),
+                        _ => break,
+                    },
+                    _ => break,
+                }
+            }
+            if let Ty::Bounded(..) = t {
+                self.diags.push(Diag::ty(
+                    d.span(),
+                    format!(
+                        "type `{type_name}` field `{}`: a `{}` starts empty and takes no default; a literal \
+                         that wants elements spells them (`{type_name} {{ {}: [..] }}`), or fill it with push(...)",
+                        f.name.name,
+                        t.display(),
+                        f.name.name
+                    ),
+                ));
+            }
+        }
+    }
+
     fn refuse_valueless_field_defaults(&mut self, type_name: &str, fields: &[hale_syntax::ast::StructField], typed: &[(&'a Expr, Ty)]) {
         let field_tys: BTreeMap<String, Ty> = match self.top.lookup(type_name) {
             Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(infos), .. })) => {
@@ -21623,6 +22948,23 @@ impl<'a> Checker<'a> {
         self.this_is_callee = std::mem::take(&mut self.callee_position);
         let ty = self.check_expr_at(expr);
         self.handling = outer;
+        // GH #1965: a literal spelled with a generic template's name,
+        // held until the walk ends to the sites that admit it.
+        if let Expr::Struct { span, .. } = expr {
+            // (a literal outside the declaration being walked is another
+            // declaration's default, typed where it is evaluated, and
+            // judged in its own declaration's walk)
+            let own = self.walk_decl_span.is_none_or(|d| d.start.0 <= span.start.0 && span.end.0 <= d.end.0);
+            if (self.generic_params.is_empty() || self.specializing.is_some())
+                && self.default_invocations.is_empty()
+                && own
+                && self.generic_template_named(&ty).is_some()
+            {
+                if let Ty::Named(n) = &ty {
+                    self.template_literals.entry((span.start.0, span.end.0)).or_insert((*span, n.clone()));
+                }
+            }
+        }
         // The fallible column (F.40 phase 3, E4): a call this walk
         // typed `Fallible` (the ordinary walk's; a specialization's walk
         // records its generic calls only), unless the call arm recorded
@@ -22193,7 +23535,8 @@ impl<'a> Checker<'a> {
             .zip(arm_tys)
             .filter_map(|(a, t)| match &a.body {
                 MatchArmBody::Expr(e) => Some((e, t)),
-                MatchArmBody::Block(_) => None,
+                // a valued block arm's value is its tail (GH #2016)
+                MatchArmBody::Block(b) => b.tail.as_deref().map(|e| (e, t)),
             })
             .collect();
         let mut own: Option<Ty> = None;
@@ -22295,8 +23638,11 @@ impl<'a> Checker<'a> {
                 TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
             }
         }
-        let (Ty::Named(w), Expr::Struct { inits, .. }) = (want, value) else { return };
+        let (Ty::Named(w), Expr::Struct { inits, span: literal_span, .. }) = (want, value) else { return };
         let Some((template, bindings)) = self.resolve_generic_monomorph(w) else { return };
+        // GH #1965: a site that declares the literal's type supplies its
+        // arguments.
+        self.admitted_template_literals.insert((literal_span.start.0, literal_span.end.0));
         for init in inits {
             let declared: Option<&TypeExpr> = match template {
                 GenericTemplate::Type(decl) => match &decl.body {
@@ -22386,6 +23732,7 @@ impl<'a> Checker<'a> {
     /// ([`Self::refuse_generic_literals_without_arguments`]). The rows are
     /// `generic_monomorph_agreement.rs`'s, one per site.
     fn admit_monomorph_literal(&mut self, want: &Ty, got: &Ty, value: &Expr, allow_loci: bool) -> bool {
+        self.mark_declared_site(value);
         let admitted = self.two_spellings_of_one_monomorph(want, got, allow_loci);
         if admitted {
             self.meet_monomorph_literal(want, value);
@@ -22485,6 +23832,9 @@ impl<'a> Checker<'a> {
             Expr::Ident(id) => {
                 let is_callee = std::mem::take(&mut self.this_is_callee);
                 if !is_callee && self.locals.lookup(&id.name).is_none() {
+                    if self.generic_fns.contains_key(id.name.as_str()) {
+                        return self.generic_fn_value(&id.name, id.span);
+                    }
                     if let Some(TopSymbol::Fn(sig)) = self.top.lookup(&id.name) {
                         let sig = sig.clone();
                         return self.fn_value(&id.name, &sig, id.span);
@@ -22521,6 +23871,15 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // RFC #1995 E1: `E::variants` of an enum it does not apply
+                // to, and `E::name` / `E::parse` / `E::index` not called
+                // (the desugar sequence rewrote every use that is right).
+                if !is_callee {
+                    if let Some(why) = self.enum_name_refusal(qn, None) {
+                        self.diags.push(Diag::ty(qn.span, why));
+                        return Ty::Unknown;
+                    }
+                }
                 // GH #1028: an imported seed's free fn, `alias::f`. It
                 // is typed like a bare fn, so a call through the path
                 // gets the arity bounds and the argument types a
@@ -22529,6 +23888,9 @@ impl<'a> Checker<'a> {
                 if let Some((_, sig)) = self.imported_fn(qn) {
                     if !is_callee {
                         let shown = qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                        if self.imported_generic_fn(qn).is_some() {
+                            return self.generic_fn_value(&shown, qn.span);
+                        }
                         return self.fn_value(&shown, &sig, qn.span);
                     }
                     return Ty::Function {
@@ -22707,6 +24069,20 @@ impl<'a> Checker<'a> {
                         self.discard_since(mark);
                     }
                 }
+                // RFC #1995 E1: `E::name(v)`, `E::parse(s)`, `E::index(v)`
+                // the desugar sequence left as written: one the functions do
+                // not apply to (a payload enum's `parse`), or of the wrong
+                // shape (`E::variants()`, two arguments). Refused with the
+                // reason; a variant of the name is the variant's, below.
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if let Some(why) = self.enum_name_refusal(qn, Some(args.len())) {
+                        self.diags.push(Diag::ty(*call_span, why));
+                        for a in args.iter() {
+                            self.check_expr(a);
+                        }
+                        return Ty::Unknown;
+                    }
+                }
                 // The api codec a program calls (spec/api.md § Codecs): the
                 // desugar rewrote every call of a record or enum the codec carries,
                 // so one left as written names something it does not.
@@ -22748,6 +24124,20 @@ impl<'a> Checker<'a> {
                             .iter()
                             .map(|s| s.name.as_str())
                             .collect();
+                        // GH #1995 S2: the text sources are `for` sources,
+                        // and the desugar rewrote every loop over one, so a
+                        // call left as written is a value (or has the wrong
+                        // arguments).
+                        if let Some((name, arity)) = hale_syntax::str_sources::source_of(callee) {
+                            self.diags.push(Diag::ty(
+                                *call_span,
+                                hale_syntax::str_sources::refusal(name, arity, args.len()),
+                            ));
+                            for a in args.iter() {
+                                self.check_expr(a);
+                            }
+                            return Ty::Unknown;
+                        }
                         // GH #470: a std:: path that renames to a
                         // REGISTERED Hale-source free fn checks
                         // against its real signature — full
@@ -22790,8 +24180,8 @@ impl<'a> Checker<'a> {
                                     ));
                                 }
                                 for (i, a) in args.iter().enumerate() {
-                                    let got =
-                                        self.check_expr(a);
+                                    let expected = f.params.get(i).map(|(_, w)| w.clone());
+                                    let got = self.check_expr_expecting(a, expected.as_ref());
                                     if let Some((_, want)) =
                                         f.params.get(i)
                                     {
@@ -22884,7 +24274,8 @@ impl<'a> Checker<'a> {
                                 ));
                             }
                             for (i, a) in args.iter().enumerate() {
-                                let got = self.check_expr(a);
+                                let expected = sig.params.get(i).map(|w| w.to_ty());
+                                let got = self.check_expr_expecting(a, expected.as_ref());
                                 if let Some(want) = sig.params.get(i) {
                                     // GH #1076 (U2): and a range widens to
                                     // an `Int` parameter.
@@ -22961,6 +24352,25 @@ impl<'a> Checker<'a> {
                                 self.check_fmt_builtin(args, callee);
                                 return Ty::Prim(PrimType::String);
                             }
+                            // GH #1942: `count()` and `mean(x)` are a closure
+                            // assertion's accumulators, read once per epoch;
+                            // anywhere else they named nothing the build
+                            // could call. (`count(x)` of a `bounded` is its
+                            // intrinsic, below.)
+                            "mean" if self.in_closure && args.len() == 1 && self.locals.lookup("mean").is_none() => {
+                                self.refuse_accumulated_non_field("mean", &args[0]);
+                            }
+                            "count" | "mean"
+                                if !self.in_closure
+                                    && args.len() == usize::from(id.name == "mean")
+                                    && self.locals.lookup(&id.name).is_none()
+                                    && !self.generic_fns.contains_key(id.name.as_str()) =>
+                            {
+                                self.diags.push(Diag::ty(
+                                    expr.span(),
+                                    accumulator_outside_closure(&format!("{}(…)", id.name)),
+                                ));
+                            }
                             // `Int(x)` and `Float(x)` take an `Int` or a `Float`
                             // (spec/types.md § Explicit numeric conversions); a
                             // `Decimal<S>` is neither, and it has no `Int`: its
@@ -22989,7 +24399,41 @@ impl<'a> Checker<'a> {
                                                 out
                                             ),
                                         ));
+                                        continue;
                                     }
+                                    // GH #1942: any other operand that is
+                                    // not a number (an identity, a range or
+                                    // a quantity is its `Int`) checked clean
+                                    // and the build refused the cast.
+                                    let repr = self.through_aliases(
+                                        self.scalars.representation(&self.through_aliases(at.clone())),
+                                    );
+                                    if matches!(repr, Ty::Prim(PrimType::Int | PrimType::Float) | Ty::Unknown) {
+                                        continue;
+                                    }
+                                    let way = match &repr {
+                                        Ty::Prim(PrimType::Bool) => "a `Bool` is no number: write \
+                                             `if b { 1 } else { 0 }`"
+                                            .to_string(),
+                                        Ty::Prim(PrimType::String) => format!(
+                                            "a `String` is parsed, not cast: `std::str::parse_{}(s)`, \
+                                             which is fallible (`or <fallback>`)",
+                                            if id.name == "Int" { "int" } else { "float" }
+                                        ),
+                                        Ty::Prim(PrimType::Duration) => "a `Duration`'s count in a unit is a \
+                                             quotient, `Float(d / 1ms)`"
+                                            .to_string(),
+                                        _ => "convert it through an `Int` or a `Float` field of it".to_string(),
+                                    };
+                                    self.diags.push(Diag::ty(
+                                        a.span(),
+                                        format!(
+                                            "`{}(…)` takes an `Int` or a `Float`, and `{}` is neither: {}",
+                                            id.name,
+                                            at.display(),
+                                            way
+                                        ),
+                                    ));
                                 }
                             }
                             "abs" | "min" | "max" => {
@@ -23093,6 +24537,53 @@ impl<'a> Checker<'a> {
                                         want_args,
                                         if want_args == 1 { "" } else { "s" },
                                         args.len()
+                                    ),
+                                ));
+                            }
+                            // GH #1951: a call's result is a temporary,
+                            // so an intrinsic that writes the list would
+                            // write nothing anyone reads again.
+                            let writes = matches!(id.name.as_str(), "push" | "set" | "clear" | "truncate");
+                            let from_call = match &args[0] {
+                                Expr::Call { .. } => true,
+                                Expr::Or { inner, .. } => matches!(inner.as_ref(), Expr::Call { .. }),
+                                _ => false,
+                            };
+                            // A bounded local is the frame's own list
+                            // (decisions F.49): written by an intrinsic
+                            // only when declared `let mut`. A parameter is
+                            // the caller's place and keeps its own rule.
+                            if let (true, Expr::Ident(local)) = (writes, &args[0]) {
+                                if let Some(sym) = self.locals.lookup(&local.name) {
+                                    if !sym.is_mut && !sym.param_place {
+                                        self.diags.push(Diag::ty(
+                                            args[0].span(),
+                                            format!(
+                                                "`{0}` is a `{1}` local declared with `let`, and `{2}` writes it: \
+                                                 declare it `let mut {0}`. A local bound from a place is its own \
+                                                 copy (decisions F.49); to write the place, name it \
+                                                 (`{2}(self.xs, …)`)",
+                                                local.name,
+                                                sym.ty.display(),
+                                                id.name
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                            if writes && from_call {
+                                let verb = match id.name.as_str() {
+                                    "push" => "push into",
+                                    "set" => "set into",
+                                    other => other,
+                                };
+                                self.diags.push(Diag::ty(
+                                    args[0].span(),
+                                    format!(
+                                        "a call's result is no place to {verb}: `{}` writes its list, and this \
+                                         list is a temporary no one reads again; bind it first (`let mut xs = \
+                                         …; {}(xs, …)`)",
+                                        id.name, id.name
                                     ),
                                 ));
                             }
@@ -23255,290 +24746,13 @@ impl<'a> Checker<'a> {
                     if let Some(template) =
                         self.generic_fns.get(id.name.as_str()).copied()
                     {
-                        if args.len() != template.params.len() {
-                            self.diags.push(Diag::ty(
-                                callee.span(),
-                                format!(
-                                    "generic fn `{}` takes {} \
-                                     argument{}, got {}",
-                                    id.name,
-                                    template.params.len(),
-                                    if template.params.len() == 1 {
-                                        ""
-                                    } else {
-                                        "s"
-                                    },
-                                    args.len()
-                                ),
-                            ));
-                        }
-                        let arg_tys: Vec<Ty> = args
-                            .iter()
-                            .map(|a| self.check_expr(a))
-                            .collect();
-                        for (a, at) in args.iter().zip(&arg_tys) {
-                            self.refuse_unit_value(
-                                at,
-                                a,
-                                &format!("an argument to generic fn `{}`", id.name),
-                            );
-                        }
-                        let generic_names: std::collections::BTreeSet<
-                            String,
-                        > = template
-                            .generics
-                            .iter()
-                            .map(|g| g.name.name.clone())
-                            .collect();
-                        let mut bindings: BTreeMap<String, Ty> =
-                            BTreeMap::new();
-                        let mut conflicted = false;
-                        for (p, at) in
-                            template.params.iter().zip(arg_tys.iter())
-                        {
-                            if let Err((gname, was, now)) =
-                                unify_generic_ty(
-                                    &p.ty,
-                                    at,
-                                    &generic_names,
-                                    &mut bindings,
-                                )
-                            {
-                                conflicted = true;
-                                self.diags.push(Diag::ty(
-                                    callee.span(),
-                                    format!(
-                                        "generic fn `{}`: parameter \
-                                         `{}` bound to both `{}` and \
-                                         `{}` by this call's arguments",
-                                        id.name,
-                                        gname,
-                                        was.display(),
-                                        now.display()
-                                    ),
-                                ));
-                            }
-                        }
-                        // A quantity or a point (GH #1076) is no type
-                        // argument: its unit lives in the checker's rows
-                        // for the places that name it, and a generic body
-                        // names `G`, so it would print and convert as the
-                        // bare count. An identity or a range is its `Int`
-                        // there, as everywhere, and binds.
-                        for (gname, bound) in &bindings {
-                            // (a synthesized denomination has its own
-                            // refusal below)
-                            if matches!(bound, Ty::Named(_))
-                                && self.scalars.quantity(bound).is_some_and(|q| !q.synthesized)
-                            {
-                                self.diags.push(Diag::ty(
-                                    callee.span(),
-                                    format!(
-                                        "generic fn `{}`: `{}` would be `{}`, a quantity, and a generic body \
-                                         has no unit to print or convert one by; write the fn over `{}`, \
-                                         or pass its count (`x / 1<unit>`)",
-                                        id.name,
-                                        gname,
-                                        bound.display(),
-                                        bound.display()
-                                    ),
-                                ));
-                            }
-                        }
-                        // `T: Numeric`, held at the binding this call
-                        // infers (the build refused the instantiation
-                        // with no location).
-                        for g in &template.generics {
-                            let numeric_bound = matches!(&g.bound, Some(TypeExpr::Named { path, .. })
-                                if path.segments.len() == 1 && path.segments[0].name == "Numeric");
-                            let Some(bound) = bindings.get(&g.name.name) else { continue };
-                            if !numeric_bound || self.satisfies_numeric(bound) {
-                                continue;
-                            }
-                            self.diags.push(Diag::ty(
-                                callee.span(),
-                                format!(
-                                    "generic fn `{}`: `{}` is bounded `Numeric`, and this call makes it `{}`, \
-                                     not one of `Int`, `Float`, `Decimal` or `Duration`",
-                                    id.name,
-                                    g.name.name,
-                                    bound.display()
-                                ),
-                            ));
-                        }
-                        // Every generic must be pinned — UNLESS an
-                        // arg typed Unknown could have pinned it
-                        // (stay permissive where inference was).
-                        let any_unknown_arg = arg_tys
-                            .iter()
-                            .any(|t| matches!(t, Ty::Unknown));
-                        if !any_unknown_arg {
-                            for g in &template.generics {
-                                if !bindings.contains_key(&g.name.name)
-                                {
-                                    self.diags.push(Diag::ty(
-                                        callee.span(),
-                                        format!(
-                                            "generic fn `{}`: cannot \
-                                             infer `{}` from this call \
-                                             — every generic param \
-                                             must appear in an \
-                                             argument position that \
-                                             pins it",
-                                            id.name, g.name.name
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                        // The call's row (F.40 phase 3, E4): the
-                        // bindings this unification made, by the
-                        // template's parameter order, and the params
-                        // they substitute into. An unpinned or
-                        // conflicting parameter, or a wrong arity,
-                        // leaves the call a hole.
-                        let row = {
-                            use crate::typed_bodies::{GenericCall, Hole, Typed};
-                            let unpinned = template
-                                .generics
-                                .iter()
-                                .find(|g| !bindings.contains_key(&g.name.name));
-                            if args.len() != template.params.len() {
-                                Typed::Hole(Hole {
-                                    span: callee.span(),
-                                    reason: format!(
-                                        "generic fn `{}` takes {} argument(s), this call passes {}",
-                                        id.name,
-                                        template.params.len(),
-                                        args.len()
-                                    ),
-                                })
-                            } else if let Some(g) = unpinned {
-                                Typed::Hole(Hole {
-                                    span: callee.span(),
-                                    reason: format!(
-                                        "generic fn `{}`: no argument of this call pins `{}`",
-                                        id.name, g.name.name
-                                    ),
-                                })
-                            } else if conflicted {
-                                Typed::Hole(Hole {
-                                    span: callee.span(),
-                                    reason: format!(
-                                        "generic fn `{}`: this call's arguments bind a parameter twice",
-                                        id.name
-                                    ),
-                                })
-                            } else {
-                                let type_args: Vec<Ty> = template
-                                    .generics
-                                    .iter()
-                                    .map(|g| bindings[&g.name.name].clone())
-                                    .collect();
-                                let params: Vec<Ty> = template
-                                    .params
-                                    .iter()
-                                    .map(|p| substitute_generic_ty(&p.ty, &bindings, self.known))
-                                    .collect();
-                                Typed::Known(GenericCall { template: template.id, type_args, params })
-                            }
-                        };
-                        // GH #1076 (U3): a monomorph is named by its type
-                        // arguments, and a synthesized denomination has no
-                        // declaration to name it by.
-                        if let crate::typed_bodies::Typed::Known(call) = &row {
-                            let synthesized =
-                                call.type_args.iter().find(|t| self.scalars.quantity(t).is_some_and(|q| q.synthesized));
-                            if let Some(t) = synthesized {
-                                let shown = self.scalars.type_display(t);
-                                self.unit_error(Diag::ty(
-                                    callee.span(),
-                                    format!(
-                                        "generic fn `{}`: `{shown}` is a denomination no declaration names, and a generic \
-                                         argument is a declared type: bind the value to one first (`let x: T = …`)",
-                                        id.name
-                                    ),
-                                ));
-                            }
-                        }
-                        if let crate::typed_bodies::Typed::Known(call) = &row {
-                            let tokens: Option<Vec<String>> =
-                                call.type_args.iter().map(crate::typed_bodies::mangle_token).collect();
-                            if let (Some(tokens), false) = (tokens, template.id.is_none()) {
-                                self.typed.monomorphs.insert(crate::typed_bodies::Monomorph {
-                                    template: template.id,
-                                    kind: crate::typed_bodies::TemplateKind::Fn,
-                                    args: call.type_args.clone(),
-                                    name: format!("{}_{}", id.name, tokens.join("_")),
-                                });
-                            }
-                        }
-                        if !self.default_invocations.is_empty() {
-                            self.typed.default_generic_call(
-                                self.body, &self.default_invocations,
-                                self.specializing.clone(), *call_id, row,
-                            );
-                        } else {
-                            match &self.specializing {
-                                Some(args) => {
-                                    let args = args.clone();
-                                    self.typed.specialized_generic_call(self.body, args, *call_id, row);
-                                }
-                                None => self.typed.generic_call(self.body, *call_id, row),
-                            }
-                        }
-                        // Preserve holes in the template's lexical scope. A
-                        // global declaration with the same name cannot fill an
-                        // argument that this call did not infer.
-                        for name in &generic_names {
-                            bindings.entry(name.clone()).or_insert(Ty::Unknown);
-                        }
-                        // Args vs substituted params.
-                        for ((p, at), a) in template
-                            .params
-                            .iter()
-                            .zip(arg_tys.iter())
-                            .zip(args.iter())
-                        {
-                            let want = substitute_generic_ty(
-                                &p.ty,
-                                &bindings,
-                                self.known,
-                            );
-                            if !want.assignable_from(at) {
-                                self.diags.push(Diag::ty(
-                                    a.span(),
-                                    format!(
-                                        "generic fn `{}` argument \
-                                         `{}`: expected `{}`, got `{}`",
-                                        id.name,
-                                        p.name.name,
-                                        want.display(),
-                                        at.display()
-                                    ),
-                                ));
-                            }
-                        }
-                        let ret = match &template.ret {
-                            Some(te) => substitute_generic_ty(
-                                te,
-                                &bindings,
-                                self.known,
-                            ),
-                            None => Ty::Unit,
-                        };
-                        if let Some(fe) = &template.fallible {
-                            let payload = substitute_generic_ty(
-                                fe,
-                                &bindings,
-                                self.known,
-                            );
-                            return Ty::Fallible {
-                                success: Box::new(ret),
-                                payload: Box::new(payload),
-                            };
-                        }
-                        return ret;
+                        return self.check_generic_fn_call(&id.name, &id.name, template, args, callee.span(), *call_id);
+                    }
+                }
+                // GH #1964: an imported seed's generic fn, `lib::id(..)`.
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if let Some((key, shown, template)) = self.imported_generic_fn(qn) {
+                        return self.check_generic_fn_call(&key, &shown, template, args, callee.span(), *call_id);
                     }
                 }
                 // m47-payloads: enum-variant construction with
@@ -23546,18 +24760,33 @@ impl<'a> Checker<'a> {
                 // enum's named type; each arg is held to the
                 // variant's declared field type.
                 if let Expr::Path(qn) = callee.as_ref() {
-                    if qn.segments.len() == 2 {
+                    // GH #1986: an imported seed's enum through its
+                    // qualified path (`lib::E::V(..)`) is the enum the
+                    // merge names it by, held to its variant as the bare
+                    // spelling is; the build resolves it so and refused
+                    // what the check let through, unlocated.
+                    let qualified = (qn.segments.len() >= 3)
+                        .then(|| {
+                            let segs: Vec<&str> = qn.segments[..qn.segments.len() - 1].iter().map(|s| s.name.as_str()).collect();
+                            let mangled = self.known.import_target(&segs.join("::"))?;
+                            Some((mangled.to_string(), segs.join("::")))
+                        })
+                        .flatten();
+                    let named = match (qn.segments.len(), qualified) {
+                        (2, _) => Some((qn.segments[0].name.clone(), qn.segments[0].name.clone())),
+                        (_, Some(q)) => Some(q),
+                        _ => None,
+                    };
+                    if let Some((enum_name, shown)) = named {
                         // GH #831: through an alias of the enum too,
                         // exactly as the payload-less form above.
-                        let enum_name = &qn.segments[0].name;
-                        let variant_name = &qn.segments[1].name;
+                        let variant_name = &qn.segments[qn.segments.len() - 1].name;
                         if let Some(TopSymbol::Type(TypeInfo {
                             kind: TypeKind::Enum(variants),
                             ..
-                        })) = self.top.symbols.get(enum_name)
+                        })) = self.top.symbols.get(&enum_name)
                         {
                             if let Some(variant) = variants.iter().find(|v| v.name == *variant_name) {
-                                let enum_name = enum_name.clone();
                                 let variant_name = variant_name.clone();
                                 let fields = variant.fields.clone();
                                 // A variant carries its declared values:
@@ -23572,7 +24801,7 @@ impl<'a> Checker<'a> {
                                     self.diags.push(Diag::ty(
                                         *call_span,
                                         format!(
-                                            "`{enum_name}::{variant_name}` carries {} value{}, and this passes {}",
+                                            "`{shown}::{variant_name}` carries {} value{}, and this passes {}",
                                             fields.len(),
                                             if fields.len() == 1 { "" } else { "s" },
                                             args.len()
@@ -23598,7 +24827,7 @@ impl<'a> Checker<'a> {
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
-                                                "`{enum_name}::{variant_name}` value {i}: expected `{}`, got `{}`",
+                                                "`{shown}::{variant_name}` value {i}: expected `{}`, got `{}`",
                                                 want.display(),
                                                 got.display()
                                             ),
@@ -23686,6 +24915,7 @@ impl<'a> Checker<'a> {
                     other => {
                         self.view_callee_node = other as *const Expr as usize;
                         self.callee_position = true;
+                        self.cursor_anchor = hale_syntax::chains::cursor_anchor(args);
                         self.check_expr(other)
                     }
                 };
@@ -23695,6 +24925,12 @@ impl<'a> Checker<'a> {
                 let through_value = match callee.as_ref() {
                     Expr::Ident(id) => self.locals.lookup(&id.name).is_some() && !self.names_fn_or_builtin(&id.name),
                     Expr::Block(_) => true,
+                    // A fn-typed field or param (`self.cb(x)`), a value
+                    // as a local of fn type is (GH #1967).
+                    Expr::Field { receiver, name, .. } => matches!(
+                        self.view_method(&self.view_expr_ty(receiver), &name.name),
+                        crate::typed_bodies::CalleeRef::Value
+                    ),
                     _ => false,
                 };
                 if through_value && !matches!(callee_ty, Ty::Function { .. } | Ty::Unknown) {
@@ -23736,9 +24972,19 @@ impl<'a> Checker<'a> {
                             .filter(|(_, sym)| matches!(sym, TopSymbol::Fn(_)))
                             .map(|(n, _)| n.as_str())
                             .collect();
-                        let hint = closest_bare_name(name, &candidates)
-                            .map(|h| format!(" — did you mean `{}`?", h))
-                            .unwrap_or_default();
+                        // GH #1948: a stdlib fn of exactly this name is
+                        // the likelier meaning than a near user fn.
+                        let std_paths = crate::stdlib_surface::fn_paths_named(name);
+                        let hint = match std_paths.as_slice() {
+                            [] => closest_bare_name(name, &candidates)
+                                .map(|h| format!(" — did you mean `{}`?", h))
+                                .unwrap_or_default(),
+                            [one] => format!(" — did you mean `{one}`? A stdlib fn is called by its path"),
+                            many => format!(
+                                " — did you mean {}? A stdlib fn is called by its path",
+                                many.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(" or ")
+                            ),
+                        };
                         self.diags.push(Diag::ty(
                             id.span,
                             format!(
@@ -23749,7 +24995,12 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 }
-                let arg_tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
+                let expected: Vec<Ty> = match &callee_ty {
+                    Ty::Function { params, .. } => params.clone(),
+                    _ => Vec::new(),
+                };
+                let arg_tys: Vec<Ty> =
+                    args.iter().enumerate().map(|(i, a)| self.check_expr_expecting(a, expected.get(i))).collect();
                 // F.20: when a fn param is an interface type, the
                 // arg's locus type must structurally satisfy the
                 // interface (have the required methods with
@@ -23853,6 +25104,31 @@ impl<'a> Checker<'a> {
                             }
                             _ => None,
                         };
+                    // GH #1967: a call through a fn VALUE (a local or a
+                    // parameter of type `fn(A, B) -> R`, or the block a
+                    // shadowed callee was rewritten to) takes exactly the
+                    // type's parameters: a fn type has no defaults, so
+                    // every one is required. Lowering refused a short call
+                    // unlocated.
+                    if min_required.is_none() && through_value && arg_tys.len() < params.len() {
+                        let shown = match callee.as_ref() {
+                            Expr::Ident(id) => format!("`{}`", id.name),
+                            Expr::Field { name, .. } => format!("`{}`", name.name),
+                            _ => "this callee".to_string(),
+                        };
+                        self.diags.push(Diag::ty(
+                            callee.span(),
+                            format!(
+                                "{} is a fn value of type `{}`, which takes {} argument{}, got {}: a fn type \
+                                 has no defaults, so every argument is passed",
+                                shown,
+                                callee_ty.display(),
+                                params.len(),
+                                if params.len() == 1 { "" } else { "s" },
+                                arg_tys.len()
+                            ),
+                        ));
+                    }
                     if let Some((min, display)) = min_required {
                         if arg_tys.len() < min {
                             self.diags.push(Diag::ty(
@@ -23967,6 +25243,19 @@ impl<'a> Checker<'a> {
                                 if let Err(msg) =
                                     self.check_structural_impl(arg_name, iface_name)
                                 {
+                                    // A value of another interface (a
+                                    // parameter, a `let`, an element
+                                    // declared as one; GH #2005)
+                                    let msg = match self.top.lookup(arg_name) {
+                                        Some(TopSymbol::Interface(_)) => format!(
+                                            "a value of interface `{a}` where interface `{}` is expected: hale \
+                                             converts a locus into an interface, not one interface's value into \
+                                             another's. Declare the parameter as `{a}`, or pass the locus itself",
+                                            param_ty.display(),
+                                            a = arg_ty.display()
+                                        ),
+                                        _ => msg,
+                                    };
                                     let span = args
                                         .get(i)
                                         .map(|e| e.span())
@@ -23977,6 +25266,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                self.refuse_unordered_vec_sort(callee);
                 let base_ret = match callee_ty {
                     Ty::Function { ret, .. } => *ret,
                     _ => Ty::Unknown,
@@ -24023,6 +25313,7 @@ impl<'a> Checker<'a> {
                             // (spec/types.md § Value builtins). The
                             // build refused it with no file or line
                             // until 2026-11-06 (downstream handoff).
+                            let mut said = matches!(t, Ty::Bounded(..));
                             if let Ty::Named(n) = &t {
                                 if let Some(form) = self.locus_decls.get(n.as_str()).and_then(|d| d.form.as_ref()) {
                                     let recv = Self::spell_receiver(&args[0]);
@@ -24035,7 +25326,25 @@ impl<'a> Checker<'a> {
                                             recv
                                         ),
                                     ));
+                                    said = true;
                                 }
+                            }
+                            // GH #1942: anything else `len`'s row admits
+                            // no length of (an `Int`, a tuple, an enum, a
+                            // record) checked clean and the build refused
+                            // it.
+                            let lengthed = crate::builtin_sigs::bare_builtin_sig("len")
+                                .is_some_and(|sig| sig.result(std::slice::from_ref(&t), |_| false).is_some());
+                            if !said && !lengthed {
+                                self.diags.push(Diag::ty(
+                                    expr.span(),
+                                    format!(
+                                        "`len` does not apply to a value of type `{}`: it is the length of a `String`, a \
+                                         `Bytes`, a view of either, or a fixed-size array (`[T; N]`) (spec/types.md § Calls \
+                                         to bare names)",
+                                        t.display()
+                                    ),
+                                ));
                             }
                         }
                         // GH #1076: `min` / `max` of two values of one
@@ -24072,6 +25381,7 @@ impl<'a> Checker<'a> {
             }
             Expr::Field { receiver, name, span } => {
                 let is_callee = std::mem::take(&mut self.this_is_callee);
+                let cursor_anchor = std::mem::take(&mut self.cursor_anchor);
                 // F.11 entity-collection sugar: `self.children.count`
                 // (Int) and `self.children.is_empty` (Bool) read the
                 // accept'd-child tracker's live count. `self.children`
@@ -24181,9 +25491,41 @@ impl<'a> Checker<'a> {
                         if !is_callee {
                             self.refuse_method_value(&rt, name);
                         }
+                        // GH #1984: a collection's element cursor (an
+                        // element chain's `src.get(i)`), whatever the
+                        // collection is and however it is reached: by
+                        // its type, the collection's own `at`.
+                        if is_callee && matches!(name.name.as_str(), "get" | "entry_at") {
+                            self.note_cursor(&rt, *span);
+                        }
+                        // STABILITY.md § Deprecation: a call of a
+                        // deprecated stdlib method warns, at the call
+                        // (`deprecations::DEPRECATED_METHODS`).
+                        if is_callee && self.specializing.is_none() {
+                            if let Some(d) = rt_named(&rt).and_then(|n| crate::deprecations::deprecated_method(n, &name.name)) {
+                                self.diags.push(Diag::warn(*span, crate::deprecations::warning(d)));
+                            }
+                        }
                         t
                     }
                     None => {
+                        // GH #1984: a chain anchored on `.items` /
+                        // `.entries` whose receiver is no form but has a
+                        // real field of that name (`b.items` of a record,
+                        // `self.items` of a locus param): the desugar
+                        // stripped the field as if it were the form's
+                        // pseudo-field, so the cursor walks the field.
+                        // A collection's cursor is its `get`, whichever
+                        // pseudo-field anchored the chain.
+                        if let Some(anchor) = cursor_anchor.filter(|_| is_callee) {
+                            if let Some(ft) = self.field_ty(&rt, anchor) {
+                                let accessor = if self.field_ty(&ft, &name.name).is_some() { name.name.as_str() } else { "get" };
+                                if let Some(t) = self.field_ty(&ft, accessor) {
+                                    self.note_cursor(&ft, *span);
+                                    return t;
+                                }
+                            }
+                        }
                         // F.22: `self.<slot>` references a capacity
                         // slot, not a field. Slots don't have a
                         // value-level type the typechecker reasons
@@ -24341,6 +25683,17 @@ impl<'a> Checker<'a> {
                                     hint = format!(" — {}", advice);
                                 }
                             }
+                            // GH #1995 S3: `s.trim()` is the method
+                            // spelling of `std::str::trim(s)`.
+                            if hint.is_empty() {
+                                if let Some(advice) =
+                                    crate::stdlib_surface::str_fn_member_advice(
+                                        &rt, &name.name,
+                                    )
+                                {
+                                    hint = format!(" — {}", advice);
+                                }
+                            }
                             // Friction sweep 2026-10-12: a value of an
                             // interface offers its methods and nothing
                             // else — no fields, whatever the locus
@@ -24445,9 +25798,73 @@ impl<'a> Checker<'a> {
             }
             Expr::Index { receiver, index, span } => {
                 let rt = self.check_expr(receiver);
+                // GH #1942: a range index slices a `String` (`s[1..3]`,
+                // `s[1..=3]`, and the open forms `s[1..]` / `s[..3]` the
+                // parser closes, GH #1995); on anything else it checked
+                // clean, typed as one element, and the build refused it.
+                if let Expr::Range { lo, hi, .. } = index.as_ref() {
+                    // The bounds are `Int`s. A bound of another known
+                    // type checked clean and the build refused it
+                    // ("string slice bounds must be Int").
+                    for b in [lo, hi] {
+                        let bt = self.check_expr(b);
+                        if let Ty::Prim(p) = self.through_aliases(bt.clone()) {
+                            if p != PrimType::Int {
+                                self.diags.push(Diag::ty(
+                                    b.span(),
+                                    format!(
+                                        "a slice's bounds are `Int` byte offsets, and this one is a `{}` \
+                                         (spec/semantics.md § String slicing)",
+                                        bt.display()
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    // the range itself, typed as `check_expr` types one
+                    if let Some(seen) = &mut self.expr_types {
+                        seen.push((index.as_ref() as *const Expr, Ty::Unknown));
+                    }
+                    let base = self.through_aliases(rt.clone());
+                    if matches!(base, Ty::Prim(PrimType::String) | Ty::Unknown) {
+                        return rt;
+                    }
+                    let recv = Self::spell_receiver(receiver);
+                    let way = match &base {
+                        Ty::Array(..) => format!(
+                            "copy the elements you want into an array of their own (`[{recv}[1], {recv}[2]]`), or \
+                             walk the range (`for i in 1..3 {{ … {recv}[i] … }}`)"
+                        ),
+                        Ty::Prim(PrimType::Bytes | PrimType::BytesView) => {
+                            format!("`std::bytes::slice({recv}, lo, hi)` copies a range of bytes")
+                        }
+                        Ty::Prim(PrimType::StringView) => {
+                            format!("slice a `String` copy of the view (`std::str::clone({recv})[lo..hi]`)")
+                        }
+                        _ => format!("index one element at a time (`{recv}[i]`)"),
+                    };
+                    self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "`{recv}[lo..hi]`: a range index slices a `String`, and hale can't compile a slice of a \
+                             `{}` yet; {way}",
+                            rt.display()
+                        ),
+                    ));
+                    return Ty::Unknown;
+                }
                 let _ = self.check_expr(index);
                 match self.through_aliases(rt.clone()) {
                     Ty::Array(elem, _) => *elem,
+                    // GH #1995 (G12): `s[i]` checked clean and the build
+                    // refused it ("indexing a non-array value"). One
+                    // index of a String has no answer to give (a byte, or
+                    // a character?), so the refusal names both.
+                    Ty::Prim(PrimType::String | PrimType::StringView) => {
+                        let recv = Self::spell_receiver(receiver);
+                        self.diags.push(Diag::ty(*span, string_index(&recv, &rt)));
+                        Ty::Unknown
+                    }
                     Ty::Bounded(elem, _) => {
                         let recv = Self::spell_receiver(receiver);
                         self.refuse_bounded_index(&recv, &rt, *elem, *span)
@@ -24462,7 +25879,21 @@ impl<'a> Checker<'a> {
                 }
                 Ty::Tuple(tys)
             }
-            Expr::Array(parts, _) => {
+            Expr::Array(parts, span) => {
+                // GH #1942: `[]` names no element type; lowering takes it
+                // from the type its site declares (`check_expr_expecting`):
+                // a `let`'s array or bounded ascription, or a bounded
+                // return, argument, assignment or record field (GH #1951).
+                // The site decides, here, once.
+                if parts.is_empty() && !std::mem::take(&mut self.empty_array_typed) {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        "an empty array literal `[]` names no element type, and hale can't compile one here yet: \
+                         write it as the value of a `let` that declares its type (`let xs: [Int; 0] = [];`), \
+                         or write `[x; 0]`, whose element is `x`'s type"
+                            .to_string(),
+                    ));
+                }
                 let tys: Vec<Ty> = parts.iter().map(|e| self.check_expr_local(e)).collect();
                 for (e, t) in parts.iter().zip(&tys) {
                     self.refuse_unit_value(t, e, "an array element");
@@ -24484,7 +25915,27 @@ impl<'a> Checker<'a> {
             // Gap C (2026-07-17): match in expression position types
             // as the join of its arm-body types.
             Expr::Match(m) => self.check_match_core(m, true),
-            Expr::Sum(inner, _) | Expr::Prod(inner, _) => self.check_expr(inner),
+            // GH #1942: `sum(x)` is a closure assertion's accumulator over
+            // a field (`sum(self.x)`), and hale has no lowering of `prod(x)`
+            // at all; each checked clean anywhere and the build refused it.
+            Expr::Sum(inner, span) => {
+                if !self.in_closure {
+                    self.diags.push(Diag::ty(*span, accumulator_outside_closure("sum(…)")));
+                } else {
+                    self.refuse_accumulated_non_field("sum", inner);
+                }
+                self.check_expr(inner)
+            }
+            Expr::Prod(inner, span) => {
+                self.diags.push(Diag::ty(
+                    *span,
+                    "hale can't compile the `prod(…)` accumulator yet: a closure assertion accumulates \
+                     `sum(self.x)`, `mean(self.x)` and `count()`. Keep the running product in a field the \
+                     locus updates, and assert on the field"
+                        .to_string(),
+                ));
+                self.check_expr(inner)
+            }
             Expr::Approx { left, right, tolerance, span } => {
                 if !self.in_closure {
                     self.diags.push(Diag::ty(
@@ -24571,6 +26022,39 @@ impl<'a> Checker<'a> {
                 // success is `T`, its failure a `RangeError`, and what
                 // discharges it is its row's policy.
                 let narrowing = self.narrowing_at(inner);
+                // GH #1966: an `or` handles the failure of the call it
+                // follows (or of a narrowing conversion). Anything else
+                // there — a field read of a literal whose field is a
+                // fallible call, an element, a name — has no failure of
+                // its own to address, and lowering refused it after a
+                // clean check; the call inside is addressed where it is
+                // written. (A non-fallible type there is the rule below's:
+                // "not fallible, drop the `or`".)
+                if narrowing.is_none()
+                    && stdlib_or.is_none()
+                    && !matches!(inner.as_ref(), Expr::Call { .. })
+                    && matches!(inner_ty, Ty::Fallible { .. } | Ty::Unknown)
+                {
+                    let what = match inner.as_ref() {
+                        Expr::Field { .. } => "a field read",
+                        Expr::Index { .. } => "an element read",
+                        Expr::Ident(_) | Expr::Path(_) => "a name",
+                        Expr::Or { .. } => "another `or`",
+                        _ => "no call",
+                    };
+                    self.diags.push(Diag::ty(
+                        inner.span(),
+                        format!(
+                            "`or` handles the failure of the call it follows, and this is {what}: it has no \
+                             failure of its own to address. Put the `or` on the fallible call where it is \
+                             written (`f(x) or 0`)"
+                        ),
+                    ));
+                    return match inner_ty {
+                        Ty::Fallible { success, .. } => *success,
+                        other => other,
+                    };
+                }
                 // GH #1076 (U3): a change of denomination's narrowing fails
                 // with an `InexactError`, a range's with a `RangeError`.
                 let ratio =
@@ -24655,14 +26139,54 @@ impl<'a> Checker<'a> {
                             },
                             _ => None,
                         };
-                        let msg = match callee {
-                            Some(c) => format!(
+                        // GH #1948: a method names itself too, and a
+                        // form's `push` says why it cannot fail, where
+                        // `get` / `set` / `pop` can.
+                        let method = match inner.as_ref() {
+                            Expr::Call { callee, .. } => match callee.as_ref() {
+                                Expr::Field { receiver, name, .. } => Some((receiver.as_ref(), name.name.as_str())),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        let msg = match (callee, method) {
+                            (None, Some((receiver, m))) => {
+                                let recv = Self::spell_receiver(receiver);
+                                let form = match receiver {
+                                    Expr::Ident(id) => match self.locals.lookup(&id.name).map(|l| &l.ty) {
+                                        Some(Ty::Named(n)) => self
+                                            .locus_decls
+                                            .get(n.as_str())
+                                            .and_then(|d| d.form.as_ref())
+                                            .map(|f| f.name.name.as_str()),
+                                        _ => None,
+                                    },
+                                    _ => None,
+                                };
+                                let why = match (form, m) {
+                                    (Some(f @ ("vec" | "heap")), "push") => format!(
+                                        ": a `@form({f})` grows to hold what is pushed, so `push` cannot \
+                                         fail, where `get`, `set` and `pop` can miss. (A \
+                                         `bounded[T; N]`'s `push(f, x)` is fallible: it can be full.)"
+                                    ),
+                                    (Some("ring_buffer"), "push") => ": a ring buffer's `push` answers \
+                                         `false` when it is full; test the `Bool`"
+                                        .to_string(),
+                                    _ => String::new(),
+                                };
+                                format!(
+                                    "`{recv}.{m}(…)` is not fallible (it returns `{}`); \
+                                     drop the `or` clause{why}",
+                                    other.display()
+                                )
+                            }
+                            (Some(c), _) => format!(
                                 "`{}` is not fallible (it returns `{}`); \
                                  drop the `or` clause",
                                 c,
                                 other.display()
                             ),
-                            None => format!(
+                            (None, None) => format!(
                                 "`or` disposition expects a fallible-typed \
                                  expression on the left; got `{}` (not fallible). \
                                  Drop the `or` clause if the call can't fail.",
@@ -24678,6 +26202,40 @@ impl<'a> Checker<'a> {
                         // `or raise` diverges via closure
                         // violation; expression's value type is
                         // the success type.
+                        //
+                        // GH #1945: inside a fallible fn it hands the
+                        // inner error on as the fn's own, so the two
+                        // are one type; the build refused a mismatch,
+                        // unlocated in the program's terms, after the
+                        // check had admitted it.
+                        //
+                        // GH #1951 (item 2): or one it converts from — a
+                        // member of the fn's set error type (R2), or the
+                        // type a `@raise` fn converts (R3), in that order.
+                        let raised_at = match disposition {
+                            OrDisposition::Raise(at) => *at,
+                            _ => *span,
+                        };
+                        if let Some((_, expected)) = self.fallible_ctx.clone() {
+                            if !self.judge_raise(&expected, &payload, raised_at) {
+                                let (want, got) = (expected.display(), payload.display());
+                                let set = if self.set_members(&expected).is_some() {
+                                    format!("add `{got}` to the set `{want}`")
+                                } else {
+                                    format!("make `{want}` a set holding it (`type {want} = {got} | …;`)")
+                                };
+                                self.diags.push(Diag::ty(
+                                    *span,
+                                    format!(
+                                        "`or raise` hands on the call's error, of type `{got}`, and the enclosing fn \
+                                         is declared `fallible({want})`: a raised error is the fn's own type, or one \
+                                         it converts from, and nothing converts `{got}` into `{want}`. Declare the \
+                                         conversion, `@raise fn …(e: {got}) -> {want} {{ … }}`; {set}; or translate \
+                                         here, `or fail {want} {{ … }}` (the call's error is in scope as `err`)",
+                                    ),
+                                ));
+                            }
+                        }
                         success
                     }
                     OrDisposition::Wait(span) => {
@@ -24764,7 +26322,12 @@ impl<'a> Checker<'a> {
                                  a value".to_string(),
                             )),
                             Some((_, expected_payload)) => {
-                                if !expected_payload.assignable_from(&new_payload_ty) {
+                                // GH #1951 (item 2): a member fails as its
+                                // set, as it does through `fail` (R2).
+                                let expected_payload = expected_payload.clone();
+                                let injected = self.set_injection(&expected_payload, &new_payload_ty).is_some()
+                                    && self.flows_into(&expected_payload, &new_payload_ty, payload_expr);
+                                if !injected && !expected_payload.assignable_from(&new_payload_ty) {
                                     self.diags.push(Diag::ty(
                                         payload_expr.span(),
                                         format!(
@@ -24883,9 +26446,12 @@ impl<'a> Checker<'a> {
                                     ),
                                 )),
                                 Some((_, expected_payload)) => {
-                                    if !expected_payload
-                                        .assignable_from(h_payload)
-                                    {
+                                    // GH #1951 (item 2): its implicit `or
+                                    // raise` converts as a written one does,
+                                    // at the handler (where lowering writes
+                                    // it).
+                                    let (expected_payload, h_payload) = (expected_payload.clone(), (**h_payload).clone());
+                                    if !self.judge_raise(&expected_payload, &h_payload, rhs.span()) {
                                         self.diags.push(Diag::ty(
                                             *span,
                                             format!(
@@ -24894,7 +26460,12 @@ impl<'a> Checker<'a> {
                                                  enclosing fn is \
                                                  `fallible({})` — the \
                                                  propagated payload must \
-                                                 match",
+                                                 match, be a member of the \
+                                                 set the fn fails with, or \
+                                                 have a `@raise fn …(e: {}) \
+                                                 -> {}` conversion",
+                                                h_payload.display(),
+                                                expected_payload.display(),
                                                 h_payload.display(),
                                                 expected_payload.display()
                                             ),
@@ -24946,6 +26517,398 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// M3 stage 3 (2026-07-02): a call to a generic fn, by its own
+    /// name or through an import alias (`lib::id(..)`, GH #1964):
+    /// `key` is the template's name in the merged program, which names
+    /// its monomorphs (`id_Int`, `__lib_…__id_Int`), and `shown` the
+    /// callee as written, for diagnostics.
+    fn check_generic_fn_call(
+        &mut self,
+        key: &str,
+        shown: &str,
+        template: &'a FnDecl,
+        args: &[Expr],
+        callee_span: Span,
+        call_id: NodeId,
+    ) -> Ty {
+        if args.len() != template.params.len() {
+            let mut message = format!(
+                "generic fn `{}` takes {} argument{}, got {}",
+                shown,
+                template.params.len(),
+                if template.params.len() == 1 { "" } else { "s" },
+                args.len()
+            );
+            // A default on a generic fn's parameter is only ever used by a
+            // call that leaves it out, which the build cannot specialize:
+            // it fills no default on a generic template.
+            let left_out = template.params.get(args.len()..).unwrap_or_default();
+            if !left_out.is_empty() && left_out.iter().all(|p| p.default.is_some()) {
+                let names: Vec<String> = left_out.iter().map(|p| format!("`{}`", p.name.name)).collect();
+                message.push_str(&format!(
+                    ": hale can't compile a call that leaves out a generic fn's defaulted parameter yet; pass {} \
+                     here",
+                    names.join(", ")
+                ));
+            }
+            // Kept where a default's walk discards its findings (a call
+            // written in another fn's parameter default, `fn f(n: Int =
+            // read())`): the build lowers that call where the default is
+            // left out, and refused it there. Kept as a quantity rule's
+            // error is (`discard_keeping_unit_errors`), once in the
+            // declaration's result.
+            self.unit_error(Diag::ty(callee_span, message));
+        }
+        let arg_tys: Vec<Ty> = args
+            .iter()
+            .map(|a| self.check_expr(a))
+            .collect();
+        for (a, at) in args.iter().zip(&arg_tys) {
+            self.refuse_unit_value(
+                at,
+                a,
+                &format!("an argument to generic fn `{}`", shown),
+            );
+        }
+        let generic_names: std::collections::BTreeSet<
+            String,
+        > = template
+            .generics
+            .iter()
+            .map(|g| g.name.name.clone())
+            .collect();
+        let mut bindings: BTreeMap<String, Ty> =
+            BTreeMap::new();
+        let mut conflicted = false;
+        for (p, at) in
+            template.params.iter().zip(arg_tys.iter())
+        {
+            if let Err((gname, was, now)) =
+                unify_generic_ty(
+                    &p.ty,
+                    at,
+                    &generic_names,
+                    &mut bindings,
+                )
+            {
+                conflicted = true;
+                self.diags.push(Diag::ty(
+                    callee_span,
+                    format!(
+                        "generic fn `{}`: parameter \
+                         `{}` bound to both `{}` and \
+                         `{}` by this call's arguments",
+                        shown,
+                        gname,
+                        was.display(),
+                        now.display()
+                    ),
+                ));
+            }
+        }
+        // A quantity or a point (GH #1076) is no type
+        // argument: its unit lives in the checker's rows
+        // for the places that name it, and a generic body
+        // names `G`, so it would print and convert as the
+        // bare count. An identity or a range is its `Int`
+        // there, as everywhere, and binds.
+        for (gname, bound) in &bindings {
+            // (a synthesized denomination has its own
+            // refusal below)
+            if matches!(bound, Ty::Named(_))
+                && self.scalars.quantity(bound).is_some_and(|q| !q.synthesized)
+            {
+                self.diags.push(Diag::ty(
+                    callee_span,
+                    format!(
+                        "generic fn `{}`: `{}` would be `{}`, a quantity, and a generic body \
+                         has no unit to print or convert one by; write the fn over `{}`, \
+                         or pass its count (`x / 1<unit>`)",
+                        shown,
+                        gname,
+                        bound.display(),
+                        bound.display()
+                    ),
+                ));
+            }
+        }
+        // `T: Numeric`, held at the binding this call
+        // infers (the build refused the instantiation
+        // with no location).
+        for g in &template.generics {
+            let numeric_bound = matches!(&g.bound, Some(TypeExpr::Named { path, .. })
+                if path.segments.len() == 1 && path.segments[0].name == "Numeric");
+            let Some(bound) = bindings.get(&g.name.name) else { continue };
+            if !numeric_bound || self.satisfies_numeric(bound) {
+                continue;
+            }
+            self.diags.push(Diag::ty(
+                callee_span,
+                format!(
+                    "generic fn `{}`: `{}` is bounded `Numeric`, and this call makes it `{}`, \
+                     not one of `Int`, `Float`, `Decimal` or `Duration`",
+                    shown,
+                    g.name.name,
+                    bound.display()
+                ),
+            ));
+        }
+        // GH #1942: a specialization is declared under a
+        // name its type arguments spell (`id_Int`), and an
+        // array, a tuple or a fn type spells none, so the
+        // build refused the call. Refused here, at the call.
+        for g in &template.generics {
+            let Some(bound) = bindings.get(&g.name.name) else { continue };
+            if let Some(what) = unnameable_generic_arg(bound) {
+                self.diags.push(Diag::ty(
+                    callee_span,
+                    format!(
+                        "generic fn `{}`: this call makes `{}` `{}`, {what}, and hale can't compile a \
+                         generic fn specialized at one yet: a generic argument is a primitive or a \
+                         declared type (a struct, an enum, an alias, a locus or an interface). Wrap \
+                         the value in a declared type (`type Wrapped {{ v: {}; }}`), or write the fn \
+                         over the concrete type",
+                        shown,
+                        g.name.name,
+                        bound.display(),
+                        bound.display()
+                    ),
+                ));
+            }
+        }
+        // A generic `type` the signature instantiates at a parameter this
+        // call binds to a locus (`fn bx<T>(x: T) -> Box<T>` at `L`) would
+        // hold the locus, which a `type` cannot; the build refused the
+        // monomorph with no location.
+        for te in template.ret.iter().chain(template.params.iter().map(|p| &p.ty)) {
+            if let Some((ty_name, g, locus)) = self.generic_type_holding_locus(te, &bindings) {
+                let message = match locus.strip_prefix("perspective(").and_then(|p| p.strip_suffix(')')) {
+                    Some(p) => format!(
+                        "generic fn `{shown}`: this call makes `{g}` the perspective `{p}`, and its signature's \
+                         `{ty_name}<{g}>` would be a generic `type` holding a perspective slot, which hale can't \
+                         compile yet. Declare a `type` with a `perspective({p})` field for it, or pass the value \
+                         where it is used as a `perspective({p})` parameter"
+                    ),
+                    None => format!(
+                        "generic fn `{shown}`: this call makes `{g}` the locus `{locus}`, and its signature's \
+                         `{ty_name}<{g}>` would be a `type` holding it: {}",
+                        generic_type_at_locus_message(&ty_name, &locus)
+                    ),
+                };
+                let d = Diag::ty(callee_span, message);
+                self.push_or_keep(d);
+                break;
+            }
+        }
+        // Every generic must be pinned — UNLESS an
+        // arg typed Unknown could have pinned it
+        // (stay permissive where inference was).
+        let any_unknown_arg = arg_tys
+            .iter()
+            .any(|t| matches!(t, Ty::Unknown));
+        // (a call with the wrong count is refused for that above; a
+        // parameter it leaves out pins nothing, and saying so again is
+        // the same refusal twice)
+        if !any_unknown_arg && args.len() == template.params.len() {
+            for g in &template.generics {
+                if !bindings.contains_key(&g.name.name)
+                {
+                    self.diags.push(Diag::ty(
+                        callee_span,
+                        format!(
+                            "generic fn `{}`: cannot \
+                             infer `{}` from this call \
+                             — every generic param \
+                             must appear in an \
+                             argument position that \
+                             pins it",
+                            shown, g.name.name
+                        ),
+                    ));
+                }
+            }
+        } else {
+            // GH #1963: an argument the checker gives no type pins
+            // nothing, and lowering reads the type arguments from this
+            // call's row, so a parameter only such an argument could
+            // pin left the call a hole the build refused after a clean
+            // check. Refused here, at the argument. (Inside a generic
+            // template a use of its own parameter is typed `Unknown`
+            // too, so there only an argument that has no value whatever
+            // the parameters are is refused: a capacity slot, a printing
+            // builtin's call, a stdlib path without `std::`. The walk of
+            // the template for one of its monomorphs types the
+            // parameter's uses, so there a LOCAL that is still `Unknown`
+            // has no nameable type at that specialization either — a
+            // match arm's binding of a recursive record, say, which is
+            // unnamed in a body over the concrete type too — and the
+            // specialized call is the hole the build refused: kept from
+            // that walk. Anything else the walk leaves `Unknown` (a
+            // `self` read in a generic locus's params default) is the
+            // walk's own gap, which the build types.)
+            let in_template = !self.generic_params.is_empty() && self.specializing.is_none();
+            let walking = self.specializing.is_some();
+            for g in &template.generics {
+                if bindings.contains_key(&g.name.name) {
+                    continue;
+                }
+                for ((p, at), a) in template.params.iter().zip(&arg_tys).zip(args) {
+                    let refused = if walking {
+                        matches!(a, Expr::Ident(id) if self.locals.lookup(&id.name).is_some())
+                    } else {
+                        !in_template || self.valueless_whatever_the_parameters(a)
+                    };
+                    if matches!(at, Ty::Unknown) && type_expr_mentions(&p.ty, &g.name.name) && refused {
+                        let msg = self.untyped_generic_arg_message(shown, &g.name.name, a);
+                        self.push_or_keep(Diag::ty(a.span(), msg));
+                    }
+                }
+            }
+        }
+        // The call's row (F.40 phase 3, E4): the
+        // bindings this unification made, by the
+        // template's parameter order, and the params
+        // they substitute into. An unpinned or
+        // conflicting parameter, or a wrong arity,
+        // leaves the call a hole.
+        let row = {
+            use crate::typed_bodies::{GenericCall, Hole, Typed};
+            let unpinned = template
+                .generics
+                .iter()
+                .find(|g| !bindings.contains_key(&g.name.name));
+            if args.len() != template.params.len() {
+                Typed::Hole(Hole {
+                    span: callee_span,
+                    reason: format!(
+                        "generic fn `{}` takes {} argument(s), this call passes {}",
+                        shown,
+                        template.params.len(),
+                        args.len()
+                    ),
+                })
+            } else if let Some(g) = unpinned {
+                Typed::Hole(Hole {
+                    span: callee_span,
+                    reason: format!(
+                        "generic fn `{}`: no argument of this call pins `{}`",
+                        shown, g.name.name
+                    ),
+                })
+            } else if conflicted {
+                Typed::Hole(Hole {
+                    span: callee_span,
+                    reason: format!(
+                        "generic fn `{}`: this call's arguments bind a parameter twice",
+                        shown
+                    ),
+                })
+            } else {
+                let type_args: Vec<Ty> = template
+                    .generics
+                    .iter()
+                    .map(|g| bindings[&g.name.name].clone())
+                    .collect();
+                let params: Vec<Ty> = template
+                    .params
+                    .iter()
+                    .map(|p| substitute_generic_ty(&p.ty, &bindings, self.known))
+                    .collect();
+                Typed::Known(GenericCall { template: template.id, type_args, params })
+            }
+        };
+        // GH #1076 (U3): a monomorph is named by its type
+        // arguments, and a synthesized denomination has no
+        // declaration to name it by.
+        if let crate::typed_bodies::Typed::Known(call) = &row {
+            let synthesized =
+                call.type_args.iter().find(|t| self.scalars.quantity(t).is_some_and(|q| q.synthesized));
+            if let Some(t) = synthesized {
+                let shown_ty = self.scalars.type_display(t);
+                self.unit_error(Diag::ty(
+                    callee_span,
+                    format!(
+                        "generic fn `{}`: `{shown_ty}` is a denomination no declaration names, and a generic \
+                         argument is a declared type: bind the value to one first (`let x: T = …`)",
+                        shown
+                    ),
+                ));
+            }
+        }
+        if let crate::typed_bodies::Typed::Known(call) = &row {
+            let tokens: Option<Vec<String>> =
+                call.type_args.iter().map(crate::typed_bodies::mangle_token).collect();
+            if let (Some(tokens), false) = (tokens, template.id.is_none()) {
+                self.typed.monomorphs.insert(crate::typed_bodies::Monomorph {
+                    template: template.id,
+                    kind: crate::typed_bodies::TemplateKind::Fn,
+                    args: call.type_args.clone(),
+                    name: format!("{}_{}", key, tokens.join("_")),
+                });
+            }
+        }
+        if !self.default_invocations.is_empty() {
+            self.typed.default_generic_call(
+                self.body, &self.default_invocations,
+                self.specializing.clone(), call_id, row,
+            );
+        } else {
+            match &self.specializing {
+                Some(args) => {
+                    let args = args.clone();
+                    self.typed.specialized_generic_call(self.body, args, call_id, row);
+                }
+                None => self.typed.generic_call(self.body, call_id, row),
+            }
+        }
+        // Preserve holes in the template's lexical scope. A
+        // global declaration with the same name cannot fill an
+        // argument that this call did not infer.
+        for name in &generic_names {
+            bindings.entry(name.clone()).or_insert(Ty::Unknown);
+        }
+        // Args vs substituted params.
+        for ((p, at), a) in template
+            .params
+            .iter()
+            .zip(arg_tys.iter())
+            .zip(args.iter())
+        {
+            let want = substitute_generic_ty(
+                &p.ty,
+                &bindings,
+                self.known,
+            );
+            if !want.assignable_from(at) {
+                self.diags.push(Diag::ty(
+                    a.span(),
+                    format!(
+                        "generic fn `{}` argument \
+                         `{}`: expected `{}`, got `{}`",
+                        shown,
+                        p.name.name,
+                        want.display(),
+                        at.display()
+                    ),
+                ));
+            }
+        }
+        // GH #1978: an application of the parameters is the monomorph the
+        // call's arguments name.
+        let ret = match &template.ret {
+            Some(te) => self.instantiated_ty(te, &bindings),
+            None => Ty::Unit,
+        };
+        if let Some(fe) = &template.fallible {
+            let payload = self.instantiated_ty(fe, &bindings);
+            return Ty::Fallible {
+                success: Box::new(ret),
+                payload: Box::new(payload),
+            };
+        }
+        return ret;
     }
 
     /// Same as check_expr but used when we need a type without
@@ -25627,6 +27590,19 @@ impl<'a> Checker<'a> {
                 }
             }
             Pattern::Tuple(subs, _) => {
+                // GH #1942: each part of a tuple pattern is a binding, `_` or
+                // a literal, as each value of a variant's is: lowering
+                // matched nothing nested there and refused the arm.
+                for p in subs {
+                    if let Pattern::Tuple(_, sp) | Pattern::Constructor { span: sp, .. } = p {
+                        self.diags.push(Diag::ty(
+                            *sp,
+                            "a tuple pattern takes a binding, `_` or a literal for each of its parts, and hale \
+                             can't compile a nested pattern there yet: bind the part, and match the binding in the arm"
+                                .to_string(),
+                        ));
+                    }
+                }
                 if let Ty::Tuple(ts) = scrut {
                     if ts.len() == subs.len() {
                         for (p, t) in subs.iter().zip(ts.clone()) {
@@ -25665,6 +27641,8 @@ impl<'a> Checker<'a> {
                 }
             }
             Pattern::Wildcard(_) | Pattern::Binding(_) => {}
+            // the arm's alternatives are each checked by the caller
+            Pattern::Or(..) => {}
         }
     }
 
@@ -26070,6 +28048,73 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A diagnostic of the ordinary walk, or, in a walk of a generic body
+    /// for one of its monomorphs (whose diagnostics are dropped), one kept
+    /// for after every walk (`kept_specialization_diags`), once.
+    fn push_or_keep(&mut self, d: Diag) {
+        if self.specializing.is_none() {
+            self.diags.push(d);
+            return;
+        }
+        let dup = self.kept_specialization_diags.iter().any(|k| k.span == d.span && k.message == d.message);
+        if !dup {
+            self.kept_specialization_diags.push(d);
+        }
+    }
+
+    /// GH #1965: the template literals `value` is, or an array, array
+    /// repeat or tuple literal of them holds, are at a site that declares
+    /// their type: that site admits them or reports its own mismatch, and
+    /// lowering rewrites them there.
+    fn mark_declared_site(&mut self, value: &Expr) {
+        match value {
+            Expr::Struct { span, .. } => {
+                self.admitted_template_literals.insert((span.start.0, span.end.0));
+            }
+            Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
+                for p in parts {
+                    self.mark_declared_site(p);
+                }
+            }
+            Expr::ArrayRepeat { val, .. } => self.mark_declared_site(val),
+            _ => {}
+        }
+    }
+
+    /// GH #1965: a literal spelled with a generic template's name that no
+    /// site declaring its type admitted
+    /// ([`Self::admit_monomorph_literal`]) and no site without one refused
+    /// ([`Self::refuse_generic_literal_without_arguments`]): a receiver
+    /// (`Box { v: 3 }.v`), a generic fn's argument, an operand, a
+    /// condition, an f-string part, an `if` or `match` arm. Lowering takes
+    /// the arguments only from a declared type, so it refused each of these
+    /// after a clean check; the check refuses them at the literal, once the
+    /// declaration's walk has seen every site that admits one.
+    fn refuse_unadmitted_template_literals(&mut self) {
+        // (each walk of a generic body for a monomorph ends here too,
+        // `specialize_generic_bodies`)
+        let literals = std::mem::take(&mut self.template_literals);
+        let admitted = std::mem::take(&mut self.admitted_template_literals);
+        for (key, (span, name)) in literals {
+            if admitted.contains(&key) {
+                continue;
+            }
+            let Some(template) = self.generic_template_named(&Ty::Named(name)) else { continue };
+            let name = template.name();
+            let params: Vec<&str> = template.generics().iter().map(|g| g.name.name.as_str()).collect();
+            self.push_or_keep(Diag::ty(
+                span,
+                format!(
+                    "`{name}` is a generic {}: a literal spelled with the template name takes its type arguments \
+                     from the declared type at the site, and nothing here declares one. Bind it to a `let` that \
+                     writes them (`let x: {name}<{}> = {name} {{ ... }};`) and use `x`",
+                    template.kind(),
+                    params.join(", "),
+                ),
+            ));
+        }
+    }
+
     fn refuse_generic_literal_without_arguments(
         &mut self,
         ty: &Ty,
@@ -26078,6 +28123,8 @@ impl<'a> Checker<'a> {
         let Some(template) = self.generic_template_named(ty) else {
             return;
         };
+        // Said here; the walk's end does not say it again (GH #1965).
+        self.admitted_template_literals.insert((span.start.0, span.end.0));
         let name = template.name();
         let params: Vec<&str> = template
             .generics()
@@ -26210,18 +28257,47 @@ impl<'a> Checker<'a> {
                 for arg in generic_args {
                     self.check_generic_arity(arg);
                 }
-                if path.segments.len() != 1 || generic_args.is_empty() {
+                if generic_args.is_empty() {
                     return;
                 }
-                let name = &path.segments[0].name;
-                let Some(template) =
-                    self.generic_template_named(&Ty::Named(name.clone()))
-                else {
+                // GH #1986: an imported seed's template through its
+                // qualified path (`lib::Box<Int, String>`) is the one the
+                // merge names it by, held to its parameter count as the
+                // bare spelling is.
+                let written: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                let (key, shown) = match written.as_slice() {
+                    [one] => (one.to_string(), one.to_string()),
+                    _ => match self.known.import_target(&written.join("::")) {
+                        Some(m) => (m.to_string(), written.join("::")),
+                        None => return,
+                    },
+                };
+                let name = &shown;
+                let Some(template) = self.generic_template_named(&Ty::Named(key)) else {
                     return;
                 };
                 let want = template.generics().len();
                 if generic_args.len() == want {
                     self.check_generic_bounds(template.kind(), name, template.generics(), generic_args);
+                    // A generic `type` at a locus would hold the locus,
+                    // which a `type` cannot (`refuse_locus_in_type`); the
+                    // build refused the monomorph with no location.
+                    // (an argument that is the enclosing template's own
+                    // parameter is judged where a call binds it)
+                    if template.is_type() {
+                        for arg in generic_args {
+                            let own_param = matches!(arg, TypeExpr::Named { path, generic_args, .. }
+                                if generic_args.is_empty() && path.segments.len() == 1
+                                    && self.generic_params.iter().any(|g| *g == path.segments[0].name));
+                            if own_param {
+                                continue;
+                            }
+                            if let Some(locus) = self.locus_held_by(arg) {
+                                let d = Diag::ty(arg.span(), generic_type_at_locus_message(name, &locus));
+                                self.push_or_keep(d);
+                            }
+                        }
+                    }
                     return;
                 }
                 self.diags.push(Diag::ty(
@@ -26350,12 +28426,16 @@ impl<'a> Checker<'a> {
                     // GH #470: a std:: literal that matches nothing in
                     // the rename table is a typo, not an Unknown —
                     // `std::log::TotallyFakeSink {}` used to typecheck.
+                    let hint = crate::stdlib_surface::type_hint(&segs)
+                        .map(|h| format!(" — {h}"))
+                        .unwrap_or_default();
                     self.diags.push(Diag::ty(
                         span,
                         format!(
                             "unknown stdlib type `{}` in struct/locus \
-                             literal",
-                            key.join("::")
+                             literal{}",
+                            key.join("::"),
+                            hint
                         ),
                     ));
                     for init in inits {
@@ -26580,7 +28660,8 @@ impl<'a> Checker<'a> {
     ) -> Ty {
         let mut seen: BTreeMap<String, ()> = BTreeMap::new();
         for init in inits {
-            let got = self.check_expr(&init.value);
+            let expected = fields.iter().find(|(n, _, _)| n == &init.name.name).map(|(_, w, _)| w.clone());
+            let got = self.check_expr_expecting(&init.value, expected.as_ref());
             // a hub param is numbered, and given its rows, in its default
             // (`hub_expand`); a construction that supplies its own would
             // leave the listener and the stream adapters on a key the hub
@@ -26801,10 +28882,12 @@ impl<'a> Checker<'a> {
         }
         if requires_all {
             for (fname, fty, has_default) in fields {
-                // bounded[T; N] fields auto-init empty and cannot
-                // be spelled in a literal.
+                // bounded[T; N] fields auto-init empty. A record's is
+                // spelled in a literal from a bounded value or an array
+                // literal (GH #1951, `flows_into`); a locus's params are
+                // not.
                 if matches!(fty, Ty::Bounded(_, _)) {
-                    if seen.contains_key(fname) {
+                    if seen.contains_key(fname) && kind_label != "type" {
                         self.diags.push(Diag::ty(
                             span,
                             format!(
@@ -27169,6 +29252,83 @@ fn locus_has_unsynchronized_state(
 /// calling every name below.
 ///
 /// Grouped by the codegen dispatch site that answers each name.
+/// GH #1942: an accumulator (`sum(…)`, `count()`, `mean(…)`) read outside
+/// a closure assertion.
+fn accumulator_outside_closure(what: &str) -> String {
+    format!(
+        "`{what}` is a closure assertion's accumulator (`closure c {{ sum(self.x) ~~ 0 within 10; epoch tick; }}`), \
+         and is compiled only there. To add up an array, walk it (`for x in xs {{ total = total + x; }}`) or chain \
+         it (`xs.map(it).sum()`)"
+    )
+}
+
+/// A generic `type` instantiated at a locus: the type would hold it.
+fn generic_type_at_locus_message(ty_name: &str, locus: &str) -> String {
+    format!(
+        "`{ty_name}<{locus}>` would make `type {ty_name}` hold the locus `{locus}`. A `type` is plain data with \
+         no lifecycle: it is copied by value, so it can neither own a locus nor keep one alive. Make `{ty_name}` \
+         a generic locus (`locus {ty_name}<T> {{ params {{ ... }} }}`), or pass the `{locus}` as a parameter where \
+         it is used"
+    )
+}
+
+/// Whether a generic fn's parameter type names the type parameter `g`
+/// anywhere (`T`, `Box<T>`, `[T; 2]`), so an argument there pins it.
+fn type_expr_mentions(te: &TypeExpr, g: &str) -> bool {
+    match te {
+        TypeExpr::Named { path, generic_args, .. } => {
+            (path.segments.len() == 1 && path.segments[0].name == g)
+                || generic_args.iter().any(|t| type_expr_mentions(t, g))
+        }
+        TypeExpr::Projection { inner, .. } => type_expr_mentions(inner, g),
+        TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => type_expr_mentions(elem, g),
+        TypeExpr::Tuple(parts, _) => parts.iter().any(|t| type_expr_mentions(t, g)),
+        TypeExpr::Function { params, ret, .. } => {
+            params.iter().any(|t| type_expr_mentions(t, g)) || ret.as_ref().is_some_and(|t| type_expr_mentions(t, g))
+        }
+        TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+    }
+}
+
+/// What a generic fn's inferred type argument is when no specialization
+/// can be named for it (GH #1942): an array, a tuple, a fn type, a
+/// `bounded` buffer, or a primitive with no mangle token. `None` for a
+/// nameable argument, and for `Unknown` (the check stays permissive where
+/// inference was).
+fn unnameable_generic_arg(t: &Ty) -> Option<&'static str> {
+    match t {
+        Ty::Array(..) => Some("an array"),
+        Ty::Tuple(_) => Some("a tuple"),
+        Ty::Function { .. } => Some("a fn type"),
+        Ty::Bounded(..) => Some("a `bounded` buffer"),
+        Ty::Prim(p) if crate::ty::generic_arg_mangle_token(*p).is_none() => Some("a primitive with no generic form"),
+        _ => None,
+    }
+}
+
+/// GH #1995 (G12): the refusal of `for c in s` over a String (or a
+/// view of one). The build refused it; the check now says what to write.
+fn for_over_string(t: &Ty) -> String {
+    format!(
+        "`for` over a `{}`: a string is not a sequence. Iterate \
+         `std::str::split/lines/words`, or a `bytes_view` by index \
+         (`let v = std::str::bytes_view(s); for i in 0..v.n {{ … std::str::byte_at(v, i) … }}`) \
+         (spec/semantics.md § Text sources)",
+        t.display()
+    )
+}
+
+/// GH #1995 (G12): the refusal of `s[i]`, one index of a String.
+fn string_index(recv: &str, t: &Ty) -> String {
+    format!(
+        "`{recv}[i]`: a `{}` has no element to index, since one position could mean a byte or a \
+         character. Read bytes through a view (`let v = std::str::bytes_view({recv});` then \
+         `std::str::byte_at(v, i)`, an `Int`, -1 past the end), or slice the text \
+         (`{recv}[i..(i + 1)]`, `{recv}[i..]`) (spec/semantics.md § String slicing)",
+        t.display()
+    )
+}
+
 pub const BARE_BUILTIN_CALLEES: &[&str] = &[
     // lower_expr's `Expr::Call` arms (hale-codegen `codegen.rs`).
     // `Int` and `Float` are the two numeric casts of
@@ -27176,8 +29336,9 @@ pub const BARE_BUILTIN_CALLEES: &[&str] = &[
     // primitive type names are types, not conversions, and a call
     // to one is an ordinary unbound callee.
     "len", "to_string", "Int", "Float", "abs", "min", "max",
-    // lower_str_predicate_builtin.
-    "starts_with", "contains",
+    // lower_str_predicate_builtin. `ends_with` (GH #1995) only where the
+    // program declares no fn of the name.
+    "starts_with", "contains", "ends_with",
     // Statement position: lower_print_call's four printers, and the
     // explicit-epoch closure surface.
     "println", "print", "eprintln", "eprint", "check_closures",
@@ -27308,6 +29469,14 @@ fn written_quantity_literal(e: &Expr) -> Option<(i64, &str, bool)> {
             Expr::Literal(Literal::Quantity { value, unit }, _) => Some((*value, unit.as_str(), true)),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// The name a receiver's type is declared under, for a named type.
+fn rt_named(rt: &Ty) -> Option<&str> {
+    match rt {
+        Ty::Named(n) => Some(n.as_str()),
         _ => None,
     }
 }

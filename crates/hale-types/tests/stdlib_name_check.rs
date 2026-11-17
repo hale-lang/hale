@@ -322,6 +322,47 @@ fn the_member_spelling_points_at_the_builtin() {
 }
 
 #[test]
+fn a_string_method_spelling_points_at_the_std_str_function() {
+    // GH #1995 S3: `s.trim()` is the method spelling of a `std::str`
+    // free function, and a String has no methods. Every public
+    // `std::str` fn that takes the String first is named, with its call
+    // shape; a fn over a `ByteView` (`slice`) is not, and a name `std::str`
+    // does not have keeps the plain error.
+    let m = msgs(
+        r#"
+        fn main() {
+            let s = " a=b ";
+            let t = s.trim();
+            let u = s.starts_with("a");
+            let v = s.cut("=");
+            let w = s.slice(0, 1);
+            let x = s.frobnicate();
+            println(t, u, v, w, x);
+        }
+    "#,
+    );
+    for (field, call) in [
+        ("trim", "`std::str::trim(s)`"),
+        ("starts_with", "`std::str::starts_with(s, …)`"),
+        ("cut", "`std::str::cut(s, …)`"),
+    ] {
+        assert!(
+            m.iter().any(|s| s.contains(&format!("no field `{field}` on `String`"))
+                && s.contains("string operations are free functions")
+                && s.contains(call)),
+            "`.{field}()` on a String should point at {call}; got: {m:?}"
+        );
+    }
+    for field in ["slice", "frobnicate"] {
+        assert!(
+            m.iter().any(|s| s.contains(&format!("no field `{field}` on `String`"))
+                && !s.contains("std::str::")),
+            "`.{field}()` names no std::str call; got: {m:?}"
+        );
+    }
+}
+
+#[test]
 fn an_unrelated_unknown_function_gets_no_builtin_suggestion() {
     // The control: names with no builtin equivalent keep the plain
     // unknown-fn diagnostic. `std::json::parse` is the interesting

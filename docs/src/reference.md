@@ -25,6 +25,7 @@ This chapter provides a quick-reference cheat sheet of Hale's syntax, decorators
 | `constitution Name [extends Base] { ... }` | Reusable set of architectural `claims` |
 | `dimension` / `unit` / `scale` / `quantity` | Compile-time dimensional analysis and unit types |
 | `import "path/to/seed" as alias;` | Cross-seed library import |
+| `import "path/to/seed" as alias { Name, Other as Mine };` | Import list: the names bare in this seed, re-exported as `alias::Name` |
 
 ### Decorator Reference
 
@@ -38,6 +39,7 @@ This chapter provides a quick-reference cheat sheet of Hale's syntax, decorators
 | `@phase_effects(birth: {...}, run: {...})` | `locus` | Restricts which effect classes each lifecycle phase may reach |
 | `@effects(none\|only\|is\|publish\|causes\|depends: {...})` | `fn` | Declares or restricts transitive side effects |
 | `@no_syscall` / `@no_block` / `@deterministic` / `@no_ffi` / `@no_publish` / `@no_spawn` / `@no_recursion` / `@no_panic` | `fn` | Shorthand effect restrictions |
+| `@raise` | free `fn` | Declares the conversion `or raise` applies from its one parameter's error type to its result's (`@raise fn conv(e: P) -> E`); makes no syscall, publish, spawn or block |
 | `@hot` | `fn` | Promotes hot-path allocation advisories inside the function to errors |
 | `@budget(alloc_per_call = N)` | `fn` | Hard compile-time ceiling on arena allocations per call (`0` = zero-alloc) |
 | `@bounded_by(input_name)` | `fn` / hook | Documents external input bounding an allocation loop; silences unbounded-alloc advisory |
@@ -121,7 +123,7 @@ All commands (`check`, `verify`, `build`, `run`, `test`, `bench`, `replay`) foll
     ^^^^
 ```
 
-- **Backend/codegen errors:** Constructs accepted by the typechecker that fail during lowering emit `path:line:col: codegen error: <message>` (or a positionless message if not tied to a single span).
+- **Backend/codegen errors:** Constructs accepted by the typechecker that fail during lowering emit `path:line:col: codegen error: <message>`, placed at the nearest expression, statement, member or declaration being lowered; one raised inside a standard library body ends `(in the standard library, <file>:<line>:<col>)`. A construct the compiler cannot lower yet says `hale can't compile this yet: …`; a positionless line is left only for a missing toolchain component or a failed link.
 - **Standard library effect notes:** When an `@effects` violation occurs inside a `std::*` body called by your code, the primary error points to your call site and attaches a `note: the '<effect>' effect happens here (in the standard library, <file>:<line>:<col>)`.
 - **NDJSON mode (`hale check --json`):** Emits one JSON object per line on `stdout` (`{"file": "...", "line": N, "col": N, "severity": "...", "kind": "...", "message": "..."}`) covering parse errors, type errors, I/O errors (`"kind": "io error"`, `line: 0`, `col: 0`), and stdlib notes (`file: ""`, `line: 0`, `col: 0`). Empty `stdout` means zero findings.
 

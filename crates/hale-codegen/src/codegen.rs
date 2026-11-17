@@ -232,6 +232,167 @@ pub(crate) enum CodegenTy {
 /// open for further IR (Open) or close it with a terminator like
 /// `br` / `ret` / `unreachable` (Terminated)? Statements after a
 /// Terminated must not emit further IR into the same block.
+/// A type as a program spells it, as the checker renders one
+/// (`hale_types::ty::Ty::display`): what a refusal names, never the Rust
+/// shape of the representation (GH #1941: `TypeRef("IoError")`).
+impl std::fmt::Display for CodegenTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let list = |tys: &[CodegenTy]| tys.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", ");
+        match self {
+            CodegenTy::Int => f.write_str("Int"),
+            CodegenTy::Float => f.write_str("Float"),
+            CodegenTy::Bool => f.write_str("Bool"),
+            CodegenTy::String => f.write_str("String"),
+            CodegenTy::Duration => f.write_str("Duration"),
+            CodegenTy::Decimal(scale) => f.write_str(hale_types::ty::decimal_name(*scale)),
+            CodegenTy::U256 => f.write_str("U256"),
+            CodegenTy::I256 => f.write_str("I256"),
+            CodegenTy::Time => f.write_str("Time"),
+            CodegenTy::Bytes => f.write_str("Bytes"),
+            CodegenTy::BytesView => f.write_str("BytesView"),
+            CodegenTy::StringView => f.write_str("StringView"),
+            CodegenTy::BytesMut => f.write_str("BytesMut"),
+            CodegenTy::Bounded(elem, n) => write!(f, "bounded[{elem}; {n}]"),
+            CodegenTy::LocusRef(n)
+            | CodegenTy::TypeRef(n)
+            | CodegenTy::Enum(n)
+            | CodegenTy::Interface(n) => f.write_str(n),
+            CodegenTy::Perspective(n) => write!(f, "perspective({n})"),
+            CodegenTy::Array(elem, n) => write!(f, "[{elem}; {n}]"),
+            CodegenTy::Tuple(parts) => write!(f, "({})", list(parts)),
+            CodegenTy::FnPtr { args, ret } => match ret {
+                Some(r) => write!(f, "fn({}) -> {r}", list(args)),
+                None => write!(f, "fn({})", list(args)),
+            },
+            CodegenTy::Cell(elem, _) => write!(f, "a cell of {elem}"),
+            CodegenTy::Drain(elem) => write!(f, "Drain<{elem}>"),
+        }
+    }
+}
+
+/// Types as a refusal lists them: `(Int, String)`.
+pub(crate) fn ty_list(tys: &[CodegenTy]) -> String {
+    format!("({})", tys.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", "))
+}
+
+/// A type that may be absent, as a refusal names it.
+pub(crate) fn ty_or_nothing(ty: Option<&CodegenTy>) -> String {
+    match ty {
+        Some(t) => t.to_string(),
+        None => "no value".to_string(),
+    }
+}
+
+/// What kind of expression `e` is, in a refusal's words (GH #1941: the
+/// build printed `expression form Discriminant(12)`).
+pub(crate) fn expr_form(e: &Expr) -> &'static str {
+    match e {
+        Expr::Literal(..) => "a literal",
+        Expr::Ident(_) => "a name",
+        Expr::Path(_) => "a path",
+        Expr::KwSelf(_) => "`self`",
+        Expr::Binary { .. } => "a binary operation",
+        Expr::Unary { .. } => "a unary operation",
+        Expr::Call { .. } => "a call",
+        Expr::Field { .. } => "a field read",
+        Expr::Index { .. } => "an index",
+        Expr::Path2 { .. } => "a qualified member",
+        Expr::Tuple(..) => "a tuple",
+        Expr::Array(..) => "an array literal",
+        Expr::Struct { .. } => "a record or locus literal",
+        Expr::Block(_) => "a block",
+        Expr::If(_) => "an `if` expression",
+        Expr::Match(_) => "a `match` expression",
+        Expr::Sum(..) => "a `sum`",
+        Expr::Prod(..) => "a `prod`",
+        Expr::Approx { .. } => "an `approx` comparison",
+        Expr::Range { .. } => "a range",
+        Expr::ArrayRepeat { .. } => "an array repeat",
+        Expr::Or { .. } => "an `or` expression",
+    }
+}
+
+/// An assignment operator as written.
+pub(crate) fn assign_op_text(op: AssignOp) -> &'static str {
+    match op {
+        AssignOp::Eq => "=",
+        AssignOp::PlusEq => "+=",
+        AssignOp::MinusEq => "-=",
+        AssignOp::StarEq => "*=",
+        AssignOp::SlashEq => "/=",
+        AssignOp::PercentEq => "%=",
+        AssignOp::AmpEq => "&=",
+        AssignOp::PipeEq => "|=",
+        AssignOp::CaretEq => "^=",
+    }
+}
+
+/// A binary operator as written.
+pub(crate) fn bin_op_text(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Eq => "==",
+        BinOp::NotEq => "!=",
+        BinOp::Lt => "<",
+        BinOp::Gt => ">",
+        BinOp::LtEq => "<=",
+        BinOp::GtEq => ">=",
+        BinOp::And => "&&",
+        BinOp::Or => "||",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
+    }
+}
+
+/// A unary operator as written.
+pub(crate) fn unary_op_text(op: UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Neg => "-",
+        UnaryOp::Not => "!",
+        UnaryOp::BitNot => "~",
+    }
+}
+
+/// A recovery operation as written.
+pub(crate) fn recovery_word(op: hale_syntax::ast::RecoveryOp) -> &'static str {
+    use hale_syntax::ast::RecoveryOp;
+    match op {
+        RecoveryOp::Restart => "restart",
+        RecoveryOp::RestartInPlace => "restart_in_place",
+        RecoveryOp::Quarantine => "quarantine",
+        RecoveryOp::Reorganize => "reorganize",
+        RecoveryOp::Bubble => "bubble",
+    }
+}
+
+/// A lifecycle hook's name as written.
+pub(crate) fn lifecycle_word(kind: hale_syntax::ast::LifecycleKind) -> &'static str {
+    use hale_syntax::ast::LifecycleKind;
+    match kind {
+        LifecycleKind::Birth => "birth",
+        LifecycleKind::Run => "run",
+        LifecycleKind::Accept => "accept",
+        LifecycleKind::Release => "release",
+        LifecycleKind::Drain => "drain",
+        LifecycleKind::Dissolve => "dissolve",
+    }
+}
+
+/// A capacity slot's kind as written.
+pub(crate) fn slot_kind_word(kind: hale_syntax::ast::CapacitySlotKind) -> &'static str {
+    match kind {
+        hale_syntax::ast::CapacitySlotKind::Pool => "pool",
+        hale_syntax::ast::CapacitySlotKind::Heap => "heap",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockEnd {
     Open,
@@ -244,6 +405,10 @@ pub(crate) use crate::iteration_arena::IterArena;
 pub(crate) struct LoopFrame<'ctx> {
     continue_bb: BasicBlock<'ctx>,
     break_bb: BasicBlock<'ctx>,
+    /// Something branches to `break_bb`: a `break` lowered in the body, or
+    /// the drain's stop latch. A `while true` nothing exits ends its block
+    /// (GH #1940: `while true { return n; }` is a body that returns).
+    exited: bool,
 }
 
 /// Gap C (2026-07-17): expression-position match support. Passed
@@ -565,6 +730,23 @@ pub enum CodegenError {
     /// the standard diagnostic formatter (file:line:col + caret)
     /// instead of a bare `codegen error:` line.
     UnsupportedAt(String, hale_syntax::Span),
+    /// GH #1941: a refusal raised in a body of the Hale-source stdlib,
+    /// placed at the stdlib statement or expression being lowered. Its
+    /// span is in the stdlib's own parse space, which overlaps the
+    /// program's files, so it is never rendered as a position in them:
+    /// the renderers name the stdlib file and line instead
+    /// (`hale_types::stdlib_bodies::stdlib_span_note`).
+    UnsupportedInStdlib(String, hale_syntax::Span),
+    /// GH #1941: a program error lowering finds in a program the check
+    /// passed (a body that can reach its end without a value, where the
+    /// harness lowers without the check), as opposed to a construct the
+    /// compiler cannot lower yet: rendered as the message alone, which
+    /// says what is wrong in the program's terms.
+    Refused(String, hale_syntax::Span),
+    /// A [`CodegenError::Refused`] raised where lowering has no place to
+    /// hand it: the boundary that places a positionless refusal makes it a
+    /// `Refused` at its site.
+    Invalid(String),
     LlvmInit(String),
     LlvmEmit(String),
     Link(String),
@@ -594,6 +776,9 @@ impl CodegenError {
         match self {
             CodegenError::Unsupported(s) => CodegenError::Unsupported(f(&s)),
             CodegenError::UnsupportedAt(s, at) => CodegenError::UnsupportedAt(f(&s), at),
+            CodegenError::UnsupportedInStdlib(s, at) => CodegenError::UnsupportedInStdlib(f(&s), at),
+            CodegenError::Refused(s, at) => CodegenError::Refused(f(&s), at),
+            CodegenError::Invalid(s) => CodegenError::Invalid(f(&s)),
             CodegenError::LlvmInit(s) => CodegenError::LlvmInit(f(&s)),
             CodegenError::LlvmEmit(s) => CodegenError::LlvmEmit(f(&s)),
             CodegenError::Link(s) => CodegenError::Link(f(&s)),
@@ -606,10 +791,15 @@ impl CodegenError {
 impl std::fmt::Display for CodegenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CodegenError::Unsupported(s) => write!(f, "unsupported in codegen v0: {}", s),
-            CodegenError::UnsupportedAt(s, _) => {
-                write!(f, "unsupported in codegen v0: {}", s)
+            // GH #1941: a construct the compiler cannot lower yet, said as
+            // that, not as an internal stage's limit.
+            CodegenError::Unsupported(s) | CodegenError::UnsupportedAt(s, _) => {
+                write!(f, "{CANT_COMPILE_YET}: {s}")
             }
+            CodegenError::UnsupportedInStdlib(s, at) => {
+                write!(f, "{CANT_COMPILE_YET}: {s} ({})", hale_types::stdlib_bodies::stdlib_span_note(*at))
+            }
+            CodegenError::Refused(s, _) | CodegenError::Invalid(s) => write!(f, "{s}"),
             CodegenError::LlvmInit(s) => write!(f, "LLVM init failed: {}", s),
             CodegenError::LlvmEmit(s) => write!(f, "LLVM emit failed: {}", s),
             CodegenError::Link(s) => write!(f, "link failed: {}", s),
@@ -621,17 +811,115 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+/// How a construct the compiler cannot lower yet is introduced (GH #1941).
+pub const CANT_COMPILE_YET: &str = "hale can't compile this yet";
+
+/// Whether a declaration (or the LLVM function lowered for one) named
+/// `name` is the Hale-source stdlib's: a merged `__…` name that is not an
+/// imported seed's (`__lib_…`, real user code at real file bases), and
+/// that one of the stdlib's own declarations is called, or that names a
+/// function lowered for one (`<decl>.<member>`, `<decl>_<suffix>`). A
+/// program's own `__…` declaration is not the stdlib's: its refusals were
+/// rendered as positions in the stdlib (GH #1969, #1971, reached through
+/// the parity gate's `__pg_…` declarations).
+pub(crate) fn stdlib_named(name: &str) -> bool {
+    if !name.starts_with("__") || name.starts_with("__lib_") {
+        return false;
+    }
+    let decls = stdlib_decl_names();
+    // No stdlib to compare with (it failed to parse, which is reported
+    // where it is merged): every `__…` name is taken as the stdlib's, as
+    // before.
+    if decls.is_empty() {
+        return true;
+    }
+    decls.contains(name)
+        || name.char_indices().any(|(i, c)| matches!(c, '.' | '_' | '$') && i > 2 && decls.contains(&name[..i]))
+}
+
+/// The names the bundled stdlib's declarations carry, modules' included.
+fn stdlib_decl_names() -> &'static std::collections::HashSet<String> {
+    static NAMES: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        use hale_syntax::ast::TopDecl;
+        let Ok(stdlib) = hale_types::desugar_sequence::bundled_stdlib() else { return Default::default() };
+        hale_syntax::ast::flat_decls(&stdlib.items)
+            .filter_map(|d| match d {
+                TopDecl::Fn(f) => Some(f.name.name.clone()),
+                TopDecl::Locus(l) => Some(l.name.name.clone()),
+                TopDecl::Type(t) => Some(t.name.name.clone()),
+                TopDecl::Perspective(p) => Some(p.name.name.clone()),
+                TopDecl::Const(c) => Some(c.name.name.clone()),
+                TopDecl::Interface(i) => Some(i.name.name.clone()),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// The place a locus member names: its name where it has one, else the
+/// member itself (GH #1941, [`Cx::member_site`]).
+pub(crate) fn member_site(m: &hale_syntax::ast::LocusMember) -> Option<hale_syntax::Span> {
+    use hale_syntax::ast::LocusMember;
+    match m {
+        LocusMember::Fn(f) => Some(f.name.span),
+        LocusMember::Lifecycle(lc) => Some(lc.span),
+        LocusMember::Mode(md) => Some(md.span),
+        LocusMember::Failure(fd) => Some(fd.span),
+        LocusMember::Closure(c) => Some(c.name.span),
+        _ => None,
+    }
+}
+
 impl CodegenError {
     /// A positionless `Unsupported` placed at `span`, the expression whose
     /// lowering raised it; every other error, and one that already names a
     /// place, is returned as it was. A synthesized zero span names no
     /// place and is not attached.
     pub(crate) fn located_at(self, span: hale_syntax::Span) -> CodegenError {
+        let placeable = !(span.start.0 == 0 && span.end.0 == 0);
         match self {
-            CodegenError::Unsupported(msg) if !(span.start.0 == 0 && span.end.0 == 0) => {
-                CodegenError::UnsupportedAt(msg, span)
-            }
+            CodegenError::Unsupported(msg) if placeable => CodegenError::UnsupportedAt(msg, span),
+            CodegenError::Invalid(msg) if placeable => CodegenError::Refused(msg, span),
             other => other,
+        }
+    }
+
+    /// [`CodegenError::located_at`] for a site that may be in the
+    /// Hale-source stdlib (`stdlib`): there the span is the stdlib's own
+    /// parse space, so the refusal is placed as
+    /// [`CodegenError::UnsupportedInStdlib`]. A span in the compiler's
+    /// generated spaces (the JSON codecs', the serve expansion's) is
+    /// placed as a seed one whatever owns it: the renderers say what
+    /// those spaces are.
+    pub(crate) fn placed(self, span: hale_syntax::Span, stdlib: bool) -> CodegenError {
+        if stdlib && span.start.0 < hale_syntax::api_names::JSON_SYNTH_BASE {
+            match self {
+                CodegenError::Unsupported(msg) | CodegenError::Invalid(msg)
+                    if !(span.start.0 == 0 && span.end.0 == 0) =>
+                {
+                    CodegenError::UnsupportedInStdlib(msg, span)
+                }
+                other => other,
+            }
+        } else {
+            self.located_at(span)
+        }
+    }
+
+    /// Whether this error names a place: a span in the program's
+    /// sources, or the stdlib file and line of one in its bodies. The
+    /// located-refusal gate (`refusals_are_located.rs`) holds every
+    /// refusal a program can reach to it.
+    pub fn is_located(&self) -> bool {
+        match self {
+            CodegenError::UnsupportedAt(..) | CodegenError::UnsupportedInStdlib(..) | CodegenError::Refused(..) => true,
+            CodegenError::MissingTsShim(_, at) | CodegenError::CapabilityRefused(_, at) => at.is_some(),
+            CodegenError::Unsupported(_)
+            | CodegenError::Invalid(_)
+            | CodegenError::LlvmInit(_)
+            | CodegenError::LlvmEmit(_)
+            | CodegenError::Link(_) => false,
         }
     }
 
@@ -1234,6 +1522,32 @@ fn compile_cached_runtime_object(
     compile_cached_runtime_object_with(options, &["clang".to_string()], "", source, stem, cflags)
 }
 
+/// Whether an object compiled with `cflags` is tied to the release of
+/// the clang that links it: a sanitizer's runtime checks its version by
+/// symbol name, and LTO bitcode is read by the linking clang's LLVM.
+fn binds_to_its_compiler(cflags: &[String]) -> bool {
+    cflags
+        .iter()
+        .any(|f| f.starts_with("-fsanitize=") || f.starts_with("-flto"))
+}
+
+/// What the host `clang` says it is (`clang --version`), asked once per
+/// process: the runtime-object key of an object that
+/// [`binds_to_its_compiler`]. A clang that cannot be run answers the
+/// empty string, and the compile that follows reports it.
+fn host_clang_identity() -> &'static str {
+    static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    IDENTITY.get_or_init(|| {
+        Command::new("clang")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    })
+}
+
 /// [`compile_cached_runtime_object`] with the C compiler spelled out:
 /// `cc[0]` is the program and the rest its leading arguments (`zig cc
 /// -target aarch64-linux-gnu.2.31` for a cross build, GH #970), and
@@ -1255,12 +1569,28 @@ pub(crate) fn compile_cached_runtime_object_with(
     const RT_CACHE_VERSION: u64 = 1;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RT_CACHE_VERSION.hash(&mut h);
-    // The host `clang` hashes as it always has, so every cached object
-    // on disk stays valid; only another compiler changes the key.
+    // The host `clang` hashes as it always has for an ordinary object,
+    // which is plain machine code any clang links; only another
+    // compiler changes that key.
     let host_clang = cc.len() == 1 && cc[0] == "clang";
     if !host_clang {
         cc.hash(&mut h);
         cc_version.hash(&mut h);
+    } else if binds_to_its_compiler(cflags) {
+        // GH #1952: a sanitizer object is not. It calls the sanitizer
+        // runtime's version check by name
+        // (`__asan_version_mismatch_check_apple_clang_1700`), and the
+        // link pulls the runtime of the clang that links it, so an object
+        // cached by the clang a toolchain update replaced no longer links
+        // (Apple clang 17's objects against clang 21's runtime). LTO
+        // bitcode is read by the linking clang's LLVM the same way. The
+        // host clang's release is part of those keys; `cc_version`
+        // stands in for it when a caller (a test) names one.
+        if cc_version.is_empty() {
+            host_clang_identity().hash(&mut h);
+        } else {
+            cc_version.hash(&mut h);
+        }
     }
     // An SDK chosen for the host clang moves the key; with none chosen
     // the key is what it always was.
@@ -1918,6 +2248,7 @@ fn build_resolved_lowered(
         current_fn_skip_exit_drain: false,
         bus_inert,
         backedge_stop_fn: None,
+        member_site: None,
         xpool_check: !is_wasm && !options.no_xpool_backstop,
         xpool_check_off: false,
         xpool_shared: false,
@@ -1926,6 +2257,10 @@ fn build_resolved_lowered(
         xpool_handed_in_names: BTreeSet::new(),
         xpool_restamp_fns: HashMap::new(),
         xpool_fresh_slots: HashSet::new(),
+        str_accs: HashMap::new(),
+        str_len_caches: HashMap::new(),
+        str_parts_arrays: HashMap::new(),
+        borrowed_args: HashSet::new(),
         xpool_strings: HashMap::new(),
         site_files: options
             .debug
@@ -3408,7 +3743,7 @@ fn link_wasm(
                 "clang --target=wasm32 (is clang installed?): {e}"
             )))?;
         if !status.success() {
-            return Err(mkerr(format!("clang failed compiling {:?} for wasm32", src)));
+            return Err(mkerr(format!("clang failed compiling {} for wasm32", src.display())));
         }
         Ok(())
     };
@@ -3440,11 +3775,11 @@ fn link_wasm(
         let o = dir.join(format!("csrc{}.o", i));
         cc(src, &o, &[]).map_err(|e| {
             mkerr(format!(
-                "compiling `[ffi] csrc` {:?} for wasm32 failed: {}. The \
+                "compiling `[ffi] csrc` {} for wasm32 failed: {}. The \
                  wasm build is freestanding — there is no libc sysroot, \
                  so a translation unit that includes system headers \
                  cannot be built for this target.",
-                src, e
+                src.display(), e
             ))
         })?;
         csrc_objs.push(o);
@@ -4093,6 +4428,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// fn (a closure) lowers under its own `current_fn`, so its loops do
     /// not take it.
     pub(crate) backedge_stop_fn: Option<FunctionValue<'ctx>>,
+    /// GH #1941: the locus member being declared or lowered, so a
+    /// refusal its prologue or signature raises with no place of its own
+    /// is placed at the member, not only at its locus.
+    pub(crate) member_site: Option<hale_syntax::Span>,
     /// Bus state generated when any locus declares a subscribe.
     /// `Some` iff the program contains at least one `bus subscribe`
     /// declaration. Bus storage itself lives in the C runtime
@@ -4498,7 +4837,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// resulting specialized FunctionValue lands in `user_fns`
     /// keyed by mangled name, so subsequent calls with the same
     /// type args resolve directly.
-    generic_fn_templates: BTreeMap<String, FnDecl>,
+    pub(crate) generic_fn_templates: BTreeMap<String, FnDecl>,
     /// m63: generic locus templates indexed by name. Populated
     /// from LocusDecls with non-empty generics. Unlike generic
     /// fns (which synthesize on-demand at call sites), generic
@@ -4907,6 +5246,22 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// an `on_failure` handler's failed child: the backstop is not
     /// emitted on them.
     pub(crate) xpool_fresh_slots: HashSet<PointerValue<'ctx>>,
+    /// GH #1947: the accumulator (`lotus_str_acc_t`, an entry-block
+    /// alloca) of each String local an appending assignment grows, by
+    /// the local's slot (`crate::string_append`).
+    pub(crate) str_accs: HashMap<PointerValue<'ctx>, PointerValue<'ctx>>,
+    /// GH #1947: the length cache (`{ ptr, i64 }`, an entry-block alloca)
+    /// of each String local or parameter its scope measures, by the
+    /// local's slot (`crate::string_len`).
+    pub(crate) str_len_caches: HashMap<PointerValue<'ctx>, PointerValue<'ctx>>,
+    /// GH #1947: each fn's one `[16 x ptr]` for the operands a String
+    /// runtime call takes (`crate::string_append`).
+    pub(crate) str_parts_arrays: HashMap<FunctionValue<'ctx>, PointerValue<'ctx>>,
+    /// GH #1947: the argument nodes of the calls being lowered that keep
+    /// none of their arguments (`hale_types::string_append::
+    /// call_keeps_no_argument`): an identifier among them is read without
+    /// giving up its local's append buffer.
+    pub(crate) borrowed_args: HashSet<*const Expr>,
     /// The backstop's report strings, one global each.
     pub(crate) xpool_strings: HashMap<String, PointerValue<'ctx>>,
     /// The source table the backstop locates its sites with (`debug`'s,
@@ -6326,6 +6681,11 @@ pub(crate) struct TypeInfo<'ctx> {
     /// The expression is evaluated at instantiation time in the
     /// caller's scope, same as locus-param non-literal defaults.
     pub(crate) defaults: BTreeMap<String, Expr>,
+    /// GH #1951 item 3 (F.52): each declared optional field (`x?: T`) →
+    /// the flag a write of it sets (`has_x`) and the one it clears
+    /// (`clear_x`, for `clearable`). A hand-written pair is not here: its
+    /// flag is written by hand.
+    pub(crate) optional: BTreeMap<String, (String, Option<String>)>,
 }
 
 /// An array or a tuple of loci a locus holds as a field, as an element
@@ -6433,6 +6793,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
         self.mangled_for_path(&refs)
+    }
+
+    /// The generic fn template a callee names: a bare name, or an
+    /// imported seed's path (`lib::id`), by its name in the merged
+    /// program.
+    pub(crate) fn generic_template_of_callee(&self, callee: &Expr) -> Option<String> {
+        match callee {
+            Expr::Ident(i) if self.generic_fn_templates.contains_key(&i.name) && !self.user_fns.contains_key(&i.name) => {
+                Some(i.name.clone())
+            }
+            Expr::Path(qn) => self.imported_generic_template(qn),
+            _ => None,
+        }
+    }
+
+    /// GH #1964: the generic fn template an imported seed's path names
+    /// (`lib::id`), by its name in the merged program.
+    pub(crate) fn imported_generic_template(&self, qn: &QualifiedName) -> Option<String> {
+        if qn.segments.len() < 2 {
+            return None;
+        }
+        let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+        self.mangled_for_path(&segs).filter(|m| self.generic_fn_templates.contains_key(m) && !self.user_fns.contains_key(m))
     }
 
     pub(crate) fn mangled_for_path(&self, segs: &[&str]) -> Option<String> {
@@ -7749,13 +8132,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///   the lazy global payload arena and writes a NUL
     ///   terminator so existing C-side `strlen`/`strcpy` ops
     ///   still work on the deserialized struct.
-    /// - Other field types (nested struct, enum, array): error
-    ///   at synthesis time — defer to a future polish.
+    /// - Every other value a record may hold (a nested struct, an
+    ///   enum, a `bounded` list, an array, a tuple): the carriage
+    ///   table's encoding (`hale_types::wire_carriage::WIRE_TABLE`,
+    ///   GH #1951 item 4; `bus/wire.rs`).
     ///
-    /// Enum payload types: keep memcpy-shape (no per-field walk
-    /// inside variants for v0.1). Enum-with-String fields
-    /// errors at synthesis time. Non-String enums round-trip
-    /// fine because their in-memory layout has no pointers.
+    /// Enum payload types: a memcpy of the storage struct when every
+    /// variant value is fixed bytes, else the tag and the variant's
+    /// values (`bus/wire.rs`, `synthesize_serializer`).
     ///
     /// Saves and restores the builder position so this can run
     /// between passes that use the builder (notably between A2
@@ -8423,10 +8807,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // check refuses; a build that skips the check must not
                 // emit a short call (LLVM's IPSCCP crashes on it).
                 if handler_fn.count_params() > 3 {
-                    return Err(CodegenError::Unsupported(format!(
-                        "bus handler `{}.{}` cannot be fallible",
+                    let err = CodegenError::Invalid(format!(
+                        "bus handler `{}.{}` is fallible, and a bus handler cannot be: it has no caller to \
+                         hand a failure to",
                         locus_name, handler_name
-                    )));
+                    ));
+                    return Err(match self.member_fn_span(&locus_name, &handler_name) {
+                        Some(at) => err.placed(at, stdlib_named(&locus_name)),
+                        None => err,
+                    });
                 }
                 let wname = format!("__hwrap_{}_{}", locus_name, handler_name);
                 let wty = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
@@ -9455,11 +9844,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             l.name.span,
                         ));
                     }
-                    return Err(CodegenError::Unsupported(
-                        "program has no `fn main()`: a native program starts at its top-level \
-                         `fn main`"
-                            .to_string(),
-                    ));
+                    // A program error, placed at the seed's first
+                    // declaration (GH #1941): the file that lacks it.
+                    let msg = "program has no `fn main()`: a native program starts at its top-level \
+                               `fn main`"
+                        .to_string();
+                    let first = self.program.items.iter().map(|d| d.span()).find(|s| !(s.start.0 == 0 && s.end.0 == 0));
+                    return Err(match first {
+                        Some(at) => CodegenError::Refused(msg, at),
+                        None => CodegenError::Unsupported(msg),
+                    });
                 }
                 let sp = self.program.span.clone();
                 FnDecl {
@@ -9885,8 +10279,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .collect();
                 return Err(CodegenError::Unsupported(format!(
                     "generic-type dependency cycle or unresolvable \
-                     dep among synthesized monomorphs: {:?}",
-                    names
+                     dep among synthesized monomorphs: {}",
+                    names.join(", ")
                 )));
             }
             pending = next_pending;
@@ -9905,8 +10299,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare_user_type (m61: generic decls produce no LLVM
         // type directly; their instantiations were declared
         // above).
+        // GH #1941: a refusal a declaration raises with no place of its own
+        // is placed at the declaration (each pass below the same way).
         for t in &type_decls {
-            self.declare_user_type(t)?;
+            self.declare_user_type(t).map_err(|e| e.placed(t.name.span, stdlib_named(&t.name.name)))?;
         }
 
         // Pass A: declare each user-defined locus. Split in two so
@@ -9932,11 +10328,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.pending_locus_names.insert(l.name.name.clone());
         }
         for l in &locus_decls {
-            self.declare_locus_struct(l)?;
+            self.declare_locus_struct(l).map_err(|e| e.placed(l.name.span, stdlib_named(&l.name.name)))?;
         }
         for l in &locus_decls {
-            self.declare_locus_methods(l)?;
+            self.member_site = None;
+            self.declare_locus_methods(l).map_err(|e| {
+                e.placed(self.member_site.take().unwrap_or(l.name.span), stdlib_named(&l.name.name))
+            })?;
         }
+        self.member_site = None;
 
         // After A2: if any locus declared a `bus subscribe`, mark
         // the program as bus-active. m45-followup: bus storage
@@ -10034,7 +10434,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 })
                 .collect();
         for f in &user_fn_decls {
-            self.declare_user_fn(f)?;
+            self.declare_user_fn(f).map_err(|e| e.placed(f.name.span, stdlib_named(&f.name.name)))?;
         }
         // The handler wrappers call user fns (`__api_local_context`
         // for a handler that takes a `std::api::Context`), so they
@@ -10109,8 +10509,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.scan_handed_in_fields();
         // Pass C: lower lifecycle method bodies (birth, run, ...).
         for l in &locus_decls {
-            self.lower_locus_method_bodies(l)?;
+            self.member_site = None;
+            self.lower_locus_method_bodies(l).map_err(|e| {
+                e.placed(self.member_site.take().unwrap_or(l.name.span), stdlib_named(&l.name.name))
+            })?;
         }
+        self.member_site = None;
         // GH #1530: the fused clones the seams called
         self.emit_fused_clones(&locus_decls)?;
         // GH #1066: restart / resume bodies, now user fns are declared
@@ -10119,7 +10523,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // Pass D: lower bodies of user-defined fns.
         for f in &user_fn_decls {
-            self.lower_user_fn_body(f)?;
+            self.lower_user_fn_body(f).map_err(|e| e.placed(f.name.span, stdlib_named(&f.name.name)))?;
         }
 
         // WASM entry-inversion: emit the arena-less export wrappers for
@@ -10764,7 +11168,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.backedge_stop_fn = Some(main_fn);
         }
-        let end = self.in_body(main_decl.id, |cx| cx.lower_block(&main_decl.body, &mut scope));
+        let end = self
+            .in_body(main_decl.id, |cx| cx.lower_block(&main_decl.body, &mut scope))
+            .map_err(|e| e.located_at(main_decl.name.span));
         self.backedge_stop_fn = None;
         let end = end?;
 
@@ -11169,13 +11575,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         Some(TransportRole::Listen) => true,
                         Some(TransportRole::Connect) => false,
                         None => {
-                            return Err(CodegenError::Unsupported(format!(
-                                "binding for topic `{}`: role could not be \
-                                 inferred (no publisher or subscriber declared \
-                                 in this bundle, or both); add `role:` kwarg \
-                                 to `unix(...)`",
-                                entry.topic.name
-                            )));
+                            return Err(CodegenError::Refused(
+                                format!(
+                                    "binding for topic `{}`: role could not be \
+                                     inferred (no publisher or subscriber declared \
+                                     in this bundle, or both); add `role:` kwarg \
+                                     to `unix(...)`",
+                                    entry.topic.name
+                                ),
+                                entry.topic.span,
+                            ));
                         }
                     };
                     // The locus the entry instantiates as its transport,
@@ -11327,8 +11736,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             return Err(CodegenError::Unsupported(format!(
                                 "shm_ring binding for topic `{}`: only \
                                  single-segment struct payloads are \
-                                 supported in v1; got payload type {:?}",
-                                entry.topic.name, other
+                                 supported in v1; got payload type {}",
+                                entry.topic.name, hale_types::surfaces::type_text(other)
                             )));
                         }
                     };
@@ -11930,19 +12339,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // emit a clear diagnostic if the lookup fails (e.g. a
         // future codegen-side rename diverges from typecheck).
         let info = self.user_loci.get(&locus.name).cloned().ok_or_else(|| {
-            CodegenError::Unsupported(format!(
-                "adapter binding for `{}`: codegen has no record \
-                 of locus `{}`",
-                topic_name, locus.name
-            ))
+            CodegenError::Refused(
+                format!("adapter binding for `{}`: `{}` is not a locus this program declares", topic_name, locus.name),
+                locus.span,
+            )
         })?;
         let send_fn = info.user_methods.get("send").copied().ok_or_else(|| {
-            CodegenError::Unsupported(format!(
-                "adapter binding for `{}`: locus `{}` has no `send` \
-                 method — every adapter must declare `fn send(subject: \
-                 String, bytes: Bytes)` to satisfy `__StdBusAdapter`",
-                topic_name, locus.name
-            ))
+            CodegenError::Refused(
+                format!(
+                    "adapter binding for `{}`: locus `{}` has no `send` \
+                     method — every adapter must declare `fn send(subject: \
+                     String, bytes: Bytes)` to satisfy `__StdBusAdapter`",
+                    topic_name, locus.name
+                ),
+                locus.span,
+            )
         })?;
         let send_fn_ptr = send_fn.as_global_value().as_pointer_value();
 
@@ -12304,20 +12715,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Resolve method ptrs against the codec locus's
             // declared user_methods (filled in pass A2).
             let info = self.user_loci.get(&locus_ident.name).cloned()
-                .ok_or_else(|| CodegenError::Unsupported(format!(
+                .ok_or_else(|| CodegenError::Refused(format!(
                     "codec binding for `{}`: codec locus `{}` not declared",
                     topic_name, locus_ident.name
-                )))?;
+                ), locus_ident.span))?;
             let encode_fn = info.user_methods.get("encode").copied()
-                .ok_or_else(|| CodegenError::Unsupported(format!(
+                .ok_or_else(|| CodegenError::Refused(format!(
                     "codec binding for `{}`: locus `{}` has no `encode` method",
                     topic_name, locus_ident.name
-                )))?;
+                ), locus_ident.span))?;
             let decode_fn = info.user_methods.get("decode").copied()
-                .ok_or_else(|| CodegenError::Unsupported(format!(
+                .ok_or_else(|| CodegenError::Refused(format!(
                     "codec binding for `{}`: locus `{}` has no `decode` method",
                     topic_name, locus_ident.name
-                )))?;
+                ), locus_ident.span))?;
 
             let codec_self_global = self.module.add_global(
                 ptr_t,
@@ -12369,8 +12780,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             other => Err(CodegenError::Unsupported(format!(
                 "codec binding for `{}`: only single-segment struct \
-                 payload types supported; got {:?}",
-                topic_name, other
+                 payload types supported; got {}",
+                topic_name, hale_types::surfaces::type_text(other)
             ))),
         }
     }
@@ -12756,7 +13167,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<BlockEnd, CodegenError> {
         for (i, stmt) in block.stmts.iter().enumerate() {
             match self.lower_stmt(stmt, scope)? {
-                BlockEnd::Open => self.note_fresh_locus_local(block, i, scope),
+                BlockEnd::Open => {
+                    self.note_fresh_locus_local(block, i, scope);
+                    self.note_string_accumulator(block, i, scope)?;
+                    self.note_string_len_cache(block, i, scope)?;
+                }
                 BlockEnd::Terminated => return Ok(BlockEnd::Terminated),
             }
         }
@@ -12765,12 +13180,57 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the value (Expr::If / Expr::Block lowering) use
         // lower_block_as_expr instead.
         if let Some(tail) = &block.tail {
-            let _ = self.lower_expr(tail, scope)?;
+            match tail.as_ref() {
+                // `touch() or fail err` ending a body that returns
+                // nothing: its value is discarded, as the statement
+                // `touch() or fail err;`'s is, and a `() fallible(E)`
+                // call's `or` has none to give a value lowering
+                Expr::Or { inner, disposition, .. } => {
+                    let previous = self.current_call;
+                    if let Some(call) = Self::invocation_id(tail) {
+                        self.current_call = Some(call);
+                    }
+                    let lowered = self.lower_or_expr(inner, disposition, scope, true);
+                    self.current_call = previous;
+                    lowered?;
+                }
+                _ => {
+                    if self.lower_discarded(tail, scope)? == BlockEnd::Terminated {
+                        return Ok(BlockEnd::Terminated);
+                    }
+                }
+            }
             if self.seal_dead()? {
                 return Ok(BlockEnd::Terminated);
             }
         }
         Ok(BlockEnd::Open)
+    }
+
+    /// An expression whose value nothing reads — the tail of a block used
+    /// as a statement, a statement `match`'s expression arm — lowered as
+    /// the statement it is equivalent to (spec/semantics.md §
+    /// "Expressions — `if` and block tails"): a call as the call
+    /// statement, so a builtin or a fn that returns nothing is the call
+    /// statement's dispatch; an `if`, a `match` (an `if let` among them)
+    /// or a block as the statement of that shape, so its own arms and
+    /// tails are statements in turn. Anything else is lowered as a value
+    /// and dropped. Until GH #2016 a block's tail went through `lower_expr`
+    /// whatever it was, which has no value to give for `println("x")`
+    /// ("call to `println`: no … binding"), so `if c { println("x") }`
+    /// and a trailing `if c { println("a") } else { println("b") }` checked
+    /// and the build refused them.
+    fn lower_discarded(&mut self, e: &Expr, scope: &mut Scope<'ctx>) -> Result<BlockEnd, CodegenError> {
+        match e {
+            Expr::Call { .. } => self.lower_stmt(&Stmt::Expr(e.clone()), scope),
+            Expr::If(ifs) => self.lower_stmt(&Stmt::If((**ifs).clone()), scope),
+            Expr::Match(m) => self.lower_stmt(&Stmt::Match((**m).clone()), scope),
+            Expr::Block(b) => self.lower_block(b, scope),
+            _ => {
+                let _ = self.lower_expr(e, scope)?;
+                Ok(if self.seal_dead()? { BlockEnd::Terminated } else { BlockEnd::Open })
+            }
+        }
     }
 
     /// GH #1566: `block.stmts[i]` just lowered; a `let` of a locus
@@ -12892,7 +13352,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         for (i, stmt) in stmts.iter().enumerate() {
             match self.lower_stmt(stmt, scope)? {
-                BlockEnd::Open => self.note_fresh_locus_local(block, i, scope),
+                BlockEnd::Open => {
+                    self.note_fresh_locus_local(block, i, scope);
+                    self.note_string_accumulator(block, i, scope)?;
+                    self.note_string_len_cache(block, i, scope)?;
+                }
                 BlockEnd::Terminated => {
                     // Statements terminated control flow before reaching
                     // the tail. Synthesize a placeholder value so the
@@ -12980,6 +13444,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     fields,
                     field_order: t.fields.iter().map(|(n, _)| n.to_string()).collect(),
                     defaults: BTreeMap::new(),
+                    optional: BTreeMap::new(),
                 },
             );
         }
@@ -13024,6 +13489,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     class: None,
                     span,
                     member: false,
+                    tag: None,
                 },
                 EnumVariant {
                     name: mk_ident("Err"),
@@ -13031,6 +13497,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     class: None,
                     span,
                     member: false,
+                    tag: None,
                 },
             ]),
             span,
@@ -13049,6 +13516,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     class: None,
                     span,
                     member: false,
+                    tag: None,
                 },
                 EnumVariant {
                     name: mk_ident("None"),
@@ -13056,6 +13524,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     class: None,
                     span,
                     member: false,
+                    tag: None,
                 },
             ]),
             span,
@@ -13116,12 +13585,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )
                     );
                     if !ok {
-                        return Err(CodegenError::Unsupported(format!(
+                        return Err(CodegenError::Invalid(format!(
                             "{} `{}`: type arg for `{}` must satisfy \
                              `Numeric` bound (Int / Float / Decimal / \
                              Duration); got non-numeric",
                             template_kind, template_name, gp.name.name
-                        )));
+                        ))
+                        .located_at(arg.span()));
                     }
                 }
                 other => {
@@ -13151,7 +13621,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `TypeExpr` per the supplied substitution map. Recurses into
     /// generic args, array elems, tuple parts, etc., so a body
     /// like `[T; 4]` substitutes to `[Int; 4]` correctly.
-    fn substitute_type_expr(
+    pub(crate) fn substitute_type_expr(
         expr: &TypeExpr,
         subst: &BTreeMap<String, TypeExpr>,
     ) -> TypeExpr {
@@ -13231,12 +13701,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         mangled_name: &str,
     ) -> Result<LocusDecl, CodegenError> {
         if template.generics.len() != type_args.len() {
-            return Err(CodegenError::Unsupported(format!(
+            return Err(CodegenError::Invalid(format!(
                 "generic locus `{}`: expected {} type args, got {}",
                 template.name.name,
                 template.generics.len(),
                 type_args.len()
-            )));
+            ))
+            .placed(template.name.span, stdlib_named(&template.name.name)));
         }
         Self::check_generic_bounds(
             "generic locus",
@@ -13447,7 +13918,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// arguments. An argument lowering cannot name a specialization for
     /// (m62 v0.1: primitives and named types) is refused as it always
     /// was; a hole, or a call the table holds no row for, at the call.
-    fn generic_call_instance(
+    pub(crate) fn generic_call_instance(
         &self,
         name: &str,
         call: hale_syntax::ast::NodeId,
@@ -13524,21 +13995,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         use hale_types::ty::Ty;
         let span = hale_syntax::span::Span::new(0, 0);
         match t {
-            Ty::Prim(
-                p @ (PrimType::Int
-                | PrimType::Float
-                | PrimType::Bool
-                | PrimType::String
-                | PrimType::Duration
-                | PrimType::Decimal(_)
-                | PrimType::Time),
-            ) => Ok(TypeExpr::Primitive(*p, span)),
+            // Every primitive a monomorph can be named for (the checker's
+            // and the mangler's one table, `GENERIC_ARG_PRIMS`).
+            Ty::Prim(p) if hale_types::ty::generic_arg_mangle_token(*p).is_some() => {
+                Ok(TypeExpr::Primitive(*p, span))
+            }
             // An identity, a range or a quantity (GH #1076) is a name
             // the alias table lowers as its `Int`.
+            // A locus or an interface is a name too (GH #1942): the
+            // specialization takes and hands back the handle, as a fn
+            // declared over the locus or interface by name does.
             Ty::Named(n)
                 if self.user_types.contains_key(n)
                     || self.user_enums.contains_key(n)
-                    || self.user_type_aliases.contains_key(n) =>
+                    || self.user_type_aliases.contains_key(n)
+                    || self.user_loci.contains_key(n)
+                    || self.pending_locus_names.contains(n)
+                    || self.user_interfaces.contains(n) =>
             {
                 Ok(TypeExpr::Named {
                     path: QualifiedName { segments: vec![Ident::new(n.clone(), span)], span },
@@ -13546,9 +14019,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     span,
                 })
             }
+            // A perspective (GH #1974): the specialization takes and hands
+            // back the `perspective(P)` handle, as a fn declared over
+            // `perspective(P)` does.
+            Ty::Named(n)
+                if hale_syntax::ast::flat_decls(&self.program.items)
+                    .any(|d| matches!(d, TopDecl::Perspective(p) if p.name.name == *n)) =>
+            {
+                Ok(TypeExpr::Perspective { name: Ident::new(n.clone(), span), span })
+            }
+            // The check refuses a generic call whose argument names no
+            // monomorph (an array, a tuple, a fn type), at the call
+            // (`refuse_unnameable_generic_args`); this is that rule for a
+            // caller that skips the check.
             other => Err(CodegenError::Unsupported(format!(
-                "generic type argument `{}` not supported (m62 v0.1 limits \
-                 inference to primitives + named types as generic args)",
+                "a generic fn specialized at `{}`: a generic argument is a primitive or a declared type",
                 other.display()
             ))),
         }
@@ -13568,12 +14053,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         mangled_name: &str,
     ) -> Result<FnDecl, CodegenError> {
         if template.generics.len() != type_args.len() {
-            return Err(CodegenError::Unsupported(format!(
+            return Err(CodegenError::Invalid(format!(
                 "generic fn `{}`: expected {} type args, got {}",
                 template.name.name,
                 template.generics.len(),
                 type_args.len()
-            )));
+            ))
+            .placed(template.name.span, stdlib_named(&template.name.name)));
         }
         Self::check_generic_bounds(
             "generic fn",
@@ -14162,12 +14648,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[TypeExpr],
     ) -> Result<TypeDecl, CodegenError> {
         if template.generics.len() != args.len() {
-            return Err(CodegenError::Unsupported(format!(
+            return Err(CodegenError::Invalid(format!(
                 "generic type `{}` expects {} args, got {}",
                 template.name.name,
                 template.generics.len(),
                 args.len()
-            )));
+            ))
+            .placed(template.name.span, stdlib_named(&template.name.name)));
         }
         // m64: enforce declared bounds (e.g., `T: Numeric`)
         // before substitution.
@@ -14196,6 +14683,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         tag: f.tag.clone(),
                         indexed_by: f.indexed_by.clone(),
                         map_value: f.map_value.clone(),
+                        optional: f.optional,
                         span: f.span.clone(),
                     })
                     .collect();
@@ -14237,6 +14725,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         class: v.class.clone(),
                         span: v.span.clone(),
                         member: v.member,
+                        tag: v.tag.clone(),
                     })
                     .collect();
                 TypeDeclBody::Enum(new_variants)
@@ -14385,13 +14874,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.bool_type().fn_type(&llvm_param_tys, false)
         } else {
             match &ret_ty {
-                Some(CodegenTy::Bounded(_, _)) => {
-                    return Err(CodegenError::Unsupported(
-                        "bounded[T; N] cannot be returned by value — it \
-                         lives inline in its containing type"
-                            .into(),
-                    ));
-                }
+                // GH #1951: a bounded list is returned as a record is, a
+                // pointer to its storage in the caller's arena.
+                Some(CodegenTy::Bounded(_, _)) => self
+                    .context
+                    .ptr_type(AddressSpace::default())
+                    .fn_type(&llvm_param_tys, false),
                 Some(CodegenTy::Int) | Some(CodegenTy::Duration) | Some(CodegenTy::Time) => self
                     .context
                     .i64_type()
@@ -15099,7 +15587,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::U256
             | CodegenTy::I256
             | CodegenTy::Decimal(_) => Err(CodegenError::Unsupported(format!(
-                "@ffi fn `{}` parameter `{}`: type {:?} is not yet wired \
+                "@ffi fn `{}` parameter `{}`: type {} is not yet wired \
                  for FFI codegen at Stage 1. See spec/ffi.md.",
                 fn_name, param_name, ty
             ))),
@@ -15151,7 +15639,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(ptr_t.into())
             }
             _ => Err(CodegenError::Unsupported(format!(
-                "@ffi fn `{}` return type {:?} is not yet wired for \
+                "@ffi fn `{}` return type {} is not yet wired for \
                  FFI codegen at Stage 1. See spec/ffi.md.",
                 fn_name, ty
             ))),
@@ -15454,6 +15942,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             scope.locals.insert(p.name.name.clone(), (alloca, lt));
         }
+        // GH #1947: a String parameter the body measures gets a length
+        // cache (`crate::string_len`).
+        self.note_param_len_caches(&f.params, &f.body, &scope)?;
 
         // Downstream handoff: an implicit block-tail return —
         // `fn f(n: Int) -> Int { let d = n * 2; d }` — typechecks
@@ -15462,9 +15953,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // stmt-context and then rejecting the fall-through.
         let end = if sig.ret.is_some() && f.body.tail.is_some() {
             let mut stmts_end = BlockEnd::Open;
-            for stmt in &f.body.stmts {
+            for (i, stmt) in f.body.stmts.iter().enumerate() {
                 match self.lower_stmt(stmt, &mut scope)? {
-                    BlockEnd::Open => continue,
+                    BlockEnd::Open => self.note_string_len_cache(&f.body, i, &scope)?,
                     BlockEnd::Terminated => {
                         stmts_end = BlockEnd::Terminated;
                         break;
@@ -15494,10 +15985,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 Some(_) => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "fn `{}` falls through without returning a value",
-                        f.name.name
-                    )));
+                    return Err(CodegenError::Refused(
+                        format!(
+                            "fn `{}` can reach the end of its body without returning a value: return \
+                             one on every path",
+                            f.name.name
+                        ),
+                        f.name.span,
+                    ));
                 }
             }
         }
@@ -15597,7 +16092,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_load(llvm_ret_ty, ret_alloca, "fn.ret.load")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 returned_locus = self.returned_locus_ptr(ret_ty, raw_ret)?;
-                if sig.non_allocating {
+                // GH #1951: a returned bounded list is the caller's own,
+                // copied out of whatever it was read from.
+                if sig.non_allocating && !matches!(ret_ty, CodegenTy::Bounded(..)) {
                     Some(raw_ret)
                 } else {
                     let dest_arena = self
@@ -15975,7 +16472,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // has a dedicated live-slot loop (never load the field as
         // a single pointer).
         if let CodegenTy::Bounded(elem, _) = ty {
-            return Self::bounded_elem_is_ptr(elem);
+            return self.bounded_elem_is_ptr(elem);
         }
         !matches!(
             ty,
@@ -16054,18 +16551,84 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for a in args {
             arg_pairs.push(self.lower_expr(a, scope)?);
         }
+        let mangled = self.generic_fn_instance(name, call, call_span, args.len())?;
+
+        // Emit the call manually using the pre-lowered args (so
+        // we don't lower them twice). Mirrors lower_user_fn_call's
+        // call-emit tail but without the inline arg lowering.
+        let sig = self
+            .user_fns
+            .get(&mangled)
+            .cloned()
+            .expect("specialized fn was just declared");
+        let caller_arena = self.call_site_arena(args, scope)?;
+        let mut llvm_args: Vec<BasicMetadataValueEnum> =
+            Vec::with_capacity(sig.params.len() + 1);
+        llvm_args.push(caller_arena.into());
+        for (i, (val, ty)) in arg_pairs.iter().enumerate() {
+            let val = if view_coerces_to(ty, &sig.params[i]) {
+                // F.30b (5a): unpack view + epoch check at
+                // monomorphized generic-fn arg site.
+                self.unpack_view_if_needed(*val, ty)?
+            } else if let (CodegenTy::Interface(iface), CodegenTy::LocusRef(l)) = (&sig.params[i], ty) {
+                // GH #1975: a locus where the specialization takes the
+                // interface it is held as (`id(c)` with `c: Job` bound
+                // to a `Big`): the fat pointer, as at any fn's argument.
+                self.coerce_to_interface(val.into_pointer_value(), l, iface)?.into()
+            } else if ty != &sig.params[i] {
+                return Err(CodegenError::Unsupported(format!(
+                    "generic fn `{}` arg {} type mismatch after \
+                     monomorphization: expected {}, got {}",
+                    mangled, i, sig.params[i], ty
+                )));
+            } else {
+                *val
+            };
+            llvm_args.push(val.into());
+        }
+        let call = self
+            .builder
+            .build_call(
+                sig.func,
+                &llvm_args,
+                &format!("{}.call", mangled),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        match sig.ret {
+            None => Ok(None),
+            Some(lt) => {
+                let v = call
+                    .try_as_basic_value()
+                    .left()
+                    .expect("non-void fn returns a basic value");
+                Ok(Some((v, lt)))
+            }
+        }
+    }
+
+    /// m62: the specialization a call to generic fn `name` instantiates,
+    /// by its mangled name, synthesized and lowered the first time it is
+    /// reached. A plain call (`lower_generic_fn_call`) and an `or` over a
+    /// fallible one (`lower_fallible_call`, GH #1966) both call it.
+    pub(crate) fn generic_fn_instance(
+        &mut self,
+        name: &str,
+        call: hale_syntax::ast::NodeId,
+        call_span: hale_syntax::span::Span,
+        arg_count: usize,
+    ) -> Result<String, CodegenError> {
         let template = self
             .generic_fn_templates
             .get(name)
             .cloned()
             .expect("caller verified template exists");
-        if arg_pairs.len() != template.params.len() {
-            return Err(CodegenError::Unsupported(format!(
+        if arg_count != template.params.len() {
+            return Err(CodegenError::Invalid(format!(
                 "generic fn `{}` expects {} args, got {} (m62 v0.1 \
                  doesn't fill defaults on generic templates yet)",
                 name,
                 template.params.len(),
-                arg_pairs.len()
+                arg_count
             )));
         }
         let (inferred, mangled, instance) = self.generic_call_instance(name, call, call_span)?;
@@ -16106,6 +16669,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let saved_in_main = self.in_main;
             let saved_current_self = self.current_self.clone();
             let saved_loops = std::mem::take(&mut self.loops);
+            // The caller's arena redirection (a method's `return` of a
+            // record, a locus instantiation's field init) and its fused
+            // return slot are its own: a specialization first reached
+            // inside one (`return Out { n: mk(x).v };` in a method)
+            // allocated its result through the caller's
+            // `method.caller_arena.for_return`, an instruction of another
+            // function (LLVM: "Instruction does not dominate all uses",
+            // a crash where the verifier is not run).
+            let saved_arena_override = self.current_arena_override.take();
+            let saved_fused_dest = self.fused_dest.take();
+            // The same for the instantiation the caller is in the middle
+            // of: a specialization first reached in a locus literal's
+            // field (`Mid { quick: mk(1) }`, `mk` building a `Quick`)
+            // registered its own locus's birth with the caller's
+            // `Mid.self.returned` as the parent, and a pinned or pooled
+            // anchor's params would hand it the anchor's route. A free
+            // fn's body is lowered outside every instantiation; so is
+            // a specialization's.
+            let saved_obs_parent = self.current_instantiation_parent.take();
+            let saved_params_init_self = self.params_init_self.take();
+            let saved_params_init_initialized = self.params_init_initialized.take();
+            let saved_anchor_route = self.anchor_route.take();
+            let saved_in_params_default = std::mem::replace(&mut self.in_params_default, false);
+            let saved_pool_init = std::mem::replace(&mut self.pool_init, false);
+            let saved_pool_init_composite = std::mem::replace(&mut self.pool_init_composite_param, false);
             // DWARF: synthesis fires MID-STATEMENT while lowering
             // the caller — the caller's active location must not
             // leak into the synthesized fn's entry allocas
@@ -16152,54 +16740,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.in_main = saved_in_main;
             self.current_self = saved_current_self;
             self.loops = saved_loops;
+            self.current_arena_override = saved_arena_override;
+            self.fused_dest = saved_fused_dest;
+            self.current_instantiation_parent = saved_obs_parent;
+            self.params_init_self = saved_params_init_self;
+            self.params_init_initialized = saved_params_init_initialized;
+            self.anchor_route = saved_anchor_route;
+            self.in_params_default = saved_in_params_default;
+            self.pool_init = saved_pool_init;
+            self.pool_init_composite_param = saved_pool_init_composite;
         }
-
-        // Emit the call manually using the pre-lowered args (so
-        // we don't lower them twice). Mirrors lower_user_fn_call's
-        // call-emit tail but without the inline arg lowering.
-        let sig = self
-            .user_fns
-            .get(&mangled)
-            .cloned()
-            .expect("specialized fn was just declared");
-        let caller_arena = self.call_site_arena(args, scope)?;
-        let mut llvm_args: Vec<BasicMetadataValueEnum> =
-            Vec::with_capacity(sig.params.len() + 1);
-        llvm_args.push(caller_arena.into());
-        for (i, (val, ty)) in arg_pairs.iter().enumerate() {
-            let val = if view_coerces_to(ty, &sig.params[i]) {
-                // F.30b (5a): unpack view + epoch check at
-                // monomorphized generic-fn arg site.
-                self.unpack_view_if_needed(*val, ty)?
-            } else if ty != &sig.params[i] {
-                return Err(CodegenError::Unsupported(format!(
-                    "generic fn `{}` arg {} type mismatch after \
-                     monomorphization: expected {:?}, got {:?}",
-                    mangled, i, sig.params[i], ty
-                )));
-            } else {
-                *val
-            };
-            llvm_args.push(val.into());
-        }
-        let call = self
-            .builder
-            .build_call(
-                sig.func,
-                &llvm_args,
-                &format!("{}.call", mangled),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        match sig.ret {
-            None => Ok(None),
-            Some(lt) => {
-                let v = call
-                    .try_as_basic_value()
-                    .left()
-                    .expect("non-void fn returns a basic value");
-                Ok(Some((v, lt)))
-            }
-        }
+        Ok(mangled)
     }
 
     /// Produce a human-readable diagnostic for a call-expression
@@ -16247,11 +16798,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     p
                 )
             }
-            Expr::Call { .. } => {
-                "callee is itself a call expression (calling the result of \
-                 another call is not yet supported in codegen v0 — bind the \
-                 inner call's result to a `let` and call the binding)".to_string()
-            }
             Expr::Field { name, .. } => format!(
                 "call to method `.{}`: receiver shape not supported in \
                  expression position",
@@ -16284,7 +16830,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         if args.len() != sig.params.len() {
-            return Err(CodegenError::Unsupported(format!(
+            return Err(CodegenError::Invalid(format!(
                 "@ffi fn `{}` expects {} args, got {}",
                 name,
                 sig.params.len(),
@@ -16344,7 +16890,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let expected = &sig.params[i];
             if &val_ty != expected {
                 return Err(CodegenError::Unsupported(format!(
-                    "@ffi fn `{}` arg {}: expected {:?}, got {:?}",
+                    "@ffi fn `{}` arg {}: expected {}, got {}",
                     name, i, expected, val_ty
                 )));
             }
@@ -16490,7 +17036,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         let (value, ty) = self.lower_expr(callee, scope)?;
         let CodegenTy::FnPtr { args: arg_tys, ret: ret_ty } = ty else {
-            return Err(CodegenError::Unsupported(format!("call through a value of type {ty:?}, not a fn value")));
+            return Err(CodegenError::Unsupported(format!("call through a value of type {ty}, not a fn value")));
         };
         self.emit_fnptr_indirect_call(value.into_pointer_value(), &arg_tys, ret_ty.as_deref(), args, scope, "fn value")
     }
@@ -16579,7 +17125,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (v, ty) = if let Some(lowered) = first.take() {
                 lowered
             } else if i < given {
-                self.lower_expr(&args[i - skip], scope)?
+                self.lower_arg_for(&args[i - skip], Some(&sig.params[i]), scope)?
             } else {
                 // Default expressions evaluate at the call site.
                 // For const/literal defaults that's a constant; for
@@ -16624,7 +17170,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.unpack_view_if_needed(v, &ty)?
             } else if ty != sig.params[i] {
                 return Err(CodegenError::Unsupported(format!(
-                    "fn `{}` arg {} type mismatch: expected {:?}, got {:?}",
+                    "fn `{}` arg {} type mismatch: expected {}, got {}",
                     name, i, sig.params[i], ty
                 )));
             } else {
@@ -16689,7 +17235,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (n_val, n_ty) = self.lower_expr(&args[0], scope)?;
         if n_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::os::getrandom: n must be Int, got {:?}",
+                "std::os::getrandom: n must be Int, got {}",
                 n_ty
             )));
         }
@@ -16876,7 +17422,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else {
                     return Err(CodegenError::Unsupported(format!(
                         "locus `{}` method `{}`: arg {} type mismatch: \
-                         expected {:?}, got {:?}",
+                         expected {}, got {}",
                         locus_name, method_name, i, want, got
                     )));
                 }
@@ -17198,7 +17744,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::I256 => "I256".to_string(),
             CodegenTy::Time => "Time".to_string(),
             CodegenTy::Duration => "Duration".to_string(),
-            other => format!("{:?}", other),
+            other => format!("{}", other),
         };
         self.global_string(&name)
     }
@@ -17474,7 +18020,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        // GH #1947: a call statement that keeps none of its arguments
+        // (`println(out);`) reads them as an expression's call does.
+        let marks = match stmt {
+            Stmt::Expr(Expr::Call { callee, args, .. }) => self.mark_borrowed_args(callee, args),
+            _ => Vec::new(),
+        };
         let r = self.lower_stmt_traced(stmt, scope);
+        self.unmark_borrowed_args(marks);
         // A value lowering inside the statement ended control flow
         // (`continue_dead`): the statement is terminated. A consumer
         // that refused the placeholder's type on the way (a String
@@ -17511,7 +18064,68 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
-        r
+        // GH #1951 item 3 (F.52): a write of a declared optional field (or
+        // of a part of one) sets its record's presence flag, after the
+        // store, so a part the write copied first holds the flag too.
+        if let (Ok(BlockEnd::Open), Stmt::Assign { target, .. }) = (&r, stmt) {
+            if let Err(err) = self.mark_optional_written(target, scope) {
+                return Err(self.place(err, stmt.span()));
+            }
+        }
+        // GH #1941: a refusal the statement raised outside any expression
+        // (a `let`'s annotation, a loop's shape, a send's subject) is
+        // placed at the statement.
+        r.map_err(|err| self.place(err, stmt.span()))
+    }
+
+    /// GH #1951 item 3 (F.52): `target` was just written. Each field
+    /// segment `x` of it that its record declares optional (`x?: T`) sets
+    /// that record's `has_x` and clears its `clear_x`: `r.x = v`,
+    /// `self.row.x = v`, `xs[i].x = v`, and a write into a part of one,
+    /// `r.x.n = v`. A hand-written pair's flag is not touched.
+    pub(crate) fn mark_optional_written(
+        &mut self,
+        target: &LValue,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if self.user_types.values().all(|t| t.optional.is_empty()) {
+            return Ok(());
+        }
+        for i in 0..target.tail.len() {
+            let LValueSeg::Field(x) = &target.tail[i] else { continue };
+            let prefix = LValue { head: target.head.clone(), tail: target.tail[..i].to_vec(), span: target.span };
+            let Some(CodegenTy::TypeRef(t)) = self.place_declared_ty(&prefix, scope) else { continue };
+            let Some((has, clear)) = self.user_types.get(&t).and_then(|info| info.optional.get(&x.name)).cloned()
+            else {
+                continue;
+            };
+            self.store_flag_through(&prefix, &has, true, scope)?;
+            if let Some(c) = clear {
+                self.store_flag_through(&prefix, &c, false, scope)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Store `on` into the `Bool` field `flag` of the record at `prefix`.
+    fn store_flag_through(
+        &mut self,
+        prefix: &LValue,
+        flag: &str,
+        on: bool,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let mut place = prefix.clone();
+        place.tail.push(LValueSeg::Field(Ident::new(flag, prefix.span)));
+        let (slot, ty, _, _) = self.resolve_lvalue_chain(&place, scope)?;
+        if ty != CodegenTy::Bool {
+            return Err(CodegenError::Unsupported(format!("optional field flag `{flag}` is a {ty}, not a Bool")));
+        }
+        let bit = self.context.bool_type().const_int(u64::from(on), false);
+        self.builder
+            .build_store(slot, bit)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
     }
 
     fn lower_stmt_traced(
@@ -17672,10 +18286,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         loc: inkwell::debug_info::DILocation<'ctx>,
     ) {
         use inkwell::debug_info::{AsDIScope, DIFlagsConstants};
-        let Some(cur_bb) = self.builder.get_insert_block() else {
+        // The fn the alloca is in, not the builder's: a monomorph
+        // lowered on demand from another fn's call site (a generic fn
+        // whose name opts out of debug info, `__box<T>`) declared its
+        // params under the CALLER's subprogram, and LLVM's DWARF
+        // finalization crashed on the stray scope.
+        let Some(func) = alloca
+            .as_instruction()
+            .and_then(|i| i.get_parent())
+            .or_else(|| self.builder.get_insert_block())
+            .and_then(|bb| bb.get_parent())
+        else {
             return;
         };
-        let Some(func) = cur_bb.get_parent() else { return };
         let Some(sp) = func.get_subprogram() else { return };
         let Some(ditype) = self.di_type_for(ty) else { return };
         let Some(di) = self.di.as_ref() else { return };
@@ -18470,6 +19093,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             let _ = self.lower_expr(call, scope)?;
                         }
                     }
+                    // GH #1964: an imported seed's generic fn.
+                    Expr::Path(qn) if self.imported_generic_template(qn).is_some() => {
+                        let name = self.imported_generic_template(qn).expect("guard matched");
+                        let _ = self.lower_generic_fn_call(&name, *call_id, qn.span, args, scope)?;
+                    }
                     Expr::Path(qn) => {
                         self.lower_path_call(qn, args, scope)?;
                     }
@@ -18519,7 +19147,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // A call through a value the callee evaluates to (a
                     // fn value bound in scope that shadows a fn of its
                     // name, `crate::shadowed_callees` in hale-types).
-                    Expr::Block(_) => {
+                    Expr::Block(_)
+                    | Expr::Call { .. }
+                    | Expr::Index { .. }
+                    | Expr::If(_)
+                    | Expr::Match(_)
+                    | Expr::Or { .. } => {
                         let _ = self.lower_computed_fn_call(callee, args, scope)?;
                     }
                     _ => {
@@ -18791,9 +19424,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // storage. Reject with a pointer at
                             // the explicit clone path.
                             return Err(CodegenError::Unsupported(format!(
-                                "let `{}`: declared `{:?}` but RHS is `{:?}` \
+                                "let `{}`: declared `{}` but RHS is `{}` \
                                  (a non-owning view of a BytesBuilder). \
-                                 Use `let {}: {:?} = ...;` to keep the \
+                                 Use `let {}: {} = ...;` to keep the \
                                  view's non-owning semantic, or wrap the \
                                  RHS in `std::bytes::clone(view)` / \
                                  `std::str::clone(view)` to deep-copy the \
@@ -18872,7 +19505,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // no bounded local emits nothing here.
                 let view_key = Self::bounded_view_key(&name.name);
                 if matches!(ty, CodegenTy::Bounded(_, _)) {
-                    let arena = self.bounded_owner_arena(value_to_lower, bounded_owner, scope)?;
+                    // GH #1951: a bounded local is the frame's own list: a
+                    // write into it (after its copy on write, when it was
+                    // bound from a place) anchors elements in this frame.
+                    let _ = bounded_owner;
+                    let arena = self.current_arena_ptr()?;
                     let slot = self.alloca_in_entry(
                         self.context.ptr_type(AddressSpace::default()).into(),
                         &format!("{}.view.arena", name.name),
@@ -18897,15 +19534,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let elem_tys = match &tup_ty {
                     CodegenTy::Tuple(ts) => ts.clone(),
                     other => {
-                        return Err(CodegenError::Unsupported(format!(
+                        return Err(CodegenError::Invalid(format!(
                             "let-tuple destructure expects a tuple rhs, \
-                             got {:?}",
+                             got {}",
                             other
                         )));
                     }
                 };
                 if elem_tys.len() != names.len() {
-                    return Err(CodegenError::Unsupported(format!(
+                    return Err(CodegenError::Invalid(format!(
                         "let-tuple destructure: expected {} elements, \
                          got {}",
                         names.len(),
@@ -19005,6 +19642,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // bounded).
                 if matches!(op, AssignOp::Eq) {
                     if let Some(CodegenTy::Bounded(elem, cap)) = self.place_declared_ty(target, scope) {
+                        if target.tail.is_empty() && target.head.name != "self" {
+                            return self.lower_bounded_local_assign(target, &elem, cap, value, *assign_id, scope);
+                        }
                         return self.lower_bounded_whole_assign(target, &elem, cap, value, scope);
                     }
                 }
@@ -19104,7 +19744,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // copy-out / mutate-locally / write-back the
                     // entire fixed-cap array per single-slot
                     // update — quadratic on ladder size.
-                    if target.tail.len() == 2 {
+                    //
+                    // A compound `self.xs[i] += v` (GH #1942) reads the
+                    // slot before it writes it, which the general walker
+                    // below does for every deeper self place.
+                    if target.tail.len() == 2 && matches!(op, AssignOp::Eq) {
                         if let (
                             LValueSeg::Field(fname_ident),
                             LValueSeg::Index(idx_expr),
@@ -19135,7 +19779,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 other => {
                                     return Err(CodegenError::Unsupported(format!(
                                         "indexed assignment to non-array \
-                                         self field `{}` (type {:?})",
+                                         self field `{}` (type {})",
                                         fname_ident.name, other
                                     )));
                                 }
@@ -19185,7 +19829,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 self.lower_expr(idx_expr, scope)?;
                             if idx_ty != CodegenTy::Int {
                                 return Err(CodegenError::Unsupported(format!(
-                                    "array index must be Int, got {:?}",
+                                    "array index must be Int, got {}",
                                     idx_ty
                                 )));
                             }
@@ -19215,16 +19859,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             if rhs_ty != elem_ty {
                                 return Err(CodegenError::Unsupported(format!(
                                     "type mismatch in `self.{}[idx] = ...`: \
-                                     slot {:?} vs rhs {:?}",
+                                     slot {} vs rhs {}",
                                     fname_ident.name, elem_ty, rhs_ty
-                                )));
-                            }
-                            if !matches!(op, AssignOp::Eq) {
-                                return Err(CodegenError::Unsupported(format!(
-                                    "compound assignment `{:?}` on \
-                                     `self.{}[idx]` is not supported; \
-                                     use `=` only",
-                                    op, fname_ident.name
                                 )));
                             }
                             // `[T; N]` of a heap type stores POINTERS
@@ -19422,7 +20058,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         other => {
                             return Err(CodegenError::Unsupported(format!(
                                 "indexed assignment to non-array local \
-                                 `{}` (type {:?})",
+                                 `{}` (type {})",
                                 target.head.name, other
                             )));
                         }
@@ -19436,7 +20072,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let (idx_val, idx_ty) = self.lower_expr(idx_expr, scope)?;
                     if idx_ty != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(
-                            "array index must be Int, got {:?}",
+                            "array index must be Int, got {}",
                             idx_ty
                         )));
                     }
@@ -19494,12 +20130,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // assignment names. `local.field = pick(a, make());`
                 // set it for the whole subtree, so `make()`'s result
                 // took the slot's ownership and went unreclaimed.
+                // GH #1947: an appending assignment to a String local or
+                // field of `self` appends (`crate::string_append`).
+                if let Some(end) =
+                    self.try_lower_string_append(target, op, value, slot_ptr, &slot_ty, *assign_id, scope)?
+                {
+                    return Ok(end);
+                }
                 let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
                 let new_val = if matches!(op, AssignOp::Eq) {
                     if rhs_ty != slot_ty {
                         return Err(CodegenError::Unsupported(format!(
                             "type mismatch in assignment to `{}`: \
-                             slot {:?} vs rhs {:?}",
+                             slot {} vs rhs {}",
                             slot_name, slot_ty, rhs_ty
                         )));
                     }
@@ -19513,8 +20156,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         AssignOp::PercentEq => BinOp::Mod,
                         other => {
                             return Err(CodegenError::Unsupported(format!(
-                                "compound assignment {:?}",
-                                other
+                                "compound assignment {}",
+                                assign_op_text(*other)
                             )));
                         }
                     };
@@ -19628,6 +20271,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.builder
                         .build_store(slot_ptr, new_val)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // GH #1947: the value now bound is not a buffer the
+                    // local owns, and its length is not known.
+                    if let Some(acc) = self.str_accs.get(&slot_ptr).copied() {
+                        self.emit_str_acc_release(acc)?;
+                    }
+                    self.forget_str_len(slot_ptr)?;
                     // A local rebound: its copy-on-write flags follow the
                     // value now bound (`crate::view_bindings`).
                     if target.tail.is_empty() {
@@ -19762,8 +20411,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 format!(
                                     "`for` bounds how many times a child \
                                      is restarted, so it does not apply \
-                                     to `{:?}`",
-                                    other
+                                     to `{}`",
+                                    recovery_word(*other)
                                 ),
                             ))
                         }
@@ -19788,8 +20437,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.lower_quarantine_call(args, scope)
                     }
                     other => Err(CodegenError::Unsupported(format!(
-                        "recovery op {:?} not lowered",
-                        other
+                        "recovery op {} not lowered",
+                        recovery_word(*other)
                     ))),
                 }
             }
@@ -20244,7 +20893,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.lower_expr(&ifs.cond, scope)?;
         if cond_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
-                "if condition must be Bool; got {:?}",
+                "if condition must be Bool; got {}",
                 cond_ty
             )));
         }
@@ -20347,7 +20996,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             _ => continue_bb,
         };
-        self.loops.push(LoopFrame { continue_bb: target, break_bb });
+        self.loops.push(LoopFrame { continue_bb: target, break_bb, exited: target != continue_bb });
         Ok(target)
     }
 
@@ -20373,7 +21022,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (cond_v, cond_ty) = self.lower_expr(cond, scope)?;
         if cond_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
-                "while condition must be Bool; got {:?}",
+                "while condition must be Bool; got {}",
                 cond_ty
             )));
         }
@@ -20385,7 +21034,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.position_at_end(body_bb);
         let back_bb = self.push_loop_frame(header_bb, exit_bb)?;
         let body_end = self.lower_loop_body(body, scope)?;
-        self.loops.pop();
+        let exited = self.loops.pop().is_some_and(|f| f.exited);
         if body_end == BlockEnd::Open {
             self.builder
                 .build_unconditional_branch(back_bb)
@@ -20393,8 +21042,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         // The exit is reachable from the header (cond=false) and
-        // any `break`s inside the body, so it's always Open.
+        // any `break`s inside the body. A `while true` that nothing
+        // exits never reaches it: the loop ends its block, as the
+        // check's definite-return judgment reads it (GH #1940).
         self.builder.position_at_end(exit_bb);
+        if !exited && matches!(cond, Expr::Literal(hale_syntax::ast::Literal::Bool(true), _)) {
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(BlockEnd::Terminated);
+        }
         Ok(BlockEnd::Open)
     }
 
@@ -20492,9 +21149,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 args.len()
             )));
         }
-        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        // `len` reads its argument and keeps nothing of it.
+        let cache = self.str_len_cache_of(&args[0], scope);
+        let (v, ty) = self.lower_operand_borrowed(&args[0], scope)?;
         let v = self.unpack_view_if_needed(v, &ty)?;
         match ty {
+            // GH #1947: a local whose length is cached is measured once per
+            // value it holds (`crate::string_len`).
+            CodegenTy::String if cache.is_some() => {
+                let cache = cache.expect("checked");
+                let n = self.emit_cached_str_len(v.into_pointer_value(), cache)?;
+                Ok((n.into(), Self::builtin_result(sig, &ty)))
+            }
             CodegenTy::String | CodegenTy::StringView => {
                 let len_fn = self
                     .module
@@ -20539,7 +21205,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((val.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
-                "`len` not supported for argument type {:?}",
+                "`len` not supported for argument type {}",
                 other
             ))),
         }
@@ -20578,7 +21244,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((res.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
-                "`Int(...)` cast not supported for argument type {:?} \
+                "`Int(...)` cast not supported for argument type {} \
                  (only Float → Int narrowing and Int identity are \
                  supported in v1)",
                 other
@@ -20623,7 +21289,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`Float(...)` cast not supported for argument type \
-                 {:?} (only Int → Float widening and Float identity \
+                 {} (only Int → Float widening and Float identity \
                  are supported in v1)",
                 other
             ))),
@@ -20688,7 +21354,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let one_count = crate::conversion::is_quantity_repr(&at) && crate::conversion::is_quantity_repr(&bt);
         if at != bt && !one_count {
             return Err(CodegenError::Unsupported(format!(
-                "`{}`: operand types must match; got {:?} and {:?}",
+                "`{}`: operand types must match; got {} and {}",
                 name, at, bt
             )));
         }
@@ -20753,7 +21419,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v.into(), Self::builtin_result(sig, &at)))
             }
             other => Err(CodegenError::Unsupported(format!(
-                "`{}` not supported for type {:?}",
+                "`{}` not supported for type {}",
                 name, other
             ))),
         }
@@ -20805,7 +21471,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((r.into(), Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
-                "`abs` not supported for type {:?}",
+                "`abs` not supported for type {}",
                 other
             ))),
         }
@@ -20832,7 +21498,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (pv, pt) = self.lower_expr(&args[1], scope)?;
         if !matches!(st, CodegenTy::String) || !matches!(pt, CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
-                "`{}` expects two String args; got {:?} and {:?}",
+                "`{}` expects two String args; got {} and {}",
                 name, st, pt
             )));
         }
@@ -20881,7 +21547,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// branch (a type outside it falls back to the mixed-type error)
     /// and `println`'s composites. The rule is
     /// `hale_types::printable`'s, which the checker reads too.
-    fn value_to_string_supports(&self, ty: &CodegenTy) -> bool {
+    pub(crate) fn value_to_string_supports(&self, ty: &CodegenTy) -> bool {
         hale_types::printable::prints(ty, &|t: &CodegenTy| self.print_shape(t))
     }
 
@@ -20953,7 +21619,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// recurse on each payload field's render. For has-payload
     /// enums this emits a switch on the variant tag with
     /// per-variant inline string assembly via lotus_str_concat.
-    fn value_to_string(
+    pub(crate) fn value_to_string(
         &mut self,
         v: BasicValueEnum<'ctx>,
         ty: &CodegenTy,
@@ -21173,7 +21839,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 name
             ))),
             other => Err(CodegenError::Unsupported(format!(
-                "`to_string` not supported for type {:?}",
+                "`to_string` not supported for type {}",
                 other
             ))),
         }
@@ -21841,7 +22507,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// GH #1076 (U3): the text `s` of the value `e`, followed by the unit
     /// its printed row writes (a quantity's), when it has one.
-    fn with_printed_unit(&mut self, e: &Expr, s: BasicValueEnum<'ctx>) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    pub(crate) fn with_printed_unit(&mut self, e: &Expr, s: BasicValueEnum<'ctx>) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match self.printed_unit(e) {
             Some(unit) => {
                 let unit = self.global_string(&unit);
@@ -21853,7 +22519,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// Inline lotus_str_concat call. Caller's arena owns the
     /// result.
-    fn str_concat(
+    pub(crate) fn str_concat(
         &mut self,
         a: BasicValueEnum<'ctx>,
         b: BasicValueEnum<'ctx>,
@@ -21969,7 +22635,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             other => Err(CodegenError::Unsupported(format!(
-                "match on {:?} not supported in v0",
+                "match on {} not supported in v0",
                 other
             ))),
         }
@@ -21996,6 +22662,454 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// cond-branches to body (true) or next-arm (false). The
     /// binding is visible to the guard expression — that's the
     /// whole point.
+    /// Lower one pattern's test against the scrutinee (GH #1995 E2: an
+    /// arm's whole pattern, or one alternative of an or-pattern): branch
+    /// to `on_match` when it matches and to `on_fail` when it does not,
+    /// pushing the names it binds, each with its value and type, onto
+    /// `bindings`. The values are computed before the branch, so each
+    /// dominates `on_match`. `i` is the arm's index, for value names.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_arm_pattern_test(
+        &mut self,
+        pat: &Pattern,
+        i: usize,
+        scrutinee_val: BasicValueEnum<'ctx>,
+        scrutinee_ty: &CodegenTy,
+        on_match: inkwell::basic_block::BasicBlock<'ctx>,
+        on_fail: inkwell::basic_block::BasicBlock<'ctx>,
+        bindings: &mut Vec<(String, BasicValueEnum<'ctx>, CodegenTy)>,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        match pat {
+            // the parser makes an or-pattern only of a whole arm, and
+            // `lower_or_pattern_test` tests its alternatives
+            Pattern::Or(..) => {
+                return Err(CodegenError::Unsupported(
+                    "an or-pattern is a whole match arm's pattern, never one inside another".into(),
+                ));
+            }
+            Pattern::Wildcard(_) => {
+                self.builder
+                    .build_unconditional_branch(on_match)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            Pattern::Binding(ident) => {
+                bindings.push((
+                    ident.name.clone(),
+                    scrutinee_val,
+                    scrutinee_ty.clone(),
+                ));
+                self.builder
+                    .build_unconditional_branch(on_match)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            Pattern::Literal(lit, span) => {
+                let (lit_val, lit_ty) = self.lower_pattern_literal(lit, *span, &scrutinee_ty, scope)?;
+                if lit_ty != *scrutinee_ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "match arm pattern type {} doesn't match \
+                         scrutinee type {}",
+                        lit_ty, scrutinee_ty
+                    )));
+                }
+                let cond = self.lower_match_eq_cmp(
+                    scrutinee_val,
+                    lit_val,
+                    &lit_ty,
+                    &format!("match.arm{}.cmp", i),
+                )?;
+                self.builder
+                    .build_conditional_branch(cond, on_match, on_fail)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            Pattern::Tuple(sub_patterns, _) => {
+                // m35: destructure scrutinee as a tuple, then
+                // apply each sub-pattern. v0 supports flat
+                // sub-patterns: Wildcard / Binding / Literal.
+                // Nested tuple patterns aren't needed for the
+                // shapes the language exposes today.
+                let elem_tys = match &scrutinee_ty {
+                    CodegenTy::Tuple(ts) => ts.clone(),
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "tuple pattern against non-tuple \
+                             scrutinee {}",
+                            other
+                        )));
+                    }
+                };
+                if elem_tys.len() != sub_patterns.len() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "tuple pattern arity {} != scrutinee tuple \
+                         arity {}",
+                        sub_patterns.len(),
+                        elem_tys.len()
+                    )));
+                }
+                let storage_ty = self.llvm_tuple_storage_type(&elem_tys);
+                let i32_t = self.context.i32_type();
+                let scrut_ptr = scrutinee_val.into_pointer_value();
+                let bool_t = self.context.bool_type();
+                let mut acc_cond: inkwell::values::IntValue<'ctx> =
+                    bool_t.const_int(1, false);
+                for (j, sub) in sub_patterns.iter().enumerate() {
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                scrut_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(j as u64, false),
+                                ],
+                                &format!("match.arm{}.tup.{}.ptr", i, j),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                    };
+                    let elem_llvm = self.llvm_basic_type(&elem_tys[j]);
+                    let elem_val = self
+                        .builder
+                        .build_load(
+                            elem_llvm,
+                            slot,
+                            &format!("match.arm{}.tup.{}", i, j),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    match sub {
+                        Pattern::Wildcard(_) => {}
+                        Pattern::Binding(ident) => {
+                            bindings.push((
+                                ident.name.clone(),
+                                elem_val,
+                                elem_tys[j].clone(),
+                            ));
+                        }
+                        Pattern::Literal(lit, span) => {
+                            let (lit_val, lit_ty) =
+                                self.lower_pattern_literal(lit, *span, &elem_tys[j], scope)?;
+                            if lit_ty != elem_tys[j] {
+                                return Err(CodegenError::Unsupported(
+                                    format!(
+                                        "tuple sub-pattern at index {} \
+                                         type {} doesn't match field \
+                                         type {}",
+                                        j, lit_ty, elem_tys[j]
+                                    ),
+                                ));
+                            }
+                            let sub_cond = self.lower_match_eq_cmp(
+                                elem_val,
+                                lit_val,
+                                &lit_ty,
+                                &format!(
+                                    "match.arm{}.tup.{}.cmp",
+                                    i, j
+                                ),
+                            )?;
+                            acc_cond = self
+                                .builder
+                                .build_and(
+                                    acc_cond,
+                                    sub_cond,
+                                    &format!(
+                                        "match.arm{}.tup.{}.acc",
+                                        i, j
+                                    ),
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                        }
+                        Pattern::Tuple(_, _)
+                        | Pattern::Constructor { .. }
+                        | Pattern::Or(..) => {
+                            return Err(CodegenError::Unsupported(
+                                "nested tuple / constructor sub-pattern \
+                                 not yet lowered"
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+                self.builder
+                    .build_conditional_branch(acc_cond, on_match, on_fail)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            Pattern::Constructor { path, args, .. } => {
+                // m47 + payloads: enum constructor pattern.
+                // Path must be `EnumName::VariantName`. Compare
+                // the scrutinee's tag to the variant's tag; if
+                // the variant has a payload AND the pattern
+                // carries args (Wildcard or Binding sub-
+                // patterns), bind each payload field to its
+                // local name. v0.1 sub-patterns are
+                // Wildcard / Binding only — nested literal
+                // / tuple / further constructor sub-patterns
+                // aren't lowered (parser doesn't even produce
+                // them with the current grammar).
+                // GH #534: an importer's `alias::Enum::Variant`
+                // resolves its first two segments through the
+                // per-build rename table.
+                // GH #1417 (R2a): so does a stdlib enum's public path,
+                // `std::api::Outcome::Refusal(…)`.
+                let aliased: Option<String> = if path.segments.len() >= 3 {
+                    let head: Vec<&str> = path.segments
+                        [..path.segments.len() - 1]
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect();
+                    self.mangled_for_path(&head)
+                        .filter(|m| self.user_enums.contains_key(m))
+                } else {
+                    None
+                };
+                // GH #1530 step 1: a set's member is matched by its
+                // type's name alone, against the set it is a member of.
+                let set_member: Option<String> = match (&scrutinee_ty, path.segments.len()) {
+                    (CodegenTy::Enum(n), 1) if self.user_enums.get(n).is_some_and(|i| i.set) => Some(n.clone()),
+                    _ => None,
+                };
+                if path.segments.len() != 2 && aliased.is_none() && set_member.is_none() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "constructor pattern path must be \
+                         `Enum::Variant` (got {} segments)",
+                        path.segments.len()
+                    )));
+                }
+                let enum_name = aliased
+                    .clone()
+                    .or_else(|| set_member.clone())
+                    .unwrap_or_else(|| path.segments[0].name.clone());
+                let variant_name = &path.segments[path.segments.len() - 1].name;
+                let info = self
+                    .user_enums
+                    .get(&enum_name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "constructor pattern: unknown enum `{}`",
+                            enum_name
+                        ))
+                    })?;
+                let variant_idx = info
+                    .variants
+                    .iter()
+                    .position(|v| v.name == *variant_name)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "enum `{}` has no variant `{}`",
+                            enum_name, variant_name
+                        ))
+                    })?;
+                if !matches!(scrutinee_ty, CodegenTy::Enum(ref n) if n == &enum_name)
+                {
+                    return Err(CodegenError::Unsupported(format!(
+                        "constructor pattern `{}::{}` against \
+                         scrutinee of type {}",
+                        enum_name, variant_name, scrutinee_ty
+                    )));
+                }
+                let variant = &info.variants[variant_idx];
+                if !args.is_empty() && args.len() != variant.field_tys.len()
+                {
+                    return Err(CodegenError::Unsupported(format!(
+                        "constructor pattern `{}::{}` has {} arg(s); \
+                         variant declares {}",
+                        enum_name,
+                        variant_name,
+                        args.len(),
+                        variant.field_tys.len()
+                    )));
+                }
+                let i32_t = self.context.i32_type();
+                let tag_val = i32_t.const_int(variant_idx as u64, false);
+                // For has-payload enums the scrutinee value is
+                // a pointer; load the tag through it. For
+                // pure no-payload enums it's an i32 directly.
+                let actual_tag: inkwell::values::IntValue<'ctx> = if info
+                    .has_payload
+                {
+                    let enum_ptr = scrutinee_val.into_pointer_value();
+                    self.load_enum_tag(&info, enum_ptr)?
+                } else {
+                    scrutinee_val.into_int_value()
+                };
+                let cond = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        actual_tag,
+                        tag_val,
+                        &format!(
+                            "match.arm{}.enum.{}.cmp",
+                            i, variant_name
+                        ),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // If pattern carries arg sub-patterns, load
+                // payload fields. Wildcard skips, Binding
+                // pushes a binding, Literal AND-extends the
+                // tag-eq cond with a field-vs-literal compare
+                // (so `Event::Tick(0) -> ...` only matches
+                // when the payload's first field equals 0).
+                // Other sub-pattern forms (Tuple / nested
+                // Constructor) aren't lowered at v0.1.
+                let mut acc_cond = cond;
+                if !args.is_empty() {
+                    let enum_ptr = scrutinee_val.into_pointer_value();
+                    let fields = self
+                        .load_enum_payload_fields(&info, enum_ptr, variant_idx)?;
+                    for (j, sub) in args.iter().enumerate() {
+                        match sub {
+                            Pattern::Wildcard(_) => {}
+                            Pattern::Binding(ident) => {
+                                let (val, ty) = fields[j].clone();
+                                bindings.push((ident.name.clone(), val, ty));
+                            }
+                            Pattern::Literal(lit, span) => {
+                                let (lit_val, lit_ty) =
+                                    self.lower_pattern_literal(lit, *span, &fields[j].1, scope)?;
+                                let (field_val, field_ty) = fields[j].clone();
+                                if lit_ty != field_ty {
+                                    return Err(CodegenError::Unsupported(
+                                        format!(
+                                            "constructor pattern arg {} \
+                                             literal type {} doesn't \
+                                             match payload field type {}",
+                                            j, lit_ty, field_ty
+                                        ),
+                                    ));
+                                }
+                                let sub_cond = self.lower_match_eq_cmp(
+                                    field_val,
+                                    lit_val,
+                                    &field_ty,
+                                    &format!(
+                                        "match.arm{}.enum.{}.field{}.cmp",
+                                        i, variant_name, j
+                                    ),
+                                )?;
+                                acc_cond = self
+                                    .builder
+                                    .build_and(
+                                        acc_cond,
+                                        sub_cond,
+                                        &format!(
+                                            "match.arm{}.enum.{}.acc",
+                                            i, variant_name
+                                        ),
+                                    )
+                                    .map_err(|e| {
+                                        CodegenError::LlvmEmit(e.to_string())
+                                    })?;
+                            }
+                            _ => {
+                                return Err(CodegenError::Unsupported(
+                                    "constructor pattern arg must be a \
+                                     binding, `_`, or literal at v0.1"
+                                        .into(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                self.builder
+                    .build_conditional_branch(acc_cond, on_match, on_fail)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// GH #1995 E2: an or-pattern's test. Each alternative is tested in
+    /// turn (`lower_arm_pattern_test`), a failed one falling to the next
+    /// and the last to `on_fail`; each that matches lands in its own
+    /// block, which jumps to `on_match`, the arm's one guard or body
+    /// block. There a phi per bound name merges the alternatives' values
+    /// (the checker holds every alternative to the same names at the same
+    /// types). When the arm is guarded and an alternative follows, the
+    /// guard is retried with the next alternative's bindings, as each
+    /// alternative written as its own arm would be: the second value
+    /// returned is the phi of which alternative matched and the block
+    /// each one resumes at.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
+    fn lower_or_pattern_test(
+        &mut self,
+        alts: &[Pattern],
+        i: usize,
+        scrutinee_val: BasicValueEnum<'ctx>,
+        scrutinee_ty: &CodegenTy,
+        on_match: inkwell::basic_block::BasicBlock<'ctx>,
+        on_fail: inkwell::basic_block::BasicBlock<'ctx>,
+        guarded: bool,
+        bindings: &mut Vec<(String, BasicValueEnum<'ctx>, CodegenTy)>,
+        scope: &Scope<'ctx>,
+    ) -> Result<
+        Option<(inkwell::values::IntValue<'ctx>, Vec<inkwell::basic_block::BasicBlock<'ctx>>)>,
+        CodegenError,
+    > {
+        let func = self.current_fn.expect("match outside function");
+        let n = alts.len();
+        // the test block of each alternative after the first, and the
+        // block each alternative lands in when it matches
+        let tests: Vec<_> = (1..n)
+            .map(|k| self.context.append_basic_block(func, &format!("match.arm{i}.alt{k}")))
+            .collect();
+        let oks: Vec<_> = (0..n)
+            .map(|k| self.context.append_basic_block(func, &format!("match.arm{i}.alt{k}.ok")))
+            .collect();
+        let mut per_alt: Vec<Vec<(String, BasicValueEnum<'ctx>, CodegenTy)>> = Vec::with_capacity(n);
+        for (k, alt) in alts.iter().enumerate() {
+            if k > 0 {
+                self.builder.position_at_end(tests[k - 1]);
+            }
+            let fail = if k + 1 < n { tests[k] } else { on_fail };
+            let mut b = Vec::new();
+            self.lower_arm_pattern_test(alt, i, scrutinee_val, scrutinee_ty, oks[k], fail, &mut b, scope)?;
+            self.builder.position_at_end(oks[k]);
+            self.builder
+                .build_unconditional_branch(on_match)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            per_alt.push(b);
+        }
+        self.builder.position_at_end(on_match);
+        for (name, _, ty) in &per_alt[0] {
+            let phi = self
+                .builder
+                .build_phi(self.llvm_basic_type(ty), &format!("match.arm{i}.{name}"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            for (k, b) in per_alt.iter().enumerate() {
+                let Some((_, v, t)) = b.iter().find(|(nm, ..)| nm == name) else {
+                    return Err(CodegenError::Unsupported(format!(
+                        "an alternative of an or-pattern does not bind `{name}`, which the first binds"
+                    )));
+                };
+                if t != ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "an or-pattern binds `{name}` as {ty} in one alternative and as {t} in another"
+                    )));
+                }
+                phi.add_incoming(&[(v, oks[k])]);
+            }
+            bindings.push((name.clone(), phi.as_basic_value(), ty.clone()));
+        }
+        if !guarded {
+            return Ok(None);
+        }
+        let i32_t = self.context.i32_type();
+        let which = self
+            .builder
+            .build_phi(i32_t, &format!("match.arm{i}.alt"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        for (k, ok) in oks.iter().enumerate() {
+            which.add_incoming(&[(&i32_t.const_int(k as u64, false), *ok)]);
+        }
+        Ok(Some((which.as_basic_value().into_int_value(), tests)))
+    }
+
     fn lower_match_stmt(
         &mut self,
         m: &MatchStmt,
@@ -22066,338 +23180,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let mut bindings: Vec<(String, BasicValueEnum<'ctx>, CodegenTy)> =
                 Vec::new();
 
-            match &arm.pattern {
-                Pattern::Wildcard(_) => {
-                    self.builder
-                        .build_unconditional_branch(pattern_target)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                Pattern::Binding(ident) => {
-                    bindings.push((
-                        ident.name.clone(),
+            // GH #1995 E2: an or-pattern tries its alternatives in turn,
+            // each matching one jumping to the arm's one guard / body
+            // block, with its bindings merged there by a phi per name.
+            let retry = match &arm.pattern {
+                Pattern::Or(alts, _) => self.lower_or_pattern_test(
+                    alts,
+                    i,
+                    scrutinee_val,
+                    &scrutinee_ty,
+                    pattern_target,
+                    next_bb,
+                    has_guard,
+                    &mut bindings,
+                    scope,
+                )?,
+                pat => {
+                    self.lower_arm_pattern_test(
+                        pat,
+                        i,
                         scrutinee_val,
-                        scrutinee_ty.clone(),
-                    ));
-                    self.builder
-                        .build_unconditional_branch(pattern_target)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                Pattern::Literal(lit, span) => {
-                    let (lit_val, lit_ty) = self.lower_pattern_literal(lit, *span, &scrutinee_ty, scope)?;
-                    if lit_ty != scrutinee_ty {
-                        return Err(CodegenError::Unsupported(format!(
-                            "match arm pattern type {:?} doesn't match \
-                             scrutinee type {:?}",
-                            lit_ty, scrutinee_ty
-                        )));
-                    }
-                    let cond = self.lower_match_eq_cmp(
-                        scrutinee_val,
-                        lit_val,
-                        &lit_ty,
-                        &format!("match.arm{}.cmp", i),
+                        &scrutinee_ty,
+                        pattern_target,
+                        next_bb,
+                        &mut bindings,
+                        scope,
                     )?;
-                    self.builder
-                        .build_conditional_branch(cond, pattern_target, next_bb)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    None
                 }
-                Pattern::Tuple(sub_patterns, _) => {
-                    // m35: destructure scrutinee as a tuple, then
-                    // apply each sub-pattern. v0 supports flat
-                    // sub-patterns: Wildcard / Binding / Literal.
-                    // Nested tuple patterns aren't needed for the
-                    // shapes the language exposes today.
-                    let elem_tys = match &scrutinee_ty {
-                        CodegenTy::Tuple(ts) => ts.clone(),
-                        other => {
-                            return Err(CodegenError::Unsupported(format!(
-                                "tuple pattern against non-tuple \
-                                 scrutinee {:?}",
-                                other
-                            )));
-                        }
-                    };
-                    if elem_tys.len() != sub_patterns.len() {
-                        return Err(CodegenError::Unsupported(format!(
-                            "tuple pattern arity {} != scrutinee tuple \
-                             arity {}",
-                            sub_patterns.len(),
-                            elem_tys.len()
-                        )));
-                    }
-                    let storage_ty = self.llvm_tuple_storage_type(&elem_tys);
-                    let i32_t = self.context.i32_type();
-                    let scrut_ptr = scrutinee_val.into_pointer_value();
-                    let bool_t = self.context.bool_type();
-                    let mut acc_cond: inkwell::values::IntValue<'ctx> =
-                        bool_t.const_int(1, false);
-                    for (j, sub) in sub_patterns.iter().enumerate() {
-                        let slot = unsafe {
-                            self.builder
-                                .build_gep(
-                                    storage_ty,
-                                    scrut_ptr,
-                                    &[
-                                        i32_t.const_int(0, false),
-                                        i32_t.const_int(j as u64, false),
-                                    ],
-                                    &format!("match.arm{}.tup.{}.ptr", i, j),
-                                )
-                                .map_err(|e| {
-                                    CodegenError::LlvmEmit(e.to_string())
-                                })?
-                        };
-                        let elem_llvm = self.llvm_basic_type(&elem_tys[j]);
-                        let elem_val = self
-                            .builder
-                            .build_load(
-                                elem_llvm,
-                                slot,
-                                &format!("match.arm{}.tup.{}", i, j),
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        match sub {
-                            Pattern::Wildcard(_) => {}
-                            Pattern::Binding(ident) => {
-                                bindings.push((
-                                    ident.name.clone(),
-                                    elem_val,
-                                    elem_tys[j].clone(),
-                                ));
-                            }
-                            Pattern::Literal(lit, span) => {
-                                let (lit_val, lit_ty) =
-                                    self.lower_pattern_literal(lit, *span, &elem_tys[j], scope)?;
-                                if lit_ty != elem_tys[j] {
-                                    return Err(CodegenError::Unsupported(
-                                        format!(
-                                            "tuple sub-pattern at index {} \
-                                             type {:?} doesn't match field \
-                                             type {:?}",
-                                            j, lit_ty, elem_tys[j]
-                                        ),
-                                    ));
-                                }
-                                let sub_cond = self.lower_match_eq_cmp(
-                                    elem_val,
-                                    lit_val,
-                                    &lit_ty,
-                                    &format!(
-                                        "match.arm{}.tup.{}.cmp",
-                                        i, j
-                                    ),
-                                )?;
-                                acc_cond = self
-                                    .builder
-                                    .build_and(
-                                        acc_cond,
-                                        sub_cond,
-                                        &format!(
-                                            "match.arm{}.tup.{}.acc",
-                                            i, j
-                                        ),
-                                    )
-                                    .map_err(|e| {
-                                        CodegenError::LlvmEmit(e.to_string())
-                                    })?;
-                            }
-                            Pattern::Tuple(_, _)
-                            | Pattern::Constructor { .. } => {
-                                return Err(CodegenError::Unsupported(
-                                    "nested tuple / constructor sub-pattern \
-                                     not yet lowered"
-                                        .into(),
-                                ));
-                            }
-                        }
-                    }
-                    self.builder
-                        .build_conditional_branch(acc_cond, pattern_target, next_bb)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                Pattern::Constructor { path, args, .. } => {
-                    // m47 + payloads: enum constructor pattern.
-                    // Path must be `EnumName::VariantName`. Compare
-                    // the scrutinee's tag to the variant's tag; if
-                    // the variant has a payload AND the pattern
-                    // carries args (Wildcard or Binding sub-
-                    // patterns), bind each payload field to its
-                    // local name. v0.1 sub-patterns are
-                    // Wildcard / Binding only — nested literal
-                    // / tuple / further constructor sub-patterns
-                    // aren't lowered (parser doesn't even produce
-                    // them with the current grammar).
-                    // GH #534: an importer's `alias::Enum::Variant`
-                    // resolves its first two segments through the
-                    // per-build rename table.
-                    // GH #1417 (R2a): so does a stdlib enum's public path,
-                    // `std::api::Outcome::Refusal(…)`.
-                    let aliased: Option<String> = if path.segments.len() >= 3 {
-                        let head: Vec<&str> = path.segments
-                            [..path.segments.len() - 1]
-                            .iter()
-                            .map(|s| s.name.as_str())
-                            .collect();
-                        self.mangled_for_path(&head)
-                            .filter(|m| self.user_enums.contains_key(m))
-                    } else {
-                        None
-                    };
-                    // GH #1530 step 1: a set's member is matched by its
-                    // type's name alone, against the set it is a member of.
-                    let set_member: Option<String> = match (&scrutinee_ty, path.segments.len()) {
-                        (CodegenTy::Enum(n), 1) if self.user_enums.get(n).is_some_and(|i| i.set) => Some(n.clone()),
-                        _ => None,
-                    };
-                    if path.segments.len() != 2 && aliased.is_none() && set_member.is_none() {
-                        return Err(CodegenError::Unsupported(format!(
-                            "constructor pattern path must be \
-                             `Enum::Variant` (got {} segments)",
-                            path.segments.len()
-                        )));
-                    }
-                    let enum_name = aliased
-                        .clone()
-                        .or_else(|| set_member.clone())
-                        .unwrap_or_else(|| path.segments[0].name.clone());
-                    let variant_name = &path.segments[path.segments.len() - 1].name;
-                    let info = self
-                        .user_enums
-                        .get(&enum_name)
-                        .cloned()
-                        .ok_or_else(|| {
-                            CodegenError::Unsupported(format!(
-                                "constructor pattern: unknown enum `{}`",
-                                enum_name
-                            ))
-                        })?;
-                    let variant_idx = info
-                        .variants
-                        .iter()
-                        .position(|v| v.name == *variant_name)
-                        .ok_or_else(|| {
-                            CodegenError::Unsupported(format!(
-                                "enum `{}` has no variant `{}`",
-                                enum_name, variant_name
-                            ))
-                        })?;
-                    if !matches!(scrutinee_ty, CodegenTy::Enum(ref n) if n == &enum_name)
-                    {
-                        return Err(CodegenError::Unsupported(format!(
-                            "constructor pattern `{}::{}` against \
-                             scrutinee of type {:?}",
-                            enum_name, variant_name, scrutinee_ty
-                        )));
-                    }
-                    let variant = &info.variants[variant_idx];
-                    if !args.is_empty() && args.len() != variant.field_tys.len()
-                    {
-                        return Err(CodegenError::Unsupported(format!(
-                            "constructor pattern `{}::{}` has {} arg(s); \
-                             variant declares {}",
-                            enum_name,
-                            variant_name,
-                            args.len(),
-                            variant.field_tys.len()
-                        )));
-                    }
-                    let i32_t = self.context.i32_type();
-                    let tag_val = i32_t.const_int(variant_idx as u64, false);
-                    // For has-payload enums the scrutinee value is
-                    // a pointer; load the tag through it. For
-                    // pure no-payload enums it's an i32 directly.
-                    let actual_tag: inkwell::values::IntValue<'ctx> = if info
-                        .has_payload
-                    {
-                        let enum_ptr = scrutinee_val.into_pointer_value();
-                        self.load_enum_tag(&info, enum_ptr)?
-                    } else {
-                        scrutinee_val.into_int_value()
-                    };
-                    let cond = self
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::EQ,
-                            actual_tag,
-                            tag_val,
-                            &format!(
-                                "match.arm{}.enum.{}.cmp",
-                                i, variant_name
-                            ),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    // If pattern carries arg sub-patterns, load
-                    // payload fields. Wildcard skips, Binding
-                    // pushes a binding, Literal AND-extends the
-                    // tag-eq cond with a field-vs-literal compare
-                    // (so `Event::Tick(0) -> ...` only matches
-                    // when the payload's first field equals 0).
-                    // Other sub-pattern forms (Tuple / nested
-                    // Constructor) aren't lowered at v0.1.
-                    let mut acc_cond = cond;
-                    if !args.is_empty() {
-                        let enum_ptr = scrutinee_val.into_pointer_value();
-                        let fields = self
-                            .load_enum_payload_fields(&info, enum_ptr, variant_idx)?;
-                        for (j, sub) in args.iter().enumerate() {
-                            match sub {
-                                Pattern::Wildcard(_) => {}
-                                Pattern::Binding(ident) => {
-                                    let (val, ty) = fields[j].clone();
-                                    bindings.push((ident.name.clone(), val, ty));
-                                }
-                                Pattern::Literal(lit, span) => {
-                                    let (lit_val, lit_ty) =
-                                        self.lower_pattern_literal(lit, *span, &fields[j].1, scope)?;
-                                    let (field_val, field_ty) = fields[j].clone();
-                                    if lit_ty != field_ty {
-                                        return Err(CodegenError::Unsupported(
-                                            format!(
-                                                "constructor pattern arg {} \
-                                                 literal type {:?} doesn't \
-                                                 match payload field type {:?}",
-                                                j, lit_ty, field_ty
-                                            ),
-                                        ));
-                                    }
-                                    let sub_cond = self.lower_match_eq_cmp(
-                                        field_val,
-                                        lit_val,
-                                        &field_ty,
-                                        &format!(
-                                            "match.arm{}.enum.{}.field{}.cmp",
-                                            i, variant_name, j
-                                        ),
-                                    )?;
-                                    acc_cond = self
-                                        .builder
-                                        .build_and(
-                                            acc_cond,
-                                            sub_cond,
-                                            &format!(
-                                                "match.arm{}.enum.{}.acc",
-                                                i, variant_name
-                                            ),
-                                        )
-                                        .map_err(|e| {
-                                            CodegenError::LlvmEmit(e.to_string())
-                                        })?;
-                                }
-                                _ => {
-                                    return Err(CodegenError::Unsupported(
-                                        "constructor pattern arg must be a \
-                                         binding, `_`, or literal at v0.1"
-                                            .into(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    self.builder
-                        .build_conditional_branch(acc_cond, pattern_target, next_bb)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-            }
+            };
 
             // Helper closure semantics inlined: install the
             // bindings list (alloca, store, scope.insert) and
@@ -22449,17 +23260,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (gv, gty) = self.lower_expr(guard_expr, scope)?;
                 if gty != CodegenTy::Bool {
                     return Err(CodegenError::Unsupported(format!(
-                        "match arm guard must have type Bool, got {:?}",
+                        "match arm guard must have type Bool, got {}",
                         gty
                     )));
                 }
-                self.builder
-                    .build_conditional_branch(
-                        gv.into_int_value(),
-                        body_bb,
-                        next_bb,
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // GH #1995 E2: a guarded or-pattern's guard, false for
+                // one alternative's bindings, is tried again with the
+                // next alternative's (`lower_or_pattern_test`).
+                let on_false = match &retry {
+                    Some((which, resumes)) if !resumes.is_empty() => {
+                        let rb = self.context.append_basic_block(func, &format!("match.arm{}.retry", i));
+                        self.builder
+                            .build_conditional_branch(gv.into_int_value(), body_bb, rb)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder.position_at_end(rb);
+                        let i32_t = self.context.i32_type();
+                        let cases: Vec<_> = resumes
+                            .iter()
+                            .enumerate()
+                            .map(|(k, bb)| (i32_t.const_int(k as u64, false), *bb))
+                            .collect();
+                        self.builder
+                            .build_switch(*which, next_bb, &cases)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        None
+                    }
+                    _ => Some(next_bb),
+                };
+                if let Some(on_false) = on_false {
+                    self.builder
+                        .build_conditional_branch(gv.into_int_value(), body_bb, on_false)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
                 self.builder.position_at_end(body_bb);
             } else {
                 self.builder.position_at_end(body_bb);
@@ -22497,22 +23329,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 arm_end
             } else {
                 match &arm.body {
-                    MatchArmBody::Expr(e) => {
-                        // Statement-position match: arm body is treated
-                        // like a Stmt::Expr (value discarded). Route
-                        // call exprs through `lower_stmt` so calls to
-                        // builtins (println) and void-returning user
-                        // fns are handled by the existing dispatch
-                        // table; other expressions go through
-                        // `lower_expr` and have their value dropped.
-                        if matches!(e, Expr::Call { .. }) {
-                            let s = Stmt::Expr(e.clone());
-                            self.lower_stmt(&s, scope)?
-                        } else {
-                            let _ = self.lower_expr(e, scope)?;
-                            if self.seal_dead()? { BlockEnd::Terminated } else { BlockEnd::Open }
-                        }
-                    }
+                    // Statement-position match: the arm's value is
+                    // discarded, so the arm is the statement it reads as
+                    // (`lower_discarded`).
+                    MatchArmBody::Expr(e) => self.lower_discarded(e, scope)?,
                     MatchArmBody::Block(b) => self.lower_block(b, scope)?,
                 }
             };
@@ -22679,7 +23499,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if *ty != result_ty {
                 return Err(CodegenError::Unsupported(format!(
                     "match expression arms have mismatched types: \
-                     {:?} vs {:?}",
+                     {} vs {}",
                     result_ty, ty
                 )));
             }
@@ -23016,13 +23836,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(iter, scope)?;
         if !matches!(ty, CodegenTy::Bounded(_, _)) {
             return Err(CodegenError::Unsupported(format!(
-                "bounded iteration receiver lowered to {:?}",
+                "bounded iteration receiver lowered to {}",
                 ty
             )));
         }
         let mut storage = v.into_pointer_value();
         let st = self.llvm_bounded_storage_type(&elem, cap);
-        if owned && Self::bounded_elem_is_ptr(&elem) {
+        if owned && self.bounded_elem_is_ptr(&elem) {
             // The loop walks the list it started with: a write in the
             // body may replace the place's elements and retire them
             // (`crate::view_bindings`), so it walks the frame's own copy
@@ -23177,7 +23997,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "`for _ in <hashmap>.entries`: cell type must be a \
-                     user-declared struct; got {:?}",
+                     user-declared struct; got {}",
                     other
                 )));
             }
@@ -23644,7 +24464,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (hi_val, hi_ty) = self.lower_expr(hi, scope)?;
         if lo_ty != CodegenTy::Int || hi_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "for-range bounds must be Int (got {:?}..{:?})",
+                "for-range bounds must be Int (got {}..{})",
                 lo_ty, hi_ty
             )));
         }
@@ -23806,7 +24626,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Array(elem, n) => (*elem, n),
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "for-loop iterator must be an array (got {:?})",
+                    "for-loop iterator must be an array (got {})",
                     other
                 )));
             }
@@ -24108,9 +24928,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     fn lower_break(&mut self) -> Result<BlockEnd, CodegenError> {
-        let frame = self.loops.last().copied().ok_or_else(|| {
+        let frame = self.loops.last_mut().ok_or_else(|| {
             CodegenError::Unsupported("`break` outside a loop".to_string())
         })?;
+        frame.exited = true;
+        let frame = *frame;
         self.builder
             .build_unconditional_branch(frame.break_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -24199,7 +25021,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if ty != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(
                             "`return` from main must carry Int (exit code); \
-                             got {:?}",
+                             got {}",
                             ty
                         )));
                     }
@@ -24393,7 +25215,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .into_pointer_value();
                     self.current_arena_override = Some(caller_arena);
                 }
-                let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;
+                // GH #1951: a `bounded[T; N]` return takes an array literal
+                // as that bounded.
+                let (v, got_ty) = if matches!(declared_ty, CodegenTy::Bounded(..)) {
+                    self.lower_expr_into(e_to_lower, scope, Some(&declared_ty))?
+                } else {
+                    self.lower_expr(e_to_lower, scope)?
+                };
                 self.current_arena_override = saved_arena_override;
                 // G20 / F.20 Phase B follow-up: implicit
                 // locus → interface coercion at return position,
@@ -24426,7 +25254,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 };
                 if got_ty != declared_ty {
                     return Err(CodegenError::Unsupported(format!(
-                        "return type mismatch: declared {:?}, got {:?}",
+                        "return type mismatch: declared {}, got {}",
                         declared_ty, got_ty
                     )));
                 }
@@ -24460,7 +25288,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             (None, Some(declared)) => {
                 return Err(CodegenError::Unsupported(format!(
-                    "fn declared to return {:?} but `return;` carries no value",
+                    "fn declared to return {} but `return;` carries no value",
                     declared
                 )));
             }
@@ -24959,7 +25787,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1530 step 2: a seam's hop call is inlined into the seam
         let hop = matches!(e, Expr::Call { .. } | Expr::Or { .. }) && hale_types::seam_expand::is_seam_pos(e.span().start.0);
         let before = if hop { self.call_sites_here() } else { Vec::new() };
+        // GH #1947: a call that keeps none of its arguments reads an
+        // argument naming a String local without giving up its buffer.
+        let marks = match e {
+            Expr::Call { callee, args, .. } => self.mark_borrowed_args(callee, args),
+            _ => Vec::new(),
+        };
         let result = self.lower_expr_at(e, scope);
+        self.unmark_borrowed_args(marks);
         // A refusal raised with no place of its own is placed at the
         // innermost expression of the user's source being lowered when it
         // was raised, so the build names a file, line and column for it
@@ -24967,10 +25802,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `codegen error:` line, downstream handoff). The innermost frame
         // places it first; an outer frame sees `UnsupportedAt` and keeps it.
         // A stdlib body's spans are another coordinate space that overlaps
-        // the user's files (`di_enter_stmt`), so its refusals stay as they
-        // were.
+        // the user's files (`di_enter_stmt`), so its refusals are placed in
+        // that space (`UnsupportedInStdlib`), which the renderers name as
+        // the stdlib file and line (GH #1941).
         let result = match result {
-            Err(err @ CodegenError::Unsupported(_)) if self.lowering_user_code() => Err(err.located_at(e.span())),
+            Err(err @ (CodegenError::Unsupported(_) | CodegenError::Invalid(_))) => Err(self.place(err, e.span())),
             other => other,
         };
         if hop {
@@ -25122,8 +25958,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if info.variants[idx].field_tys.first() != Some(&lowered.1) {
             return Err(CodegenError::UnsupportedAt(
                 format!(
-                    "a value of {:?} flowed into the set `{}` as its member `{}`, which holds {:?}",
-                    lowered.1, inj.set, inj.member, info.variants[idx].field_tys
+                    "a value of {} flowed into the set `{}` as its member `{}`, which holds {}",
+                    lowered.1, inj.set, inj.member, ty_list(&info.variants[idx].field_tys)
                 ),
                 e.span(),
             ));
@@ -25567,6 +26403,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .builder
                         .build_load(llvm_ty, alloca, &id.name)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // GH #1947: a read that may keep the value gives up the
+                    // local's append buffer (`crate::string_append`).
+                    if let Some(acc) = self.str_accs.get(&alloca).copied() {
+                        if !self.borrowed_args.contains(&(e as *const Expr)) {
+                            self.emit_str_acc_release(acc)?;
+                        }
+                    }
                     return Ok((loaded, ty));
                 }
                 // G7: top-level `const NAME: T = LITERAL;` reference.
@@ -25871,7 +26714,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                         other => {
                             return Err(CodegenError::Unsupported(format!(
-                                "field access on Cell<{:?}>: only struct cells \
+                                "field access on Cell<{}>: only struct cells \
                                  expose fields at v1; primitive-cell content \
                                  access is a v1.x follow-up",
                                 other
@@ -25880,7 +26723,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     },
                     other => {
                         return Err(CodegenError::Unsupported(format!(
-                            "field access `.{}` on non-record type {:?}",
+                            "field access `.{}` on non-record type {}",
                             name.name, other
                         )));
                     }
@@ -25947,101 +26790,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             Expr::Binary { op, left, right, span } => {
-                let (lv, lt) = self.lower_expr(left, scope)?;
-                let (rv, rt) = self.lower_expr(right, scope)?;
-                // Ergonomics arc: `String + <printable>` and
-                // `<printable> + String` auto-coerce the non-String
-                // side via value_to_string. Resolves the apps/tcp-echo
-                // friction "String + Int rejected even though
-                // println('p=', n) works." Other mixed-type binops
-                // remain errors.
-                if *op == BinOp::Add && lt != rt {
-                    if lt == CodegenTy::String && self.value_to_string_supports(&rt) {
-                        let coerced = self.value_to_string(rv, &rt)?;
-                        let coerced = self.with_printed_unit(right, coerced)?;
-                        return self.lower_binop(*op, lv, coerced, &CodegenTy::String);
-                    }
-                    if rt == CodegenTy::String && self.value_to_string_supports(&lt) {
-                        let coerced = self.value_to_string(lv, &lt)?;
-                        let coerced = self.with_printed_unit(left, coerced)?;
-                        return self.lower_binop(*op, coerced, rv, &CodegenTy::String);
-                    }
+                // GH #1947: a `+` is a chain, lowered whole: a String
+                // chain is one allocation (`crate::string_append`).
+                if *op == BinOp::Add {
+                    return match self.lower_add_tree(e, scope)? {
+                        crate::string_append::AddTree::Str(parts) => Ok((self.concat_parts(parts)?, CodegenTy::String)),
+                        crate::string_append::AddTree::Val(v, t) => Ok((v, t)),
+                    };
                 }
-                // B13 / G30: F.23 Int → Float widening in
-                // binary-op position. Symmetric — either side
-                // can be the Int that gets widened. Must NOT
-                // cross Float → Decimal or Int → Decimal (F.23
-                // explicitly carves those out: Decimal stays
-                // strict for monetary precision).
-                if lt == CodegenTy::Float && rt == CodegenTy::Int {
-                    let rv2 = self.coerce_to_float(rv, &rt, "binop rhs")?;
-                    return self.lower_binop(*op, lv, rv2.into(), &CodegenTy::Float);
-                }
-                if lt == CodegenTy::Int && rt == CodegenTy::Float {
-                    let lv2 = self.coerce_to_float(lv, &lt, "binop lhs")?;
-                    return self.lower_binop(*op, lv2.into(), rv, &CodegenTy::Float);
-                }
-                // GH #1076 (U4): an arithmetic operator over a quantity or
-                // a point (a `Duration`, a `Time`) is the algebra's, and
-                // its row says what the result is (`Int * Duration` a
-                // `Duration`, `Time - Time` a `Duration`): the operands
-                // are each the `Int` their representation is, emitted as
-                // the result's.
-                if let Some(result) = self.operator_result(*span) {
-                    return self.lower_binop(*op, lv, rv, &result);
-                }
-                // A stdlib body has no operator rows (the checker records
-                // none for it: `conversion::row`), so its `n * 1ms` — the
-                // one spelling by which a count becomes a `Duration` —
-                // found no row and was refused here. The algebra's answer
-                // for that product is fixed whatever the site (spec/units.md:
-                // a quantity times an `Int` is the quantity, and a
-                // `Duration` counts nanoseconds, the `i64` both operands
-                // are), so it is the same multiply a row would emit.
-                if *op == BinOp::Mul
-                    && matches!(
-                        (&lt, &rt),
-                        (CodegenTy::Int, CodegenTy::Duration)
-                            | (CodegenTy::Duration, CodegenTy::Int)
-                    )
-                {
-                    return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
-                }
-                // The other fixed answer: a `Duration` over a `Duration` is
-                // the dimensionless count (`d / 1ms`, the whole milliseconds
-                // in `d`), the one spelling by which a stdlib body turns a
-                // `Duration` back into an `Int` (std::http's SSE `retry:`).
-                if *op == BinOp::Div && lt == CodegenTy::Duration && rt == CodegenTy::Duration {
-                    let (q, _) = self.lower_binop(*op, lv, rv, &CodegenTy::Duration)?;
-                    return Ok((q, CodegenTy::Int));
-                }
-                // GH #1076: a comparison the checker typed between two
-                // representations of the unit dialect (a `Duration` and a
-                // refinement of it at the same denomination, which is the
-                // `Int` it counts; a `Time` and a refinement of it) is the
-                // signed comparison of their counts: a side that changed
-                // denomination was converted where it stands, and a
-                // comparison records no operator row (downstream handoff:
-                // `a == b` with `b: Duration in ns` was refused here as
-                // operands of mixed types).
-                if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
-                    && lt != rt
-                    && crate::conversion::is_quantity_repr(&lt)
-                    && crate::conversion::is_quantity_repr(&rt)
-                {
-                    return self.lower_binop(*op, lv, rv, &CodegenTy::Int);
-                }
-                // GH #1934: a 256-bit integer shifts by an `Int` count.
-                if matches!(op, BinOp::Shl | BinOp::Shr) && matches!(lt, CodegenTy::U256 | CodegenTy::I256) {
-                    return self.lower_wide_shift(*op, lv.into_int_value(), rv.into_int_value(), &lt);
-                }
-                if lt != rt {
-                    return Err(CodegenError::Unsupported(format!(
-                        "binary op operands of mixed types {:?} and {:?}",
-                        lt, rt
-                    )));
-                }
-                self.lower_binop(*op, lv, rv, &lt)
+                // A comparison reads its operands and keeps neither.
+                let compare = matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq);
+                let (lv, lt) = if compare { self.lower_operand_borrowed(left, scope)? } else { self.lower_expr(left, scope)? };
+                let (rv, rt) = if compare { self.lower_operand_borrowed(right, scope)? } else { self.lower_expr(right, scope)? };
+                self.lower_binary_values(*op, lv, lt, rv, rt, left, right, *span)
             }
             Expr::Unary { op, operand, span } => {
                 // GH #1076: a negated quantity literal where it flows is the
@@ -26180,6 +26941,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.reject_builtin_over_user_fn(&i.name)?;
                     self.lower_str_predicate_builtin(&i.name, args, scope)
                 }
+                // GH #1995 S3: bare `ends_with`, the third predicate. Not a
+                // reserved call form (a program's `fn ends_with` predates
+                // it and keeps the name), so it answers only where no fn
+                // of the name is declared.
+                Expr::Ident(i)
+                    if i.name == "ends_with"
+                        && !self.user_fns.contains_key("ends_with")
+                        && !self.generic_fn_templates.contains_key("ends_with") =>
+                {
+                    self.lower_str_predicate_builtin(&i.name, args, scope)
+                }
                 Expr::Ident(i) if self.user_fns.contains_key(&i.name) => {
                     let result =
                         self.lower_user_fn_call(i.name.as_str(), args, scope)?;
@@ -26248,6 +27020,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     })
                 }
+                // GH #1964: an imported seed's generic fn.
+                Expr::Path(qn) if self.imported_generic_template(qn).is_some() => {
+                    let name = self.imported_generic_template(qn).expect("guard matched");
+                    let result = self.lower_generic_fn_call(&name, *call_id, qn.span, args, scope)?;
+                    result.ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "generic fn `{}` returns no value but is used in expression position",
+                            qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")
+                        ))
+                    })
+                }
                 Expr::Path(qn) => self.lower_path_call_expr(qn, args, scope),
                 Expr::Field { receiver, name, .. }
                     if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
@@ -26277,11 +27060,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     })
                 }
-                Expr::Block(_) => self.lower_computed_fn_call(callee, args, scope)?.ok_or_else(|| {
-                    CodegenError::Unsupported(
-                        "a fn value that returns no value is used in expression position".to_string(),
-                    )
-                }),
+                // A call through the fn value any other callee evaluates
+                // to (GH #1942): a block (the desugar of a binding that
+                // shadows a fn of its name), a call that returns a fn
+                // (`pick()(2)`), an element of an array of fns
+                // (`fs[0](4)`), a branch that picks one, or the success
+                // of an `or` (`(pick() or raise)(4)`).
+                Expr::Block(_) | Expr::Call { .. } | Expr::Index { .. } | Expr::If(_) | Expr::Match(_) | Expr::Or { .. } => {
+                    self.lower_computed_fn_call(callee, args, scope)?.ok_or_else(|| {
+                        CodegenError::Unsupported(
+                            "a fn value that returns no value is used in expression position".to_string(),
+                        )
+                    })
+                }
                 _ => Err(CodegenError::Unsupported(
                     self.diagnose_unresolved_callee(callee, scope),
                 )),
@@ -26407,10 +27198,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // first dictates the type. Empty arrays would need
                 // an ascription to know the element type — reject
                 // them in v0.
+                // `[]` names no element type. It lowers as the value of a
+                // `let` that declares one (`lower_expr_into`); anywhere
+                // else the check refuses it (`refuse_untyped_empty_array`),
+                // and this is that rule for a caller that skips the check.
                 if parts.is_empty() {
-                    return Err(CodegenError::Unsupported(
-                        "empty array literal needs a type ascription \
-                         (not yet supported in v0)"
+                    return Err(CodegenError::Invalid(
+                        "an empty array literal `[]` names no element type: write it as the value of a `let` \
+                         that declares one (`let xs: [Int; 0] = [];`), or use `[x; 0]`"
                             .into(),
                     ));
                 }
@@ -26423,7 +27218,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         if prev != &t {
                             return Err(CodegenError::Unsupported(format!(
                                 "array literal mixes element types \
-                                 ({:?} and {:?})",
+                                 ({} and {})",
                                 prev, t
                             )));
                         }
@@ -26470,14 +27265,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // single source value broadcast across the slots.
                 // Parser already enforced `count` is a non-negative
                 // Int literal.
+                // `[val; 0]` (GH #1942) is a zero-length array of `val`'s
+                // type: `val` is still evaluated once, for its effects, and
+                // the storage holds no slot.
                 let n = *count;
-                if n == 0 {
-                    return Err(CodegenError::Unsupported(
-                        "array-repeat with zero count is not yet \
-                         supported in v0 (empty arrays need a type \
-                         ascription mechanism)".into(),
-                    ));
-                }
                 // GH #767: the OUTERMOST repeat consumes the `let`'s
                 // one-shot stack-slot signal, before `val` is lowered —
                 // a nested `[[0; 4]; 8]` must not take it instead.
@@ -26555,11 +27346,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // (`s[lo..=hi]`) maps to lotus_str_slice with hi+1
                 // since the helper takes exclusive `hi`.
                 if let Expr::Range { lo, hi, inclusive, .. } = index.as_ref() {
-                    let (recv_val, recv_ty) = self.lower_expr(receiver, scope)?;
+                    // The slice copies the bytes it names: the receiver is
+                    // read and not kept (GH #1947).
+                    let cache = self.str_len_cache_of(receiver, scope);
+                    let (recv_val, recv_ty) = self.lower_operand_borrowed(receiver, scope)?;
                     if !matches!(recv_ty, CodegenTy::String) {
                         return Err(CodegenError::Unsupported(format!(
                             "range slicing only supported on String in v0, \
-                             not {:?}",
+                             not {}",
                             recv_ty
                         )));
                     }
@@ -26568,7 +27362,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if lo_t != CodegenTy::Int || hi_t != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(
                             "string slice bounds must be Int; got \
-                             {:?}..{:?}",
+                             {}..{}",
                             lo_t, hi_t
                         )));
                     }
@@ -26581,6 +27375,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         hi_v.into_int_value()
                     };
                     let arena_ptr = self.current_arena_ptr()?;
+                    // GH #1947: a receiver whose length is cached is not
+                    // measured again to clamp the range (`crate::string_len`).
+                    if let Some(cache) = cache {
+                        let s = recv_val.into_pointer_value();
+                        let n = self.emit_cached_str_len(s, cache)?;
+                        let slice_fn = self.module.get_function("lotus_str_slice_n").expect("lotus_str_slice_n declared");
+                        let v = self
+                            .builder
+                            .build_call(
+                                slice_fn,
+                                &[arena_ptr.into(), s.into(), n.into(), lo_v.into_int_value().into(), hi_final.into()],
+                                "str.slice",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .try_as_basic_value()
+                            .left()
+                            .expect("lotus_str_slice_n returns ptr");
+                        return Ok((v, CodegenTy::String));
+                    }
                     let slice_fn = self
                         .module
                         .get_function("lotus_str_slice")
@@ -26607,7 +27420,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (idx_val, idx_ty) = self.lower_expr(index, scope)?;
                 if idx_ty != CodegenTy::Int {
                     return Err(CodegenError::Unsupported(format!(
-                        "array index must be Int, got {:?}",
+                        "array index must be Int, got {}",
                         idx_ty
                     )));
                 }
@@ -26639,7 +27452,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         Ok((loaded, *elem_ty))
                     }
                     other => Err(CodegenError::Unsupported(format!(
-                        "indexing a non-array value (type {:?})",
+                        "indexing a non-array value (type {})",
                         other
                     ))),
                 }
@@ -26705,8 +27518,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ))
             }
             _ => Err(CodegenError::Unsupported(format!(
-                "expression form {:?}",
-                std::mem::discriminant(e)
+                "expression form {}",
+                expr_form(e)
             ))),
         }
     }
@@ -26735,13 +27548,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         hint: Option<&CodegenTy>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match (hint, e) {
+            // GH #1951: an array literal at a declared `bounded[T; N]` site
+            // is that bounded, its count the literal's length.
+            (Some(CodegenTy::Bounded(elem, cap)), Expr::Array(parts, _)) => {
+                let (elem, cap) = ((**elem).clone(), *cap);
+                let storage = self.lower_bounded_literal(parts, &elem, cap, scope)?;
+                Ok((storage.into(), CodegenTy::Bounded(Box::new(elem), cap)))
+            }
             (
                 Some(CodegenTy::Array(elem_hint, want_n)),
                 Expr::Array(parts, _),
             ) if parts.len() as u64 == *want_n => {
-                if parts.is_empty() {
-                    return self.lower_expr(e, scope);
-                }
+                // `let xs: [T; 0] = [];` (GH #1942): the ascription names
+                // the element type the literal cannot, and the storage is
+                // a zero-length `[0 x T]`; the loop below stores nothing.
                 // GH #883: an ARRAY is not any one of its elements
                 // — whatever owns it owns the storage, never an
                 // element in it. The table said so when it walked the
@@ -26756,8 +27576,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.lower_expr_into(p, scope, Some(elem_hint.as_ref()))?;
                     if &got != elem_hint.as_ref() {
                         return Err(CodegenError::Unsupported(format!(
-                            "array literal element type {:?} doesn't match \
-                             ascription's element type {:?}",
+                            "array literal element type {} doesn't match \
+                             ascription's element type {}",
                             got, elem_hint
                         )));
                     }
@@ -26811,8 +27631,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.lower_expr_into(val, scope, Some(elem_hint.as_ref()))?;
                 if &got != elem_hint.as_ref() {
                     return Err(CodegenError::Unsupported(format!(
-                        "array-repeat element type {:?} doesn't match \
-                         ascription's element type {:?}",
+                        "array-repeat element type {} doesn't match \
+                         ascription's element type {}",
                         got, elem_hint
                     )));
                 }
@@ -26888,6 +27708,101 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// GH #1951: the array literal `[e1, .., ek]` at a declared
+    /// `bounded[T; N]` site (`k <= N`, which the check holds): a fresh
+    /// `{ i64 len, [N x T] }` block in the current arena, its count `k`.
+    /// The list owns its elements, as `push` stores one: a pointer-shaped
+    /// element that is not a fresh value (a local, a field, an element
+    /// read) is stored as the list's own copy.
+    pub(crate) fn lower_bounded_literal(
+        &mut self,
+        parts: &[Expr],
+        elem: &CodegenTy,
+        cap: u64,
+        scope: &Scope<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        if parts.len() as u64 > cap {
+            return Err(CodegenError::Unsupported(format!(
+                "a literal of {} elements for a bounded of capacity {cap}",
+                parts.len()
+            )));
+        }
+        let mut vals = Vec::with_capacity(parts.len());
+        for p in parts {
+            let (v, got) = self.lower_expr_into(p, scope, Some(elem))?;
+            let v = if *elem == CodegenTy::Float && got == CodegenTy::Int {
+                self.coerce_to_float(v, &got, "bounded literal element")?.into()
+            } else {
+                v
+            };
+            let v = if self.bounded_elem_is_ptr(elem) && !Self::expr_is_fresh_value(p) {
+                let dest = self.current_arena_ptr()?;
+                self.emit_owned_deep_copy(v, elem, dest)?
+            } else {
+                v
+            };
+            vals.push(v);
+        }
+        let st = self.llvm_bounded_storage_type(elem, cap);
+        let size = st.size_of().expect("a sized bounded storage");
+        let storage = self.arena_alloc(size, "bounded.literal")?;
+        let i64_t = self.context.i64_type();
+        let len_ptr = self.builder.build_struct_gep(st, storage, 0, "bounded.literal.len").map_err(err)?;
+        self.builder.build_store(len_ptr, i64_t.const_int(parts.len() as u64, false)).map_err(err)?;
+        let data_ptr = self.builder.build_struct_gep(st, storage, 1, "bounded.literal.data").map_err(err)?;
+        let elem_llvm = self.llvm_basic_type(elem);
+        for (i, v) in vals.into_iter().enumerate() {
+            let slot = unsafe {
+                self.builder
+                    .build_gep(elem_llvm, data_ptr, &[i64_t.const_int(i as u64, false)], "bounded.literal.slot")
+                    .map_err(err)?
+            };
+            self.builder.build_store(slot, v).map_err(err)?;
+        }
+        Ok(storage)
+    }
+
+    /// A value no other name reaches once built: a literal, a call's
+    /// result (but `at`, which hands back a list's element itself), an
+    /// f-string or an operator's result. Anything else (a local, a
+    /// field, an element, a carrier) may be another name's block.
+    pub(crate) fn expr_is_fresh_value(e: &Expr) -> bool {
+        match e {
+            Expr::Literal(..) | Expr::Struct { .. } | Expr::Array(..) | Expr::Binary { .. } => true,
+            Expr::Call { callee, .. } => !matches!(callee.as_ref(), Expr::Ident(i) if i.name == "at"),
+            _ => false,
+        }
+    }
+
+    /// An argument for a parameter of type `param`: an array literal for
+    /// a `bounded[T; N]` parameter is that bounded (GH #1951); anything
+    /// else lowers as it is.
+    pub(crate) fn lower_arg_for(
+        &mut self,
+        a: &Expr,
+        param: Option<&CodegenTy>,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        match param {
+            Some(t @ CodegenTy::Bounded(..)) => self.lower_expr_into(a, scope, Some(t)),
+            _ => self.lower_expr(a, scope),
+        }
+    }
+
+    /// The value of a `bounded[T; N]` site: an array literal built as
+    /// that bounded (`lower_bounded_literal`), anything else lowered as it
+    /// is.
+    pub(crate) fn lower_bounded_operand(
+        &mut self,
+        value: &Expr,
+        elem: &CodegenTy,
+        cap: u64,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_expr_into(value, scope, Some(&CodegenTy::Bounded(Box::new(elem.clone()), cap)))
+    }
+
     /// Lower an `if`-as-expression. The then- and else- blocks must
     /// each have a trailing expression; the values are phi-merged at
     /// the join point and the phi is the if-expression's value. An
@@ -26914,7 +27829,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (lv, lt) = self.lower_expr(left, scope)?;
         if lt != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
-                "`{spelled}` operands must be Bool; got {lt:?}"
+                "`{spelled}` operands must be Bool; got {lt}"
             )));
         }
         let func = self
@@ -26939,7 +27854,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (rv, rt) = self.lower_expr(right, scope)?;
         if rt != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
-                "`{spelled}` operands must be Bool; got {rt:?}"
+                "`{spelled}` operands must be Bool; got {rt}"
             )));
         }
         let rhs_end = self.builder.get_insert_block().unwrap_or(rhs_bb);
@@ -26980,7 +27895,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (cond_v, cond_ty) = self.lower_expr(&ifs.cond, scope)?;
         if cond_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
-                "if condition must be Bool; got {:?}",
+                "if condition must be Bool; got {}",
                 cond_ty
             )));
         }
@@ -27045,7 +27960,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             && else_end == BlockEnd::Open
         {
             return Err(CodegenError::Unsupported(format!(
-                "if-expression arms have mismatched types: then={:?}, else={:?}",
+                "if-expression arms have mismatched types: then={}, else={}",
                 then_ty, else_ty
             )));
         }
@@ -27134,6 +28049,176 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.context.struct_type(&field_tys, false)
     }
 
+
+    /// GH #1947: when `callee` keeps none of its arguments
+    /// (`hale_types::string_append::call_keeps_no_argument`), mark the
+    /// arguments that are identifiers, so the identifier arm reads them
+    /// without giving up their locals' append buffers. Returns the marks
+    /// this call added, for [`Self::unmark_borrowed_args`].
+    pub(crate) fn mark_borrowed_args(&mut self, callee: &Expr, args: &[Expr]) -> Vec<*const Expr> {
+        if self.str_accs.is_empty() || !hale_types::string_append::call_keeps_no_argument(callee) {
+            return Vec::new();
+        }
+        args.iter()
+            .filter(|a| matches!(a, Expr::Ident(_)))
+            .map(|a| a as *const Expr)
+            .filter(|p| self.borrowed_args.insert(*p))
+            .collect()
+    }
+
+    pub(crate) fn unmark_borrowed_args(&mut self, marks: Vec<*const Expr>) {
+        for p in marks {
+            self.borrowed_args.remove(&p);
+        }
+    }
+
+    /// A binary operator over its lowered operands: the coercions and
+    /// operator rows `Expr::Binary` applies (a printable side of a String
+    /// `+` rendered, `Int` widened against `Float`, a quantity's row),
+    /// then the operator itself.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn lower_binary_values(
+        &mut self,
+        op: BinOp,
+        lv: BasicValueEnum<'ctx>,
+        lt: CodegenTy,
+        rv: BasicValueEnum<'ctx>,
+        rt: CodegenTy,
+        left: &Expr,
+        right: &Expr,
+        span: hale_syntax::Span,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let op = &op;
+        let span = &span;
+        // Ergonomics arc: `String + <printable>` and
+        // `<printable> + String` auto-coerce the non-String
+        // side via value_to_string. Resolves the apps/tcp-echo
+        // friction "String + Int rejected even though
+        // println('p=', n) works." Other mixed-type binops
+        // remain errors.
+        if *op == BinOp::Add && lt != rt {
+            if lt == CodegenTy::String && self.value_to_string_supports(&rt) {
+                let coerced = self.value_to_string(rv, &rt)?;
+                let coerced = self.with_printed_unit(right, coerced)?;
+                return self.lower_binop(*op, lv, coerced, &CodegenTy::String);
+            }
+            if rt == CodegenTy::String && self.value_to_string_supports(&lt) {
+                let coerced = self.value_to_string(lv, &lt)?;
+                let coerced = self.with_printed_unit(left, coerced)?;
+                return self.lower_binop(*op, coerced, rv, &CodegenTy::String);
+            }
+        }
+        // B13 / G30: F.23 Int → Float widening in
+        // binary-op position. Symmetric — either side
+        // can be the Int that gets widened. Must NOT
+        // cross Float → Decimal or Int → Decimal (F.23
+        // explicitly carves those out: Decimal stays
+        // strict for monetary precision).
+        if lt == CodegenTy::Float && rt == CodegenTy::Int {
+            let rv2 = self.coerce_to_float(rv, &rt, "binop rhs")?;
+            return self.lower_binop(*op, lv, rv2.into(), &CodegenTy::Float);
+        }
+        if lt == CodegenTy::Int && rt == CodegenTy::Float {
+            let lv2 = self.coerce_to_float(lv, &lt, "binop lhs")?;
+            return self.lower_binop(*op, lv2.into(), rv, &CodegenTy::Float);
+        }
+        // GH #1076 (U4): an arithmetic operator over a quantity or
+        // a point (a `Duration`, a `Time`) is the algebra's, and
+        // its row says what the result is (`Int * Duration` a
+        // `Duration`, `Time - Time` a `Duration`): the operands
+        // are each the `Int` their representation is, emitted as
+        // the result's.
+        if let Some(result) = self.operator_result(*span) {
+            return self.lower_binop(*op, lv, rv, &result);
+        }
+        // A stdlib body has no operator rows (the checker records
+        // none for it: `conversion::row`), so its `n * 1ms` — the
+        // one spelling by which a count becomes a `Duration` —
+        // found no row and was refused here. The algebra's answer
+        // for that product is fixed whatever the site (spec/units.md:
+        // a quantity times an `Int` is the quantity, and a
+        // `Duration` counts nanoseconds, the `i64` both operands
+        // are), so it is the same multiply a row would emit.
+        if *op == BinOp::Mul
+            && matches!(
+                (&lt, &rt),
+                (CodegenTy::Int, CodegenTy::Duration)
+                    | (CodegenTy::Duration, CodegenTy::Int)
+            )
+        {
+            return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
+        }
+        // The other fixed answer: a `Duration` over a `Duration` is
+        // the dimensionless count (`d / 1ms`, the whole milliseconds
+        // in `d`), the one spelling by which a stdlib body turns a
+        // `Duration` back into an `Int` (std::http's SSE `retry:`).
+        if *op == BinOp::Div && lt == CodegenTy::Duration && rt == CodegenTy::Duration {
+            let (q, _) = self.lower_binop(*op, lv, rv, &CodegenTy::Duration)?;
+            return Ok((q, CodegenTy::Int));
+        }
+        // A point moved by a `Duration`, and the `Duration` between two
+        // points, have fixed answers too (spec/units.md: a `Time` counts
+        // nanoseconds from its origin, a `Duration` nanoseconds). A
+        // generic body specialized at `Duration` (`fn later<T>(t: Time,
+        // d: T) -> Time { return t + d; }`) reaches here with no row: the
+        // template's walk typed `d` as its parameter, and the rows are
+        // the template's.
+        match (op, &lt, &rt) {
+            (BinOp::Add | BinOp::Sub, CodegenTy::Time, CodegenTy::Duration)
+            | (BinOp::Add, CodegenTy::Duration, CodegenTy::Time) => {
+                return self.lower_binop(*op, lv, rv, &CodegenTy::Time);
+            }
+            (BinOp::Sub, CodegenTy::Time, CodegenTy::Time) => {
+                return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
+            }
+            _ => {}
+        }
+        // GH #1076: a comparison the checker typed between two
+        // representations of the unit dialect (a `Duration` and a
+        // refinement of it at the same denomination, which is the
+        // `Int` it counts; a `Time` and a refinement of it) is the
+        // signed comparison of their counts: a side that changed
+        // denomination was converted where it stands, and a
+        // comparison records no operator row (downstream handoff:
+        // `a == b` with `b: Duration in ns` was refused here as
+        // operands of mixed types).
+        if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
+            && lt != rt
+            && crate::conversion::is_quantity_repr(&lt)
+            && crate::conversion::is_quantity_repr(&rt)
+        {
+            return self.lower_binop(*op, lv, rv, &CodegenTy::Int);
+        }
+        // A Decimal literal takes the scale of the place it flows into,
+        // which the checker records at the literal. In a generic body
+        // specialized at a `Decimal<S>` (`fn half<T>(x: T) -> T { return
+        // x / 2d; }`) the row is the template's, which knew no scale, so
+        // the literal is put at the other operand's scale here, as the
+        // checker puts it in a body over `Decimal<S>`.
+        if let (CodegenTy::Decimal(ls), CodegenTy::Decimal(rs)) = (&lt, &rt) {
+            if ls != rs {
+                if let Some(m) = decimal_literal_at_scale(right, *ls) {
+                    let v = i128_const(self.context, m?).into();
+                    return self.lower_binop(*op, lv, v, &lt);
+                }
+                if let Some(m) = decimal_literal_at_scale(left, *rs) {
+                    let v = i128_const(self.context, m?).into();
+                    return self.lower_binop(*op, v, rv, &rt);
+                }
+            }
+        }
+        // GH #1934: a 256-bit integer shifts by an `Int` count.
+        if matches!(op, BinOp::Shl | BinOp::Shr) && matches!(lt, CodegenTy::U256 | CodegenTy::I256) {
+            return self.lower_wide_shift(*op, lv.into_int_value(), rv.into_int_value(), &lt);
+        }
+        if lt != rt {
+            return Err(CodegenError::Unsupported(format!(
+                "binary op operands of mixed types {} and {}",
+                lt, rt
+            )));
+        }
+        self.lower_binop(*op, lv, rv, &lt)
+    }
 
     fn lower_binop(
         &mut self,
@@ -27559,8 +28644,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((result.into(), CodegenTy::Bool))
             }
             _ => Err(CodegenError::Unsupported(format!(
-                "binop {:?} on {:?}",
-                op, ty
+                "binop {} on {}",
+                bin_op_text(op), ty
             ))),
         }
     }
@@ -27623,8 +28708,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((r.into(), CodegenTy::Int))
             }
             _ => Err(CodegenError::Unsupported(format!(
-                "unop {:?} on {:?}",
-                op, ty
+                "unop {} on {}",
+                unary_op_text(op), ty
             ))),
         }
     }
@@ -27809,8 +28894,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 CodegenTy::LocusRef(name) => {
                     return Err(CodegenError::Unsupported(format!(
-                        "println of a locus value (LocusRef `{}`) — \
-                         lotus has no Display protocol yet",
+                        "println of the locus `{}`: a locus has no printed form; print \
+                         its fields",
                         name
                     )));
                 }
@@ -27846,7 +28931,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 CodegenTy::TypeRef(name) => {
                     return Err(CodegenError::Unsupported(format!(
-                        "println of a type value (TypeRef `{}`) — one \
+                        "println of a value of type `{}` — one \
                          of its fields is not printable; print the \
                          printable fields individually",
                         name
@@ -27934,7 +29019,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::Cell(inner, _) => {
                     return Err(CodegenError::Unsupported(format!(
                         "println of an F.22 capacity-slot cell \
-                         (Cell<{:?}>) — cells are opaque round-trip \
+                         (Cell<{}>) — cells are opaque round-trip \
                          handles at v1, not printable values. \
                          Release/free the cell and println a \
                          specific value instead.",
@@ -27943,7 +29028,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 CodegenTy::Drain(inner) => {
                     return Err(CodegenError::Unsupported(format!(
-                        "println of a `Drain<{:?}>` batch handle — \
+                        "println of a `Drain<{}>` batch handle — \
                          iterate it with `for t in feed` and print \
                          individual records instead",
                         inner
@@ -28138,7 +29223,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let (v, ty) = self.lower_expr(rewritten.as_ref().unwrap_or(a), scope)?;
                     if ty != variant.field_tys[j] {
                         return Err(CodegenError::Unsupported(format!(
-                            "{}::{} arg {}: expected type {:?}, got {:?}",
+                            "{}::{} arg {}: expected type {}, got {}",
                             enum_name, variant_name, j, variant.field_tys[j], ty
                         )));
                     }
@@ -28294,6 +29379,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// user's files) nor a synthesized `__*` helper (copied or zero
     /// spans). `__lib_*` is an imported user file parsed at a real file
     /// base and counts — the test `di_enter_stmt` makes.
+    /// The name span of the fn member `method` of the locus `locus`, as the
+    /// program declares it (GH #1941: a refusal of a member lowering meets
+    /// outside its body).
+    pub(crate) fn member_fn_span(&self, locus: &str, method: &str) -> Option<hale_syntax::Span> {
+        hale_syntax::ast::flat_decls(&self.program.items).find_map(|d| match d {
+            TopDecl::Locus(l) if l.name.name == locus => l.members.iter().find_map(|m| match m {
+                hale_syntax::ast::LocusMember::Fn(f) if f.name.name == method => Some(f.name.span),
+                _ => None,
+            }),
+            _ => None,
+        })
+    }
+
+    /// Whether the body being lowered is one of the Hale-source stdlib's
+    /// ([`stdlib_named`]), whose spans are the stdlib's own parse space.
+    pub(crate) fn lowering_stdlib_body(&self) -> bool {
+        self.builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .is_some_and(|f| stdlib_named(&f.get_name().to_string_lossy()))
+    }
+
+    /// GH #1941: a refusal raised with no place of its own, placed at
+    /// `span`, the nearest enclosing site being lowered (a statement, an
+    /// expression), in the space of the body it is in.
+    pub(crate) fn place(&self, err: CodegenError, span: hale_syntax::Span) -> CodegenError {
+        err.placed(span, self.lowering_stdlib_body())
+    }
+
     pub(crate) fn lowering_user_code(&self) -> bool {
         self.builder
             .get_insert_block()
@@ -28522,7 +29636,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 })
                 .collect();
             return Err(CodegenError::Unsupported(format!(
-                "{path} receiver must be {}; got {:?}",
+                "{path} receiver must be {}; got {}",
                 names.join(" or "),
                 ty
             )));
@@ -29579,6 +30693,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::ProcessPid => self.lower_std_process_pid(args),
             Id::ProcessUid => self.lower_std_process_uid(args),
             Id::ProcessRssBytes => self.lower_std_process_rss_bytes(args),
+            Id::ProcessPeakRssBytes => self.lower_std_process_peak_rss_bytes(args),
             Id::ProcessDumpArenaResidency => {
                 self.lower_std_process_dump_arena_residency(args)
             }
@@ -30304,6 +31419,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::ProcessDumpArenaResidency
             | Id::ProcessDumpPoolResidency
             | Id::ProcessExit
+            | Id::ProcessPeakRssBytes
             | Id::ProcessPid
             | Id::ProcessRssBytes
             | Id::ProcessUid
@@ -30419,7 +31535,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !matches!(src_ty, CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
                 "std::text::tokenize_words_into: source arg must be \
-                 String, got {:?}",
+                 String, got {}",
                 src_ty
             )));
         }
@@ -30429,7 +31545,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "std::text::tokenize_words_into: target arg must be a \
-                     @form(vec) of String locus, got {:?}",
+                     @form(vec) of String locus, got {}",
                     other
                 )));
             }
@@ -30458,7 +31574,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !matches!(vec_slot.elem_ty, CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
                 "std::text::tokenize_words_into: target vec `{}` cell type \
-                 must be String, got {:?}",
+                 must be String, got {}",
                 target_locus_name, vec_slot.elem_ty
             )));
         }
@@ -30525,7 +31641,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !matches!(src_ty, CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::split_into: source arg must be \
-                 String, got {:?}",
+                 String, got {}",
                 src_ty
             )));
         }
@@ -30537,7 +31653,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "std::str::split_into: target arg must be a \
-                     @form(vec) of String locus, got {:?}",
+                     @form(vec) of String locus, got {}",
                     other
                 )));
             }
@@ -30566,7 +31682,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !matches!(vec_slot.elem_ty, CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::split_into: target vec `{}` cell type \
-                 must be String, got {:?}",
+                 must be String, got {}",
                 target_locus_name, vec_slot.elem_ty
             )));
         }
@@ -30630,7 +31746,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             other => {
                 return Err(CodegenError::Unsupported(format!(
                     "std::str::join: target arg must be a \
-                     @form(vec) of String locus, got {:?}",
+                     @form(vec) of String locus, got {}",
                     other
                 )));
             }
@@ -30659,7 +31775,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !matches!(vec_slot.elem_ty, CodegenTy::String) {
             return Err(CodegenError::Unsupported(format!(
                 "std::str::join: target vec `{}` cell type \
-                 must be String, got {:?}",
+                 must be String, got {}",
                 target_locus_name, vec_slot.elem_ty
             )));
         }
@@ -30718,10 +31834,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 args.len()
             )));
         }
+        // GH #1947: `cp_at` / `cp_size` of a local whose length is cached
+        // check the offset against the length instead of scanning up to it
+        // (`crate::string_len`).
+        let cache = match sym {
+            "lotus_str_cp_at" | "lotus_str_cp_size" => self.str_len_cache_of(&args[0], scope),
+            _ => None,
+        };
         let (s, s_ty) = self.lower_expr(&args[0], scope)?;
         let s = self.unpack_view_if_needed(s, &s_ty)?;
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> =
             vec![s.into()];
+        let sym = match cache {
+            Some(cache) if s_ty == CodegenTy::String => {
+                let n = self.emit_cached_str_len(s.into_pointer_value(), cache)?;
+                call_args.push(n.into());
+                if sym == "lotus_str_cp_at" { "lotus_str_cp_at_n" } else { "lotus_str_cp_size_n" }
+            }
+            _ => sym,
+        };
         if arity == 2 {
             let (off, _) = self.lower_expr(&args[1], scope)?;
             call_args.push(off.into());
@@ -30801,7 +31932,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
             }
             other => Err(CodegenError::Unsupported(format!(
-                "{}: expected Float (or Int via widening), got {:?}",
+                "{}: expected Float (or Int via widening), got {}",
                 callee_label, other
             ))),
         }
@@ -30863,7 +31994,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (src_val, src_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(src_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::ts::parse_go: src must be String, got {:?}",
+                "std::ts::parse_go: src must be String, got {}",
                 src_ty
             )));
         }
@@ -30903,7 +32034,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         if ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "{}: arg must be Int, got {:?}",
+                "{}: arg must be Int, got {}",
                 path, ty
             )));
         }
@@ -30941,14 +32072,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (a, at) = self.lower_expr(&args[0], scope)?;
         if at != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "{}: arg 0 must be Int, got {:?}",
+                "{}: arg 0 must be Int, got {}",
                 path, at
             )));
         }
         let (b, bt) = self.lower_expr(&args[1], scope)?;
         if bt != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "{}: arg 1 must be Int, got {:?}",
+                "{}: arg 1 must be Int, got {}",
                 path, bt
             )));
         }
@@ -30989,7 +32120,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         if ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "{}: arg must be Int, got {:?}",
+                "{}: arg must be Int, got {}",
                 path, ty
             )));
         }
@@ -31055,7 +32186,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "{}: fd must be Int, got {:?}",
+                "{}: fd must be Int, got {}",
                 diag_name, fd_ty
             )));
         }
@@ -31115,7 +32246,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 return Err(CodegenError::Unsupported(format!(
                     "{}: buf must be std::bytes::BytesBuilder (constructed \
                      via `std::bytes::BytesBuilder {{ initial_cap: ... }}`), \
-                     got {:?}",
+                     got {}",
                     diag_name, buf_ty
                 )));
             }
@@ -31123,7 +32254,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (max_val, max_ty) = self.lower_expr(&args[2], scope)?;
         if max_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "{}: max_bytes must be Int, got {:?}",
+                "{}: max_bytes must be Int, got {}",
                 diag_name, max_ty
             )));
         }
@@ -31142,7 +32273,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (until_val, until_ty) = self.lower_expr(&args[3], scope)?;
             if until_ty != CodegenTy::Int {
                 return Err(CodegenError::Unsupported(format!(
-                    "{}: until_ns must be Int, got {:?}",
+                    "{}: until_ns must be Int, got {}",
                     diag_name, until_ty
                 )));
             }
@@ -31236,9 +32367,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // F.30b (5a): unpack view + epoch check at
                         // self.fnptr arg site.
                         self.unpack_view_if_needed(v, &vt)?
+                    } else if arg_tys[i] == CodegenTy::Float && vt == CodegenTy::Int {
+                        // Int -> Float widening, as at a direct call
+                        // (GH #1967).
+                        self.coerce_to_float(v, &vt, method_name)?.into()
                     } else if vt != arg_tys[i] {
                         return Err(CodegenError::Unsupported(format!(
-                            "self.{} arg {}: expected {:?}, got {:?}",
+                            "self.{} arg {}: expected {}, got {}",
                             method_name, i, arg_tys[i], vt
                         )));
                     } else {
@@ -31273,26 +32408,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .void_type()
                         .fn_type(&llvm_param_tys, false),
                     Some(rt) => {
-                        let lr = self.llvm_basic_type(rt);
-                        match lr {
-                            inkwell::types::BasicTypeEnum::IntType(t) => {
-                                t.fn_type(&llvm_param_tys, false)
-                            }
-                            inkwell::types::BasicTypeEnum::FloatType(t) => {
-                                t.fn_type(&llvm_param_tys, false)
-                            }
-                            inkwell::types::BasicTypeEnum::PointerType(t) => {
-                                t.fn_type(&llvm_param_tys, false)
-                            }
-                            _ => {
-                                return Err(CodegenError::Unsupported(
-                                    format!(
-                                        "fn-pointer return type {:?} not yet supported",
-                                        rt
-                                    ),
-                                ));
-                            }
-                        }
+                        // Any value type: a view returns by value as the `{ptr, i64}`
+                        // struct the callee was declared with (GH #1942).
+                        self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false)
                     }
                 };
                 let call = self
@@ -31447,7 +32565,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(cs.self_ptr.into());
         for i in 0..sig.params.len() {
             let (v, ty) = if i < args.len() {
-                self.lower_expr(&args[i], scope)?
+                let want = self.type_expr_to_codegen_ty(&sig.params[i].ty).ok();
+                self.lower_arg_for(&args[i], want.as_ref(), scope)?
             } else {
                 let default_expr =
                     sig.params[i].default.as_ref().expect("checked above");
@@ -31482,7 +32601,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             if ty != want {
                 return Err(CodegenError::Unsupported(format!(
-                    "self.{} arg {} type mismatch: expected {:?}, got {:?}",
+                    "self.{} arg {} type mismatch: expected {}, got {}",
                     method_name, i, want, ty
                 )));
             }
@@ -31568,14 +32687,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         call_args.push(caller_arena.into());
         llvm_param_tys.push(ptr_t.into());
         for (i, a) in args.iter().enumerate() {
-            let (v, vt) = self.lower_expr(a, scope)?;
+            // an array literal for a `bounded[T; N]` parameter is that
+            // bounded, as at a direct call (GH #1951)
+            let (v, vt) = self.lower_arg_for(a, Some(&arg_tys[i]), scope)?;
             let v = if view_coerces_to(&vt, &arg_tys[i]) {
                 // F.30b (5a): unpack view + epoch check at fn-pointer
                 // arg site.
                 self.unpack_view_if_needed(v, &vt)?
+            } else if arg_tys[i] == CodegenTy::Float && vt == CodegenTy::Int {
+                // Int -> Float widening, as at a direct call: the check
+                // holds a call through a fn value to its type's
+                // parameters as it holds a direct call (GH #1967).
+                self.coerce_to_float(v, &vt, callee_label)?.into()
             } else if vt != arg_tys[i] {
                 return Err(CodegenError::Unsupported(format!(
-                    "{} arg {}: expected {:?}, got {:?}",
+                    "{} arg {}: expected {}, got {}",
                     callee_label, i, arg_tys[i], vt
                 )));
             } else {
@@ -31590,24 +32716,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .void_type()
                 .fn_type(&llvm_param_tys, false),
             Some(rt) => {
-                let lr = self.llvm_basic_type(rt);
-                match lr {
-                    inkwell::types::BasicTypeEnum::IntType(t) => {
-                        t.fn_type(&llvm_param_tys, false)
-                    }
-                    inkwell::types::BasicTypeEnum::FloatType(t) => {
-                        t.fn_type(&llvm_param_tys, false)
-                    }
-                    inkwell::types::BasicTypeEnum::PointerType(t) => {
-                        t.fn_type(&llvm_param_tys, false)
-                    }
-                    _ => {
-                        return Err(CodegenError::Unsupported(format!(
-                            "fn-pointer return type {:?} not yet supported",
-                            rt
-                        )));
-                    }
-                }
+                // Any value type: a view returns by value as the `{ptr, i64}`
+                // struct the callee was declared with (GH #1942).
+                self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false)
             }
         };
         let call = self
@@ -31774,11 +32885,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+        // GH #1942: `t.0(x)` calls the fn value a tuple holds at that
+        // position, as `h.f(x)` calls a record's fn field above.
+        if let CodegenTy::Tuple(elems) = &recv_ty {
+            if let Ok(i) = method_name.parse::<usize>() {
+                if let Some(CodegenTy::FnPtr { args: fn_args, ret: fn_ret }) = elems.get(i).cloned() {
+                    let storage_ty = self.llvm_tuple_storage_type(elems);
+                    let i32_t = self.context.i32_type();
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                recv_val.into_pointer_value(),
+                                &[i32_t.const_int(0, false), i32_t.const_int(i as u64, false)],
+                                &format!("tup.{i}.fn.ptr"),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    };
+                    let fn_value_ptr = self
+                        .builder
+                        .build_load(self.context.ptr_type(AddressSpace::default()), slot, &format!("tup.{i}.fn"))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    return self.emit_fnptr_indirect_call(
+                        fn_value_ptr,
+                        &fn_args,
+                        fn_ret.as_deref(),
+                        args,
+                        scope,
+                        &format!("tuple.{i}"),
+                    );
+                }
+            }
+        }
         let locus_name = match recv_ty {
             CodegenTy::LocusRef(n) => n,
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "method call on non-locus value of type {:?}",
+                    "method call on non-locus value of type {}",
                     other
                 )));
             }
@@ -31957,7 +33101,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(recv_val.into_pointer_value().into());
         for i in 0..sig.params.len() {
             let (v, ty) = if i < args.len() {
-                self.lower_expr(&args[i], scope)?
+                let want = self.type_expr_to_codegen_ty(&sig.params[i].ty).ok();
+                self.lower_arg_for(&args[i], want.as_ref(), scope)?
             } else {
                 let default_expr = sig.params[i]
                     .default
@@ -32000,7 +33145,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             if ty != want {
                 return Err(CodegenError::Unsupported(format!(
-                    "{}.{} arg {} type mismatch: expected {:?}, got {:?}",
+                    "{}.{} arg {} type mismatch: expected {}, got {}",
                     locus_name, method_name, i, want, ty
                 )));
             }
@@ -32231,7 +33376,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     other => {
                         return Err(CodegenError::Unsupported(format!(
-                            "slot `{}`.{}: expected Cell<{:?}>, got {:?}",
+                            "slot `{}`.{}: expected Cell<{}>, got {}",
                             slot_name, method_name, expected_elem, other
                         )));
                     }
@@ -32292,7 +33437,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Enum(name) => format!("enum_{}", name),
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "@form(vec).sort_by: cell type {:?} not supported",
+                    "@form(vec).sort_by: cell type {} not supported",
                     other
                 )));
             }
@@ -32626,8 +33771,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(data_ptr.into());
         llvm_param_tys.push(ptr_t.into());
         for (i, a) in args.iter().enumerate() {
-            let (v, ty) = self.lower_expr(a, scope)?;
             let want = self.type_expr_to_codegen_ty(&method_sig.params[i].ty)?;
+            let (v, ty) = self.lower_arg_for(a, Some(&want), scope)?;
             // Same Locus→Interface coercion the free-fn call site
             // does — keeps interface-typed method params usable.
             let (v, ty) = if let (
@@ -32651,7 +33796,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             if ty != want {
                 return Err(CodegenError::Unsupported(format!(
-                    "{}.{} (interface) arg {} type mismatch: expected {:?}, got {:?}",
+                    "{}.{} (interface) arg {} type mismatch: expected {}, got {}",
                     iface_name, method_name, i, want, ty
                 )));
             }
@@ -32779,24 +33924,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let fn_ty = match &ret_codegen_ty {
             None => self.context.void_type().fn_type(&llvm_param_tys, false),
-            Some(rt) => match self.llvm_basic_type(rt) {
-                inkwell::types::BasicTypeEnum::IntType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::FloatType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::PointerType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                other => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "interface method return type {:?} not yet supported \
-                         by Phase B dispatch",
-                        other
-                    )));
-                }
-            },
+            // Any value type, a view's `{ptr, i64}` struct included (GH #1942).
+            Some(rt) => self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false),
         };
         // Bus-arena reclaim (2026-05-21): publish caller arena
         // via TLS for the same reason as the direct-method-call
@@ -32952,7 +34081,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             if ty != want {
                 return Err(CodegenError::Unsupported(format!(
-                    "{}.{} (perspective) arg {} type mismatch: expected {:?}, got {:?}",
+                    "{}.{} (perspective) arg {} type mismatch: expected {}, got {}",
                     persp_name, method_name, i, want, ty
                 )));
             }
@@ -32965,24 +34094,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let fn_ty = match &ret_codegen_ty {
             None => self.context.void_type().fn_type(&llvm_param_tys, false),
-            Some(rt) => match self.llvm_basic_type(rt) {
-                inkwell::types::BasicTypeEnum::IntType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::FloatType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                inkwell::types::BasicTypeEnum::PointerType(t) => {
-                    t.fn_type(&llvm_param_tys, false)
-                }
-                other => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "perspective method return type {:?} not yet \
-                         supported by dispatch",
-                        other
-                    )));
-                }
-            },
+            // Any value type, a view's `{ptr, i64}` struct included (GH #1942).
+            Some(rt) => self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false),
         };
         self.emit_set_caller_arena_for(args, scope)?;
         let call = self
@@ -33279,7 +34392,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "accumulator slot field type {:?} unexpected", ty
+                    "accumulator slot field type {} unexpected", ty
                 )));
             }
         }
@@ -33311,8 +34424,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (sample_val, sample_ty) = self.lower_expr(inner, scope)?;
                 if sample_ty != slot.inner_ty {
                     return Err(CodegenError::Unsupported(format!(
-                        "accumulator inner expr re-lowered with type {:?} but \
-                         slot was declared {:?}",
+                        "accumulator inner expr re-lowered with type {} but \
+                         slot was declared {}",
                         sample_ty, slot.inner_ty
                     )));
                 }
@@ -33344,8 +34457,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (sample_val, sample_ty) = self.lower_expr(inner, scope)?;
                 if sample_ty != slot.inner_ty {
                     return Err(CodegenError::Unsupported(format!(
-                        "accumulator inner expr re-lowered with type {:?} but \
-                         mean slot was declared {:?}",
+                        "accumulator inner expr re-lowered with type {} but \
+                         mean slot was declared {}",
                         sample_ty, slot.inner_ty
                     )));
                 }
@@ -33447,7 +34560,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "accumulator field type {:?} unexpected", ty
+                    "accumulator field type {} unexpected", ty
                 )));
             }
         }
@@ -33575,7 +34688,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     ref other => {
                         return Err(CodegenError::Unsupported(format!(
-                            "mean accumulator inner type {:?} unexpected",
+                            "mean accumulator inner type {} unexpected",
                             other
                         )));
                     }
@@ -33629,7 +34742,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "load_field_typed: unsupported type {:?}", other
+                    "load_field_typed: unsupported type {}", other
                 )));
             }
         };
@@ -33699,7 +34812,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::LocusRef(n) => n.clone(),
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "{}() requires a locus reference; got {:?}",
+                    "{}() requires a locus reference; got {}",
                     kind, other
                 )));
             }
@@ -33742,7 +34855,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let (nval, nty) = self.lower_expr(written, scope)?;
                         if !matches!(nty, CodegenTy::Int) {
                             return Err(CodegenError::Unsupported(format!(
-                                "`{} for N`: the bound must be an Int; got {:?}",
+                                "`{} for N`: the bound must be an Int; got {}",
                                 kind, nty
                             )));
                         }
@@ -33895,7 +35008,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::LocusRef(n) => n.clone(),
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "quarantine() requires a locus reference; got {:?}",
+                    "quarantine() requires a locus reference; got {}",
                     other
                 )));
             }
@@ -34069,7 +35182,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (val, ty) = self.lower_expr(&args[0], scope)?;
         if ty != CodegenTy::TypeRef("ClosureViolation".into()) {
             return Err(CodegenError::Unsupported(format!(
-                "bubble() requires a ClosureViolation; got {:?}",
+                "bubble() requires a ClosureViolation; got {}",
                 ty
             )));
         }
@@ -34364,13 +35477,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// payload-bearing enum, pass an empty `field_vals` —
     /// only the tag is written, body bytes stay uninitialized
     /// but are never read for those variants.
+    ///
+    /// Under the return-arena routing (`current_arena_override`, a
+    /// method returning a fresh value), the cell lands in the caller's
+    /// arena, so the boundary's same-arena check passes it through
+    /// uncopied: each heap payload is anchored there too, as
+    /// `populate_user_type_fields` anchors a record literal's fields. A
+    /// payload bound by a `let` in the method (`let t = …; return
+    /// E::A(t);`) lived in its scratch, which the return frees, and the
+    /// caller read it after the free until 2026-11-15 (GH #1951's
+    /// ownership-matrix cells found it).
     pub(crate) fn lower_enum_variant_alloc(
         &mut self,
         info: &EnumInfo,
         tag: u32,
         field_vals: &[(BasicValueEnum<'ctx>, CodegenTy)],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        self.lower_enum_variant_alloc_in(info, tag, field_vals, None)
+        let Some(arena) = self.current_arena_override else {
+            return self.lower_enum_variant_alloc_in(info, tag, field_vals, None);
+        };
+        let mut anchored = Vec::with_capacity(field_vals.len());
+        for (j, (val, ty)) in field_vals.iter().enumerate() {
+            let heap = val.is_pointer_value()
+                && matches!(
+                    ty,
+                    CodegenTy::String
+                        | CodegenTy::Bytes
+                        | CodegenTy::TypeRef(_)
+                        | CodegenTy::Tuple(_)
+                        | CodegenTy::Array(_, _)
+                        | CodegenTy::Enum(_)
+                );
+            // An array payload is a pointer to its own block, never the
+            // body's inline bytes (`retire_desc_for`'s variant table).
+            let v = if heap {
+                self.emit_cross_arena_store_deep_copy_ptr(*val, ty, arena, &format!("enum.payload{j}"))?
+            } else {
+                *val
+            };
+            anchored.push((v, ty.clone()));
+        }
+        self.lower_enum_variant_alloc_in(info, tag, &anchored, None)
     }
 
     /// `lower_enum_variant_alloc`, the block taken from `reusable`'s
@@ -34863,7 +36010,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         });
         let Some(fd) = fd else { return Ok(None) };
         if args.len() != fd.params.len() {
-            return Err(CodegenError::Unsupported(format!(
+            return Err(CodegenError::Invalid(format!(
                 "locus `{}` method `{}`: expects {} args, got {}",
                 locus_name,
                 method_name,
@@ -34896,7 +36043,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.coerce_to_interface(v.into_pointer_value(), l, i)?.into()
                 } else {
                     return Err(CodegenError::Unsupported(format!(
-                        "locus `{}` method `{}`: arg {} type mismatch: expected {:?}, got {:?}",
+                        "locus `{}` method `{}`: arg {} type mismatch: expected {}, got {}",
                         locus_name, method_name, i, want, got
                     )));
                 }
@@ -35275,14 +36422,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         let e = |err: inkwell::builder::BuilderError| CodegenError::LlvmEmit(err.to_string());
-        // A bounded local is a view whose owner is not known here: the
-        // check refuses its whole assignment.
-        if target.tail.is_empty() {
-            return Err(CodegenError::UnsupportedAt(
-                format!("a whole assignment through the bounded local `{}`", target.head.name),
-                target.span,
-            ));
-        }
         let (dest, _, _, owner) = self.resolve_lvalue_chain(target, scope)?;
         if let Some(o) = owner.as_ref().filter(|o| !o.is_self) {
             let shown = format!("store into `{}`", o.locus.rsplit("__").next().unwrap_or(&o.locus));
@@ -35291,10 +36430,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (ptr, locus) = (o.ptr, o.locus.clone());
             self.emit_cross_pool_check(ptr, recv, &locus, &shown, target.span, scope)?;
         }
-        let (src, src_ty) = self.lower_expr(value, scope)?;
+        let (src, src_ty) = self.lower_bounded_operand(value, elem, cap, scope)?;
         if !matches!(&src_ty, CodegenTy::Bounded(se, sn) if se.as_ref() == elem && *sn == cap) {
             return Err(CodegenError::Unsupported(format!(
-                "a `bounded` place assigned whole from a {src_ty:?}, not the place's own type"
+                "a `bounded` place assigned whole from a {src_ty}, not the place's own type"
             )));
         }
         let locus_place = owner.is_some();
@@ -35371,6 +36510,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Open)
     }
 
+    /// GH #1951: `xs = value` where `xs` is a bounded local, the frame's
+    /// own list: it holds a value of its own afterwards. A literal and a
+    /// call's result are fresh and are bound as they are; any other value
+    /// (a place, another local) is copied into the frame's arena, its
+    /// pointer-shaped elements with it, so neither name reaches the
+    /// other's list. The local's copy-on-write flag says the frame owns it.
+    fn lower_bounded_local_assign(
+        &mut self,
+        target: &LValue,
+        elem: &CodegenTy,
+        cap: u64,
+        value: &Expr,
+        assign_id: NodeId,
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let e = |err: inkwell::builder::BuilderError| CodegenError::LlvmEmit(err.to_string());
+        let name = &target.head.name;
+        let Some((slot, slot_ty)) = scope.locals.get(name).cloned() else {
+            return Err(CodegenError::UnsupportedAt(format!("assignment to unknown local `{name}`"), target.span));
+        };
+        let (mut v, ty) = self.lower_bounded_operand(value, elem, cap, scope)?;
+        if !matches!(&ty, CodegenTy::Bounded(se, sn) if se.as_ref() == elem && *sn == cap) {
+            return Err(CodegenError::Unsupported(format!(
+                "a `bounded` local assigned whole from a {ty:?}, not the local's own type"
+            )));
+        }
+        if !Self::expr_is_fresh_value(value) {
+            let dest = self.current_arena_ptr()?;
+            v = self.emit_owned_deep_copy(v, &ty, dest)?;
+        }
+        self.builder.build_store(slot, v).map_err(e)?;
+        if let Some(fields) = self.owned_views.cow_bind(assign_id, name) {
+            let fields = fields.to_vec();
+            self.set_cell_part_flags(slot, &fields, true)?;
+        }
+        if let Some((arena_slot, _)) = scope.locals.get(&Self::bounded_view_key(name)).cloned() {
+            let arena = self.current_arena_ptr()?;
+            self.builder.build_store(arena_slot, arena).map_err(e)?;
+        }
+        let _ = slot_ty;
+        Ok(BlockEnd::Open)
+    }
+
     /// The scope key that holds the owning arena of the bounded place a
     /// bounded local `name` views (`let mut dest = self.xs`): not an
     /// identifier, so no program name meets it, and a block's end drops
@@ -35416,19 +36598,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<(PointerValue<'ctx>, Option<Option<LvalueOwner<'ctx>>>), CodegenError> {
         let target = Self::expr_place_lvalue(recv);
+        self.bounded_receiver_cow(recv, scope)?;
         // A place with an index evaluates it once, through the walk, which
         // also addresses the storage.
         if let Some(t) = target.as_ref().filter(|t| t.tail.iter().any(|s| matches!(s, LValueSeg::Index(_)))) {
             let (slot, ty, _, owner) = self.resolve_lvalue_chain(t, scope)?;
             if !matches!(ty, CodegenTy::Bounded(_, _)) {
-                return Err(CodegenError::Unsupported(format!("a bounded place lowered to {ty:?}")));
+                return Err(CodegenError::Unsupported(format!("a bounded place lowered to {ty}")));
             }
             return Ok((slot, Some(owner)));
         }
         let (v, ty) = self.lower_expr(recv, scope)?;
         if !matches!(ty, CodegenTy::Bounded(_, _)) {
             return Err(CodegenError::Unsupported(format!(
-                "bounded intrinsic receiver lowered to {ty:?}, expected bounded[T; N]"
+                "bounded intrinsic receiver lowered to {ty}, expected bounded[T; N]"
             )));
         }
         // A place of fields alone has no side effect to repeat: its owner
@@ -35647,7 +36830,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
-                        "lvalue: head `{}` has non-addressable type {:?}",
+                        "lvalue: head `{}` has non-addressable type {}",
                         target.head.name, other
                     )));
                 }
@@ -35715,7 +36898,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     other => {
                         return Err(CodegenError::Unsupported(format!(
-                            "lvalue: cannot step into the tuple part `{}` of type {:?}",
+                            "lvalue: cannot step into the tuple part `{}` of type {}",
                             name, other
                         )));
                     }
@@ -35847,7 +37030,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         other => {
                             return Err(CodegenError::Unsupported(format!(
                                 "lvalue: cannot step into non-struct field `{}` \
-                                 of type {:?}",
+                                 of type {}",
                                 name, other
                             )));
                         }
@@ -35877,7 +37060,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let (idx_val, idx_ty) = self.lower_expr(idx_expr, scope)?;
                     if idx_ty != CodegenTy::Int {
                         return Err(CodegenError::Unsupported(format!(
-                            "array index must be Int, got {:?}",
+                            "array index must be Int, got {}",
                             idx_ty
                         )));
                     }
@@ -35966,7 +37149,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         other => {
                             return Err(CodegenError::Unsupported(format!(
                                 "lvalue: cannot step into non-struct array \
-                                 element of type {:?}",
+                                 element of type {}",
                                 other
                             )));
                         }
@@ -36319,7 +37502,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if rhs_ty != slot_ty {
                 return Err(CodegenError::Unsupported(format!(
                     "type mismatch in assignment to `{}`: \
-                     slot {:?} vs rhs {:?}",
+                     slot {} vs rhs {}",
                     slot_name, slot_ty, rhs_ty
                 )));
             }
@@ -36333,8 +37516,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 AssignOp::PercentEq => BinOp::Mod,
                 other => {
                     return Err(CodegenError::Unsupported(format!(
-                        "compound assignment {:?}",
-                        other
+                        "compound assignment {}",
+                        assign_op_text(*other)
                     )));
                 }
             };
@@ -36965,7 +38148,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(ix) => {
                     let (v, vty) = self.lower_expr(ix, scope)?;
                     if vty != CodegenTy::Int {
-                        return Err(CodegenError::Unsupported(format!("array index must be Int, got {vty:?}")));
+                        return Err(CodegenError::Unsupported(format!("array index must be Int, got {vty}")));
                     }
                     (v.into_int_value(), None)
                 }
@@ -37865,7 +39048,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if rhs_ty != slot_ty {
                 return Err(CodegenError::Unsupported(format!(
                     "type mismatch in assignment to `{}`: \
-                     slot {:?} vs rhs {:?}",
+                     slot {} vs rhs {}",
                     slot_name, slot_ty, rhs_ty
                 )));
             }
@@ -37879,8 +39062,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 AssignOp::PercentEq => BinOp::Mod,
                 other => {
                     return Err(CodegenError::Unsupported(format!(
-                        "compound assignment {:?}",
-                        other
+                        "compound assignment {}",
+                        assign_op_text(*other)
                     )));
                 }
             };
@@ -37997,7 +39180,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "compound_storage_size: non-compound type {:?}",
+                    "compound_storage_size: non-compound type {}",
                     other
                 )));
             }
@@ -38111,24 +39294,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let i64_t = self.context.i64_type();
         let (h, h_ty) = self.lower_expr(&args[0], scope)?;
         if h_ty != CodegenTy::Int {
-            return Err(CodegenError::Unsupported(format!("{cname}: handle must be Int, got {h_ty:?}")));
+            return Err(CodegenError::Unsupported(format!("{cname}: handle must be Int, got {h_ty}")));
         }
         let h = self.builder.build_int_truncate(h.into_int_value(), i32_t, "until.h").map_err(e)?;
         let (x, x_ty) = self.lower_expr(&args[1], scope)?;
         let x: inkwell::values::BasicMetadataValueEnum<'ctx> = if reads {
             if x_ty != CodegenTy::Int {
-                return Err(CodegenError::Unsupported(format!("{cname}: max must be Int, got {x_ty:?}")));
+                return Err(CodegenError::Unsupported(format!("{cname}: max must be Int, got {x_ty}")));
             }
             self.builder.build_int_truncate(x.into_int_value(), i32_t, "until.max").map_err(e)?.into()
         } else {
             if !matches!(x_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
-                return Err(CodegenError::Unsupported(format!("{cname}: bytes must be Bytes, got {x_ty:?}")));
+                return Err(CodegenError::Unsupported(format!("{cname}: bytes must be Bytes, got {x_ty}")));
             }
             self.unpack_view_if_needed(x, &x_ty)?.into()
         };
         let (until, u_ty) = self.lower_expr(&args[2], scope)?;
         if u_ty != CodegenTy::Int {
-            return Err(CodegenError::Unsupported(format!("{cname}: until must be Int, got {u_ty:?}")));
+            return Err(CodegenError::Unsupported(format!("{cname}: until must be Int, got {u_ty}")));
         }
         if reads {
             // the read's buffer lives in the caller's arena
@@ -39054,6 +40237,19 @@ fn expr_kind_label(e: &Expr) -> &'static str {
     }
 }
 
+/// A Decimal literal's mantissa at `scale`, when `e` is one: `None` for
+/// any other expression, an error when the literal has more places than
+/// the scale holds.
+fn decimal_literal_at_scale(e: &Expr, scale: u8) -> Option<Result<i128, CodegenError>> {
+    let Expr::Literal(Literal::Decimal(text), span) = e else { return None };
+    Some(hale_syntax::decimal_literal::parse_at_scale(text, scale).map_err(|_| {
+        CodegenError::UnsupportedAt(
+            format!("Decimal literal `{text}` does not fit `{}`", hale_types::ty::decimal_name(scale)),
+            *span,
+        )
+    }))
+}
+
 /// Build an i128 LLVM constant from a Rust i128. inkwell's
 /// `const_int_arbitrary_precision` takes a slice of i64 limbs;
 /// pack the i128 as low/high halves so the constant matches the
@@ -39246,8 +40442,9 @@ mod tests {
     /// `runtime_object_key`, read from the cached object's name over a
     /// one-line translation unit (the runtime's own C would take seconds
     /// to compile): the source, a flag, and another compiler's version
-    /// move it; the host `clang`'s version, the stem and the cache's
-    /// place keep it.
+    /// move it; the host `clang`'s version moves it for a sanitizer object
+    /// (GH #1952) and keeps it otherwise, as the stem and the cache's
+    /// place do.
     #[test]
     fn runtime_object_key_moves_with_source_flags_and_compiler_and_keeps_the_host_clang() {
         let dir = std::env::temp_dir().join(format!("hale-codegen-rt-key-{}", std::process::id()));
@@ -39268,6 +40465,15 @@ mod tests {
         let other = ["clang", "-w"];
         assert_ne!(key(&a, &other, "1", "int x;\n", "t", &["-O1"]), key(&a, &other, "2", "int x;\n", "t", &["-O1"]), "another compiler's version");
         assert_eq!(base, key(&a, &["clang"], "clang version 99", "int x;\n", "t", &["-O1"]), "the host clang's version");
+        // GH #1952: a sanitizer object calls its runtime's version check
+        // by name, so the host clang's release moves its key.
+        let asan = ["-O1", "-fsanitize=address"];
+        assert_ne!(
+            key(&a, &["clang"], "clang version 17", "int x;\n", "t", &asan),
+            key(&a, &["clang"], "clang version 21", "int x;\n", "t", &asan),
+            "the host clang's version, under a sanitizer"
+        );
+        assert!(!host_clang_identity().is_empty(), "the host clang answers --version");
         assert_eq!(base, key(&a, &["clang"], "", "int x;\n", "u", &["-O1"]), "the stem");
         assert_eq!(base, key(&options("b"), &["clang"], "", "int x;\n", "t", &["-O1"]), "the cache's place");
         let _ = std::fs::remove_dir_all(&dir);
@@ -39435,7 +40641,7 @@ fn match_assigns(m: &MatchStmt, name: &str) -> bool {
         })
 }
 
-fn expr_assigns(e: &Expr, name: &str) -> bool {
+pub(crate) fn expr_assigns(e: &Expr, name: &str) -> bool {
     match e {
         Expr::Block(b) => block_assigns(b, name),
         Expr::If(i) => if_assigns(i, name),

@@ -55,7 +55,7 @@ locus KnowledgeHost {
         let b = std::json::Builder { }; b.begin_object(); b.begin_array_field("items");
         if request.kind == "nodes" {
             b.begin_object(); b.string_field("id", NODE); b.string_field("kind", "principle");
-            b.field("text", "\"Native \\u0061 \\u00e9 \\ud83e\\udded\"");
+            b.raw_field("text", "\"Native \\u0061 \\u00e9 \\ud83e\\udded\"");
             b.string_field("author", "alice");
             b.string_field("projection_state", "ratified");
             b.string_field("revision", "-9223372036854775808");
@@ -63,7 +63,7 @@ locus KnowledgeHost {
             b.string_field("name", "");
             b.string_field("supersedes", "");
             b.string_field("ratified_seq", "9223372036854775807");
-            b.field("source_provenance", "null");
+            b.raw_field("source_provenance", "null");
             b.end_object();
         } else if request.kind == "edges" {
             b.begin_object();
@@ -96,11 +96,11 @@ locus KnowledgeHost {
         b.int_field("limit", request.query.limit);
         b.int_field("returned", 1);
         b.bool_field("has_more", false);
-        b.field("next_cursor", "null");
+        b.raw_field("next_cursor", "null");
         b.string_field("snapshot", wire.basis_snapshot(basis.result()));
         b.end_object();
-        b.field("basis", basis.result());
-        b.field(
+        b.raw_field("basis", basis.result());
+        b.raw_field(
             "coverage",
             "{\"bindings\":\"complete\",\"runs\":\"unavailable\",\"definitions\":\"unavailable\",\"practices\":\"unavailable\"}",
         );
@@ -117,10 +117,10 @@ locus KnowledgeCases {
         let mut it = std::json::object_first(object);
         while !it.done {
             let name = std::json::obj_key_string(it, object);
-            if name != key { b.field(name, std::json::obj_value_raw(it, object)); }
+            if name != key { b.raw_field(name, std::json::obj_value_raw(it, object)); }
             it = std::json::object_next(it, object);
         }
-        b.field(key, value); b.end_object(); return b.result();
+        b.raw_field(key, value); b.end_object(); return b.result();
     }
     fn get(service: api::Api, suffix: String, status: Int) -> String {
         let response = service.handle(

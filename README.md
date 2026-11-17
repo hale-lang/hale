@@ -521,16 +521,23 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 
 ## Where the language stands
 
-Hale is at **v0.32.13** (2026-11-12) and pre-1.0, and it uses that
-freedom: there are no compatibility windows before 1.0. A rule that
-turns out to be wrong changes in the release that finds it, the change
-is listed under *Breaking changes* on that release's page with its
-migration, and nothing keeps the old form alive beside the new one.
-v0.22.0, for one, carried nine such changes: a bare call to a fallible stdlib
-function is now an error rather than a warning, a revealed secret is
-consumed in the statement that reveals it, a second `on_failure` for
-one child type is refused. Expect more of the same until 1.0; the page
-for each release says exactly what moved.
+Hale is at **v0.33.0** (2026-11-16) and pre-1.0. What a release may
+change is written down in [`STABILITY.md`](./STABILITY.md): a patch
+release fixes bugs and changes nothing a correct program means; a
+minor release may break programs, and every release's CHANGELOG opens
+with a *Breaking* heading listing each break with its migration (or
+`None.`). In the **stable** tier (the core language and the everyday
+stdlib, per [`spec/stability.toml`](./spec/stability.toml)) a removed
+form warns for a minor release before it is refused. The
+**experimental** tier (the unit dialect, the api binding, `U256`,
+observability, DNA's surfaces among others) may change in any minor
+release. The keyword list is frozen behind a golden, and changing it
+takes an RFC. Breaks have been frequent: v0.22.0, for one, carried
+nine (a bare call to a fallible stdlib function became an error, a
+revealed secret is consumed in the statement that reveals it, a second
+`on_failure` for one child type is refused). 1.0 waits on the exit
+gates in `STABILITY.md`, among them three consecutive minor releases
+with no breaking change.
 
 The **proven core**, all of it self-hosted by the native compiler: the
 typed topic bus; `placement`, `bindings` and NUMA-aware `topology`

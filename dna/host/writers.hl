@@ -2255,7 +2255,7 @@ fn fleet_deploy(
     b.string_field("plan", fleet);
     b.string_field("revision", rev);
     b.string_field("seed", seed);
-    b.field("touched", touched_json(touched));
+    b.raw_field("touched", touched_json(touched));
     b.string_field("reason", reason);
     b.end_object();
     if !append_as(root, "fleet.deploy", entity, b.result(), "", memory) {
@@ -2381,35 +2381,59 @@ type ForgeIndex {
 // a Review still pending opens again at the new one (nothing migrates).
 fn forge_index(p: Projection, kind: String) -> ForgeIndex {
     let mut x = ForgeIndex { };
+    // Each list grows in a local of its own, read only by
+    // `std::str::contains`, so an append extends it in place (GH #1947),
+    // and is stored once the record is read.
+    let mut met = x.met;
+    let mut settled = x.settled;
+    let mut prs = x.prs;
+    let mut routes = x.routes;
+    let mut landed = x.landed;
+    let mut commented = x.commented;
     let mut i = p.rows() - 1;
     while i >= 0 {
         let e = p.row(i);
         i = i - 1;
         if e.kind == "review.requested" {
             let id = p.review_id_of(e);
-            if !listed(x.met, id) { x.met = x.met + id + "\n"; }
+            if !std::str::contains(met, "\n" + id + "\n") { met = met + id + "\n"; }
             if len(std::json::find_string_field(e.body, "mutation_id")) > 0 {
                 x.mutations = insert_sorted(x.mutations, id);
             }
         } else if e.kind == "review.settled" {
             let id = p.review_id_of(e);
-            if !listed(x.met, id) { x.met = x.met + id + "\n"; x.settled = x.settled + id + "\n"; }
+            if !std::str::contains(met, "\n" + id + "\n") {
+                met = met + id + "\n";
+                settled = settled + id + "\n";
+            }
         } else if e.kind == "github.pr" {
             let at = std::json::find_string_field(e.body, "forge");
-            if (at == kind || (len(at) == 0 && kind == "github")) && !indexed(x.prs, e.entity) {
-                x.prs = x.prs + e.entity + "\t" + std::str::replace(e.body, "\n", " ") + "\n";
+            if (at == kind || (len(at) == 0 && kind == "github"))
+                && !std::str::contains(prs, "\n" + e.entity + "\t")
+            {
+                prs = prs + e.entity + "\t" + std::str::replace(e.body, "\n", " ") + "\n";
             }
         } else if e.kind == "review.routed" {
-            if !indexed(x.routes, e.entity) {
-                x.routes = x.routes + e.entity + "\t"
+            if !std::str::contains(routes, "\n" + e.entity + "\t") {
+                routes = routes + e.entity + "\t"
                     + std::str::replace(dna::native_json_string(e.body, "gates"), "\n", " ") + "\n";
             }
         } else if e.kind == "mutation.applied" || e.kind == "mutation.failed" {
-            if !listed(x.landed, e.entity) { x.landed = x.landed + e.entity + "\n"; }
+            if !std::str::contains(landed, "\n" + e.entity + "\n") {
+                landed = landed + e.entity + "\n";
+            }
         } else if e.kind == "github.commented" {
-            if !listed(x.commented, e.entity) { x.commented = x.commented + e.entity + "\n"; }
+            if !std::str::contains(commented, "\n" + e.entity + "\n") {
+                commented = commented + e.entity + "\n";
+            }
         }
     }
+    x.met = met;
+    x.settled = settled;
+    x.prs = prs;
+    x.routes = routes;
+    x.landed = landed;
+    x.commented = commented;
     return x;
 }
 

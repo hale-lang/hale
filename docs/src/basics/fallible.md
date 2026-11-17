@@ -78,8 +78,78 @@ fn main() {
 - **Statement-position `or` blocks:** When a fallible call stands as a complete statement (`parse_count(s) or { log(err.kind); };`), its success value is discarded, so the `or` block does not need to produce a value of the success type.
 - **No binding `()` calls:** A fallible function whose success type is `()` cannot be bound to a `let` variable (`let ok = std::io::fs::write_file(p, s) or { };` is rejected); call it as a statement instead.
 - **No `or discard` in value bindings:** Writing `let n = parse_count(s) or discard;` is a compile error because `n` would have no value on failure; use `or <fallback>`, `or raise`, or call `parse_count(s) or discard;` as a statement.
+- **`or raise` hands on the enclosing function's error type:** `or raise` hands the call's error on as the enclosing function's own, so the call's error must be that type or one it converts from (next section). Raising a `ParseError` out of a `fallible(AppErr)` function with nothing to convert it is a compile error at the `or raise` that names both types and the three ways forward. A stdlib error type may be spelled by its path (`fallible(std::str::ParseError)`, `fallible(std::crypto::CryptoError)`) or its bare name; both are the same type.
+
+## Converting Errors for `or raise`
+
+A function that calls into several layers usually fails with an error of its own, not theirs. `or raise` converts the call's error into the enclosing function's in two ways, tried in this order:
+
+1. **A set of errors.** When the function's error type is a [set type](../everyday/records.md) holding the call's error, the error becomes the set's member. The same is true of `fail e;`, `or fail err` and a fallible handler's failure. The caller tells the members apart with `match`:
+
+```hale
+type ParseFailure { at: Int; }
+type FetchFailure { url: String; }
+type LoadError = ParseFailure | FetchFailure;
+
+fn fetch(url: String) -> String fallible(FetchFailure) {
+    if url == "" { fail FetchFailure { url: "<none>" }; }
+    return url;
+}
+
+fn parse(s: String) -> Int fallible(ParseFailure) {
+    if s == "bad" { fail ParseFailure { at: 3 }; }
+    return len(s);
+}
+
+fn load(url: String) -> Int fallible(LoadError) {
+    let body = fetch(url) or raise;
+    return parse(body) or raise;
+}
+
+fn main() {
+    let n = load("") or match err {
+        ParseFailure(p) -> p.at,
+        FetchFailure(f) -> -1,
+    };
+    println(n);
+}
+```
+
+2. **A conversion function.** `@raise fn conv(e: P) -> E { … }` declares how an error of type `P` becomes an `E`. An `or raise` of a `P` inside a `fallible(E)` function then fails with `conv(err)`, so the fields of the original error reach the caller's handler:
+
+```hale
+type StoreError { key: String; }
+type ApiError { status: Int; detail: String; }
+
+@raise fn api_from_store(e: StoreError) -> ApiError {
+    return ApiError { status: 404, detail: "no key " + e.key };
+}
+
+fn lookup(key: String) -> Int fallible(StoreError) {
+    if key == "missing" { fail StoreError { key: key }; }
+    return len(key);
+}
+
+fn get(key: String) -> Int fallible(ApiError) {
+    return lookup(key) or raise;
+}
+
+fn main() {
+    let n = get("missing") or {
+        eprintln(err.status, " ", err.detail);
+        0
+    };
+    println(n);
+}
+```
+
+A `@raise` function takes exactly one parameter, is not generic and not `fallible`, and returns a type other than its parameter's. It runs on the error path, so it may allocate the error it builds but may not make a syscall, publish, spawn or block (each is refused as an effect assertion is). Whatever it does still counts against the function that raises: its allocations against that function's `@budget(alloc_per_call = N)`, and an effect it reaches (`time`, an `effect` class of your own) against that function's `@effects`, exactly as if the `or raise` were the call `conv(err)` it stands for. It is declared in the seed that declares one of its two types, its parameter's or its result's. A builtin error type such as `IoError` belongs to no seed, so a conversion from `IoError` lives beside the type it converts into. At most one conversion may apply to an `or raise`: two from the same `P` to the same `E` are an error at the `or raise`, naming both. Conversions never chain (a `P` converted into a `Q` does not then become an `E`), and a set member is preferred over a conversion.
+
+When neither applies, translate the error where it is raised with `or fail E { … }` (the call's error is in scope as `err`).
 
 ## Chaining and Fallible Recovery Handlers
+
+An `or` goes on the fallible call itself (a fn's, a generic fn's, a method's or a stdlib path's). Written after something that only holds a call's result — `R { v: parse(s) }.v or 0`, an element, a name — it has no failure to address, and `hale check` refuses it there; put it where the call is written: `R { v: parse(s) or 0 }.v`.
 
 `or` clauses associate right-to-left, allowing you to chain fallback attempts before a final default or `raise`:
 

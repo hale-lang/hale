@@ -37,9 +37,9 @@ locus KnowledgeEdgeCodec {
     }
     fn identity(from_id: String, to_id: String, rel: String) -> String {
         let b = std::json::Builder { }; b.begin_array();
-        b.value(record_json_quote(from_id));
-        b.value(record_json_quote(to_id));
-        b.value(record_json_quote(rel));
+        b.raw_value(record_json_quote(from_id));
+        b.raw_value(record_json_quote(to_id));
+        b.raw_value(record_json_quote(rel));
         b.end_array();
         return digest_of(b.result());
     }

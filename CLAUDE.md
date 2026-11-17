@@ -210,12 +210,20 @@ LOTUS_ASAN=1 cargo test --release -p hale-codegen \
     --test corpus_oracle -- --ignored --test-threads=1
 ```
 
+The ASan oracles run on a Mac too, with the Command Line Tools'
+`clang`. Apple ships no LeakSanitizer for arm64 macOS, so there they
+run under `harness::ASAN_LEAKS` = `detect_leaks=0` and catch
+use-after-frees and overflows; leaks are Linux's (CI). A cached
+sanitizer runtime object is keyed by the host `clang`'s release, so a
+developer-tools update recompiles it instead of failing the link on
+`___asan_version_mismatch_check_apple_clang_<N>` (GH #1952).
+
 Locus ownership has a generated matrix rather than hand-written
 cases: `crates/hale-codegen/tests/ownership_matrix.rs` builds every
-position × type × context (1470 cells) and runs four oracles on each
+position × type × context (1792 cells) and runs four oracles on each
 — `dissolve()` tag counts, `LOTUS_ARENA_RESIDENCY=1`, an ASan run,
 and the inline-vs-`let` differential. The default is a ~90-cell
-sample (~16 s); `HALE_MATRIX=full` runs all 1470 (~160 s) and belongs
+sample (~16 s); `HALE_MATRIX=full` runs all 1792 (~190 s) and belongs
 in a nightly job:
 
 ```sh
@@ -285,9 +293,24 @@ alone). Open the PR, then add the file under its number in a
 second push. Two PRs that land the same day then touch two files
 instead of one hunk, so neither rebases over the other's entry.
 
+**Every fragment declares its breaking changes** (STABILITY.md):
+either a line reading exactly `Breaking: none`, or a `### Breaking`
+heading with one bullet per break, each naming what stops building
+or behaves differently and how to migrate. Never both, never
+neither. A break is anything that can make a program that built
+under the previous release stop building or behave differently, a
+newly refused form included, even one that never did anything useful.
+In the stable tier (`spec/stability.toml`) a removal warns with a
+`deprecated:` warning for a minor release before it is refused, and
+a patch release carries no semantic change at all. The `changelog
+fragments` CI job runs `scripts/changelog-check.sh`, and the fold
+refuses a fragment that declares neither.
+
 At release, `scripts/changelog-fold.sh vX.Y.Z "headline"` folds
 the fragments in PR order under the next version's heading and
-`git rm`s them; the release page is written above that
+`git rm`s them, gathering every fragment's Breaking bullets under
+one `### Breaking` heading at the top of the version (`None.` when
+there are none); the release page is written above that
 item-level list by hand. `hale fmt` walks only `.hl` files and the
 CI `scope` job classifies the directory as prose, so a fragment
 alone is a docs-only diff.

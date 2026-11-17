@@ -93,6 +93,12 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     // rather than left to chance.
     ("--warn-unbounded-alloc", false),
     ("--warn-resource-leak", false),
+    // GH #1948: the hot-path allocation advisory, off by default
+    // (`hale verify` reports it).
+    ("--warn-hot-path", false),
+    // GH #1995 S5: the string-match advisory, off by default (for
+    // `hale verify` too).
+    ("--warn-string-match", false),
     // GH #436
     ("--strict-secret", false),
     // GH #738

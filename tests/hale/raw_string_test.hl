@@ -1,0 +1,15 @@
+// tests/hale/raw_string_test.hl — the raw string (spec/tokens.md § Raw
+// strings, GH #1948): `r"…"` reads no escape and no interpolation, and
+// `r#"…"#` carries a `"`, closing only at a `"` followed by its `#`s.
+
+const PATTERN: String = r"^\d+\.\d+$";
+
+fn main() {
+    std::test::assert_eq_str(r"a\b", "a\\b", "a backslash is a backslash");
+    std::test::assert_eq_str(PATTERN, "^\\d+\\.\\d+$", "a raw string is a const like any string");
+    std::test::assert_eq_str(r"{x}\n", "{x}\\n", "braces are text, `\\n` is two characters");
+    std::test::assert_eq_str(r#"say "hi""#, "say \"hi\"", "`r#` carries a quote");
+    std::test::assert_eq_str(r##"a "# b"##, "a \"# b", "`r##` carries `\"#`");
+    std::test::assert_eq_str(r"", "", "the empty raw string");
+    std::test::assert(len(r"C:\temp\new") == 11, "nothing is escaped, nothing is dropped");
+}

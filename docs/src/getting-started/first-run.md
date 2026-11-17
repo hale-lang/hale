@@ -76,7 +76,7 @@ Passing a directory (`hale run .`, `hale check .`, `hale build .`) compiles all 
 
 ### Fast Iteration (`--dev`)
 
-By default, `hale build` and `hale run` compile with `-O3` tuned for the host CPU (`--target-cpu portable` builds a binary that runs on other machines of the same architecture too). During rapid edit-compile-run loops, enable the lighter optimization pipeline:
+By default, `hale build` and `hale run` compile with `-O3` tuned for the host CPU (`--target-cpu portable` builds a binary that runs on other machines of the same architecture too: use it for anything you ship, such as a container image; `hale build` warns when it sees a container build or CI without it). During rapid edit-compile-run loops, enable the lighter optimization pipeline:
 
 ```sh
 hale build --dev app.hl
@@ -99,7 +99,12 @@ Compiled binaries include full DWARF debug info by default at zero runtime cost:
 - Set breakpoints by `.hl` file and line (`break app.hl:42`).
 - Inspect backtraces with original Hale source locations.
 - Print local variables and typed `String` values with `info locals` / `print x`.
-- AddressSanitizer (`LOTUS_ASAN=1`) reports exact `.hl` source lines.
+- AddressSanitizer (`LOTUS_ASAN=1`) reports exact `.hl` source lines, on
+  Linux and on macOS with the Command Line Tools' `clang`. Its runtime
+  objects are cached per `clang` release, so updating the developer
+  tools rebuilds them rather than failing the link. Leak reports are
+  Linux-only: Apple ships no LeakSanitizer for arm64 macOS, so leave
+  `ASAN_OPTIONS=detect_leaks=1` unset there.
 
 ---
 

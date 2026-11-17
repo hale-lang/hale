@@ -721,6 +721,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_str_concat", str_concat_ty, None);
+        // GH #1947 (`crate::string_append`): a `+` chain in one
+        // allocation, and the appending assignment to a local (its
+        // accumulator) and to a String field of `self`.
+        // declare ptr @lotus_str_concat_n(ptr arena, ptr parts, i64 n)
+        // declare ptr @lotus_str_append(ptr arena, ptr acc, ptr cur, ptr parts, i64 n)
+        // declare ptr @lotus_str_field_append(ptr arena, ptr cur, i64 cur_len, ptr now, ptr parts, i64 n)
+        self.module.add_function(
+            "lotus_str_concat_n",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_str_append",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into()], false),
+            None,
+        );
+        // declare i64 @lotus_str_field_len(ptr arena, ptr s)
+        self.module.add_function(
+            "lotus_str_field_len",
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_str_field_append",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into()], false),
+            None,
+        );
         // m49: deep-copy String into the destination arena. Used at
         // free-fn return boundaries — the body's per-call subregion
         // is about to be destroyed, so any String the body returns
@@ -947,6 +974,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_str_slice", str_slice_ty, None);
+        // GH #1947: the slice of a String whose length codegen knows.
+        // declare ptr @lotus_str_slice_n(ptr arena, ptr s, i64 n, i64 lo, i64 hi)
+        let str_slice_n_ty = ptr_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), i64_t.into(), i64_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_str_slice_n", str_slice_n_ty, None);
 
         // m37: to_string runtime helpers. Each renders one
         // primitive into a fresh arena-owned NUL-terminated
@@ -1102,6 +1137,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let cp_at_ty = i64_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
         for name in ["lotus_str_cp_at", "lotus_str_cp_size"] {
             let f = self.module.add_function(name, cp_at_ty, None);
+            self.mark_pure_read(f);
+        }
+        // GH #1947: the same over a String whose length codegen knows.
+        let cp_at_n_ty = i64_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
+        for name in ["lotus_str_cp_at_n", "lotus_str_cp_size_n"] {
+            let f = self.module.add_function(name, cp_at_n_ty, None);
             self.mark_pure_read(f);
         }
         let cp_count_ty = i64_t.fn_type(&[ptr_t.into()], false);
@@ -3209,16 +3250,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function("getpid", getpid_ty, None);
         // declare i32 @getuid(void)  — POSIX, backs std::process::uid()
         self.module.add_function("getuid", i32_t.fn_type(&[], false), None);
-        // declare i64 @lotus_process_rss_bytes(void)
-        // 2026-05-21: peak resident-set size in bytes via
-        // getrusage(RUSAGE_SELF). Observability primitive — lets
-        // Hale code measure its own memory pressure without
-        // needing the read_file-of-/proc/self/statm path
-        // (synthesized files report st_size=0 so read_file's
-        // fstat-based sizing returns empty; separate fix).
+        // declare i64 @lotus_process_rss_bytes(void) — current
+        // resident-set size in bytes (GH #1906)
         let rss_bytes_ty = i64_t.fn_type(&[], false);
         self.module
             .add_function("lotus_process_rss_bytes", rss_bytes_ty, None);
+        // declare i64 @lotus_process_peak_rss_bytes(void) — peak
+        // resident-set size in bytes, getrusage's ru_maxrss
+        self.module
+            .add_function("lotus_process_peak_rss_bytes", rss_bytes_ty, None);
         // pond P4 stage 1: terminal/raw-IO primitives.
         // declare i64 @lotus_term_is_tty(i64 fd)  — isatty(fd) -> 0/1
         let term_is_tty_ty = i64_t.fn_type(&[i64_t.into()], false);

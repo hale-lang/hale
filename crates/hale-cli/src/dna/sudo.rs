@@ -246,6 +246,27 @@ mod tests {
         assert!(std::process::Command::new("sh").args(["-n", "-c", CHECK]).status().unwrap().success());
     }
 
+    /// The probe itself, run by `sh` against a stand-in sudo: one that
+    /// lets `-n` through is free, one that refuses it needs a password,
+    /// and a login with no sudo on its PATH says so.
+    #[test]
+    fn the_probe_tells_the_three_logins_apart() {
+        let run = |prelude: &str, path: Option<&str>| {
+            // `/bin/sh` by its path: the child's PATH is the one looked in
+            let mut c = std::process::Command::new("/bin/sh");
+            c.args(["-c", &format!("{prelude}{PROBE}")]);
+            if let Some(p) = path {
+                c.env("PATH", p);
+            }
+            let out = c.output().unwrap();
+            assert!(out.status.success());
+            needs(&String::from_utf8_lossy(&out.stdout))
+        };
+        assert_eq!(run("sudo() { [ \"$1\" = -n ] || exit 2; return 0; }; ", None), Needs::Nothing);
+        assert_eq!(run("sudo() { echo 'sudo: a password is required' >&2; return 1; }; ", None), Needs::Password);
+        assert_eq!(run("", Some("/nonexistent-hale-probe-path")), Needs::NoSudo);
+    }
+
     /// No password needed: as ever, terminal or not. A password needed:
     /// asked for at a terminal, refused off one at once, naming the host,
     /// what mends it, and that nothing ran.
@@ -257,8 +278,10 @@ mod tests {
         assert_eq!(decide(Needs::Password, true, "op@node-a", "node-a"), Decision::Ask);
         let Decision::Refuse(why) = decide(Needs::Password, false, "op@node-a", "node-a") else { panic!("refused off a terminal") };
         assert!(why.contains("sudo on node-a needs op@node-a's password") && why.contains("no terminal") && why.contains("NOPASSWD") && why.contains("at a terminal") && why.contains("nothing was run there"), "{why}");
-        let Decision::Refuse(why) = decide(Needs::NoSudo, true, "op@node-a", "node-a") else { panic!("no sudo is refused") };
-        assert!(why.contains("no sudo on node-a"), "{why}");
+        for tty in [true, false] {
+            let Decision::Refuse(why) = decide(Needs::NoSudo, tty, "op@node-a", "node-a") else { panic!("no sudo is refused") };
+            assert!(why.contains("no sudo on node-a") && why.contains("nothing was run there"), "{why}");
+        }
     }
 
     /// A wrong password is asked again; any other refusal is not.

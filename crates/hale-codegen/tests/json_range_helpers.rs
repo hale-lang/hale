@@ -208,7 +208,8 @@ fn high_volume_walk_cost_per_element_is_document_size_independent() {
     // `std::process::rss_bytes() / 1048576 < 100` after a 50k-element
     // walk — could not work, for two independent reasons:
     //
-    //   1. `rss_bytes()` is `getrusage(RUSAGE_SELF).ru_maxrss`, which
+    //   1. `rss_bytes()` was `getrusage(RUSAGE_SELF).ru_maxrss` (until
+    //      GH #1906; that peak is `peak_rss_bytes()` now), which
     //      a spawned program inherits from its parent through
     //      fork+exec (see `harness::statm_resident_bytes`). Under
     //      `cargo test` the parent is a libtest process running

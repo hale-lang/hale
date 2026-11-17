@@ -240,10 +240,12 @@ fn these_gaps_are_invisible_to_check() {
 
 // ---- sharp edges that pass `hale check` and fail at build ----------
 
-/// §7 sharp edges: "No char-level `s[i]` — and the checker doesn't
-/// say so". The slice the entry recommends must build.
+/// §7 sharp edges: "No char-level `s[i]`, and no `for c in s`". Until
+/// GH #1995 the check passed `s[i]` and the build refused it; the check
+/// refuses both now, with the way forward. The slice the entry
+/// recommends must build.
 #[test]
-fn claim_char_index_passes_check_and_fails_build() {
+fn claim_char_index_is_refused_by_check() {
     let (_, slice_failed, slice_out) = check_then_build(
         "fn main() { let s = \"hale\"; let i = 1; println(s[i..i + 1]); }",
         "char-slice",
@@ -255,24 +257,19 @@ fn claim_char_index_passes_check_and_fails_build() {
         slice_out
     );
 
-    let (checked, failed, out) = check_then_build(
-        "fn main() { let s = \"hale\"; println(s[1]); }",
-        "char-index",
-    );
-    assert!(
-        failed && out.contains("indexing a non-array value"),
-        "spec/styleguide.md §7 says `s[i]` on a String fails at build. \
-         It builds now — update the \"No char-level `s[i]`\" entry \
-         (and consider whether a `Char` type shipped with it):\n{}",
-        out
-    );
-    assert!(
-        checked,
-        "spec/styleguide.md §7 says `hale check` accepts `s[i]`. It \
-         refuses it now — reword the entry: the edge is no longer \
-         invisible to the checker:\n{}",
-        out
-    );
+    for (src, tag, said) in [
+        ("fn main() { let s = \"hale\"; println(s[1]); }", "char-index", "has no element to index"),
+        ("fn main() { let s = \"hale\"; for c in s { println(c); } }", "char-loop", "a string is not a sequence"),
+    ] {
+        let (checked, _, out) = check_then_build(src, tag);
+        assert!(
+            !checked && out.contains(said),
+            "spec/styleguide.md §7 says `hale check` refuses this on a \
+             String. It accepts it now: update the \"No char-level `s[i]`\" \
+             entry (and consider whether a `Char` type shipped with it):\n{}",
+            out
+        );
+    }
 }
 
 /// §7 sharp edges: "Write the stdlib's time types bare: `Time` and
@@ -599,11 +596,14 @@ fn peak_growth_kb(bin: &std::path::Path, mode: &str, n: usize) -> i64 {
         .unwrap_or_else(|| panic!("no grew_kb= line from {} {}:\n{}", mode, n, text))
 }
 
-/// S15 and S16: a String grown with `+` in a loop, and a text read by
-/// slicing off the rest, hold memory quadratic in the text, because
-/// every intermediate stays in the method's scratch until it returns;
-/// a `BytesBuilder`, and reading by position over a `ByteView`, hold it
-/// once. Twice the rows is four times the memory for the first two.
+/// S15 and S16: a String grown by appending to a local, a `BytesBuilder`,
+/// and reading by position over a `ByteView` hold the text once (GH
+/// #1947 made the append grow a buffer the local owns). A loop that hands
+/// the growing local to a call gives that buffer up, so each append
+/// copies the text, and a text read by slicing off the rest copies the
+/// remainder: both hold memory quadratic in the text, every copy staying
+/// in the method's scratch until it returns. Twice the rows is four
+/// times the memory for the shared append.
 #[test]
 fn claim_text_built_or_read_by_copy_is_quadratic() {
     if asan_build() {
@@ -625,6 +625,14 @@ fn by_concat(n: Int) -> Int {
     let mut i = 0;
     while i < n { out = out + row(); i = i + 1; }
     return len(out);
+}
+fn keep(s: String) -> Int { return len(s); }
+fn by_shared(n: Int) -> Int {
+    let mut out = "";
+    let mut i = 0;
+    let mut k = 0;
+    while i < n { out = out + row(); k = k + keep(out); i = i + 1; }
+    return k;
 }
 fn text(n: Int) -> String {
     let b = std::bytes::BytesBuilder { initial_cap: 4096 };
@@ -659,6 +667,7 @@ fn main() {
     let before = peak_kb();
     let mut r = 0;
     if mode == "concat" { r = by_concat(n); }
+    if mode == "shared" { r = by_shared(n); }
     if mode == "builder" { r = len(text(n)); }
     if mode == "rest" { r = by_rest(all); }
     if mode == "position" { r = by_position(all); }
@@ -677,24 +686,31 @@ fn main() {
         .output()
         .expect("run hale build");
     assert!(build.status.success(), "build failed:\n{}", output_text(&build));
-    let concat_half = peak_growth_kb(&bin, "concat", 500);
     let concat = peak_growth_kb(&bin, "concat", 1000);
+    let shared_half = peak_growth_kb(&bin, "shared", 500);
+    let shared = peak_growth_kb(&bin, "shared", 1000);
     let builder = peak_growth_kb(&bin, "builder", 1000);
     let rest = peak_growth_kb(&bin, "rest", 1000);
     let position = peak_growth_kb(&bin, "position", 1000);
     let _ = std::fs::remove_dir_all(&dir);
     eprintln!(
-        "peak growth (kB) over 500 KB of text: concat {} (half the rows: {}), builder {}, rest {}, position {}",
-        concat, concat_half, builder, rest, position
+        "peak growth (kB) over 500 KB of text: concat {}, shared {} (half the rows: {}), builder {}, rest {}, position {}",
+        concat, shared, shared_half, builder, rest, position
     );
     assert!(
-        concat > 100 * 1024 && concat > 3 * concat_half,
-        "spec/styleguide.md S15 says `out = out + row` in a loop holds \
-         memory quadratic in the text (about 250 MB for 500 KB in 1 000 \
-         rows, four times what half the rows hold). It grew {} kB, and \
-         {} kB for half: if the concat no longer copies, retire S15",
-        concat,
-        concat_half
+        concat < 16 * 1024,
+        "spec/styleguide.md S15 (and spec/stdlib.md § Building a String) \
+         say `out = out + row` on a local holds the text once; it grew {} kB",
+        concat
+    );
+    assert!(
+        shared > 100 * 1024 && shared > 3 * shared_half,
+        "spec/styleguide.md S15 says a loop that hands the local it appends \
+         to to a call copies the text on every append, memory quadratic in \
+         the text (four times what half the rows hold). It grew {} kB, and \
+         {} kB for half: if that append no longer copies, update S15",
+        shared,
+        shared_half
     );
     assert!(
         builder < 16 * 1024,

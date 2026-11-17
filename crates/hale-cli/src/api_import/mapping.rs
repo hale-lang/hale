@@ -3,8 +3,9 @@
 //! (spec/api.md § Imported surfaces).
 //!
 //! The mapping is the smallest one the api codec makes honest. A JSON
-//! Schema object with properties is a record, a string enum whose values
-//! are all names is an enum, `integer`, `number`, `boolean` and `string`
+//! Schema object with properties is a record, a string enum is an enum (its
+//! values the variants when all are names, PascalCase variants tagged with
+//! the values otherwise), `integer`, `number`, `boolean` and `string`
 //! are `Int`, `Float`, `Bool` and `String`, an array with a `maxItems` is
 //! a `bounded` list, and a property the schema does not require (or allows
 //! to be null) is a presence pair. Everything else the codec cannot carry
@@ -61,16 +62,6 @@ impl Ty {
 
     /// The literal a field of the type defaults to when it is optional, for
     /// a scalar.
-    fn zero(&self) -> Option<&'static str> {
-        match self {
-            Ty::Int => Some("0"),
-            Ty::Float => Some("0.0"),
-            Ty::Bool => Some("false"),
-            Ty::Str => Some("\"\""),
-            _ => None,
-        }
-    }
-
     fn why(&self) -> Option<&str> {
         match self {
             Ty::Value(w) => Some(w),
@@ -318,14 +309,43 @@ impl<'d> Mapper<'d> {
         };
         let names: Vec<&str> = values.iter().filter_map(Value::as_str).collect();
         let mut seen = BTreeSet::new();
-        if names.is_empty() || names.len() != values.len() || !names.iter().all(|n| is_name(n) && seen.insert(*n)) {
+        if names.is_empty() || names.len() != values.len() || !names.iter().all(|n| seen.insert(*n)) {
             return Ty::Str;
         }
+        let variants = if names.iter().all(|n| is_name(n)) {
+            // every value is a name: the variants are the values
+            names.iter().map(|s| s.to_string()).collect()
+        } else {
+            // GH #1951 item 5: a value no identifier spells (`stop-limit`,
+            // `1m`) makes every variant a PascalCase name with the value in
+            // its `json:` tag where the two differ; a value a tag cannot
+            // hold (empty, or with a quote, a backtick or a comma) keeps
+            // the field a `String`
+            if names.iter().any(|n| n.is_empty() || n.contains(['"', '`', ',', '\\'])) {
+                return Ty::Str;
+            }
+            let mut taken = BTreeSet::new();
+            names
+                .iter()
+                .map(|n| {
+                    let mut v = camel(n);
+                    if !v.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                        v.insert(0, 'V');
+                    }
+                    if !is_name(&v) {
+                        v.push('_');
+                    }
+                    let v = fresh(v, &mut taken, "_");
+                    if v == *n {
+                        v
+                    } else {
+                        format!("{v} `json:{}`", quote_tag(n))
+                    }
+                })
+                .collect()
+        };
         let name = self.type_name(hint);
-        self.decls.push(Decl::Enum {
-            name: name.clone(),
-            variants: names.iter().map(|s| s.to_string()).collect(),
-        });
+        self.decls.push(Decl::Enum { name: name.clone(), variants });
         Ty::Named(name)
     }
 
@@ -760,12 +780,11 @@ impl Surface {
                         } else {
                             String::new()
                         };
+                        // an optional property is an optional field, its
+                        // presence flag `has_<name>` synthesized beside it and
+                        // its absent value its type's zero (F.52)
                         if f.optional {
-                            o.push_str(&format!("    has_{}: Bool = false;\n", f.name));
-                            match f.ty.zero() {
-                                Some(z) => o.push_str(&format!("    {}: {} = {z}{tag};\n", f.name, f.ty.text())),
-                                None => o.push_str(&format!("    {}: {}{tag};\n", f.name, f.ty.text())),
-                            }
+                            o.push_str(&format!("    {}?: {}{tag};\n", f.name, f.ty.text()));
                         } else {
                             o.push_str(&format!("    {}: {}{tag};\n", f.name, f.ty.text()));
                         }

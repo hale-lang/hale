@@ -644,7 +644,7 @@ fn receipts_json(cfg: HeadConfig, application_id: String, n: Int, full: Bool) ->
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let r = j.find(id);
         if !r.ok { continue; }
-        if full { b.value(j.json(r)); continue; }
+        if full { b.raw_value(j.json(r)); continue; }
         b.begin_object();
         b.string_field("command_id", r.command_id);
         b.string_field("request_id", r.request_id);
@@ -684,21 +684,21 @@ fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) 
     } else {
         children_fallback(cfg, r.root, ChildView { name: "body" })
     };
-    b.field("body", std::json::find_field_raw(children, "body"));
+    b.raw_field("body", std::json::find_field_raw(children, "body"));
     b.begin_object_field("forge");
     // the forge the habitat allocated, read back; never a setting
     let forge = dna::forge_allocated(r.root);
     b.string_field("github", if forge.provider == "github" { forge.repo } else { "" });
-    b.field("board", logins_json(record.setting("github.board")));
+    b.raw_field("board", logins_json(record.setting("github.board")));
     b.end_object();
-    b.field("recent", receipts_json(cfg, r.application_id, 10, false));
+    b.raw_field("recent", receipts_json(cfg, r.application_id, 10, false));
     if detail {
-        b.field("authority", authority_json(r.root, r.application_id));
+        b.raw_field("authority", authority_json(r.root, r.application_id));
         let projected = s3_project_detail_json(ctx, r.root);
         let connections = std::json::find_field_raw(projected, "connections");
         let handoffs = std::json::find_field_raw(projected, "handoffs");
         let secrets = std::json::find_field_raw(projected, "secrets");
-        b.field(
+        b.raw_field(
             "connections",
             if std::str::starts_with(std::str::trim(connections), "[") {
                 connections
@@ -706,15 +706,15 @@ fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) 
                 "[]"
             },
         );
-        b.field(
+        b.raw_field(
             "handoffs",
             if std::str::starts_with(std::str::trim(handoffs), "[") { handoffs } else { "[]" },
         );
-        b.field(
+        b.raw_field(
             "secrets",
             if std::str::starts_with(std::str::trim(secrets), "[") { secrets } else { "[]" },
         );
-        b.field("receipts", receipts_json(cfg, r.application_id, 50, true));
+        b.raw_field("receipts", receipts_json(cfg, r.application_id, 50, true));
     }
     b.end_object();
     return b.result();
@@ -730,6 +730,12 @@ locus Head {
         // the API child pid the head last saw answer, and the one it last saw refuse a connection
         api_ready_pid: Int = -1;
         api_failed_pid: Int = -1;
+        // every organization of the habitat this head's organism lives in,
+        // as its habitat's head last listed them (organization_list.hl), and
+        // when (monotonic ns; 0 = never asked): the face's Index read
+        // carries it, asked again once `api::ORGANIZATIONS_TTL_NS` has passed
+        organizations: String = "[]";
+        organizations_at: Int = 0;
     }
 
     fn error(status: Int, code: String, message: String, retryable: Bool) -> std::http::Response {
@@ -810,6 +816,77 @@ locus Head {
         };
     }
 
+    // `GET /api/hale/v1/head/organizations`, on a habitat's head: every
+    // organization it holds, by name and state (`api::habitat_organization_list`),
+    // for the face of an organism it keeps. That face's head presents the
+    // proof of its own launch token (`api::organizations_proof`), which this
+    // head reads where the habitat keeps it, as the hand-in route does; no
+    // session and no other credential opens it, and it answers nothing but
+    // the names and states, the asking face's own organism marked
+    // `current`. Anyone else is refused (401), the same way
+    // whether the proof is missing, wrong, or no organism's.
+    fn organization_list(req: std::http::Request) -> std::http::Response {
+        if req.method != "GET" {
+            return self.error(405, "method_not_allowed", "the organizations list is a read", false);
+        }
+        let proof = dna::bearer_token(std::http::header(req, "Authorization"));
+        let ctx = context_of(self.cfg);
+        let asking = if len(proof) == 0 || len(ctx.active_root) == 0 {
+            ""
+        } else {
+            api::organizations_proof_key(
+                api::habitat_journal(ctx.active_root),
+                dna::local_habitat_dir(),
+                proof,
+            )
+        };
+        if len(asking) == 0 {
+            return self.error(
+                401,
+                "unauthenticated",
+                "the organizations list is for the faces of the organisms this habitat keeps",
+                false,
+            );
+        }
+        return std::http::Response {
+            status: 200,
+            content_type: "application/json",
+            headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff",
+            // the asking face's own organism marked `current`
+            body: api::habitat_organization_list(
+                api::habitat_journal(ctx.active_root),
+                api::ORGANIZATIONS_CAP,
+                asking,
+            ),
+        };
+    }
+
+    // Every organization of the habitat this head's organism lives in, as
+    // its face lists them (`api::organizations_for`): read from the
+    // habitat's head (`api::fetch_organizations`) at most once a
+    // `api::ORGANIZATIONS_TTL_NS`, and kept between. "[]" for the habitat's
+    // own head and an organism run outside a habitat (no habitat was handed
+    // it), and while the habitat does not answer: the read it rides on
+    // answers either way.
+    fn habitat_organizations() -> String {
+        let now = std::time::monotonic_ns();
+        if self.organizations_at > 0 && now - self.organizations_at < api::ORGANIZATIONS_TTL_NS {
+            return self.organizations;
+        }
+        let ctx = context_of(self.cfg);
+        let list = if len(ctx.active_root) == 0 {
+            "[]"
+        } else {
+            api::fetch_organizations(
+                api::organization_habitat(api::habitat_journal(ctx.active_root)),
+                self.cfg.token,
+            )
+        };
+        self.organizations = list;
+        self.organizations_at = std::time::monotonic_ns();
+        return list;
+    }
+
     // The head envelope (§2.4) around `data`.
     fn envelope(status: Int, active_id: String, data: String) -> std::http::Response {
         let http = api::Http { };
@@ -824,7 +901,7 @@ locus Head {
         b.end_object();
         b.string_field("active", active_id);
         b.end_object();
-        b.field("data", data);
+        b.raw_field("data", data);
         b.end_object();
         return http.response(status, b.result());
     }
@@ -979,8 +1056,8 @@ locus Head {
         b.string_field("state_dir", self.cfg.state_dir);
         b.string_field("sources_dir", self.cfg.sources_dir);
         b.string_field("projects_dir", std::env::var("HOME") + "/dna");
-        b.field("children", children_json(self.cfg, ctx));
-        b.field("credentials", credentials_json(self.cfg, ctx.active_root));
+        b.raw_field("children", children_json(self.cfg, ctx));
+        b.raw_field("credentials", credentials_json(self.cfg, ctx.active_root));
         let running = j.running_ids("");
         let nl = std::str::index_of(running, "\n");
         b.string_field("busy", if nl < 0 { running } else { running[0..nl] });
@@ -1041,7 +1118,7 @@ locus Head {
         if len(id) > 0 {
             let one = reg.find(id);
             if !one.ok || one.forgotten { return self.command_error("project_not_found"); }
-            b.value(project_json(self.cfg, ctx, one, true));
+            b.raw_value(project_json(self.cfg, ctx, one, true));
         } else {
             let mut rest = reg.ids();
             while len(rest) > 0 {
@@ -1049,7 +1126,7 @@ locus Head {
                 let each = if nl < 0 { rest } else { rest[0..nl] };
                 rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
                 let r = reg.find(each);
-                if r.ok && !r.forgotten { b.value(project_json(self.cfg, ctx, r, false)); }
+                if r.ok && !r.forgotten { b.raw_value(project_json(self.cfg, ctx, r, false)); }
             }
         }
         b.end_array();
@@ -1422,12 +1499,19 @@ locus Head {
                     true,
                 );
             }
-            let up = api::relay_upstream(
+            let mut up = api::relay_upstream(
                 req.body,
                 commands,
                 if self.cfg.principal_mode == "local" { child_token } else { bearer },
             );
             if up.ok { self.api_ready_pid = child.pid; }
+            // the record's index, as the face reads it: with every
+            // organization of the habitat this organism lives in beside it
+            // (`organizations`), which this head, not the record, knows
+            let wire_call = api::CommandWire { };
+            if up.ok && up.status == 200 && wire_call.text(req.body, "call") == "Index" {
+                up.body = api::with_organizations(up.body, self.habitat_organizations());
+            }
             return proxied_response(up);
         }
         let up = proxy_exchange(
@@ -1520,6 +1604,10 @@ locus Head {
                 false,
             );
         }
+        // the habitat's list of its organizations, for the faces it keeps:
+        // asked by their heads with a proof of their own, never a session,
+        // so it is answered before the sign-in's gate (organization_list)
+        if path == api::ORGANIZATIONS_PATH { return self.organization_list(req); }
         // who the gate at `/` lets through: the head's own principal, or
         // under OIDC the person the session names
         let mut gate_person = self.cfg.principal_name;

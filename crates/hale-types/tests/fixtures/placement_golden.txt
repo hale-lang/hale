@@ -705,7 +705,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#533ed679
+== crates/hale-stdlib/hl/api_rpc.hl#08f28634
 
 == crates/hale-stdlib/hl/crypto.hl#31fcf297
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
@@ -729,7 +729,13 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/source.hl#fac6c107
 
+== crates/hale-stdlib/hl/str_helpers.hl#36459fea
+dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
+
 == crates/hale-stdlib/hl/tagged.hl#b5e9dd95
+
+== crates/hale-stdlib/hl/time_rfc3339.hl#c263c37e
+dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
 == crates/hale-stdlib/hl/url.hl#a4efffbc
 
@@ -1217,7 +1223,7 @@ row	App@literal1.p	Plain	main	default
 row	App@literal1.se	Ser	main	default
 row	App@literal1.st	Str	main	default
 
-== crates/hale-cli/tests/styleguide_claims.rs#41eea4c5
+== crates/hale-cli/tests/styleguide_claims.rs#090fc2a4
 dynamic	__StdBytesBytesBuilder	on main	in the seed
 
 == crates/hale-cli/tests/styleguide_claims.rs#201ef3ec
@@ -1442,10 +1448,10 @@ row	App@main1	App	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#7cfb2316
 row	App@main1	App	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#f55749e4
+== crates/hale-codegen/tests/alloc_model_rss.rs#208dafdb
 row	App@main1	App	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#3156882a
+== crates/hale-codegen/tests/alloc_model_rss.rs#099bb3e9
 row	App@main1	App	main	default
 
 == crates/hale-codegen/tests/alloc_model_rss.rs#47d2a245
@@ -1808,12 +1814,15 @@ row	~.l	Listener	main	inherited
 == crates/hale-codegen/tests/bounded_collections.rs#9b194cc5
 row	L@main1	L	main	default
 
-== crates/hale-codegen/tests/bounded_collections.rs#14fd8149
+== crates/hale-codegen/tests/bounded_collections.rs#4dc03955
 -- L@main1	L
 row	~	L	main	default
 row	~.child	Child	main	inherited
 
-== crates/hale-codegen/tests/bounded_collections.rs#e6b74386
+== crates/hale-codegen/tests/bounded_collections.rs#5ae76cde
+row	Store@main1	Store	main	default
+
+== crates/hale-codegen/tests/bounded_collections.rs#2d2113bc
 -- Store@main1	Store
 row	~	Store	main	default
 row	~.slots.0	Slot	main	inherited
@@ -2611,6 +2620,16 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 row	App@literal1.w	Wire	main	default
+
+== crates/hale-codegen/tests/bus_wire_type_set.rs#226cccf2
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.s	Sub	main	default
+
+== crates/hale-codegen/tests/bus_wire_type_set.rs#86d38882
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.s	Sub	main	default
 
 == crates/hale-codegen/tests/bytes_builder.rs#737371a4
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
@@ -6798,6 +6817,12 @@ dynamic	Pure	on main	in the seed
 row	~	Manifest	main	default
 row	~.sink	QuietEmitter	main	inherited
 
+== crates/hale-types/tests/enum_names.rs#096f9d8d
+dynamic	<hole>	on main|unresolved declaration `ParseError`	in the seed
+
+== crates/hale-types/tests/enum_names.rs#d97c0830
+dynamic	<hole>	on main|unresolved declaration `ParseError`	in the seed
+
 == crates/hale-types/tests/fn_key_identity.rs#57279317
 row	W@main1	W	main	default
 
@@ -6811,6 +6836,10 @@ row	App@literal1	App	main	default
 -- App@literal1.mid	Mid
 row	~	Mid	main	default
 row	~.leaf	Leaf	main	inherited
+
+== crates/hale-types/tests/hot_path_alloc.rs#e575004f
+template	Acc@main1	unbounded (built in a loop)
+row	Acc@main1	Acc	main	default
 
 == crates/hale-types/tests/hot_path_alloc.rs#0d3e5366
 
@@ -8166,6 +8195,15 @@ row	Desk@literal1.probe	Probe	main	default
 shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
 shared	dynamic	sites in the seed #d81b1982
 
+== tests/hale/api/pb_enum_wire_test.hl
+root	Desk	the entry
+domain	pool:__api_grpc	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.probe	Probe	main	default
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
+shared	dynamic	sites in the seed #d81b1982
+
 == tests/hale/api/pb_json_value_test.hl
 root	Desk	the entry
 domain	pool:__api_grpc	async_io
@@ -8466,9 +8504,20 @@ dynamic	Mx	on main	in the seed
 == tests/hale/bounded_on_call_result_test.hl
 row	Store@main1	Store	main	default
 
+== tests/hale/bounded_payload_enum_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.slots	Slots	main	default
+row	Churn@main3	Churn	main	default
+row	Maker@main2	Maker	main	default
+row	Store@main1	Store	main	default
+
 == tests/hale/bounded_time_test.hl
 root	Clock	the entry
 row	Clock@literal1	Clock	main	default
+
+== tests/hale/bounded_values_test.hl
+row	Store@main1	Store	main	default
 
 == tests/hale/bounded_whole_assign_test.hl
 row	Store@main1	Store	main	default
@@ -8482,8 +8531,18 @@ row	App@literal1.w	Worker	main	default
 row	Printer@main1	Printer	main	default
 row	Producer@main2	Producer	main	default
 
+== tests/hale/bus_wire_type_set_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	main	default
+
 == tests/hale/bytes_writer_offset_test.hl
 row	__StdIoMirrorRing@main1	__StdIoMirrorRing	main	default
+
+== tests/hale/chains_field_anchor_test.hl
+-- Cart@main1	Cart
+row	~	Cart	main	default
+row	~.n	Nums	main	inherited
 
 == tests/hale/chains_hashmap_test.hl
 root	App	the entry
@@ -8498,12 +8557,31 @@ row	Nums@main3	Nums	main	default
 row	Nums@main4	Nums	main	default
 row	Tallies@main5	Tallies	main	default
 
+== tests/hale/check_build_parity_shapes_test.hl
+row	Decoder@main3	Decoder	main	default
+row	Lv@main2	Lv	main	default
+row	Scaler@main1	Scaler	main	default
+
 == tests/hale/closure_restore_inline_array_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.bars	Bars	main	default
 shared	App@literal1.r	Ring #711a93c5
 shared	App@literal1.s	Sup #20139bc1
+
+== tests/hale/codegen_gaps_test.hl
+row	Counter@main5	Counter	main	default
+row	Dog@main6	Dog	main	default
+row	Ladder@main7	Ladder	main	default
+row	Picker@main1	Picker	main	default
+row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
+-- Holder@main2	Holder
+row	~	Holder	main	default
+row	~.b	__StdBytesBytesBuilder	main	inherited
+-- Watcher@main4	Watcher
+row	~	Watcher	main	default
+row	~.v	Holder	main	inherited
+row	~.v.b	__StdBytesBytesBuilder	main	inherited
 
 == tests/hale/contextual_keywords_test.hl
 root	App	the entry
@@ -8538,6 +8616,9 @@ row	~.b	Boom	main	inherited
 dynamic	Outer	on main
 dynamic	Pick	on main
 dynamic	Sup	on main
+
+== tests/hale/enum_names_test.hl
+dynamic	<hole>	on main|unresolved declaration `ParseError`	in the seed
 
 == tests/hale/enum_tag_storage_test.hl
 root	App	the entry
@@ -8578,6 +8659,13 @@ row	~.rows	Rows	main	inherited
 row	Cache_Int_String@main1	Cache_Int_String	main	default
 row	Holder_Int@main2	Holder_Int	main	default
 dynamic	Cache	on main|unresolved arguments	in the seed
+
+== tests/hale/generics_parity_test.hl
+row	Pool@main2	Pool	main	default
+dynamic	Big	on main	in the seed
+-- App@main1	App
+row	~	App	main	default
+row	~.router	RouterV1	main	inherited
 
 == tests/hale/http_client_stream_test.hl
 root	App	the entry
@@ -8661,6 +8749,14 @@ row	~.relay	__StdIoTcpRelay	main	inherited
 == tests/hale/is_route_test.hl
 row	Api@main1	Api	main	default
 
+== tests/hale/json_builder_quoting_test.hl
+shared	__StdJsonBuilder@main1	__StdJsonBuilder #6efd4260
+shared	__StdJsonBuilder@main2	__StdJsonBuilder #6efd4260
+shared	__StdJsonBuilder@main3	__StdJsonBuilder #6efd4260
+shared	__StdJsonBuilder@main4	__StdJsonBuilder #6efd4260
+shared	__StdJsonBuilder@main5	__StdJsonBuilder #6efd4260
+shared	dynamic	sites in the stdlib #c3a51769
+
 == tests/hale/json_escape_runs_test.hl
 row	Rng@main1	Rng	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
@@ -8737,6 +8833,12 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	main	default
 dynamic	Probe	on main	in the seed
+
+== tests/hale/open_slices_test.hl
+row	Lines@main1	Lines	main	default
+
+== tests/hale/optional_field_test.hl
+row	Desk@main1	Desk	main	default
 
 == tests/hale/or_discard_value_test.hl
 root	App	the entry
@@ -9070,6 +9172,20 @@ row	~.s	__StdSecretSigner	main	inherited
 row	~	Unset	main	default
 row	~.c	__StdSecretCredential	main	inherited
 
+== tests/hale/str_split_sources_test.hl
+row	Doc@main4	Doc	main	default
+row	Fields@main1	Fields	main	default
+row	Fields@main2	Fields	main	default
+row	Fields@main3	Fields	main	default
+dynamic	Fields	on main	in the seed
+
+== tests/hale/string_append_test.hl
+row	Doc@main1	Doc	main	default
+
+== tests/hale/string_len_test.hl
+row	Listener@main1	Listener	main	default
+row	Sender@main2	Sender	main	default
+
 == tests/hale/struct_let_copies_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -9083,6 +9199,11 @@ row	App@literal1.b	Nested	main	default
 row	App@literal1.c	ViaLet	main	default
 row	App@literal1.d	ParamString	main	default
 row	App@literal1.e	Constant	main	default
+
+== tests/hale/tail_value_returns_test.hl
+row	Box@main2	Box	main	default
+row	Box@main3	Box	main	default
+row	Namer@main1	Namer	main	default
 
 == tests/hale/temp_locus_receiver_test.hl
 row	Lonely@main7	Lonely	main	default
@@ -9246,6 +9367,15 @@ dynamic	__lib_dna__core___memory_record__MemoryReceipts	on main
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main
 dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
+shared	dynamic	sites in api/project_service/tests/fixture #06baa4c5
+shared	dynamic	sites in core #8e1938c5
+shared	dynamic	sites in core/pond/pq #39e83e0a
+shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/api/project_service/tests/head_organizations_test.hl
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main2	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main3	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
 shared	dynamic	sites in api/project_service/tests/fixture #06baa4c5
 shared	dynamic	sites in core #8e1938c5
 shared	dynamic	sites in core/pond/pq #39e83e0a
@@ -13374,6 +13504,16 @@ dynamic	__StdJsonBuilder	on main	in tests
 shared	__lib_dna__core___journal__MemJournal@main1	__lib_dna__core___journal__MemJournal #63b83e2f
 shared	dynamic	sites in the stdlib #919aadb4
 
+== dna/tests/organization_habitat_test.hl
+shared	__lib_dna__core___journal__MemJournal@main1	__lib_dna__core___journal__MemJournal #63b83e2f
+shared	__lib_dna__core___journal__MemJournal@main2	__lib_dna__core___journal__MemJournal #63b83e2f
+
+== dna/tests/organization_list_test.hl
+dynamic	__StdJsonBuilder	on main	in tests
+shared	__lib_dna__core___journal__MemJournal@main1	__lib_dna__core___journal__MemJournal #63b83e2f
+shared	__lib_dna__core___journal__MemJournal@main2	__lib_dna__core___journal__MemJournal #63b83e2f
+shared	dynamic	sites in the stdlib #919aadb4
+
 == dna/tests/organization_source_request_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -15468,7 +15608,7 @@ dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:io
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:io
-dynamic	__StdJsonBuilder	on main|pool:commands|pool:io
+dynamic	__StdJsonBuilder	on main|pool:commands|pool:io|unknown (no caller)
 dynamic	__lib_dna__core___infrastructure__ComposeProvider	on pool:commands
 dynamic	__lib_dna__core___memory_record__MemoryReceipts	on pool:commands|pool:io
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main|pool:commands|pool:io
@@ -15746,7 +15886,7 @@ row	~.relay	__StdIoTcpRelay	pool:io	inherited
 -- dynamic	sites in dna/api
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io
 dynamic	__StdIoTcpStream	on pool:io
-dynamic	__StdJsonBuilder	on main|pool:commands|pool:io
+dynamic	__StdJsonBuilder	on main|pool:commands|pool:io|unknown (no caller)
 dynamic	__lib_dna__api___commands__CommandWire	on pool:io
 dynamic	__lib_dna__api___context__ContextWire	on pool:io
 dynamic	__lib_dna__api___definition_drafts__DefinitionDraftWire	on pool:io
@@ -16281,7 +16421,7 @@ row	~.updated.catalog.stats	__lib_dna__core___workflow_definition__DefStatRows	m
 row	~.updated.catalog.workflows	__lib_dna__core___workflow_definition__WorkflowDefRows	main	inherited	built by __lib_dna__core___workflow_definition__WorkflowCatalog@main3.workflows
 shared	__lib_dna__core___workflow_definition__WorkflowCatalog@main2	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
 shared	__lib_dna__core___workflow_definition__WorkflowCatalog@main3	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
-shared	dynamic	sites in api #87e13c63
+shared	dynamic	sites in api #3b6c4861
 -- dynamic	sites in api/tests/catalog
 dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
@@ -16342,7 +16482,7 @@ shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #83c87156
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
 shared	FixtureHead@literal1.srv	__StdHttpServer #2c83e381
-shared	dynamic	sites in api #87e13c63
+shared	dynamic	sites in api #3b6c4861
 -- dynamic	sites in api/tests/commands
 dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
@@ -19742,6 +19882,64 @@ row	~	__lib_tests__hale__api__client__public___client__FillsSubscription	main	de
 row	~.ws	__lib_tests__hale__api__client__public___client__ApiWs	main	inherited
 row	~.ws.stream	__StdIoTcpStream	main	inherited
 
+== shared sites in api #3b6c4861
+dynamic	__StdBytesBytesBuilder	on pool:commands|pool:io
+dynamic	__StdIoTcpStream	on pool:io
+dynamic	__StdJsonBuilder	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__api___commands__CommandWire	on pool:io
+dynamic	__lib_dna__api___context__ContextWire	on pool:io
+dynamic	__lib_dna__api___definition_drafts__DefinitionDraftWire	on pool:io
+dynamic	__lib_dna__api___http__Http	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__api___knowledge__KnowledgeWire	on pool:io
+dynamic	__lib_dna__api___knowledge_memory__GraphHttp	on pool:io
+dynamic	__lib_dna__api___knowledge_memory__GraphItems	on pool:io
+dynamic	__lib_dna__api___main__Wire	on pool:io
+dynamic	__lib_dna__api___organization_drafts__OrganizationDraftWire	on pool:io
+dynamic	__lib_dna__api___organization_impact__OrganizationImpactWire	on pool:io
+dynamic	__lib_dna__api___organization_status__OrganizationStatusWire	on pool:commands|pool:io
+dynamic	__lib_dna__api___people__PersonWire	on pool:io
+dynamic	__lib_dna__api___source__JsonShape	on pool:commands|pool:io
+dynamic	__lib_dna__api___source__SourceReader	on pool:io
+dynamic	__lib_dna__api___tasks__TaskWire	on pool:commands|pool:io
+dynamic	__lib_dna__api___upstream__DrainWatch	on pool:io
+dynamic	__lib_dna__api___workflows__WorkflowRead	on pool:io
+dynamic	__lib_dna__api___workflows__WorkflowWire	on pool:io
+dynamic	__lib_dna__core___infrastructure__ComposeProvider	on pool:commands
+dynamic	__lib_dna__core___memory_record__MemoryReceipts	on pool:commands|pool:io
+dynamic	__lib_dna__core___memory_record__MemoryRecord	on pool:commands|pool:io|unknown (no caller)
+dynamic	__lib_dna__core___memory_record__RecordJournal	on pool:commands|pool:io
+dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on pool:io
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on pool:commands|pool:io
+dynamic	__lib_dna__core___memory_store__GraphRules	on pool:io
+dynamic	__lib_dna__core___models__HostedCredential	on pool:commands
+dynamic	__lib_dna__core___organization_launch__OrganizationLaunchCodec	on pool:commands|pool:io
+dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on pool:io
+dynamic	__lib_dna__core___placement__LatestRows	on pool:commands
+dynamic	__lib_dna__core___routing__RoutedJournal	on pool:commands|pool:io
+dynamic	__lib_dna__core___ssh_provider__SshProvider	on pool:commands
+dynamic	__lib_dna__operations___context__HatReader	on pool:io
+dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCodec	on pool:io
+dynamic	__lib_dna__operations___definition_drafts__DefinitionDrafts	on pool:io
+dynamic	__lib_dna__operations___definitions__Definitions	on pool:io
+dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on pool:commands|pool:io
+dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on pool:commands|pool:io
+dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on pool:commands|pool:io
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on pool:commands|pool:io
+dynamic	__lib_dna__operations___knowledge_policy__FixedKnowledgeAuthority	on pool:commands
+dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on pool:commands
+dynamic	__lib_dna__operations___memory_tail__KnowledgeVisibility	on pool:io
+dynamic	__lib_dna__operations___organization__Organization	on pool:io
+dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on pool:commands|pool:io
+dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on pool:io
+dynamic	__lib_dna__operations___organization_impact__OrganizationImpact	on pool:io
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on pool:commands|pool:io
+dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on pool:commands|pool:io
+dynamic	__lib_dna__operations___queries__NoReceipts	on pool:io
+dynamic	__lib_dna__operations___queries__Queries	on pool:commands|pool:io
+dynamic	__lib_dna__operations___task_projection__TaskProjection	on pool:commands|pool:io
+dynamic	__lib_dna__operations___usage__Usage	on pool:commands|pool:io
+
 == shared sites in api #446d82b3
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)
 dynamic	__StdHttpSseWriter	on main
@@ -19799,64 +19997,6 @@ dynamic	__lib_dna__operations___queries__NoReceipts	on main
 dynamic	__lib_dna__operations___queries__Queries	on main|unknown (no caller)
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main|unknown (no caller)
 dynamic	__lib_dna__operations___usage__Usage	on main
-
-== shared sites in api #87e13c63
-dynamic	__StdBytesBytesBuilder	on pool:commands|pool:io
-dynamic	__StdIoTcpStream	on pool:io
-dynamic	__StdJsonBuilder	on pool:commands|pool:io
-dynamic	__lib_dna__api___commands__CommandWire	on pool:io
-dynamic	__lib_dna__api___context__ContextWire	on pool:io
-dynamic	__lib_dna__api___definition_drafts__DefinitionDraftWire	on pool:io
-dynamic	__lib_dna__api___http__Http	on pool:commands|pool:io|unknown (no caller)
-dynamic	__lib_dna__api___knowledge__KnowledgeWire	on pool:io
-dynamic	__lib_dna__api___knowledge_memory__GraphHttp	on pool:io
-dynamic	__lib_dna__api___knowledge_memory__GraphItems	on pool:io
-dynamic	__lib_dna__api___main__Wire	on pool:io
-dynamic	__lib_dna__api___organization_drafts__OrganizationDraftWire	on pool:io
-dynamic	__lib_dna__api___organization_impact__OrganizationImpactWire	on pool:io
-dynamic	__lib_dna__api___organization_status__OrganizationStatusWire	on pool:commands|pool:io
-dynamic	__lib_dna__api___people__PersonWire	on pool:io
-dynamic	__lib_dna__api___source__JsonShape	on pool:commands|pool:io
-dynamic	__lib_dna__api___source__SourceReader	on pool:io
-dynamic	__lib_dna__api___tasks__TaskWire	on pool:commands|pool:io
-dynamic	__lib_dna__api___upstream__DrainWatch	on pool:io
-dynamic	__lib_dna__api___workflows__WorkflowRead	on pool:io
-dynamic	__lib_dna__api___workflows__WorkflowWire	on pool:io
-dynamic	__lib_dna__core___infrastructure__ComposeProvider	on pool:commands
-dynamic	__lib_dna__core___memory_record__MemoryReceipts	on pool:commands|pool:io
-dynamic	__lib_dna__core___memory_record__MemoryRecord	on pool:commands|pool:io|unknown (no caller)
-dynamic	__lib_dna__core___memory_record__RecordJournal	on pool:commands|pool:io
-dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on pool:io
-dynamic	__lib_dna__core___memory_spine__MemoryLedger	on pool:commands|pool:io
-dynamic	__lib_dna__core___memory_store__GraphRules	on pool:io
-dynamic	__lib_dna__core___models__HostedCredential	on pool:commands
-dynamic	__lib_dna__core___organization_launch__OrganizationLaunchCodec	on pool:commands|pool:io
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on pool:io
-dynamic	__lib_dna__core___placement__LatestRows	on pool:commands
-dynamic	__lib_dna__core___routing__RoutedJournal	on pool:commands|pool:io
-dynamic	__lib_dna__core___ssh_provider__SshProvider	on pool:commands
-dynamic	__lib_dna__operations___context__HatReader	on pool:io
-dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCodec	on pool:io
-dynamic	__lib_dna__operations___definition_drafts__DefinitionDrafts	on pool:io
-dynamic	__lib_dna__operations___definitions__Definitions	on pool:io
-dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on pool:commands|pool:io
-dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on pool:commands|pool:io
-dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on pool:commands|pool:io
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on pool:commands|pool:io
-dynamic	__lib_dna__operations___knowledge_policy__FixedKnowledgeAuthority	on pool:commands
-dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on pool:commands
-dynamic	__lib_dna__operations___memory_tail__KnowledgeVisibility	on pool:io
-dynamic	__lib_dna__operations___organization__Organization	on pool:io
-dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on pool:commands|pool:io
-dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on pool:io
-dynamic	__lib_dna__operations___organization_impact__OrganizationImpact	on pool:io
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on pool:commands|pool:io
-dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on pool:commands|pool:io
-dynamic	__lib_dna__operations___queries__NoReceipts	on pool:io
-dynamic	__lib_dna__operations___queries__Queries	on pool:commands|pool:io
-dynamic	__lib_dna__operations___task_projection__TaskProjection	on pool:commands|pool:io
-dynamic	__lib_dna__operations___usage__Usage	on pool:commands|pool:io
 
 == shared sites in api #a6ea2058
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)

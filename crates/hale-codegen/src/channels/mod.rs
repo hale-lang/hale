@@ -8,9 +8,10 @@
 //! refactor.
 
 use hale_syntax::ast::{
-    Expr, FnDecl, LocusDecl, LocusMember, OrDisposition, Stmt, TopDecl,
-    TypeExpr,
+    Expr, FnDecl, Ident, LocusDecl, LocusMember, NodeId, OrDisposition, Stmt,
+    TopDecl, TypeExpr,
 };
+use hale_syntax::Span;
 use inkwell::types::BasicType;
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
@@ -420,8 +421,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // caller's arena, not this call's scratch (GH #1832).
         let mut scope = Scope::default();
         self.bind_member_params(&fd.params, func, &mut scope)?;
+        self.note_param_len_caches(&fd.params, &fd.body, &scope)?;
 
-        let end = self.in_body(fd.id, |cx| cx.lower_block(&fd.body, &mut scope))?;
+        // A body's tail is its return (spec/semantics.md, the definite-
+        // return rule takes it as one): lowered as one, as an infallible
+        // method's and a free fallible fn's are (GH #1968).
+        let end = self.in_body(fd.id, |cx| {
+            Ok(match fd.body.tail.as_deref() {
+                Some(tail) if ret_ty.is_some() => {
+                    let mut stmts_end = BlockEnd::Open;
+                    for (i, stmt) in fd.body.stmts.iter().enumerate() {
+                        if cx.lower_stmt(stmt, &mut scope)? == BlockEnd::Terminated {
+                            stmts_end = BlockEnd::Terminated;
+                            break;
+                        }
+                        cx.note_string_len_cache(&fd.body, i, &scope)?;
+                    }
+                    match stmts_end {
+                        BlockEnd::Open => cx.lower_return(Some(tail), &scope)?,
+                        BlockEnd::Terminated => BlockEnd::Terminated,
+                    }
+                }
+                _ => cx.lower_block(&fd.body, &mut scope)?,
+            })
+        })?;
         if end == BlockEnd::Open {
             // Fall-through. For Unit success (`() fallible(E)`)
             // this is the natural shape: the body fires `fail`
@@ -432,11 +455,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // For typed-return methods the user owes us an
             // explicit `return`.
             if ret_ty.is_some() {
-                return Err(CodegenError::Unsupported(format!(
-                    "locus `{}` method `{}`: fallible body falls through \
-                     without `return` or `fail`",
-                    l.name.name, fd.name.name
-                )));
+                return Err(CodegenError::Refused(
+                    format!(
+                        "method `{}.{}` can reach the end of its body without a `return` or a `fail`: \
+                         end every path in one",
+                        l.name.name, fd.name.name
+                    ),
+                    fd.name.span,
+                ));
             }
             self.builder
                 .build_unconditional_branch(exit_bb)
@@ -905,8 +931,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.position_at_end(err_bb);
         let err_join: Option<(Option<BasicValueEnum<'ctx>>, inkwell::basic_block::BasicBlock<'ctx>)> =
             match disposition {
-                OrDisposition::Raise(_) => {
-                    self.lower_or_raise(&call)?;
+                OrDisposition::Raise(at) => {
+                    self.lower_or_raise(&call, *at, scope)?;
                     None
                 }
                 // GH #255: typecheck rejects `or wait` in
@@ -1090,11 +1116,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         } else {
                             (sub_v, sub_ty)
                         };
+                        // A bare `0` is every quantity's zero (spec/units.md),
+                        // so the check admits `1day / 4 or 0`: a Duration (or
+                        // a Time's count) is the integer it holds.
+                        let sub_ty = match (&sub_ty, &call.success_ty) {
+                            (Some(CodegenTy::Int), Some(want @ (CodegenTy::Duration | CodegenTy::Time)))
+                                if hale_types::unit_values::int_literal(rhs) == Some(0) =>
+                            {
+                                Some(want.clone())
+                            }
+                            _ => sub_ty,
+                        };
                         if !value_discarded && sub_ty != call.success_ty {
-                            return Err(CodegenError::Unsupported(format!(
+                            return Err(CodegenError::Invalid(format!(
                                 "`or` substitute type mismatch: expected \
-                                 {:?}, got {:?}",
-                                call.success_ty, sub_ty
+                                 {}, got {}",
+                                crate::codegen::ty_or_nothing(call.success_ty.as_ref()), crate::codegen::ty_or_nothing(sub_ty.as_ref())
                             )));
                         }
                         // The rhs lowering may have created intermediate
@@ -1268,8 +1305,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Expr::Call { callee, args, .. } => (callee.as_ref(), args),
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "`or` requires a fallible call expression; got {:?}",
-                    std::mem::discriminant(inner)
+                    "`or` requires a fallible call expression; got {}",
+                    crate::codegen::expr_form(inner)
                 )));
             }
         };
@@ -1300,7 +1337,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     return Ok(result);
                 }
-                id.name.clone()
+                // GH #1966: a generic fallible fn, specialized as a
+                // plain call to it is, and called through the fallible
+                // ABI like any other fallible fn.
+                if self.generic_fn_templates.contains_key(&id.name) && !self.user_fns.contains_key(&id.name) {
+                    self.generic_fn_instance(&id.name, call_id, id.span, args.len())?
+                } else {
+                    id.name.clone()
+                }
             }
             Expr::Field { receiver, name, .. } => {
                 return self.lower_fallible_method_call(
@@ -1318,22 +1362,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     return Ok(result);
                 }
-                // Otherwise the path is either an imported-lib free
-                // fn (mangled name lives in `user_fns`) or unknown.
-                match self.mangled_for_path(&segs) {
-                    Some(mangled) => mangled,
-                    None => {
-                        return Err(CodegenError::Unsupported(format!(
-                            "`or` over unknown path call `{}`",
-                            segs.join("::")
-                        )));
+                // GH #1964 / #1966: an imported seed's generic
+                // fallible fn.
+                if let Some(name) = self.imported_generic_template(qn) {
+                    let call_id = match inner {
+                        Expr::Call { id, .. } => *id,
+                        _ => hale_syntax::ast::NodeId::NONE,
+                    };
+                    self.generic_fn_instance(&name, call_id, qn.span, args.len())?
+                } else {
+                    // Otherwise the path is either an imported-lib free
+                    // fn (mangled name lives in `user_fns`) or unknown.
+                    match self.mangled_for_path(&segs) {
+                        Some(mangled) => mangled,
+                        None => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "`or` over unknown path call `{}`",
+                                segs.join("::")
+                            )));
+                        }
                     }
                 }
             }
             _ => {
                 return Err(CodegenError::Unsupported(format!(
-                    "`or` callee shape not yet supported: {:?}",
-                    std::mem::discriminant(callee)
+                    "`or` callee shape not yet supported: {}",
+                    crate::codegen::expr_form(callee)
                 )));
             }
         };
@@ -1397,7 +1451,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(caller_arena_at_call.into());
         for i in 0..sig.params.len() {
             let (v, ty) = if i < args.len() {
-                self.lower_expr(&args[i], scope)?
+                self.lower_arg_for(&args[i], Some(&sig.params[i]), scope)?
             } else {
                 let default = sig
                     .defaults[i]
@@ -1431,8 +1485,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.unpack_view_if_needed(v, &ty)?
             } else if ty != sig.params[i] {
                 return Err(CodegenError::Unsupported(format!(
-                    "fallible fn `{}` arg {} type mismatch: expected {:?}, \
-                     got {:?}",
+                    "fallible fn `{}` arg {} type mismatch: expected {}, \
+                     got {}",
                     resolved_name, i, sig.params[i], ty
                 )));
             } else {
@@ -1935,7 +1989,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
         let enclosing = self.current_user_fn_fallible.clone().ok_or_else(|| {
-            CodegenError::Unsupported(
+            CodegenError::Invalid(
                 "`or fail X` outside a fallible(E) fn (use `or raise` \
                  if you want to propagate the inner call's payload, or \
                  `or <fallback>` to substitute a value)".into(),
@@ -1973,7 +2027,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if got_ty != payload_ty {
             return Err(CodegenError::Unsupported(format!(
                 "`or fail` payload type mismatch: enclosing fn declared \
-                 fallible({:?}), got {:?}",
+                 fallible({}), got {}",
                 payload_ty, got_ty
             )));
         }
@@ -1996,13 +2050,78 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn lower_or_raise(
         &mut self,
         call: &FallibleCallResult<'ctx>,
+        at: Span,
+        scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
+        // GH #1951 (item 2): an error the checker converted at this
+        // `raise` (the word's span, or a fallible handler's for its
+        // implicit one) is raised as the `or fail` the conversion stands
+        // for: `or fail S::P(err)` for a member of the fn's set error type,
+        // `or fail conv(err)` for a `@raise fn`.
+        let conversion = self.current_body.and_then(|body| {
+            let site = self.site(hale_types::typed_bodies::SiteKind::value(at));
+            self.typed.raise_in(body, &site).cloned()
+        });
+        if let (Some(conversion), Some(_)) = (conversion, &self.current_user_fn_fallible) {
+            use hale_types::typed_bodies::RaiseConversion;
+            let err = Expr::Ident(Ident { name: "err".to_string(), span: at, id: NodeId::NONE });
+            match conversion {
+                RaiseConversion::Member(inj) => {
+                    let enclosing = self.current_user_fn_fallible.clone().expect("checked above");
+                    let info = self.user_enums.get(&inj.set).cloned().ok_or_else(|| {
+                        CodegenError::UnsupportedAt(format!("the set `{}` has no declaration lowering knows", inj.set), at)
+                    })?;
+                    let idx = info.variants.iter().position(|v| v.name == inj.member).ok_or_else(|| {
+                        CodegenError::UnsupportedAt(format!("the set `{}` has no member `{}`", inj.set, inj.member), at)
+                    })?;
+                    if info.variants[idx].field_tys.first() != Some(&call.payload_ty) {
+                        return Err(CodegenError::UnsupportedAt(
+                            format!(
+                                "an error of {} raised into the set `{}` as its member `{}`, which holds {}",
+                                call.payload_ty,
+                                inj.set,
+                                inj.member,
+                                crate::codegen::ty_list(&info.variants[idx].field_tys)
+                            ),
+                            at,
+                        ));
+                    }
+                    let llvm_err_ty = self.llvm_basic_type(&call.payload_ty);
+                    let v = self
+                        .builder
+                        .build_load(llvm_err_ty, call.out_err_slot, "or.raise.member.load")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let ptr = self.lower_enum_variant_alloc(&info, idx as u32, &[(v, call.payload_ty.clone())])?;
+                    self.builder
+                        .build_store(enclosing.err_alloca, ptr)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let bool_t = self.context.bool_type();
+                    self.builder
+                        .build_store(enclosing.path_alloca, bool_t.const_int(1, false))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let exit_bb = self.current_user_fn_exit_bb.expect("exit_bb set inside a fn body");
+                    self.builder
+                        .build_unconditional_branch(exit_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                RaiseConversion::Convert(name) => {
+                    let converted = Expr::Call {
+                        callee: Box::new(Expr::Ident(Ident { name, span: at, id: NodeId::NONE })),
+                        args: vec![err],
+                        span: at,
+                        id: NodeId::NONE,
+                    };
+                    self.lower_or_fail(&converted, call, scope)?;
+                }
+            }
+            return Ok(());
+        }
         match self.current_user_fn_fallible.clone() {
             Some(enclosing) => {
                 if call.payload_ty != enclosing.payload_ty {
-                    return Err(CodegenError::Unsupported(format!(
-                        "`or raise` payload type mismatch: inner is {:?}, \
-                         enclosing fn declared fallible({:?})",
+                    return Err(CodegenError::Invalid(format!(
+                        "`or raise` payload type mismatch: inner is {}, \
+                         enclosing fn declared fallible({})",
                         call.payload_ty, enclosing.payload_ty
                     )));
                 }
@@ -2075,6 +2194,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// the synthesized @form(vec) get/pop. User-declared
     /// fallible locus methods are not yet wired (see PR6 commit
     /// 1's note about declare_locus_struct).
+    /// GH #1984: the field an element chain's cursor walks when its
+    /// source was anchored on `.items` / `.entries`
+    /// (`hale_syntax::chains::cursor_anchor`) and the receiver the
+    /// desugar stripped it to is no form: a record's field, or a locus
+    /// param, of the anchor's name. A form locus, or a locus that
+    /// declares the accessor itself, keeps the pseudo-field reading.
+    /// Returns the field read and the accessor to call on it: `get` for
+    /// a collection, the chain's own for a form locus held in the field.
+    fn chain_anchor_field(
+        &self,
+        receiver: &Expr,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Option<(Expr, &'static str)> {
+        let anchor = hale_syntax::chains::cursor_anchor(args)?;
+        let field_ty = match self.static_expr_codegen_ty(receiver, scope)? {
+            CodegenTy::TypeRef(n) => self.user_types.get(&n)?.fields.get(anchor)?.1.clone(),
+            CodegenTy::LocusRef(n) => {
+                let info = self.user_loci.get(&n)?;
+                let declares = self.locus_declaration(&n).is_some_and(|d| {
+                    d.members.iter().any(|m| matches!(m, LocusMember::Fn(fd) if fd.name.name == method_name))
+                });
+                if declares || info.capacity_slots.iter().any(|s| s.form.is_some()) {
+                    return None;
+                }
+                info.fields.get(anchor)?.1.clone()
+            }
+            _ => return None,
+        };
+        let accessor = match field_ty {
+            CodegenTy::Bounded(..) | CodegenTy::Array(..) => "get",
+            CodegenTy::LocusRef(_) if method_name == "entry_at" => "entry_at",
+            CodegenTy::LocusRef(_) => "get",
+            _ => return None,
+        };
+        let span = receiver.span();
+        Some((
+            Expr::Field {
+                receiver: Box::new(receiver.clone()),
+                name: Ident { name: anchor.to_string(), span, id: NodeId::NONE },
+                span,
+            },
+            accessor,
+        ))
+    }
+
     pub(crate) fn lower_fallible_method_call(
         &mut self,
         receiver: &Expr,
@@ -2082,6 +2248,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        // GH #1984: an element chain anchored on `.items` / `.entries`
+        // over a receiver that is no form but has a real field of that
+        // name walks the field, as the checker typed it.
+        if let Some((field, accessor)) = self.chain_anchor_field(receiver, method_name, args, scope) {
+            return self.lower_fallible_method_call(&field, accessor, args, scope);
+        }
         // `src.get(i)` where src is a type-level collection (a fixed
         // array or a `bounded[T; N]`) rather than a form locus. This
         // is what the element-chain desugar emits, and it is checked
@@ -2132,7 +2304,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     other => {
                         return Err(CodegenError::Unsupported(format!(
                             "fallible method call on non-locus value of \
-                             type {:?}",
+                             type {}",
                             other
                         )));
                     }
@@ -2432,8 +2604,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;
         if got_ty != payload_ty {
             return Err(CodegenError::Unsupported(format!(
-                "`fail` payload type mismatch: fallible declared {:?}, \
-                 got {:?}",
+                "`fail` payload type mismatch: fallible declared {}, \
+                 got {}",
                 payload_ty, got_ty
             )));
         }

@@ -404,6 +404,18 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     known_names
         .entry("ClosureViolation".to_string())
         .or_insert(Span::new(0, 0));
+    // So is every builtin type `inject_builtin_types` declares in every
+    // program: a signature naming one (`fn default_port(e: ParseError)`,
+    // the handler an `or` hands `err`) resolved to `Unknown` here while a
+    // body's annotation named the record, so the check passed any
+    // argument (`default_port("x")`, a `String` error's `err`) and the
+    // build refused it (GH #2005). A program's own declaration of the
+    // name still wins.
+    for t in crate::builtin_types::BUILTIN_TYPES {
+        if matches!(t.injected, crate::builtin_types::Injected::Always) {
+            known_names.entry(t.name.to_string()).or_insert(Span::new(0, 0));
+        }
+    }
     // GH #470: pre-register the ENTIRE Hale-source stdlib surface —
     // loci, types, interfaces, enums, free fns — so a user's
     // `std::http::Router {}` / `ctx: std::http::Context` resolves to
@@ -1470,6 +1482,7 @@ fn register_type(
                     fields: v.fields.iter().map(|t| resolve_type_expr(t, known)).collect(),
                     span: v.span,
                     member: v.member,
+                    tag: v.tag.clone(),
                 })
                 .collect();
             TypeKind::Enum(infos)

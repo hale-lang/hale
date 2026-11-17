@@ -3,7 +3,7 @@ import { isWrite } from './command-wire.mjs';
 
 // The face reads through the commands relay too: a POST whose line is a
 // read call (`Index`, `Org`, `Tasks`, `BatchPreview`) or the describe is no write.
-const READ_LINE = /^\s*\{\s*"(describe|call"\s*:\s*"(Index|Org|Tasks|BatchPreview)")/;
+const READ_LINE = /^\s*\{\s*"(describe|call"\s*:\s*"(Index|Org|Uis|Tasks|BatchPreview)")/;
 const isMutation = request => isWrite(request) && !READ_LINE.test(request.postData() || '');
 
 // The org chart as the graph states it: a position the record seats is
@@ -47,14 +47,14 @@ test.describe('the org chart', () => {
     await page.goto(service.url('org', { id: 'position:api/dev' }));
     const inspector = page.getByRole('complementary', { name: 'Inspector' });
     await expect(inspector.getByRole('heading', { name: 'api/dev', exact: true })).toBeVisible();
-    await expect(inspector.getByRole('heading', { name: /say what this position does|change what this position does/ })).toBeVisible();
-    await expect(inspector.getByRole('heading', { name: 'move this position', exact: true })).toBeVisible();
-    await expect(inspector.getByRole('heading', { name: 'retire this position', exact: true })).toBeVisible();
+    await expect(inspector.getByRole('heading', { name: /Describe this position|Change its description/ })).toBeVisible();
+    await expect(inspector.getByRole('heading', { name: 'Move it under another position', exact: true })).toBeVisible();
+    await expect(inspector.getByRole('heading', { name: 'Remove this position', exact: true })).toBeVisible();
     await expect(inspector.getByRole('combobox', { name: 'under' })).toContainText('board');
     await inspector.getByPlaceholder('one sentence on what this position does').fill('Keeps the api correct and fast.');
-    await inspector.getByRole('button', { name: 'Check the change' }).first().click();
+    await inspector.getByRole('button', { name: 'Preview' }).first().click();
     await expect(inspector).toContainText('+ keeps position:api/dev Keeps the api correct and fast.');
-    await expect(inspector.getByRole('button', { name: 'Propose it' }).first()).toBeVisible();
+    await expect(inspector.getByRole('button', { name: 'Submit for approval' }).first()).toBeVisible();
     expect(mutations).toEqual([]);
     expect(await service.refs()).toBe(before);
   });

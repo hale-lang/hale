@@ -1397,6 +1397,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("dump_pool_residency", SYSCALL | STDIO, [] -> Int, Intrinsic(ProcessDumpPoolResidency)),
             row!("exit", SYSCALL, [Int] -> Unit, Intrinsic(ProcessExit)),
             row!("kill", SYSCALL, [Int] -> Unit ! "IoError", Renamed),
+            row!("peak_rss_bytes", SYSCALL, [] -> Int, Intrinsic(ProcessPeakRssBytes)),
             row!("pid", SYSCALL, [] -> Int, Intrinsic(ProcessPid)),
             row!("uid", SYSCALL, [] -> Int, Intrinsic(ProcessUid)),
             row!("read_stderr", SYSCALL | BLOCK, _, Renamed),
@@ -1405,7 +1406,7 @@ pub const SURFACES: &[NsSurface] = &[
             // std::process child management — success types are internal
             // handles (__StdProcessSpawnHandle etc.); Any keeps arity +
             // arg + fallible checking without naming them.
-            row!("run", SYSCALL | BLOCK, [Str] -> Any ! "IoError", Intrinsic(ProcessRun)),
+            row!("run", SYSCALL | BLOCK, [Str] -> Named("__StdProcessOutput") ! "IoError", Intrinsic(ProcessRun)),
             // `run` / `spawn` under a `SpawnOptions` (cwd, environment,
             // timeout, rlimits): `process.hl` bodies over `__run_with` /
             // `__spawn_with`, typed against those bodies' signatures.
@@ -1539,6 +1540,29 @@ pub const SURFACES: &[NsSurface] = &[
             row!("substring", PURE, [Str, Int, Int] -> Str, Intrinsic(StrSubstring)),
             row!("trim", PURE, [Str] -> Str, Intrinsic(StrTrim)),
             row!("upper", PURE, [Str] -> Str, Intrinsic(StrUpper)),
+            // GH #1995 S3: the splits and trims a program otherwise writes
+            // with a magic offset, Hale bodies in `str_helpers.hl`. `cut`
+            // and `cut_last` return a tuple, which the signature
+            // vocabulary has no word for: the checker reads their types
+            // from the bodies.
+            row!("cut", PURE, _, Renamed),
+            row!("cut_last", PURE, _, Renamed),
+            row!("eq_ignore_case", PURE, [Str, Str] -> Bool, Renamed),
+            row!("last_index_of", PURE, [Str, Str] -> Int, Renamed),
+            row!("parse_bool", PURE, [Str] -> Bool ! "ParseError", Renamed),
+            row!("trim_end", PURE, [Str] -> Str, Renamed),
+            row!("trim_prefix", PURE, [Str, Str] -> Str, Renamed),
+            row!("trim_start", PURE, [Str] -> Str, Renamed),
+            row!("trim_suffix", PURE, [Str, Str] -> Str, Renamed),
+            // GH #1995 S2: the text `for` sources. Not functions: the
+            // desugar sequence rewrites every `for x in std::str::split(s,
+            // sep)` (`lines(s)`, `words(s)`) into one `while` over a view
+            // (`hale_syntax::str_sources`), and the checker refuses a call
+            // left as written, so nothing lowers one. No signature: there is
+            // no value to type. Pure, as every call the loop is made of.
+            row!("lines", PURE, _, Unlowered),
+            row!("split", PURE, _, Unlowered),
+            row!("words", PURE, _, Unlowered),
         ],
         open_prefixes: &[],
     },
@@ -1627,6 +1651,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("current", TIME, [] -> Time, Intrinsic(TimeCurrent)),
             row!("iso8601", PURE, [Time] -> Str, Intrinsic(TimeIso8601)),
             row!("parse_time", PURE, [Str] -> Time ! "ParseError", Intrinsic(TimeParseTime)),
+            // GH #1948: RFC 3339 with its offset applied, a Hale body
+            // (`time_rfc3339.hl`) over `parse_time` and the integer views.
+            row!("parse_rfc3339", PURE, _, Renamed),
             row!("unix", PURE, [Time] -> Int, Intrinsic(TimeUnix)),
             row!("nanos", PURE, [Time] -> Int, Intrinsic(TimeNanos)),
             row!("from_nanos", PURE, [Int] -> Time, Intrinsic(TimeFromNanos)),
@@ -2035,6 +2062,7 @@ pub enum IntrinsicId {
     ProcessPid,
     ProcessUid,
     ProcessRssBytes,
+    ProcessPeakRssBytes,
     ProcessRun,
     RandNextInt,
     RandSeedFromTime,
@@ -2149,6 +2177,45 @@ fn nearest_namespace(segs: &[&str]) -> Option<String> {
         }
     }
     best.map(|(n, _)| n)
+}
+
+/// Stdlib types a program reaches for under a name they do not have
+/// (GH #1948): the path written, the type it means, and how it is used
+/// for what the name suggests. Read by [`type_hint`].
+const MOVED_TYPES: &[(&[&str], &str, &str)] = &[(
+    &["std", "str", "Builder"],
+    "std::bytes::BytesBuilder",
+    "It builds text too: `append_str(s)`, then `text_view()` (no copy) or `finish()`",
+)];
+
+/// The did-you-mean for a `std::` type path that names nothing
+/// (GH #1948): a tabled move ([`MOVED_TYPES`]), else the one stdlib type
+/// of the same name in another namespace (`std::http::Listener` →
+/// `std::io::tcp::Listener`). `segs` includes the leading `std`.
+pub fn type_hint(segs: &[&str]) -> Option<String> {
+    if let Some((_, to, how)) = MOVED_TYPES.iter().find(|(from, _, _)| *from == segs) {
+        return Some(format!("did you mean `{to}`? {how}"));
+    }
+    let last = segs.last()?;
+    let mut same: Vec<String> =
+        LOCUS_PATHS.iter().filter(|p| p.last() == Some(last) && **p != segs).map(|p| p.join("::")).collect();
+    same.dedup();
+    match same.as_slice() {
+        [one] => Some(format!("did you mean `{one}`?")),
+        _ => None,
+    }
+}
+
+/// Every public stdlib fn named `name`, by its full path, in table
+/// order (GH #1948): the did-you-mean for a bare call that names nothing
+/// (`substring(s, 0, 2)` → `std::str::substring`). A stdlib fn is called
+/// by its path.
+pub fn fn_paths_named(name: &str) -> Vec<String> {
+    SURFACES
+        .iter()
+        .filter(|s| s.public().any(|f| f.name == name))
+        .map(|s| format!("std::{}::{}", s.ns.join("::"), name))
+        .collect()
 }
 
 /// Nearest known name within the namespace, for the did-you-mean
@@ -2301,6 +2368,27 @@ pub fn builtin_member_advice(recv: &Ty, field: &str) -> Option<&'static str> {
         }
         _ => None,
     }
+}
+
+/// GH #1995 S3, the rest of the member half: `s.trim()` on a String is
+/// the method spelling of a `std::str` free function, and Hale has no
+/// methods on its primitives. For a field named like a public `std::str`
+/// fn that takes the String first, the advice names the call to write
+/// (`std::str::trim(s)`, `std::str::cut(s, …)`). The fns over a
+/// `ByteView` take no String first and are not suggested.
+pub fn str_fn_member_advice(recv: &Ty, field: &str) -> Option<String> {
+    if !matches!(recv, Ty::Prim(PrimType::String) | Ty::Prim(PrimType::StringView)) {
+        return None;
+    }
+    let f = row(&["std", "str", field]).filter(|f| f.is_public() && !field.starts_with("__"))?;
+    let args = match f.sig.as_ref() {
+        Some(sig) if sig.params.first() != Some(&SigTy::Str) => return None,
+        Some(sig) if sig.params.len() == 1 => "s",
+        _ => "s, …",
+    };
+    Some(format!(
+        "string operations are free functions, not methods: `std::str::{field}({args})`"
+    ))
 }
 
 /// The stage-1 check: for a call whose callee is a `std::` path,

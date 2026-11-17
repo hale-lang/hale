@@ -27,8 +27,7 @@ fn main() {
 | **Record (`type`)** | `type Player { id: String; score: Int = 0; }` | Fixed-layout product type with optional field defaults |
 | **Enum (`enum`)** | `type Event = enum { Tick(Int), Halt };` | Tagged union with unit or payload-carrying variants |
 | **Set union (`\|`)** | `type Inbound = Book \| Trade \| Unknown;` | Union of existing struct/enum types where the member type is the tag |
-| **Type alias** | `type Cents = Int;` / `type IntBox = Box<Int>;` | Transparent synonym for an existing type or concrete generic instantiation |
-| **Generic record** | `type Box<T> { value: T = 0; }` | Template monomorphized per concrete type argument (`Box<Int>`) |
+| **Type alias** | `type Cents = Int;` / `type UserId = String;` | Transparent synonym for an existing type |
 | **Fixed array / slice** | `[Int; 8]` / `[Player]` | Inline fixed-length array (`[0; 8]`) or slice view |
 | **Tuple** | `let pair = (1, "one");` | Lightweight anonymous grouping |
 
@@ -53,6 +52,32 @@ fn main() {
 - **A record field's default names its type:** write `meta: Meta = Meta { };`, not `meta: Meta = { };`. A bare `{ }` is an empty block, which produces no value, and `hale check` refuses it at the default and spells the literal (`Meta { }`).
 - **Top-level only:** `type` declarations must appear at the top level outside any `locus` body.
 - **No loci inside records:** Because records are pure values with no lifecycle hooks, a `type` field (or `enum` variant) cannot hold a `locus` or a function pointer whose signature names a locus (`fn() -> Worker`). Store loci inside another locus's `params` instead. (A record field typed by an `interface` is permitted because it is a non-owning reference.)
+
+### Optional Fields (`x?: T`)
+
+A field marked `?` may be absent. `x?: T` declares `x` and, right after it, a real `Bool` field `has_x` that says whether `x` holds a value; `x?: T clearable` adds `clear_x` as well, for a PATCH field whose `null` means "clear it":
+
+```hale
+type Ticker {
+    symbol: String;
+    last?: Decimal<8>;
+    expires_at?: Time clearable;
+    limit?: Int = 100;
+}
+
+fn main() {
+    let mut t = Ticker { symbol: "BTC" };   // `last` left out: absent
+    println(t.has_last);                    // false
+    t.last = 97000.5d;                      // a write sets the flag
+    println(t.has_last);                    // true
+    println(t.limit, t.has_limit);          // 100 false: absent, at its default
+}
+```
+
+- **A write sets the flag:** a literal that spells `x`, an assignment to it through any path (`t.last = v`, `self.row.last = v`, `rows[i].last = v`), a write into a part of it, and a `push` or `set` into an optional `bounded` field all set `has_x` (and clear `clear_x`). The flags are ordinary fields, so a program may also read and write them by name.
+- **Leaving it out builds it absent:** `x` then holds its default, or its type's zero (`0`, `""`, `false`, the epoch, an empty list, an enum's first variant, a record of zeros). A type with no zero (a tuple, a point, `Bytes`) needs a default, and `hale check` says so at the field.
+- **One shape on the wire:** the flags are exactly the hand-written presence pair (`x: T; has_x: Bool;`) and triple the JSON and protobuf codecs read, so a record converted from the pair to `x?` crosses the wire, describes itself and hashes byte for byte as before (see [JSON](json.md) and [The API surface](../services/api.md)).
+- **Only record fields:** Hale has no optional type. `?` on a parameter, a local or a locus param, and `T?` after any type, are refused; a value that may be missing in a computation is `fallible(E)` ([Fallible values](../basics/fallible.md)).
 
 ## Value Copy Semantics and Mutation
 
@@ -128,7 +153,7 @@ Because `Cents` is transparent, it is completely interchangeable with `Int` (inc
 
 1. **Literal construction requires a record or locus target:** If `type Cents = Int;`, writing `Cents { }` is a compile error.
 2. **No cyclic aliases:** `type A = B; type B = A;` is rejected.
-3. **Concrete generic aliases only:** Generic aliases (`type Twin<T> = Pair<T>;`) are not supported, but aliasing a concrete instantiation (`type IntBox = Box<Int>;`) is supported and supplies the type arguments for `let b: IntBox = Box { value: 1 };` (for both generic records and generic loci).
+3. **Concrete generic aliases only:** An alias can name one instantiation of a [generic](./generics.md) record or locus (`type OrderReply = Envelope<Order>;`), and `let r: OrderReply = Envelope { data: o };` then takes its type arguments from the alias. An alias cannot take parameters itself: `type Reply<T> = Envelope<T>;` is refused.
 
 ## Enums (`enum`) and Exhaustive `match`
 
@@ -160,6 +185,32 @@ fn main() {
 - **Exhaustive matching:** `match` arms can match literal sub-patterns (`Event::Tick(0)`) before variable bindings (`Event::Tick(n)`), and must cover every variant in the `enum`.
 - **`enum` vs. `fallible(E)`:** Use `enum` for domain states and sum-type messages; use `fallible(E)` ([When a Call Can Fail](../basics/fallible.md)) for functions that can fail.
 
+### Names, Parsing and the Variant List
+
+Don't write a name function and a parse function for each enum. The compiler writes four for every enum `E`:
+
+```hale
+type Lifecycle = enum { Active, Archived };
+
+fn load(status: String) -> Lifecycle {
+    // an unknown name fails with ParseError { kind: "unknown_variant", input }
+    return Lifecycle::parse(status) or Lifecycle::Active;
+}
+
+fn main() {
+    for l in Lifecycle::variants {                      // [Lifecycle; 2], declaration order
+        println(Lifecycle::index(l), " ", Lifecycle::name(l)); // 0 Active, 1 Archived
+    }
+}
+```
+
+- **`E::name(v)`** is the variant's external name, its values ignored. **`E::index(v)`** is its position in the declaration, from 0. Both work on any enum but a generic one.
+- **`E::parse(s)`** is the variant `s` names exactly, and fails with `ParseError { kind: "unknown_variant", input: s }` otherwise; write `or raise`, or `or` a default. **`E::variants`** is a value (no parentheses) holding every variant in declaration order. Both need variants that carry no values: on an enum like `Event` above, `hale check` refuses them and names the variant that carries values.
+- **One external name:** a variant's name is its `json:` tag's when it has one (``Sell `json:"sell"` ``), so `name`, `parse` and the [JSON codecs](./json.md) always agree. With a catch-all, ``Other(String) `json:",other"` ``, `parse` cannot fail: an unknown name becomes `Other(s)`, and `name(Other(s))` is `s`. `E::variants` leaves that catch-all out.
+- **`@wire_case`:** spell every variant in one case without tagging each: `@wire_case(snake) type Phase = enum { InProgress, Done };` makes the names `in_progress` and `done`. The cases are `snake`, `screaming_snake` (`IN_PROGRESS`), `kebab` (`in-progress`) and `lower` (`inprogress`), and a variant's own `json:` tag still wins.
+- **Printing is unchanged:** `println(Lifecycle::Archived)` still shows `Lifecycle::Archived`; ask for `Lifecycle::name(v)` where you want the external name.
+- **A variant named `name` keeps its meaning:** if an enum declares a variant called `name`, `parse`, `variants` or `index`, `E::name` is that variant, and the other three are still the enum's.
+
 ## Set Types (`A | B | C`)
 
 When each alternative is already a standalone `type` record or `enum`, declare a **set type** using `|` instead of wrapping each record in a redundant enum variant:
@@ -185,37 +236,14 @@ fn describe(m: Inbound) -> String {
 }
 ```
 
-- **Type-as-tag coercion:** A `Book`, `Trade`, or `Unknown` value automatically coerces to `Inbound` wherever `Inbound` is expected (return values, function arguments, typed `let` bindings, or struct fields).
+- **Type-as-tag coercion:** A `Book`, `Trade`, or `Unknown` value automatically coerces to `Inbound` wherever `Inbound` is expected (return values, a function body's final expression included, function arguments, typed `let` bindings, or struct fields), and on the error channel of a `fallible(Inbound)` function: `fail`, `or fail err` and `or raise` of a member are the set's ([Converting Errors for `or raise`](../basics/fallible.md#converting-errors-for-or-raise)).
+- **Bare names are for sets only:** A set's `match` names a member by its type alone (`Book(b)`). An `enum`'s `match` always names the enum (`Shape::Line(l)`); `Line(l)` against an enum, or against a generic fn's type parameter, is a type error.
 - **Target type required for mixed branches:** An unannotated `if` or `match` whose arms produce `Book` and `Trade` (`let m = if n == 0 { Book { ... } } else { Trade { ... } };`) fails typechecking because the compiler does not guess which set type joins them; annotate the binding (`let m: Inbound = ...`) or return from a function declared `-> Inbound`.
 - **Members must be declared structs or enums:** Primitive types like `Int` cannot appear directly in a set; wrap them in a struct (`type Count { n: Int; }`).
 - **Wire representation and seams:** Across JSON APIs, a set serializes as a tagged object keyed by the member's type name (`{"Trade": {"qty": 2, "px": 1.5}}`). At the service layer, a [seam](../services/seams.md) can dispatch each member of a set to a dedicated handler method and verify exhaustiveness at compile time.
 
-## Generic Records and Loci (`<T>`)
+## Generic Records
 
-Both `type` records and `locus` declarations can be parameterized by type arguments:
+A record can take type parameters (`type Envelope<T> { data: T; request_id: String = ""; }`), and so can a locus or a `fn`. See [Generics](./generics.md).
 
-```hale
-type Box<T> {
-    value: T = 0;
-}
-
-locus Cache<K, V> {
-    params {
-        cap: Int = 1;
-    }
-}
-
-fn main() {
-    let b: Box<Int> = Box { value: 1 };
-    let c: Cache<Int, String> = Cache { cap: 2 };
-    println(b.value, " ", c.cap);
-}
-```
-
-### Monomorphization and Type-Argument Rules
-
-- **Explicit type context required:** In `let b: Box<Int> = Box { value: 1 };`, the struct literal spells the template name `Box` while the concrete type argument `<Int>` comes from the surrounding type context (a `let` annotation, function return type `-> Box<Int>`, enclosing struct field, assignment target, or `[Box<Int>; 2]` array annotation). Writing `let b = Box { value: 1 };` without a type annotation is a compile error.
-- **Supported type arguments:** Any user-defined `type` record and all built-in types (`Int`, `Float`, `Bool`, `String`, `Duration`, `Decimal`, `Time`, `Bytes`, `BytesView`, `BytesMut`, `StringView`) are valid type arguments. (`Uint` has no lowered representation and is rejected; use `Int`.)
-- **Name mangling:** Each instantiation compiles to a distinct specialized type named `Template_Arg1_Arg2` (such as `Box_Int` or `Cache_Int_String`). Inside `Box<T>`, the identifier `T` always resolves to the type parameter even if the seed also declares a top-level type named `T`.
-
-Next: [Files](./files.md).
+Next: [Generics](./generics.md).

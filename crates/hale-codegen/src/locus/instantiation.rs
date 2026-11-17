@@ -1600,19 +1600,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             if child_slot.kind != parent_slot.kind {
                                 return Err(CodegenError::Unsupported(format!(
                                     "as_parent_for `{}`: slot `{}` kind \
-                                     mismatch — parent is `{:?}`, child is \
-                                     `{:?}`",
+                                     mismatch — parent is `{}`, child is \
+                                     `{}`",
                                     child_locus,
                                     parent_slot.name,
-                                    parent_slot.kind,
-                                    child_slot.kind
+                                    crate::codegen::slot_kind_word(parent_slot.kind),
+                                    crate::codegen::slot_kind_word(child_slot.kind)
                                 )));
                             }
                             if child_slot.elem_ty != parent_slot.elem_ty {
                                 return Err(CodegenError::Unsupported(format!(
                                     "as_parent_for `{}`: slot `{}` cell-type \
-                                     mismatch — parent stores {:?}, child \
-                                     stores {:?}",
+                                     mismatch — parent stores {}, child \
+                                     stores {}",
                                     child_locus,
                                     parent_slot.name,
                                     parent_slot.elem_ty,
@@ -1836,7 +1836,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         _ => {
                             return Err(CodegenError::Unsupported(format!(
                                 "@form(lru_cache) `{}`: slot `{}` cell type \
-                                 must be a user-declared struct; got {:?} \
+                                 must be a user-declared struct; got {} \
                                  (typecheck should have rejected this — \
                                  contact compiler maintainer)",
                                 locus_name, slot.name, slot.elem_ty
@@ -1877,7 +1877,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         other => {
                             return Err(CodegenError::Unsupported(format!(
                                 "@form(lru_cache) `{}`: indexed-by field \
-                                 `{}` has type {:?}; v1 supports Int and \
+                                 `{}` has type {}; v1 supports Int and \
                                  String key types only",
                                 locus_name, field_name, other
                             )));
@@ -1935,7 +1935,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         _ => {
                             return Err(CodegenError::Unsupported(format!(
                                 "@form(hashmap) `{}`: slot `{}` cell type \
-                                 must be a user-declared struct; got {:?} \
+                                 must be a user-declared struct; got {} \
                                  (typecheck should have rejected this — \
                                  contact compiler maintainer)",
                                 locus_name, slot.name, slot.elem_ty
@@ -1976,7 +1976,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         other => {
                             return Err(CodegenError::Unsupported(format!(
                                 "@form(hashmap) `{}`: indexed-by field \
-                                 `{}` has type {:?}; v1 supports Int and \
+                                 `{}` has type {}; v1 supports Int and \
                                  String key types only (other key types \
                                  are deferred — see spec/forms.md \
                                  @form(hashmap) key types section)",
@@ -3285,8 +3285,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             if val_ty != declared_ty {
                 return Err(CodegenError::Unsupported(format!(
-                    "locus `{}` field `{}` type mismatch: declared {:?}, \
-                     got {:?}",
+                    "locus `{}` field `{}` type mismatch: declared {}, \
+                     got {}",
                     locus_name, fname, declared_ty, val_ty
                 )));
             }
@@ -5632,6 +5632,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         let init_ref = init.as_value_ref();
         let caller_ref = caller.as_value_ref();
+        // An anchor nested in another anchor's params (a second `App`
+        // built through the first one's pinned `h`) is initialized in an
+        // init of an init: its caller is the outer init, still being
+        // lowered, and a value the inner one reads may be the outer's
+        // caller's (a binding of `fn main`, `Ear { tag: s }`). Captured
+        // here like the caller's own: the outer init stores it into this
+        // block, and the outer init's capture, when it finishes, moves
+        // it into its own block in turn, or refuses it there if it is a
+        // value of no function the chain is instantiated from.
+        let caller_is_init = {
+            let name = caller.get_name().to_string_lossy();
+            name.starts_with("__pinned_init_") || name.starts_with("__pool_init_") || name.starts_with("__pool_birth_")
+        };
         let mut captured: Vec<LLVMValueRef> = Vec::new();
         let mut uses: Vec<(LLVMValueRef, u32, usize)> = Vec::new();
         for bb in init.get_basic_blocks() {
@@ -5671,7 +5684,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if owner == init_ref {
                         continue;
                     }
-                    if owner != caller_ref {
+                    if owner != caller_ref && !caller_is_init {
                         return Err(CodegenError::LlvmEmit(format!(
                             "{} `{}`: its params-init reads a value of a function \
                              other than the one instantiating it",
@@ -6173,7 +6186,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if !wire_ok(&ty) {
                 return Err(CodegenError::Unsupported(format!(
                     "cross-pool spawn `{}`: unsupported cross-pool payload \
-                     field `{}: {:?}` — a fire-and-forget spawn marshals its \
+                     field `{}: {}` — a fire-and-forget spawn marshals its \
                      params across the thread boundary via the bus wire \
                      format, which supports primitives (Int, Float, Decimal, \
                      Bool, Duration, Time), String, Bytes, nested structs, \
@@ -6254,6 +6267,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.crosspool_child_shape_ok(child_locus, info)?;
         let (param_order, param_fields) =
             self.crosspool_param_layout(child_locus, info)?;
+        // GH #1951 item 4: the wire walks a counted list, an enum's cell or
+        // a tuple in a loop or a switch, and the create cell's dispatch is
+        // one straight-line block, so a spawn marshals only the shapes the
+        // walk takes without either (the check refuses the rest at the
+        // spawn, `lowering_laws::cross_pool_child_shape`).
+        for fname in &param_order {
+            if let Some((_, t)) = param_fields.get(fname) {
+                if !self.wire_fixed_walk(t, true, 0) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "cross-pool spawn `{child_locus}`: param `{fname}: {t}` is a value the wire \
+                         carries in a loop or a switch (a `bounded` list of pointers, an enum with \
+                         payloads, a tuple), and a cross-pool create cell is one straight-line block"
+                    )));
+                }
+            }
+        }
         // Synthesize (once) the far-side dispatcher for this (I, A) pair.
         let dispatcher = self.synthesize_crosspool_dispatcher(
             child_locus,
@@ -6302,7 +6331,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if val_ty != declared_ty {
                 return Err(CodegenError::Unsupported(format!(
                     "cross-pool spawn `{}` field `{}` type mismatch: declared \
-                     {:?}, got {:?}",
+                     {}, got {}",
                     child_locus, fname, declared_ty, val_ty
                 )));
             }

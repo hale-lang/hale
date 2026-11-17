@@ -575,7 +575,7 @@ locus Wire {
     fn decode(b: String) -> Inbound fallible(WireError) {
         if b == "cancel" { return Cancel { id: 1 }; }
         if std::str::starts_with(b, "new ") {
-            let qty = std::str::parse_int(b[4..len(b)]) or { fail WireError { at: 4 }; };
+            let qty = std::str::parse_int(b[4..]) or { fail WireError { at: 4 }; };
             return NewOrder { id: qty * 10, qty: qty };
         }
         fail WireError { at: 0 };
@@ -671,14 +671,12 @@ type Check { name: String; status: Status; }
 
 type HealthQuery {
     verbose: Bool = false;
-    since: Time = `1970-01-01T00:00:00Z`;
-    has_since: Bool = false;
+    since?: Time;
 }
 
 type Health {
     checks: bounded[Check; 16] indexed_by name;
-    note: String = "";
-    has_note: Bool = false;
+    note?: String;
 }
 
 type Problem = enum { @not_found NotFound(String), @unavailable Busy };
@@ -696,7 +694,6 @@ locus Probe {
         push(h.checks, Check { name: "cache", status: Status::Degraded("cold") }) or discard;
         if q.has_since {
             h.note = "since " + std::time::iso8601(q.since);
-            h.has_note = true;
         }
         return h;
     }
@@ -726,18 +723,22 @@ fn main() {
   constants, module fns and records of those: a default never reads
   the scope of the literal that leaves it (C11), so the decoder builds
   it on its own.
-- **A presence pair, when "not sent" means not sent.** With `since`
-  and `has_since: Bool`, the caller may leave the key out or send
-  `null`, and the handler reads the flag. The encoder writes `note`
-  only when `has_note` is set, and it never writes a flag. Declare
-  both fields with defaults, so that a literal with nothing to say
-  names neither. Never encode absence as a value the field's type can
+- **An optional field, when "not sent" means not sent.** `since?: Time`
+  declares `since` and its presence flag `has_since: Bool`: the caller
+  may leave the key out or send `null`, and the handler reads the flag.
+  The encoder writes `note` only when `has_note` is set, and it never
+  writes a flag. Writing `h.note` sets `has_note`, and a literal that
+  leaves `note` out builds it absent, so neither side spells the flag.
+  A hand-written pair (`note: String = ""; has_note: Bool = false;`) is
+  the same shape on the wire; prefer the mark, which cannot forget the
+  flag (F.52). Never encode absence as a value the field's type can
   hold (`""`, `-1`, the epoch): the description cannot say so, and a
   client cannot tell it from a real value.
 - **A presence triple, when "not sent", "clear" and a value all differ.**
   A PATCH keeps a field it is not sent, clears one sent as `null`, and
-  sets one sent a value. Add `clear_note: Bool = false` beside the pair,
-  and the handler reads `clear_note` before `has_note`. Use it only where
+  sets one sent a value. Declare it `note?: String clearable` (the pair
+  and a `clear_note` flag), and the handler reads `clear_note` before
+  `has_note`. Use it only where
   a caller must be able to clear: on a pair, `null` and "not sent" are
   one answer, which is the right one for every other input.
 - **A `std::json::Value`, when the program carries JSON it never
@@ -761,7 +762,7 @@ fn main() {
   `{"Degraded": "cold"}`, and the description lists the variants. A
   `String` status crosses as any string, and every client re-invents
   the list. An absent enum field is its default when it declares one,
-  and `missing_field` otherwise, unless the field is a presence pair.
+  and `missing_field` otherwise, unless the field is optional.
 - **An error type that says which thing went wrong.** With
   `fallible(Problem)`, where `Problem` is an enum or a set of error
   records, a caller branches on the variant. A record of `code: String`
@@ -1332,36 +1333,35 @@ as `Int`'s `/` does, and a runtime divisor (`d / n`) is the same
 integer division. When the count must round another way, narrow
 first, as `count` above does. **[error for an unnamed narrowing]**
 
-### C9. A `bounded` lives in its holder: count it, copy it whole, return its record
+### C9. A `bounded` is a value: count it, build it from a literal, copy it whole
 
-A `bounded[T; N]` is laid out inline in the value that holds it. Its
-operations are the intrinsics, and its lifetime is its holder's. Four
-edges follow from that, and the check refuses the wrong side of each:
+A `bounded[T; N]` is a fixed-capacity list. Its operations are the
+intrinsics; a literal at a declared site builds one; a local, a return
+and a whole assignment each hold a copy of their own. Four edges follow,
+and the check refuses the wrong side of each:
 
 ```hale
 type Row { names: bounded[String; 4]; }
-type Names { items: bounded[String; 4]; }
 
 fn fill(r: Row) {
     push(r.names, "a") or discard;
     push(r.names, "b") or discard;
 }
 
-fn first_two() -> Names {
-    let mut n = Names { };
-    push(n.items, "x") or discard;
-    push(n.items, "y") or discard;
-    return n;
+fn first_two() -> bounded[String; 4] {
+    let mut out: bounded[String; 4] = ["x"];
+    push(out, "y") or discard;
+    return out;
 }
 
 locus Roster {
-    params { row: Row = Row { }; spare: Names = Names { }; }
+    params { row: Row = Row { }; spare: Row = Row { }; }
     fn refill() {
         let mut mine = Row { };
         fill(mine);
         self.row = mine;
-        self.spare.items = first_two().items;
-        println(count(self.row.names), " ", count(self.spare.items));
+        self.spare.names = first_two();
+        println(count(self.row.names), " ", count(self.spare.names));
     }
 }
 
@@ -1370,24 +1370,24 @@ fn main() { let r = Roster { }; r.refill(); }
 
 - **`count(x)`, not `len(x)`.** `len` of a `bounded` is refused, and the
   diagnostic points at `count`. **[error]**
-- **Return the record, not the list.** A fn returning `bounded[T; N]` is
-  refused. Return a record that holds it, as `first_two` does; its
-  elements come back whole, and the caller can keep pushing.
-  **[error]**
+- **A literal fits its capacity.** `let xs: bounded[Int; 4] = [1, 2, 3];`
+  is a list of three; `[]` is empty. A literal longer than the capacity
+  is refused where it is written, and so is a field default: a
+  `bounded` field starts empty. **[error]**
 - **Fill a local, then store it whole.** A fn that pushes a `String`,
   `Bytes` or record into a `bounded` under its parameter allocates the
   element in the frame that runs the call. Handed a place under `self`
   (`fill(self.row)`), it would leave the locus holding elements that
   frame frees, so that argument is refused. Fill a local the frame owns
-  and store it whole (`self.row = mine`), which anchors the elements in
-  the locus's arena. Or write the elements through `self`, in a method
-  of the locus that holds the place. **[error]**
-- **Whole assignment is a copy.** Assigning one `bounded` place to
-  another of the same element type and capacity (`self.spare.items =
-  first_two().items`) copies the elements and the count. A later `push`
-  on either side does not reach the other. Anything else on the right,
-  such as an array literal or another capacity, is refused: build the
-  list with `push`. **[error for a mismatched type]**
+  and store it whole (`self.row = mine`), or return the list
+  (`first_two`), which anchors the elements in the locus's arena when it
+  is stored. **[error]**
+- **Whole assignment is a copy.** Assigning one `bounded` to a place or a
+  local of the same element type and capacity (`self.spare.names =
+  first_two()`) copies the elements and the count, and so does binding
+  a local from a place (`let mut l = self.row.names;`). A later `push`
+  on either side does not reach the other. Another element type or
+  capacity is refused. **[error for a mismatched type]**
 
 ### C10. A served HTTP edge: cap it in your own shape, and stream from a pool that parks
 
@@ -1893,24 +1893,43 @@ as itself beside its tag; inlined into the seam, each of the producer's
 on to a method taking the set (an encoder of the outbound set, say) is
 not split and is built as any set is.
 
-### S15. Build a long text in one buffer, never with `s = s + chunk` in a loop
+### S15. Grow a long text in one place, and hand it on after the loop
 
-This rule applies on every path, hot or not. `s += chunk` is `s = s + chunk`, the same site. `s + chunk` makes a new
-String as long as both and copies `s` into it. Inside a loop the old `s`
-is not freed: it lives in the method's scratch until the method returns,
-so every prefix the loop made is still held at the end. Building `n`
-bytes in `k` appends holds about `n·k/2` bytes. Measured on v0.25.0,
-with 500-byte rows, as the growth of the process's peak resident set:
+This rule applies on every path, hot or not. An appending assignment
+(`out = out + chunk`, `out += chunk`, `out = f"{out}…"`) on a local
+declared `let mut`, or on a `String` field of `self`, appends into a
+buffer that place owns and grows geometrically, so building `n` bytes
+costs O(n) (spec/stdlib.md § "Building a String"). It stays linear only
+while nothing else holds the text: a read of the local that may keep
+the value (the local passed to a call, bound, stored or returned) gives
+the buffer up, and the next append copies the whole text first. So read
+the growing text in the loop only as an operand of `+` or of a
+comparison, in a slice, or as an argument of a `std::` reader that
+returns a number or a `Bool` (`len`, `std::str::contains`, `index_of`,
+`starts_with`), and hand it on after the loop:
 
-| text | appends | `out = out + row` | `BytesBuilder` |
-|---|---|---|---|
-| 500 KB | 1 000 | +250 MB | +2 MB |
-| 1 MB | 2 000 | +990 MB | +4 MB |
-| 2 MB | 4 000 | +3.9 GB | +8 MB |
+```hale
+fn page(n: Int) -> String {
+    let mut out = "[";
+    let mut i = 0;
+    while i < n {
+        if i > 0 { out += ", "; }
+        out = out + "{\"id\": " + to_string(i) + "}";
+        i = i + 1;
+    }
+    return out + "]";
+}
 
-Append into one `std::bytes::BytesBuilder` instead. It grows by
-doubling, so it holds the text once, plus slack. A list body is the
-common case:
+fn main() { println(page(3)); }
+```
+
+Two shapes are still quadratic, and the hot-path lint reports both at
+the append: a loop that appends to a local and also hands it to a call
+(`out += row; log(out);`), and an append to any other place
+(`rec.body = rec.body + row`), which builds a fresh String the size of
+the whole each time. For those, and for a buffer that outlives one
+call, append into a `std::bytes::BytesBuilder`: it grows by doubling
+and holds the text once, plus slack:
 
 ```hale
 locus JsonList {
@@ -1929,34 +1948,49 @@ locus JsonList {
     }
 }
 
-fn page(n: Int) -> String {
+fn main() {
     let rows = JsonList { };
-    let mut i = 0;
-    while i < n {
-        rows.add("{\"id\": " + to_string(i) + "}");
-        i = i + 1;
-    }
-    return "[" + rows.text() + "]";
+    rows.add("{\"id\": 0}");
+    println("[" + rows.text() + "]");
 }
-
-fn main() { println(page(3)); }
 ```
 
-A `+` that joins a fixed handful of pieces, such as one record rendered
-as one line, is fine. The rule is about a loop whose trip count grows
-with the input. `std::str::join` joins a `@form(vec)` of Strings in one
-allocation. `std::http::Server` assembled requests with `+` until
-2026-10-18: a 12 MiB body held about 9.5 GB before any handler ran.
-`hale check` does not flag the loop. **[convention]**
+Until GH #1947 every `+` made a new String and the frame's arena kept
+each one until the method returned, so a loop of appends held every
+prefix it made: a 350 KB text built in 8000 appends peaked at 4.5 GB.
+It now peaks at 4 MB. A chain of `+` (`a + b + c`) is one allocation.
+`std::str::join` joins a `@form(vec)` of Strings in one allocation.
+**[convention]**
 
 ### S16. Read a long text by position, never by slicing off the rest
 
-This rule also applies on every path. `rest = rest[(nl + 1)..len(rest)]`
+This rule also applies on every path. `rest = rest[(nl + 1)..]`
 copies the remainder for each line, and each copy stays in scratch until
-the method returns: the same square as S15. Walk the text by position
-instead. `std::str::bytes_view` measures it once, `byte_at` reads a byte
-against that length, and `std::str::slice(v, start, end)` copies only
-the line:
+the method returns: the square an append that copies makes (S15).
+
+To take a text apart by a separator, by line or by whitespace, loop over
+a text source (spec/semantics.md § Text sources). It is the walk by
+position below, already written: one view, one pass, a copy of each part
+and nothing else.
+
+```hale
+fn count_rows(all: String) -> Int {
+    let mut rows = 0;
+    for line in std::str::lines(all) {
+        if len(line) > 0 { rows = rows + 1; }
+    }
+    return rows;
+}
+
+fn main() { println(count_rows("a\nb\n\nc")); }
+```
+
+`std::str::split(s, sep)` keeps empty parts, and `std::str::words(s)`
+never yields one. **[convention]**
+
+For any other scan, walk the text by position. `std::str::bytes_view`
+measures it once, `byte_at` reads a byte against that length, and
+`std::str::slice(v, start, end)` copies only the part:
 
 ```hale
 fn line_end(v: std::str::ByteView, start: Int) -> Int {
@@ -2055,8 +2089,10 @@ certify a path — plus one tier you get for free because your
 | Tier | Check | Status |
 |---|---|---|
 | **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match, a set's included (2.9); a seam's coverage, failure placement and one-tower rules (2.10); `@form` cell constraints; the unit laws, and a narrowing with no policy (C8); a `bounded`'s `len`, its return by value and an element stored through a parameter's place (C9); a default that reads the caller's scope (C11); a writer handed a held record and a parameter in one call (C14) | build fails |
-| **warn** (default) | unbounded-alloc survey (self-escaping allocs in unbounded contexts; retirement-aware since v0.11.3); subscription nothing publishes to; locus/builder in a loop **or bus handler**; allocating recv in a loop; blocking call on a cooperative pool (interprocedural); accept-without-release on a daemon | advisory |
-| **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
+| **warn** (default) | unbounded-alloc survey (self-escaping allocs in unbounded contexts; retirement-aware since v0.11.3); subscription nothing publishes to; blocking call on a cooperative pool (interprocedural); accept-without-release on a daemon | advisory |
+| **hot-path** (opt-in) | locus/builder in a loop **or bus handler**; a locus factory's result bound there; allocating recv in a loop — `hale check --warn-hot-path`, and every `hale verify` (GH #1948: off by default, so a first program's ordinary loop is not reported) | advisory |
+| **string-match** (opt-in) | three or more `if` tests in a row comparing one String with literals, which a `match` (with `\|` alternatives) says once — `--warn-string-match` on `hale check` or `hale verify` (off by default for both) | warnings |
+| **@hot** (opt-in) | the hot-path findings as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |
 | **@effects** (opt-in) | `@effects(none: {syscall, block, time, entropy, env, ffi, publish, spawn, recursion, stdio})` / `@effects(publish: {T})`, and the `@no_*` / `@deterministic` sugar — checked transitively; diagnostics carry the call chain to the offending leaf | build fails on violation |
 | **@sealed** (opt-in) | a sealed locus's `params` are reachable only from inside its own methods — reads and writes both. The tier that makes state confinement structural; loci are otherwise not field-encapsulated. `hale check --sealable` reports what taking it would cost | build fails on violation |
@@ -2159,12 +2195,13 @@ thread / pool / subject / fd counts in CI — see
   first-class; String-match the command routers.
 - **Floating state** — every named piece of state has one locus
   owner. State that "lives between loci" is a modeling error.
-- **Growing a String with `+` in a loop, or slicing off the rest of
-  one** — memory quadratic in the text, on every path (S15, S16).
+- **Handing a String to a call in the loop that appends to it, or
+  slicing off the rest of one** — memory quadratic in the text, on
+  every path (S15, S16).
 - **A hand-written `match` forwarding a set's members to another
   locus's methods** — a seam checks the coverage both ways (2.10).
-- **A sentinel for "absent" on the wire** (`""`, `-1`) — declare a
-  presence pair (2.11).
+- **A sentinel for "absent" on the wire** (`""`, `-1`) — declare an
+  optional field, `x?: T` (2.11).
 - **JSON built by hand for a type the codec carries** — call
   `T::api_encode` (2.11).
 
@@ -2216,9 +2253,10 @@ absent thing means fighting the design, not waiting on it.
   `Vec<User>`. So `Option<T>` is not merely unblessed; it is
   not currently expressible.
 
-  At an API boundary, absence is a **presence pair**: a field `x`
-  beside a `has_x: Bool`, which the codec reads as an optional key
-  (2.11).
+  At an API boundary, absence is an **optional field**: `x?: T`, the
+  field `x` beside a `has_x: Bool` the mark declares, which the codec
+  reads as an optional key (2.11). There is no general `T?` (F.52):
+  optionality is a record field's, never a type's.
 - **Fn-pointer callbacks don't capture state.** Loci are the
   language's closures — state lives in a locus with its own
   `self`, or routes through bus subjects. A capturing lambda
@@ -2250,16 +2288,18 @@ Write the workaround knowing it's a placeholder.
 ### Sharp edges — current limitations, step around them
 
 Implementation constraints, not positions; no promise attached.
-Two of them pass `hale check` and fail only at `hale build`: know
-those cold.
+One of them passes `hale check` and fails only at `hale build`: know
+it cold.
 
-- **No char-level `s[i]`** — and the checker doesn't say so:
-  `s[1]` on a `String` typechecks, then the build fails with
-  "indexing a non-array value (type String)". Use `s[i..i + 1]`
-  slices, `std::str::index_of`, or the UTF-8 accessors
-  `std::str::cp_at` / `cp_size` / `cp_count` when you need code
-  points rather than bytes. There is still no `Char` type;
-  `cp_at` yields the code point as an `Int`.
+- **No char-level `s[i]`, and no `for c in s`.** `hale check`
+  refuses both on a `String` (GH #1995; until then the check passed
+  them and the build failed with "indexing a non-array value").
+  Use `s[i..i + 1]` slices, a view's `std::str::byte_at(v, i)`,
+  `std::str::index_of`, or the UTF-8 accessors `std::str::cp_at` /
+  `cp_size` / `cp_count` when you need code points rather than
+  bytes; to take a text apart, loop over `std::str::split`,
+  `lines` or `words` (S16). There is still no `Char` type; `cp_at`
+  yields the code point as an `Int`.
 - **Write the stdlib's time types bare: `Time` and `Duration`, not
   `std::time::Time` or `std::time::Duration`.** The qualified
   spelling typechecks as a field, a `@form` cell type or a fn

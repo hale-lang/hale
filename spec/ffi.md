@@ -60,7 +60,9 @@ An `@ffi("c")` fn declaration MUST NOT be:
   if exposed to user code.
 - **Defaulted.** Parameter defaults are not portable across the
   C-ABI boundary; the wrapper layer applies defaults before the
-  call.
+  call. `hale check` refuses a defaulted `@ffi` parameter at its
+  default (GH #1942: the build refused it after a passing check),
+  naming the wrapper to write.
 
 The parser rejects all three with a diagnostic at the annotation
 or marker position.
@@ -76,7 +78,7 @@ matching C-ABI representation at the call boundary:
 | `Int` | `i64` | `int64_t` | 64-bit signed throughout. |
 | `Float` | `double` | `double` | 64-bit IEEE 754. |
 | `Bool` | `i32` | `int32_t` | Hale's i1 zero-extends to i32 at the call, truncates back at the return. Avoids C `_Bool` cross-platform ambiguity. |
-| `String` | `ptr` | `const char *` | NUL-terminated. Caller owns; callee MUST NOT retain past the call. A `StringView` does **not** implicitly coerce to a `String` parameter — it isn't NUL-terminated, so a `char*`-expecting callee would `strlen` past its end. Pass a view as a `StringView` parameter (→ `lotus_view_t`, length-carrying) or materialize it first via `std::str::clone`. |
+| `String` | `ptr` | `const char *` | NUL-terminated. Caller owns; callee MUST NOT retain past the call. A `String` returned to Hale is a value: Hale may measure it once and remember its length, so C must not rewrite the bytes of a String it returned while Hale holds it (a buffer the next call reuses, such as `sqlite3_column_text`'s, is cloned at once with `std::str::clone`). A `StringView` does **not** implicitly coerce to a `String` parameter — it isn't NUL-terminated, so a `char*`-expecting callee would `strlen` past its end. Pass a view as a `StringView` parameter (→ `lotus_view_t`, length-carrying) or materialize it first via `std::str::clone`. |
 | `Bytes` | `ptr` | `void *` (header) | Points at Hale's `[int64 len][payload]` header — callee uses `lotus_bytes_len(p)` / `lotus_bytes_data(p)` (declared in `lotus_arena.h`) to inspect. Caller owns. |
 | `BytesView` / `StringView` | `{ ptr, i64 }` (struct by value) | `lotus_view_t` | 16-byte F.30b view layout. C glue MAY use `lotus_view_data` to recover the payload pointer + length. |
 | `Duration` / `Time` | `i64` | `int64_t` | Both are 64-bit nanosecond counts under the hood. |
@@ -336,15 +338,21 @@ Typecheck errors:
 - `\`@ffi\` is only valid on top-level free fns at Stage 1, not
   on locus methods`
 
-Codegen errors:
+A named type crosses only as a user struct (by pointer, its C struct
+kept layout-compatible by the library author), an identity, a range
+or a quantity (its `Int`). An enum, a locus, an interface or a
+perspective has no C layout at Stage 1, and is refused at the
+annotation (GH #1942):
 
-- `@ffi fn \`<name>\` parameter \`<p>\`: type <T> is not yet
-  wired for FFI codegen at Stage 1` — user-type structs, arrays,
-  etc. fall here.
-- `@ffi fn \`<name>\`: parameter defaults are not supported
-  across the C-ABI boundary`
-- `@export fn \`<name>\`: fallible exports are not supported yet
-  (wasm entry-inversion v1)`
+- `\`@ffi\` fn \`<name>\` parameter \`<p>\` has type Color — \`Color\`
+  is an enum, which has no C layout at Stage 1; pass its variant as
+  an \`Int\` you map on each side, or a struct that carries it`
+- `\`@ffi\` fn \`<name>\`: parameter \`<p>\` has a default, and a C
+  function has a fixed arity, so nothing fills it in at the boundary`
+
+Lowering keeps its own refusals of these as the backstop of a build
+that skips the check; `hale check` stands in front of every one, so a
+program it accepts is a program `hale build` lowers.
 
 ## WASM host interface
 

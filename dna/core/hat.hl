@@ -424,7 +424,7 @@ fn hat_body(h: Hat) -> String {
     b.begin_object_field("position");
     b.string_field("id", h.position_id);
     b.string_field("charter", h.charter);
-    if len(h.persona) > 0 { b.field("persona", h.persona); }
+    if len(h.persona) > 0 { b.raw_field("persona", h.persona); }
     b.end_object();
     b.string_field("objective", h.objective);
     b.string_field("target", h.target);
@@ -435,15 +435,15 @@ fn hat_body(h: Hat) -> String {
     b.string_field("effects", h.effects);
     b.string_field("cost_ceiling", to_string(h.cost_ceiling));
     b.string_field("tool_grant", h.tool_grant);
-    b.field("hands", h.hands);
+    b.raw_field("hands", h.hands);
     b.string_field("validators", h.validators);
-    b.field("model", h.model);
+    b.raw_field("model", h.model);
     b.string_field("knowledge_bindings", h.knowledge_bindings);
-    b.field("practices", h.practices);
+    b.raw_field("practices", h.practices);
     b.string_field("practices_status", h.practices_status);
-    b.field("history", h.history);
-    if len(h.codebase) > 0 { b.field("codebase", h.codebase); }
-    if len(h.integration) > 0 { b.field("integration", h.integration); }
+    b.raw_field("history", h.history);
+    if len(h.codebase) > 0 { b.raw_field("codebase", h.codebase); }
+    if len(h.integration) > 0 { b.raw_field("integration", h.integration); }
     b.string_field("head", h.head);
     b.string_field("watermark", to_string(h.watermark));
     b.end_object();

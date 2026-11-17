@@ -107,7 +107,7 @@ locus ApplicationApi {
                     }
                     j = j + 1;
                 }
-                b.value(wire.operation(op)); i = i + 1;
+                b.raw_value(wire.operation(op)); i = i + 1;
             }
             b.end_array(); b.end_object();
             if self.provider.application_id() != self.application_id {
@@ -129,7 +129,7 @@ locus ApplicationApi {
         let b = std::json::Builder { };
         b.begin_object();
         b.begin_array_field("items");
-        b.value(wire.application(result.state));
+        b.raw_value(wire.application(result.state));
         b.end_array();
         b.end_object();
         return wire.success(self.actor, b.result());

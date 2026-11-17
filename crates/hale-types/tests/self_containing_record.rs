@@ -52,7 +52,7 @@ fn a_record_holding_itself_with_a_default_is_refused_at_the_field() {
         hits[0].0,
         "a record cannot contain itself by value: `Cfg.child: Cfg` puts a whole `Cfg` inside every `Cfg`, so none \
          can be built. Hold the `Cfg` values a `Cfg` may have in a `bounded[Cfg; N]` (it starts empty), or in an \
-         enum variant beside one that holds none (`type Child = enum { Nothing, One(Cfg) }`), or keep them \
+         enum variant beside one that holds none (`type Child = enum { Nothing, One(Cfg) };`), or keep them \
          elsewhere and hold a key"
     );
     assert_eq!(hits[0].1, "child: Cfg = Cfg { };", "located at the field");

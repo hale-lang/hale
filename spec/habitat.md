@@ -21,7 +21,9 @@ first nor last a `-`); `local` when its birth names none. The name is
 recorded on its `habitat.profile` row and kept: an `up` that asks another
 name of a habitat born is refused (exit 2). `hale habitat status` shows it
 (`name` line), the head's `Commands::index` answers it (`name`, `""` for
-any record but a habitat's), and the operator face's first screen shows it
+any record but a habitat's; an organism the habitat keeps a body for
+answers it on `Commands::org` as its `habitat`'s `name`, § A sapling's
+body), and the operator face's first screen shows it
 as the habitat's name.
 
 The local habitat is one docker compose project per machine, named for the
@@ -959,6 +961,50 @@ so the `face` and `head` the habitat's index lists for the organism answer.
 A shape kept by an `up` from before faces were kept carries no face
 environment, and its organisms get a face at the next `up`.
 
+**Both know the habitat they live in.** The body and the face are handed
+the habitat's name, `HALE_DNA_HABITAT_NAME` (as the organism's services
+are, The handover), and its face, `HALE_DNA_HABITAT_FACE`: the absolute
+origin a person reaches the habitat's face at, `http://<address>:<port>`
+with no path and no trailing `/`, as the latest `habitat.profile` row
+records it (under the habitat's declared address,
+`HALE_DNA_HABITAT_ADDRESS`; the address `hale habitat status` prints on its
+`face` line). Both or neither: a habitat whose record holds no face
+address hands neither. The organism's head answers them on its
+organization's org read, `Commands::org`, as `habitat`, an object
+`{name, face}`, so its face links to the habitat's
+(`<face>/organization`) and, through the habitat face's hand-in, to each
+of its siblings (`<face>/organisms/<name>/face`). Both are `""` on the
+habitat's own record (one that holds a `habitat.profile` row, whatever its
+process was handed) and for an organism run outside a habitat. The
+habitat's own `body` and `face` are handed neither. Written into
+`body.yaml` at every `up`, graft and apply on the habitat's machine, so a
+body made before the habitat recorded its face is told at the next.
+
+**And every organization the habitat holds.** An organism's face lists
+its siblings beside its habitat: its head asks the habitat's head for
+them, `GET /api/hale/v1/head/organizations` on the habitat face's origin
+(`HALE_DNA_HABITAT_FACE`; the face passes the path to its head), and lays
+them on the face's `Index` read as `organizations`, the habitat first and
+then each organism with the link that hands a signed-in visitor into its
+face (`spec/dna.md`, Every organization of its habitat). The habitat
+answers that read to the faces it keeps and to nobody else, with a
+credential each already holds: the asking head presents as its bearer a
+proof of its own launch token, the lowercase hex SHA-256 of
+`hale-organizations-v1`, a newline and the token, and the habitat's head
+accepts it when it is the proof of the token in
+`<habitat>/allocations/<key>/face-state/head.token` of an organism it
+holds (the file its hand-in route reads), comparing it with every
+candidate. No secret is drawn for it and no session opens it; the token
+itself is never sent, and opens nothing here. A missing, wrong or unknown
+proof is refused alike (401). The habitat answers before its sign-in's
+gate, with `{name, organisms: [{name, state}]}`: its name, and each
+organism it holds by the name it was grafted under, `up` while its face
+accepts connections, else `grafted`; no key, address or anything else of
+a graft. The organism whose face's token the proof matched is marked
+`"current": true`, the asking organization's own entry, which its face
+shows as the one it is on. The links are the organism's own to make, on the origin it was
+handed.
+
 **The body stays on the habitat's machine**, wherever the organism's
 services are placed: it runs the habitat's image with the habitat's
 directory and vault mounted, which another host does not hold, and it
@@ -1736,7 +1782,19 @@ grafted organism that came from a sapling the habitat pins, and a
   revision, cloned (then fetched) on the host under the login's
   `~/.local/share/hale/hosted/<organism>`, where the command runs. Its
   declaration is read from that checkout, so the command is the one the
-  pinned revision declares.
+  pinned revision declares. The host clones the repository itself, so a
+  sapling whose repository is a path (an absolute path, `./`, `../` or
+  `file://`: what a nursery added from a checkout records) reaches only
+  the machine it is on. `place` onto any other host is refused before
+  anything runs there, saying to push the commit and add the nursery as
+  `<url>#<commit>` (`hale habitat nursery add https://…#<sha>`). Only a
+  place whose scripts run on this machine takes a path (`local`, or the
+  host the habitat added that is this machine); through a pointer the
+  habitat's own machine does not, as it holds only the nursery's shipped
+  mirror, not the path (GH #2010). An
+  upgrade's re-run of a placement's `install` is refused the same way.
+  `unplace` is not: the placed command's checkout is on the host
+  already, and it only fetches.
 - **What the host is.** Before anything is touched, the verb reads the host
   over the login: its OS and architecture, its package manager (apt-get,
   dnf, Homebrew), what of the toolchain's prerequisites it has, the
@@ -1835,7 +1893,9 @@ grafted organism that came from a sapling the habitat pins, and a
   `host add` makes the habitat's account (on the habitat's own machine,
   here or over the pointer's login, as above); `root = true` runs it under the
   person's sudo. Before a script that needs sudo runs, the login is asked
-  over the same way whether its sudo needs a password (`sudo -n true`).
+  over the same way whether its sudo needs a password (`sudo -n true`);
+  a sapling whose repository is a path the host does not reach is
+  refused first, as above, so its host is never asked.
   None needed (a `NOPASSWD` rule, a cached ticket): it runs as ever, over
   `ssh -tt` at a terminal. One needed at a terminal: the password is asked
   for here, on the terminal itself (`/dev/tty`, whatever the verb's output

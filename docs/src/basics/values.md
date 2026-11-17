@@ -21,7 +21,7 @@ Hale provides eight built-in scalar types and two inline sequence types. `Decima
 
 | Type | Description | Literal / Syntax Examples | Notes & Defaults |
 |---|---|---|---|
-| `Int` | 64-bit signed integer | `0`, `42`, `1_000_000`, `0xFF`, `0b1010` | Default type for integer literals |
+| `Int` | 64-bit signed integer | `0`, `42`, `1_000_000`, `0xFF`, `0b1010`, `b'/'` | Default type for integer literals |
 | `Float` | 64-bit IEEE-754 float | `3.14`, `1.0e-3`, `2.5` | Default type for fractional literals |
 | `Decimal` | Exact fixed-point number (`Decimal<9>`) | `1.50d`, `0.00d` | `d` suffix; parameterized as `Decimal<S>` (`S` in `0..=18`) |
 | `U256`, `I256` | 256-bit unsigned / signed integer | `U256::from_int(5)`, `U256::parse("0xff") or ...` | No literal; checked arithmetic (see [Numbers, Money & Time](./math.md)) |
@@ -30,10 +30,10 @@ Hale provides eight built-in scalar types and two inline sequence types. `Decima
 | `Bytes` | Raw binary data | `b"\x00\x01\xff"`, `b"raw"` | Arbitrary octets, including null bytes |
 | `Duration` | Nanosecond time span | `100ns`, `50us`, `16ms`, `5s`, `90min`, `8h`, `7day` | `quantity Int in ns` |
 | `Time` | UTC wall-clock instant | `` `2026-05-08T12:00:00Z` `` | `point Duration` (nanoseconds since Unix epoch) |
-| `[T; N]` | Fixed-length array | `[1, 2, 3]`, `[0; 8]` | Inline fixed capacity `N` |
+| `[T; N]` | Fixed-length array | `[1, 2, 3]`, `[0; 8]`, `[0; 0]` | `N` is an integer literal, `0` included. There is no unsized `[T]`; an empty `[]` needs its type written: `let xs: [Int; 0] = [];` |
 | `bounded[T; N]` | Fixed-capacity dynamic list | `tags: bounded[String; 32];` | Inline in `type` structs; starts empty (`count = 0`) |
 
-Numeric literals accept underscores (`1_000_000`) as visual separators. Integer literals default to `Int`, fractional literals default to `Float`, and the `d` suffix produces an exact `Decimal` (covered in [Math, Money & Time](./math.md)).
+Numeric literals accept underscores (`1_000_000`) as visual separators. A byte literal, `b'/'`, is the `Int` value of one ASCII byte (see [Strings & Text](./strings.md)). Integer literals default to `Int`, fractional literals default to `Float`, and the `d` suffix produces an exact `Decimal` (covered in [Math, Money & Time](./math.md)).
 
 ## Variables (`let` and `let mut`)
 
@@ -117,6 +117,7 @@ fn main() {
 
 - `println` and `print` accept any number of arguments and concatenate their output without format strings.
 - Structs, tuples, and arrays of printable elements format recursively. Two types deliberately do not print directly: **loci** (which represent stateful components rather than values) and **`Bytes`** (which must be explicitly formatted as hex, length, or decoded text; see [Strings & Text](./strings.md#printing-whole-values)).
+- `len(x)` is the length of a `String`, `Bytes`, a view of either, or a fixed-size array; `Int(x)` and `Float(x)` convert between `Int` and `Float` only (parse a `String` with `std::str::parse_int(s)`, divide a `Duration` by a unit, `d / 1ms`). `hale check` refuses any other operand at the call.
 - Builtins use function call syntax (`len(s)`, `abs(x)`), not method call syntax (`s.len()`) or stdlib paths (`std::str::len(s)`, `std::math::abs(x)`, `std::io::println(x)`). If you write one of those forms, `hale check` points directly to the builtin.
 
 ## Compiler Rules and Identifier Resolution
@@ -129,7 +130,7 @@ Referencing an undeclared variable, constant, or type fails `hale check` at the 
 |---|---|---|
 | Misspelled variable or constant | `return totl;` | Reports `unknown identifier` and suggests `total` if in scope |
 | Lowercase primitive type name | `fn f() -> int` | Reports `unknown type int — did you mean Int?` (`Int`, `Float`, `String`, `Bool` are PascalCase) |
-| Duplicate field or variant | `type T { a: Int; a: Int; }` | Reports duplicate declaration and cites the line of the first declaration (applies to `type`, `enum`, `params`, `contract`, and `interface`) |
+| Duplicate field or variant | `type Point { x: Int; x: Int; }` | Reports duplicate declaration and cites the line of the first declaration (applies to `type`, `enum`, `params`, `contract`, and `interface`) |
 | Single-file check in multi-file seed | `hale check main.hl` | Checks only `main.hl` and its explicit `import`s; run `hale check .` to check all sibling `.hl` files in the directory together |
 
 Cross-seed qualified type names containing `::` (such as `lib::Thing` or `std::text::Sink`) are resolved when checking the seed as a whole.

@@ -33,13 +33,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let e = self.type_expr_to_codegen_ty(elem)?;
                 // A payload-free enum is its i32 tag: inline bytes, like
                 // a `Bool`. One with payloads is a pointer to its cell,
-                // which the slots' anchoring does not walk; the check
-                // refuses it (`bounded_element_refusal`).
-                let tag_enum = matches!(&e, CodegenTy::Enum(n)
-                    if self.user_enums.get(n.as_str()).is_some_and(|i| !i.has_payload));
-                if !tag_enum && !matches!(
+                // which the slots' anchoring and retire walk follow by
+                // its tag, as a record field's (`bounded_elem_is_ptr`,
+                // GH #1951).
+                if !matches!(
                     e,
-                    CodegenTy::Int
+                    CodegenTy::Enum(_)
+                        | CodegenTy::Int
                         | CodegenTy::Float
                         | CodegenTy::Bool
                         | CodegenTy::Decimal(_)
@@ -52,10 +52,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         | CodegenTy::TypeRef(_)
                 ) {
                     return Err(CodegenError::Unsupported(format!(
-                        "bounded[T; N]: element type {:?} not supported \
+                        "bounded[T; N]: element type {} not supported \
                          — scalars (Int / Float / Bool / Decimal / \
-                         Duration / Time), String, Bytes, and user \
-                         structs are covered",
+                         Duration / Time), enums, String, Bytes, and \
+                         user structs are covered",
                         e
                     )));
                 }
@@ -76,8 +76,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 PrimType::BytesMut => Ok(CodegenTy::BytesMut),
                 PrimType::StringView => Ok(CodegenTy::StringView),
                 other => Err(CodegenError::Unsupported(format!(
-                    "type primitive `{:?}` in signature",
-                    other
+                    "type primitive `{}` in signature",
+                    hale_types::ty::prim_name(*other)
                 ))),
             },
             TypeExpr::Named { path, generic_args, .. }
@@ -302,7 +302,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Err(CodegenError::Unsupported(format!(
                         "generic instantiation `{}` not synthesized — \
                          discovery missed the use site; reachable from \
-                         {:?}",
+                         {}",
                         mangled, path.segments[0].name
                     )))
                 }
@@ -310,10 +310,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             TypeExpr::Array { elem, size, .. } => {
                 let elem_ty = self.type_expr_to_codegen_ty(elem)?;
                 let n = match size {
-                    Some(Expr::Literal(Literal::Int(n), _)) if *n > 0 => *n as u64,
+                    // A zero-length `[T; 0]` is an array too (GH #1942).
+                    Some(Expr::Literal(Literal::Int(n), _)) if *n >= 0 => *n as u64,
                     Some(_) => {
                         return Err(CodegenError::Unsupported(
-                            "array size must be a positive integer literal in v0"
+                            "array size must be a non-negative integer literal"
                                 .into(),
                         ));
                     }
@@ -344,6 +345,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     arg_tys.push(self.type_expr_to_codegen_ty(p)?);
                 }
                 let ret_ty = match ret {
+                    // `fn(Row) -> ()` returns nothing, as `fn(Row)` does:
+                    // the check reads `()` as the unit type there, and
+                    // a signature naming it was refused here as an empty
+                    // tuple
+                    Some(r) if matches!(r.as_ref(), TypeExpr::Tuple(parts, _) if parts.is_empty()) => None,
                     Some(r) => Some(Box::new(self.type_expr_to_codegen_ty(r)?)),
                     None => None,
                 };
@@ -516,6 +522,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 defaults.insert(f.name.name.clone(), d.clone());
             }
         }
+        let optional: BTreeMap<String, (String, Option<String>)> = struct_fields
+            .iter()
+            .filter_map(|f| {
+                hale_syntax::ast::optional_flags(struct_fields, &f.name.name).map(|flags| (f.name.name.clone(), flags))
+            })
+            .collect();
         let struct_ty = self
             .context
             .opaque_struct_type(&format!("type.{}", t.name.name));
@@ -528,6 +540,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 fields,
                 field_order,
                 defaults,
+                optional,
             },
         );
         Ok(())
@@ -951,14 +964,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if let Some((bidx, CodegenTy::Bounded(belem, bn))) =
                 info.fields.get(fname).cloned()
             {
-                if by_name.contains_key(fname.as_str()) {
-                    return Err(CodegenError::Unsupported(format!(
-                        "type `{}` field `{}`: bounded[T; N] fields \
-                         cannot be initialized in a literal — they \
-                         start empty; use push(...)",
-                        type_name, fname
-                    )));
-                }
                 let slot = self
                     .builder
                     .build_struct_gep(
@@ -970,6 +975,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 let st = self.llvm_bounded_storage_type(&belem, bn);
                 let size = st.size_of().expect("bounded storage sized");
+                // GH #1951: a field spelled in the literal takes a bounded
+                // value or an array literal: its storage copied in, each
+                // live pointer-shaped element the record's own (a place's
+                // elements copied, a fresh value's kept).
+                if let Some(init) = by_name.get(fname.as_str()).copied() {
+                    let (src, src_ty) = self.lower_bounded_operand(init, &belem, bn, scope)?;
+                    if !matches!(&src_ty, CodegenTy::Bounded(se, sn) if **se == *belem && *sn == bn) {
+                        return Err(CodegenError::Unsupported(format!(
+                            "type `{type_name}` field `{fname}`: a bounded field initialized from a {src_ty:?}"
+                        )));
+                    }
+                    self.emit_memcpy_call(slot, src.into_pointer_value(), size, &format!("{type_name}.{fname}.bounded.init"))?;
+                    let arena = self.current_arena_ptr()?;
+                    let prev = self.cell_owned_clone;
+                    if !Self::expr_is_fresh_value(init) {
+                        self.cell_owned_clone = true;
+                    }
+                    let anchored = self.anchor_bounded_elems_in_place(slot, &belem, bn, arena, "bounded.field.init");
+                    self.cell_owned_clone = prev;
+                    anchored?;
+                    continue;
+                }
                 self.builder
                     .build_memset(
                         slot,
@@ -1067,8 +1094,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             if val_ty != declared_ty {
                 return Err(CodegenError::Unsupported(format!(
-                    "type `{}` field `{}` type mismatch: declared {:?}, \
-                     got {:?}",
+                    "type `{}` field `{}` type mismatch: declared {}, \
+                     got {}",
                     type_name, fname, declared_ty, val_ty
                 )));
             }
@@ -1135,6 +1162,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_store(field_ptr, val)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        // GH #1951 item 3 (F.52): a declared optional field the literal
+        // spells is present: its `has_x` is set, unless the literal spells
+        // the flag itself (its `clear_x` keeps its default, `false`, or
+        // what the literal spells).
+        for (x, (has, _)) in &info.optional {
+            if !by_name.contains_key(x.as_str()) || by_name.contains_key(has.as_str()) {
+                continue;
+            }
+            self.store_presence_flag(info, dest_ptr, type_name, has, true)?;
+        }
+        Ok(())
+    }
+
+    /// GH #1951 item 3 (F.52): store `on` into the `Bool` flag `flag` of
+    /// the record of type `info` at `ptr`.
+    pub(crate) fn store_presence_flag(
+        &mut self,
+        info: &TypeInfo<'ctx>,
+        ptr: PointerValue<'ctx>,
+        type_name: &str,
+        flag: &str,
+        on: bool,
+    ) -> Result<(), CodegenError> {
+        let Some((idx, _)) = info.fields.get(flag).cloned() else {
+            return Err(CodegenError::Unsupported(format!(
+                "type `{type_name}`: optional field flag `{flag}` is not declared"
+            )));
+        };
+        let slot = self
+            .builder
+            .build_struct_gep(info.struct_ty, ptr, idx, &format!("{type_name}.{flag}.ptr"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let bit = self.context.bool_type().const_int(u64::from(on), false);
+        self.builder
+            .build_store(slot, bit)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 

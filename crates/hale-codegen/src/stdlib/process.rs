@@ -30,6 +30,11 @@ pub(crate) trait ProcessStdlib<'ctx> {
         args: &[Expr],
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 
+    fn lower_std_process_peak_rss_bytes(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
     fn lower_std_process_dump_arena_residency(
         &mut self,
         args: &[Expr],
@@ -140,7 +145,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (code_val, code_ty) = self.lower_expr(&args[0], scope)?;
         if code_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::exit: code must be Int, got {:?}",
+                "std::process::exit: code must be Int, got {}",
                 code_ty
             )));
         }
@@ -241,37 +246,26 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((uid_i64.into(), CodegenTy::Int))
     }
 
-    /// `std::process::rss_bytes() -> Int` (2026-05-21). Returns
-    /// the calling process's peak resident-set size in bytes via
-    /// `getrusage(RUSAGE_SELF)`. Observability primitive — lets
-    /// a long-running daemon verify the Phase-4 method-scratch
-    /// reclaim actually bounds memory (the previous attempt to
-    /// read /proc/self/statm via `std::io::fs::read_file` hit
-    /// the synthesized-file fstat-returns-0 bug). Peak (not
-    /// current) RSS is what getrusage exposes; alarm thresholds
-    /// typically want the worst-case anyway.
+    /// `std::process::rss_bytes() -> Int`: the calling process's
+    /// current resident-set size in bytes (`lotus_process_rss_bytes`:
+    /// `/proc/self/statm` on Linux, mach `task_info` on macOS). Until
+    /// GH #1906 it returned the peak, 1024x too large on macOS.
     fn lower_std_process_rss_bytes(
         &mut self,
         args: &[Expr],
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if !args.is_empty() {
-            return Err(CodegenError::Unsupported(format!(
-                "std::process::rss_bytes takes 0 arguments, got {}",
-                args.len()
-            )));
-        }
-        let f = self
-            .module
-            .get_function("lotus_process_rss_bytes")
-            .expect("lotus_process_rss_bytes declared");
-        let bytes = self
-            .builder
-            .build_call(f, &[], "rss_bytes.ret")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("lotus_process_rss_bytes returns i64");
-        Ok((bytes, CodegenTy::Int))
+        self.lower_std_process_nullary_i64("rss_bytes", "lotus_process_rss_bytes", args)
+    }
+
+    /// `std::process::peak_rss_bytes() -> Int` (GH #1906): the calling
+    /// process's peak resident-set size in bytes, getrusage's
+    /// `ru_maxrss` in the platform's unit (bytes on macOS, KiB on
+    /// Linux) converted to bytes.
+    fn lower_std_process_peak_rss_bytes(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        self.lower_std_process_nullary_i64("peak_rss_bytes", "lotus_process_peak_rss_bytes", args)
     }
 
     /// `std::process::dump_arena_residency()` (2026-05-22 PM).
@@ -418,7 +412,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
             let (v, ty) = self.lower_expr(a, scope)?;
             if ty != CodegenTy::Int {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::process::__wait_deadline: arguments are Int, got {:?}",
+                    "std::process::__wait_deadline: arguments are Int, got {}",
                     ty
                 )));
             }
@@ -523,7 +517,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (pid_val, pid_ty) = self.lower_expr(&args[0], scope)?;
         if pid_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__wait_pid: pid must be Int, got {:?}",
+                "std::process::__wait_pid: pid must be Int, got {}",
                 pid_ty
             )));
         }
@@ -613,7 +607,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (pid_val, pid_ty) = self.lower_expr(&args[0], scope)?;
         if pid_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__try_wait_pid: pid must be Int, got {:?}",
+                "std::process::__try_wait_pid: pid must be Int, got {}",
                 pid_ty
             )));
         }
@@ -703,14 +697,14 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (pid_val, pid_ty) = self.lower_expr(&args[0], scope)?;
         if pid_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__signal_pid: pid must be Int, got {:?}",
+                "std::process::__signal_pid: pid must be Int, got {}",
                 pid_ty
             )));
         }
         let (sig_val, sig_ty) = self.lower_expr(&args[1], scope)?;
         if sig_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__signal_pid: sig must be Int, got {:?}",
+                "std::process::__signal_pid: sig must be Int, got {}",
                 sig_ty
             )));
         }
@@ -775,7 +769,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (pid_val, pid_ty) = self.lower_expr(&args[0], scope)?;
         if pid_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__kill_escalate: pid must be Int, got {:?}",
+                "std::process::__kill_escalate: pid must be Int, got {}",
                 pid_ty
             )));
         }
@@ -836,7 +830,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__pipe_read: fd must be Int, got {:?}",
+                "std::process::__pipe_read: fd must be Int, got {}",
                 fd_ty
             )));
         }
@@ -908,14 +902,14 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         let (fd_val, fd_ty) = self.lower_expr(&args[0], scope)?;
         if fd_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__pipe_write: fd must be Int, got {:?}",
+                "std::process::__pipe_write: fd must be Int, got {}",
                 fd_ty
             )));
         }
         let (s_val, s_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::__pipe_write: s must be String, got {:?}",
+                "std::process::__pipe_write: s must be String, got {}",
                 s_ty
             )));
         }
@@ -1019,6 +1013,36 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// A `std::process::<name>()` that takes nothing and returns the
+    /// `Int` a nullary runtime primitive answers (`rss_bytes`,
+    /// `peak_rss_bytes`).
+    fn lower_std_process_nullary_i64(
+        &mut self,
+        name: &str,
+        runtime_fn: &str,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::process::{} takes 0 arguments, got {}",
+                name,
+                args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function(runtime_fn)
+            .unwrap_or_else(|| panic!("{runtime_fn} declared"));
+        let bytes = self
+            .builder
+            .build_call(f, &[], &format!("{name}.ret"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .unwrap_or_else(|| panic!("{runtime_fn} returns i64"));
+        Ok((bytes, CodegenTy::Int))
+    }
+
     /// hale-bun upstream item 4: emit the plain + hint surface
     /// labels for a run/spawn call and pick between them at
     /// runtime via `lotus_process_enoent_hint_label` — the hint
@@ -1088,7 +1112,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !matches!(argv_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "{}: argv must be String (newline-\
-                 separated), got {:?}",
+                 separated), got {}",
                 surface, argv_ty
             )));
         }
@@ -1278,7 +1302,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (argv_val, argv_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(argv_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "{}: argv must be String, got {:?}",
+                "{}: argv must be String, got {}",
                 surface, argv_ty
             )));
         }
@@ -1416,7 +1440,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 0..=2 => {
                     if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
                         return Err(CodegenError::Unsupported(format!(
-                            "{}: option {} must be String, got {:?}",
+                            "{}: option {} must be String, got {}",
                             surface, i, ty
                         )));
                     }
@@ -1426,7 +1450,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 3 => {
                     if ty != CodegenTy::Bool {
                         return Err(CodegenError::Unsupported(format!(
-                            "{}: clear_env must be Bool, got {:?}",
+                            "{}: clear_env must be Bool, got {}",
                             surface, ty
                         )));
                     }
@@ -1439,7 +1463,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 _ => {
                     if !matches!(ty, CodegenTy::Int | CodegenTy::Duration) {
                         return Err(CodegenError::Unsupported(format!(
-                            "{}: option {} must be Int, got {:?}",
+                            "{}: option {} must be Int, got {}",
                             surface, i, ty
                         )));
                     }

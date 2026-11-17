@@ -170,6 +170,14 @@ name = "ownership_reclaim"
 path = "tests/ownership_reclaim.rs"
 
 [[test]]
+name = "parity_gate"
+path = "tests/parity_gate.rs"
+
+[[test]]
+name = "refusals_are_located"
+path = "tests/refusals_are_located.rs"
+
+[[test]]
 name = "replay_obs"
 path = "tests/replay_obs.rs"
 

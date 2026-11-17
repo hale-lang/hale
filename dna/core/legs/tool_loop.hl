@@ -27,7 +27,7 @@ fn tools_for_model(hands: String) -> String {
         b.begin_object_field("function");
         b.string_field("name", std::json::find_string_field(it.element, "name"));
         b.string_field("description", std::json::find_string_field(it.element, "description"));
-        b.field("parameters", std::json::find_field_raw(it.element, "input_schema"));
+        b.raw_field("parameters", std::json::find_field_raw(it.element, "input_schema"));
         b.end_object();
         b.end_object();
         it = std::json::array_next(it);

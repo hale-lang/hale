@@ -1110,14 +1110,16 @@ fn chart_descends(chart: String, node: String, root: String) -> Bool {
 fn plan_move(st: PlanState, p: String, q: String) -> PlanState {
     let mut out = st;
     let mut parents = chart_with(out.after, "under " + p + " ");
+    // the order grows in a local, so each row extends it in place (GH #1947)
+    let mut order = out.order;
     while len(parents) > 0 {
         let nl = std::str::index_of(parents, "\n");
         let old = parents[0..nl];
         parents = parents[(nl + 1)..len(parents)];
-        out.order = out.order + "retire\tunfold:" + old + "|" + p + "\n";
+        order = order + "retire\tunfold:" + old + "|" + p + "\n";
         out.after = chart_without(out.after, "under " + p + " " + old);
     }
-    out.order = out.order + "edge\tunfold:" + q + "|" + p + "\t"
+    out.order = order + "edge\tunfold:" + q + "|" + p + "\t"
         + batch_pair_body("unfold", "parent", q, "child", p) + "\n";
     out.after = out.after + "under " + p + " " + q + "\n";
     return out;
@@ -1134,7 +1136,7 @@ fn plan_amend(st: PlanState, bodies: String, p: String, text: String) -> PlanSta
     node.string_field("kind", "position");
     node.string_field("name", p[9..len(p)]);
     node.string_field("text", text);
-    node.field("equipment", if len(equipment) > 0 { equipment } else { "{\"roles\": []}" });
+    node.raw_field("equipment", if len(equipment) > 0 { equipment } else { "{\"roles\": []}" });
     node.end_object();
     out.order = out.order + "node\t" + p + "\t" + node.result() + "\n";
     let mut kept = chart_with(out.after, "keeps " + p + " ");
@@ -2189,6 +2191,7 @@ fn batch_plan_on(j: Journal, receipts: Receipts, text: String, pending: String) 
     let mut plan = batch_plan(planned, receipts, text);
     if !plan.ok { return plan; }
     let named = plan.graph + plan.steps;
+    let mut planned_on = plan.planned_on;
     rest = pending;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
@@ -2196,8 +2199,9 @@ fn batch_plan_on(j: Journal, receipts: Receipts, text: String, pending: String) 
         rest = rest[(nl + 1)..len(rest)];
         let d = line[(std::str::index_of(line, " ") + 1)..len(line)];
         let doc = receipts.read(if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d });
-        if batch_stands_on(named, doc) { plan.planned_on = plan.planned_on + line + "\n"; }
+        if batch_stands_on(named, doc) { planned_on = planned_on + line + "\n"; }
     }
+    plan.planned_on = planned_on;
     return plan;
 }
 

@@ -14,7 +14,7 @@ document tells you what's *meaningfully* valid.
 | `Float` | f64 | IEEE 754 double; default for float literals |
 | `Decimal<S>`, `Decimal` | i128 | Fixed point: an i128 mantissa at the scale `S` (`mantissa × 10^-S`), `S` an integer literal from 0 to 18 that is **part of the type**; plain `Decimal` is `Decimal<9>`, the same type (2026-10-12, [§ Decimal<S>](#decimals--the-scale-is-part-of-the-type)). Every scale is the one 16-byte, 16-aligned layout. Distinct from `Float` at the type level; suffix `d` on literals (`1.50d`). A literal holds no more places than the scale of the place it flows into (a check error at the literal otherwise, never a truncation); `+ - %` are exact, `*` and `/` truncate toward zero at the scale; two scales never mix, and `d.rescale(T)` converts. Real arbitrary-precision deferred. |
 | `U256`, `I256` | i256 | The 256-bit integers (GH #1934), unsigned and two's complement signed: 32 bytes at the target's i256 alignment (16 on x86-64 and aarch64). No literal: `U256::from_int(n)`, `U256::parse(s) or ...` (decimal or `0x` hex), `U256::from_be_bytes(b) or ...` (32 bytes) make one. `+ - * / %` never wrap: an overflow or a division by zero is a runtime violation, and `U256::checked_*` / `mul_div` fail instead. Never mixes with `Int` or another type implicitly ([§ U256 and I256](#u256-and-i256--256-bit-integers)). |
-| `String` | ptr (NUL-terminated) | UTF-8 bytes, C-style NUL-terminated. Single-pointer ABI to fit return-by-value through the m49 calling convention. Embedded NUL truncates — use `Bytes` for binary content. Allocated in the caller's arena (or the lazy global payload arena for stdlib returns whose lifetime needs to outlive the call). |
+| `String` | ptr (NUL-terminated) | UTF-8 bytes, C-style NUL-terminated. Single-pointer ABI to fit return-by-value through the m49 calling convention. Embedded NUL truncates — use `Bytes` for binary content. `len(s)` is a `strlen`, which a local or parameter remembers per value it holds (spec/stdlib.md § Linear byte scanning). Allocated in the caller's arena (or the lazy global payload arena for stdlib returns whose lifetime needs to outlive the call). |
 | `Bool` | i1 | `true` / `false` |
 | `Time` | i64 | Nanoseconds since the Unix epoch, UTC (GH #607, 2026-09-14). A literal is ISO-8601 between backticks — `` `2026-05-08T12:00:00Z` ``, an optional fraction of one to nine digits, an optional `Z`; an offset such as `+01:00` is a compile error, never read as UTC, and so is a day past its month's length (`2099-02-30`, `2100-02-29`), never rolled into the next month — and is parsed at check time. Declared by the stdlib (`type Time = point Duration;`, GH #1076 U4, spec/units.md § The stdlib's time catalogue): a point over `Duration` with no `origin:`, so the unit dialect's algebra of points is its arithmetic: `Time ± Duration → Time`, `Duration + Time → Time`, `Time − Time → Duration`; anything else with a `Time` operand is refused, naming both. Orders and compares as an instant. `to_string` / `println` render ISO-8601, the fraction only when it is not zero. Before the epoch is negative, not an error. It holds `1677-09-21T00:12:43.145224192Z` through `2262-04-11T23:47:16.854775807Z`: a literal past either end is a check error at the literal, `parse_time` of one is its `ParseError`, and `time_from_unix` or `Time ± Duration` past either end is a runtime violation (spec/stdlib.md `std::time`), never a wrapped instant. On the wire and in a struct it is the same 8 bytes as `Int`; over FFI it is `i64`. `std::time::current()` reads the wall clock as one; `iso8601`, `parse_time`, `unix`, `nanos`, `from_nanos`, `time_from_unix` convert. Was a string-shaped placeholder until v0.20.0. |
 | `Duration` | i64 | Nanoseconds. Declared by the stdlib (`type Duration = quantity Int in ns;`, GH #1076 U4, spec/units.md § The stdlib's time catalogue): a quantity of the time catalogue (`ns us ms s min h day`), whose literals are its units' (`5s`, `100ms`, `2min`, `1day`), each its count of nanoseconds. Arithmetic is the unit dialect's algebra of quantities: `Duration ± Duration → Duration`; scalar scale `Int * Duration` (either order) produces `Duration` (the runtime-computed-delay shape, `ms * 1ms`); `Duration / Duration → Int`, the quotient of the two counts (`1h / 1min` is 60); `Duration / Int → Duration`, the integer division for a runtime divisor, and for an integer literal other than one a narrowing whose `or` says what becomes of the remainder (`timeout / 2 or floor`, `or ceil`, `or <value>`; a bare `timeout / 2` is refused, U4's second correction); `Duration * Duration` and `%` are refused, naming both. Keeps its representation: prints its nanoseconds (`1500000000ns`), tags a topic field `u`, is its own FFI class. `d.in(u)`, `d.split(u)` and `Duration(x)` are the dialect's conversions (spec/units.md § Conversions). |
@@ -24,7 +24,8 @@ document tells you what's *meaningfully* valid.
 | `BytesMut` (#3) | raw `{ptr, len}` window (by-value; no `[i64 len]` prefix) | A non-owning **raw writable/readable window** — distinct from `Bytes` (which carries a length prefix the handle points *into*) because `BytesMut` is a bare `{ptr, len}` pair over memory owned elsewhere. Handed out by the zero-copy ring producer (`Topic.write(max) { w => … }` binds `w: BytesMut` over the reserved slot) and by `std::io::MirrorRing` (`readable()` / `writable()` return a `BytesMut` over the live / free region). Read it zero-copy with the `_raw` siblings of the binary-pack family (`std::bytes::read_*` / `at` / `find_byte` accept a `BytesMut` directly — length is the window length, not a prefix); write into it with the binary-pack writers (`std::bytes::write_*`). The window is valid only until the next ring commit / mirror advance — no epoch guard, so the lifetime discipline is the caller's. |
 
 **FnPtr (m80):** First-class function values, type-spelled
-`fn(T1, T2) -> R` (or `fn(T1, T2)` for void-returning). LLVM
+`fn(T1, T2) -> R` (or `fn(T1, T2)` for void-returning; `fn(T1, T2) ->
+()` is the same type, in a signature too, GH #2005). LLVM
 lowering is `ptr` (raw fn pointer); calls go through
 `build_indirect_call` with an LLVM `FunctionType` synthesized
 from the FnPtr's args/ret at the call site. The implicit
@@ -340,7 +341,7 @@ stdlib, which keep their own representation class (the table above).
 
 | Construct | Form | Notes |
 |---|---|---|
-| Slice / array | `[T]` or `[T; N]` | Dynamic or fixed-size |
+| Array | `[T; N]` | Fixed-size: `N` is an integer literal, `0` included (`[x; 0]`, a `[T; 0]` parameter). An unsized `[T]`, or a length spelled by a name (`[T; N]` with `N` a `const`), is refused by `hale check` at the annotation (see § "What the compiler cannot compile yet"). |
 | Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
 | Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time, the default evaluated where the literal that leaves it is written. A default reads only its constants and the module's items, never the literal's scope (§ Locus params). |
@@ -355,6 +356,75 @@ Missing`, one of `@not_found`, `@conflict`, `@invalid`, `@forbidden` and
 `@unavailable`; it is what a served member's handler error of that variant
 is answered with (spec/api.md § Error classes), and any other word is a
 type error.
+
+### An enum's names (RFC #1995 E1, F.53)
+
+A variant has one external name: its `json:` tag's key when it has one
+(``Sell `json:"sell"` ``, spec/api.md § Codecs), else the spelling its
+enum's `@wire_case(...)` gives it, else its declared name. The JSON
+codecs read and write it, and so do four functions the compiler writes
+for every enum `E`:
+
+| Spelling | Type | What it is |
+|---|---|---|
+| `E::name(v)` | `String` | `v`'s external name. Payloads are ignored (`Shape::name(Shape::Circle(2.0))` is `"Circle"`); a lossless catch-all (``Other(String) `json:",other"` ``) names the string it holds. |
+| `E::parse(s)` | `E fallible(ParseError)` | The variant `s` names, compared exactly against each external name; any other string fails with `ParseError { kind: "unknown_variant", input: s }`. With a catch-all it is plain `E`, never failing: an unknown name is the catch-all, holding the string when it is lossless, as the JSON codec reads one. |
+| `E::variants` | `[E; N]` | A value, not a call: every variant in declaration order, the lossless catch-all left out (it needs a string). |
+| `E::index(v)` | `Int` | `v`'s declaration ordinal, from 0, payloads ignored. |
+
+```hale
+type Lifecycle = enum { Active, Archived };
+
+fn status(row: String) -> Lifecycle {
+    return Lifecycle::parse(row) or Lifecycle::Active;
+}
+
+fn main() {
+    for l in Lifecycle::variants {
+        println(Lifecycle::index(l), " ", Lifecycle::name(l));
+    }
+}
+```
+
+`parse` and `variants` apply to an enum whose variants carry no values,
+with at most one lossless catch-all; on any other enum the call is
+refused, naming the variant that carries values ("\`Shape::parse\` builds
+a variant from its name alone, so it applies to an enum whose variants
+carry no values (…), and \`Shape::Circle\` carries 1 value; match on the
+name and build the variant yourself"). None of the four is written for a
+generic enum yet, and each is refused there with that reason.
+`E::variants()` is refused ("\`E::variants\` is a value, … not a
+function: write \`E::variants\`, without the parentheses"), as is `E::name`,
+`E::parse` or `E::index` used as a value or called with other than one
+argument. An imported enum's are spelled through its alias,
+`lib::E::name(v)`, and an alias of an enum names the enum's.
+
+The four names are contextual, as framework vocabulary is (F.43): an
+enum that declares a variant named `name`, `parse`, `variants` or `index`
+keeps meaning its variant (`Field::name` is the variant `name`), and the
+other three are still the enum's.
+
+`to_string`, `println` and an f-string keep rendering a variant as
+`Enum::Variant` (`Lifecycle::Archived`); the external name is what
+crosses a wire, a store or a log line that asks for it.
+
+**`@wire_case(case)`** on an enum's declaration spells every variant in
+one case: `snake` (`InProgress` is `in_progress`, `HTTPError` is
+`http_error`), `screaming_snake` (`IN_PROGRESS`), `kebab` (`in-progress`)
+or `lower` (`inprogress`, the name in lower case). Words break at `_`, at
+a lower-case letter or digit followed by a capital, and before the last
+capital of a run that a lower-case letter follows; a digit stays with
+its word (`Http2Error` is `http2_error`). A variant's own `json:` key
+still wins, and a lossless catch-all keeps none (it writes the string it
+holds). It is an annotation, not a keyword: it marks an enum and stacks
+with nothing, and on a record, a set or with any other case it is a
+parse error. Two variants whose spellings meet (`FooBar` and `Foo_Bar`
+under `snake`) are refused as two variants of one wire name are.
+
+```hale
+@wire_case(snake) type Phase = enum { InProgress, HTTPError, Done `json:"finished"` };
+// Phase::name(Phase::InProgress) is "in_progress", Phase::name(Phase::Done) "finished"
+```
 
 ### One name, one field (GH #1141)
 
@@ -374,6 +444,68 @@ Before it, the second declaration passed `hale check` and one of the
 two won the slot, with nothing in the source to say which — while
 the json codecs and a surface's description assume one slot
 per name.
+
+### Optional fields (GH #1951 item 3, F.52)
+
+Optionality is a property of a record field, not a type. `x?: T` in a
+`type` declares the field `x` and, right after it, a real field `has_x:
+Bool = false`, its presence flag; `x?: T clearable` declares a third,
+`clear_x: Bool = false`, after that:
+
+```hale
+type Ticker {
+    symbol: String;
+    last?: Decimal<8>;
+    raw?: std::json::Value;
+    expires_at?: Time clearable;
+    limit?: Int = 100;
+}
+```
+
+The flags are ordinary fields in every way: read and written by name,
+held in the record's own slots, declared exactly as the hand-written
+presence pair (`x` then `has_x`) and triple (`x`, `has_x`, `clear_x`)
+the api codecs read (spec/api.md § Codecs). So the JSON and protobuf
+codecs, the bus wire, a surface's description and its contract digest
+see one shape, and converting a hand-written pair to the mark changes no
+shape hash. A record that declares `has_x` itself beside `x?` (or
+`clear_x` beside a clearable `x?`) is refused at that declaration: the
+mark declares it already (§ One name, one field).
+
+What the mark adds is how the flags follow the field:
+
+- **A write of `x` sets `has_x` and clears `clear_x`.** A record
+  literal that spells `x` (`Ticker { symbol: "a", last: 1.5d }`), an
+  assignment to it through any path (`t.last = v`, `self.row.last = v`,
+  `rows[i].last = v`, compound assignment included), an assignment into
+  a part of it (`t.inner.n = 4` writes `inner`), and a `push` or `set`
+  into an optional `bounded` field all set the flag after the store. A
+  literal that spells `has_x` (or `clear_x`) itself keeps what it spells.
+  Writing a flag by hand sets only the flag.
+- **A literal that leaves `x` out builds it absent:** `has_x` false and
+  `x` at its default (`x?: T = d`), or, where it declares none, at its
+  type's zero, the value the JSON codecs give an absent field: `0`,
+  `0.0`, `false`, `""`, a `Decimal`'s or a 256-bit integer's `0`, the
+  epoch for a `Time`, `0ns` for a `Duration`, `null` for a
+  `std::json::Value`, an identity's or a quantity's `0`, a range's `0`
+  (its least value when it leaves `0` out), a fixed array of its
+  element's zero, an enum's first variant with its values' zeros, and a
+  record built of its fields' defaults and zeros (a nested optional field
+  absent). An optional `bounded` field starts empty as any `bounded`
+  does. A type with none of these (a point, `Bytes`, a tuple, a generic
+  parameter, a record that reaches itself) is refused at the field:
+  "optional field `x` of type `T`: `…` has no zero for an absent `x` to
+  hold, so give it a default".
+
+A hand-written pair keeps working as it always did: its `has_x` is
+written by hand, and writing `x` leaves it alone.
+
+Nothing else is optional. `?` on a parameter, a locus param or a local
+is a parse error naming the position, and so is `T?` after any type (a
+field's, a return's, an enum payload's): Hale has no optional type, and
+absence in a computation is `fallible(E)` (§ Fallible typing). A
+`@positional` record's fields take no `?`, since every field of a
+positional row is an element.
 
 ### A struct binding is a copy (GH #713)
 
@@ -560,7 +692,8 @@ Each copy is a site of the allocation survey (`place-copy (<reason>)`:
 place is passed to a call that may write through its parameter`, `copy:
 what the local was read from is written while it is live`), so it
 counts toward `@budget(alloc_per_call = N)` and the `alloc` effect, and
-the hot-path lint reports one in a loop, a bus handler or a `@hot` fn.
+the hot-path lint reports one in a loop or a bus handler (when asked for:
+`hale verify`, `hale check --warn-hot-path`) and in a `@hot` fn.
 A store's own copy is one too: `copy: a place's value stored into a
 part of a parameter` (`h.arr = r.arr`), and `copy: a value stored into
 a locus's field from outside its methods` (§ A store into a locus's
@@ -573,13 +706,21 @@ it is, so a local or a literal's part viewing it is copied first. A call
 through a parameter declared a fn returning a primitive (`cb: fn(Int)
 -> Int`) hands back a primitive, as a declared fn of that signature
 does.
-A `bounded[T; N]` local is not a first-class value and is not copied:
-a bounded intrinsic on one bound from a field still writes the field,
-and the element a `push` or a `set` stores through it is anchored where
-that field lives (the holding locus's arena, for `let mut dest =
-self.xs` or a child's field), as on the field itself; until 2026-10-17
-it went to the current arena, so a method's view of `self.xs` left the
-field holding Strings its scratch freed at return.
+A `bounded[T; N]` local is held to the same rule (decisions F.49, GH
+#1951): `let mut dest = self.xs; push(dest, s) or …;` leaves `self.xs`
+as it was, and a write into `self.xs` while `dest` is live does not
+reach `dest`. A bounded intrinsic that writes the local (`push`, `set`,
+`clear`, `truncate`) is a write into it: the local takes its own copy at
+the first one (its storage and its live pointer-shaped elements, in the
+frame's arena) unless the frame owns it already, and the element stored
+is kept in the frame. A local only read stays the place's storage, so a
+`for` over it or a `count` of it costs nothing; one bound across an
+in-place write of its place, or handed to a call that may write through
+its parameter, is bound as a copy, as any binding of a place is. To
+write the place, name it (`push(self.xs, s)`), or store the local back
+whole (`self.xs = dest;`). Until F.49 a bounded local was a view: an
+intrinsic on one bound from a field wrote the field, its element
+anchored where the field lives.
 Before this rule the write landed in the place's block: `let mut a =
 self.r.names; a[0] = x;` changed the field.
 
@@ -596,13 +737,21 @@ members may not share the last segment of their names (`a::Book` and
 `b::Book`), since a pattern names a member by that alone.
 
 A member's value is the set's wherever a set is expected: a return from
-a fn returning the set, an argument to a parameter of it, a `let` of its
-type, an assignment to a place of it and a field of it. Two sets may
+a fn returning the set (a `return`, or the body's tail, which is its
+return), an argument to a parameter of it, a `let` of its
+type, an assignment to a place of it and a field of it. The error channel
+of a `fallible(S)` fn is such a place (GH #1951): `fail m;`, `or fail
+err`, an `or raise` of a call failing with a member and a fallible
+handler's failure with one are the set's, so with `type LoadError =
+ParseError | IoError;` a `fallible(LoadError)` fn raises either
+(spec/semantics.md § "Converting a raised error"). Two sets may
 share a member; the place's type says which set the value becomes. The
 arms of an `if` or a `match` whose values are different members are not
 joined into a set: give each arm the set's type (a fn returning it).
 
-`match` names each member by its type alone, binding the member's value:
+`match` names each member by its type alone, binding the member's value
+at the member's type (`b` below is a `Book`; spec/semantics.md, a pattern's
+bindings):
 
 ```hale
 fn handle(m: Inbound) -> Outbound {
@@ -619,6 +768,19 @@ not a member of the set `Inbound`, whose members are Book, Trade,
 Unknown"), and the match is exhaustive as an enum's is: every member, or
 a `_` arm. `Name(_)` matches a member without binding it; a bare `Name`
 is a binding, as everywhere.
+
+The bare name is a set's alone, against a value the check knows to be
+of the set. A pattern on an enum names its enum, `E::A(x)`; `A(x)`
+against anything but a set (an enum, a generic fn's type parameter, a
+value whose type the check cannot name, a type that is no enum) is
+refused at the pattern (until 2026-11-15 the check passed it and the
+build refused it):
+
+```
+main.hl:5:9: type error: `A(…)` names a variant of the enum `E` without
+its enum: a pattern on an enum names it, `E::A(…)` (only a set's member
+is named by its type alone)
+```
 
 Underneath, a set is an enum whose variants are its members, each named
 for its type and holding one value of it, and it costs what that enum
@@ -982,9 +1144,23 @@ A field read (`sink.path`) or a method the interface does not declare
 methods; a local bound from the parameter (`let s = sink;`) is the
 interface too (friction sweep 2026-10-12; until then the parameter
 typed as unknown, the check passed such a read and the build refused
-it). A fn or locus-method parameter has this typing; an interface-
-typed slot (a field, an array element, a `let` annotation) still
-accepts any satisfying locus.
+it). A fn or locus-method parameter has this typing, and so does a
+`let` that declares an interface, an array, `bounded` or tuple element
+declared as one (`let gs: [Greeter; 2]`, `fn f(gs: [Greeter; 2])`), and
+a stdlib interface written as its path (`h: std::http::Handler`); each
+such slot still accepts any satisfying locus where it is declared (GH
+#2005: until then these read as unknown, and the check passed what
+the build refused).
+
+A value of an interface converts into no OTHER interface: passing one
+where another interface is expected (`via(gs[0])` with `fn via(x:
+Other)`) is a check-time error at the argument, even when the two
+declare the same methods; declare the parameter as the value's own
+interface, or pass the locus. Nor is a locus assigned to a place of an
+interface (`g = Hey { };` for `let mut g: Greeter`, an element of an
+interface array, an interface field): the conversion happens where the
+place is declared, and the assignment is refused at the value (GH
+#2005).
 
 **Fallible methods (GH #732).** An interface method may declare
 `fallible(E)` after its return type, as a fn does:
@@ -1202,7 +1378,11 @@ for the narrowing direction (LLVM `fptosi` / `sitofp`):
   form. `Int(f)` narrows a `Float` to an `Int` (truncates toward
   zero); the cast is opt-in, so there is no silent `Float → Int`.
   `Float(i)` widens an `Int` to a `Float` (`sitofp`). Each is the
-  identity on its own type, and rejects any other argument type.
+  identity on its own type, and `hale check` rejects any other argument
+  type at the argument (an identity, a range or a quantity is its
+  `Int`): a `Bool` is no number (`if b { 1 } else { 0 }`), a `String` is
+  parsed, not cast (`std::str::parse_int(s)`, `std::str::parse_float(s)`),
+  a `Duration`'s count in a unit is a quotient (`Float(d / 1ms)`).
   They are the only two numeric casts: there is no `String(x)`,
   `Bool(x)`, `Bytes(x)` or `Decimal(x)` — those names are types; a
   Decimal changes scale by `d.rescale(T)` (§ Decimal<S>), and has no
@@ -1382,26 +1562,90 @@ namespace.
 The element type is one a slot holds inline or by a pointer it
 anchors: a scalar (`Int`, `Float`, `Bool`, `Decimal<S>`, `Duration`,
 `Time`, an identity, a range or a quantity), an enum without payloads
-(its tag), `String`, `Bytes` or a struct. `hale check` refuses any
+(its tag), `String`, `Bytes`, a struct, or an enum with payloads (a
+pointer to its cell, `{ i32 tag, body }`). `hale check` refuses any
 other at the annotation, naming it: a tuple, an array, another
-`bounded`, an enum with payloads (a pointer to its cell, which the
-slots' anchoring does not walk) or an interface ("\`bounded[Shape;
-N]\`: \`Shape\` is an enum with payloads, which a bounded buffer cannot
-hold inline … wrap the element in a struct"). Until 2026-10-13 the
-check admitted them and the build refused the element type with no
-file or line, and a payload-free enum, which lowers as a `Bool` does,
-was refused too.
+`bounded` or an interface ("\`bounded[(Int, Int); N]\`: a tuple, which
+a bounded buffer cannot hold inline … wrap the element in a struct").
+Until 2026-10-13 the check admitted them and the build refused the
+element type with no file or line, and a payload-free enum, which
+lowers as a `Bool` does, was refused too.
+
+An enum element with payloads is owned as a struct element is (GH
+#1951): a `push`, a `set`, an array literal, a whole copy of the list,
+a list returned by value and a list built into a locus store the
+place's own copy of the cell and of what its variant carries (a
+`String`, a `Bytes`, a record, a nested enum's cell), and an element
+that stops being one — the one `set` overwrites, the ones `clear` and
+`truncate` drop, every element of a list replaced whole or dissolved
+with its owner — is retired with everything under it, by the variant
+its tag names. `at`, a `for` element and a `match` on either read the
+place's cell; a value kept past a write to the place is the reader's
+own copy, as a struct element's is (§ Any binding of a place keeps its
+value). Until 2026-11-15 the check refused the element type ("an enum
+with payloads, which a bounded buffer cannot hold inline"). A bus
+payload does not carry a `bounded` of them (it carries no `bounded` of
+pointers, spec/semantics.md § The bus wire format), and an API codec
+carries no list of them (spec/api.md § Codecs).
 
 Semantics:
-- Fields auto-initialize EMPTY. Literal init is rejected — the
-  intrinsics build a bounded value. Whole-STRUCT copies carry
-  elements + count by construction (the storage is inline).
-- A fn, a locus method or an interface method does not return a
-  `bounded` (written, or through an alias): the check refuses the
-  declaration ("\`names\` returns a \`bounded[String; 4]\`, and
-  bounded[T; N] cannot be returned by value — it lives inline in its
-  containing type …"), where the build refused it with no file or line
-  until 2026-10-18. A record holding the `bounded` returns it.
+- **An array literal at a declared site is a bounded** (GH #1951). Where
+  a `bounded[T; N]` is declared — a `let` ascription, a `return` from a
+  fn declared to return one, an argument for a parameter of one, an
+  assignment to a place or local of one, a record literal's field —
+  `[e1, …, ek]` with `k <= N` is that list, its count `k`, and `[]` is
+  the empty one. Each element flows into `T` from its own type (an `Int`
+  widening into a `Float` as a `push` widens it). A literal longer than
+  the capacity is refused where it stands ("a \`bounded[Int; 2]\` holds
+  at most 2 elements, and this literal has 3"), and so is an element of
+  another type, at the element. The list owns its elements, as `push`
+  stores one: a pointer-shaped element that is not a fresh value (a
+  local, a field, an element read) is stored as the list's own copy. An
+  unannotated `let xs = [];` declares no list; the check refuses it, as
+  any `[]` with no declared type (§ What the compiler cannot compile
+  yet). The type written as a value (`let x = bounded[String; 4] { };`) is a parse error at
+  `bounded[String;` that names this spelling (GH #1948).
+  ```hale
+  type Doc { tags: bounded[String; 8]; }
+  fn tags_of(d: Doc) -> bounded[String; 8] { return d.tags; }
+  fn main() {
+      let ids: bounded[Int; 4] = [1, 2, 3];
+      let mut tags: bounded[String; 8] = [];
+      push(tags, "a") or discard;
+      let d = Doc { tags: tags };
+      println(count(ids), " ", count(tags_of(d)));
+  }
+  ```
+- Fields auto-initialize EMPTY, and a field takes no default: the check
+  refuses one at the default ("type \`Doc\` field \`tags\`: a
+  \`bounded[String; 8]\` starts empty and takes no default …"), where
+  lowering evaluated none and the field started empty whatever the
+  default said. An absent list decodes as empty. Whole-STRUCT copies
+  carry elements + count by construction (the storage is inline).
+- **A local is the frame's own list.** One bound from a literal or a
+  call's result is fresh; one bound from a place is a copy (§ A local
+  bound from a place is yours). A `let mut` local is assigned whole
+  (`xs = ys;`, `xs = [];`, a copy of the value unless it is fresh) and
+  written by the intrinsics; an intrinsic that writes a local declared
+  with `let` is refused at its argument ("\`d\` is a
+  \`bounded[String; 4]\` local declared with \`let\`, and \`push\`
+  writes it: declare it \`let mut d\` …"), so a program written against
+  the view a bounded local was before F.49 is told where it no longer
+  writes the place. A local's storage is a block of the frame's arena,
+  never a stack slot, whatever its capacity.
+- **A fn returns a `bounded` by value** (GH #1951): a free fn, a locus
+  method, a mode and an interface method may be declared to return
+  `bounded[T; N]` (written, or through an alias), and return its storage
+  as a record is returned, a pointer into the caller's arena. Every
+  return copies the list there, its live pointer-shaped elements with
+  it (an element already in the caller's arena is kept), so a String or
+  record a member's scratch built reads whole after the call. A call's
+  result is a temporary the intrinsics read (`count(tags_of(d))`,
+  `at(names(), 0) or …`, `for x in names()`); one that writes it is
+  refused at the argument ("a call's result is no place to push into
+  …"): bind it to a `let mut` local first. Until GH #1951 the check
+  refused such a declaration and a record holding the `bounded`
+  returned it.
 - Its live count is `count(x)`; `len` does not apply to a `bounded`
   (written or through an alias), and the check refuses it, pointing at
   `count` ("\`len\` does not apply to a \`bounded[String; 4]\`: a
@@ -1426,14 +1670,12 @@ Semantics:
   anchored in the place's owner's arena, as `push` anchors the one it
   adds (the holding locus's arena, else the current one). It is a
   copy: a later intrinsic on either side does not reach the other.
-  Any other value (an array literal, another element type or
-  capacity) is refused at the assignment ("a \`bounded[String; 4]\` is
-  assigned whole only from another \`bounded[String; 4]\` …"). A bounded
-  local is not assigned whole: it is a view of the place it was bound
-  from, and the assignment would anchor the elements in the frame rather
-  than where that place lives (a locus's field would hold blocks its
-  method's scratch frees), so the check refuses it and names the place
-  to assign instead.
+  An array literal builds the value it copies (above); any other value
+  (another element type or capacity) is refused at the assignment ("a
+  \`bounded[String; 4]\` is assigned whole only from another
+  \`bounded[String; 4]\` or an array literal …"). Until GH #1951 a
+  bounded local was not assigned whole: it was a view of the place it
+  was bound from.
   Until 2026-10-17 every whole assignment was refused, with no
   ruling behind it but a lowering that had none, so a copy between
   two records' fields was a `push` loop.
@@ -1442,9 +1684,11 @@ Semantics:
   i64 a `Duration` is and lowers inline the same way; it is not flat
   under `zero_copy`, as `[Time; N]` is not (`semantics.md` §
   Payload-shape compatibility). Pointer-shaped
-  elements (String/Bytes/struct) work in-process — push/set
-  arena-anchor the element into the receiver's owning arena — but
-  are rejected in cross-process bus payloads (post-v1 polish).
+  elements (String/Bytes/struct/an enum with payloads) work
+  in-process — push/set arena-anchor the element into the receiver's
+  owning arena — and cross the bus as a count and that many elements
+  (`semantics.md` § Payload type, GH #1951 item 4); they are not flat
+  under `zero_copy`.
 - A bounded place a locus holds (a field of its, or a field of a
   record it holds) **owns** its pointer-shaped elements, as the record
   owns its String fields: `push`, `set` and a whole assignment store
@@ -1503,7 +1747,7 @@ Semantics:
   into a bounded place under a parameter of a locus member …"), and a
   free fn doing it, directly or through a fn it hands the place to, is
   refused at a call that hands it a place the frame does not own: one
-  under `self` or a bounded local viewing one ("\`fill\` stores
+  under `self` ("\`fill\` stores
   pointer-shaped elements … this argument is a place in this locus's
   arena …"). A call through a function value is the fn the value's
   binding names (`let f = fill;`, a tuple `let`'s element of a tuple
@@ -1513,9 +1757,10 @@ Semantics:
   spellings: an inner `let f` names nothing after its block, and
   `let r = r;` is an owned copy, not the parameter. A generic fn is
   read as any other, its type parameters taken as any type (fail closed): a
-  field path through one (`fn fill<T>(r: T) { push(r.xs, s) }`, or a local view
-  of it, `let dst = r.xs`) may be such a place, so `fill(self.row)` is
-  refused; a type parameter is the fn's own, whatever global type shares
+  field path through one (`fn fill<T>(r: T) { push(r.xs, s) }`) may be
+  such a place, so `fill(self.row)` is refused (a local bound from it,
+  `let mut dst = r.xs`, is the frame's own copy since F.49, and writing
+  it writes no place); a type parameter is the fn's own, whatever global type shares
   its name. A record of the
   frame's own, a copy of one, and a scalar element are sound; the shape that works for a locus's field is to fill
   a local and store it whole (`self.row = mine`), which anchors the
@@ -1559,6 +1804,19 @@ declarations and literals unify, and a `Box_String` literal in a
 validate against the template with the type args substituted, and
 field reads on monomorph values type as the substituted field.
 
+A generic fn's result that applies a template to its parameters
+(`fn box_of<T>(x: T) -> Box<T>`) is, at each call, the monomorph the
+call's arguments name: `box_of(Blob { … })` is a `Box_Blob`, its field
+`v` a `Blob`, as the build lowers the call (GH #1978). A result whose
+arguments the call leaves unknown stays unchecked.
+
+An imported seed's template and enum through the qualified alias
+path are held to their declarations as the bare spellings are:
+`lib::Box<Int, String>` against `type Box<T>` is refused for its
+argument count, and `lib::E::V(…)` for its value count and each
+value's type, a scale-less Decimal literal taking the payload's
+scale (GH #1986).
+
 A declared type parameter shadows a same-named top-level declaration or
 alias throughout its template's signatures, fields and body annotations.
 Before specialization it remains unbound; a global name cannot supply
@@ -1593,7 +1851,7 @@ carries no type arguments of its own; it takes them from the
 declared type at the site. The sites that declare one are:
 
 - a `let` ascription — `let c: Cache<Int, String> = Cache { cap: 2 };`
-- a declared return type — `fn make() -> Box<Int> { return Box { value: 4 }; }`
+- a declared return type, at a `return` or the body's tail — `fn make() -> Box<Int> { return Box { value: 4 }; }`, `fn make() -> Box<Int> { Box { value: 4 } }`
 - a declared field or param, at its DEFAULT — `params { b: Box<Int> = Box { value: 0 }; }`
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
 - the place of a plain assignment (`=`, not `+=`) — `self.cfg = Cfg { n: 2 };`, a local, a record's field or an array's element, by the place's declared type
@@ -1621,10 +1879,21 @@ is a type error at `"x"` (`type `Box`: field `value` expects `Int`, got
 into a locus param's.
 
 Anywhere else — an un-annotated `let` (of the literal, or of an array
-or tuple literal holding it), a literal in statement position — the
-arguments cannot be recovered, and the literal is a
-type error naming the template and the annotation to write. There
-is no inference from a literal's field values back to the
+or tuple literal holding it), a literal in statement position, a
+receiver (`Box { value: 1 }.value`), a call's argument (a generic
+fn's included), an operand, a condition, an f-string part, the arm of
+an `if` or `match` expression — the arguments cannot be recovered, and
+the literal is a type error, at the literal, naming the template and
+the annotation to write (GH #1965):
+
+```
+main.hl:6:13: type error: `Box` is a generic type: a literal spelled
+with the template name takes its type arguments from the declared type
+at the site, and nothing here declares one. Bind it to a `let` that
+writes them (`let x: Box<T> = Box { ... };`) and use `x`
+```
+
+There is no inference from a literal's field values back to the
 parameters.
 
 A generic instantiation's argument COUNT must equal the template's
@@ -1640,10 +1909,64 @@ the template spelling.
 Generic params are declared with angle brackets:
 
 ```
-fn map<T, U>(xs: [T], f: fn(T) -> U) -> [U] { ... }
-type Stack<T> { items: [T]; }
+fn apply<T, U>(x: T, f: fn(T) -> U) -> U { ... }
+type Box<T> { value: T; }
 locus Cache<K, V> { params { cap: Int = 1; } }
 ```
+
+A locus's method is not generic itself: `fn twice<T>(...)` inside a
+locus is refused by `hale check` at the method's name (hale can't
+compile a generic locus method yet); declare it as a free generic fn,
+or make the locus the template.
+
+**Calling a generic fn.** A call binds each type parameter from the
+argument in the position that names it, and the specialization is the
+one those arguments name. The same holds for a generic fn another seed
+declares, called through its import alias (`lib::id(3)`, for its value
+or as a statement), and for a generic `fallible(E)` fn under `or`
+(`parse(s) or 0`, `lib::parse(s) or raise`), which specializes as a
+plain call does and is addressed like any fallible call (GH #1964,
+#1966).
+
+An argument whose type the checker cannot name pins nothing: a
+capacity slot (`id(self.registry)`: a slot is used through its
+operations), a call that returns no value (`id(println("x"))`), a
+stdlib path written without `std::` (`id(time::sleep(5ms))`). A
+generic call whose parameter only such an argument could pin is a type
+error at the argument (GH #1963), naming what it is, or asking for the
+value bound to a `let` that writes its type. Inside a generic body a
+use of its own type parameter is unnamed until a call specializes it,
+so there the rule is held at each specialization: a local the body
+still cannot name at the type arguments a call makes is refused at the
+argument (GH #2005). A `match` arm's binding is named there: it is of
+its variant's value type at the specialization (GH #2016; until then
+`Link::Next(n) -> id(n)` over a recursive record was refused, the binding
+unnamed).
+
+A call fills no default on a generic fn's parameter: a call that leaves
+a defaulted parameter out (`fn read<T>(n: T = 42) -> T` called as
+`read()`) is refused at the callee, naming the parameters to pass. A
+call written in another fn's parameter default (`fn f(n: Int =
+read())`) is held to the same rule (GH #2005; the default's walk
+kept no findings, so the check passed it and the build refused it
+where the default is left out).
+
+**A generic body is checked at each specialization.** The template is
+checked once with its parameters unnamed, and again for each set of
+type arguments its calls make; a `return` (or a body's value) that does
+not type at those is refused at the value, naming the specialization
+(`fn scale<T>(x: T) -> T { return x * 1.5; }` called with an `Int`:
+"return: expected \`Int\`, got \`Float\`, where a call makes \`T\` =
+\`Int\`"; GH #2005), and so is a value that is `()` only there (a
+generic locus's `id(self.child.go())` at a `T` whose `go` returns
+nothing). Inside the specialization, `Time ± Duration`,
+`Time - Time` and a Decimal literal beside a `Decimal<S>` operand lower
+as they do in a body written over the concrete types.
+
+A generic fn has no single type, so its name is not a value: `let g =
+get;` (or passing `get` as an argument) is a type error at the name
+(GH #1976). Call it, or pass a fn written over the concrete types that
+calls it.
 
 ### Generic bounds
 
@@ -1674,10 +1997,13 @@ generic surface; runtime is full-speed.
 
 A monomorph has to be NAMED before it can be declared — `Box<Int>`
 is lowered as `Box_Int` — so each argument must contribute a token
-to that name. The primitive vocabulary is:
+to that name. The name is the template's, then each argument's token
+in declaration order, joined by `_` (`Template_Arg1_Arg2`:
+`Cache<Int, String>` is `Cache_Int_String`, `Box<Pair<Int, Bool>>` is
+`Box_Pair_Int_Bool`). The primitive vocabulary is:
 
 ```
-Int  Float  Bool  String  Duration  Decimal  Time
+Int  Float  Bool  String  Duration  Decimal  U256  I256  Time
 Bytes  BytesView  BytesMut  StringView
 ```
 
@@ -1694,8 +2020,8 @@ argument's span and names the supported set:
 ```
 main.hl:6:12: type error: `Uint` cannot be a generic argument: no
 monomorph name exists for it (supported: Int / Float / Bool /
-String / Duration / Decimal / Time / Bytes / BytesView / BytesMut
-/ StringView)
+String / Duration / Decimal / U256 / I256 / Time / Bytes / BytesView
+/ BytesMut / StringView)
 ```
 
 A non-primitive argument is a single-segment named type (a user
@@ -1707,12 +2033,83 @@ type, and a generic body names `T`, so it would print and convert as
 the bare count. A generic fn call that would bind one is refused at
 the callee ("generic fn \`id\`: \`T\` would be \`Money\`, a quantity,
 and a generic body has no unit to print or convert one by"); the
-stdlib's `Duration` and `Time` are primitives and bind. An array, tuple, `bounded[T; N]` or function type as
-an argument is refused at lowering; a qualified path is rewritten
-to a single segment by the import renames before the mangler sees
-it, which is why the checker's rule above is confined to
-primitives — the only argument form whose answer is the same in
-both layers.
+stdlib's `Duration` and `Time` are primitives and bind. A locus, an
+interface or a perspective binds too: the specialization takes and
+hands back the handle, as a fn declared over the locus, the interface
+or `perspective(P)` does (`let c = id(Counter { n: 3 });`,
+`id(self.router).health()` with `router: perspective(Router)`; GH
+#1974). A locus handed where the interface it is held as is the bound
+type (`id(c)` with `c: Job` in a `release(c: Job)`) is passed as that
+interface (GH #1975).
+
+A generic `type`'s argument is never a locus: `Box<L>` would make a
+`type` hold the locus `L`, and a `type` is plain data that can neither
+own a locus nor keep one alive (the rule a `type`'s field of a locus
+type follows). `hale check` refuses it at the argument of the
+annotation, and refuses a generic fn call that binds a parameter to a
+locus where the fn's signature instantiates a generic `type` at that
+parameter (`fn bx<T>(x: T) -> Box<T>` called with an `L`), at the
+callee; the build refused the monomorph with no location. A generic
+locus's monomorph is a locus too (`bx(c)` with `c: Cache<Int, String>`),
+and so is the locus a perspective slot holds: a call binding the
+parameter to `perspective(P)`'s value (`bx(self.router)`) is refused at
+the callee as well, since hale can't compile a generic `type` holding a
+perspective slot yet; a non-generic `type` with a `perspective(P)` field
+holds one (GH #2005). A generic locus (`locus Box<T>`) holds one.
+
+An array, a tuple, a `bounded[T; N]` or a function type names no
+monomorph, so a generic fn call whose arguments would bind one is
+refused by `hale check` at the callee (GH #1942):
+
+```
+main.hl:2:21: type error: generic fn `id`: this call makes `T` `[Int; 2]`,
+an array, and hale can't compile a generic fn specialized at one yet: a
+generic argument is a primitive or a declared type (a struct, an enum,
+an alias, a locus or an interface). Wrap the value in a declared type
+(`type Wrapped { v: [Int; 2]; }`), or write the fn over the concrete type
+```
+
+A qualified path is rewritten to a single segment by the import
+renames before the mangler sees it, in a signature and in a body's
+`let` ascription alike: `let x: Box<lib::Scalar> = Box { v: 17 };` and
+`let b: lib::Box<String> = lib::Box { v: "x" };` name one monomorph in
+the check and the build (GH #1964).
+
+### What the compiler cannot compile yet
+
+A construct `hale check` accepts is a construct `hale build` compiles
+(GH #1942). The few the compiler has no lowering for yet are refused by
+the check, at the construct, with the words "hale can't compile …
+yet" and a way forward, never by the build after a passing check:
+
+| construct | refused at | way forward |
+|---|---|---|
+| an unsized array type `[T]`, or a length that is not an integer literal (`[T; N]`) | the annotation | size it with a literal, or hold a varying count in `bounded[T; N]` or a `@form(vec)` |
+| a generic fn call that binds a parameter to an array, a tuple, a `bounded` or a fn type | the callee | wrap the value in a declared type |
+| a generic locus method (`fn f<T>(…)` inside a locus) | the method's name | a free generic fn, or a generic locus |
+| a generic fn named as a value (`let g = get;`) | the name | call it, or pass a fn over the concrete types that calls it |
+| a generic fn call whose parameter only an argument with no nameable type could pin (a capacity slot, a call with no value, a `match` arm's binding in a generic body) | the argument | bind the value to a `let` that writes its type |
+| a literal spelled with a generic template's name where no declared type supplies its arguments | the literal | bind it to a `let` that writes them |
+| a generic `type` instantiated at a locus (`Box<L>`, or a generic fn's `-> Box<T>` called with an `L` or a generic locus's monomorph) | the argument, or the callee | a generic locus, or pass the locus as a parameter |
+| a generic fn's `-> Box<T>` called with a perspective slot's value | the callee | a `type` with a `perspective(P)` field, or pass the value as a `perspective(P)` parameter |
+| a call that leaves out a generic fn's defaulted parameter | the callee | pass the parameter |
+| an empty array literal `[]` with no list type declared where it stands: anywhere but the value of a `let` that declares its type, or a site that declares a `bounded[T; N]` (a `let`, a `return`, an argument, an assignment, a record field; § bounded[T; N]) | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
+| a nested pattern inside a tuple pattern (`((1, 2), 3) ->`, `(E::A, 3) ->`) | the nested pattern | bind the part and match the binding (the rule a variant's pattern follows) |
+| a range index on anything but a `String` (`a[1..3]` of an array) | the index | copy the elements, `std::bytes::slice` for bytes |
+| `sum(…)`, `count()`, `mean(…)` outside a closure assertion; an accumulator over anything but one field (`sum(self.a + self.b)`); `prod(…)` anywhere | the accumulator | spec/semantics.md § Closure tests |
+| a closure band that mixes `Int` and `Float` (`mean(self.n) ~~ 1 within 2`) | the `Int` side | write it as a `Float` |
+
+`len`, `Int(…)` and `Float(…)` refuse an operand outside their rows
+(§ Calls to bare names, § Explicit numeric conversions) for the same reason.
+The boundaries refuse theirs where they are declared: an `@ffi`
+parameter with a default, or of an enum, a locus or an interface type
+(spec/ffi.md); a bus payload field the wire format has no form for, an
+enum in a native `shm_ring`, a `Drain<T>` handler on a `layout:` ring
+(spec/semantics.md § The bus wire format); a cross-pool child whose
+params the spawn cannot marshal or which keeps work the far side would
+schedule (spec/semantics.md § Accept bubbling); `sort()` of a
+`@form(vec)` whose cell has no default ordering and a `@form(lru_cache)`
+key that is no `Int` or `String` (spec/forms.md).
 
 ## Type inference
 
@@ -1868,7 +2265,7 @@ write needs a value of the type being built. The check refuses the
 declaration at the field that closes the ring, naming each field on it:
 
 ```text
-main.hl:1:57: type error: a record cannot contain itself by value: `Cfg.child: Cfg` puts a whole `Cfg` inside every `Cfg`, so none can be built. Hold the `Cfg` values a `Cfg` may have in a `bounded[Cfg; N]` (it starts empty), or in an enum variant beside one that holds none (`type Child = enum { Nothing, One(Cfg) }`), or keep them elsewhere and hold a key
+main.hl:1:57: type error: a record cannot contain itself by value: `Cfg.child: Cfg` puts a whole `Cfg` inside every `Cfg`, so none can be built. Hold the `Cfg` values a `Cfg` may have in a `bounded[Cfg; N]` (it starts empty), or in an enum variant beside one that holds none (`type Child = enum { Nothing, One(Cfg) };`), or keep them elsewhere and hold a key
 ```
 
 A generic record is followed with its type arguments substituted (`b:
@@ -1902,6 +2299,18 @@ just not bound to a value at declaration time.
 
 Functions are first-class values. `fn(A, B) -> C` is a type;
 function literals can be assigned, passed, returned.
+
+A call's callee is any expression that evaluates to a fn value: a
+name, a record's fn field (`h.f(x)`), and, as of GH #1942, a call that
+returns one (`pick()(2)`, `a.get()(4)`), an array element (`fs[0](4)`),
+a tuple part (`t.0(4)`), an `if` or `match` that picks one (`(if c {
+dbl } else { tri })(5)`), or the success of an `or` (`(pick() or
+raise)(4)`, GH #2005). The callee is evaluated once, before the
+arguments, each passed as at a direct call (an array literal for a
+`bounded[T; N]` parameter is that bounded, GH #2005). A fn value
+returns any value type, a view's included: a
+`StringView` comes back through a fn value, an interface method or a
+perspective method as through a direct call.
 
 A locus's `fn` member can be a method (takes `self`) or a free
 function within the locus's scope. Lifecycle methods (`birth`,
@@ -2017,7 +2426,12 @@ organization's gate runs) or on one file, every command that compiles
 exactly what they bundle) and `hale lsp` — any other bare callee is a
 type error — `call to X: no free fn, generic fn or fn-pointer binding
 with that name is in scope`, with a did-you-mean over the program's
-fns. The rule holds wherever the call stands: a statement, an operand,
+fns, or, when a stdlib fn has exactly that name, its path (`substring`
+→ `std::str::substring`: a stdlib fn is called by its path, GH
+#1948). A `std::` type path that names nothing (`std::str::Builder`)
+likewise names the stdlib type meant: a tabled move
+(`std::bytes::BytesBuilder`, which builds text too) or the one stdlib
+type of that name in another namespace. The rule holds wherever the call stands: a statement, an operand,
 a condition, a fn or method body, a lifecycle hook, a bus handler, a
 `params` default, a `const` initializer. Only a partial program a
 library caller assembles (a styleguide snippet, a test harness's
@@ -2038,11 +2452,25 @@ A bare callee no such binding shadows names the fn or the builtin. A
 binding of a known type that is no fn leaves it so (`let max = 10;
 max(1, 2)` calls the builtin, `max` still reads 10). A binding whose
 declaration does not show it to be a fn value, while its type is one or
-is one the check cannot name (a tuple pattern's binding, a value read
-from a field or a call), would read as the callee and is not: the check
+is one the check cannot name (a tuple pattern's part, `(helper, n) ->`
+over a `(fn() -> Int, Int)`; a value read from a field or a call), would read as the callee and is not: the check
 refuses the call, and the binding is given its type, or renamed. A call
 through a value that is no fn (`let x = 3; x(2)`) is refused at the
 callee.
+
+A call through a fn value (a local, a parameter, or a locus's or a
+record's field of a `fn(..)` type) is held to the value's type as a
+direct call is held to the fn's parameters: each argument flows into
+its parameter's type, an `Int` widening to a `Float` parameter as at a
+direct call, and the count is the type's. A fn type has no defaults, so
+every argument is passed; a short call is refused at the callee (until
+2026-11-15 the check passed it and the build refused it with no place):
+
+```
+main.hl:7:13: type error: `add2` is a fn value of type `fn(Int, Int) ->
+Int`, which takes 2 arguments, got 1: a fn type has no defaults, so
+every argument is passed
+```
 
 A call the compiler writes into the user's scope (an f-string's
 `to_string` and `__fmt`, a `from_json`'s parser) is the compiler's,
@@ -2115,6 +2543,13 @@ N]) and a form locus (its length is the form's synthesized `len()`
 method: "\`len\` does not apply to a \`V\`: a \`@form(vec)\`'s length
 is \`v.len()\`", [forms.md](forms.md) § Synthesized methods), where
 the build refused the form case with no file or line until 2026-11-06.
+Every other operand of a known type outside `len`'s row (an `Int`, a
+tuple, an enum, a record) is refused at the call ("\`len\` does not
+apply to a value of type \`(Int, Int)\`: it is the length of a
+\`String\`, a \`Bytes\`, a view of either, or a fixed-size array"), and
+so is an `Int(…)` or `Float(…)` operand outside theirs (§ Explicit
+numeric conversions); the build refused each with no rule of its own
+(GH #1942).
 
 ### Bare identifiers
 
@@ -2162,7 +2597,12 @@ type is expected must name a declaration: a primitive, a `type`
 a generic parameter of the declaration being checked, or one of the
 types the compiler synthesizes for its own channels (`IoError`,
 `ParseError`, `CryptoError`, `IndexError`, `KeyError`, `EmptyError`,
-`CapacityError`, `BusUnmatchedKey`, `ClosureViolation`). In a whole
+`CapacityError`, `BusUnmatchedKey`, `ClosureViolation`). A
+synthesized type names the same record in a signature as in a body: a
+parameter typed `ParseError` takes a `ParseError`, and an argument of
+another type is refused at the call (GH #2005; the signature had read
+it as unknown, so the check passed `default_port("x")` and an `or`'s
+`String` `err`, and the build refused them). In a whole
 program — the same set of callers as above — any other bare name is a
 type error at its own span:
 
@@ -2658,6 +3098,12 @@ so the position reports no type mismatch beside the law's error.
   in v1.) On success, passes the inner value through. The
   resulting expression's type is the success type T.
 
+  The error handed on is the enclosing fn's `E`: the call's own
+  when it is that type, else converted, as a member of `E` when
+  `E` is a set holding it, or by the one `@raise fn` from its type
+  to `E` (`spec/semantics.md` § "Converting a raised error"). An
+  error nothing converts is refused at the `or raise`.
+
   Past every enclosing `fallible(E)` frame — at the implicit
   main locus's root boundary — the runtime panics via
   `lotus_root_panic`. See `spec/semantics.md` § "Process
@@ -2675,9 +3121,10 @@ so the position reports no type mismatch beside the law's error.
   `fallible(E2)`. Its success value substitutes; its FAILURE
   propagates through the ENCLOSING fn's error path — implicit
   `or raise`, sugar for the already-legal nested spelling
-  `call() or (handler(err) or raise)`. E2 must be assignable to
-  the enclosing fn's declared payload ("handler's failure has
-  nowhere to go" / "propagated payload must match" otherwise).
+  `call() or (handler(err) or raise)`. E2 must be the enclosing
+  fn's declared payload or one that implicit `or raise` converts
+  from, as a written one does ("handler's failure has nowhere to
+  go" / "propagated payload must match" otherwise).
   The implicit `or raise` applies where lowering supports it, a
   limitation to lift rather than a rule: a fn the program declares
   (not a generic one), an imported or bundled stdlib fn written as
@@ -2753,8 +3200,8 @@ stdlib's two) as at a program's own.
 
 `fail <expr>;` is only valid inside a fallible fn body. It
 evaluates `<expr>`, requires the result type to match the fn's
-declared payload type E, and exits via the error path (the
-caller sees a `FallibleErr` value).
+declared payload type E (or to be a member of E, a set), and
+exits via the error path (the caller sees a `FallibleErr` value).
 
 ### Custom payload types
 

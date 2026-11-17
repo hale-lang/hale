@@ -34,8 +34,14 @@ pub(crate) fn render_codegen_error(
     // we could point at; otherwise it renders as a bare line like the
     // rest.
     let located = match e {
-        hale_codegen::CodegenError::UnsupportedAt(msg, span) => {
+        hale_codegen::CodegenError::UnsupportedAt(msg, span)
+        | hale_codegen::CodegenError::Refused(msg, span) => {
             Some((msg.clone(), *span))
+        }
+        // GH #1941: a refusal in a stdlib body has no position in the
+        // program's files; it names the stdlib file and line instead.
+        hale_codegen::CodegenError::UnsupportedInStdlib(msg, span) => {
+            return format!("codegen error: {} ({})", msg, stdlib_note(*span));
         }
         hale_codegen::CodegenError::MissingTsShim(msg, Some(span)) => {
             Some((msg.clone(), *span))

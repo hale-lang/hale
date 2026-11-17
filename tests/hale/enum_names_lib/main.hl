@@ -1,0 +1,11 @@
+// The library `enum_names_test.hl` imports: an enum whose names the
+// library calls itself, and the importer through the alias.
+@wire_case(snake) type Mode = enum { FastLane, Slow };
+
+fn slow() -> Mode {
+    return Mode::Slow;
+}
+
+fn label(m: Mode) -> String {
+    return Mode::name(m);
+}

@@ -74,6 +74,18 @@ pub fn build_source_ir_text(source: &str, bin: &Path) -> Result<String, hale_cod
     Ok(text)
 }
 
+/// The `ASAN_OPTIONS` an ASan oracle runs its child under when it
+/// wants leaks reported: `detect_leaks=1` where LeakSanitizer exists.
+/// Apple's clang ships no LeakSanitizer for macOS on arm64, and its
+/// AddressSanitizer runtime aborts at start (`detect_leaks is not
+/// supported on this platform`) when asked for one, so on any other
+/// host the oracle runs with leaks off and still catches every
+/// use-after-free and overflow; the leak half is Linux's, which is
+/// where CI runs it (GH #1952).
+#[allow(dead_code)]
+pub const ASAN_LEAKS: &str =
+    if cfg!(target_os = "linux") { "detect_leaks=1" } else { "detect_leaks=0" };
+
 /// Build the source text `source` to `bin` with AddressSanitizer instrumentation
 /// (`BuildOptions::asan`), and check the artifact really carries it.
 ///
@@ -122,10 +134,11 @@ pub fn build_source_asan(source: &str, bin: &Path) {
 /// a memory test that silently stops measuring is worse than one
 /// that is red.
 ///
-/// ## Why not `std::process::rss_bytes()` (GH #772)
+/// ## Why not a peak (GH #772)
 ///
-/// `std::process::rss_bytes()` is `getrusage(RUSAGE_SELF).ru_maxrss`,
-/// and that number is **not** the program's own. `fork()` gives the
+/// `std::process::peak_rss_bytes()` (what `rss_bytes()` returned
+/// until GH #1906) is `getrusage(RUSAGE_SELF).ru_maxrss`, and that
+/// number is **not** the program's own. `fork()` gives the
 /// child a copy-on-write duplicate of the parent's address space, so
 /// the pre-exec child's RSS high-water mark is the *parent's* RSS;
 /// `execve` then folds that mark into the new image's `ru_maxrss`

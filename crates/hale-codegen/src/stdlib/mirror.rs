@@ -38,7 +38,7 @@ impl<'ctx, 'p> MirrorStdlib<'ctx> for Cx<'ctx, 'p> {
                 let (v, t) = self.lower_expr(&args[$idx], scope)?;
                 if t != CodegenTy::Int {
                     return Err(CodegenError::Unsupported(format!(
-                        "std::io::mirror::__{}: {} must be Int, got {:?}",
+                        "std::io::mirror::__{}: {} must be Int, got {}",
                         op, $what, t
                     )));
                 }

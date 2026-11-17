@@ -296,10 +296,9 @@ const char *__tsan_default_suppressions(void) {
 #if defined(__GLIBC__) || defined(__APPLE__)
 #include <execinfo.h>
 #endif
-/* std::process::rss_bytes (2026-05-21): getrusage for the
- * process's resident-set high-water mark. Backs the
- * observability primitive used to verify
- * the Phase-4 method-scratch reclaim actually bounds memory. */
+/* std::process::peak_rss_bytes: getrusage for the process's
+ * resident-set high-water mark (std::process::rss_bytes reads the
+ * current resident size, see lotus_process_rss_bytes). */
 #ifndef __wasm__
 #include <sys/resource.h>
 #endif
@@ -3346,6 +3345,14 @@ typedef struct lotus_slot_reuse {
     uint32_t nheads, capheads;
     void   **keys;        /* open addressing, linear probe */
     uint8_t *cls;
+    /* GH #1947: the length of the String the block holds, recorded by
+     * the field append (lotus_str_field_append) so it need not measure
+     * the value each time; LOTUS_SLOT_LEN_UNKNOWN until then. A store
+     * that writes a block in place keeps its length
+     * (lotus_str_assign_in_place writes only a same-length value), and
+     * a reader checks the recorded length ends at a NUL before trusting
+     * it. */
+    size_t  *lens;
     size_t   cap;         /* power of two, or 0 */
     size_t   len;
 } lotus_slot_reuse_t;
@@ -3388,11 +3395,14 @@ static size_t lotus_slot_hash(const void *p, size_t cap) {
     return (size_t)(h >> 20) & (cap - 1);
 }
 
+#define LOTUS_SLOT_LEN_UNKNOWN ((size_t)-1)
+
 static int lotus_slot_tab_grow(lotus_slot_reuse_t *r) {
     size_t ncap = r->cap ? r->cap * 2 : 8;
     void **nk = (void **)calloc(ncap, sizeof(void *));
     uint8_t *nc = (uint8_t *)malloc(ncap);
-    if (!nk || !nc) { free(nk); free(nc); return 0; }
+    size_t *nl = (size_t *)malloc(ncap * sizeof(size_t));
+    if (!nk || !nc || !nl) { free(nk); free(nc); free(nl); return 0; }
     for (size_t i = 0; i < r->cap; i++) {
         void *k = r->keys[i];
         if (!k) continue;
@@ -3400,11 +3410,14 @@ static int lotus_slot_tab_grow(lotus_slot_reuse_t *r) {
         while (nk[j]) j = (j + 1) & (ncap - 1);
         nk[j] = k;
         nc[j] = r->cls[i];
+        nl[j] = r->lens[i];
     }
     free(r->keys);
     free(r->cls);
+    free(r->lens);
     r->keys = nk;
     r->cls = nc;
+    r->lens = nl;
     r->cap = ncap;
     return 1;
 }
@@ -3419,6 +3432,7 @@ static void lotus_slot_tab_put(lotus_slot_reuse_t *r, void *p, int c) {
     if (!r->keys[j]) r->len++;
     r->keys[j] = p;
     r->cls[j] = (uint8_t)c;
+    r->lens[j] = LOTUS_SLOT_LEN_UNKNOWN;
 }
 
 /* Take block `p`'s record out of the table: its class, or -1 when
@@ -3444,6 +3458,7 @@ static int lotus_slot_tab_take(lotus_slot_reuse_t *r, const void *p) {
         if (!stays) {
             r->keys[hole] = r->keys[i];
             r->cls[hole] = r->cls[i];
+            r->lens[hole] = r->lens[i];
             hole = i;
         }
         i = (i + 1) & mask;
@@ -3451,6 +3466,19 @@ static int lotus_slot_tab_take(lotus_slot_reuse_t *r, const void *p) {
     r->keys[hole] = NULL;
     r->len--;
     return c;
+}
+
+/* Block `p`'s record, its index in the table, or -1 when the table does
+ * not know it; the record stays. */
+static long lotus_slot_tab_find(const lotus_slot_reuse_t *r, const void *p) {
+    if (!r->cap) return -1;
+    size_t mask = r->cap - 1;
+    size_t j = lotus_slot_hash(p, r->cap);
+    while (r->keys[j] != p) {
+        if (!r->keys[j]) return -1;
+        j = (j + 1) & mask;
+    }
+    return (long)j;
 }
 
 /* Class `c`'s list head, added when `create` (NULL when absent, or
@@ -3494,6 +3522,7 @@ static void lotus_slot_reuse_free(lotus_arena_t *a) {
     free(r->heads);
     free(r->keys);
     free(r->cls);
+    free(r->lens);
     free(r);
 }
 
@@ -6115,10 +6144,9 @@ int64_t lotus_str_cp_size(const char *s, int64_t byte_off) {
     return lotus_utf8_width_at((const unsigned char *)s + byte_off);
 }
 
-int64_t lotus_str_cp_at(const char *s, int64_t byte_off) {
-    int64_t n = lotus_str_cp_size(s, byte_off);
-    if (n < 0) return -1;
-    const unsigned char *p = (const unsigned char *)s + byte_off;
+/* The code point of the `n`-byte sequence at `p` (`n` from
+ * lotus_utf8_width_at, so 1..=4 and checked). */
+static int64_t lotus_utf8_decode(const unsigned char *p, int64_t n) {
     switch (n) {
         case 1: return p[0];
         case 2: return ((int64_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
@@ -6128,6 +6156,29 @@ int64_t lotus_str_cp_at(const char *s, int64_t byte_off) {
                       | ((int64_t)(p[1] & 0x3F) << 12)
                       | ((int64_t)(p[2] & 0x3F) << 6) | (p[3] & 0x3F);
     }
+}
+
+int64_t lotus_str_cp_at(const char *s, int64_t byte_off) {
+    int64_t n = lotus_str_cp_size(s, byte_off);
+    if (n < 0) return -1;
+    return lotus_utf8_decode((const unsigned char *)s + byte_off, n);
+}
+
+/* GH #1947: cp_size / cp_at where codegen knows the length of `s` (`n`,
+ * its strlen: `crate::string_len`). An offset is inside the String when
+ * it is at most `n` (the terminator's offset), which is what
+ * lotus_str_offset_inside finds with a memchr over the offset; with the
+ * length known the check is one compare, so a code-point walk is linear
+ * in the text instead of quadratic. */
+int64_t lotus_str_cp_size_n(const char *s, int64_t n, int64_t byte_off) {
+    if (!s || byte_off < 0 || byte_off > n) return -1;
+    return lotus_utf8_width_at((const unsigned char *)s + byte_off);
+}
+
+int64_t lotus_str_cp_at_n(const char *s, int64_t n, int64_t byte_off) {
+    int64_t w = lotus_str_cp_size_n(s, n, byte_off);
+    if (w < 0) return -1;
+    return lotus_utf8_decode((const unsigned char *)s + byte_off, w);
 }
 
 int64_t lotus_str_cp_count(const char *s) {
@@ -19654,6 +19705,110 @@ char *lotus_str_concat(lotus_arena_t *a, const char *l, const char *r) {
     return out;
 }
 
+/* GH #1947: one allocation for a chain of `+` (`a + b + c + d`), where
+ * each `+` used to build a String of its own and the arena kept every
+ * intermediate one until the frame ended. `parts` is the chain's
+ * operands in order, `n` of them. */
+#define LOTUS_STR_PARTS_INLINE 16
+
+static size_t *lotus_str_part_lens(const char *const *parts, int64_t n,
+                                   size_t *inline_lens, size_t *total) {
+    size_t *lens = n <= LOTUS_STR_PARTS_INLINE
+                       ? inline_lens
+                       : (size_t *)malloc((size_t)n * sizeof(size_t));
+    size_t sum = 0;
+    for (int64_t i = 0; i < n; i++) {
+        size_t l = parts[i] ? strlen(parts[i]) : 0;
+        if (lens) lens[i] = l;
+        sum += l;
+    }
+    *total = sum;
+    return lens;
+}
+
+static void lotus_str_put_parts(char *dst, const char *const *parts,
+                                int64_t n, const size_t *lens) {
+    size_t pos = 0;
+    for (int64_t i = 0; i < n; i++) {
+        size_t l = lens ? lens[i] : (parts[i] ? strlen(parts[i]) : 0);
+        if (l) memcpy(dst + pos, parts[i], l);
+        pos += l;
+    }
+    dst[pos] = '\0';
+}
+
+char *lotus_str_concat_n(lotus_arena_t *a, const char *const *parts,
+                         int64_t n) {
+    size_t inline_lens[LOTUS_STR_PARTS_INLINE];
+    size_t total;
+    size_t *lens = lotus_str_part_lens(parts, n, inline_lens, &total);
+    char *out = (char *)lotus_arena_alloc(a, total + 1, 1);
+    if (out) lotus_str_put_parts(out, parts, n, lens);
+    if (lens != inline_lens) free(lens);
+    return out;
+}
+
+/* GH #1947: the appending assignment to a local, `s = s + a + b` /
+ * `s += a`. The local keeps an accumulator beside its slot (an
+ * entry-block alloca codegen zeroes at the local's `let`): the buffer
+ * the local's value lives in, its length and capacity, and the arena it
+ * was allocated in. The buffer is the local's own while `acc->buf` is
+ * the local's current value; codegen clears `acc->buf` at every read of
+ * the local that may keep the value (passed to a call, bound, stored,
+ * returned), so a value read before an append never sees it — a copy
+ * taken before the append is a different String, as value semantics
+ * says. While the buffer is the local's own and has room, the parts are
+ * written after its last byte and the local keeps its pointer;
+ * otherwise a buffer half again as large as the result is allocated in
+ * the current arena and the value copied into it. The old buffer stays
+ * where it was (an arena frees nothing early), so a loop that appends n
+ * bytes allocates O(n) in all, and copies each byte O(1) times.
+ *
+ * A part may be the local's own value (`s = s + s`): the lengths are
+ * taken before anything is written, the old bytes are never written
+ * over (an in-place append writes past them), and a grown buffer is a
+ * new block, so every part still reads what it read before. */
+typedef struct lotus_str_acc {
+    char          *buf;
+    int64_t        len;
+    int64_t        cap;
+    lotus_arena_t *arena;
+} lotus_str_acc_t;
+
+char *lotus_str_append(lotus_arena_t *a, lotus_str_acc_t *acc,
+                       const char *cur, const char *const *parts,
+                       int64_t n) {
+    size_t inline_lens[LOTUS_STR_PARTS_INLINE];
+    size_t total;
+    size_t *lens = lotus_str_part_lens(parts, n, inline_lens, &total);
+    int owned = acc && acc->buf && acc->buf == cur && acc->arena == a;
+    size_t cur_len = owned ? (size_t)acc->len : (cur ? strlen(cur) : 0);
+    size_t need = cur_len + total + 1;
+    char *dst;
+    if (owned && need <= (size_t)acc->cap) {
+        dst = acc->buf;
+    } else {
+        size_t cap = need + need / 2;
+        if (owned && cap < (size_t)acc->cap * 2) cap = (size_t)acc->cap * 2;
+        if (cap < 32) cap = 32;
+        dst = (char *)lotus_arena_alloc(a, cap, 1);
+        if (!dst) {
+            if (lens != inline_lens) free(lens);
+            return NULL;
+        }
+        if (cur_len) memcpy(dst, cur, cur_len);
+        if (acc) {
+            acc->buf = dst;
+            acc->cap = (int64_t)cap;
+            acc->arena = a;
+        }
+    }
+    lotus_str_put_parts(dst + cur_len, parts, n, lens);
+    if (acc) acc->len = (int64_t)(cur_len + total);
+    if (lens != inline_lens) free(lens);
+    return dst;
+}
+
 int lotus_str_eq(const char *l, const char *r) {
     return strcmp(l, r) == 0 ? 1 : 0;
 }
@@ -20275,6 +20430,87 @@ char *lotus_str_assign_in_place(lotus_arena_t *a, char *old,
     return lotus_slot_copy(a, new_s, lotus_ptr_in_arena(a, old));
 }
 
+/* GH #1947: the length of the String field value `s` of a locus whose
+ * arena is `a`: the length the field append recorded for its block, when
+ * it still ends at a NUL, else measured. */
+int64_t lotus_str_field_len(lotus_arena_t *a, const char *s) {
+    if (!s) return 0;
+    if (a && lotus_slot_state(a)) {
+        size_t len = LOTUS_SLOT_LEN_UNKNOWN;
+        lotus_retire_lock(a);
+        long j = lotus_slot_tab_find(lotus_slot_state(a), s);
+        if (j >= 0) len = lotus_slot_state(a)->lens[j];
+        lotus_retire_unlock(a);
+        if (len != LOTUS_SLOT_LEN_UNKNOWN && s[len] == '\0') return (int64_t)len;
+    }
+    return (int64_t)strlen(s);
+}
+
+/* Record that field block `b` of `a` holds a String of `len` bytes. */
+static void lotus_slot_note_len(lotus_arena_t *a, const char *b, size_t len) {
+    if (!a || !lotus_slot_state(a)) return;
+    lotus_retire_lock(a);
+    long j = lotus_slot_tab_find(lotus_slot_state(a), b);
+    if (j >= 0) lotus_slot_state(a)->lens[j] = len;
+    lotus_retire_unlock(a);
+}
+
+/* GH #1947: the appending assignment to a String field of `self`,
+ * `self.f = self.f + a + b` / `self.f += a`, in a method with a scratch.
+ * `cur` is the field's value as the assignment read it and `cur_len` its
+ * length then (lotus_str_field_len); `now` is the field's value when the
+ * parts have been evaluated (a part may call a method that stores into
+ * the field). A field block is the field's own (Gap A: a store never
+ * shares one between two slots, and a local bound from the field that a
+ * later write could reach is copied, as the same-length overwrite in
+ * lotus_str_assign_in_place already requires), and the capacity table
+ * knows its size class (GH #1490). While the field still holds the value
+ * read (`now == cur`, nothing appended to it since: the byte after it is
+ * still its NUL) and the class has room, the parts are written after the
+ * value's last byte and the field keeps its block. Otherwise the result
+ * goes to a block of a class half again as large, and `now` is retired,
+ * as a store that replaces it retires it — so a field grown by appends
+ * allocates O(n) and copies each byte O(1) times, up to the largest class
+ * (LOTUS_SLOT_MAX, 16 MiB); past it a block has no recorded capacity and
+ * each append copies the value. The table records the new length, so the
+ * next append does not measure the value. A part may be the field's own
+ * value: lengths are taken first and the old bytes are not overwritten. */
+char *lotus_str_field_append(lotus_arena_t *a, const char *cur,
+                             int64_t cur_len, char *now,
+                             const char *const *parts, int64_t n) {
+    size_t inline_lens[LOTUS_STR_PARTS_INLINE];
+    size_t total;
+    size_t *lens = lotus_str_part_lens(parts, n, inline_lens, &total);
+    size_t len = cur ? (size_t)cur_len : 0;
+    size_t need = len + total + 1;
+    int unchanged = cur && now == cur && cur[len] == '\0';
+    char *out = NULL;
+    if (unchanged && a && lotus_slot_state(a)) {
+        lotus_retire_lock(a);
+        long j = lotus_slot_tab_find(lotus_slot_state(a), now);
+        int c = j >= 0 ? lotus_slot_state(a)->cls[j] : -1;
+        lotus_retire_unlock(a);
+        if (c >= 0 && need <= lotus_slot_class_cap(c)) out = now;
+    }
+    if (out) {
+        lotus_str_put_parts(out + len, parts, n, lens);
+    } else if (unchanged && total == 0) {
+        out = now;                    /* nothing appended: the same value */
+    } else {
+        size_t want = need + need / 2;
+        if (want > LOTUS_SLOT_MAX) want = need;
+        out = lotus_slot_alloc(a, want, 1);
+        if (out) {
+            if (len) memmove(out, cur, len);
+            lotus_str_put_parts(out + len, parts, n, lens);
+            if (now && now != out) lotus_slot_retire(a, now);
+        }
+    }
+    if (out) lotus_slot_note_len(a, out, len + total);
+    if (lens != inline_lens) free(lens);
+    return out;
+}
+
 /* lotus_bytes_clone is defined further down (alongside the
  * other Bytes helpers) so the forward references to
  * lotus_bytes_create / lotus_bytes_len / lotus_bytes_data
@@ -20324,6 +20560,26 @@ int64_t lotus_str_byte_at_unchecked(const char *s, int64_t i) {
 char *lotus_str_slice(lotus_arena_t *a, const char *s,
                       int64_t lo, int64_t hi) {
     int64_t n = (int64_t)strlen(s);
+    if (lo < 0) lo = 0;
+    if (lo > n) lo = n;
+    if (hi < lo) hi = lo;
+    if (hi > n) hi = n;
+    int64_t len = hi - lo;
+    char *out = (char *)lotus_arena_alloc(a, (size_t)len + 1, 1);
+    if (!out) return NULL;
+    if (len > 0) {
+        memcpy(out, s + lo, (size_t)len);
+    }
+    out[len] = '\0';
+    return out;
+}
+
+/* GH #1947: `s[lo..hi]` where codegen knows the length of `s` (`n`, its
+ * strlen, from the receiver's length cache: `crate::string_len`). The
+ * same clamp and copy as lotus_str_slice, without measuring `s`, so a
+ * slice costs the bytes it copies and not the length of the String. */
+char *lotus_str_slice_n(lotus_arena_t *a, const char *s, int64_t n,
+                        int64_t lo, int64_t hi) {
     if (lo < 0) lo = 0;
     if (lo > n) lo = n;
     if (hi < lo) hi = lo;
@@ -23447,27 +23703,11 @@ int64_t lotus_obs_live_loci(void) __attribute__((weak));
 int lotus_obs_topic_counts(int64_t i, const char **subject, uint64_t *published,
                                uint64_t *delivered, uint64_t *bytes) __attribute__((weak));
 
-/* The process's resident memory: Linux's /proc/self/statm; on macOS,
- * which has no /proc, the task's own basic info from mach. */
-#if defined(__APPLE__)
-#include <mach/mach.h>
-#endif
+/* The process's resident memory, the same number
+ * std::process::rss_bytes() returns (lotus_process_rss_bytes, below). */
+int64_t lotus_process_rss_bytes(void);
 static double lotus_observe_rss_bytes(void) {
-#if defined(__APPLE__)
-    mach_task_basic_info_data_t info;
-    mach_msg_type_number_t n = MACH_TASK_BASIC_INFO_COUNT;
-    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &n) != KERN_SUCCESS)
-        return 0.0;
-    return (double)info.resident_size;
-#else
-    FILE *f = fopen("/proc/self/statm", "r");
-    if (!f) return 0.0;
-    long size = 0, resident = 0;
-    int got = fscanf(f, "%ld %ld", &size, &resident);
-    fclose(f);
-    if (got != 2) return 0.0;
-    return (double)resident * (double)sysconf(_SC_PAGESIZE);
-#endif
+    return (double)lotus_process_rss_bytes();
 }
 
 /* The CPU time the process has used, user and system, in seconds
@@ -31241,31 +31481,66 @@ static int lotus_process_split_argv(
  * failure. ENOENT if the executable isn't found, EACCES if it's
  * not executable, ENOMEM on allocation failure, etc.
  */
-/* std::process::rss_bytes (2026-05-21): the calling process's
- * peak resident-set size in bytes. Wraps getrusage(RUSAGE_SELF).
+/* std::process::rss_bytes (GH #1906): the calling process's CURRENT
+ * resident-set size in bytes. Linux reads /proc/self/statm's second
+ * field (resident pages) times the page size; macOS, which has no
+ * /proc, asks mach for the task's resident size. Both read the
+ * post-exec address space, so a spawned program reports its own
+ * memory, not its parent's. A wasm instance's resident memory is its
+ * linear memory. 0 when the platform cannot say (another OS, or the
+ * read fails), never negative. hale_process_resident_memory_bytes
+ * (std::observe's scrape) reports this same number.
  *
- * Linux reports ru_maxrss in KiB (the kernel's `struct rusage`
- * comment says "maximum resident set size (in kilobytes)"; man
- * getrusage confirms `ru_maxrss` is "in kilobytes" on Linux).
- * BSD / macOS report it in bytes. We're targeting Linux for v1
- * so we multiply by 1024 unconditionally. If we ever care about
- * BSD parity, this is one #ifdef away.
- *
- * The "peak" framing (high-water mark, not current RSS) is what
- * `getrusage` actually exposes — there's no syscall for current
- * RSS that doesn't go through /proc. For observability the peak
- * is usually what matters (alarm thresholds key off worst-case);
- * a future `current_rss_bytes()` could parse /proc/self/statm
- * once the read_file fix lands.
- *
- * On failure (getrusage rejects, vanishingly rare) returns 0 so
- * the caller doesn't get a negative value through the i64 ABI. */
+ * Until GH #1906 this returned getrusage's ru_maxrss * 1024: the peak,
+ * not the current size, and 1024x too large on macOS, which reports
+ * ru_maxrss in bytes. The peak is std::process::peak_rss_bytes. */
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#endif
 int64_t lotus_process_rss_bytes(void) {
+#if defined(__wasm__)
+    return (int64_t)__builtin_wasm_memory_size(0) * 65536;
+#elif defined(__APPLE__)
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t n = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &n) != KERN_SUCCESS)
+        return 0;
+    return (int64_t)info.resident_size;
+#else
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (!f) return 0;
+    long size = 0, resident = 0;
+    int got = fscanf(f, "%ld %ld", &size, &resident);
+    fclose(f);
+    if (got != 2 || resident < 0) return 0;
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) return 0;
+    return (int64_t)resident * (int64_t)page;
+#endif
+}
+
+/* std::process::peak_rss_bytes (GH #1906): the calling process's PEAK
+ * resident-set size in bytes, getrusage(RUSAGE_SELF).ru_maxrss. The
+ * unit is the platform's: macOS reports bytes, Linux (and the other
+ * BSDs) KiB. A peak survives exec: fork hands the child a copy of the
+ * parent's address space, and execve folds that high-water mark into
+ * the new image's ru_maxrss, so a spawned program's peak is at least
+ * its parent's RSS at the fork. A wasm instance's linear memory never
+ * shrinks, so its peak is its current size. 0 if getrusage fails. */
+int64_t lotus_process_peak_rss_bytes(void) {
+#if defined(__wasm__)
+    return (int64_t)__builtin_wasm_memory_size(0) * 65536;
+#else
     struct rusage ru;
-    if (getrusage(RUSAGE_SELF, &ru) != 0) {
+    if (getrusage(RUSAGE_SELF, &ru) != 0 || ru.ru_maxrss < 0) {
         return 0;
     }
+#if defined(__APPLE__)
+    return (int64_t)ru.ru_maxrss;
+#else
     return (int64_t)ru.ru_maxrss * 1024;
+#endif
+#endif
 }
 
 /* pond P4 stage 1 (std::term + std::io::stdout). Generic OS surface

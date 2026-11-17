@@ -1,0 +1,12 @@
+// A seed between `import_list_test.hl` and `import_list_store`: its
+// import list makes `Row`, `Side` and `show` bare here, and re-exports
+// them as `api::Row`, `api::Side` and `api::show`.
+import "../import_list_store" as st { Row, Side, describe as show };
+
+fn make(id: Int) -> Row {
+    return Row { id: id, name: "row" };
+}
+
+fn sell(n: Int) -> Side {
+    return Side::Sell(n);
+}

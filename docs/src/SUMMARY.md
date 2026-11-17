@@ -18,6 +18,7 @@
 - [Program Structure & `main`](./basics/first-program.md)
 - [Introduction to Loci](./everyday/locus-gently.md)
 - [Records, Enums & Set Types](./everyday/records.md)
+- [Generics](./everyday/generics.md)
 - [Collections (`@form`)](./everyday/collections.md)
 - [Filesystem I/O](./everyday/files.md)
 - [JSON Encoding & Decoding](./everyday/json.md)
@@ -98,6 +99,7 @@
 ---
 
 - [Language & CLI Reference](./reference.md)
+- [Stability & Compatibility](./stability.md)
 - [Package Management & `pond` Catalog](./libraries.md)
 - [Verification & Model-Checking Reference](./verification.md)
 - [Formal Design Model (`%DESIGN v1`)](./the-design.md)

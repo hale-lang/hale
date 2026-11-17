@@ -411,10 +411,28 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
         ]),
         // no key of its own: `type_schema` leaves it out
         FieldSchema::Presence { .. } | FieldSchema::Unformed => J::Obj(Vec::new()),
-        FieldSchema::Enum { name, variants, classes } => {
+        FieldSchema::Enum { name, variants, classes, wire } => {
             // the declared error classes, by variant (spec/api.md § Error
-            // classes): a key only an enum declaring one has
+            // classes): a key only an enum declaring one has; and before
+            // them what the variants' `json:` tags say (GH #1951 item 5):
+            // each variant's wire name, by variant, and the catch-all, keys
+            // only an enum whose variants are tagged has
             let classed = |mut pairs: Vec<(String, J)>| {
+                if !wire.is_plain() {
+                    pairs.push((
+                        "x-hale-variants".to_string(),
+                        J::Obj(
+                            variants
+                                .iter()
+                                .filter(|(v, _)| !wire.is_lossless_other(v))
+                                .map(|(v, _)| (v.clone(), s(wire.name(v))))
+                                .collect(),
+                        ),
+                    ));
+                    if let Some(other) = wire.other_variant() {
+                        pairs.push(("x-hale-other".to_string(), s(other)));
+                    }
+                }
                 if !classes.is_empty() {
                     pairs.push((
                         "x-hale-error-classes".to_string(),
@@ -423,10 +441,13 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
                 }
                 J::Obj(pairs)
             };
-            let units: Vec<J> = variants.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| s(n)).collect();
+            // the variants with a wire name of their own: all but a lossless
+            // catch-all, which is the string it holds
+            let carried: Vec<&(String, Vec<FieldSchema>)> = variants.iter().filter(|(v, _)| !wire.is_lossless_other(v)).collect();
+            let units: Vec<J> = carried.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| s(wire.name(n))).collect();
             let unit_count = units.len();
             let unit = |units: Vec<J>| vec![("type".to_string(), s("string")), ("enum".to_string(), J::Arr(units))];
-            if unit_count == variants.len() {
+            if unit_count == carried.len() {
                 let mut pairs = unit(units);
                 pairs.push(("x-hale-type".to_string(), s(name)));
                 return classed(pairs);
@@ -435,7 +456,7 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
             if unit_count > 0 {
                 one.push(J::Obj(unit(units)));
             }
-            for (v, values) in variants.iter().filter(|(_, v)| !v.is_empty()) {
+            for (v, values) in carried.iter().filter(|(_, v)| !v.is_empty()) {
                 let value = match values.as_slice() {
                     [only] => field_schema(only, base),
                     many => o(vec![
@@ -445,10 +466,11 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
                         ("maxItems", J::Int(many.len() as i64)),
                     ]),
                 };
+                let key = wire.name(v);
                 one.push(o(vec![
                     ("type", s("object")),
-                    ("properties", J::Obj(vec![(v.clone(), value)])),
-                    ("required", J::Arr(vec![s(v)])),
+                    ("properties", J::Obj(vec![(key.to_string(), value)])),
+                    ("required", J::Arr(vec![s(key)])),
                     ("additionalProperties", J::Bool(false)),
                 ]));
             }

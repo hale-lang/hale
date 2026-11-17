@@ -332,6 +332,23 @@ impl Parser {
         matches!(self.peek(), TokenKind::Ident(s) if s == w)
     }
 
+    /// F.52 (GH #1951 item 3): `name?` outside a `type`'s field list. Only
+    /// a record field is optional; `what` names the position refused.
+    fn refuse_optional_mark(&self, name: &Ident, what: &str) -> Result<(), Diag> {
+        if !self.at(&TokenKind::Question) {
+            return Ok(());
+        }
+        Err(Diag::parse(
+            self.peek_token().span,
+            format!(
+                "`{}?`: {what} is never optional. Only a field of a `type` takes `?` (`x?: T`, \
+                 with its presence flag `has_x`); absence in a computation is `fallible(E)` \
+                 (spec/decisions.md F.52)",
+                name.name
+            ),
+        ))
+    }
+
     /// Consume the contextual keyword `w` if it is next.
     fn eat_word(&mut self, w: &str) -> bool {
         if self.at_word(w) {
@@ -761,12 +778,56 @@ impl Parser {
         }
         self.bump();
         let alias = self.expect_ident("import alias")?.name;
+        // GH #1951 item 6: an optional import list, `{ Name, Other as
+        // Mine }` — each listed name bare in this seed, and re-exported
+        // through its alias (F.51). No globs: every name is spelled.
+        let mut items: Vec<ImportItem> = Vec::new();
+        if matches!(self.peek(), TokenKind::LBrace) {
+            self.bump();
+            loop {
+                if matches!(self.peek(), TokenKind::RBrace) {
+                    if items.is_empty() {
+                        return Err(Diag::parse(
+                            self.peek_token().span,
+                            format!(
+                                "the import list of \"{}\" names nothing: list the names to bring in bare \
+                                 (`{{ Name, Other as Mine }}`), or drop the braces",
+                                path,
+                            ),
+                        ));
+                    }
+                    break;
+                }
+                if matches!(self.peek(), TokenKind::Star) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "an import list names each name it brings in; there is no glob \
+                         (`import \"...\" as a { Name, Other };`)"
+                            .to_string(),
+                    ));
+                }
+                let name = self.expect_ident("a name in the import list")?;
+                let rename = if self.peek_is_kw_as() {
+                    self.bump();
+                    Some(self.expect_ident("the name after `as` in the import list")?)
+                } else {
+                    None
+                };
+                let end = rename.as_ref().map_or(name.span, |r| r.span);
+                items.push(ImportItem { span: name.span.merge(end), name, rename });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBrace, "}")?;
+        }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(Import {
             path,
             alias: Some(alias),
             span: kw.span.merge(semi.span),
             path_span,
+            items,
         })
     }
 
@@ -822,7 +883,78 @@ impl Parser {
                         ),
                     ));
                 }
+                // a positional row has no keys, so no key is optional: every
+                // declared field is an element (spec/api.md § Codecs)
+                if let TypeDeclBody::Struct(fields) = &td.body {
+                    if let Some(f) = fields.iter().find(|f| matches!(f.optional, FieldOptional::Declared { .. })) {
+                        return Err(Diag::parse(
+                            f.name.span,
+                            format!(
+                                "a positional record has no optional field: every field of it is an element \
+                                 of its row, so `{}` takes no `?` (an absent element is a left-out tail, its \
+                                 field's default)",
+                                f.name.name
+                            ),
+                        ));
+                    }
+                }
                 td.positional = true;
+                td.span = at.span.merge(td.span);
+                return Ok(TopDecl::Type(td));
+            }
+            // RFC #1995 E1b: `@wire_case(snake) type E = enum { ... };` spells
+            // every variant of the enum in one case on the wire, for the
+            // codecs and `E::name` / `E::parse` alike; a variant's own
+            // `json:` key still wins (`enum_names::apply_wire_case`). It
+            // marks an enum and stacks with nothing.
+            if matches!(&kind_tok, TokenKind::Ident(s) if s == "wire_case") {
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // `wire_case`
+                if leading_span.is_some() || form.is_some() || locality.is_some() {
+                    return Err(Diag::parse(at.span, "`@wire_case` marks an enum's `type`, and stacks with no other annotation"));
+                }
+                let cases = crate::enum_names::WireCase::WORDS.iter().map(|w| format!("`{w}`")).collect::<Vec<_>>().join(", ");
+                self.expect(TokenKind::LParen, "(")?;
+                let word = self.expect_ident("a case")?;
+                let Some(case) = crate::enum_names::WireCase::of(&word.name) else {
+                    return Err(Diag::parse(
+                        word.span,
+                        format!("`@wire_case({})`: the cases are {cases}", word.name),
+                    ));
+                };
+                self.expect(TokenKind::RParen, ")")?;
+                if !matches!(self.peek(), TokenKind::Type) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "expected `type` after `@wire_case(...)`: it marks an enum (`@wire_case(snake) type E = enum { ... };`)",
+                    ));
+                }
+                let mut td = self.parse_type_decl()?;
+                match &mut td.body {
+                    TypeDeclBody::Enum(vs) if !vs.iter().all(|v| v.member) => {
+                        crate::enum_names::apply_wire_case(vs, case);
+                    }
+                    TypeDeclBody::Enum(_) => {
+                        return Err(Diag::parse(
+                            at.span,
+                            format!(
+                                "`@wire_case` spells an enum's variants, and `{}` is a set: its members cross the \
+                                 codecs named for their types, so there is no variant name to case",
+                                td.name.name
+                            ),
+                        ));
+                    }
+                    _ => {
+                        return Err(Diag::parse(
+                            at.span,
+                            format!(
+                                "`@wire_case` spells an enum's variants on the wire, and `{}` is no enum; a record's \
+                                 field is renamed by its `json:` tag",
+                                td.name.name
+                            ),
+                        ));
+                    }
+                }
                 td.span = at.span.merge(td.span);
                 return Ok(TopDecl::Type(td));
             }
@@ -1096,7 +1228,7 @@ impl Parser {
             return Err(Diag::parse(
                 self.peek_token().span,
                 "expected `form`, `locality`, `bounded`, `unbounded`, \
-                 `budget`, `sealed`, or `ffi` after `@`",
+                 `budget`, `sealed`, `ffi`, `positional` or `wire_case` after `@`",
             ));
         }
         if form.is_some() || locality.is_some() || export_locus || bounded_locus
@@ -3409,6 +3541,7 @@ impl Parser {
             || name == "rpc"
             || name == "idempotent"
             || name == "not_idempotent"
+            || name == "raise"
             || Self::effect_assert_for(name).is_some()
             || Self::is_effects_form(name)
     }
@@ -3497,6 +3630,19 @@ impl Parser {
                 // GH #1530: the repo method's idempotency marker. Kept
                 // as the decorator's name; `repo_check` reads it.
                 "idempotent" | "not_idempotent" => {}
+                // GH #1951 (item 2): `@raise fn conv(e: P) -> E` declares
+                // the conversion an `or raise` applies from `P` to `E`.
+                // Kept as the decorator's name (the check reads it); what
+                // it implies of the fn's effects is an assertion like any
+                // other: a conversion runs on an error path, so it makes
+                // no syscall, publishes nothing, spawns nothing and never
+                // blocks (it may allocate the error it returns).
+                "raise" => out.effects.push(EffectAssert::Forbid(vec![
+                    EffectClass::Syscall,
+                    EffectClass::Publish,
+                    EffectClass::Spawn,
+                    EffectClass::Block,
+                ])),
                 _ => out.effects.push(
                     Self::effect_assert_for(&name)
                         .expect("is_fn_decorator admitted this name"),
@@ -5845,6 +5991,7 @@ impl Parser {
 
     fn parse_param_decl(&mut self) -> Result<ParamDecl, Diag> {
         let name = self.expect_decl_name("params field name")?;
+        self.refuse_optional_mark(&name, "a locus param")?;
         let ty = if self.eat(&TokenKind::Colon) {
             // Could be inferred or a type expression. Check next.
             if self.at_word("inferred") {
@@ -6262,6 +6409,7 @@ impl Parser {
             secret = true;
         }
         let name = self.expect_decl_name("parameter name")?;
+        self.refuse_optional_mark(&name, "a parameter")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let default = if self.eat(&TokenKind::Eq) {
@@ -6711,6 +6859,7 @@ impl Parser {
                 self.bump();
             }
             let ty = self.parse_type_expr()?;
+            self.refuse_member_tag(kind.is_none(), false)?;
             // GH #1530 step 1: a set type, `type S = A | B | C;`. Untagged:
             // each member is a named type and is its own discriminant, so
             // the set is an enum whose variants are named for their
@@ -6719,6 +6868,7 @@ impl Parser {
                 let mut members = vec![ty];
                 while self.eat(&TokenKind::Pipe) {
                     members.push(self.parse_type_expr()?);
+                    self.refuse_member_tag(true, true)?;
                 }
                 let end = self.expect(TokenKind::Semi, ";")?.span;
                 let mut variants = Vec::new();
@@ -6739,7 +6889,14 @@ impl Parser {
                         ));
                     }
                     let last = path.segments.last().expect("a path has a segment").clone();
-                    variants.push(EnumVariant { name: last, fields: vec![m.clone()], class: None, span: *span, member: true });
+                    variants.push(EnumVariant {
+                        name: last,
+                        fields: vec![m.clone()],
+                        class: None,
+                        span: *span,
+                        member: true,
+                        tag: None,
+                    });
                 }
                 return Ok(TypeDecl {
                     display: None,
@@ -6813,6 +6970,7 @@ impl Parser {
             while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
                 fields.push(self.parse_struct_field()?);
             }
+            let fields = synthesize_optional_flags(fields)?;
             let close = self.expect(TokenKind::RBrace, "}")?;
             Ok(TypeDecl {
                 display: None,
@@ -6932,8 +7090,24 @@ impl Parser {
         // unambiguous, so reserving these words at field-name
         // position would just block useful patterns.
         let name = self.expect_member_name("field name")?;
+        // GH #1951 item 3 (F.52): `x?: T` is an optional field, `x` beside
+        // a synthesized presence flag `has_x` (`synthesize_optional_flags`)
+        let question = self.at(&TokenKind::Question).then(|| self.bump().span);
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
+        // `x?: T clearable`: a PATCH field, `null` its clear flag `clear_x`
+        let clearable_span = self.at_word("clearable").then(|| self.bump().span);
+        let clearable = clearable_span.is_some();
+        if let (Some(at), None) = (clearable_span, question) {
+            return Err(Diag::parse(
+                at,
+                format!(
+                    "`clearable` marks an optional field: write `{}?: … clearable;` \
+                     (an optional field's `null` then clears it)",
+                    name.name
+                ),
+            ));
+        }
         // `indexed_by <field>`: the field is a wire map keyed by its
         // elements' `<field>` (the slot clause's spelling and rules)
         let indexed_by = if self.eat_word("indexed_by") {
@@ -6957,6 +7131,7 @@ impl Parser {
         // field. The backtick lexer is shared with time literals (which
         // only appear in expression position); in field-declaration
         // position it's a tag, and we keep its raw body verbatim.
+        let tag_span = self.peek_token().span;
         let tag = if matches!(self.peek(), TokenKind::TimeLit(_)) {
             match self.bump().kind {
                 TokenKind::TimeLit(body) => Some(body),
@@ -6965,6 +7140,26 @@ impl Parser {
         } else {
             None
         };
+        // GH #1948: a tag written before the default stopped at the `=`
+        // with "expected ;, got Eq".
+        if let (Some(body), None, true) = (&tag, &default, self.at(&TokenKind::Eq)) {
+            let eq = self.peek_token().span;
+            return Err(Diag::parse(
+                eq,
+                format!(
+                    "write the default before the tag: `{}: … = <default> `{}`;` \
+                     (a field's tag is the last thing before its `;`)",
+                    name.name, body
+                ),
+            )
+            .with_related(tag_span, "the tag, written before the default"));
+        }
+        if self.at_word("clearable") && question.is_some() {
+            return Err(Diag::parse(
+                self.peek_token().span,
+                format!("write `clearable` right after the type: `{}?: <type> clearable …;`", name.name),
+            ));
+        }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(StructField {
             span: name.span.merge(semi.span),
@@ -6974,7 +7169,34 @@ impl Parser {
             tag,
             indexed_by,
             map_value,
+            optional: match question {
+                Some(_) => FieldOptional::Declared { clearable },
+                None => FieldOptional::No,
+            },
         })
+    }
+
+    /// GH #1951 item 5: a backtick tag after a set's member (or after an
+    /// alias's type) is refused here, where it was written. A member is
+    /// its own discriminant and crosses the codecs named for its type, so
+    /// it has no wire name to rename and no catch-all to be; a variant of
+    /// a declared enum takes a tag (`type S = enum { A(A) `json:"a"` };`).
+    fn refuse_member_tag(&mut self, set_or_alias: bool, in_set: bool) -> Result<(), Diag> {
+        if !set_or_alias || !matches!(self.peek(), TokenKind::TimeLit(_)) {
+            return Ok(());
+        }
+        let at = self.peek_token().span;
+        let set = in_set || matches!(self.peek_at(1), TokenKind::Pipe);
+        Err(Diag::parse(
+            at,
+            if set {
+                "a set's member takes no tag: it is its own discriminant and crosses the codecs named for its \
+                 type, so it has no wire name to rename and is no catch-all; to rename one, declare an enum \
+                 whose variant holds it (`type S = enum { A(A) `json:\"a\"`, B(B) };`)"
+            } else {
+                "an alias takes no tag: a metadata tag follows a record's field or an enum's variant"
+            },
+        ))
     }
 
     fn parse_enum_variant(&mut self) -> Result<EnumVariant, Diag> {
@@ -6999,8 +7221,19 @@ impl Parser {
             }
             self.expect(TokenKind::RParen, ")")?;
         }
+        // GH #1951 item 5: an optional metadata tag after the values, as
+        // after a struct field (``Sell `json:"sell"` ``); the backtick
+        // string is a tag in this position, never a time literal
+        let tag = if matches!(self.peek(), TokenKind::TimeLit(_)) {
+            match self.bump().kind {
+                TokenKind::TimeLit(body) => Some(body),
+                _ => unreachable!("peeked TimeLit"),
+            }
+        } else {
+            None
+        };
         let span = name.span;
-        Ok(EnumVariant { name, fields, class, span, member: false })
+        Ok(EnumVariant { name, fields, class, span, member: false, tag })
     }
 
     fn parse_generic_params_opt(&mut self) -> Result<Vec<GenericParam>, Diag> {
@@ -7303,6 +7536,20 @@ impl Parser {
     // === type expressions ================================
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr, Diag> {
+        let ty = self.parse_type_expr_inner()?;
+        // F.52 (GH #1951 item 3): optionality is a record field's, never a
+        // type's. `T?` has no meaning anywhere a type is written.
+        if self.at(&TokenKind::Question) {
+            return Err(Diag::parse(
+                self.peek_token().span,
+                "Hale has no optional type `T?`: optionality belongs to a record field, `x?: T` in a \
+                 `type`, and absence in a computation is `fallible(E)` (spec/decisions.md F.52)",
+            ));
+        }
+        Ok(ty)
+    }
+
+    fn parse_type_expr_inner(&mut self) -> Result<TypeExpr, Diag> {
         let start = self.peek_token().span;
         match self.peek() {
             // Primitive type names are predefined identifiers; the
@@ -7602,12 +7849,14 @@ impl Parser {
         // program bundles the stdlib (full of side-effect trailing
         // ifs), that would break all compilation. (`match` keeps the
         // old statement-only behavior — see WS3.2 note.)
+        // GH #1995 E3: an `if let` link follows the same rule, as the
+        // match it is.
         if matches!(self.peek(), TokenKind::If) {
-            let if_stmt = self.parse_if_stmt()?;
-            if self.at(&TokenKind::RBrace) && if_is_value_producing(&if_stmt) {
-                return Ok(Some(Expr::If(Box::new(if_stmt))));
+            let chain = self.parse_if_chain()?;
+            if self.at(&TokenKind::RBrace) && chain.value_producing() {
+                return Ok(Some(chain.realize(true).into_expr()));
             }
-            stmts.push(Stmt::If(if_stmt));
+            stmts.push(chain.realize(false).into_stmt());
             return Ok(None);
         }
         match self.peek() {
@@ -7751,10 +8000,7 @@ impl Parser {
     fn parse_stmt(&mut self) -> Result<Stmt, Diag> {
         match self.peek() {
             TokenKind::Let => self.parse_let_stmt(),
-            TokenKind::If => {
-                let s = self.parse_if_stmt()?;
-                Ok(Stmt::If(s))
-            }
+            TokenKind::If => Ok(self.parse_if_chain()?.realize(false).into_stmt()),
             TokenKind::Match => {
                 let s = self.parse_match_stmt()?;
                 Ok(Stmt::Match(s))
@@ -7819,6 +8065,21 @@ impl Parser {
     fn parse_let_stmt(&mut self) -> Result<Stmt, Diag> {
         let kw = self.expect(TokenKind::Let, "let")?;
         let is_mut = self.eat(&TokenKind::Mut);
+        // GH #1995 E3: `let PATTERN = e else { … };` and `let PATTERN =
+        // e;` with a pattern that is not a name or a flat tuple of names.
+        if self.let_is_pattern_led() {
+            let pattern = self.parse_arm_pattern()?;
+            if self.at(&TokenKind::Colon) {
+                return Err(Diag::parse(
+                    self.peek_token().span,
+                    "a `let` with a pattern takes no type: the pattern is matched against the value's own type"
+                        .to_string(),
+                ));
+            }
+            self.expect(TokenKind::Eq, "=")?;
+            let value = self.parse_expr()?;
+            return self.finish_pattern_let(kw.span, is_mut, pattern, None, value);
+        }
         // Tuple destructure form: `let (a, b) = expr;`.
         if self.at(&TokenKind::LParen) {
             self.bump();
@@ -7829,7 +8090,7 @@ impl Parser {
                 }
                 names.push(self.expect_decl_name("variable name")?);
             }
-            self.expect(TokenKind::RParen, ")")?;
+            let rp = self.expect(TokenKind::RParen, ")")?;
             let ty = if self.eat(&TokenKind::Colon) {
                 Some(self.parse_type_expr()?)
             } else {
@@ -7837,6 +8098,11 @@ impl Parser {
             };
             self.expect(TokenKind::Eq, "=")?;
             let value = self.parse_expr()?;
+            if self.at(&TokenKind::Else) {
+                let span = names[0].span.merge(rp.span);
+                let elems = names.into_iter().map(name_pattern).collect();
+                return self.finish_pattern_let(kw.span, is_mut, Pattern::Tuple(elems, span), ty, value);
+            }
             let semi = self.expect(TokenKind::Semi, ";")?;
             return Ok(Stmt::LetTuple {
                 is_mut,
@@ -7848,6 +8114,7 @@ impl Parser {
             });
         }
         let name = self.expect_decl_name("variable name")?;
+        self.refuse_optional_mark(&name, "a local")?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type_expr()?)
         } else {
@@ -7855,6 +8122,9 @@ impl Parser {
         };
         self.expect(TokenKind::Eq, "=")?;
         let value = self.parse_expr()?;
+        if self.at(&TokenKind::Else) {
+            return self.finish_pattern_let(kw.span, is_mut, name_pattern(name), ty, value);
+        }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(Stmt::Let {
             is_mut,
@@ -7866,32 +8136,137 @@ impl Parser {
         })
     }
 
-    fn parse_if_stmt(&mut self) -> Result<IfStmt, Diag> {
+    /// After `let [mut]`: does a pattern follow that is not a name (`let
+    /// x`) or a flat tuple of names (`let (a, b)`), the two forms a
+    /// `let` always took? A constructor (`Side::Other(raw)`, `Book(b)`),
+    /// a literal, or a tuple with anything but names in it.
+    fn let_is_pattern_led(&self) -> bool {
+        match self.peek() {
+            TokenKind::Ident(_) => matches!(self.peek_at(1), TokenKind::ColonColon | TokenKind::LParen),
+            TokenKind::IntLit(_)
+            | TokenKind::FloatLit(_)
+            | TokenKind::DecimalLit(_)
+            | TokenKind::QuantityLit(..)
+            | TokenKind::StringLit(_)
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Nil => true,
+            TokenKind::LParen => {
+                // `(` name { `,` name } [ `,` ] `)` is the tuple form
+                let mut i = 1;
+                loop {
+                    let name = matches!(self.peek_at(i), TokenKind::Ident(_)) || self.peek_at(i).keyword_lexeme().is_some();
+                    if !name {
+                        return true;
+                    }
+                    i += 1;
+                    match self.peek_at(i) {
+                        TokenKind::RParen => return false,
+                        TokenKind::Comma if matches!(self.peek_at(i + 1), TokenKind::RParen) => return false,
+                        TokenKind::Comma => i += 1,
+                        _ => return true,
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// GH #1995 E3: a `let` of a pattern, with or without `else`, after
+    /// its value: the `else` block if there is one, then `;`. Desugared
+    /// here to the match it means, binding the pattern's names in the
+    /// enclosing block (spec/semantics.md, "`if let` and `let … else`"
+    /// under `match`):
+    ///
+    /// ```text
+    /// let P = e else { B };   one name x:  let x = match e { P -> x, _ -> { B } };
+    ///                         names a, b:  let (a, b) = match e { P -> (a, b), _ -> { B } };
+    ///                         no name:     match e { P -> { }, _ -> { B } }
+    /// let P = e;              the same with no `_` arm
+    /// ```
+    ///
+    /// The match carries its form, so the check holds the `else` block
+    /// to F.48's judgment (it must leave) and words a pattern `let` that
+    /// can fail to match as "add `else { … }`".
+    fn finish_pattern_let(
+        &mut self,
+        kw: Span,
+        is_mut: bool,
+        pattern: Pattern,
+        ty: Option<TypeExpr>,
+        value: Expr,
+    ) -> Result<Stmt, Diag> {
+        let else_block = if self.eat(&TokenKind::Else) { Some(self.parse_block()?) } else { None };
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        let span = kw.merge(semi.span);
+        let names = pattern_binders(&pattern);
+        let form = if else_block.is_some() { MatchForm::LetElse } else { MatchForm::Let };
+        let pattern_span = pattern.span();
+        let bound = match names.as_slice() {
+            [] => None,
+            [one] => Some(Expr::Ident(one.clone())),
+            many => Some(Expr::Tuple(many.iter().cloned().map(Expr::Ident).collect(), pattern_span)),
+        };
+        let mut arms = vec![MatchArm {
+            pattern,
+            guard: None,
+            body: match &bound {
+                Some(e) => MatchArmBody::Expr(e.clone()),
+                None => MatchArmBody::Block(Block { stmts: Vec::new(), tail: None, span: pattern_span }),
+            },
+            span: pattern_span,
+        }];
+        if let Some(b) = else_block {
+            arms.push(MatchArm { pattern: Pattern::Wildcard(b.span), guard: None, span: b.span, body: MatchArmBody::Block(b) });
+        }
+        let m = MatchStmt { scrutinee: value, arms, span, form };
+        Ok(match bound {
+            None => Stmt::Match(m),
+            Some(Expr::Ident(_)) => Stmt::Let {
+                is_mut,
+                name: names.into_iter().next().expect("one name"),
+                ty,
+                value: Expr::Match(Box::new(m)),
+                span,
+                id: NodeId::NONE,
+            },
+            Some(_) => Stmt::LetTuple { is_mut, names, ty, value: Expr::Match(Box::new(m)), span, id: NodeId::NONE },
+        })
+    }
+
+    /// An `if` chain, each link a plain `if` or an `if let` (GH #1995
+    /// E3), as parsed. [`IfLink::realize`] makes it the statement or the
+    /// value it is used as; a chain with no `if let` realizes as the
+    /// `IfStmt` this always parsed.
+    fn parse_if_chain(&mut self) -> Result<IfLink, Diag> {
         let kw = self.expect(TokenKind::If, "if")?;
-        let cond = self.parse_expr()?;
+        let head = if self.eat(&TokenKind::Let) {
+            let pattern = self.parse_arm_pattern()?;
+            self.expect(TokenKind::Eq, "=")?;
+            let scrutinee = self.parse_expr()?;
+            IfHead::Let { pattern, scrutinee }
+        } else {
+            IfHead::Cond(self.parse_expr()?)
+        };
         let then_block = self.parse_block()?;
-        let else_block = if self.eat(&TokenKind::Else) {
+        let else_branch = if self.eat(&TokenKind::Else) {
             if self.at(&TokenKind::If) {
-                let elif = self.parse_if_stmt()?;
-                Some(Box::new(ElseBranch::ElseIf(elif)))
+                Some(IfElse::Link(Box::new(self.parse_if_chain()?)))
             } else {
-                let block = self.parse_block()?;
-                Some(Box::new(ElseBranch::Else(block)))
+                Some(IfElse::Block(self.parse_block()?))
             }
         } else {
             None
         };
-        let span_end = match &else_block {
-            Some(b) => match b.as_ref() {
-                ElseBranch::Else(blk) => blk.span,
-                ElseBranch::ElseIf(if_) => if_.span,
-            },
+        let span_end = match &else_branch {
+            Some(IfElse::Block(blk)) => blk.span,
+            Some(IfElse::Link(link)) => link.span,
             None => then_block.span,
         };
-        Ok(IfStmt {
-            cond,
+        Ok(IfLink {
+            head,
             then_block,
-            else_block,
+            else_branch,
             span: kw.span.merge(span_end),
         })
     }
@@ -7937,6 +8312,7 @@ impl Parser {
             scrutinee,
             arms,
             span: kw.span.merge(close.span),
+            form: MatchForm::Match,
         })
     }
 
@@ -7981,7 +8357,11 @@ impl Parser {
     }
 
     fn parse_match_arm(&mut self) -> Result<MatchArm, Diag> {
-        let pattern = self.parse_pattern()?;
+        // GH #1995 E2: `A | B | C -> …`, an arm of alternatives. A
+        // pattern is not an expression, so this `|` is never the bitwise
+        // operator: the guard after `if` and the body after `->` are
+        // expressions, parsed as such, where `x | y` is the operator.
+        let pattern = self.parse_arm_pattern()?;
         let guard = if self.eat(&TokenKind::If) {
             Some(self.parse_expr()?)
         } else {
@@ -8005,6 +8385,40 @@ impl Parser {
             body,
             span,
         })
+    }
+
+    /// An arm's whole pattern: one pattern, or two or more alternatives
+    /// separated by `|` (GH #1995 E2). Also the pattern of an `if let`
+    /// and a pattern `let` (E3), which take any arm's pattern.
+    fn parse_arm_pattern(&mut self) -> Result<Pattern, Diag> {
+        let first = self.parse_pattern()?;
+        if !self.at(&TokenKind::Pipe) {
+            return Ok(first);
+        }
+        let mut alts = vec![first];
+        while self.eat(&TokenKind::Pipe) {
+            alts.push(self.parse_pattern()?);
+        }
+        let span = alts[0].span().merge(alts[alts.len() - 1].span());
+        Ok(Pattern::Or(alts, span))
+    }
+
+    /// A pattern inside a tuple pattern or a variant's values. An
+    /// or-pattern is a whole arm's, never one of these (GH #1995 E2:
+    /// "top level only", as the flat-pattern rule is), so a `|` after
+    /// one is refused here, where it is written.
+    fn parse_inner_pattern(&mut self) -> Result<Pattern, Diag> {
+        let p = self.parse_pattern()?;
+        if self.at(&TokenKind::Pipe) {
+            let bar = self.peek_token().span;
+            return Err(Diag::parse(
+                bar,
+                "`|` separates the alternatives of a whole match arm, and is not written inside a tuple or a \
+                 variant's values: write each alternative in full, `E::A(1) | E::A(2) -> …`, not `E::A(1 | 2)`"
+                    .to_string(),
+            ));
+        }
+        Ok(p)
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, Diag> {
@@ -8051,9 +8465,9 @@ impl Parser {
                 if self.eat(&TokenKind::LParen) {
                     let mut args = Vec::new();
                     if !self.at(&TokenKind::RParen) {
-                        args.push(self.parse_pattern()?);
+                        args.push(self.parse_inner_pattern()?);
                         while self.eat(&TokenKind::Comma) {
-                            args.push(self.parse_pattern()?);
+                            args.push(self.parse_inner_pattern()?);
                         }
                     }
                     let close = self.expect(TokenKind::RParen, ")")?;
@@ -8076,9 +8490,9 @@ impl Parser {
                 let lp = self.bump();
                 let mut elems = Vec::new();
                 if !self.at(&TokenKind::RParen) {
-                    elems.push(self.parse_pattern()?);
+                    elems.push(self.parse_inner_pattern()?);
                     while self.eat(&TokenKind::Comma) {
-                        elems.push(self.parse_pattern()?);
+                        elems.push(self.parse_inner_pattern()?);
                     }
                 }
                 let rp = self.expect(TokenKind::RParen, ")")?;
@@ -8318,26 +8732,91 @@ impl Parser {
         let lhs = self.parse_expr_bp(0)?;
         // Range operator binds at the lowest precedence: `for i in
         // 0 .. n + 1` should parse as `0 .. (n + 1)`. v0 only
-        // surfaces ranges in for-loop iterator position; the
-        // typechecker / codegen rejects them elsewhere.
+        // surfaces ranges in for-loop iterator position and as a
+        // String slice's index; the typechecker / codegen rejects
+        // them elsewhere. With no range, the v1.x-FORM-1
+        // `or`-disposition postfix (right-associative, so `a() or
+        // b() or raise` chains correctly).
+        self.parse_expr_tail(lhs)
+    }
+
+    /// The expression inside an index's `[ ]`. Everything `parse_expr`
+    /// takes, plus a range with an end left out (GH #1995 S1):
+    /// `s[a..]`, `s[..b]`, `s[..=b]`, `s[..]`. An open range parses
+    /// here and nowhere else, so a bare `3..` stays a parse error.
+    ///
+    /// It desugars at once to the closed form, so every later pass
+    /// sees an ordinary `Expr::Range`: a missing start is the literal
+    /// `0`, a missing end the literal `i64::MAX`, which the slice clamps
+    /// to the receiver's length (`lotus_str_slice`, spec/semantics.md §
+    /// String slicing). Spelling the end as `len(recv)` would evaluate
+    /// the receiver twice; the clamp gives the same bytes with the
+    /// receiver evaluated once. The synthesized literals carry
+    /// zero-width spans at the `..`, and `hale fmt` (a token-stream
+    /// formatter) never sees them, so the source round-trips as written.
+    fn parse_index_expr(&mut self) -> Result<Expr, Diag> {
+        let open_lo = matches!(self.peek(), TokenKind::DotDot | TokenKind::DotDotEq);
+        if !open_lo {
+            let lhs = self.parse_expr_bp(0)?;
+            let ends_open = matches!(self.peek(), TokenKind::DotDot | TokenKind::DotDotEq)
+                && matches!(self.peek_at(1), TokenKind::RBracket);
+            if !ends_open {
+                return self.parse_expr_tail(lhs);
+            }
+            let op = self.bump();
+            let inclusive = matches!(op.kind, TokenKind::DotDotEq);
+            if inclusive {
+                return Err(Self::open_inclusive_range(op.span));
+            }
+            let hi = Self::open_range_end(op.span);
+            let span = lhs.span().merge(op.span);
+            return Ok(Expr::Range { lo: Box::new(lhs), hi: Box::new(hi), inclusive: false, span });
+        }
+        let op = self.bump();
+        let inclusive = matches!(op.kind, TokenKind::DotDotEq);
+        let lo = Expr::Literal(
+            Literal::Int(0),
+            Span { start: op.span.start, end: op.span.start },
+        );
+        if self.at(&TokenKind::RBracket) {
+            if inclusive {
+                return Err(Self::open_inclusive_range(op.span));
+            }
+            let hi = Self::open_range_end(op.span);
+            return Ok(Expr::Range { lo: Box::new(lo), hi: Box::new(hi), inclusive: false, span: op.span });
+        }
+        let hi = self.parse_expr_bp(0)?;
+        let span = op.span.merge(hi.span());
+        Ok(Expr::Range { lo: Box::new(lo), hi: Box::new(hi), inclusive, span })
+    }
+
+    /// The end of `s[a..]`: a zero-width `i64::MAX` just past the `..`,
+    /// which the slice clamps to the receiver's length.
+    fn open_range_end(op: Span) -> Expr {
+        Expr::Literal(Literal::Int(i64::MAX), Span { start: op.end, end: op.end })
+    }
+
+    fn open_inclusive_range(op: Span) -> Diag {
+        Diag::parse(
+            op,
+            "`..=` needs an end to include: write `s[a..]` for the rest of the \
+             string, or `s[a..=b]` with the last index (spec/semantics.md § \
+             String slicing)",
+        )
+    }
+
+    /// `parse_expr` past its left operand: a range, or an `or` tail.
+    fn parse_expr_tail(&mut self, lhs: Expr) -> Result<Expr, Diag> {
         let inclusive = if self.eat(&TokenKind::DotDot) {
             false
         } else if self.eat(&TokenKind::DotDotEq) {
             true
         } else {
-            // No range; check for the v1.x-FORM-1 `or`-disposition
-            // postfix instead. Right-associative so
-            // `a() or b() or raise` chains correctly.
             return self.parse_or_disposition_tail(lhs);
         };
         let rhs = self.parse_expr_bp(0)?;
         let span = lhs.span().merge(rhs.span());
-        Ok(Expr::Range {
-            lo: Box::new(lhs),
-            hi: Box::new(rhs),
-            inclusive,
-            span,
-        })
+        Ok(Expr::Range { lo: Box::new(lhs), hi: Box::new(rhs), inclusive, span })
     }
 
     /// v1.x-FORM-1: `<expr> or <disposition>` postfix. Addresses
@@ -8645,7 +9124,22 @@ impl Parser {
                 }
                 TokenKind::LBracket => {
                     let lb = self.bump();
-                    let index = self.parse_expr()?;
+                    let index = self.parse_index_expr()?;
+                    // GH #1948: `bounded[String; 4] { }` in value position
+                    // reads as an index of a name `bounded` and stopped at
+                    // the `;` with "expected ]". Say what it is instead.
+                    if self.at(&TokenKind::Semi)
+                        && matches!(&expr, Expr::Ident(id) if id.name == "bounded")
+                    {
+                        return Err(Diag::parse(
+                            expr.span().merge(self.peek_token().span),
+                            "`bounded[T; N]` is a type, not a value: write the \
+                             list as an array literal where its type is declared, \
+                             `let mut xs: bounded[String; 4] = [];` (or `= [\"a\", \"b\"]`), \
+                             and add to it with `push(xs, x) or …` \
+                             (spec/types.md § bounded[T; N])",
+                        ));
+                    }
                     let rb = self.expect(TokenKind::RBracket, "]")?;
                     let span = expr.span().merge(rb.span);
                     expr = Expr::Index {
@@ -8780,10 +9274,7 @@ impl Parser {
                 let block = self.parse_block()?;
                 Ok(Expr::Block(block))
             }
-            TokenKind::If => {
-                let if_ = self.parse_if_stmt()?;
-                Ok(Expr::If(Box::new(if_)))
-            }
+            TokenKind::If => Ok(self.parse_if_chain()?.realize(true).into_expr()),
             TokenKind::Match => {
                 let m = self.parse_match_stmt()?;
                 Ok(Expr::Match(Box::new(m)))
@@ -9171,6 +9662,170 @@ impl Parser {
     }
 }
 
+/// GH #1995 E3: one link of an `if` chain as parsed: a plain `if` or an
+/// `if let`, its then-block, and what follows its `else`.
+struct IfLink {
+    head: IfHead,
+    then_block: Block,
+    else_branch: Option<IfElse>,
+    span: Span,
+}
+
+enum IfHead {
+    Cond(Expr),
+    /// `if let PATTERN = SCRUTINEE`
+    Let { pattern: Pattern, scrutinee: Expr },
+}
+
+enum IfElse {
+    Block(Block),
+    Link(Box<IfLink>),
+}
+
+/// A realized link: the `if` it always was, or the match an `if let` is.
+enum IfRealized {
+    If(IfStmt),
+    Match(MatchStmt),
+}
+
+impl IfRealized {
+    fn into_stmt(self) -> Stmt {
+        match self {
+            IfRealized::If(i) => Stmt::If(i),
+            IfRealized::Match(m) => Stmt::Match(m),
+        }
+    }
+
+    fn into_expr(self) -> Expr {
+        match self {
+            IfRealized::If(i) => Expr::If(Box::new(i)),
+            IfRealized::Match(m) => Expr::Match(Box::new(m)),
+        }
+    }
+
+    fn span(&self) -> Span {
+        match self {
+            IfRealized::If(i) => i.span,
+            IfRealized::Match(m) => m.span,
+        }
+    }
+
+    /// The block an `else` holds when what follows it is not an `if`
+    /// the `IfStmt` can chain: the link as the block's value, or as its
+    /// one statement.
+    fn into_block(self, value: bool) -> Block {
+        let span = self.span();
+        if value {
+            Block { stmts: Vec::new(), tail: Some(Box::new(self.into_expr())), span }
+        } else {
+            Block { stmts: vec![self.into_stmt()], tail: None, span }
+        }
+    }
+}
+
+impl IfLink {
+    /// WS3.2: is this chain value-producing — does every reachable arm
+    /// end in a tail expression? Only such an `if` may become a block's
+    /// tail; a side-effect `if` (any arm tail-less, or no `else`) stays a
+    /// statement so codegen never lowers a tail-less arm as a value. An
+    /// `if let` link is held to the same rule.
+    fn value_producing(&self) -> bool {
+        if self.then_block.tail.is_none() {
+            return false;
+        }
+        match &self.else_branch {
+            Some(IfElse::Block(blk)) => blk.tail.is_some(),
+            Some(IfElse::Link(nested)) => nested.value_producing(),
+            None => false,
+        }
+    }
+
+    /// The statement (`value == false`) or the value this chain is. A
+    /// plain link is an `IfStmt`; an `if let` link is the two-arm match
+    /// it means, `match e { P -> { A }, _ -> { B } }` (`{ }` with no
+    /// `else`), whose arms are blocks as a statement and block values
+    /// as a value, so the check types each arm as an `if`'s arms are
+    /// typed. A link after `else` that the `IfStmt` cannot chain (an
+    /// `if let`, or anything after one) is the `else` block's statement
+    /// or value.
+    fn realize(self, value: bool) -> IfRealized {
+        let IfLink { head, then_block, else_branch, span } = self;
+        match head {
+            IfHead::Cond(cond) => {
+                let else_block = else_branch.map(|e| {
+                    Box::new(match e {
+                        IfElse::Block(b) => ElseBranch::Else(b),
+                        IfElse::Link(link) => match link.realize(value) {
+                            IfRealized::If(i) => ElseBranch::ElseIf(i),
+                            other => ElseBranch::Else(other.into_block(value)),
+                        },
+                    })
+                });
+                IfRealized::If(IfStmt { cond, then_block, else_block, span })
+            }
+            IfHead::Let { pattern, scrutinee } => {
+                let form = if else_branch.is_some() { MatchForm::IfLetElse } else { MatchForm::IfLet };
+                let else_block = match else_branch {
+                    Some(IfElse::Block(b)) => b,
+                    Some(IfElse::Link(link)) => link.realize(value).into_block(value),
+                    // no `else`: an empty block where the `else` would be
+                    None => Block {
+                        stmts: Vec::new(),
+                        tail: None,
+                        span: Span::new(then_block.span.end.as_usize(), then_block.span.end.as_usize()),
+                    },
+                };
+                let arm = |pattern: Pattern, body: Block| {
+                    let span = body.span;
+                    let body = if value { MatchArmBody::Expr(Expr::Block(body)) } else { MatchArmBody::Block(body) };
+                    MatchArm { pattern, guard: None, body, span }
+                };
+                let wildcard = Pattern::Wildcard(else_block.span);
+                IfRealized::Match(MatchStmt {
+                    scrutinee,
+                    arms: vec![arm(pattern, then_block), arm(wildcard, else_block)],
+                    span,
+                    form,
+                })
+            }
+        }
+    }
+}
+
+/// GH #1995 E3: a name as the binding pattern it is in a `let … else`.
+fn name_pattern(name: Ident) -> Pattern {
+    if name.name == "_" {
+        Pattern::Wildcard(name.span)
+    } else {
+        Pattern::Binding(name)
+    }
+}
+
+/// The names a pattern binds, in the order written, each once. An
+/// or-pattern's alternatives bind the same names (the checker's rule), so
+/// its first alternative's are its names.
+fn pattern_binders(p: &Pattern) -> Vec<Ident> {
+    fn walk(p: &Pattern, out: &mut Vec<Ident>) {
+        match p {
+            Pattern::Binding(id) => {
+                if !out.iter().any(|o| o.name == id.name) {
+                    out.push(id.clone());
+                }
+            }
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => args.iter().for_each(|a| walk(a, out)),
+            Pattern::Or(alts, _) => {
+                if let Some(first) = alts.first() {
+                    walk(first, out);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(p, &mut out);
+    out
+}
+
 /// Convert an expression we just parsed (in a stmt position) to an
 /// LValue if possible; else error.
 ///
@@ -9178,24 +9833,6 @@ impl Parser {
 /// (synthetic Ident with the name "self"). The downstream type
 /// checker is responsible for resolving the synthetic head against
 /// the enclosing locus's params.
-/// WS3.2: is this `if` value-producing — does every reachable arm
-/// end in a tail expression? Only such an `if` may become a block's
-/// tail `Expr::If`; a side-effect `if` (any arm tail-less, or no
-/// `else`) stays a statement so codegen never lowers a tail-less arm
-/// as a value. Walks the `else if` chain.
-fn if_is_value_producing(if_stmt: &IfStmt) -> bool {
-    if if_stmt.then_block.tail.is_none() {
-        return false;
-    }
-    match &if_stmt.else_block {
-        Some(b) => match b.as_ref() {
-            ElseBranch::Else(blk) => blk.tail.is_some(),
-            ElseBranch::ElseIf(nested) => if_is_value_producing(nested),
-        },
-        None => false,
-    }
-}
-
 fn expr_to_lvalue(expr: Expr, op_span: Span) -> Result<LValue, Diag> {
     match expr {
         Expr::Ident(i) => Ok(LValue {
@@ -9555,6 +10192,66 @@ fn shift_span(s: Span, base: usize, limit: usize) -> Span {
     Span::new(lo, hi)
 }
 
+
+/// GH #1951 item 3 (F.52): each declared optional field `x?: T` of a
+/// record gets its flags as real fields right after it, `has_x: Bool =
+/// false` and, for `x?: T clearable`, `clear_x: Bool = false`: the slots
+/// a hand-written presence pair or triple has (spec/api.md § Codecs), so
+/// the codecs, the description and the digest read one shape. A flag
+/// the record declares itself beside its optional field is refused: the
+/// name is one slot (GH #1141), and the mark already declares it.
+fn synthesize_optional_flags(fields: Vec<StructField>) -> Result<Vec<StructField>, Diag> {
+    if !fields.iter().any(|f| matches!(f.optional, FieldOptional::Declared { .. })) {
+        return Ok(fields);
+    }
+    for f in &fields {
+        let FieldOptional::Declared { clearable } = f.optional else { continue };
+        let x = &f.name.name;
+        let mut flags = vec![format!("has_{x}")];
+        if clearable {
+            flags.push(format!("clear_{x}"));
+        }
+        for flag in &flags {
+            if let Some(dup) = fields.iter().find(|g| g.name.name == *flag) {
+                let mark = if flag.starts_with("has_") { format!("`{x}?`") } else { format!("`{x}?: … clearable`") };
+                return Err(Diag::parse(
+                    dup.name.span,
+                    format!(
+                        "field `{flag}` is already declared by {mark}: an optional field's flag is \
+                         synthesized beside it, so drop this declaration (or write the pair by hand, \
+                         without the `?`)"
+                    ),
+                )
+                .with_related(f.name.span, "the optional field that declares it"));
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(fields.len() + 2);
+    for f in fields {
+        let declared = match f.optional {
+            FieldOptional::Declared { clearable } => Some((f.name.clone(), f.span, clearable)),
+            _ => None,
+        };
+        out.push(f);
+        let Some((x, span, clearable)) = declared else { continue };
+        let flag = |name: String, optional: FieldOptional| StructField {
+            name: Ident::new(name, x.span),
+            ty: TypeExpr::Primitive(PrimType::Bool, x.span),
+            default: Some(Expr::Literal(Literal::Bool(false), x.span)),
+            tag: None,
+            indexed_by: None,
+            map_value: None,
+            optional,
+            span,
+        };
+        out.push(flag(format!("has_{}", x.name), FieldOptional::Presence));
+        if clearable {
+            out.push(flag(format!("clear_{}", x.name), FieldOptional::Clear));
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9692,7 +10389,10 @@ fn main() {
 
     #[test]
     fn let_with_non_keyword_token_keeps_debug_fallback() {
-        let errs = parse_str("fn main() { let 5 = 1; }").unwrap_err();
+        // `let 5 = 1;` parses since GH #1995 E3 (a literal is a pattern,
+        // which the check refuses as one that can fail to match); a token
+        // that begins no pattern still takes the fallback
+        let errs = parse_str("fn main() { let + = 1; }").unwrap_err();
         let msg = &errs[0].message;
         assert!(msg.contains("got"), "got: {msg}");
         assert!(!msg.contains("reserved"), "got: {msg}");
@@ -10665,6 +11365,34 @@ fn main() { }
         assert_eq!(prog.imports.len(), 1);
         assert_eq!(prog.imports[0].path, "lib/foo");
         assert_eq!(prog.imports[0].alias.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn parse_import_list_names_and_renames() {
+        let src = r#"
+import "../store" as st { ModelRow, Names as StoreNames, };
+
+fn main() { }
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let items = &prog.imports[0].items;
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].name.name, "ModelRow");
+        assert!(items[0].rename.is_none());
+        assert_eq!(items[0].local().name, "ModelRow");
+        assert_eq!(items[1].name.name, "Names");
+        assert_eq!(items[1].local().name, "StoreNames");
+        assert!(prog.imports[0].span.end.as_usize() > items[1].span.end.as_usize());
+    }
+
+    #[test]
+    fn parse_import_list_refuses_a_glob_and_an_empty_list() {
+        let glob = parse_str("import \"../store\" as st { * };\nfn main() { }\n")
+            .expect_err("a glob is refused");
+        assert!(glob.iter().any(|d| d.message.contains("there is no glob")), "{glob:?}");
+        let empty = parse_str("import \"../store\" as st { };\nfn main() { }\n")
+            .expect_err("an empty list is refused");
+        assert!(empty.iter().any(|d| d.message.contains("names nothing")), "{empty:?}");
     }
 
     #[test]

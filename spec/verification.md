@@ -1411,10 +1411,26 @@ seed's own files; `hale check <fleet seed>` reports them, and `hale
 fleet check` checks each instance's seed as it cuts its artifact.
 
 - **params** are the instances: each names another seed's `main locus`
-  through the fleet seed's import (`alias::Main`) and takes no value. A
-  param naming a locus that is not its seed's main, a locus of the
-  fleet seed itself, or nothing an import declares is refused. A seed
+  through the fleet seed's import (`alias::Main`, or `Main` bare from
+  an import list, spec/projects.md) and takes no value. A param naming
+  a locus that is not its seed's main, a locus of the fleet seed
+  itself, or nothing an import declares is refused. A seed
   declares at most one fleet.
+- A name the fleet spells through its imports, a param's main or a
+  binding's or a claim's topic, resolves through the rename and
+  re-export rows the compiler builds for the same imports (GH #1987):
+  a name an import list brings in bare (`import "../desk" as desk {
+  Orders };` then `orders: Orders;`, a topic renamed `{ OrderRequest as
+  Req }` then `Req: unix(…)`), and a name an imported seed re-exports
+  from its own import list (`api::Gateway`, where `api` lists `Gateway`
+  from `venue`), whose instance is built from the seed that declares
+  it (`venue`). A name the rows do not answer resolves against what
+  the alias's own seed declares, as before the rows; the fleet's own
+  declaration stays out of the link, so a binding's adapter spelled
+  through an alias only an instance's seed imports
+  (`nats::NatsAdapter`) is still the instances' concern. Only an
+  import list's own refusals (an item the library does not declare, a
+  listed name that collides) are the fleet's.
 - **placement** is a default per param: `host("<name>")`, one instance
   on each of several hosts (`host("a"), host("b")`), or `replicas(<n>)`
   (n ≥ 1) on no named host. A host is one name of letters, digits,
@@ -2099,7 +2115,8 @@ manifest. `hale verify` fails on these as on any advisory.
 | **Persistence with no accumulator** | `persists_through(...)` on a closure whose assertion has no `sum`, `count` or `mean`: there is nothing to keep. Reported at the clause, with the assertion as its witness | warning | `nothing_to_keep` (closure events) |
 | **Sealed confinement** | a read or a write of a `@sealed` locus's `params` field from outside that locus's own members (`self.signer.key` in its parent), naming the methods to call instead; see § "Secrets — confine, classify, claim". Judged over the param-access rows the checker records for every access through a locus-typed receiver, sealed or not, which the `--sealable` survey reads too. A parameter's default is judged where it is evaluated, at each call that leaves it, with that caller as the reader, and refused once, at the default. A receiver typed as a generic locus's specialization (`b: Box<Int>`) reaches the generic locus's `params`, and is judged against its `@sealed`. A generic body is judged in each of its specializations, so an access through a value of a parameter type (`self.inner.key`, `inner: T`) is refused where it is written when a specialization binds that type to a sealed locus, once however many do, through a chain of fields of any depth (`self.h.s.key`, `h: Holder<T>`) | error | `outside_access` (sealed access) |
 | **Module-nested entry** | a seed whose only `main locus` sits inside a `module { }`: it is not the entry (`spec/semantics.md` § "The entry locus"), and nothing else in the seed is, so the program would build with a `main locus` that never runs. Reported once, at that locus's name, read from the entry row; every other rule still judges the declaration | error | `module_nested_main_is_not_the_entry` (lowering laws) |
-| **Cross-pool spawn as a value** | a locus literal used as a value (let-bound, an argument, a field, a sub-expression) where the ownership graph's bubble plan posts it to an owner on another thread: a cross-pool spawn is fire-and-forget (`spec/semantics.md` § "accept bubbling"), so it may only be a bare statement. Judged at every place lowering builds the literal, a default's expansions included, from the ownership graph's sites and expansions and the typed bodies' omitted arguments | error | `cross_pool_spawn_used_as_a_value` (lowering laws) |
+| **Cross-pool spawn as a value** | a locus literal used as a value (let-bound, an argument, a field, a sub-expression) where the ownership graph's bubble plan posts it to an owner on another thread: a cross-pool spawn is fire-and-forget (`spec/semantics.md` § "accept bubbling"), so it may only be a bare statement. A member body's literal whose enclosing locus runs both on the owner's thread and off it (a `Mixed` edge: a same-tower birth in some instances, a post in others) is refused the same way, naming the instances and their threads. Judged at every place lowering builds the literal, a default's expansions included, from the ownership graph's sites and expansions and the typed bodies' omitted arguments | error | `cross_pool_spawn_used_as_a_value` (lowering laws) |
+| **Cross-pool child shape** | a locus the ownership graph's bubble plan posts to an owner on another thread is born there from a marshaled copy of its params (`spec/semantics.md` § "accept bubbling"), so each param is a type the spawn marshals (a scalar of `Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`; a `String`; a `Bytes`; a struct whose fields the bus carries; a fixed array of those) and the child keeps no work the far side would schedule (a non-empty `run()`, bus subscriptions, closures, capacity slots, an `accept`). Judged once per child, at the first literal that crosses (GH #1942: the build refused both, after a passing check) | error | `cross_pool_child_shape` (lowering laws) |
 | **Self-containing locus** | a locus whose params defaults construct one of its own kind by value, by a literal or through a fresh-factory call, so its construction has no floor (`spec/types.md` § "A locus may not contain itself by value"). Reported at the param that closes the cycle, naming the ring | error | `self_containing_locus` (lowering laws) |
 | **Self-containing record** | a record type that holds a value of its own kind, directly or around a ring of records, through a field, a tuple's part or a fixed array's element (a generic record's fields with its arguments substituted, an alias's target), so no value of it can be built (`spec/types.md` § "A record may not contain itself by value"). A `bounded[T; N]` of the record, or an enum holding it, is no such edge. Reported at the field that closes the ring, naming each field on it | error | `self_containing_record` (lowering laws) |
 | **Role declared once** | a `role` declared twice (`spec/types.md` § "Roles"): a role is one name the deployment maps, not a merge. Reported at the second declaration, with the first as its witness | error | `declared_twice` (roles) |
@@ -2111,7 +2128,7 @@ manifest. `hale verify` fails on these as on any advisory.
 | **Dropped scope-local delivery** | a bus subscriber — or a locus that keeps one for its whole life: one its params defaults build, transitively, or its bodies build and `accept` or store in a field — built and dissolved inside one call (a `let` or a bare statement, neither stored in a field nor returned, with no `accept` owning it) whose enclosing scope runs on a classic cooperative pool (not `where async_io`; a free fn's domains are its callers'): its subscription registers with that pool, and the call holds the pool's worker for the subscriber's whole life, so a delivery to it waits for a park point of a `run()` on that worker (a sleep or a yield there delivers the pool's queued cells; one in a handler delivers nothing) and is dropped at its dissolve when none comes first (`spec/runtime.md` § "Subscriptions follow the tower"). The advisory does not look for the park point: it fires at every such literal. Reported at the literal, naming the locus, the call and the pool, and saying to place the pool `where async_io` or keep the subscriber beyond the call; a literal in a bus handler is type-check rule 20's, and a scope whose domains are unknown proves nothing. Read from the allocation summary's rows, the ownership graph and the placement table's dynamic sites | warning | `check_scope_local_subscriber_on_classic_pool` |
 | **Subscriber torn down at its statement** | a bus subscriber — or a locus that keeps one for its whole life (as the row above) — built by a literal in statement position (a bare statement; a let-bound one lives for its scope and hears across a park point there, and the row above judges it on a classic pool), whose locus writes neither `birth()` nor `run()`, with no `accept` of its type owning it: it is a transient throwaway (`spec/semantics.md` § "Locus instantiation") born and torn down inside the statement, its subscription with it, so a delivery can never reach it, and with no hook of its own the build was for the hearing alone; the program is silent by design and the author meant otherwise. A statement-position locus with a `run()` runs it and hears while it runs, and one with a `birth()` does its work there (a fire-and-forget literal, `spec/styleguide.md`), so neither is reported; nor is a holder with neither whose params field holds a child that has a `run()` (transitively: the statement lives while that child's `run()` runs, and the subscriber the holder keeps hears meanwhile); nor the entry (`main locus`). Reported at the literal, in a `birth()` or another hook, a method or a free fn; not in a `run()` body, a nested block's included (the runtime keeps a statement literal there alive while the `run()` runs, so it hears), not in a bus handler's (type-check rule 20's) and not in `fn main`'s (its literal is the program's root); naming the locus and the call, and saying to `accept` it in the enclosing locus or hold it in a field. Read from the allocation summary's rows (and their entry kind), the ownership graph and the declarations (which locus wrote a `run()`, which params field holds a locus) | warning | `check_subscriber_torn_down_at_its_statement` |
 | **Publish before its subscriber** | a send written, in one body, before a literal building a locus that subscribes to its subject — the literal's own locus, or a locus its params build (by their declared types), a `**` subscription covering the subject included, keyed or not — where the literal is a statement, a `let`'s value or an assignment's, and "before" is the order written (a send after the literal inside one loop is the next iteration's, which the built instance receives). A cell reaches the subscribers registered when it is published (`spec/runtime.md` § "Lifecycle obligations", line 6), so that subscriber never receives it. Reported at the send, the literal its witness, saying to build the subscriber first or publish once it exists. Read from the bundle's bodies, the scope and the bus graph. What a statically built tree publishes to itself while it is built is not this rule's (2026-10-12) | warning | `check_publish_before_subscriber` |
-| **Hot-path allocation** | an allocation per loop iteration or per bus message in the program's own fns: a locus instantiated, a factory's result bound (the factory is the free fn the summary resolved the call to, by declaration: an imported seed's through its alias, never a stdlib call; until 2026-10-17 a path's last segment was matched against the tail of every imported fn's mangled name, so an imported `one_arg` returning a locus made each `std::env::arg(i)` a finding, downstream handoff), an allocating receive in a loop; under `@hot` also `snapshot()` / `finish()` and a whole-struct `self.<field> =` replace. Read from the allocation summary's rows; an error under `@hot`, otherwise a warning that `@unbounded` or `@bounded_by(<name>)` silences | warning / error | `check_hot_path_alloc` |
+| **Hot-path allocation** | an allocation per loop iteration or per bus message in the program's own fns: a locus instantiated, a factory's result bound (the factory is the free fn the summary resolved the call to, by declaration: an imported seed's through its alias, never a stdlib call; until 2026-10-17 a path's last segment was matched against the tail of every imported fn's mangled name, so an imported `one_arg` returning a locus made each `std::env::arg(i)` a finding, downstream handoff), an allocating receive in a loop; under `@hot` also `snapshot()` / `finish()` and a whole-struct `self.<field> =` replace. Read from the allocation summary's rows; an error under `@hot`; elsewhere a warning only when asked for — `hale check --warn-hot-path` or `hale verify` (GH #1948, 2026-11-15) — that `@unbounded` or `@bounded_by(<name>)` silences | warning (opt-in) / error | `check_hot_path_alloc` |
 | **Unit declared once** | a `unit` declared twice (`spec/units.md` § "Declarations"): a unit is one node of the catalogue. Reported at the second declaration's name, with the first as its witness; a unit of a name the stdlib's time catalogue declares (`ms`, U4) is that unit declared again, the message naming the catalogue | error | `declared_twice` (units) |
 | **Declared unit** | an equation's target, a denomination or an origin that names no declared unit, at the name, suggesting the nearest declared one, a program's own before the stdlib's; a retired time unit (`m`) says what it is now instead (minutes are `min`) | error | `undeclared_units` (units) |
 | **Unit cycles multiply to one** | a cycle of unit equations whose product is not one, at the equation the closure found inconsistent, stating what it claims and what the other equations imply; the witness is the other path, each step at its declaration | error | `inconsistent_cycles` (units) |
@@ -3041,7 +3058,36 @@ assume the others in a build:
   turned its own reproducer into a correct program that the advisory
   still flagged — and the fix it suggested, `@no_block`, is a compile
   error on that program.
-- **Hot-path allocation lint — default-on advisory** (2026-07-16). Two
+- **String-match advisory — opt-in** (GH #1995 S5). Three or more
+  `if` tests in a row comparing one String place (a local, or `self` and
+  its fields) with string literals by `==` — the links of one `else if`
+  chain, consecutive `if` statements, or both, each condition one
+  comparison or an `||` of comparisons on that place — get a warning at
+  the first test, naming the place and the count and showing the
+  `match` they read as (spec/semantics.md § Or-patterns, § Matching
+  strings). A link testing anything else, a final plain `else` or any
+  other statement ends the run; code that already matches is never
+  flagged. Reported only under `--warn-string-match`, on `hale check`
+  or `hale verify`; without it no verb reports it, `verify` included:
+  `verify` fails on any finding, advisories too, and this one is a
+  suggestion — over the in-tree `dna/` library it names 150 ladders,
+  which an always-on rule would turn into 150 verify failures. The
+  stdlib's source, and stdlib text an expansion appends to the program
+  (the api runtime, the streamed body readers, the TCP substrate), is
+  never reported. Syntactic, over the program as written
+  (`crate::string_if_chain`).
+- **Hot-path allocation lint — opt-in advisory** (2026-07-16; opt-in
+  since GH #1948, 2026-11-15). Its warnings are reported by `hale
+  verify` (the discipline gate, which fails on any finding) and by
+  `hale check --warn-hot-path`; `hale check`, `build`, `run`, `test` and
+  the editor report none, and a `@hot` fn's findings are errors
+  whatever is asked. It was on by default until then, and a first
+  program came out full of it: a `let x = Locus { … }` in a plain
+  `while` in `fn main`, a child born in a handler of a service with a
+  handful of messages. Neither is a path anyone certified hot, and
+  the lint cannot tell one from the 10k/s read loop it was written
+  for; the author can, with `@hot` on the path that is, or by asking.
+  The rest of this entry is what it finds when it runs. Two
   loop-scoped anti-patterns get a **warning** (never a build failure), so
   the allocation-free shape is the path of least resistance rather than
   expert folklore: (1) a **locus** (its own arena / heap buffer) or a
@@ -3053,7 +3099,7 @@ assume the others in a build:
   the unambiguous case); a plain value struct/type literal is not flagged
   (only loci and heap-bearing builders), and a per-invocation
   instantiation outside a loop reclaims at method exit. This is the
-  conservative default advisory; `@budget` is the strict opt-in contract
+  conservative advisory; `@budget` is the strict opt-in contract
   built on the same intent.
 
   Gap D extensions (2026-07-17): (3) a locus / `BytesBuilder`
@@ -3066,6 +3112,33 @@ assume the others in a build:
   parent dissolves, so a parent whose `run()` loops forever (literal
   `while true` — the deliberately narrow daemon signal) grows
   O(accepted children). Run-to-exit accept examples stay silent.
+
+  GH #1947 (2026-11-15): (5) an **appending assignment that copies the
+  whole String on every iteration** — `s = s + …`, `s += …` or
+  `s = f"{s}…"` in a loop, where an append no longer copies otherwise
+  (spec/stdlib.md § "Building a String"). Two shapes: the target is a
+  local declared outside the loop and the loop also reads it in a way
+  that may keep the value (anything but the reads spec/stdlib.md
+  § "Building a String" lists as keeping nothing — an operand of `+` or
+  of a comparison, a slice, an argument of a call that keeps none, the
+  append's own read: the same list lowering reads without giving the
+  buffer up), which gives the local's buffer up before each append —
+  reported with that read as its step. A read is not reported when the
+  statements after it in its own block start the local afresh (a plain
+  assignment: `tok = ""` after handing `tok` on) or leave the frame
+  (`return`, `fail`) before any append to it, nor when it is in a
+  `return`, a `fail` or a plain assignment to the local itself; the next
+  append then copies a fresh value, or never comes. The other shape: the
+  target is a place other than a local or a field of
+  `self` (`rec.body`, `self.page.body`), which builds a fresh String
+  the size of the whole each time. The message names the fix: read the
+  local after the loop, or build in a local, or in a
+  `std::bytes::BytesBuilder`. A place is judged a String when an
+  appended operand is a string literal, or, for a local, when its `let`
+  is annotated `String` or initialized with a literal; an append to a
+  local declared inside the loop starts afresh and is silent. Read
+  from the allocation summary's `quadratic_appends` rows
+  (`hale_types::string_append`).
 
   **The lint reaches inside `module { … }`** (GH #764, 2026-09-20). A
   module is a NAMESPACE, not an analysis boundary: the resolver
@@ -3096,10 +3169,10 @@ assume the others in a build:
   read as "copied here in a loop" whenever a generated decoder's loop
   had a statement at exactly its offsets, which an edit anywhere earlier
   in the bundle could bring about. A diagnostic inside a generated codec
-  names it as that (`in the JSON codecs the compiler generated …`), not
+  names it as that (`in the code the compiler generated for …`), not
   a position in a file.
 - **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
-  escalation between the default advisory and `@budget`'s counted
+  escalation between the opt-in advisory and `@budget`'s counted
   ceiling: `@hot fn` certifies "this is a 10k/s-class path" and (a)
   **promotes the hot-path lint's findings inside that fn to hard
   errors** (prefixed `@hot:`), and (b) enables two stricter,
@@ -3263,7 +3336,8 @@ assume the others in a build:
   *runtime*. See `notes/closure-lifting.md`.
 
 The item-1 whole-program survey and the hot-path lint are advisory
-(warnings). The one build-failing *allocation* gate is opt-in:
+(warnings; the hot-path lint's only when asked for, `hale verify` or
+`hale check --warn-hot-path`). The one build-failing *allocation* gate is opt-in:
 `@budget(alloc_per_call = N)` on a fn — you ask for the ceiling, and a
 violation is a hard error. fd and thread bounds remain advisory / CI-gated
 (item 5), not automatic build failures.

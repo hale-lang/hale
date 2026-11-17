@@ -6971,7 +6971,14 @@ or family proposal whose receipt carries a `position` node the graph does
 not state), with `state: "proposed"` and `review` the Review that awaits,
 so the face shows what is pending as pending and never as absent), its
 **parts** (the nodes positions sit under that are not positions: `id`,
-`kind`, `name`, `text`) and its **organisms** as the index lists them. It
+`kind`, `name`, `text`), its **organisms** as the index lists them, and the
+**habitat** the organization lives in, an object `{name, face}`: the
+habitat's name and the absolute origin of its face
+(`http://<address>:<port>`, no trailing `/`), as the habitat handed the
+head's process (`HALE_DNA_HABITAT_NAME`, `HALE_DNA_HABITAT_FACE`, on the
+body and the face of every organism it keeps: `spec/habitat.md`, A
+sapling's body), both `""` when either was not handed and on a habitat's
+own record. It
 is read from the record's rows alone (`dna::record_graph_bodies`), never
 from memory, so it answers wherever the record does, and the org chart it
 states is the graph's (**The repository's graph**): the face draws the
@@ -6985,6 +6992,33 @@ it answers `ok: false` with `code: task_source_unavailable` and why. The
 HTTP tasks read answers only a trusted-local session; this row answers as
 the signed-in person wherever the Ledger is reached, which is what a
 hosted face's board needs. Both write nothing.
+
+**Every organization of its habitat.** The face's `Index` call through a
+project head's commands relay answers `Commands::index` with one more
+field beside the row's own, `organizations`: a JSON array, carried as a
+string as the row's other lists are, of every organization of the habitat
+the head's organism lives in, the habitat first and then each organism
+the habitat grafted, each `{name, state, face_link}`. `state` is `up` for
+the habitat (it answered) and the organism's own for an organism (`up`
+while its face accepts connections, `grafted` otherwise); `face_link` is
+the absolute address that reaches it on the habitat's face:
+`<face>/organization` for the habitat, the hand-in
+`<face>/organisms/<name>/face` for an organism (`spec/habitat.md`, A
+sapling's body). The head's own organism's entry carries one more field,
+`"current": true`, and no other entry has it: the habitat marks the
+organism whose face asked, so the head needs no name of its own. The head knows them, not the record: it asks the
+habitat's head (`GET /api/hale/v1/head/organizations` on the habitat
+face's origin it was handed, through `HALE_DNA_LOOPBACK_HOST` when that
+names the loopback) at most once every 30 s and keeps the answer between.
+The list is `[]` for the habitat's own head and an organism run outside
+one (no habitat handed it), and while the habitat does not answer or
+refuses: the dial is bounded at 2 s and the answer at 5 s, the empty list
+is kept as long as an answer would be, and the read answers either way.
+The row's own shape is unchanged: the field rides on the relay's answer,
+not on `RecordIndex`, so the standard face's `/index` client, which
+declares the row's shape for its member digest, calls it as before, and a
+call of the row on the head's surface (`…/head/surface/call/Commands::index`)
+answers without it.
 
 **The index.** `GET /index` on the face is the record's index: a static
 page, plain HTML in the shell's stylesheet and no script, generated on
@@ -7320,9 +7354,10 @@ otherwise.
 | `HALE_DNA_ID_TOKEN=<token>` | unset | The bearer token a leg presents to the head; sent only over `https://` or loopback, never plain http off this machine. |
 | `HALE_DNA_HOST_NAME=<name>` | unset | The name of the `ssh` host a compose project is applied on, handed to that project's environment by the habitat (`spec/habitat.md`, The handover); a project maps it in its compose file. Unset on this machine. |
 | `HALE_DNA_HOST_LISTEN=<addr>` | unset | That host's listen address (the first IPv4 address its name resolves to on the habitat's machine), handed beside `HALE_DNA_HOST_NAME`, through the toolchain's own resolver (`hale habitat resolve`); an apply on a host whose name resolves to none is refused. Unset on this machine. |
-| `HALE_DNA_HABITAT_NAME=<name>` | unset | The habitat's name (its `name` file, `hale habitat up --name`; `local` when it was born with none), handed by the habitat to the environment of every organism of its own: the compose project of its services, wherever they are applied, a repository body's compose services when the habitat grafted it, and each run of a host command (`spec/habitat.md`, The handover; Host commands). A project maps it in its compose file; a provider names what it keeps for the habitat it serves by it (voice's projects, `<name>-<label>`). Unset for a repository body outside a habitat. |
+| `HALE_DNA_HABITAT_NAME=<name>` | unset | The habitat's name (its `name` file, `hale habitat up --name`; `local` when it was born with none), handed by the habitat to the environment of every organism of its own: the compose project of its services, wherever they are applied, a repository body's compose services when the habitat grafted it, the body and the face of each organism it keeps (`body-<key>`, `face-<key>`, beside `HALE_DNA_HABITAT_FACE`), and each run of a host command (`spec/habitat.md`, The handover; A sapling's body; Host commands). A project maps it in its compose file; a provider names what it keeps for the habitat it serves by it (voice's projects, `<name>-<label>`). Unset for a repository body outside a habitat. |
 | `HALE_DNA_REVISION=<commit>` | unset | The full commit an organism's checkout is at (its sapling's pinned revision), handed by the habitat to the organism's compose services, its host commands and its heart migrations (`spec/habitat.md`). A compose file that names its images by it is applied without `--build`, so its published images are pulled. Unset outside a habitat. |
 | `HALE_DNA_HOST_RESERVED_BYTES=<n>` | unset | The memory, in bytes, the habitat's own containers may use on the host a host command runs on, by their compose `mem_limit`s: the habitat's own services on its machine and each organism's allocations placed there (a service with no limit counts 0), or, on a Mac, the memory of the VM docker runs in when that is more. Handed to every run of a host command, 0 on a host the habitat runs nothing on (`spec/habitat.md`, Host commands); a provider's node subtracts it from the memory it offers models. Unset outside a habitat. |
+| `HALE_DNA_HABITAT_FACE=<url>` | unset | The habitat's face, the absolute origin a person reaches it at (`http://<address>:<port>`, no path), handed with `HALE_DNA_HABITAT_NAME` to the body and the face of every organism the habitat keeps (`body-<key>`, `face-<key>`; `spec/habitat.md`, A sapling's body). The organism's head answers both on `Commands::org` as `habitat: {name, face}`; unset, or on the habitat's own record, both are `""`. Not set by hand. |
 | `HALE_DNA_HABITAT_LISTEN=<addr>` | `127.0.0.1` | The address a habitat declares its face, head and OIDC stub on: what the `face` service binds (`HALE_DNA_LISTEN_HOST`) and where `up` probes them. Not set by hand: `hale habitat up --host <name>` sets it on every container it runs on that machine to the address `<name>` resolves to on the admin machine. |
 | `HALE_DNA_HABITAT_EXPECT=<record>` | unset | The record a `hale habitat down` run on a habitat's machine through a pointer must find there: when it is set and the habitat's genome pins another record, or none, nothing is stopped or removed. Not set by hand: `hale habitat down` on the admin machine sets it to the pointer's identity, after checking the same over SSH. |
 | `HALE_DNA_HABITAT_ADDRESS=<name>` | `127.0.0.1` | The host a habitat's face and head are recorded at (`http://<name>:<port>`, on its `habitat.profile` row and in `head.url`). Not set by hand: `hale habitat up --host <name>` sets it to `<name>` on the containers it runs there. |

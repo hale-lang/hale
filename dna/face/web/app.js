@@ -162,6 +162,8 @@ async function loadAll() {
     command(S.app, "Index", { limit: 200 }).then(x => { S.index = x; }, e => { S.errors.index = e; }),
     // the org chart row; a head without it answers a malformed-call
     // refusal, and the chart falls back to the index's positions
+    // every organization's UIs, where this head is a habitat's (`Uis`)
+    (S.calls.has("Uis") ? command(S.app, "Uis", { limit: 200 }).then(x => { if (x && x.ok) S.uis = parseList(x.uis); }, () => {}) : Promise.resolve()),
     command(S.app, "Org", { limit: 500 }).then(x => { if (x && x.ok) S.org = x; else S.errors.org = new ReadError(200, "org_refused", (x && (x.why || (x.refusal && x.refusal.reason))) || ""); }, e => { S.errors.org = e; }),
     readAllKnowledge().then(x => { S.knowledge = x; }, e => { S.errors.knowledge = e; }),
     read(S.app, "dna/reviews?limit=100").then(x => { S.reviews = x.data.items; }, e => { S.errors.reviews = e; }),
@@ -328,7 +330,7 @@ function renderOrg(main) {
   const insp = el("aside", { class: "panel insp", "aria-label": "Inspector" });
   const node = org.byId.get(current);
   if (!node) {
-    insp.append(el("h2", {}, "Select a position"), el("p", { class: "note" }, "A position is a seat in the organization: who holds it, what its mandate says, what it signs."));
+    insp.append(el("h2", {}, "Select a position"), el("p", { class: "note" }, "A position is a seat in the organization: who holds it and what it is responsible for. Click one in the chart."));
     if (S.calls.has("PositionOpen")) insp.append(openPositionForm(org));
   } else if (node.kind === "part") {
     insp.append(el("h2", {}, node.name), el("p", { class: "note" }, "A part of the organization its positions sit under."));
@@ -353,7 +355,7 @@ function positionInspector(n, org) {
   if (n.text && !isDefaultText(n)) wrap.append(el("p", { class: "text" }, n.text));
   if (n.mandate.node) wrap.append(el("p", { class: "text" }, n.mandate.node.text), el("p", { class: "note mono" }, n.mandate.node.name, " · ", n.mandate.node.id.slice(0, 19)));
   const reviews = (S.reviews || []).filter(r => r.state === "pending" && (r.question || "").includes("`" + n.name + "`"));
-  if (reviews.length) wrap.append(el("h3", {}, "awaiting the Board"), el("ul", {}, reviews.map(r => el("li", {}, el("a", { href: href("board", r.id) }, r.question)))));
+  if (reviews.length) wrap.append(el("h3", {}, "waiting for approval"), el("ul", {}, reviews.map(r => el("li", {}, el("a", { href: href("board", r.id) }, r.question)))));
   if (S.calls.has("HoldFill")) wrap.append(fillForm(n));
   if (S.calls.has("BatchApply") && n.state !== "proposed") {
     wrap.append(amendForm(n));
@@ -424,18 +426,18 @@ function batchForm(opts) {
   const preview = el("div", { class: "preview" });
   let steps = "";
   const proposeBtn = el("button", { class: "primary", type: "button", onclick: async () => {
-    out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
+    out.replaceChildren(el("div", { class: "receipt" }, "submitting…"));
     try {
       const reply = await command(S.app, "BatchApply", { request_id: requestId(), record_head: S.record.record_head, steps, pack: "" });
       const refusal = await settled(reply, opts.said());
       if (refusal) out.replaceChildren(refusal);
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
-  } }, opts.propose || "Propose it");
+  } }, opts.propose || "Submit for approval");
   proposeBtn.hidden = true;
   const form = el("form", { class: "act" + (opts.danger ? " danger" : ""), onsubmit: async ev => {
     ev.preventDefault();
     steps = opts.steps();
-    preview.replaceChildren(el("div", { class: "receipt" }, "checking…"));
+    preview.replaceChildren(el("div", { class: "receipt" }, "previewing…"));
     proposeBtn.hidden = true;
     try {
       const p = await command(S.app, "BatchPreview", { steps });
@@ -444,12 +446,12 @@ function batchForm(opts) {
                      ...(p.removed || "").split("\n").filter(Boolean).map(l => el("div", { class: "mono del" }, "- " + l))];
       preview.replaceChildren(el("div", { class: "diff" }, ...(lines.length ? lines : [el("div", { class: "note" }, "this changes nothing")])));
       proposeBtn.hidden = !lines.length;
-      if (p.pending) preview.append(el("div", { class: "note" }, "the same change already awaits the Board: ", el("a", { href: href("board", p.pending) }, p.pending)));
+      if (p.pending) preview.append(el("div", { class: "note" }, "the same change is already waiting for approval: ", el("a", { href: href("board", p.pending) }, p.pending)));
     } catch (e) { preview.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, opts.title),
     ...opts.fields,
-    el("div", { class: "actions" }, el("button", { type: "submit" }, opts.check || "Check the change"), proposeBtn),
+    el("div", { class: "actions" }, el("button", { type: "submit" }, opts.check || "Preview"), proposeBtn),
     preview, out,
   );
   return form;
@@ -458,10 +460,10 @@ function batchForm(opts) {
 function amendForm(n) {
   const text = el("input", { name: "text", placeholder: "one sentence on what this position does", value: isDefaultText(n) ? "" : n.text, required: true });
   return batchForm({
-    title: isDefaultText(n) ? "say what this position does" : "change what this position does",
-    fields: [el("label", {}, "it", text)],
+    title: isDefaultText(n) ? "Describe this position" : "Change its description",
+    fields: [el("label", {}, "description", text)],
     steps: () => `amend ${n.id} | ${text.value.trim()}\n`,
-    said: () => `proposed a new sentence for ${n.name}; the Board approves it`,
+    said: () => `the new description of ${n.name} is waiting for approval`,
   });
 }
 
@@ -473,10 +475,10 @@ function moveForm(n, org) {
   const sel = el("select", { name: "under" }, ...choices.map(p => el("option", { value: p.id }, p.name)));
   for (const o of sel.options) if (o.value === n.under) o.selected = true;
   return batchForm({
-    title: "move this position",
+    title: "Move it under another position",
     fields: [el("label", {}, "under", sel)],
     steps: () => `move ${n.id} under ${sel.value}\n`,
-    said: () => `proposed moving ${n.name}; the Board approves it`,
+    said: () => `moving ${n.name} is waiting for approval`,
   });
 }
 
@@ -489,13 +491,13 @@ function descends(org, id, root) {
 
 function closeForm(n) {
   return batchForm({
-    title: "retire this position",
+    title: "Remove this position",
     danger: true,
     fields: [el("p", { class: "note" }, "whoever holds it leaves it and it stops signing anything; positions under it stay where they are")],
     steps: () => `close ${n.id}\n`,
-    check: "Check what retiring it does",
-    propose: "Propose retiring it",
-    said: () => `proposed retiring ${n.name}; the Board approves it`,
+    check: "Preview",
+    propose: "Submit removal for approval",
+    said: () => `removing ${n.name} is waiting for approval`,
   });
 }
 
@@ -504,16 +506,16 @@ function fillForm(n) {
   const out = el("div", {});
   const form = el("form", { class: "act", onsubmit: async ev => {
     ev.preventDefault();
-    out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
+    out.replaceChildren(el("div", { class: "receipt" }, "submitting…"));
     try {
       const reply = await command(S.app, "HoldFill", { request_id: requestId(), record_head: S.record.record_head, position: n.id, holder: holder.value.trim() });
       const refusal = await settled(reply, `proposed ${holder.value.trim()} holding ${n.name}; the Board ratifies it`);
       if (refusal) out.replaceChildren(refusal);
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
-    el("h3", {}, "fill this position"),
-    el("label", {}, "holder", holder),
-    el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Propose the hold")),
+    el("h3", {}, "Assign someone"),
+    el("label", {}, "person", holder),
+    el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Submit for approval")),
     out,
   );
   return form;
@@ -521,12 +523,12 @@ function fillForm(n) {
 
 function openPositionForm(org, under) {
   const name = el("input", { name: "position", placeholder: under ? under.name + "/…" : "team/role", required: true, value: under ? under.name + "/" : "" });
-  const text = el("input", { name: "text", placeholder: "what the position keeps, one line" });
-  const mandate = el("textarea", { name: "mandate", placeholder: "Decides: … May not: … Cites: … Escalates: …", required: true });
+  const text = el("input", { name: "text", placeholder: "what this position is for, one line" });
+  const mandate = el("textarea", { name: "mandate", placeholder: "Decides: …  May not: …  Cites: …  Escalates: …", required: true });
   const out = el("div", {});
   return el("form", { class: "act", onsubmit: async ev => {
     ev.preventDefault();
-    out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
+    out.replaceChildren(el("div", { class: "receipt" }, "submitting…"));
     try {
       const reply = await command(S.app, "PositionOpen", {
         request_id: requestId(), record_head: S.record.record_head,
@@ -537,11 +539,11 @@ function openPositionForm(org, under) {
       if (refusal) out.replaceChildren(refusal);
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
-    el("h3", {}, under ? "open a position under " + under.name : "open a position"),
+    el("h3", {}, under ? "Add a position under " + under.name : "Add a position"),
     el("label", {}, "name", name),
-    el("label", {}, "keeps", text),
+    el("label", {}, "description", text),
     el("label", {}, "mandate", mandate),
-    el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Propose the opening")),
+    el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Submit for approval")),
     out,
   );
 }
@@ -607,9 +609,11 @@ function renderBoard(main) {
   const task = tasks.find(t => t.id === current);
   if (review) insp.append(reviewInspector(review));
   else if (task) insp.append(taskInspector(task));
-  else insp.append(el("h2", {}, "Select a card"), el("p", { class: "note" }, "A card is a Task a person holds, or a Review the Board decides. Nothing here is a leg's attempt; that is work in flight, read elsewhere."));
+  else insp.append(el("h2", {}, "Select a card"), el("p", { class: "note" }, "A card is a task someone is doing, or a change waiting for approval. Click one to see it."));
   // the lanes take the width; the selected card opens beneath them
-  main.append(el("div", { class: "board-screen" }, el("div", { class: "board-wrap" }, board), insp));
+  main.append(el("div", { class: "board-screen" },
+    S.calls.has("TaskCreate") ? newTaskForm() : "",
+    el("div", { class: "board-wrap" }, board), insp));
 }
 
 // What a Review is about, when its row carries no question: the
@@ -660,13 +664,13 @@ function reviewTitle(r) {
 function reviewCard(r) {
   return el("li", {}, el("a", { class: "card", href: href("board", r.id), "aria-current": r.id === S.route.id ? "true" : null },
     el("span", { class: "title" }, reviewTitle(r)),
-    el("span", { class: "meta" }, r.state === "pending" ? `needs ${r.required_authority}` : (r.settled || r.outcome), " · ", el("span", { class: "mono" }, r.id)),
+    el("span", { class: "meta" }, r.state === "pending" ? (r.required_authority === "board" ? "waiting for the board" : `waiting for ${r.required_authority}`) : (r.settled || r.outcome), " · ", el("span", { class: "mono" }, r.id)),
   ));
 }
 function taskCard(t) {
   return el("li", {}, el("a", { class: "card", href: href("board", t.id), "aria-current": t.id === S.route.id ? "true" : null },
     el("span", { class: "title" }, t.outcome || t.id),
-    el("span", { class: "meta" }, t.assignee ? (t.taken ? "taken by " : "held by ") + t.assignee : "unassigned", " · ", t.state, t.waiting ? " · waiting: " + t.waiting : ""),
+    el("span", { class: "meta" }, t.assignee ? (t.taken ? "taken by " : "assigned to ") + t.assignee : "nobody yet", " · ", t.state, t.waiting ? " · waiting on " + t.waiting : ""),
   ));
 }
 
@@ -685,41 +689,91 @@ function reviewInspector(r) {
 }
 
 function verdictForm(r) {
-  const choice = el("select", { name: "verdict" }, ["approve", "reject", "revise"].map(v => el("option", { value: v }, v)));
+  const choice = el("select", { name: "verdict" }, [["approve", "Approve"], ["reject", "Reject"], ["revise", "Ask for changes"]].map(([v, l]) => el("option", { value: v }, l)));
   const comment = el("input", { name: "comment", placeholder: "why, in a line" });
   const out = el("div", {});
   return el("form", { class: "act", onsubmit: async ev => {
     ev.preventDefault();
-    out.replaceChildren(el("div", { class: "receipt" }, "deciding…"));
+    out.replaceChildren(el("div", { class: "receipt" }, "submitting…"));
     try {
       const reply = await command(S.app, "ReviewVerdict", { request_id: requestId(), review_id: r.id, subject_digest: r.subject_digest, verdict: choice.value, comment: comment.value.trim() });
       const refusal = await settled(reply, `${choice.value} recorded on ${r.id}`);
       if (refusal) out.replaceChildren(refusal);
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
-    el("h3", {}, "decide"),
+    el("h3", {}, "Your decision"),
     el("label", {}, "verdict", choice),
     el("label", {}, "comment", comment),
-    el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Record the verdict")),
+    el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Submit decision")),
     out,
   );
 }
 
+// The people a task can go to: everyone holding a position, and whoever
+// is signed in, once each.
+function knownPeople() {
+  const people = new Set();
+  for (const p of parseList(S.org && S.org.positions)) for (const h of p.holders || []) people.add(String(h).replace(/^person:/, ""));
+  if (S.principal && S.principal.name) people.add(S.principal.name);
+  return [...people].filter(Boolean).sort();
+}
+function peopleList(id) { return el("datalist", { id }, knownPeople().map(p => el("option", { value: p }))); }
+
+// A new task, from the board: what it is for and who gets it (the record
+// hands every task to someone; the signed-in person by default).
+function newTaskForm() {
+  const outcome = el("input", { name: "outcome", placeholder: "what needs doing, in a line", required: true, "aria-label": "What needs doing" });
+  const to = el("input", { name: "to", list: "task-people", placeholder: "who does it", required: true, value: (S.principal && S.principal.name) || "", "aria-label": "Assign to" });
+  const out = el("div", {});
+  const form = el("form", { class: "new-task", "aria-label": "New task", onsubmit: async ev => {
+    ev.preventDefault();
+    out.replaceChildren(el("div", { class: "receipt" }, "creating…"));
+    try {
+      const reply = await command(S.app, "TaskCreate", { request_id: requestId(), record_head: S.record.record_head, outcome: outcome.value.trim(), to: to.value.trim(), kind: "" });
+      if (!reply || reply.ok === false) { out.replaceChildren(receiptCard(reply, "")); return; }
+      S.receipt = { tab: "board", id: "", card: el("div", { class: "receipt" }, "created: ", outcome.value.trim(), " → ", to.value.trim()) };
+      await loadAll(); render();
+    } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
+  } },
+    outcome, to, peopleList("task-people"),
+    el("button", { class: "primary", type: "submit" }, "Create task"),
+    out,
+  );
+  return form;
+}
+
 function taskInspector(t) {
+  const me = S.principal && S.principal.name;
   const wrap = el("div", {}, el("h2", {}, t.outcome || t.id));
   wrap.append(el("dl", {},
+    el("dt", {}, "state"), el("dd", {}, el("span", { class: "badge" }, t.state), t.taken ? " · taken" : "", t.waiting ? " · waiting on " + t.waiting : ""),
+    el("dt", {}, "assigned to"), el("dd", {}, t.assignee || el("span", { class: "note" }, "nobody")),
+    t.obligation ? el("dt", {}, "done when") : "", t.obligation ? el("dd", {}, t.obligation, t.evidence_required ? " · evidence required" : "") : "",
     el("dt", {}, "task"), el("dd", { class: "mono" }, t.id),
-    el("dt", {}, "state"), el("dd", {}, el("span", { class: "badge" }, t.state), t.waiting ? " waiting: " + t.waiting : ""),
-    el("dt", {}, "assignee"), el("dd", {}, t.assignee || el("span", { class: "note" }, "unassigned")),
-    el("dt", {}, "obligation"), el("dd", {}, t.obligation || "", t.evidence_required ? " · evidence required" : ""),
   ));
   const acts = el("div", { class: "actions" });
-  if (S.calls.has("TaskTake") && !t.assignee) acts.append(el("button", { onclick: () => act(wrap, "TaskTake", { task_id: t.id }, "taken") }, "Take it"));
+  // taking: an unassigned task is taken; one assigned to someone else is
+  // reassigned to the signed-in person (the record refuses a take of it)
+  const open = !["done", "delivered"].includes(t.state);
+  if (open && !t.assignee && S.calls.has("TaskTake")) acts.append(el("button", { onclick: () => act(wrap, "TaskTake", { task_id: t.id }, "taken") }, "Take this task"));
+  else if (open && t.assignee && t.assignee !== me && me && S.calls.has("TaskReassign") && t.reassignment_supported && t.assignment_digest)
+    acts.append(el("button", { onclick: () => act(wrap, "TaskReassign", { request_id: requestId(), task_id: t.id, assignment_digest: t.assignment_digest, assignee: t.assignee, to: me }, "taken over") }, "Take this task"));
+  if (S.calls.has("TaskReassign") && t.reassignment_supported && t.assignment_digest && !["done", "delivered"].includes(t.state)) {
+    const to = el("input", { list: "hand-people", placeholder: "hand to…", "aria-label": "Hand to" });
+    acts.append(to, peopleList("hand-people"), el("button", { onclick: () => {
+      if (!to.value.trim()) return;
+      act(wrap, "TaskReassign", { request_id: requestId(), task_id: t.id, assignment_digest: t.assignment_digest, assignee: t.assignee || "", to: to.value.trim() }, "handed to " + to.value.trim());
+    } }, "Hand off"));
+  }
   if (S.calls.has("TaskDone") && (!t.assignee || t.assignee === (S.principal && S.principal.name))) {
     const text = el("input", { placeholder: "what was done, in a line" });
-    acts.append(text, el("button", { class: "primary", onclick: () => act(wrap, "TaskDone", { task_id: t.id, text: text.value.trim() }, "reported done") }, "Report done"));
+    acts.append(text, el("button", { class: "primary", onclick: () => act(wrap, "TaskDone", { task_id: t.id, text: text.value.trim() }, "marked done") }, "Mark done"));
   }
   wrap.append(acts);
+  const hist = Array.isArray(t.history) ? t.history : [];
+  if (hist.length) wrap.append(el("h3", {}, "history"), el("ul", { class: "history" }, hist.map(h => el("li", {},
+    el("span", { class: "mono" }, (h.kind || "").replace(/^task\./, "")), " ",
+    h.from && h.to && h.from !== h.to ? `${h.from} → ${h.to}` : (h.to || h.from || ""), h.by ? el("span", { class: "note" }, " by " + h.by) : ""))));
   return wrap;
 }
 
@@ -734,6 +788,109 @@ async function act(wrap, member, payload, said) {
   } catch (e) { out.classList.add("refused"); out.replaceChildren(errorText(e)); }
 }
 
+// ---- knowledge: the graph -------------------------------------------------
+//
+// Every entry is a node coloured by its kind. With an entry selected, the
+// graph is that entry, the entries it relates to and theirs (two steps,
+// read from memory's edges), and the targets it applies to (dashed); with
+// none, every entry grouped by kind, and the relations of the first ones
+// as they are read. Clicking an entry goes to it.
+function kindColour(kind) {
+  const i = Math.max(0, KIND_ORDER.indexOf(kind));
+  return "--color-chart-" + ((i % 8) + 1);
+}
+
+async function drawKnowledgeGraph(host, nodes, center) {
+  if (typeof window.cytoscape !== "function") { host.replaceWith(el("p", { class: "note" }, "the graph library is not served")); return; }
+  // a newer draw supersedes this one: it never touches the graph on screen
+  const draw = (S.kdraw = (S.kdraw || 0) + 1);
+  const css = getComputedStyle(document.documentElement);
+  const v = name => css.getPropertyValue(name).trim();
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const label = n => (n.name || n.id.slice(0, 12)).split("/").slice(-2).join("/");
+  const elements = [];
+  const have = new Set();
+  const addNode = (n, cls) => {
+    if (!n || have.has(n.id)) return;
+    have.add(n.id);
+    elements.push({ data: { id: n.id, label: label(n), kind: n.kind, colour: v(kindColour(n.kind)) || v("--color-slate") }, classes: cls || "" });
+  };
+  const edgeIds = new Set();
+  const addEdge = (from, to, rel, cls) => {
+    const id = from + ">" + to + ">" + (rel || "");
+    if (edgeIds.has(id) || !have.has(from) || !have.has(to)) return;
+    edgeIds.add(id);
+    elements.push({ data: { id: "e:" + id, source: from, target: to, rel: rel || "" }, classes: cls || "" });
+  };
+  if (center) {
+    addNode(center, "center");
+    const first = await readNodeRelations(center.id);
+    const neighbours = [];
+    for (const e of first.edges || []) {
+      const other = e.from_id === center.id ? e.to_id : e.from_id;
+      const n = byId.get(other);
+      if (!n) continue;
+      addNode(n); neighbours.push(n.id); addEdge(e.from_id, e.to_id, e.rel || e.kind);
+    }
+    for (const b of first.bindings || []) {
+      if (!b.target) continue;
+      const id = "target:" + b.target;
+      if (!have.has(id)) { have.add(id); elements.push({ data: { id, label: b.target, kind: "target", colour: v("--color-text-muted") }, classes: "target" }); }
+      addEdge(center.id, id, b.class || "applies to", "applies");
+    }
+    // the second step: the neighbours' own relations, a dozen at most
+    const second = await Promise.all(neighbours.slice(0, 12).map(id => readNodeRelations(id).catch(() => ({ edges: [] }))));
+    second.forEach(rel => {
+      for (const e of rel.edges || []) {
+        addNode(byId.get(e.from_id), "far"); addNode(byId.get(e.to_id), "far");
+        addEdge(e.from_id, e.to_id, e.rel || e.kind, "far");
+      }
+    });
+  } else {
+    const kinds = [...new Set(nodes.map(n => n.kind))];
+    for (const k of kinds) elements.push({ data: { id: "kind:" + k, label: k, kind: "group" }, classes: "group" });
+    for (const n of nodes) { addNode(n); elements[elements.length - 1].data.parent = "kind:" + n.kind; }
+  }
+  if (draw !== S.kdraw || !host.isConnected) return;
+  if (S.kcy) { try { S.kcy.destroy(); } catch (e) { /* torn down */ } }
+  const cy = window.cytoscape({
+    container: host, elements, boxSelectionEnabled: false, autounselectify: true, wheelSensitivity: 0.2, minZoom: 0.2, maxZoom: 1.6,
+    style: [
+      { selector: "node", style: { "background-color": "data(colour)", width: 14, height: 14, label: "data(label)", color: v("--color-text"), "font-family": v("--font-sans"), "font-size": 11, "text-valign": "bottom", "text-margin-y": 4, "text-max-width": 140, "text-wrap": "ellipsis" } },
+      { selector: "node.center", style: { width: 26, height: 26, "border-width": 2, "border-color": v("--color-accent"), "font-size": 13, "font-weight": 500 } },
+      { selector: "node.far", style: { opacity: 0.6, width: 10, height: 10, "font-size": 10 } },
+      { selector: "node.target", style: { shape: "round-rectangle", "background-color": v("--color-bg-2"), "border-width": 1, "border-style": "dashed", "border-color": v("--color-rule-strong"), width: "label", height: 20, padding: "4px", "text-valign": "center", "text-margin-y": 0, color: v("--color-text-muted") } },
+      { selector: "node.group", style: { "background-color": v("--color-bg-1"), "background-opacity": 0.6, "border-width": 1, "border-color": v("--color-rule"), shape: "round-rectangle", label: "data(label)", "text-valign": "top", "text-halign": "center", "text-margin-y": -4, color: v("--color-text-muted"), "font-size": 11, "text-transform": "uppercase", padding: "14px" } },
+      { selector: "edge", style: { width: 1, "line-color": v("--color-rule-strong"), "curve-style": "bezier", "target-arrow-shape": "triangle", "target-arrow-color": v("--color-rule-strong"), "arrow-scale": 0.7, label: "data(rel)", "font-size": 9, color: v("--color-text-faint"), "text-rotation": "autorotate", "text-background-color": v("--color-bg-0"), "text-background-opacity": 1, "text-background-padding": "1px" } },
+      { selector: "edge.applies", style: { "line-style": "dashed", "target-arrow-shape": "none" } },
+      { selector: "edge.far", style: { opacity: 0.5, label: "" } },
+    ],
+    layout: center ? { name: "concentric", concentric: n => n.hasClass("center") ? 3 : n.hasClass("far") ? 1 : 2, levelWidth: () => 1, minNodeSpacing: 40, padding: 24, animate: false }
+      : { name: "cose", padding: 24, animate: false, nodeRepulsion: 6000, idealEdgeLength: 60, componentSpacing: 60 },
+  });
+  cy.on("tap", "node", ev => {
+    const id = ev.target.id();
+    if (id.startsWith("kind:") || id.startsWith("target:")) return;
+    location.hash = href("knowledge", id);
+  });
+  cy.on("mouseover", "node", () => { host.style.cursor = "pointer"; });
+  cy.on("mouseout", "node", () => { host.style.cursor = ""; });
+  S.kcy = cy;
+  // the overview: the first entries' relations, drawn as they are read
+  if (!center && S.knowledgeSource === "memory") {
+    for (const n of nodes.slice(0, 60)) {
+      readNodeRelations(n.id).then(rel => {
+        if (S.kcy !== cy) return;
+        for (const e of rel.edges || []) {
+          const id = "e:" + e.from_id + ">" + e.to_id + ">" + (e.rel || "");
+          if (cy.getElementById(id).length || !cy.getElementById(e.from_id).length || !cy.getElementById(e.to_id).length) continue;
+          cy.add({ data: { id, source: e.from_id, target: e.to_id, rel: "" } });
+        }
+      }).catch(() => {});
+    }
+  }
+}
+
 // ---- knowledge: every node by kind, one node with its relations -----------
 
 const KIND_ORDER = ["purpose", "mandate", "practice", "idea", "concept", "graph", "design", "document"];
@@ -742,13 +899,17 @@ const REVISABLE_KINDS = ["idea", "concept", "practice", "task_concept"];
 function renderKnowledge(main) {
   if (S.errors.knowledge) { main.append(stateCard("unavailable", "knowledge is unavailable: " + errorText(S.errors.knowledge))); return; }
   const nodes = S.knowledge || [];
-  const search = el("input", { type: "search", placeholder: `search ${nodes.length} nodes`, value: S.filter || "", "aria-label": "Search knowledge", oninput: ev => { S.filter = ev.target.value; const groups = $("kn-groups"); if (groups) groups.replaceWith(knowledgeGroups()); } });
+  const search = el("input", { type: "search", placeholder: `search ${nodes.length} entries`, value: S.filter || "", "aria-label": "Search knowledge", oninput: ev => { S.filter = ev.target.value; const groups = $("kn-groups"); if (groups) groups.replaceWith(knowledgeGroups()); } });
   const list = el("div", { class: "list", id: "kn-list" }, search, knowledgeGroups());
   const page = el("section", { class: "panel node", "aria-label": "Node" });
   const node = nodes.find(n => n.id === S.route.id);
+  // the graph: the selected entry and what it relates to, two steps out;
+  // with none selected, every entry by kind and the relations memory holds
+  const graph = el("div", { class: "graph kgraph", role: "img", "aria-label": node ? "The entry and what it relates to" : "Every entry, by kind" });
+  queueMicrotask(() => drawKnowledgeGraph(graph, nodes, node));
   if (!node) {
-    page.append(el("h2", {}, "Knowledge"), el("p", { class: "note" }, `${nodes.length} nodes the record holds: the purpose, the mandates of its positions, the practices in force. Select one.`));
-    if (S.knowledgeSource === "record") page.append(el("p", { class: "note" }, "read from the record's proposals", S.knowledgeWhy ? `; memory's projection is not readable from this head (${S.knowledgeWhy})` : ""));
+    page.append(el("h2", {}, "Knowledge"), el("p", { class: "note" }, `${nodes.length} entries: the organization's purpose, what each position is responsible for, and the practices it follows. Click one.`));
+    if (S.knowledgeSource === "record") page.append(el("p", { class: "note" }, "related entries are not available here", S.knowledgeWhy ? ` (${S.knowledgeWhy})` : ""));
     if (S.calls.has("KnowledgeNodePropose")) page.append(nodeForm(null));
   } else {
     page.append(nodePage(node));
@@ -757,7 +918,7 @@ function renderKnowledge(main) {
     if (S.calls.has("KnowledgeNodeRevise") && node.accepted && REVISABLE_KINDS.includes(node.kind)) page.append(nodeForm(node));
     if (S.calls.has("KnowledgeNodeRetire") && node.accepted) page.append(retireForm(node));
   }
-  main.append(el("div", { class: "kn" }, list, page));
+  main.append(el("div", { class: "kn" }, list, el("div", { class: "kn-main" }, el("section", { class: "panel", "aria-label": "Knowledge graph" }, graph, el("p", { class: "note legend" }, node ? "click an entry to go to it; dashed is what it applies to" : "click an entry to open it")), page)));
 
   // the nodes that match the search, by kind: rebuilt on each keystroke,
   // the search field itself kept
@@ -785,7 +946,7 @@ function nodeForm(prev) {
   const out = el("div", {});
   return el("form", { class: "act", onsubmit: async ev => {
     ev.preventDefault();
-    out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
+    out.replaceChildren(el("div", { class: "receipt" }, "submitting…"));
     const payload = { request_id: requestId(), record_head: S.record.record_head, kind: prev ? prev.kind : kind.value, name: name.value.trim(), text: text.value, author: (S.principal && S.principal.name) || "", target: target.value.trim() || "org", rationale: rationale.value.trim() };
     if (prev) payload.supersedes = prev.id;
     try {
@@ -800,7 +961,7 @@ function nodeForm(prev) {
     el("label", {}, "text", text),
     el("label", {}, "target", target),
     el("label", {}, "rationale", rationale),
-    el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, prev ? "Propose the revision" : "Propose the node")),
+    el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, prev ? "Submit for approval" : "Submit for approval")),
     out,
   );
 }
@@ -810,16 +971,16 @@ function retireForm(node) {
   const out = el("div", {});
   return el("form", { class: "act", onsubmit: async ev => {
     ev.preventDefault();
-    out.replaceChildren(el("div", { class: "receipt" }, "proposing…"));
+    out.replaceChildren(el("div", { class: "receipt" }, "submitting…"));
     try {
       const reply = await command(S.app, "KnowledgeNodeRetire", { request_id: requestId(), record_head: S.record.record_head, id: node.id, rationale: rationale.value.trim() });
       const refusal = await settled(reply, `retirement of ${node.name} proposed`);
       if (refusal) out.replaceChildren(refusal);
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
-    el("h3", {}, "retire this node"),
+    el("h3", {}, "Remove this entry"),
     el("label", {}, "rationale", rationale),
-    el("div", { class: "actions" }, el("button", { type: "submit" }, "Propose the retirement")),
+    el("div", { class: "actions" }, el("button", { type: "submit" }, "Submit removal for approval")),
     out,
   );
 }
@@ -843,12 +1004,12 @@ function nodePage(n) {
 
 function relations(n, rel) {
   const wrap = el("div", {});
-  wrap.append(el("h3", {}, "bound to"));
+  wrap.append(el("h3", {}, "applies to"));
   if (rel.bindings === null) wrap.append(el("p", { class: "note" }, "bindings unavailable"));
   else if (!rel.bindings.length) wrap.append(el("p", { class: "note" }, "nothing: this node binds no target"));
   else wrap.append(el("ul", { class: "edges" }, rel.bindings.map(b => el("li", {}, el("span", { class: "rel" }, b.class || "binds"), targetLink(b.target), el("span", { class: "note" }, b.author ? "by " + b.author : "")))));
-  wrap.append(el("h3", {}, "edges"));
-  if (rel.edges === null) wrap.append(el("p", { class: "note" }, S.knowledgeSource === "memory" ? "edges unavailable" : "edges are memory's: this head reads the record alone"));
+  wrap.append(el("h3", {}, "related"));
+  if (rel.edges === null) wrap.append(el("p", { class: "note" }, S.knowledgeSource === "memory" ? "related entries could not be read" : "related entries are not available here"));
   else if (!rel.edges.length) wrap.append(el("p", { class: "note" }, "none"));
   else wrap.append(el("ul", { class: "edges" }, rel.edges.map(e => {
     const other = e.from_id === n.id ? e.to_id : e.from_id;
@@ -866,13 +1027,67 @@ function targetLink(target) {
 
 // ---- shell ---------------------------------------------------------------
 
+// Every organization's UI in one list, in the rail of every organization
+// face: the habitat first, then each organization it holds, each entered
+// signed in through the habitat head's hand-in (`/organisms/<name>/face`,
+// an absolute address on the habitat's face), with the UIs it declares
+// nested under it. The list is, in order of preference: `organizations`
+// as this organization's read carries it (a child's head fetches it from
+// its habitat); the habitat's own `Uis` rows (on the habitat's face); this
+// organization and its habitat (`habitat: {name, face}`); or the
+// organizations the record names.
+function readObject(v) { if (!v) return null; if (typeof v === "object") return v; try { return JSON.parse(v); } catch (e) { return null; } }
+function renderOrganizations(name, idx) {
+  const list = $("orgs");
+  if (!list) return;
+  list.replaceChildren();
+  const habitat = readObject(S.org && S.org.habitat) || readObject(idx.habitat);
+  const base = (habitat && habitat.face ? habitat.face : location.origin).replace(/\/$/, "");
+  const handIn = n => base + "/organisms/" + encodeURIComponent(n) + "/face";
+  const entry = (label, href_, state, current, extra) => el("li", {},
+    el("a", { href: href_, "aria-current": current ? "page" : null, target: current ? null : "_blank", rel: current ? null : "noopener" },
+      el("span", { class: "dot " + (state === "up" || current ? "up" : state ? "down" : "") }), label,
+      current ? el("span", { class: "note" }, " this one") : state && state !== "up" ? el("span", { class: "note" }, " " + state) : ""),
+    extra || "");
+  const items = [];
+  const given = parseList(idx.organizations);
+  if (given.length) {
+    // the organization this face serves is the entry its head marks
+    // `current` (a child's own name is not on its Index read), else by name
+    for (const o of given) {
+      const current = o.current === true || (!!idx.name && o.name === idx.name);
+      items.push(entry(o.name, current ? "#/org" : (o.face_link || handIn(o.name)), o.state === "grafted" ? "not answering" : o.state, current));
+    }
+  } else if (S.uis && S.uis.length) {
+    // on the habitat's face: itself, then each organism, its declared UIs under it
+    items.push(entry(name, "#/org", "up", true));
+    const byOrg = new Map();
+    for (const u of S.uis) { if (!byOrg.has(u.organism)) byOrg.set(u.organism, []); byOrg.get(u.organism).push(u); }
+    const organisms = new Map(parseList(S.org ? S.org.organisms : idx.organisms).map(o => [o.name, o]));
+    for (const [org, uis] of byOrg) {
+      const declared = uis.filter(u => u.kind === "declared" && u.name);
+      const sub = declared.length ? el("ul", { class: "sub" }, declared.map(u => el("li", {},
+        u.url ? el("a", { href: u.url, target: "_blank", rel: "noopener" }, u.label || u.name) : el("span", { class: "note" }, (u.label || u.name) + (u.loopback_host ? " · loopback only on " + u.loopback_host : u.note ? " · " + u.note : ""))))) : "";
+      const o = organisms.get(org);
+      items.push(entry(org, handIn(org), o ? o.state : "", false, sub));
+    }
+  } else if (habitat && habitat.name) {
+    items.push(entry(habitat.name, base + "/organization", "up", false), entry(name, "#/org", "up", true));
+  } else {
+    const orgs = parseList(S.org ? S.org.organisms : idx.organisms);
+    if (!orgs.length) return;
+    items.push(entry(name, "#/org", "up", true), ...orgs.map(o => entry(o.name, handIn(o.name), o.state, false)));
+  }
+  list.append(el("h3", {}, "organizations"), el("ul", {}, items));
+}
+
 function renderShell() {
   const idx = S.index || {};
   const horizon = $("horizon");
   horizon.replaceChildren();
   const name = idx.name || (S.record && "record " + S.record.record_id.slice(0, 12)) || "organization";
   horizon.append(el("span", { class: "org" }, name));
-  if (idx.organisms && parseList(idx.organisms).length) horizon.append(el("span", { class: "note" }, `habitat · ${parseList(idx.organisms).length} grafted`));
+  renderOrganizations(name, idx);
   const who = $("who");
   who.replaceChildren(S.principal ? el("span", {}, el("b", {}, S.principal.name), " · ", S.principal.mode) : "");
   const picker = $("theme");

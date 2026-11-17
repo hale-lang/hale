@@ -13,6 +13,7 @@ pub mod ast;
 pub mod chains;
 pub mod decimal_literal;
 pub mod desugar;
+pub mod enum_names;
 pub mod error;
 pub mod fmt;
 pub mod fstring;
@@ -24,6 +25,7 @@ pub mod parser;
 pub mod shift;
 pub mod sites;
 pub mod span;
+pub mod str_sources;
 pub mod time_literal;
 
 pub use crate::error::{Diag, DiagKind, Related, SpanOrigin};

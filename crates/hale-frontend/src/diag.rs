@@ -97,7 +97,9 @@ pub fn render_located(
 /// offset. The text and the JSON renderers both say it.
 fn json_codec_note(off: u32) -> Option<String> {
     hale_syntax::api_names::is_json_synth_pos(off).then(|| {
-        "in the JSON codecs the compiler generated for a record's `from_json` / `to_json` or an api surface".to_string()
+        "in the code the compiler generated for a record's `from_json` / `to_json`, an api surface, or an enum's \
+         `name` / `parse` / `variants` / `index`"
+            .to_string()
     })
 }
 

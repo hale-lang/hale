@@ -175,7 +175,10 @@ Filter these reflexes before they cost you time.
 
 - **No `import` / `use` syntax for stdlib.** Stdlib is called
   inline through `std::*` paths (`std::io::fs::read_file(p)`).
-  Cross-seed user libraries use `import "lib/x" as alias;`.
+  Cross-seed user libraries use `import "lib/x" as alias;`; an
+  import list (`import "lib/x" as x { Row, f as g };`) spells
+  those names bare in the seed and re-exports them to its
+  importers (`<its alias>::Row`, the same declaration). No globs.
 - **No visibility modifiers** (`pub`, `private`). Every
   top-level decl in a seed (one directory) is visible to every
   file in that seed. Decompose by concern, not visibility.
@@ -200,12 +203,38 @@ Filter these reflexes before they cost you time.
 - **No method syntax on builtins.** `len(s)`, `to_string(n)` —
   not `s.len()`. User-defined locus / type methods use
   `obj.method()` normally.
+- **A `String` slices by byte offset**, clamped: `s[lo..hi]`,
+  `s[lo..]` (to the end), `s[..hi]` (from the start). Write
+  `line[(at + 1)..]`, not `line[(at + 1)..len(line)]`. There is no
+  `s[i]` and no `for c in s`: both are refused (a byte, or a
+  character?). Slice `s[i..(i + 1)]` or read `std::str::byte_at`,
+  and compare the byte with a byte literal, never a bare number:
+  `b'/'` is the `Int` 47 (`std::str::byte_at(v, i) == b'/'`, an arm
+  `b'a' | b'A' -> …`).
+- **Take a text apart with a `for` source**, never a `while
+  len(rest) > 0 { … rest = rest[(sp + 1)..]; }` loop, which copies
+  the rest every turn (quadratic): `for part in std::str::split(s,
+  ",") { … }` (empty parts kept), `for line in std::str::lines(s)`
+  (CRLF stripped, no final empty line), `for w in
+  std::str::words(s)` (ASCII-whitespace runs, no empties). One pass,
+  each part a `String`, `break`/`continue` work, pure. They are not
+  values: to keep the parts, `std::str::split_into(s, sep, v)` into a
+  `@form(vec)`. For any other scan, `std::str::bytes_view` once and
+  walk it by index.
 - **No printf-style format strings.** `println(a, b, c)`
   concatenates its args. F-strings `f"hello {name}"` interpolate.
+- **String operations are `std::str` free functions**, not methods:
+  `std::str::trim(s)`, not `s.trim()`. Split and strip with them,
+  not with offsets: `let (k, v) = std::str::cut(line, "=") or { … };`
+  splits once (`cut_last` at the last `sep`); `trim_prefix(s, "v")` /
+  `trim_suffix` drop an affix if present; `trim_start` / `trim_end`,
+  `last_index_of`, `eq_ignore_case` (ASCII) and `parse_bool` round it
+  out. `contains`, `starts_with` and `ends_with` are also bare.
 - **Embedded program text, SQL or JSON is a block string**: `"""`
   ending its line, the raw text, `"""` on a line of its own; the
   closing line's indent is stripped and nothing is escaped
-  (`spec/tokens.md` § Block strings).
+  (`spec/tokens.md` § Block strings). A one-line regex or path is a
+  raw string, `r"\d+"` (`r#"…"#` when it holds a `"`).
 - **No `return` inside `birth` / `run` / `dissolve` bodies.**
   Factor short-circuit logic into helper free fns.
 - **`fallible(E)` is rejected on substrate-facing surfaces:**
@@ -325,7 +354,8 @@ fighting the language instead of using it.
    surface).
 4. Write the smallest program that gets one thing working.
    `hale run <file-or-dir>` for fast feedback; `hale build`
-   for the native binary.
+   for the native binary, tuned to this machine's CPU
+   (`--target-cpu portable` for one you ship, such as an image).
 5. Iterate. Before you finish, run `hale fmt <file-or-dir>` —
    canonical form is tool-defined (zero config), so your diff
    touches only the lines you actually changed. Never
@@ -526,6 +556,29 @@ sign/keygen` + `[fleet_trust]` pin the rows a deployment admits
 renders one description per host; `hale fleet export` writes the rows
 as the old plan JSON, which nothing reads.
 
+## Enum names
+
+Never hand-write an enum's name or parse function. For every enum `E`
+the compiler writes `E::name(v) -> String`, `E::parse(s) -> E
+fallible(ParseError)` (`kind: "unknown_variant"`), `E::variants` (a
+value, `[E; N]` in declaration order, no parentheses) and `E::index(v)
+-> Int`:
+
+```hale
+type Lifecycle = enum { Active, Archived };
+let l = Lifecycle::parse(row_status) or Lifecycle::Active;
+```
+
+The name is the variant's one external name, the same one the JSON
+codecs use: its `json:` tag's key, else its enum's `@wire_case(snake |
+screaming_snake | kebab | lower)` spelling, else the declared name. So
+declare variants in the style guide's case and put `@wire_case(snake)` on
+the enum when the wire wants `in_progress`. With a catch-all
+(``Other(String) `json:",other"` ``) `parse` cannot fail. `parse` and
+`variants` need payload-free variants and are refused on an enum with
+payloads; `name` and `index` ignore payloads. `println` still renders
+`Lifecycle::Archived`.
+
 ## Matching
 
 `match` is an expression as well as a statement, so it can produce a
@@ -543,6 +596,49 @@ Arms use `->`, not `=>`.
 
 Arms may be blocks. `_` is the catch-all and is required when the
 arms don't cover the domain.
+
+Match on a `String` with string-literal patterns, and put several
+patterns on one arm with `|`. Prefer this to a ladder of
+`if s == "lit"` tests: it names the subject once and has one
+catch-all.
+
+```hale
+return match verb {
+    "assign" | "unassign" -> verb + " <name>",
+    "close" -> "close <name>",
+    _ -> "unknown verb",
+};
+
+return match e {
+    CtlError::Invalid(p) | CtlError::NotFound(p) -> p,
+    CtlError::NotReady(h) -> f"not ready: {h}",
+};
+```
+
+Every alternative binds the same names at the same types; a guard
+(`p1 | p2 if cond -> …`) covers the whole arm; exhaustiveness counts
+each alternative. `|` is top level only: `E::A(1 | 2)` is refused,
+write `E::A(1) | E::A(2)`. `hale check --warn-string-match` (or `hale
+verify --warn-string-match`) flags three
+or more `if x == "lit"` tests in a row on one string.
+
+When one pattern is the question, use `if let` (an expression with an
+`else`, its names scoped to the first block) or `let … else` (the names
+bound after it; the `else` block must leave with `return`, `fail`,
+`break` or `continue`, and a call such as `std::process::exit` does not
+count):
+
+```hale
+if let Side::Other(raw) = side { self.note_unknown(raw); }
+
+let Outcome::Result(index) = self.head.index(ask) else {
+    return RecordIndex { why: "the head refused the read" };
+};
+```
+
+A plain `let` of a pattern that can fail to match (`let E::A(x) = e;`)
+is refused with "add `else { … }`". There is no `Option`; this is the
+enum form of `or { return …; }`.
 
 ## Hard gotchas (codegen-v0 limits — don't fight these)
 

@@ -192,3 +192,435 @@ fn an_imported_fallible_fn_read_as_a_value_is_refused_at_the_path() {
     assert!(ok, "check: {out}");
     assert!(built, "build: {bout}");
 }
+
+/// GH #1986: an imported seed's generic type and enum variant through
+/// the qualified alias path are held to their declarations as the bare
+/// spelling is: a template's parameter count, a variant's value count and
+/// each value's type, a scale-less Decimal literal taking the payload's
+/// scale. Each passed the check and the build refused it, in lowering's
+/// terms. The well-formed program builds.
+#[test]
+fn an_imported_template_or_variant_through_its_alias_is_held_to_its_declaration() {
+    let lib = "type Box<T> { value: T = 0; }\ntype Wrap = enum { Held(Int), Empty };\n\
+               type Side = enum { Buy, Limit(Decimal<2>), Stop(Int, Decimal<4>) };\n";
+    let refused_at = |body: &str, tag: &str, at: &str, head: &str| {
+        let main = format!("import \"./lib\" as lib;\n\nfn main() {{\n{body}\n}}\n");
+        let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", &main), ("lib/lib.hl", lib)], tag);
+        assert!(!ok && out.contains(&format!("main.hl:{at}: type error: {head}")), "check: {out}");
+        assert!(!built && bout.contains(head) && !bout.contains("codegen error"), "build: {bout}");
+    };
+    refused_at(
+        "    let b: lib::Box<Int, String> = lib::Box { value: 1 };",
+        "alias_arity",
+        "4:12",
+        "generic type `lib::Box` takes 1 type argument, not 2",
+    );
+    refused_at("    let w = lib::Wrap::Held(1, 2);", "alias_variant_arity", "4:13", "`lib::Wrap::Held` carries 1 value, and this passes 2");
+    refused_at("    let w = lib::Wrap::Held(\"s\");", "alias_variant_value", "4:29", "`lib::Wrap::Held` value 0: expected `Int`, got `String`");
+    let ok_main = "import \"./lib\" as lib;\n\n\
+                   fn make(px: Decimal<2>) -> lib::Side { return lib::Side::Limit(px); }\n\n\
+                   fn main() {\n    let b: lib::Box<Int> = lib::Box { value: 1 };\n    let t = lib::Side::Limit(2.5d);\n\
+                   \x20   match lib::Side::Stop(7, 0.0001d) {\n        lib::Side::Stop(n, px) -> { println(f\"{n} {px}\"); },\n        _ -> { },\n    }\n\
+                   \x20   match make(1.25d) {\n        lib::Side::Limit(px) -> { println(f\"{px} {b.value}\"); },\n        _ -> { },\n    }\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", ok_main), ("lib/lib.hl", lib)], "alias_ok");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1978: a generic fn whose result applies a generic type to its
+/// parameter (`-> Box<T>`) is typed at its call as the monomorph its
+/// arguments name, as the build lowers it. The checker took it as
+/// `Unknown`, so a record no f-string renders, read out of the result,
+/// checked clean and the build refused it in lowering's terms (``to_string`
+/// not supported for type Bytes``).
+#[test]
+fn a_generic_fn_returning_a_generic_type_is_typed_as_its_monomorph() {
+    let src = "type Blob { data: Bytes; }\ntype Box<T> { v: T; }\nfn box_of<T>(x: T) -> Box<T> { return Box { v: x }; }\n\
+               fn main() {\n    let b = box_of(Blob { data: b\"x\" }).v;\n    println(f\"blob = {b}\");\n}\n";
+    refused(src, "generic_return_fstring", "6:23", "`to_string` cannot render a value of type `Blob`");
+    refused(
+        "type Box<T> { v: T; }\nfn box_of<T>(x: T) -> Box<T> { return Box { v: x }; }\nfn main() {\n    let z: Int = box_of(\"s\");\n    println(z);\n}\n",
+        "generic_return_let",
+        "4:18",
+        "let `z`: expected `Int`, got `Box_String`",
+    );
+}
+
+/// GH #1945: `or raise` hands the call's error on as the enclosing fn's
+/// own, so the two are one type. A mismatch passed the check and the build
+/// refused it in lowering's terms (`TypeRef("IoError")`); the check
+/// refuses it at the `or raise`, naming both types and the mapping. The
+/// mapping (`or fail CryptoError { … }`, the call's error in scope as
+/// `err`) checks and builds, and so does a raise of the declared type
+/// across a seed (`fallible(lib::Oops)` raising `lib::parse`'s error).
+#[test]
+fn an_or_raise_of_another_error_type_is_refused_at_the_or_raise() {
+    refused(
+        "fn seed() -> Bytes fallible(CryptoError) {\n    let b = std::os::getrandom(4) or raise;\n    return b;\n}\nfn main() { let b = seed() or { return; }; println(len(b)); }\n",
+        "or_raise_mismatch",
+        "2:13",
+        "`or raise` hands on the call's error, of type `IoError`, and the enclosing fn is declared `fallible(CryptoError)`: a raised error is the fn's own type, or one it converts from, and nothing converts `IoError` into `CryptoError`. Declare the conversion, `@raise fn …(e: IoError) -> CryptoError { … }`; make `CryptoError` a set holding it (`type CryptoError = IoError | …;`); or translate here, `or fail CryptoError { … }` (the call's error is in scope as `err`)",
+    );
+    let mapped = "fn seed() -> Bytes fallible(CryptoError) {\n    let b = std::os::getrandom(4) or fail CryptoError { kind: err.kind, detail: err.detail };\n    return b;\n}\nfn main() { let b = seed() or { return; }; println(len(b)); }\n";
+    let ((ok, out), (built, bout)) = check_and_build(mapped, "or_raise_mapped");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+    let lib = "type Oops { why: String = \"\"; }\n\
+               fn parse(s: String) -> Int fallible(Oops) { if s == \"bad\" { fail Oops { why: s }; } return 7; }\n";
+    let main = "import \"./lib\" as lib;\n\nfn twice(s: String) -> Int fallible(lib::Oops) { let n = lib::parse(s) or raise; return n * 2; }\n\nfn main() { println(twice(\"ok\") or 0); }\n";
+    let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", main), ("lib/lib.hl", lib)], "or_raise_cross_seed");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1951 (item 2): an `or raise` whose error two `@raise` fns convert
+/// into the enclosing fn's is refused at the `raise`, naming both. Each
+/// alone builds.
+#[test]
+fn an_or_raise_two_conversions_apply_to_is_refused_naming_both() {
+    let src = |second: &str| {
+        format!(
+            "type Oops {{ why: String; }}\ntype ApiError {{ code: Int; }}\n\
+             fn parse(s: String) -> Int fallible(Oops) {{ if s == \"bad\" {{ fail Oops {{ why: s }}; }} return 7; }}\n\
+             @raise fn api_a(e: Oops) -> ApiError {{ return ApiError {{ code: 1 }}; }}\n{second}\
+             fn twice(s: String) -> Int fallible(ApiError) {{\n    let n = parse(s) or raise;\n    return n * 2;\n}}\n\
+             fn main() {{ println(twice(\"bad\") or 0); }}\n"
+        )
+    };
+    refused(
+        &src("@raise fn api_b(e: Oops) -> ApiError { return ApiError { code: 2 }; }\n"),
+        "raise_ambiguous",
+        "7:25",
+        "`or raise` converts the call's error, of type `Oops`, into the enclosing fn's `ApiError`, and two `@raise` fns convert it: `api_a` and `api_b`. Keep one, or translate here, `or fail ApiError { … }`",
+    );
+    let ((ok, out), (built, bout)) = check_and_build(&src(""), "raise_one");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1951 (item 2): a `@raise` fn's shape. It takes one parameter, is
+/// neither fallible nor generic, and returns another type; and it is
+/// declared in the seed of one of its two types (the orphan rule, where a
+/// builtin error type belongs to no seed). Each is refused at the fn.
+#[test]
+fn a_raise_fn_of_the_wrong_shape_is_refused_at_the_fn() {
+    let with = |decl: &str| format!("type Oops {{ why: String; }}\ntype ApiError {{ code: Int; }}\n{decl}\nfn main() {{ println(1); }}\n");
+    refused(
+        &with("@raise fn conv(e: Oops, n: Int) -> ApiError { return ApiError { code: n }; }"),
+        "raise_arity",
+        "3:11",
+        "a `@raise` fn takes one parameter, the error it converts, and `conv` takes 2: `@raise fn conv(e: P) -> E { … }`",
+    );
+    refused(
+        &with("@raise fn conv(e: Oops) -> ApiError fallible(Oops) { return ApiError { code: 1 }; }"),
+        "raise_fallible",
+        "3:46",
+        "a `@raise` fn cannot fail: it runs where an `or raise` hands an error on, and a second error there has nowhere to go. Drop `fallible(…)` from `conv`",
+    );
+    refused(
+        &with("@raise fn conv<T>(e: T) -> ApiError { return ApiError { code: 1 }; }"),
+        "raise_generic",
+        "3:16",
+        "a `@raise` fn converts one error type into another, and `conv` is generic",
+    );
+    refused(
+        &with("@raise fn conv(e: Oops) -> Oops { return e; }"),
+        "raise_itself",
+        "3:1",
+        "`conv` converts `Oops` into itself",
+    );
+    refused(
+        &with("locus L { @raise fn conv(e: Oops) -> ApiError { return ApiError { code: 1 }; } }"),
+        "raise_method",
+        "3:11",
+        "`@raise` declares a conversion, a free fn: `L.conv` is a method of a locus",
+    );
+    // The orphan rule: the entry seed declares neither the builtin
+    // `IoError` nor the library's `ApiError`.
+    let lib = "type ApiError { code: Int; }\n";
+    let main = "import \"./lib\" as lib;\n\n@raise fn conv(e: IoError) -> lib::ApiError { return lib::ApiError { code: e.errno }; }\n\nfn main() { println(1); }\n";
+    let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", main), ("lib/lib.hl", lib)], "raise_orphan");
+    let head = "`conv` converts `IoError` into `lib::ApiError`, and a `@raise` fn is declared in the seed of one of its two types: `IoError` is a builtin type, which no seed declares, and `lib::ApiError` is declared in another seed.";
+    assert!(!ok && out.contains("main.hl:3:1: type error: ") && out.contains(head), "check: {out}");
+    assert!(!built && bout.contains(head) && !bout.contains("codegen error"), "build: {bout}");
+}
+
+/// GH #1951 (item 2): a `@raise` fn runs where an `or raise` hands an
+/// error on, so it makes no syscall, publishes, spawns or blocks. One that
+/// does is refused as its implied effect assertion is, saying why.
+#[test]
+fn a_raise_fn_that_reaches_a_forbidden_effect_is_refused() {
+    let src = "type Oops { why: String; }\ntype ApiError { code: Int; }\n\
+               @raise fn conv(e: Oops) -> ApiError {\n    println(e.why);\n    return ApiError { code: 1 };\n}\n\
+               fn main() { println(1); }\n";
+    refused(
+        src,
+        "raise_effect",
+        "3:11",
+        "effect assertion violated: `conv` is a `@raise` fn, which runs where an `or raise` hands an error on, so it makes no syscall, publishes nothing, spawns nothing and never blocks; it must not reach `syscall`",
+    );
+}
+
+/// GH #1982: a converting `or raise` is the call `conv(err)` it lowers
+/// to, for the raising fn's analyses: an effect class the conversion
+/// reaches (one a `@raise` fn may: `time`, a program's own) is the raising
+/// fn's, with the conversion on the witness path; the conversion's
+/// allocations count against the raising fn's `@budget`; and `@no_panic`
+/// holds the raise to be a trap, as any `or raise` is.
+#[test]
+fn a_raise_conversion_is_a_call_of_the_fn_that_raises() {
+    let src = |raiser: &str| {
+        format!(
+            "effect audit;\ntype Oops {{ why: String; }}\ntype ApiError {{ code: Int; detail: String; }}\n\
+             @effects(is: {{audit}})\nfn note(s: String) -> Int {{ return len(s); }}\n\
+             @raise fn conv(e: Oops) -> ApiError {{\n    let n = note(e.why);\n    return ApiError {{ code: n, detail: \"no \" + e.why }};\n}}\n\
+             fn parse(s: String) -> Int fallible(Oops) {{ if s == \"bad\" {{ fail Oops {{ why: s }}; }} return 7; }}\n\
+             {raiser}\nfn main() {{ println(twice(\"bad\") or 0); }}\n"
+        )
+    };
+    refused(
+        &src("@effects(none: {audit})\nfn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or raise;\n}"),
+        "raise_conv_effect",
+        "12:4",
+        "effect assertion violated: `twice` must not reach `audit`, but reaches twice -> conv [`note` declares it carries this effect class]",
+    );
+    refused(
+        &src("@budget(alloc_per_call = 0)\nfn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or raise;\n}"),
+        "raise_conv_budget",
+        "12:4",
+        "hot-path budget exceeded: `twice` declares `@budget(alloc_per_call = 0)`",
+    );
+    let ((ok, out), _) = check_and_build(
+        &src("@budget(alloc_per_call = 0)\nfn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or raise;\n}"),
+        "raise_conv_budget_sites",
+    );
+    assert!(!ok && out.contains("main.hl:8:12: type error: counts against `twice`'s alloc budget: a `ApiError` instantiation"), "check: {out}");
+    // A fallible handler's implicit `or raise` converts, and is a call,
+    // the same way.
+    refused(
+        &src("fn retry(e: Oops) -> Int fallible(Oops) { fail e; }\n@effects(none: {audit})\nfn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or retry(err);\n}"),
+        "raise_conv_handler",
+        "13:4",
+        "effect assertion violated: `twice` must not reach `audit`, but reaches twice -> conv",
+    );
+    refused(
+        &src("@no_panic\nfn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or raise;\n}"),
+        "raise_conv_no_panic",
+        "12:4",
+        "`@no_panic` violated: `twice` can trap — a fallible call dispositioned `or raise`",
+    );
+    let ((ok, out), (built, bout)) =
+        check_and_build(&src("fn twice(s: String) -> Int fallible(ApiError) {\n    return parse(s) or raise;\n}"), "raise_conv_plain");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1945: a stdlib error type spelled by its path builds wherever its
+/// bare name does. `fallible(std::crypto::CryptoError)` checked clean and
+/// the build refused it, unlocated ("not in stdlib path-renames table");
+/// each path the shadowing law suggests now names the same builtin, so a
+/// raise of the stdlib call's error through it is the same type too.
+#[test]
+fn a_qualified_stdlib_error_type_builds_where_its_bare_name_does() {
+    let src = "fn sign(k: Bytes) -> Bytes fallible(std::crypto::CryptoError) {\n    let s = std::crypto::ed25519_sign(k, std::bytes::from_string(\"m\")) or raise;\n    return s;\n}\n\
+               fn read(p: String) -> String fallible(std::io::IoError) { let t = std::io::fs::read_file(p) or raise; return t; }\n\
+               fn parse(s: String) -> Int fallible(std::str::ParseError) { let n = std::str::parse_int(s) or raise; return n; }\n\
+               fn main() {\n    let s = sign(std::bytes::from_string(\"short\")) or { println(err.kind); return; };\n    println(len(s));\n    println(read(\"/nonexistent/x\") or \"none\");\n    println(parse(\"12\") or 0);\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "qualified_errors");
+    assert!(ok, "check: {out}");
+    assert!(built && !bout.contains("path-renames"), "build: {bout}");
+}
+
+/// GH #1944: an `indexed_by` field of a `json:`-tagged record had codecs
+/// that called helpers nothing declared, so the check refused the program
+/// naming them (`__json_parse_Pair__by_k`) with no location, and warned of
+/// a hot-path copy inside them. The record's `from_json` / `to_json` now
+/// carry the map, and no finding is raised inside the generated codec.
+#[test]
+fn an_indexed_by_field_of_a_json_tagged_record_checks_and_builds() {
+    let src = "type Pair { k: String `json:\"k\"`; v: Int `json:\"v\"`; }\n\
+               type Doc { ps: bounded[Pair; 4] indexed_by k `json:\"ps\"`; }\n\
+               fn main() {\n    let d = Doc::from_json(\"{\\\"ps\\\":{\\\"a\\\":{\\\"v\\\":1}}}\") or { println(err.kind); return; };\n    println(Doc::to_json(d));\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "indexed_by_json_tag");
+    assert!(ok && !out.contains("__json_") && !out.contains("hot-path"), "check: {out}");
+    assert!(built && !bout.contains("hot-path"), "build: {bout}");
+    // And with the hot-path advisory asked for (opt-in since GH #1948):
+    // still nothing inside the generated codec.
+    let d: PathBuf = std::env::temp_dir().join(format!("hale_check_build_refusals_{}_indexed_by_warn", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join("main.hl");
+    std::fs::write(&f, src).unwrap();
+    let (ok, out) = hale(&["check", "--warn-hot-path", &f.to_string_lossy()]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(ok && !out.contains("hot-path"), "check --warn-hot-path: {out}");
+}
+
+/// GH #1946: an exposure's receivers are slots of its runtime, numbered
+/// within its key. The slots were 16, and a serve site with a 17th
+/// receiver type passed the check, was left unexpanded, and failed the
+/// build ("path call `api::serve` in expression position") — the check
+/// skipping its validation on the way. 17 builds now, and past the
+/// slots (100) the check refuses the site at its `receivers:`.
+#[test]
+fn api_serve_has_no_seventeen_receiver_cliff() {
+    let serve = |n: usize| {
+        let mut s = String::from("type Ping { n: Int; }\napi Public {\n");
+        for i in 0..n {
+            s.push_str(&format!("    rpc R{i}::ping;\n"));
+        }
+        s.push_str("}\nlocus Grants { fn holds(p: std::api::Principal, r: String) -> Bool { return true; } }\n");
+        for i in 0..n {
+            s.push_str(&format!("locus R{i} {{ fn ping(p: Ping) -> Ping {{ return p; }} }}\n"));
+        }
+        s.push_str("main locus Desk {\n    params {\n        g: Grants = Grants { };\n");
+        for i in 0..n {
+            s.push_str(&format!("        r{i}: R{i} = R{i} {{ }};\n"));
+        }
+        let receivers: Vec<String> = (0..n).map(|i| format!("R{i}: self.r{i}")).collect();
+        s.push_str("        fixture: std::api::test::Rpc = std::api::test::Rpc { roles: self.g };\n");
+        s.push_str(&format!(
+            "        public: api::Exposure = api::serve(Public, self.fixture, as: \"public\", receivers: {{ {} }}, bound: 8, on_full: refuse);\n",
+            receivers.join(", ")
+        ));
+        s.push_str("    }\n    run() { self.public.stop(); }\n}\nfn main() { Desk { }; }\n");
+        s
+    };
+    let ((ok, out), (built, bout)) = check_and_build(&serve(17), "serve_17");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+    let ((ok, out), (built, bout)) = check_and_build(&serve(101), "serve_101");
+    assert!(
+        !ok && out.contains("main.hl:")
+            && out.contains("type error: serve of `Public` as `public`: its rows name 101 receiver types, and an exposure dispatches to at most 100"),
+        "check: {out}"
+    );
+    assert!(!built && !bout.contains("codegen error"), "build: {bout}");
+}
+
+/// GH #1943, STABILITY.md § Deprecation: `std::json::Builder.field` and
+/// `.value` write their argument raw, as they always have, and the spec
+/// says they take a string; v0.34 makes them quote. Until then a call
+/// warns `deprecated:` at the call, naming the raw and the string
+/// variants, and still checks, builds and writes what it wrote before.
+#[test]
+fn a_builder_field_or_value_call_warns_deprecated_and_writes_raw() {
+    let src = "fn main() {\n    let b = std::json::Builder { };\n    b.begin_object();\n    b.field(\"n\", \"42\");\n    b.begin_array_field(\"xs\");\n    b.value(\"1\");\n    b.end_array();\n    b.end_object();\n    println(b.result());\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "builder_deprecated");
+    assert!(ok, "check: {out}");
+    assert!(
+        out.contains("main.hl:4:5: warning: deprecated: `std::json::Builder.field(name, value)` writes `value` raw")
+            && out.contains("write `raw_field(name, json)` for encoded JSON or `string_field(name, s)` for a string")
+            && out.contains("main.hl:6:5: warning: deprecated: `std::json::Builder.value(v)` writes `v` raw")
+            && out.matches("deprecated:").count() == 2,
+        "check: {out}"
+    );
+    assert!(built, "build: {bout}");
+    // the raw and string variants raise nothing
+    let quiet = "fn main() {\n    let b = std::json::Builder { };\n    b.begin_object();\n    b.raw_field(\"n\", \"42\");\n    b.string_field(\"s\", \"x\");\n    b.begin_array_field(\"xs\");\n    b.raw_value(\"1\");\n    b.string_value(\"y\");\n    b.end_array();\n    b.end_object();\n    println(b.result());\n}\n";
+    let ((ok, out), _) = check_and_build(quiet, "builder_quiet");
+    assert!(ok && !out.contains("deprecated"), "check: {out}");
+}
+
+/// GH #1967: a call through a fn value is held to the value's type. A
+/// short call is refused at the callee (a fn type has no defaults), for
+/// a local and for a fn-typed locus param; an `Int` argument to a
+/// `Float` parameter widens, as at a direct call, and builds.
+#[test]
+fn a_call_through_a_fn_value_is_held_to_its_type() {
+    refused(
+        "fn add(a: Int, b: Int) -> Int { return a + b; }\nfn main() {\n    let add2: fn(Int, Int) -> Int = add;\n    println(add2(1));\n}\n",
+        "fn_value_arity",
+        "4:13",
+        "`add2` is a fn value of type `fn(Int, Int) -> Int`, which takes 2 arguments, got 1",
+    );
+    refused(
+        "fn add(a: Int, b: Int) -> Int { return a + b; }\nlocus S {\n    params { f: fn(Int, Int) -> Int = add; }\n    fn go() -> Int { return self.f(1); }\n}\nfn main() { println(S { }.go()); }\n",
+        "fn_field_arity",
+        "4:29",
+        "`f` is a fn value of type `fn(Int, Int) -> Int`, which takes 2 arguments, got 1",
+    );
+    let widened = "fn half(x: Float) -> Float { return x / 2.0; }\nfn main() {\n    let h: fn(Float) -> Float = half;\n    let n = 8;\n    println(h(n));\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(widened, "fn_value_widen");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1969: `return <a call with no value>;` in a `() fallible(E)` fn
+/// is a value returned from a body that returns nothing, as in any fn
+/// with no `-> T`.
+#[test]
+fn a_unit_call_returned_from_a_unit_fallible_fn_is_refused_at_the_value() {
+    refused(
+        "fn touch() -> () fallible(String) {\n}\n\nfn fwd() -> () fallible(String) {\n    return touch() or fail err;\n}\n\nfn main() {\n    fwd() or discard;\n}\n",
+        "unit_fallible_return",
+        "5:12",
+        "`return` carries a value, but this body returns nothing",
+    );
+}
+
+/// GH #1971: a pattern on an enum names its enum; a bare `A(x)` is a
+/// set member's spelling only.
+#[test]
+fn a_bare_variant_pattern_on_an_enum_is_refused_at_the_pattern() {
+    refused(
+        "type E = enum { A(Int), B };\n\nfn f(e: E) -> Int {\n    return match e {\n        A(x) -> x,\n        E::B -> 0,\n    };\n}\n\nfn main() {\n    println(f(E::A(3)));\n}\n",
+        "bare_variant",
+        "5:9",
+        "`A(…)` names a variant of the enum `E` without its enum: a pattern on an enum names it, `E::A(…)`",
+    );
+    // Structural, whatever the scrutinee is: under a type parameter the
+    // check cannot see a set, and lowering refused it unlocated.
+    refused(
+        "type Opt = enum { Has(Int), Empty };\nfn unwrap<T>(o: T, d: Int) -> Int {\n    return match o {\n        Has(x) -> x,\n    };\n}\nfn main() {\n    let o = Opt::Has(7);\n    println(unwrap(o, 7));\n}\n",
+        "bare_variant_generic",
+        "4:9",
+        "`Has(…)` names a variant without its enum, against a value whose type is not known here",
+    );
+    // A value that is no enum or set.
+    refused(
+        "fn f(n: Int) -> Int {\n    return match n {\n        Has(x) -> x,\n        _ -> 0,\n    };\n}\nfn main() { println(f(1)); }\n",
+        "bare_variant_int",
+        "3:9",
+        "`Has(…)` is a constructor pattern without its enum against a value of `Int`, which is no enum or set",
+    );
+    // A set's member keeps its bare name, an imported set's included.
+    let set = "type Book { id: Int; }\ntype Trade { qty: Int; }\ntype Inbound = Book | Trade;\nfn d(m: Inbound) -> Int {\n    return match m {\n        Book(b) -> b.id,\n        Trade(t) -> t.qty,\n    };\n}\nfn main() { println(d(Trade { qty: 4 })); }\n";
+    let ((ok, out), (built, bout)) = check_and_build(set, "bare_set_member");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1970: a body's tail is its return, checked as one: a member of
+/// the return type's set builds as that set (in a fn, a fallible fn and
+/// a method), and a tail of another type is refused at the tail.
+#[test]
+fn a_tail_is_checked_and_lowered_as_its_return() {
+    let src = "type Book { id: Int; }\ntype Trade { qty: Int; }\ntype Inbound = Book | Trade;\nfn decode() -> Inbound {\n    Trade { qty: 1 }\n}\nfn maybe(n: Int) -> Inbound fallible(String) {\n    if n < 0 { fail \"neg\"; }\n    Book { id: n }\n}\nlocus D {\n    fn next() -> Inbound {\n        Book { id: 2 }\n    }\n}\nfn main() {\n    let x = decode();\n    let y = maybe(1) or Trade { qty: 0 };\n    let z = D { }.next();\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "set_tail");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+    refused("fn f() -> Int {\n    \"s\"\n}\nfn main() { println(f()); }\n", "tail_mismatch", "2:5", "this is the body's value (its tail): expected `Int`, got `String`");
+}
+
+/// GH #1968: a fallible locus method's tail is its return.
+#[test]
+fn a_fallible_method_ending_in_a_tail_builds() {
+    let src = "locus Lv {\n    fn go(x: Int) -> Int fallible(String) {\n        x\n    }\n}\n\nfn main() {\n    println(Lv { }.go(1) or 0);\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "fallible_method_tail");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #1972: a locus literal used as a value where its enclosing locus
+/// runs both on the owner's thread and off it is refused by the check,
+/// in the words lowering used, with the instances it runs in.
+#[test]
+fn a_mixed_edge_literal_used_as_a_value_is_refused_at_the_literal() {
+    refused(
+        "locus I {\n    params {\n        x: Int = 0;\n    }\n}\n\nfn id<T>(x: T) -> T {\n    return x;\n}\n\nlocus Worker {\n    fn spawn() {\n        id(I { });\n    }\n}\n\nlocus Owner {\n    params {\n        w: Worker = Worker { };\n    }\n}\n\nmain locus App {\n    params {\n        a: Worker = Worker { };\n        o: Owner = Owner { };\n    }\n    placement {\n        o: pinned;\n    }\n    accept(c: I) { }\n}\n\nfn main() {\n    App { };\n}\n",
+        "mixed_value",
+        "13:12",
+        "`I { }` is born to `App`, but `Worker` runs both on `App`'s thread and off it (App.a on main; App.o.w on the pinned thread of App.o; the owner App on main), so its birth is a same-tower allocation in some instances and a cross-pool post in others; a cross-pool birth is fire-and-forget, so the literal cannot be used as a value.",
+    );
+}

@@ -360,8 +360,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         );
                         if asc_ty != default_ty && !literal_to_view {
                             return Err(CodegenError::Unsupported(format!(
-                                "locus `{}` param `{}`: declared {:?}, \
-                                 default {:?}",
+                                "locus `{}` param `{}`: declared {}, \
+                                 default {}",
                                 l.name.name, p.name.name, asc_ty, default_ty
                             )));
                         }
@@ -1495,6 +1495,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             .collect();
 
         for member in &l.members {
+            self.member_site = crate::codegen::member_site(member);
             match member {
                 LocusMember::Params(_) | LocusMember::Contract(_) => {
                     // Params handled in pass A1; contracts are a
@@ -1517,10 +1518,10 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 }
                 LocusMember::Lifecycle(lc) => {
                     if lc.ret.is_some() {
-                        return Err(CodegenError::Unsupported(format!(
-                            "locus `{}` lifecycle `{:?}` declares a return \
-                             type; only void is supported in v0",
-                            l.name.name, lc.kind
+                        return Err(CodegenError::Invalid(format!(
+                            "lifecycle hook `{}` of `{}` declares a return type, and a hook returns \
+                             nothing: remove the `-> T`",
+                            crate::codegen::lifecycle_word(lc.kind), l.name.name
                         )));
                     }
                     match lc.kind {
@@ -1598,7 +1599,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     return Err(CodegenError::Unsupported(
                                         format!(
                                             "locus `{}` accept() param must \
-                                             be a locus or an interface type; got {:?}",
+                                             be a locus or an interface type; got {}",
                                             l.name.name, other
                                         ),
                                     ));
@@ -1656,7 +1657,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     return Err(CodegenError::Unsupported(
                                         format!(
                                             "locus `{}` release() param must \
-                                             be a locus or an interface type; got {:?}",
+                                             be a locus or an interface type; got {}",
                                             l.name.name, other
                                         ),
                                     ));
@@ -1852,13 +1853,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         match &ret_codegen_ty {
                             None => void_t.fn_type(&llvm_param_tys, false),
                             Some(rt) => match rt {
-                                CodegenTy::Bounded(_, _) => {
-                                    return Err(CodegenError::Unsupported(
-                                        "bounded[T; N] cannot be returned \
-                                         by value"
-                                            .into(),
-                                    ));
-                                }
+                                // GH #1951: a pointer to the list's storage
+                                // in the caller's arena, as a record.
+                                CodegenTy::Bounded(_, _) => self
+                                    .context
+                                    .ptr_type(AddressSpace::default())
+                                    .fn_type(&llvm_param_tys, false),
                                 CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => self
                                     .context
                                     .i64_type()
@@ -1973,7 +1973,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     {
                         return Err(CodegenError::Unsupported(format!(
                             "locus `{}` on_failure second param must be \
-                             ClosureViolation; got {:?}",
+                             ClosureViolation; got {}",
                             l.name.name, err_ty
                         )));
                     }
@@ -2024,13 +2024,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         Some(t) => {
                             let rt = self.type_expr_to_codegen_ty(t)?;
                             match rt {
-                                CodegenTy::Bounded(_, _) => {
-                                    return Err(CodegenError::Unsupported(
-                                        "bounded[T; N] cannot be returned \
-                                         by value"
-                                            .into(),
-                                    ));
-                                }
+                                // GH #1951: a pointer to the list's storage
+                                // in the caller's arena, as a record.
+                                CodegenTy::Bounded(_, _) => self
+                                    .context
+                                    .ptr_type(AddressSpace::default())
+                                    .fn_type(&llvm_param_tys, false),
                                 CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => self
                                     .context
                                     .i64_type()
@@ -2313,7 +2312,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         )),
                         other => CodegenError::Unsupported(format!(
                             "locus `{}` on_failure first param must be \
-                             a locus type; got {:?}",
+                             a locus type; got {}",
                             l.name.name, other
                         )),
                     });

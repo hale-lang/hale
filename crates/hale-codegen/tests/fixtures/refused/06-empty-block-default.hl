@@ -1,0 +1,9 @@
+// refused at line 4: block used as expression has no trailing expression
+// An expression lowering cannot give a value, placed at the expression.
+type Meta { count: Int = 0; }
+type Page { meta: Meta = { }; }
+
+fn main() {
+    let p = Page { };
+    println(to_string(p.meta.count));
+}

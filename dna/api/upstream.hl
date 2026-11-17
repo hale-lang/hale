@@ -66,9 +66,50 @@ fn exchange(
 ) -> Upstream {
     let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
     if fd < 0 { return Upstream { code: "connect_failed" }; }
+    return exchange_on(
+        fd,
+        "127.0.0.1:" + to_string(port),
+        method,
+        target,
+        headers,
+        body,
+        timeout_ns,
+    );
+}
+
+// `exchange` against `host`:`port`, a listener that may not be this
+// machine's loopback (a habitat's head, as an organism's head reaches it):
+// the dial itself bounded by `dial`, so a host that never answers costs
+// that and no more.
+fn exchange_at(
+    host: String,
+    port: Int,
+    method: String,
+    target: String,
+    headers: String,
+    body: String,
+    dial: Duration,
+    timeout_ns: Int
+) -> Upstream {
+    if len(host) == 0 || port < 1 || port > 65535 { return Upstream { code: "connect_failed" }; }
+    let fd = std::io::tcp::connect_within(host, port, dial) or - 1;
+    if fd < 0 { return Upstream { code: "connect_failed" }; }
+    return exchange_on(fd, host + ":" + to_string(port), method, target, headers, body, timeout_ns);
+}
+
+// The exchange on the connected `fd`, `authority` its Host.
+fn exchange_on(
+    fd: Int,
+    authority: String,
+    method: String,
+    target: String,
+    headers: String,
+    body: String,
+    timeout_ns: Int
+) -> Upstream {
     let armed = std::io::tcp::__set_recv_timeout_ns(fd, min(timeout_ns, UPSTREAM_SLICE_NS));
     let s = std::io::tcp::Stream { conn_fd: fd };
-    let head = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:" + to_string(port) + "\r\n"
+    let head = method + " " + target + " HTTP/1.1\r\nHost: " + authority + "\r\n"
         + headers + "Connection: close\r\n\r\n";
     s.send(head + body) or discard;
     let received = std::bytes::BytesBuilder { };

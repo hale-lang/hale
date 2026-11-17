@@ -58,20 +58,44 @@ expression position (let-RHS, fn-call argument, if-arm body)
 the value is consumed; in statement position (loop body,
 `Stmt::If` / `Stmt::Match` block) the trailing expression is
 evaluated for side effects and the value is discarded —
-semantically equivalent to having added the `;`.
+semantically equivalent to having added the `;`. A call there is the
+call statement, a builtin's or a fn's that returns nothing included:
+`if c { println("x") }` and a statement `match`'s arm `P -> {
+println("x") }` build as `if c { println("x"); }` does. An `if`, a
+`match` (an `if let` included) or a block there is the statement of
+that shape, its own arms' tails statements in turn: a value-shaped
+trailing `if c { println("a") } else { println("b") }` (below) ending a
+body that returns nothing is that `if` statement. (GH #2016; until then
+the check passed these and the build refused the call as having no
+binding.)
 
 A **fn-shaped body** (free fn, locus method, mode) with a
 declared return type treats its trailing expression as an
 implicit `return`: `fn double(n: Int) -> Int { let d = n * 2;
 d }` returns `d` (2026-08-11 — previously the typechecker
 accepted this form and codegen rejected it as a fall-through).
+The tail is checked as that `return` is: against the return type
+(a fallible body's success type), a set's member flowing into the
+set, an `Int` widening to a `Float` (2026-11-15 — previously the
+check judged only a Decimal tail's scale, and the build refused a
+tail of another type, a member included, with no place). A
+fallible locus method's tail is its return as every other body's
+is.
 A body with *no* declared return type keeps statement-position
-semantics: the tail is evaluated for side effects.
+semantics: the tail is evaluated for side effects. So does a `()
+fallible(E)` body's, an `or` included (`fn fwd() -> () fallible(E) {
+touch() or fail err }` lowers as the statement `touch() or fail err;`;
+GH #2005).
+The same body's **last statement** is its value when it is a `match`,
+an `if` or a block: its arms and tails carry the value down, each leaf a
+return (§ "Definite return", below).
 
 Such a body returns nothing, so a `return` in it carries no value: a
 `return <expr>;` in a fn or mode with no `-> T` (a fallible fn's
 success type is then `()`) or in a lifecycle hook (`birth`, `run`,
-`accept`, `drain`, …) is a type error at the value. `fn main` is the
+`accept`, `drain`, …) is a type error at the value, a call with no
+value of its own included (`return touch() or fail err;` in a
+`() fallible(E)` fn: write the call as a statement, then `return;`). `fn main` is the
 exception: its `return n;` is the process exit code (§ "Process
 exit").
 
@@ -138,7 +162,18 @@ Phase 2b entry in `spec/stdlib.md`.
   typecheck with the match's span; `match` expression works with
   every pattern form the statement supports — literal / binding /
   wildcard / tuple / enum-constructor patterns, guards, and
-  block arm bodies with trailing expressions). F.18
+  block arm bodies with trailing expressions). A block arm's value
+  is its tail, or its trailing `match`'s (below); a block arm with
+  neither that does not leave produces no value, `()`, so it
+  disagrees with a valued arm: `match c { 1 -> 5, _ -> {} }` is
+  refused at the match ("match expression arms have mismatched
+  types: \`Int\` vs \`()\`"), as an `if` expression's mismatched
+  arms are. A block arm that leaves (its last statement a `return`,
+  `fail`, `break`, `continue`, an endless loop, or an `if`/`match`
+  each of whose branches leaves) is a diverging arm and supplies no
+  type. Until GH #2016 the check judged only expression arms (and a
+  binding as an arm's value carried no type), so `S::B(v) -> v, _ ->
+  "s"` and the block arm above checked and the build refused them. F.18
   exhaustiveness applies in both positions. The only reachable
   no-arm-matched case in expression position is a match whose
   arms are all guarded and every guard is false at runtime; it
@@ -169,8 +204,9 @@ Phase 2b entry in `spec/stdlib.md`.
   block ("this block ends in a \`match\` whose every arm leaves
   without a value … give an arm a value, or end the block with
   \`return\`"), as it refuses `let x = { return 1; };`. In a block
-  used as a statement (a fn body, a loop body) it stays the statement
-  it reads as. Until 2026-11-06 the check passed the arm above and
+  used as a statement (a loop body, a body that returns nothing) it
+  stays the statement it reads as; at the end of a body with a declared
+  return type it is the body's value (§ "Definite return", GH #1940). Until 2026-11-06 the check passed the arm above and
   the build refused it as a block with no trailing expression, where
   the same arm ending in `if … else …` built (downstream handoff);
   2026-11-07 refused the all-leaving trailing `match` in every
@@ -181,6 +217,17 @@ Phase 2b entry in `spec/stdlib.md`.
 literal: a nested pattern there (`Op::Pair((a, b))`) is a type error at
 the nested pattern; bind the value and match or read the binding in the
 arm.
+
+**A pattern's bindings** are locals of their arm (its guard and its
+body), each of the type of what it binds: a bare binding is of the
+scrutinee's type, a variant's value of the variant's declared field
+type (a set member's of the member's type), a tuple pattern's part of
+the element's type. A binding is typed at its uses as any other local
+is, so with `type S = enum { A, B(Int) }`, `S::B(v) -> { let t: String
+= v; … }` is a type error at `v`. An or-pattern's bindings are the first
+alternative's (every alternative binds the same names at the same
+types, below). Until GH #2016 a binding was entered untyped, and that
+`let` passed both the check and the build.
 
 **A literal in a pattern** is a value of the type it is matched
 against, compared as lowering compares them (an identity's or a
@@ -193,6 +240,66 @@ denomination: `match d { 1min -> … }` over a `Duration` matches sixty
 seconds. A Decimal literal takes the scrutinee's scale. The values in
 an enum constructor's pattern (`Fee::Flat(2.50d)`) are matched against
 the variant's declared types the same way.
+
+**Or-patterns** (GH #1995 E2). An arm's pattern may be two or more
+alternatives separated by `|`; the arm matches when one of them does:
+
+```hale
+type CtlError = enum { Invalid(String), NotFound(String), NotReady(Int) };
+
+fn problem(e: CtlError) -> String {
+    return match e {
+        CtlError::Invalid(p) | CtlError::NotFound(p) -> p,
+        CtlError::NotReady(h) -> f"not ready: {h}",
+    };
+}
+
+fn usage(verb: String) -> String {
+    return match verb {
+        "assign" | "unassign" -> verb + " <name>",
+        "close" -> "close <name>",
+        _ -> "unknown",
+    };
+}
+```
+
+- Every alternative binds the same names at the same types, since the
+  guard and the body read them whichever alternative matched. A name one
+  alternative binds and another does not, or binds at another type, is a
+  type error at the alternative (or its binding), naming the name and
+  both alternatives.
+- Alternatives are tried left to right. A guard covers the whole arm: it
+  is evaluated with the bindings of the alternative that matched, and
+  when it is false the next alternative that matches is tried with its
+  own bindings, before the next arm. The arm behaves exactly as its
+  alternatives written as consecutive arms with the same guard and body
+  would.
+- F.18 exhaustiveness counts each alternative of an unguarded arm as the
+  arm it could have been written as: `true | false` covers a `Bool`, and
+  enum variants covered through alternatives need no `_`.
+- `|` is top level only, as patterns are flat: inside a tuple pattern or
+  a variant's values a pattern is one pattern, and a `|` there
+  (`E::A(1 | 2)`) is a parse error; write `E::A(1) | E::A(2)`.
+- An alternative an earlier unguarded arm, or an earlier alternative of
+  the same arm, already covers is never tried, and the check warns at it
+  ("the alternative … is never tried"). (A guarded arm that binds names
+  does not make its own later alternatives redundant, since the guard is
+  tried again with theirs.)
+- A pattern is not an expression, so the `|` between alternatives is
+  never the bitwise operator; the guard and the body are expressions,
+  where `x | y` is.
+
+The body is lowered once: each alternative's test branches to the arm's
+one guard or body block, its bindings merged there.
+
+**Matching strings.** A `String` scrutinee matches string-literal
+patterns by value (`"assign" | "unassign" -> …`). A ladder of three or
+more `if` tests comparing one String place with literals, chained with
+`else if` or as consecutive `if` statements, is the same decision, and
+`--warn-string-match` (on `hale check` or `hale verify`) warns at its
+first test with the `match` it reads as. The advisory is off by default
+for every verb, `hale verify` included, and never reports stdlib
+source.
 
 **Scrutinee-less form.** `match { cond -> body, else -> body }`
 omits the scrutinee and tests guards directly:
@@ -222,6 +329,128 @@ ignore.
 
 `match {` is not ambiguous with matching on a block expression:
 that shape is written `match (…) { … }`.
+
+**`if let` and `let … else`** (GH #1995 E3). Two spellings of a
+two-arm match, for the test of one pattern:
+
+```hale
+type Side = enum { Buy, Other(String) };
+type Outcome = enum { Result(Int), Refused(String) };
+
+fn note(side: Side) -> String {
+    if let Side::Other(raw) = side { "other: " + raw } else { "buy" }
+}
+
+fn index_of(o: Outcome) -> Int {
+    let Outcome::Result(index) = o else {
+        return -1;
+    };
+    return index * 2;
+}
+```
+
+- `if let P = e { A } else { B }` is `match e { P -> { A }, _ -> { B }
+  }`, written by the parser, so the check, the analyses and lowering see
+  that match. With no `else` the `_` arm is empty. `P` is any arm's
+  pattern, an or-pattern included under the same binding rule, and its
+  names are in scope in the then-block only. It is an expression as
+  `if` is: used as a value it needs an `else`, and both arms are typed
+  as an `if`'s are (a mismatch is "\`if let\` arms have mismatched
+  types: then=…, else=…"); a trailing `if let` every arm of which ends
+  in a value is its block's value, as a trailing `if` is. Links chain
+  both ways: `if let … else if let … else`, and `if c { … } else if
+  let … { … }`.
+- `let P = e else { B };` binds `P`'s names in the enclosing block,
+  after the statement. It is `let x = match e { P -> x, _ -> { B } };`
+  (a tuple of the names when there are several, a statement match when
+  there are none). `B` runs when `P` does not match and must **leave**,
+  as § "Definite return" judges a path: `return`, `fail`, `break`,
+  `continue`, `terminate`, `violate`, or a statement every branch of
+  which does. A call completes, `std::process::exit` included. An
+  `else` that can complete is refused at the block, the completing path
+  named ("the \`else\` of a \`let … else\` must leave …: what follows
+  the statement runs only when \`P\` matches; this \`else\` can
+  complete: …"). A name or a tuple of names takes an `else` too; when
+  `P` matches every value of its type the `else` never runs, and the
+  check warns.
+- A plain `let` takes a pattern that matches every value of its type:
+  a one-variant enum's constructor (`let Meters::M(n) = m;`), a tuple of
+  names, as it always did. One that can fail to match is refused at the
+  pattern, "\`P\` can fail to match a \`T\`, so a plain \`let\` cannot
+  bind it: add \`else { … }\` that leaves when it does not match …".
+  Until GH #1995 a `let` of anything but a name or a tuple of names did
+  not parse.
+- A `let` of a pattern takes no type annotation; `let mut P = e else {
+  … };` binds its names mutable.
+- The names `P` binds, in either spelling, are typed as a match arm's
+  bindings are (§ `match`, a pattern's bindings): `index` above is an
+  `Int`, and is checked as one wherever it is used (GH #2016).
+
+`if let` is the enum counterpart of `or { return …; }`, and it
+introduces no `Option` (F.52). No keyword is added.
+
+## Definite return
+
+A body with a declared return type (a fn, a locus method, a mode with
+`-> T`, a fallible fn with a success type) returns a value on every
+path that reaches its end.
+
+**The result position.** Its tail is its value (above), and when its
+last statement is a `match`, an `if` or a block, that statement is the
+value: every arm of the `match` (an expression arm, or a block arm's
+own result position), the `if`'s then-block, each `else if` and its
+`else`, and a block's tail or last statement in turn. A leaf in result
+position is checked as the `return` it is, against the return type
+("this is the body's value (its last statement's arm or tail): expected
+\`String\`, got \`Int\`"), and lowered as one, for every result type:
+
+```hale
+fn word(n: Int) -> String {
+    match n { 1 -> "one", _ -> "other" }
+}
+
+fn sign(n: Int) -> Int {
+    if n > 0 { return 1; } else if n < 0 { -1 } else { 0 }
+}
+```
+
+A leaf that leaves (`return`, `fail`, …) is unchanged. A trailing
+`match` stays a statement in the grammar, and a trailing `if` some arm
+of which has no tail stays one too (§ "Expressions — `if` and block
+tails"); in a body that returns a value, the result position is what
+makes them its value.
+
+**Reaching the end.** A path **leaves** without reaching the end when
+it meets `return`, `fail`, `break`, `continue`, `terminate` or
+`violate`; an `if` with an `else` each of whose branches leaves; a
+`match` each of whose arms leaves (F.18 makes it exhaustive); a block
+that leaves; a `while true` loop no `break` leaves (a `break` inside a
+nested loop leaves that loop, not this one); or a statement whose value
+is a `match`, an `if … else` or a block expression that leaves on every
+path. Any other statement can complete, and the body can reach its end
+when its last statement can, or when it is empty. Such a body is a type
+error at the declaration's name, naming the path as a secondary
+location:
+
+```text
+main.hl:1:4: type error: fn `sign` returns `Int`, and its body can reach
+its end without a value: this `if` has no `else`, so when its condition
+is false the body ends after it. Return a value on that path, or end the
+body with its value (a tail expression, or a `match`, an `if … else` or
+a block whose every arm ends in one)
+    note: the path that reaches the end without a value at main.hl:2:5
+```
+
+The paths it names: an `if` with no `else`, and an `if let` with
+none (GH #1995); a `while` loop whose
+condition can be false, and a `for` loop; the `break` that leaves a
+`while true`; an arm or block whose last statement completes; an empty
+body, block or arm. The judgment is the program's shape, not its
+values: `while n > 0 { return n; }` can finish as far as it is
+concerned, and a call that never returns (`std::process::exit`) is a
+call that completes. Until GH #1940 the check passed such a body and the
+build refused it as falling through, with no file or line; a tail
+`match` was refused the same way.
 
 ## Expression statements
 
@@ -301,6 +530,139 @@ supported", and an enum payload of an enum was refused at the build even
 when it compared). Until 2026-10-13 the check held only that the two sides were
 one type, and the build refused `true < false`, `p == q` of two
 structs, `b"a" + b"b"` and `!n` with no file or line.
+
+## String slicing
+
+A range in an index's brackets slices a `String` by byte offset and
+yields a new `String` holding a copy of those bytes:
+
+| Form | Bytes | Same as |
+|---|---|---|
+| `s[lo..hi]` | `lo` up to, not including, `hi` | `std::str::substring(s, lo, hi)` |
+| `s[lo..=hi]` | `lo` through `hi` | `s[lo..(hi + 1)]` |
+| `s[lo..]` | `lo` to the end | `s[lo..len(s)]` |
+| `s[..hi]` | the start up to, not including, `hi` | `s[0..hi]` |
+| `s[..=hi]` | the start through `hi` | `s[0..(hi + 1)]` |
+| `s[..]` | every byte (a copy) | `s[0..len(s)]` |
+
+The bounds are `Int` expressions, evaluated left to right after the
+receiver, and the receiver is evaluated once in every form:
+`next_line()[4..]` calls `next_line` once, as a closed slice does.
+Bounds clamp and never fail: a start below 0 is 0, a bound past the
+end is the end, and an end before the start gives `""`. Offsets are
+bytes, not characters, so a slice can cut a multibyte UTF-8 character
+in two; `std::str::cp_at` and `cp_size` walk code points.
+
+A bound is left out only inside an index's brackets (GH #1995): a
+bare `3..` or `..3` anywhere else, `for i in 0..` included, is a
+parse error. `..=` needs its end (`s[lo..=]` is refused). An open
+form is the closed form it reads as before anything checks or
+lowers it, so `hale check` and the build accept exactly the same
+open slices as closed ones. Only a `String` slices: a range index on
+an array, a `bounded`, `Bytes` or a view is refused at the check
+(spec/types.md § What the compiler cannot compile yet;
+`std::bytes::slice` copies a range of
+bytes, `std::str::slice` a range of a `ByteView`).
+
+Each slice measures the receiver and copies the bytes (`O(n) +
+O(hi - lo)`, spec/stdlib.md § Linear byte scanning), so walking
+a long string by re-slicing its tail is quadratic; a text source
+(§ Text sources, below) or a `ByteView` walks it in one pass
+(spec/styleguide.md S16).
+
+An index that is not a range (`s[i]`) is refused at the check: one
+position of a `String` could mean a byte or a character, and Hale
+picks neither. The refusal names both ways to say which: "\`s[i]\`: a
+\`String\` has no element to index, since one position could mean a
+byte or a character. Read bytes through a view (\`let v =
+std::str::bytes_view(s);\` then \`std::str::byte_at(v, i)\` …), or
+slice the text (\`s[i..(i + 1)]\`, \`s[i..]\`)". Until GH #1995 the
+check passed it and the build refused it ("indexing a non-array
+value").
+
+A byte read that way is an `Int` (0..=255), and a **byte literal**
+names one by its character: `b'/'` is `47`, so
+`std::str::byte_at(v, i) == b'/'` reads as the test it is (GH #1995,
+spec/tokens.md § Integer literals). A byte literal is an integer
+literal in every respect: it types as `Int`, folds in a constant,
+and matches in an arm's pattern, or-patterns included
+(`b'a' | b'A' -> …`). It is the lexer's, so `hale check` and the
+build accept exactly the same ones, and refuse the same ones (no
+byte, several bytes, a non-ASCII character) at the literal.
+
+## Text sources
+
+`std::str::split(s, sep)`, `std::str::lines(s)` and
+`std::str::words(s)` are **`for` sources**: each names the parts of a
+text for a `for` loop to visit, one per iteration (GH #1995). They are
+not values. Hale has no sequence value for them to return, which is
+also why `std::str::split_into` writes into storage the caller owns.
+
+```hale
+fn main() {
+    let row = "id,name,,note";
+    for field in std::str::split(row, ",") {
+        println("[" + field + "]");
+    }
+    for line in std::str::lines("first\r\nsecond\n") {
+        println(line);
+    }
+    for w in std::str::words("  any   amount of  space ") {
+        println(w);
+    }
+}
+```
+
+| Source | The parts |
+|---|---|
+| `split(s, sep)` | The text between occurrences of `sep`, empty parts included, as `split_into` writes them: `"a,,b,"` is `a`, an empty part, `b`, an empty part. `""` is one empty part, and `s` with no `sep` in it is `s`. An empty `sep` gives no parts. |
+| `lines(s)` | The text between `\n`s, each without one `\r` before its `\n` (or before the end of the text). A final `\n` starts no line: `"a\r\nb\n"` is `a`, `b`. `""` is no lines, and `"\n"` is one empty line. |
+| `words(s)` | The runs of bytes that are not ASCII whitespace (space, tab, LF, vertical tab, form feed, CR). There is never an empty word, so `""` and `"  "` are no words. |
+
+- **The arguments are evaluated once**, left to right, before the first
+  part. Assigning a variable the arguments were read from inside the
+  body does not change the scan.
+- **Each part is a new `String`**, bound to the loop variable for its
+  iteration and not assignable, like any loop variable. The body owns
+  it: it can keep it in an outer variable, return it or store it.
+- **`break` leaves the loop and `continue` goes to the next part**, as
+  in any `for`; `return` returns from the enclosing fn. Loops over
+  sources nest, and an inner `break` leaves only the inner loop.
+- **Bytes, not characters.** A separator is matched byte for byte, so
+  a valid UTF-8 separator never cuts a character, and a non-ASCII
+  space (U+00A0) is text to `words`.
+- **One scan.** `s` is measured and copied once into a `ByteView`
+  (spec/stdlib.md § Linear byte scanning). Each part costs a search
+  from where the last one ended and a copy of the part, so a loop is
+  linear in the text, where the hand loop it replaces (`rest =
+  rest[(sp + 1)..]`, a measure and a copy of the rest per
+  part) is quadratic. `words_source_scales_linearly_where_the_hand_loop_does_not`
+  in `crates/hale-codegen/tests/stdlib_str.rs` pins it.
+- **Pure.** A loop over a source has the effects of its body and no
+  others, so it is legal in `@deterministic @no_syscall` code.
+
+Before anything checks it, the loop is rewritten as one `while` over a
+view of `s` (`hale_syntax::str_sources`, in the desugar sequence every
+entry point runs). The checker, the analyses and lowering see that
+loop, so `hale check` and `hale build` accept the same programs, and a
+diagnostic in the body points where the body was written.
+
+A source used as anything other than a loop's iterand is refused at
+the check, with the way to keep the parts: "\`std::str::split\` is a
+\`for\` source, not a value: write \`for part in std::str::split(s, sep)
+{ … }\`. Hale has no sequence value to return; to keep the parts, write
+them into storage you own with \`std::str::split_into(s, sep, v)\`". So
+is a call with the wrong number of arguments ("\`std::str::lines(s)\`
+takes 1 argument, got 2"), and an argument that is not a string, at
+the argument ("\`std::str::split(s, sep)\`: \`sep\` takes a \`String\`,
+not a \`Int\`"). A chain over a source (`std::str::words(s).count()`)
+is not recognized yet.
+
+A `for` over a `String` itself is refused at the check: "\`for\` over a
+\`String\`: a string is not a sequence. Iterate
+\`std::str::split/lines/words\`, or a \`bytes_view\` by index". Until GH
+#1995 the check passed it and the build refused it ("for-loop iterator
+must be an array").
 
 ## Binary data — Bytes and conversion
 
@@ -513,7 +875,11 @@ owner may live in a different tower or on a different pool: a
 cross-pool owner is served by an async handoff over the bus, so a
 cross-pool `I{}` is **fire-and-forget** — it may only appear as a
 bare statement, and using the instance as a value is rejected at
-compile time. The rule holds at every expansion of a default, since
+compile time. So is a value use where the enclosing locus runs both
+on the owner's thread and off it (its birth is a same-tower
+allocation in some instances and a cross-pool post in others,
+chosen at a bare statement): the typechecker refuses it at the
+literal, naming the instances and their threads. The rule holds at every expansion of a default, since
 a default is lowered where it is expanded, not where it is written.
 The typechecker rejects it at the literal: in a member body (a
 closure's assertion included), under the locus whose body it is; in
@@ -530,6 +896,20 @@ not rejected. Chains of defaults of either kind are followed. A
 use, under whichever locus uses them, so one that builds an `I{}`
 some locus would post is rejected at the position. See `runtime.md`
 "Interest-based ownership (accept bubbling)."
+
+A cross-pool child is born on the owner's thread from a marshaled copy
+of its params, and nothing of it runs on the far side but that birth:
+each param must be a type the spawn marshals (a scalar of `Int`,
+`Float`, `Bool`, `Decimal`, `Duration` and `Time`, a `String`, a
+`Bytes`, a struct whose fields the bus carries, a fixed array of those),
+and the child keeps params, an optional `birth`, `drain` or `dissolve`,
+and a contract, never a non-empty `run()`, bus subscriptions, closures,
+capacity slots or an `accept` of its own. `hale check` refuses a child
+that breaks either, once, at the first literal the bubble plan posts
+across ("cross-pool spawn \`Ship{ }\`: it is born on \`World\`'s thread
+from a marshaled copy of its params, and hale can't compile this child
+that way yet: its param \`t\` is \`(Int, Int)\`, a tuple, …"); the build
+refused it after a passing check (GH #1942).
 
 **An interface `accept`.** `accept(c: I)` may name an interface
 (`spec/types.md` § Interface types). It accepts every locus that
@@ -2806,7 +3186,9 @@ payload picks the consumer mode:
   declares a `json:` tag itself; a nested failure propagates), and a
   `bounded[T; N]` or `[T; N]` of any of those as a JSON array (more
   elements than `N` is `too_long`, fewer than a fixed array's
-  `too_short`; an absent `bounded` field is empty). A `Decimal<S>`
+  `too_short`; an absent `bounded` field is empty), and a map of
+  records (`bounded[T; N] indexed_by <key>`, GH #1944) as the api
+  codec carries one, an object keyed by each record's key. A `Decimal<S>`
   field is a JSON number, or a JSON string holding one (`"97000.50"`;
   2026-11-14, downstream handoff), read at the field's scale, every
   digit kept and no float on the way, an exponent applied exactly
@@ -2870,6 +3252,25 @@ payload picks the consumer mode:
   array cursor and pushing into a `@form(vec)` locus cell (see
   `notes/value-collections.md`). Further tag keys remain reserved for
   future consumers (validation, db mapping).
+- An enum's variant takes the same backtick tag after its values (GH
+  #1951 item 5): ``Sell `json:"sell"` ``, ``Fill(Int) `json:"fill"` ``,
+  ``Other(String) `json:",other"` ``. Its `json:` key renames the variant
+  on the JSON wire, in `from_json` / `to_json` and the api codecs alike:
+  a payload-free variant is written and read as the name (`"sell"`), one
+  with values is the key of the object that holds them (`{"fill": 3}`),
+  and the declared name is no longer read. The one option is `other`,
+  which makes the variant the enum's catch-all: a JSON string that names
+  no payload-free variant decodes to it, keeping the string when it
+  holds one `String` (lossless, and it writes that string back) or only
+  that the string was unknown when it is payload-free (lossy, and it
+  writes its own wire name); an unknown object key stays `wrong_type`.
+  The check refuses, each at the variant: two variants with one wire
+  name, a second catch-all, a catch-all holding anything but one
+  `String`, a wire name on a lossless catch-all (it writes what it holds),
+  and any option but `other`. A set's member (`type S = A | B;`) takes no
+  tag: a tag after one is a parse error. Other keys of a variant's tag
+  are ignored, as a field's are (spec/api.md § Codecs has the wire, the
+  description and the protobuf rules).
 
 Any other payload (with `String`, `Bytes`, or variable-size fields and
 not itself `BytesView`) is rejected.
@@ -3007,11 +3408,15 @@ The typechecker validates three classes of constraint issue
    fixed-size array of anything else (`[P; 2]` of a struct,
    `[Time; 2]`), which keeps the out-of-line layout, a pointer
    that would dangle across the zero-copy / shm boundary; an
-   unbounded array `[T]`; and an enum. The binding is refused at
+   unbounded array `[T]`; a tuple (a pointer to its block); a
+   `bounded` list of strings, bytes, records or enums; and an enum.
+   The bus wire carries all of these (§ Payload type); a raw copy
+   does not. The binding is refused at
    typecheck, at its `zero_copy`, rather than compiled into a
    cross-process use-after-free: "binding for topic `TA` requires
    `zero_copy` but payload type `PayA` is not flat-shapeable — it
-   contains a String, Bytes, or fixed-size array field, …". Send
+   contains a String, Bytes, fixed-size array, tuple, enum or
+   list-of-pointers field, …". Send
    variable data as `Bytes` on a binding without `zero_copy`, or as
    a `layout:`-bound `BytesView` raw frame.
 
@@ -4494,6 +4899,19 @@ The rewrite happens post-parse, before typecheck, so it cannot
 dispatch on the source's type; a form that does not answer `get`
 fails with an ordinary no-method diagnostic at the chain's site.
 
+A chain over a `bounded[T; N]` or an array walks it by its type,
+however it is reached and whatever it is named: a local, a param, a
+record's or a locus's field, a path of fields (`o.inner.tags.filter(it
+> 1).count()`). Its element cursor is the collection's own `at`, so the
+effect and allocation analyses read it as that intrinsic (no effect, no
+allocation) and the chain holds under `@no_syscall` and `@budget(
+alloc_per_call = 0)` (GH #1984). `.items` and `.entries` anchor a chain
+on a form's iteration surface, and the rewrite strips the anchor before
+any type is known; the receiver's type then decides what it was: a
+`@form` locus, or one that declares the cursor itself, keeps the
+pseudo-field, and a receiver with a real field of the anchor's name (a
+record's `items: bounded[T; N]`) walks that field.
+
 **Fallible terminals ride the source's own `get`.** `first` / `find`
 / `min` / `max` lower to an index search whose value is
 `src.get(idx)` — an empty result is the ordinary `IndexError`, so
@@ -4577,7 +4995,9 @@ A subject's payload type — `T` in `of type T`, or a `topic`'s
 
 - a user `type` (`type T { ... }`);
 - an `enum` with at least one variant that carries a payload,
-  which travels as that enum's storage struct;
+  which travels as its tag and the variant's values (below; one whose
+  every value is a scalar or a payload-free enum travels as its
+  storage struct, the bytes it always had);
 - `BytesView` (`std::bytes::BytesView`), the raw-frame path: the
   payload is not typed at all, and the handler receives a bounded
   view over each record. This is how a foreign writer's ring is
@@ -4617,21 +5037,56 @@ path). To send one, wrap it in a user `type` and declare the topic's
 `payload:` as that.
 ```
 
-**Within** a payload, the wire format supports primitives (`Int`,
-`Float`, `Bool`, `Decimal`, `Duration`, `Time`, `String`),
-`Bytes`, and **nested user struct types** recursively composed. A
-bus payload may carry a struct whose fields are primitives,
-Strings, Bytes, or other nested structs, at any depth. Serialize
-walks the field tree in declaration order; deserialize allocates
-each nested struct in the lazy global payload arena and recurses.
+**Within** a payload, every value a `type` may hold is carried, at
+any depth (GH #1951 item 4). Serialize walks the value in declaration
+order and deserialize allocates each pointer-shaped value (a string, a
+record, a list's or an array's element, an enum's cell, a tuple) in the
+lazy global payload arena. The encodings are the wire format's carriage
+table, `hale_types::wire_carriage::WIRE_TABLE`; the check's refusal and
+the serializer both read it, so the list a refusal prints is the list
+the serializer encodes. The format is internal (F.36): Hale talks to
+Hale with it, and a foreign peer goes through a `codec(...)` clause.
+Little-endian, nothing between values:
+
+| Value | Wire bytes |
+|---|---|
+| `Int`, `Float`, `Bool`, `Duration`, `Time`, a unit type | 8 bytes |
+| `Decimal` | 16 bytes |
+| `U256`, `I256` | 32 bytes |
+| a payload-free enum | its tag, a `u32` (the variant's declaration index) |
+| `String`, `Bytes` | an `i64` length, then its bytes |
+| a record | its fields, in declaration order |
+| `bounded[T; N]`, `T` a scalar or a payload-free enum | its inline storage: the `i64` count and all `N` slots |
+| `bounded[T; N]`, `T` a `String`, `Bytes`, record or enum with payloads | an `i64` count, then that many elements, each as a value of `T` |
+| `[T; N]` | its `N` elements (an array of scalars as one block, as before) |
+| an enum with payloads | its `u32` tag, then the variant's values in order |
+| a tuple | as a record of its elements |
+| `std::json::Value` | its text, as a `String` |
+
+What no frame can hold stays refused, naming the part and the carried
+set: a fn value, a locus handle, a view (`BytesView`, `StringView`,
+`BytesMut` as a field), a projection, an array of no fixed length, and a
+type that reaches itself (`type Node { kids: bounded[Node; 4]; }`),
+whose frame has no bound. A topic whose payload holds one is rejected
+at typecheck where it is delivered, as above ("topic \`Ev\` declares
+\`payload: Msg\`, whose field \`f\` is a fn value (\`fn(Int) -> Int\`),
+which the wire format does not carry: a delivery serializes each value,
+and carries scalars (…), …, and records of these"). Until
+2026-11-16 the check refused an enum with payloads, a tuple, a `bounded`
+of strings, bytes or records and an array of strings as a field, and the
+build refused a top-level enum with a `String` value with no place
+(and copied any other pointer value of one as the pointer).
+
 A frame is decoded only as far as it reaches (2026-11-07, downstream
 handoff): one shorter than its type's minimum encoded size (its
-fixed fields and length prefixes; the empty datagram included) is
-refused before any field is read, and every read after that — a
-fixed field, a length prefix, the bytes a String or Bytes length
-announces, a nested struct's or an array element's fields — is held
-to what remains of the frame after it, never to the frame's whole
-length; a refused frame is dropped by the reader that received it and
+fixed fields, length prefixes, list counts and enum tags; the empty
+datagram included) is refused before any field is read, and every read
+after that — a fixed field, a length prefix, the bytes a String or
+Bytes length announces, a list's count, an enum's tag, a nested
+struct's or an element's fields — is held to what remains of the frame
+after it, never to the frame's whole length. A list count below zero or
+past the list's `N`, and an enum tag past its last variant, are refused
+too. A refused frame is dropped by the reader that received it and
 counted (`dropped_decode` in the counters dump), and nothing of the
 reader's previous frame is delivered as part of it. It used to be
 that an empty datagram was delivered as a zero-filled record, one
@@ -4643,18 +5098,24 @@ frame. In-process delivery — a publish materialized on the owner's
 thread, a cross-pool create cell — holds the program's own
 serializer's bytes and is decoded straight through, unchecked, so a
 create cell's dispatch stays one straight-line block (accept, the
-children's push, then birth, in the text's order).
-A payload-free enum field travels as its four-byte tag (so a topic
-`keyed_by` an enum field builds), and a `bounded[T; N]` of scalars or
-such enums and an array of scalars or structs are carried too. An
-enum with payloads, a tuple, a `bounded` of pointers (strings, bytes,
-structs) and an array of strings or arrays as a payload *field* (at
-any depth) are post-v1 polish, and a topic whose payload struct holds
-one is rejected at typecheck where it is delivered, as above, naming
-the field ("topic \`Ev\` declares \`payload: Msg\`, whose field \`x\` is
-a tuple (\`(Int, Int)\`), which the wire format does not carry").
-Until 2026-10-13 the check admitted every field and the build refused
-these, and every enum field, with no file or line.
+children's push, then birth, in the text's order). For that reason a
+cross-pool spawn's params keep to the shapes the walk takes without a
+loop or a switch: a counted list, an enum's cell and a tuple are refused
+there (`lowering_laws::cross_pool_child_shape`).
+
+The flat paths are unchanged: a `zero_copy` binding and a `layout:`
+ring copy the payload's bytes raw, so every new shape (a counted list,
+an enum's cell, a tuple, an array of strings) is not flat-shapeable and
+is refused at the binding, as a `String` field is; a `keyed_by` key is
+one of the key table's types.
+A literal subject's `of type` struct (`subscribe "m" as on_m of type
+M`) is held to the same rule, once per payload type, at the first clause
+that names it; it reached the build until GH #1942. So is a binding's
+transport: a native `shm_ring`
+holds fixed-size struct slots, so a topic whose payload is an enum is
+refused at its entry, and a `layout:` ring hands its subscriber one
+record at a time, so a `Drain<T>` batch handler on one is refused at
+the `subscribe`.
 
 **Size.** A delivery is as large as its fields make it, and local
 delivery is bounded only by the payload arena (`spec/memory.md`):
@@ -4683,6 +5144,25 @@ For each `closure NAME { LEFT ~~ RIGHT within TOL; epoch
 3. If `<= TOL`: closure passes silently.
 4. If `> TOL`: flips the locus's "exploded" flag; emits a
    typed `ClosureViolation` event.
+
+The band is computed in one type: LEFT, RIGHT and TOL are all `Int`
+(a `Duration`, a `Decimal`) or all `Float`. An `Int` beside a `Float`
+— most often a literal beside `mean(self.x)`, which is a `Float` — is
+refused by `hale check` at the `Int` ("closure \`band\`: the band is a
+\`Float\` (the other side is one), and its tolerance is an \`Int\`; …
+write it as a \`Float\`").
+
+The accumulators `sum(…)`, `count()` and `mean(…)` are a closure
+assertion's, sampled once per epoch, and each accumulates one field of
+the locus (`sum(self.x)`, `mean(self.x)`). Outside a closure assertion
+they name nothing the build can call, an accumulator over a wider
+expression (`sum(self.a + self.b)`) has no slot to sample, and
+`prod(…)`, which the grammar reserves, has no lowering: `hale check`
+refuses each at the accumulator ("\`sum(…)\` is a closure assertion's
+accumulator …, and is compiled only there"; "hale can't compile the
+\`prod(…)\` accumulator yet"), where the build refused it after a
+passing check (GH #1942). A running product, or a sum of two fields,
+is kept in a field the locus updates, and asserted on.
 
 Epoch boundaries:
 
@@ -5786,7 +6266,9 @@ narrowing's full reasoning and the rejected alternatives.
 `fail <expr>;` inside a fallible fn body:
 
 1. Evaluates `<expr>` to a value `v` (typed as the fn's
-   declared payload type E).
+   declared payload type E, or as a member of E when E is a
+   set type: the member's value is the set's, spec/types.md
+   § Set types).
 2. Exits the enclosing fallible fn body via the error path.
 3. The caller's `Expr::Call` sees the result as
    `FallibleErr(v)` — a tagged value the immediate caller's
@@ -5868,6 +6350,13 @@ today, not part of the rule:
 non-error value, that value is the expression's value
 (disposition is a no-op). If the result is `FallibleErr(p)`:
 
+`<expr>` is the fallible call itself (a fn's, a generic fn's, a
+method's, a stdlib path's) or a narrowing conversion. Anything else
+in that place — a field read of a record whose field holds a fallible
+call (`Box { v: f() }.v or 0`), an element, a name — has no failure
+of its own, and the `or` is a type error at it (GH #1966): the `or`
+goes on the call where it is written.
+
 - **`or raise`** — propagate the error one frame up the
   static call stack. Inside a fallible(E) fn, this writes `p`
   into the enclosing fn's error sret slot and exits via the
@@ -5875,7 +6364,21 @@ non-error value, that value is the expression's value
   clause then addresses the error in turn. The closure-
   violation channel is **not** entered. (An application may
   later promote a value error to a closure violation
-  explicitly, but no such syntax exists in v1.)
+  explicitly, but no such syntax exists in v1.) The payload
+  forwarded is the enclosing fn's error, so the call's error
+  type must be the one the fn declares or one it converts from
+  ("Converting a raised error", below): `std::os::getrandom(4)
+  or raise` in a `fallible(CryptoError)` fn, with nothing to
+  convert an `IoError` into a `CryptoError`, is refused at the
+  `or raise`, naming both types and the three ways forward (a
+  `@raise` conversion, a set holding the call's error, or `or
+  fail CryptoError { kind: err.kind, detail: err.detail }`,
+  below) (GH #1945: the check admitted it and the build refused
+  it in lowering's terms). A
+  stdlib error type spelled by its path (`std::crypto::CryptoError`,
+  `std::io::IoError`, `std::str::ParseError`, `std::index::IndexError`,
+  `std::form::hashmap::KeyError`, `std::form::ring_buffer::EmptyError`)
+  is the same type as its bare name, wherever either is written.
 - **`or <fallback>`** — binds `err` to `p` in scope and
   evaluates `<fallback>`. Its result is the expression's
   value. Type must match the success type. `<fallback>` may
@@ -5919,10 +6422,88 @@ non-error value, that value is the expression's value
   `src() or fail DstError { kind: err.kind }`. Same
   divergence rule: chain value type collapses to the inner
   success type. Typechecker rejects outside a fallible fn
-  body with a hint to use `or raise` or `or <fallback>`.
+  body with a hint to use `or raise` or `or <fallback>`. As
+  with `fail`, a member of a set error type is the set's: `or
+  fail err` hands a `ParseError` on in a `fallible(LoadError)`
+  fn, with `type LoadError = ParseError | IoError;`.
 
 Chains are right-associative: `a() or b() or raise` reduces
 the value to the success type level by level.
+
+### Converting a raised error
+
+An `or raise` (and the implicit `or raise` of a fallible
+handler, spec/types.md § "Disposition operators (`or`)") whose
+call fails with `P` inside a `fallible(E)` fn, `P` not `E`,
+converts the error into an `E` in one of two ways, tried in
+this order (GH #1951, F.50):
+
+1. **A set member (R2).** `E` is a set type holding `P`
+   (spec/types.md § Set types): the error becomes the set's
+   member, exactly as `fail p;` and `or fail err` make it. One
+   relation decides all four: `fail`, `or fail <expr>`, `or
+   raise` and a fallible handler's failure.
+2. **A conversion (R3).** One `@raise fn` from `P` to `E` is
+   declared: the raise is `or fail conv(err)`, so the caller's
+   handler sees the converted error and every field the
+   conversion copied.
+
+   ```hale
+   type StoreError { key: String; }
+   type ApiError { status: Int; detail: String; }
+
+   @raise fn api_from_store(e: StoreError) -> ApiError {
+       return ApiError { status: 404, detail: "no key " + e.key };
+   }
+
+   fn lookup(key: String) -> Int fallible(StoreError) {
+       if key == "missing" { fail StoreError { key: key }; }
+       return len(key);
+   }
+
+   fn get(key: String) -> Int fallible(ApiError) {
+       return lookup(key) or raise;
+   }
+   ```
+
+A `@raise fn` is a free fn of one parameter, not generic and
+not `fallible`, whose result type is not its parameter's; each
+other shape is refused at the fn. It runs on the error path of
+the raise, so `@raise` implies the effect assertion
+`@effects(none: {syscall, publish, spawn, block})`, held as
+every assertion is (spec/verification.md): it may allocate the
+error it returns and do nothing else with an effect. The
+conversion's call is not written, and every analysis of the fn
+that raises reads it as the call it is, the `or fail conv(err)`
+the raise stands for (GH #1982): its allocations count against
+the raising fn's `@budget(alloc_per_call = N)`, an effect class it
+reaches beyond the four (`time`, a program's own `effect` class)
+is one the raising fn reaches, with the conversion on the witness
+path (`get -> api_from_store`), and `@no_panic` judges the raise as
+the `or raise` it is written, a trap.
+
+Conversions are coherent:
+
+- **The orphan rule.** A `@raise fn` is declared in a seed that
+  declares `P` or `E`. A builtin type (`IoError`,
+  `ParseError`, `CryptoError`, …) belongs to no seed, so a
+  conversion from one is declared beside the type it converts
+  into. A conversion declared anywhere else is refused at the fn
+  ("`conv` converts `IoError` into `lib::ApiError`, and a
+  `@raise` fn is declared in the seed of one of its two types").
+- **In reach.** By the orphan rule every conversion from `P` to
+  `E` is in the seed of `P` or of `E`, so the conversions an `or
+  raise` sees are those two seeds'. Two of them for one pair are
+  refused at the `or raise`, naming both; either alone applies.
+- **No chaining.** A conversion applies once: a `P` that one
+  converts into `Q` and another from `Q` into `E` is not an `E`.
+  Nor does a conversion apply into a set by way of a member, or
+  to a member by way of the set.
+
+A set member is tried first: where `E` is a set holding `P`, a
+conversion from `P` to `E` is never called. Where neither
+applies, the `or raise` is refused as above, and the error is
+translated where it is raised, `or fail E { … }`.
 
 ### Process exit
 

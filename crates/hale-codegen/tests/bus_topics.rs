@@ -1,4 +1,4 @@
-//! The `bus_topics` integration-test binary: 23 test files of this area, kept
+//! The `bus_topics` integration-test binary: 26 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -23,6 +23,8 @@ mod binding_multi_peer;
 mod binding_stream_framing;
 #[path = "bus_udp_ingress.rs"]
 mod bus_udp_ingress;
+#[path = "bus_wire_type_set.rs"]
+mod bus_wire_type_set;
 #[path = "bindings_codec_clause.rs"]
 mod bindings_codec_clause;
 #[path = "bindings_transport_dissolve.rs"]

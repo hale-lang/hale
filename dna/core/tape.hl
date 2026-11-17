@@ -221,7 +221,7 @@ locus RecordedModel {
         b.string_field("turns", e.turns);
         b.bool_field("ok", e.ok);
         b.string_field("output", e.output);
-        if len(std::str::trim(e.tool_calls)) > 2 { b.field("tool_calls", e.tool_calls); }
+        if len(std::str::trim(e.tool_calls)) > 2 { b.raw_field("tool_calls", e.tool_calls); }
         b.string_field("refused", e.refused);
         b.int_field("tokens", e.tokens);
         b.int_field("cost_micros", e.cost_micros);

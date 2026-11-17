@@ -603,7 +603,42 @@ fn per_target_moves() {
 ///
 /// `api_positional_test` (2026-11-14) moves two of its codec's verdicts,
 /// as the other programs that call the api codec themselves do
-/// (`api_codec_call_test`, `api_decimal_field_test`, ...).
+/// (`api_codec_call_test`, `api_decimal_field_test`, ...), and
+/// `api_map_wrong_kind_test` (GH #1944) one of its wire maps' codecs.
+///
+/// `tail_value_returns_test` (GH #1940) is a new target: four fns hand a
+/// record or a String back through a tail `match`, `if` or block, whose
+/// tags the dump moves into the caller's arena as every returned value's.
+///
+/// `check_build_parity_shapes_test` (GH #1967, #1968, #1970) is a new
+/// target, the same shape: one tag of a value it hands back to its caller
+/// moves into the caller's arena; no leak site goes or appears.
+///
+/// `ends_with_own_fn_test` (GH #1995 S3) is a new target, the same
+/// shape: one tag moves into the caller's arena; no leak site goes or
+/// appears.
+///
+/// `bus_wire_type_set_test` (GH #1951 item 4) is a new target, the same
+/// shape: one tag of a value one of its fns hands back moves into the
+/// caller's arena; no leak site goes or appears.
+///
+/// `open_slices_test` (GH #1995 S1) is a new target, the same shape: one
+/// tag of a value its locus method hands back moves into the caller's
+/// arena; no leak site goes or appears.
+///
+/// `byte_literals_test` (GH #1995 S6) is a new target, the same shape:
+/// one tag of a value one of its fns hands back moves into the caller's
+/// arena; no leak site goes or appears.
+///
+/// `dna/api`'s habitat organizations list (organization_list.hl) adds
+/// three fns that free at return (`organization_name_ok`,
+/// `organizations_origin`, `with_organizations`): three more tags and six
+/// more sites reclaimed at return; no leak site goes or appears.
+///
+/// `string_len_test` (GH #1947) is a new target: two of its loops'
+/// temporaries go, each in a fn that frees at return (the check above
+/// holds every site that goes to that), and three tags of values its fns
+/// hand back move into the caller's arena; no leak site appears.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -618,17 +653,17 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/91-module-decls: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
-    "dna/api: 1 go, 0 appear, 1 move their reason; dump 549 tags, 1340 reclaim, 1 verdicts",
-    "dna/core: 0 go, 0 appear; dump 413 tags, 1048 reclaim, 0 verdicts",
-    "dna/host: 2 go, 0 appear; dump 604 tags, 1398 reclaim, 2 verdicts",
-    "dna/host/verb: 0 go, 0 appear; dump 604 tags, 1165 reclaim, 1453 verdicts",
+    "dna/api: 1 go, 0 appear, 1 move their reason; dump 552 tags, 1354 reclaim, 1 verdicts",
+    "dna/core: 0 go, 0 appear; dump 413 tags, 1052 reclaim, 0 verdicts",
+    "dna/host: 2 go, 0 appear; dump 604 tags, 1406 reclaim, 2 verdicts",
+    "dna/host/verb: 0 go, 0 appear; dump 604 tags, 1165 reclaim, 1461 verdicts",
     "dna/oidc: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
-    "dna/operations: 0 go, 0 appear; dump 503 tags, 1269 reclaim, 0 verdicts",
-    "dna/organism: 0 go, 0 appear; dump 425 tags, 1069 reclaim, 0 verdicts",
-    "dna/organization_runtime: 0 go, 0 appear; dump 503 tags, 1269 reclaim, 0 verdicts",
-    "dna/organization_source: 0 go, 0 appear; dump 413 tags, 1048 reclaim, 0 verdicts",
+    "dna/operations: 0 go, 0 appear; dump 503 tags, 1277 reclaim, 0 verdicts",
+    "dna/organism: 0 go, 0 appear; dump 425 tags, 1073 reclaim, 0 verdicts",
+    "dna/organization_runtime: 0 go, 0 appear; dump 503 tags, 1277 reclaim, 0 verdicts",
+    "dna/organization_source: 0 go, 0 appear; dump 413 tags, 1052 reclaim, 0 verdicts",
     "dna/reflexes: 0 go, 0 appear; dump 17 tags, 26 reclaim, 0 verdicts",
-    "dna/ui: 0 go, 0 appear; dump 415 tags, 1048 reclaim, 0 verdicts",
+    "dna/ui: 0 go, 0 appear; dump 415 tags, 1052 reclaim, 0 verdicts",
     "tests/hale/api_bearer_roles_test.hl: 0 go, 0 appear; dump 3 tags, 41 reclaim, 0 verdicts",
     "tests/hale/api_big_reply_test.hl: 0 go, 0 appear; dump 1 tags, 20 reclaim, 0 verdicts",
     "tests/hale/api_binding_test.hl: 0 go, 0 appear; dump 2 tags, 28 reclaim, 0 verdicts",
@@ -637,6 +672,7 @@ const PINNED: &[&str] = &[
     "tests/hale/api_decimal_field_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_encode_linear_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_json_value_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
+    "tests/hale/api_map_wrong_kind_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 1 verdicts",
     "tests/hale/api_patch_field_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/api_positional_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_roles_test.hl: 0 go, 0 appear; dump 4 tags, 42 reclaim, 0 verdicts",
@@ -644,10 +680,15 @@ const PINNED: &[&str] = &[
     "tests/hale/api_serve_test.hl: 0 go, 0 appear; dump 3 tags, 27 reclaim, 0 verdicts",
     "tests/hale/block_string_test.hl: 0 go, 0 appear; dump 1 tags, 1 reclaim, 0 verdicts",
     "tests/hale/block_tail_return_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/bus_wire_type_set_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/byte_literals_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/chains_tranche2_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/check_build_parity_shapes_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/codegen_gaps_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/contextual_keywords_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/crypto_sha256_stream_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 5 verdicts",
     "tests/hale/decorator_stack_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/ends_with_own_fn_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/factory_field_owner_test.hl: 2 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
     "tests/hale/float_ieee_compare_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/float_widening_surfaces_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
@@ -656,10 +697,14 @@ const PINNED: &[&str] = &[
     "tests/hale/json_escape_runs_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
     "tests/hale/let_block_scope_test.hl: 0 go, 0 appear; dump 5 tags, 0 reclaim, 0 verdicts",
     "tests/hale/local_place_value_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/open_slices_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/queued_self_cycle_test.hl: 0 go, 0 appear; dump 1 tags, 14 reclaim, 0 verdicts",
     "tests/hale/rest_fallback_test.hl: 0 go, 0 appear; dump 1 tags, 3 reclaim, 0 verdicts",
     "tests/hale/sigterm_drains_pinned_test.hl: 0 go, 0 appear; dump 1 tags, 21 reclaim, 0 verdicts",
     "tests/hale/sigterm_no_live_drain_reader_test.hl: 0 go, 0 appear; dump 3 tags, 13 reclaim, 0 verdicts",
     "tests/hale/sigterm_runs_drain_hook_test.hl: 0 go, 0 appear; dump 1 tags, 15 reclaim, 0 verdicts",
     "tests/hale/str_index_of_from_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/string_append_test.hl: 0 go, 0 appear; dump 3 tags, 0 reclaim, 6 verdicts",
+    "tests/hale/string_len_test.hl: 2 go, 0 appear; dump 3 tags, 0 reclaim, 2 verdicts",
+    "tests/hale/tail_value_returns_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
 ];

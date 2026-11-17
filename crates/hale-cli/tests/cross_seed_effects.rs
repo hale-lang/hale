@@ -39,8 +39,10 @@ fn fixture() -> PathBuf {
 }
 
 fn check() -> String {
+    // With the hot-path advisory asked for (GH #1948), so the filter
+    // below still meets the imported seed's hot-path findings.
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .arg("check")
+        .args(["check", "--warn-hot-path"])
         .arg(fixture())
         .output()
         .expect("invoke hale check");

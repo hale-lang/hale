@@ -82,6 +82,10 @@ Hale has two kinds of keyword (decision F.43):
   future-use words is contextual, and each section says where its
   words are keywords.
 
+The list is frozen: [`keywords.txt`](./keywords.txt) holds every hard
+and contextual keyword, a test holds it equal to the compiler's, and a
+change to it is an RFC (STABILITY.md § Keywords).
+
 Two declarations of a contextual word stay refused, because the name
 would collide with the syntax the word introduces at the use site:
 
@@ -388,6 +392,9 @@ trait           impl            async           await
 macro
 ```
 
+F.47 (proposed, awaiting confirmation) unreserves all five before
+1.0. Until it is confirmed and implemented they stay reserved.
+
 (`with` is no longer in this list — v1.x-VIOLATE recognizes it
 as a contextual keyword inside the `violate_stmt` production.
 `where` is no longer in this list either — Form K
@@ -637,6 +644,10 @@ annotations are not in v1.
 #   $   ?   ??  ?:
 ```
 
+One position gives `?` a meaning: after a record field's name, `x?: T`
+declares an optional field (spec/types.md § Optional fields, F.52).
+Anywhere else, after a type (`T?`) included, it is a parse error.
+
 ## Literals
 
 ### Integer literals
@@ -650,6 +661,20 @@ annotations are not in v1.
   is a decimal literal (`d`) or a quantity literal (any other name,
   the time units among them), below; a radix integer followed by a
   name is a parse error.
+- Byte: `b'/'`, `b'a'`, `b'\n'`, `b'\xff'` (GH #1995). One byte
+  between single quotes, after a `b`, is an integer literal of the
+  byte's value: `b'/'` is `47`, and it is an `Int` wherever an
+  integer literal is legal (an operand, an arm's pattern, a
+  constant, an array element). The body is one printable ASCII
+  character (`0x20..=0x7e`; `b'"'` needs no escape) or one escape:
+  `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0`, or `\xNN` for any
+  byte `0x00..=0xff` (the `b"..."` table, below, plus `\'`). The
+  lexer refuses, at the literal, an empty `b''`, a body of more
+  than one byte (`b'ab'`, `b'\n\t'`), a non-ASCII character
+  (`b'é'` is two bytes in UTF-8: write `\xNN`, or `b"é"` for a
+  `Bytes` of its encoding), a raw control character, an unknown
+  escape, and an unescaped quote (`b'''`). Outside a byte literal
+  `'` is not a token: there are no character literals.
 
 ### Float literals
 
@@ -719,8 +744,9 @@ annotations are not in v1.
   part of the value, as written, with no indentation stripped and
   the escapes still read (the DNA's own sources do this for short
   fixtures). Multi-line text that is itself a program, a query or a
-  document is a **block string** (below). There is no `r"..."` raw
-  form: the block string is the one raw string.
+  document is a **block string** (below); a short text whose
+  backslashes are its own (a regex, a Windows path) is a **raw
+  string** (below).
 - F-strings (v1.x-10): `f"hello {name}"` — interpolates Hale
   expressions inside `{...}`, each rendered via the same
   formatter `println` uses. `{{` and `}}` are literal braces.
@@ -780,6 +806,29 @@ annotations are not in v1.
   happens to also be a local is unusual, not illegal. `{{`
   anywhere in the literal suppresses it, since that spelling
   signals the author knows the syntax.
+
+### Raw strings
+
+A raw string (GH #1948, 2026-11-15) is `r` before the opening quote:
+`r"C:\temp\new"`, `r"^\d+\.\d+$"`. Nothing in it is an escape — a
+`\` is a backslash — and `{` is text, so it reads exactly as written.
+It ends at the first `"`. A text that holds a `"` puts one or more `#`
+between the `r` and the quote and closes with a `"` followed by as
+many: `r#"say "hi""#`, and `r##"a "# inside"##` for a body holding
+`"#`. This is Rust's spelling, also Python's `r"…"` for the
+no-`#` form.
+
+- The value is a `String`, the same token as a `"..."` literal
+  (`STRING_LIT`): it goes wherever a string literal does.
+- It may span lines; a line break inside it is part of the value, as
+  written, with no indentation stripped. Multi-line text that indents
+  with the code is a block string.
+- There is no `fr"` or `br"` form. A `r` followed by anything but `"`
+  or `#…"` is the identifier `r`.
+- A raw string nothing closes is a lex error that names the closing
+  quote it looks for.
+
+`hale fmt` keeps it as written, like every other token.
 
 ### Block strings
 
@@ -844,7 +893,8 @@ section listed `r"..."` and `"""..."""` aspirationally. A raw block
 answers the text it exists for: embedded Hale, SQL and JSON carry
 escapes of their own (`\n` inside a Hale string, `\"` inside JSON), so
 a block that processed escapes would double every backslash in them,
-and a raw `r"..."` on one line would still be one line. The fence is
+and a raw `r"..."` on one line would still be one line (it was added
+later, GH #1948, for the one-line case: a regex or a path). The fence is
 the string's own quote, so the literal reads as a string; its length
 grows instead of a `#` count (Rust's `r#"`), so a body holding the
 form itself needs no other punctuation; and the indentation is the
@@ -891,8 +941,8 @@ sum             prod            min             max
 length          empty
 print           println         eprint          eprintln
 to_string       len             abs
-starts_with     contains        check_closures
-Int             Float
+starts_with     contains        ends_with
+check_closures  Int             Float
 ```
 
 `Int(x)` (v1.x-11) is a built-in cast — explicit Float → Int
@@ -903,8 +953,12 @@ call. `Float(x)` is its widening twin — Int → Float via `sitofp`,
 Float arg the identity, other types reject. These two are the only
 casts; the remaining primitive-type names are types and nothing
 else. `to_string(x)`, `len(x)`, `abs(x)`, `min(a, b)`, `max(a, b)`,
-`starts_with(s, p)` and `contains(s, p)` are similarly bare-name
-builtins, as is `check_closures()` at statement position.
+`starts_with(s, p)`, `contains(s, p)` and `ends_with(s, p)` are
+similarly bare-name builtins, as is `check_closures()` at statement
+position. `ends_with` (GH #1995) answers only where the program
+declares no fn of that name: the name was free before it was a
+builtin, so a program's own `fn ends_with` keeps it, and it is not
+among the claimed names below.
 
 **A bare builtin call is the same call in either position.** In
 statement position the expression is evaluated and its value
@@ -1065,6 +1119,7 @@ lexer errors if encountered outside a string or comment:
 
 ```
 ` (outside time literal)    \   (vertical bar mid-token, not || or |=)
+' (outside a byte literal)
 ```
 
 (Backticks are reserved for time literals only; bare backslash
@@ -1094,6 +1149,7 @@ They attach to the declaration that follows.
 | `@sealed` | locus | this locus's `params` are readable only from inside it |
 | `@repo(T)` | locus | the locus is where `T`'s state lives; held to the method set and the state classes (spec/api.md § Repositories) |
 | `@idempotent` / `@not_idempotent` | fn | a `@repo` method's marker: repeating the write is, or is not, safe |
+| `@raise` | free fn | the conversion an `or raise` applies from the fn's one parameter's type to its result's; implies `@effects(none: {syscall, publish, spawn, block})` (spec/semantics.md § `or` disposition) |
 | `@secret` | fn param | **lint**: flags a value reaching a publish or log/file sink in the same body |
 | `@effects(publish: {…})` | fn | the allowed publish set |
 | `@effects(depends: {…})` | locus | complete set of subjects that may transitively reach any handler |

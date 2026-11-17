@@ -48,6 +48,24 @@ bus { publish "org.metrics" of type Int; }   // error: `Int` cannot be carried d
 
 Wrap scalar values in a single-field record (`type Metric { n: Int = 0; }`).
 
+A delivery is serialized value by value, and every value a record can hold crosses the wire, at any depth: scalars, enums with or without payloads, `String`, `Bytes`, nested records, `bounded` lists (of strings and records too), fixed arrays, tuples and `std::json::Value`. Only what no frame can hold is refused by `hale check` where the payload is first delivered or declared (`of type M`): a fn value, a locus handle, a view, or a type that contains itself (bound it with ids instead).
+
+```hale
+type Point { x: Int; label: String; }
+type Status = enum { Ok, Moved(Point), Tagged(String, Int) };
+type Snapshot {
+    names: bounded[String; 8];      // an i64 count, then each string
+    points: bounded[Point; 4];      // an i64 count, then each record
+    status: Status;                 // a u32 tag, then the variant's values
+    pair: (Int, String);            // as a record of its elements
+    meta: std::json::Value;         // its text
+}
+
+topic Snapshots { payload: Snapshot; }
+```
+
+The wire format is internal—Hale talks to Hale with it (the encodings are tabled in the spec's *Payload type* section); a foreign peer goes through a binding's `codec(...)`. A frame that lies (a list count past its capacity or below zero, an enum tag past its last variant, a length past the frame's end) is dropped by the transport reader and counted as `dropped_decode`. The raw paths keep their rule: a `zero_copy` binding or a `layout:` ring copies bytes as they are, so their payloads hold only fixed-size scalar fields. A native `shm_ring` binding carries struct payloads only, and a `layout:` ring hands its subscriber one record per call (no `Drain<T>` handler).
+
 ## Publishing & Subscribing (`bus { }`)
 
 Every locus declares its bus inputs and outputs inside a `bus { }` block:

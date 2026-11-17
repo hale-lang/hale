@@ -66,6 +66,27 @@ pub struct Import {
     /// an unresolvable import is about the string the author typed,
     /// so the caret belongs under it.
     pub path_span: Span,
+    /// GH #1951 item 6: the import list, `{ Name, Other as Mine }`
+    /// after the alias, in source order. Each listed name is bare in
+    /// the importing seed and re-exported through its alias (F.51).
+    /// Empty when the import has no list.
+    pub items: Vec<ImportItem>,
+}
+
+/// One entry of an import list: the imported seed's top-level `name`,
+/// bound in the importing seed as `rename` when given, else as `name`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportItem {
+    pub name: Ident,
+    pub rename: Option<Ident>,
+    pub span: Span,
+}
+
+impl ImportItem {
+    /// The name the importing seed spells it by.
+    pub fn local(&self) -> &Ident {
+        self.rename.as_ref().unwrap_or(&self.name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2685,7 +2706,53 @@ pub struct StructField {
     /// `name` (`{"db": "ok"}`), the element a record of the key and that
     /// one value (spec/api.md § Codecs).
     pub map_value: Option<Ident>,
+    /// GH #1951 item 3 (F.52): the field's part in a declared optional,
+    /// `x?: T` (spec/types.md § Optional fields).
+    pub optional: FieldOptional,
     pub span: Span,
+}
+
+/// How a record field takes part in a declared optional field (GH #1951
+/// item 3, F.52). Optionality is a property of a record field, never a
+/// type: `x?: T` declares `x` and a real `has_x: Bool` beside it, and
+/// `x?: T clearable` a `clear_x: Bool` as well, the presence pair and
+/// triple a record could always spell by hand (spec/api.md § Codecs). The
+/// parser synthesizes the flags as ordinary fields right after `x`, so
+/// every reader of a record's fields (the codecs, the description, the
+/// digest, protobuf, the bus wire) sees the hand-written shape; what the
+/// mark adds is that a write of `x` sets `has_x` (and clears `clear_x`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FieldOptional {
+    /// An ordinary field (a hand-written flag included).
+    #[default]
+    No,
+    /// `x?: T`, and `x?: T clearable` with `clearable`.
+    Declared { clearable: bool },
+    /// The `has_x` synthesized for `x?`.
+    Presence,
+    /// The `clear_x` synthesized for `x?: T clearable`.
+    Clear,
+}
+
+impl FieldOptional {
+    /// The flag field the parser synthesized for a declared optional.
+    pub fn is_synthesized(self) -> bool {
+        matches!(self, FieldOptional::Presence | FieldOptional::Clear)
+    }
+}
+
+/// The flags a write of the declared optional field `name` of `fields`
+/// sets and clears: its `has_<name>`, and its `clear_<name>` when it is
+/// `clearable`. `None` for any other field, a hand-written pair's
+/// included (writing its `x` leaves its `has_x` alone).
+pub fn optional_flags(fields: &[StructField], name: &str) -> Option<(String, Option<String>)> {
+    let f = fields.iter().find(|f| f.name.name == name)?;
+    match f.optional {
+        FieldOptional::Declared { clearable } => {
+            Some((format!("has_{name}"), clearable.then(|| format!("clear_{name}"))))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2702,6 +2769,14 @@ pub struct EnumVariant {
     /// step 1): the variant is named for its one field's type, which is
     /// the discriminant. A set is an enum whose every variant is one.
     pub member: bool,
+    /// GH #1951 item 5: the variant's metadata tag, the raw text of a
+    /// backtick string after its values, as a struct field's
+    /// ([`StructField::tag`]). The codecs read its `json:` key: a name
+    /// renames the variant on the JSON wire (``Sell `json:"sell"` ``) and
+    /// the option `other` makes it the enum's catch-all
+    /// (``Other(String) `json:",other"` ``, spec/api.md § Codecs). A set's
+    /// member has none.
+    pub tag: Option<String>,
 }
 
 impl TypeDecl {
@@ -3465,6 +3540,34 @@ pub struct MatchStmt {
     pub scrutinee: Expr,
     pub arms: Vec<MatchArm>,
     pub span: Span,
+    /// The spelling the match was parsed from (GH #1995 E3): a written
+    /// `match`, or one of the forms the parser desugars to a match
+    /// (`if let`, `let … else`, a pattern `let`). Everything downstream
+    /// sees an ordinary match; this says only which rules and words the
+    /// checker uses for it.
+    pub form: MatchForm,
+}
+
+/// What a [`MatchStmt`] was written as (GH #1995 E3). Every form but
+/// `Match` is a match of two arms or one, built by the parser:
+///
+/// * `IfLet` / `IfLetElse`: `if let P = e { A } [else { B }]` is
+///   `match e { P -> { A }, _ -> { B } }` (`{ }` with no `else`).
+/// * `LetElse`: `let P = e else { B };` binds `P`'s names after the
+///   statement: `let x = match e { P -> x, _ -> { B } };` (a tuple of
+///   the names for several, a statement match for none). The `else`
+///   block must leave (F.48's judgment), which the check holds it to.
+/// * `Let`: `let P = e;` with a pattern that is not a name or a tuple
+///   of names: the same, with no `_` arm, so a pattern that can fail to
+///   match is refused by exhaustiveness, worded "add `else { … }`".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MatchForm {
+    #[default]
+    Match,
+    IfLet,
+    IfLetElse,
+    LetElse,
+    Let,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3492,6 +3595,84 @@ pub enum Pattern {
         span: Span,
     },
     Tuple(Vec<Pattern>, Span),
+    /// GH #1995 E2: an or-pattern, `A | B | C`: two or more
+    /// alternatives, the arm matching when one of them does (tried left
+    /// to right). Only ever a match arm's whole pattern: the parser
+    /// refuses a `|` inside a tuple or a variant's values, so no
+    /// alternative is itself an `Or` and no consumer meets one nested.
+    /// Every alternative binds the same names at the same types (the
+    /// checker's rule).
+    Or(Vec<Pattern>, Span),
+}
+
+/// A string literal's text as written between its quotes: the escapes
+/// a reader needs (`\"`, `\\`, `\n`, `\t`, `\r`), everything else as is.
+fn quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+impl Pattern {
+    /// The alternatives an arm's pattern tries: an or-pattern's, or the
+    /// pattern alone.
+    pub fn alternatives(&self) -> &[Pattern] {
+        match self {
+            Pattern::Or(alts, _) => alts,
+            other => std::slice::from_ref(other),
+        }
+    }
+
+    /// The pattern as a diagnostic quotes it: its source spelling, near
+    /// enough (a string literal is re-escaped, a decimal keeps its
+    /// digits).
+    pub fn text(&self) -> String {
+        let list = |ps: &[Pattern], sep: &str| ps.iter().map(Pattern::text).collect::<Vec<_>>().join(sep);
+        match self {
+            Pattern::Literal(lit, _) => match lit {
+                Literal::Int(n) => n.to_string(),
+                Literal::Float(f) if f.fract() == 0.0 && f.is_finite() => format!("{f}.0"),
+                Literal::Float(f) => f.to_string(),
+                Literal::Decimal(d) => format!("{d}d"),
+                Literal::String(s) => format!("\"{}\"", quoted(s)),
+                Literal::Bool(b) => b.to_string(),
+                Literal::Nil => "nil".to_string(),
+                Literal::Time(t) => t.clone(),
+                Literal::Bytes(b) => format!("b\"{}\"", quoted(&String::from_utf8_lossy(b))),
+                Literal::Quantity { value, unit } => format!("{value}{unit}"),
+            },
+            Pattern::Wildcard(_) => "_".to_string(),
+            Pattern::Binding(id) => id.name.clone(),
+            Pattern::Constructor { path, args, .. } => {
+                let p = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                if args.is_empty() {
+                    p
+                } else {
+                    format!("{p}({})", list(args, ", "))
+                }
+            }
+            Pattern::Tuple(ps, _) => format!("({})", list(ps, ", ")),
+            Pattern::Or(ps, _) => list(ps, " | "),
+        }
+    }
+
+    /// Where the pattern is written.
+    pub fn span(&self) -> Span {
+        match self {
+            Pattern::Literal(_, s) | Pattern::Wildcard(s) | Pattern::Tuple(_, s) | Pattern::Or(_, s) => *s,
+            Pattern::Binding(id) => id.span,
+            Pattern::Constructor { span, .. } => *span,
+        }
+    }
 }
 
 /// Recovery primitives invokable from `on_failure` bodies.

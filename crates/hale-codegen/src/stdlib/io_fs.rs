@@ -109,7 +109,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::read_file: path must be String, got {:?}",
+                "std::io::fs::read_file: path must be String, got {}",
                 path_ty
             )));
         }
@@ -169,7 +169,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::read_bytes: path must be String, got {:?}",
+                "std::io::fs::read_bytes: path must be String, got {}",
                 path_ty
             )));
         }
@@ -235,7 +235,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "{}: path must be String, got {:?}",
+                "{}: path must be String, got {}",
                 c_fn_name, path_ty
             )));
         }
@@ -243,7 +243,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (content_val, content_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(content_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "{}: content must be String, got {:?}",
+                "{}: content must be String, got {}",
                 c_fn_name, content_ty
             )));
         }
@@ -314,7 +314,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::write_bytes: path must be String, got {:?}",
+                "std::io::fs::write_bytes: path must be String, got {}",
                 path_ty
             )));
         }
@@ -322,7 +322,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
         if b_ty != CodegenTy::Bytes {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::write_bytes: b must be Bytes, got {:?}",
+                "std::io::fs::write_bytes: b must be Bytes, got {}",
                 b_ty
             )));
         }
@@ -391,7 +391,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::file_size: path must be String, got {:?}",
+                "std::io::fs::file_size: path must be String, got {}",
                 path_ty
             )));
         }
@@ -439,7 +439,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::mkdir: path must be String, got {:?}",
+                "std::io::fs::mkdir: path must be String, got {}",
                 path_ty
             )));
         }
@@ -487,7 +487,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (src_val, src_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(src_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::rename: src must be String, got {:?}",
+                "std::io::fs::rename: src must be String, got {}",
                 src_ty
             )));
         }
@@ -495,7 +495,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (dst_val, dst_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(dst_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::rename: dst must be String, got {:?}",
+                "std::io::fs::rename: dst must be String, got {}",
                 dst_ty
             )));
         }
@@ -544,7 +544,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::unlink: path must be String, got {:?}",
+                "std::io::fs::unlink: path must be String, got {}",
                 path_ty
             )));
         }
@@ -592,7 +592,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (prefix_val, prefix_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(prefix_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::mktemp: prefix must be String, got {:?}",
+                "std::io::fs::mktemp: prefix must be String, got {}",
                 prefix_ty
             )));
         }
@@ -600,7 +600,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (suffix_val, suffix_ty) = self.lower_expr(&args[1], scope)?;
         if !matches!(suffix_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::mktemp: suffix must be String, got {:?}",
+                "std::io::fs::mktemp: suffix must be String, got {}",
                 suffix_ty
             )));
         }
@@ -700,7 +700,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::list_dir_count: path must be String, got {:?}",
+                "std::io::fs::list_dir_count: path must be String, got {}",
                 path_ty
             )));
         }
@@ -760,7 +760,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::list_dir_at: path must be String, got {:?}",
+                "std::io::fs::list_dir_at: path must be String, got {}",
                 path_ty
             )));
         }
@@ -768,7 +768,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (idx_val, idx_ty) = self.lower_expr(&args[1], scope)?;
         if idx_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::list_dir_at: index must be Int, got {:?}",
+                "std::io::fs::list_dir_at: index must be Int, got {}",
                 idx_ty
             )));
         }
@@ -830,7 +830,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::file_exists: path must be String, got {:?}",
+                "std::io::fs::file_exists: path must be String, got {}",
                 path_ty
             )));
         }
@@ -883,7 +883,7 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
         let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
-                "std::io::fs::extension: path must be String, got {:?}",
+                "std::io::fs::extension: path must be String, got {}",
                 path_ty
             )));
         }

@@ -250,7 +250,15 @@ fn hole_equipment(roles: String, contracts: String, kind: String) -> String {
             let n2 = std::str::index_of(rs, "\n");
             let role = rs[0..n2];
             rs = rs[(n2 + 1)..len(rs)];
-            if hole_role_position(role) == kind && !dna::word_in(role, out) {
+            // `dna::word_in(role, out)`, spelled with the readers that keep
+            // nothing, so the append extends `out` in place (GH #1947)
+            if hole_role_position(role) == kind
+                && !(len(role) > 0
+                        && (out == role
+                                || std::str::starts_with(out, role + " ")
+                                || std::str::ends_with(out, " " + role)
+                                || std::str::contains(out, " " + role + " ")))
+            {
                 out = out + (if len(out) > 0 { " " } else { "" }) + role;
             }
         }

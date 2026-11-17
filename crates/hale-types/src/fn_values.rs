@@ -549,7 +549,7 @@ impl Walk<'_> {
 fn pattern_names(p: &Pattern, out: &mut Vec<String>) {
     match p {
         Pattern::Binding(i) => out.push(i.name.clone()),
-        Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+        Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
             for a in args {
                 pattern_names(a, out);
             }

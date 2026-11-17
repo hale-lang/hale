@@ -181,7 +181,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             CodegenTy::Float => phi_v.into_float_value(),
             other => {
                 return Err(CodegenError::Unsupported(format!(
-                    "k_max requires param `phi` of type Float, got {:?}",
+                    "k_max requires param `phi` of type Float, got {}",
                     other
                 )));
             }
@@ -321,6 +321,22 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         value: BasicValueEnum<'ctx>,
         ty: &CodegenTy,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        // GH #1951: a returned bounded list is always copied into the
+        // caller's arena, its storage and its live pointer-shaped elements
+        // (an element already there is kept): a literal routed there whole
+        // may still hold elements this call's scratch made.
+        if matches!(ty, CodegenTy::Bounded(..)) {
+            let slot = self
+                .current_method_caller_arena
+                .expect("method scratch active implies caller-arena snapshot");
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let dest_arena = self
+                .builder
+                .build_load(ptr_t, slot, "method.caller_arena.load")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            return self.emit_return_value_deep_copy(value, ty, dest_arena);
+        }
         if !Self::ty_needs_self_field_deep_copy(ty) {
             // Same set of types that need cross-arena copy
             // for self-field stores. Scalars / views / loci
@@ -1251,7 +1267,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         let (cond_v, cond_ty) = self.lower_expr(&bc.cond, scope)?;
         if cond_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
-                "birth_check cond must be Bool, got {:?}",
+                "birth_check cond must be Bool, got {}",
                 cond_ty
             )));
         }

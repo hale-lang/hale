@@ -115,6 +115,9 @@ fn review_id_of(e: dna::Event) -> String {
 // applies receipt visibility to knowledge-derived free text.
 fn review_row(j: dna::Journal, id: String) -> ReviewRow {
     let mut r = ReviewRow { };
+    // the refusals grow in a local, stored once (GH #1947); a request
+    // rebuilds the row, and with it the list
+    let mut refusals = r.refusals;
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
@@ -166,6 +169,7 @@ fn review_row(j: dna::Journal, id: String) -> ReviewRow {
                     binding_class: std::json::find_string_field(b, "class"),
                     approvers: std::json::find_string_field(b, "approvers")
                 };
+                refusals = r.refusals;
             } else if len(r.id) > 0 {
                 if e.kind == "review.settled" {
                     r.state = "settled";
@@ -174,13 +178,14 @@ fn review_row(j: dna::Journal, id: String) -> ReviewRow {
                 }
                 if e.kind == "review.reasoned" { r.reasoned = e.body; r.has_reasoned = true; }
                 if e.kind == "review.refused" {
-                    r.refusals = r.refusals + e.body + "\n";
+                    refusals = refusals + e.body + "\n";
                     r.refusal_count = r.refusal_count + 1;
                 }
             }
         }
         i = i + 1;
     }
+    r.refusals = refusals;
     return r;
 }
 

@@ -10,14 +10,12 @@ type Check { name: String; status: Status; }
 
 type HealthQuery {
     verbose: Bool = false;
-    since: Time = `1970-01-01T00:00:00Z`;
-    has_since: Bool = false;
+    since?: Time;
 }
 
 type Health {
     checks: bounded[Check; 16] indexed_by name;
-    note: String = "";
-    has_note: Bool = false;
+    note?: String;
 }
 
 type Restart { name: String; }
@@ -36,9 +34,10 @@ api Ops requires: [operator] {
 | Pattern | Hale Declaration | Wire Representation & Behavior |
 |---|---|---|
 | **Field Default** | `verbose: Bool = false;` | Omitted from JSON Schema `required`. If omitted by the caller, the decoder substitutes the default value. Defaults may be literals, enums (`Scope::key`), or records, and may reference module constants/items. |
-| **Presence Pair** | `since: Time = ...;`<br>`has_since: Bool = false;` | Distinguishes "omitted or `null`" (`has_since == false`) from a provided value (`has_since == true`). `has_since` is never sent on the wire; when encoding, the field is omitted if `has_<field>` is `false`. |
+| **Optional Field** | `since?: Time;` | Declares `since` and its presence flag `has_since: Bool` (the presence pair, also spellable by hand). Distinguishes "omitted or `null`" (`has_since == false`) from a provided value (`has_since == true`). `has_since` is never sent on the wire; when encoding, the field is omitted if `has_<field>` is `false`. Writing `since` sets `has_since`. |
 | **Keyed Map** | `checks: bounded[Check; 16] indexed_by name;` | Stored in Hale as an ordered `bounded[Check; 16]` list, but encoded on the wire as a JSON object keyed by each element's `name` field (`{"db": {"status": "Up"}}`). |
 | **Enum** | `enum { Up, Degraded(String), Down }` | Unit variants encode as strings (`"Up"`). Payload variants encode as single-key objects (`{"Degraded": "cold"}`). |
+| **Wire Name / Catch-all** | ``Up `json:"up"` ``<br>``Other(String) `json:",other"` `` | A `json:` tag renames the variant on the wire (`"up"`, `{"degraded": …}`); the `other` variant takes any string no variant names, holding it (`Other(String)`) or not (a payload-free one). See [Wire names and the catch-all](api.md#wire-names-and-the-catch-all). |
 | **Error Class** | `@not_found NotFound(String)` | Maps `fallible(E)` enum variants to transport status codes (`404` / gRPC `NOT_FOUND`) and sets the `Hale-Error-Class` response header. |
 | **Surface Default Role** | `api Ops requires: [operator] { ... }` | Sets the default `requires` list for every row in the surface. Individual rows can override it (e.g., `requires: []` to allow any authenticated caller). Produces the exact same contract digest as spelling roles on each row. |
 
@@ -79,8 +78,7 @@ locus Probe {
     fn health(q: HealthQuery) -> Health {
         let mut h = snapshot(self.restarts);
         if q.has_since {
-            h.note = "changes since " + std::time::iso8601(q.since);
-            h.has_note = true;
+            h.note = "changes since " + std::time::iso8601(q.since);   // sets `has_note`
         }
         return h;
     }
@@ -170,7 +168,7 @@ caller: bearer ops; roles: operator
 
 ### Presence Pair & Timestamp Validation
 
-Sending different payloads to `POST /call/Probe::health` (with `Authorization: Bearer t-ops`) demonstrates how presence pairs and strict timestamp parsing behave:
+Sending different payloads to `POST /call/Probe::health` (with `Authorization: Bearer t-ops`) demonstrates how optional fields and strict timestamp parsing behave:
 
 ```text
 {}                                        200 {"checks":{"db":{"status":"Up"},"cache":{"status":{"Degraded":"cold"}}}}

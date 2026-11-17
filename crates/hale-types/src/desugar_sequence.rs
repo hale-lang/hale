@@ -9,6 +9,10 @@
 //!
 //! In order:
 //!
+//! 0. optional zeros: a declared optional field (`x?: T`) with no
+//!    default takes its type's zero as one
+//!    ([`crate::optional_fields::fill_optional_zeros`]), so a literal
+//!    that leaves it out builds it absent.
 //! 1. JSON parsers: `json_gen` synthesizes `__json_parse_<T>` and
 //!    rewrites `T::from_json` (per program), then `alias::T::from_json`
 //!    through the rename table (bundle-wide).
@@ -21,11 +25,22 @@
 //!    another file's).
 //! 3. unit returns: `-> ()` is "no return type" on every fn-shaped
 //!    declaration.
+//!    3b. tail returns: in a body with a declared return type, a trailing
+//!    `match`, `if` or block carries the value down to its leaves, each a
+//!    `return` (GH #1940, `hale_syntax::desugar::desugar_tail_returns`).
+//!    3c. text sources: `for part in std::str::split(s, sep)`, `lines(s)`
+//!    and `words(s)` become one `while` over a view of `s`
+//!    (GH #1995 S2, `hale_syntax::str_sources`).
 //! 4. construction aliases: a struct literal, variant path or
 //!    constructor pattern spelled with a type alias names the
 //!    declaration the alias chain ends at
 //!    ([`crate::mangle::resolve_construction_aliases`]), over the
 //!    whole bundle at once.
+//!    4a. enum names (RFC #1995 E1): `E::name(v)`, `E::parse(s)`,
+//!    `E::variants` and `E::index(v)` call the functions
+//!    [`hale_syntax::enum_names`] writes for `E` into the program that
+//!    declares it; a use they do not apply to stays as written, for the
+//!    checker to refuse with the reason.
 //!    4b. qualified bus subjects: `subscribe alias::Topic`,
 //!    `publish alias::Topic`, `alias::Topic <- v` and a `bindings`
 //!    entry name the single-segment topic the imported declaration
@@ -72,6 +87,10 @@ pub struct Sequence<'a> {
 /// unchanged, so a caller that cannot tell whether its program went
 /// through it (the test harness) may run it again.
 pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
+    // GH #1951 item 3 (F.52): an optional field with no default takes its
+    // type's zero as one, before the JSON parsers read the defaults
+    // (`optional_fields`).
+    crate::optional_fields::fill_optional_zeros(programs, bundled_stdlib().ok().as_slice());
     // Each program's parsers in their own parse space, past every file and
     // every other program's (`JSON_SYNTH_BASE`).
     hale_syntax::json_gen::generate_json_parsers_in(programs, seq.import_renames);
@@ -101,8 +120,17 @@ pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
 fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]) {
     for p in programs.iter_mut() {
         normalize_unit_return_annotations(&mut p.items);
+        // After the unit returns: a `-> ()` body returns nothing, so its
+        // last statement is no value.
+        hale_syntax::desugar::desugar_tail_returns(p);
+        // GH #1995 S2: a loop over a text source is one `while`.
+        hale_syntax::str_sources::desugar_str_sources(p);
     }
     crate::mangle::resolve_construction_aliases(programs, context, seq.import_renames);
+    // RFC #1995 E1: `E::name(v)`, `E::parse(s)`, `E::variants` and
+    // `E::index(v)` call the functions the pass writes for `E`, after the
+    // aliases, so `type C2 = Color; C2::name(c)` names `Color`'s.
+    hale_syntax::enum_names::generate_enum_names_in(programs, seq.import_renames);
     for p in programs.iter_mut() {
         crate::qualified_subjects::resolve_qualified_bus_subjects(p, seq.import_renames);
     }
