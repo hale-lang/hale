@@ -577,6 +577,11 @@ impl Walk<'_> {
                     self.pattern_bindings(a, parts.and_then(|ps| ps.get(i)), out);
                 }
             }
+            Pattern::Or(alts, _) => {
+                for a in alts {
+                    self.pattern_bindings(a, declared, out);
+                }
+            }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
     }

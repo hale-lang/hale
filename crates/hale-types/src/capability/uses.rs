@@ -1278,7 +1278,7 @@ fn pattern_bindings(p: &Pattern, out: &mut BTreeMap<String, Option<FnValue>>) {
         Pattern::Binding(id) => {
             out.insert(id.name.clone(), None);
         }
-        Pattern::Constructor { args: ps, .. } | Pattern::Tuple(ps, _) => {
+        Pattern::Constructor { args: ps, .. } | Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => {
             for p in ps {
                 pattern_bindings(p, out);
             }

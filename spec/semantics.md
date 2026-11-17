@@ -207,6 +207,65 @@ seconds. A Decimal literal takes the scrutinee's scale. The values in
 an enum constructor's pattern (`Fee::Flat(2.50d)`) are matched against
 the variant's declared types the same way.
 
+**Or-patterns** (GH #1995 E2). An arm's pattern may be two or more
+alternatives separated by `|`; the arm matches when one of them does:
+
+```hale
+type CtlError = enum { Invalid(String), NotFound(String), NotReady(Int) };
+
+fn problem(e: CtlError) -> String {
+    return match e {
+        CtlError::Invalid(p) | CtlError::NotFound(p) -> p,
+        CtlError::NotReady(h) -> f"not ready: {h}",
+    };
+}
+
+fn usage(verb: String) -> String {
+    return match verb {
+        "assign" | "unassign" -> verb + " <name>",
+        "close" -> "close <name>",
+        _ -> "unknown",
+    };
+}
+```
+
+- Every alternative binds the same names at the same types, since the
+  guard and the body read them whichever alternative matched. A name one
+  alternative binds and another does not, or binds at another type, is a
+  type error at the alternative (or its binding), naming the name and
+  both alternatives.
+- Alternatives are tried left to right. A guard covers the whole arm: it
+  is evaluated with the bindings of the alternative that matched, and
+  when it is false the next alternative that matches is tried with its
+  own bindings, before the next arm. The arm behaves exactly as its
+  alternatives written as consecutive arms with the same guard and body
+  would.
+- F.18 exhaustiveness counts each alternative of an unguarded arm as the
+  arm it could have been written as: `true | false` covers a `Bool`, and
+  enum variants covered through alternatives need no `_`.
+- `|` is top level only, as patterns are flat: inside a tuple pattern or
+  a variant's values a pattern is one pattern, and a `|` there
+  (`E::A(1 | 2)`) is a parse error; write `E::A(1) | E::A(2)`.
+- An alternative an earlier unguarded arm, or an earlier alternative of
+  the same arm, already covers is never tried, and the check warns at it
+  ("the alternative … is never tried"). (A guarded arm that binds names
+  does not make its own later alternatives redundant, since the guard is
+  tried again with theirs.)
+- A pattern is not an expression, so the `|` between alternatives is
+  never the bitwise operator; the guard and the body are expressions,
+  where `x | y` is.
+
+The body is lowered once: each alternative's test branches to the arm's
+one guard or body block, its bindings merged there.
+
+**Matching strings.** A `String` scrutinee matches string-literal
+patterns by value (`"assign" | "unassign" -> …`). A ladder of three or
+more `if` tests comparing one String place with literals, chained with
+`else if` or as consecutive `if` statements, is the same decision, and
+`hale check --warn-string-match` (and `hale verify`) warns at its first
+test with the `match` it reads as. The advisory is off by default, as
+the hot-path allocation advisory is.
+
 **Scrutinee-less form.** `match { cond -> body, else -> body }`
 omits the scrutinee and tests guards directly:
 

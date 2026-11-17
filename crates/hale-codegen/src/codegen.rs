@@ -22575,6 +22575,454 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// cond-branches to body (true) or next-arm (false). The
     /// binding is visible to the guard expression — that's the
     /// whole point.
+    /// Lower one pattern's test against the scrutinee (GH #1995 E2: an
+    /// arm's whole pattern, or one alternative of an or-pattern): branch
+    /// to `on_match` when it matches and to `on_fail` when it does not,
+    /// pushing the names it binds, each with its value and type, onto
+    /// `bindings`. The values are computed before the branch, so each
+    /// dominates `on_match`. `i` is the arm's index, for value names.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_arm_pattern_test(
+        &mut self,
+        pat: &Pattern,
+        i: usize,
+        scrutinee_val: BasicValueEnum<'ctx>,
+        scrutinee_ty: &CodegenTy,
+        on_match: inkwell::basic_block::BasicBlock<'ctx>,
+        on_fail: inkwell::basic_block::BasicBlock<'ctx>,
+        bindings: &mut Vec<(String, BasicValueEnum<'ctx>, CodegenTy)>,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        match pat {
+            // the parser makes an or-pattern only of a whole arm, and
+            // `lower_or_pattern_test` tests its alternatives
+            Pattern::Or(..) => {
+                return Err(CodegenError::Unsupported(
+                    "an or-pattern is a whole match arm's pattern, never one inside another".into(),
+                ));
+            }
+            Pattern::Wildcard(_) => {
+                self.builder
+                    .build_unconditional_branch(on_match)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            Pattern::Binding(ident) => {
+                bindings.push((
+                    ident.name.clone(),
+                    scrutinee_val,
+                    scrutinee_ty.clone(),
+                ));
+                self.builder
+                    .build_unconditional_branch(on_match)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            Pattern::Literal(lit, span) => {
+                let (lit_val, lit_ty) = self.lower_pattern_literal(lit, *span, &scrutinee_ty, scope)?;
+                if lit_ty != *scrutinee_ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "match arm pattern type {} doesn't match \
+                         scrutinee type {}",
+                        lit_ty, scrutinee_ty
+                    )));
+                }
+                let cond = self.lower_match_eq_cmp(
+                    scrutinee_val,
+                    lit_val,
+                    &lit_ty,
+                    &format!("match.arm{}.cmp", i),
+                )?;
+                self.builder
+                    .build_conditional_branch(cond, on_match, on_fail)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            Pattern::Tuple(sub_patterns, _) => {
+                // m35: destructure scrutinee as a tuple, then
+                // apply each sub-pattern. v0 supports flat
+                // sub-patterns: Wildcard / Binding / Literal.
+                // Nested tuple patterns aren't needed for the
+                // shapes the language exposes today.
+                let elem_tys = match &scrutinee_ty {
+                    CodegenTy::Tuple(ts) => ts.clone(),
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "tuple pattern against non-tuple \
+                             scrutinee {}",
+                            other
+                        )));
+                    }
+                };
+                if elem_tys.len() != sub_patterns.len() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "tuple pattern arity {} != scrutinee tuple \
+                         arity {}",
+                        sub_patterns.len(),
+                        elem_tys.len()
+                    )));
+                }
+                let storage_ty = self.llvm_tuple_storage_type(&elem_tys);
+                let i32_t = self.context.i32_type();
+                let scrut_ptr = scrutinee_val.into_pointer_value();
+                let bool_t = self.context.bool_type();
+                let mut acc_cond: inkwell::values::IntValue<'ctx> =
+                    bool_t.const_int(1, false);
+                for (j, sub) in sub_patterns.iter().enumerate() {
+                    let slot = unsafe {
+                        self.builder
+                            .build_gep(
+                                storage_ty,
+                                scrut_ptr,
+                                &[
+                                    i32_t.const_int(0, false),
+                                    i32_t.const_int(j as u64, false),
+                                ],
+                                &format!("match.arm{}.tup.{}.ptr", i, j),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?
+                    };
+                    let elem_llvm = self.llvm_basic_type(&elem_tys[j]);
+                    let elem_val = self
+                        .builder
+                        .build_load(
+                            elem_llvm,
+                            slot,
+                            &format!("match.arm{}.tup.{}", i, j),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    match sub {
+                        Pattern::Wildcard(_) => {}
+                        Pattern::Binding(ident) => {
+                            bindings.push((
+                                ident.name.clone(),
+                                elem_val,
+                                elem_tys[j].clone(),
+                            ));
+                        }
+                        Pattern::Literal(lit, span) => {
+                            let (lit_val, lit_ty) =
+                                self.lower_pattern_literal(lit, *span, &elem_tys[j], scope)?;
+                            if lit_ty != elem_tys[j] {
+                                return Err(CodegenError::Unsupported(
+                                    format!(
+                                        "tuple sub-pattern at index {} \
+                                         type {} doesn't match field \
+                                         type {}",
+                                        j, lit_ty, elem_tys[j]
+                                    ),
+                                ));
+                            }
+                            let sub_cond = self.lower_match_eq_cmp(
+                                elem_val,
+                                lit_val,
+                                &lit_ty,
+                                &format!(
+                                    "match.arm{}.tup.{}.cmp",
+                                    i, j
+                                ),
+                            )?;
+                            acc_cond = self
+                                .builder
+                                .build_and(
+                                    acc_cond,
+                                    sub_cond,
+                                    &format!(
+                                        "match.arm{}.tup.{}.acc",
+                                        i, j
+                                    ),
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                        }
+                        Pattern::Tuple(_, _)
+                        | Pattern::Constructor { .. }
+                        | Pattern::Or(..) => {
+                            return Err(CodegenError::Unsupported(
+                                "nested tuple / constructor sub-pattern \
+                                 not yet lowered"
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+                self.builder
+                    .build_conditional_branch(acc_cond, on_match, on_fail)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            Pattern::Constructor { path, args, .. } => {
+                // m47 + payloads: enum constructor pattern.
+                // Path must be `EnumName::VariantName`. Compare
+                // the scrutinee's tag to the variant's tag; if
+                // the variant has a payload AND the pattern
+                // carries args (Wildcard or Binding sub-
+                // patterns), bind each payload field to its
+                // local name. v0.1 sub-patterns are
+                // Wildcard / Binding only — nested literal
+                // / tuple / further constructor sub-patterns
+                // aren't lowered (parser doesn't even produce
+                // them with the current grammar).
+                // GH #534: an importer's `alias::Enum::Variant`
+                // resolves its first two segments through the
+                // per-build rename table.
+                // GH #1417 (R2a): so does a stdlib enum's public path,
+                // `std::api::Outcome::Refusal(…)`.
+                let aliased: Option<String> = if path.segments.len() >= 3 {
+                    let head: Vec<&str> = path.segments
+                        [..path.segments.len() - 1]
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect();
+                    self.mangled_for_path(&head)
+                        .filter(|m| self.user_enums.contains_key(m))
+                } else {
+                    None
+                };
+                // GH #1530 step 1: a set's member is matched by its
+                // type's name alone, against the set it is a member of.
+                let set_member: Option<String> = match (&scrutinee_ty, path.segments.len()) {
+                    (CodegenTy::Enum(n), 1) if self.user_enums.get(n).is_some_and(|i| i.set) => Some(n.clone()),
+                    _ => None,
+                };
+                if path.segments.len() != 2 && aliased.is_none() && set_member.is_none() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "constructor pattern path must be \
+                         `Enum::Variant` (got {} segments)",
+                        path.segments.len()
+                    )));
+                }
+                let enum_name = aliased
+                    .clone()
+                    .or_else(|| set_member.clone())
+                    .unwrap_or_else(|| path.segments[0].name.clone());
+                let variant_name = &path.segments[path.segments.len() - 1].name;
+                let info = self
+                    .user_enums
+                    .get(&enum_name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "constructor pattern: unknown enum `{}`",
+                            enum_name
+                        ))
+                    })?;
+                let variant_idx = info
+                    .variants
+                    .iter()
+                    .position(|v| v.name == *variant_name)
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "enum `{}` has no variant `{}`",
+                            enum_name, variant_name
+                        ))
+                    })?;
+                if !matches!(scrutinee_ty, CodegenTy::Enum(ref n) if n == &enum_name)
+                {
+                    return Err(CodegenError::Unsupported(format!(
+                        "constructor pattern `{}::{}` against \
+                         scrutinee of type {}",
+                        enum_name, variant_name, scrutinee_ty
+                    )));
+                }
+                let variant = &info.variants[variant_idx];
+                if !args.is_empty() && args.len() != variant.field_tys.len()
+                {
+                    return Err(CodegenError::Unsupported(format!(
+                        "constructor pattern `{}::{}` has {} arg(s); \
+                         variant declares {}",
+                        enum_name,
+                        variant_name,
+                        args.len(),
+                        variant.field_tys.len()
+                    )));
+                }
+                let i32_t = self.context.i32_type();
+                let tag_val = i32_t.const_int(variant_idx as u64, false);
+                // For has-payload enums the scrutinee value is
+                // a pointer; load the tag through it. For
+                // pure no-payload enums it's an i32 directly.
+                let actual_tag: inkwell::values::IntValue<'ctx> = if info
+                    .has_payload
+                {
+                    let enum_ptr = scrutinee_val.into_pointer_value();
+                    self.load_enum_tag(&info, enum_ptr)?
+                } else {
+                    scrutinee_val.into_int_value()
+                };
+                let cond = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        actual_tag,
+                        tag_val,
+                        &format!(
+                            "match.arm{}.enum.{}.cmp",
+                            i, variant_name
+                        ),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // If pattern carries arg sub-patterns, load
+                // payload fields. Wildcard skips, Binding
+                // pushes a binding, Literal AND-extends the
+                // tag-eq cond with a field-vs-literal compare
+                // (so `Event::Tick(0) -> ...` only matches
+                // when the payload's first field equals 0).
+                // Other sub-pattern forms (Tuple / nested
+                // Constructor) aren't lowered at v0.1.
+                let mut acc_cond = cond;
+                if !args.is_empty() {
+                    let enum_ptr = scrutinee_val.into_pointer_value();
+                    let fields = self
+                        .load_enum_payload_fields(&info, enum_ptr, variant_idx)?;
+                    for (j, sub) in args.iter().enumerate() {
+                        match sub {
+                            Pattern::Wildcard(_) => {}
+                            Pattern::Binding(ident) => {
+                                let (val, ty) = fields[j].clone();
+                                bindings.push((ident.name.clone(), val, ty));
+                            }
+                            Pattern::Literal(lit, span) => {
+                                let (lit_val, lit_ty) =
+                                    self.lower_pattern_literal(lit, *span, &fields[j].1, scope)?;
+                                let (field_val, field_ty) = fields[j].clone();
+                                if lit_ty != field_ty {
+                                    return Err(CodegenError::Unsupported(
+                                        format!(
+                                            "constructor pattern arg {} \
+                                             literal type {} doesn't \
+                                             match payload field type {}",
+                                            j, lit_ty, field_ty
+                                        ),
+                                    ));
+                                }
+                                let sub_cond = self.lower_match_eq_cmp(
+                                    field_val,
+                                    lit_val,
+                                    &field_ty,
+                                    &format!(
+                                        "match.arm{}.enum.{}.field{}.cmp",
+                                        i, variant_name, j
+                                    ),
+                                )?;
+                                acc_cond = self
+                                    .builder
+                                    .build_and(
+                                        acc_cond,
+                                        sub_cond,
+                                        &format!(
+                                            "match.arm{}.enum.{}.acc",
+                                            i, variant_name
+                                        ),
+                                    )
+                                    .map_err(|e| {
+                                        CodegenError::LlvmEmit(e.to_string())
+                                    })?;
+                            }
+                            _ => {
+                                return Err(CodegenError::Unsupported(
+                                    "constructor pattern arg must be a \
+                                     binding, `_`, or literal at v0.1"
+                                        .into(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                self.builder
+                    .build_conditional_branch(acc_cond, on_match, on_fail)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// GH #1995 E2: an or-pattern's test. Each alternative is tested in
+    /// turn (`lower_arm_pattern_test`), a failed one falling to the next
+    /// and the last to `on_fail`; each that matches lands in its own
+    /// block, which jumps to `on_match`, the arm's one guard or body
+    /// block. There a phi per bound name merges the alternatives' values
+    /// (the checker holds every alternative to the same names at the same
+    /// types). When the arm is guarded and an alternative follows, the
+    /// guard is retried with the next alternative's bindings, as each
+    /// alternative written as its own arm would be: the second value
+    /// returned is the phi of which alternative matched and the block
+    /// each one resumes at.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
+    fn lower_or_pattern_test(
+        &mut self,
+        alts: &[Pattern],
+        i: usize,
+        scrutinee_val: BasicValueEnum<'ctx>,
+        scrutinee_ty: &CodegenTy,
+        on_match: inkwell::basic_block::BasicBlock<'ctx>,
+        on_fail: inkwell::basic_block::BasicBlock<'ctx>,
+        guarded: bool,
+        bindings: &mut Vec<(String, BasicValueEnum<'ctx>, CodegenTy)>,
+        scope: &Scope<'ctx>,
+    ) -> Result<
+        Option<(inkwell::values::IntValue<'ctx>, Vec<inkwell::basic_block::BasicBlock<'ctx>>)>,
+        CodegenError,
+    > {
+        let func = self.current_fn.expect("match outside function");
+        let n = alts.len();
+        // the test block of each alternative after the first, and the
+        // block each alternative lands in when it matches
+        let tests: Vec<_> = (1..n)
+            .map(|k| self.context.append_basic_block(func, &format!("match.arm{i}.alt{k}")))
+            .collect();
+        let oks: Vec<_> = (0..n)
+            .map(|k| self.context.append_basic_block(func, &format!("match.arm{i}.alt{k}.ok")))
+            .collect();
+        let mut per_alt: Vec<Vec<(String, BasicValueEnum<'ctx>, CodegenTy)>> = Vec::with_capacity(n);
+        for (k, alt) in alts.iter().enumerate() {
+            if k > 0 {
+                self.builder.position_at_end(tests[k - 1]);
+            }
+            let fail = if k + 1 < n { tests[k] } else { on_fail };
+            let mut b = Vec::new();
+            self.lower_arm_pattern_test(alt, i, scrutinee_val, scrutinee_ty, oks[k], fail, &mut b, scope)?;
+            self.builder.position_at_end(oks[k]);
+            self.builder
+                .build_unconditional_branch(on_match)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            per_alt.push(b);
+        }
+        self.builder.position_at_end(on_match);
+        for (name, _, ty) in &per_alt[0] {
+            let phi = self
+                .builder
+                .build_phi(self.llvm_basic_type(ty), &format!("match.arm{i}.{name}"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            for (k, b) in per_alt.iter().enumerate() {
+                let Some((_, v, t)) = b.iter().find(|(nm, ..)| nm == name) else {
+                    return Err(CodegenError::Unsupported(format!(
+                        "an alternative of an or-pattern does not bind `{name}`, which the first binds"
+                    )));
+                };
+                if t != ty {
+                    return Err(CodegenError::Unsupported(format!(
+                        "an or-pattern binds `{name}` as {ty} in one alternative and as {t} in another"
+                    )));
+                }
+                phi.add_incoming(&[(v, oks[k])]);
+            }
+            bindings.push((name.clone(), phi.as_basic_value(), ty.clone()));
+        }
+        if !guarded {
+            return Ok(None);
+        }
+        let i32_t = self.context.i32_type();
+        let which = self
+            .builder
+            .build_phi(i32_t, &format!("match.arm{i}.alt"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        for (k, ok) in oks.iter().enumerate() {
+            which.add_incoming(&[(&i32_t.const_int(k as u64, false), *ok)]);
+        }
+        Ok(Some((which.as_basic_value().into_int_value(), tests)))
+    }
+
     fn lower_match_stmt(
         &mut self,
         m: &MatchStmt,
@@ -22645,338 +23093,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let mut bindings: Vec<(String, BasicValueEnum<'ctx>, CodegenTy)> =
                 Vec::new();
 
-            match &arm.pattern {
-                Pattern::Wildcard(_) => {
-                    self.builder
-                        .build_unconditional_branch(pattern_target)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                Pattern::Binding(ident) => {
-                    bindings.push((
-                        ident.name.clone(),
+            // GH #1995 E2: an or-pattern tries its alternatives in turn,
+            // each matching one jumping to the arm's one guard / body
+            // block, with its bindings merged there by a phi per name.
+            let retry = match &arm.pattern {
+                Pattern::Or(alts, _) => self.lower_or_pattern_test(
+                    alts,
+                    i,
+                    scrutinee_val,
+                    &scrutinee_ty,
+                    pattern_target,
+                    next_bb,
+                    has_guard,
+                    &mut bindings,
+                    scope,
+                )?,
+                pat => {
+                    self.lower_arm_pattern_test(
+                        pat,
+                        i,
                         scrutinee_val,
-                        scrutinee_ty.clone(),
-                    ));
-                    self.builder
-                        .build_unconditional_branch(pattern_target)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                Pattern::Literal(lit, span) => {
-                    let (lit_val, lit_ty) = self.lower_pattern_literal(lit, *span, &scrutinee_ty, scope)?;
-                    if lit_ty != scrutinee_ty {
-                        return Err(CodegenError::Unsupported(format!(
-                            "match arm pattern type {} doesn't match \
-                             scrutinee type {}",
-                            lit_ty, scrutinee_ty
-                        )));
-                    }
-                    let cond = self.lower_match_eq_cmp(
-                        scrutinee_val,
-                        lit_val,
-                        &lit_ty,
-                        &format!("match.arm{}.cmp", i),
+                        &scrutinee_ty,
+                        pattern_target,
+                        next_bb,
+                        &mut bindings,
+                        scope,
                     )?;
-                    self.builder
-                        .build_conditional_branch(cond, pattern_target, next_bb)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    None
                 }
-                Pattern::Tuple(sub_patterns, _) => {
-                    // m35: destructure scrutinee as a tuple, then
-                    // apply each sub-pattern. v0 supports flat
-                    // sub-patterns: Wildcard / Binding / Literal.
-                    // Nested tuple patterns aren't needed for the
-                    // shapes the language exposes today.
-                    let elem_tys = match &scrutinee_ty {
-                        CodegenTy::Tuple(ts) => ts.clone(),
-                        other => {
-                            return Err(CodegenError::Unsupported(format!(
-                                "tuple pattern against non-tuple \
-                                 scrutinee {}",
-                                other
-                            )));
-                        }
-                    };
-                    if elem_tys.len() != sub_patterns.len() {
-                        return Err(CodegenError::Unsupported(format!(
-                            "tuple pattern arity {} != scrutinee tuple \
-                             arity {}",
-                            sub_patterns.len(),
-                            elem_tys.len()
-                        )));
-                    }
-                    let storage_ty = self.llvm_tuple_storage_type(&elem_tys);
-                    let i32_t = self.context.i32_type();
-                    let scrut_ptr = scrutinee_val.into_pointer_value();
-                    let bool_t = self.context.bool_type();
-                    let mut acc_cond: inkwell::values::IntValue<'ctx> =
-                        bool_t.const_int(1, false);
-                    for (j, sub) in sub_patterns.iter().enumerate() {
-                        let slot = unsafe {
-                            self.builder
-                                .build_gep(
-                                    storage_ty,
-                                    scrut_ptr,
-                                    &[
-                                        i32_t.const_int(0, false),
-                                        i32_t.const_int(j as u64, false),
-                                    ],
-                                    &format!("match.arm{}.tup.{}.ptr", i, j),
-                                )
-                                .map_err(|e| {
-                                    CodegenError::LlvmEmit(e.to_string())
-                                })?
-                        };
-                        let elem_llvm = self.llvm_basic_type(&elem_tys[j]);
-                        let elem_val = self
-                            .builder
-                            .build_load(
-                                elem_llvm,
-                                slot,
-                                &format!("match.arm{}.tup.{}", i, j),
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        match sub {
-                            Pattern::Wildcard(_) => {}
-                            Pattern::Binding(ident) => {
-                                bindings.push((
-                                    ident.name.clone(),
-                                    elem_val,
-                                    elem_tys[j].clone(),
-                                ));
-                            }
-                            Pattern::Literal(lit, span) => {
-                                let (lit_val, lit_ty) =
-                                    self.lower_pattern_literal(lit, *span, &elem_tys[j], scope)?;
-                                if lit_ty != elem_tys[j] {
-                                    return Err(CodegenError::Unsupported(
-                                        format!(
-                                            "tuple sub-pattern at index {} \
-                                             type {} doesn't match field \
-                                             type {}",
-                                            j, lit_ty, elem_tys[j]
-                                        ),
-                                    ));
-                                }
-                                let sub_cond = self.lower_match_eq_cmp(
-                                    elem_val,
-                                    lit_val,
-                                    &lit_ty,
-                                    &format!(
-                                        "match.arm{}.tup.{}.cmp",
-                                        i, j
-                                    ),
-                                )?;
-                                acc_cond = self
-                                    .builder
-                                    .build_and(
-                                        acc_cond,
-                                        sub_cond,
-                                        &format!(
-                                            "match.arm{}.tup.{}.acc",
-                                            i, j
-                                        ),
-                                    )
-                                    .map_err(|e| {
-                                        CodegenError::LlvmEmit(e.to_string())
-                                    })?;
-                            }
-                            Pattern::Tuple(_, _)
-                            | Pattern::Constructor { .. } => {
-                                return Err(CodegenError::Unsupported(
-                                    "nested tuple / constructor sub-pattern \
-                                     not yet lowered"
-                                        .into(),
-                                ));
-                            }
-                        }
-                    }
-                    self.builder
-                        .build_conditional_branch(acc_cond, pattern_target, next_bb)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-                Pattern::Constructor { path, args, .. } => {
-                    // m47 + payloads: enum constructor pattern.
-                    // Path must be `EnumName::VariantName`. Compare
-                    // the scrutinee's tag to the variant's tag; if
-                    // the variant has a payload AND the pattern
-                    // carries args (Wildcard or Binding sub-
-                    // patterns), bind each payload field to its
-                    // local name. v0.1 sub-patterns are
-                    // Wildcard / Binding only — nested literal
-                    // / tuple / further constructor sub-patterns
-                    // aren't lowered (parser doesn't even produce
-                    // them with the current grammar).
-                    // GH #534: an importer's `alias::Enum::Variant`
-                    // resolves its first two segments through the
-                    // per-build rename table.
-                    // GH #1417 (R2a): so does a stdlib enum's public path,
-                    // `std::api::Outcome::Refusal(…)`.
-                    let aliased: Option<String> = if path.segments.len() >= 3 {
-                        let head: Vec<&str> = path.segments
-                            [..path.segments.len() - 1]
-                            .iter()
-                            .map(|s| s.name.as_str())
-                            .collect();
-                        self.mangled_for_path(&head)
-                            .filter(|m| self.user_enums.contains_key(m))
-                    } else {
-                        None
-                    };
-                    // GH #1530 step 1: a set's member is matched by its
-                    // type's name alone, against the set it is a member of.
-                    let set_member: Option<String> = match (&scrutinee_ty, path.segments.len()) {
-                        (CodegenTy::Enum(n), 1) if self.user_enums.get(n).is_some_and(|i| i.set) => Some(n.clone()),
-                        _ => None,
-                    };
-                    if path.segments.len() != 2 && aliased.is_none() && set_member.is_none() {
-                        return Err(CodegenError::Unsupported(format!(
-                            "constructor pattern path must be \
-                             `Enum::Variant` (got {} segments)",
-                            path.segments.len()
-                        )));
-                    }
-                    let enum_name = aliased
-                        .clone()
-                        .or_else(|| set_member.clone())
-                        .unwrap_or_else(|| path.segments[0].name.clone());
-                    let variant_name = &path.segments[path.segments.len() - 1].name;
-                    let info = self
-                        .user_enums
-                        .get(&enum_name)
-                        .cloned()
-                        .ok_or_else(|| {
-                            CodegenError::Unsupported(format!(
-                                "constructor pattern: unknown enum `{}`",
-                                enum_name
-                            ))
-                        })?;
-                    let variant_idx = info
-                        .variants
-                        .iter()
-                        .position(|v| v.name == *variant_name)
-                        .ok_or_else(|| {
-                            CodegenError::Unsupported(format!(
-                                "enum `{}` has no variant `{}`",
-                                enum_name, variant_name
-                            ))
-                        })?;
-                    if !matches!(scrutinee_ty, CodegenTy::Enum(ref n) if n == &enum_name)
-                    {
-                        return Err(CodegenError::Unsupported(format!(
-                            "constructor pattern `{}::{}` against \
-                             scrutinee of type {}",
-                            enum_name, variant_name, scrutinee_ty
-                        )));
-                    }
-                    let variant = &info.variants[variant_idx];
-                    if !args.is_empty() && args.len() != variant.field_tys.len()
-                    {
-                        return Err(CodegenError::Unsupported(format!(
-                            "constructor pattern `{}::{}` has {} arg(s); \
-                             variant declares {}",
-                            enum_name,
-                            variant_name,
-                            args.len(),
-                            variant.field_tys.len()
-                        )));
-                    }
-                    let i32_t = self.context.i32_type();
-                    let tag_val = i32_t.const_int(variant_idx as u64, false);
-                    // For has-payload enums the scrutinee value is
-                    // a pointer; load the tag through it. For
-                    // pure no-payload enums it's an i32 directly.
-                    let actual_tag: inkwell::values::IntValue<'ctx> = if info
-                        .has_payload
-                    {
-                        let enum_ptr = scrutinee_val.into_pointer_value();
-                        self.load_enum_tag(&info, enum_ptr)?
-                    } else {
-                        scrutinee_val.into_int_value()
-                    };
-                    let cond = self
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::EQ,
-                            actual_tag,
-                            tag_val,
-                            &format!(
-                                "match.arm{}.enum.{}.cmp",
-                                i, variant_name
-                            ),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    // If pattern carries arg sub-patterns, load
-                    // payload fields. Wildcard skips, Binding
-                    // pushes a binding, Literal AND-extends the
-                    // tag-eq cond with a field-vs-literal compare
-                    // (so `Event::Tick(0) -> ...` only matches
-                    // when the payload's first field equals 0).
-                    // Other sub-pattern forms (Tuple / nested
-                    // Constructor) aren't lowered at v0.1.
-                    let mut acc_cond = cond;
-                    if !args.is_empty() {
-                        let enum_ptr = scrutinee_val.into_pointer_value();
-                        let fields = self
-                            .load_enum_payload_fields(&info, enum_ptr, variant_idx)?;
-                        for (j, sub) in args.iter().enumerate() {
-                            match sub {
-                                Pattern::Wildcard(_) => {}
-                                Pattern::Binding(ident) => {
-                                    let (val, ty) = fields[j].clone();
-                                    bindings.push((ident.name.clone(), val, ty));
-                                }
-                                Pattern::Literal(lit, span) => {
-                                    let (lit_val, lit_ty) =
-                                        self.lower_pattern_literal(lit, *span, &fields[j].1, scope)?;
-                                    let (field_val, field_ty) = fields[j].clone();
-                                    if lit_ty != field_ty {
-                                        return Err(CodegenError::Unsupported(
-                                            format!(
-                                                "constructor pattern arg {} \
-                                                 literal type {} doesn't \
-                                                 match payload field type {}",
-                                                j, lit_ty, field_ty
-                                            ),
-                                        ));
-                                    }
-                                    let sub_cond = self.lower_match_eq_cmp(
-                                        field_val,
-                                        lit_val,
-                                        &field_ty,
-                                        &format!(
-                                            "match.arm{}.enum.{}.field{}.cmp",
-                                            i, variant_name, j
-                                        ),
-                                    )?;
-                                    acc_cond = self
-                                        .builder
-                                        .build_and(
-                                            acc_cond,
-                                            sub_cond,
-                                            &format!(
-                                                "match.arm{}.enum.{}.acc",
-                                                i, variant_name
-                                            ),
-                                        )
-                                        .map_err(|e| {
-                                            CodegenError::LlvmEmit(e.to_string())
-                                        })?;
-                                }
-                                _ => {
-                                    return Err(CodegenError::Unsupported(
-                                        "constructor pattern arg must be a \
-                                         binding, `_`, or literal at v0.1"
-                                            .into(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    self.builder
-                        .build_conditional_branch(acc_cond, pattern_target, next_bb)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
-            }
+            };
 
             // Helper closure semantics inlined: install the
             // bindings list (alloca, store, scope.insert) and
@@ -23032,13 +23177,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         gty
                     )));
                 }
-                self.builder
-                    .build_conditional_branch(
-                        gv.into_int_value(),
-                        body_bb,
-                        next_bb,
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // GH #1995 E2: a guarded or-pattern's guard, false for
+                // one alternative's bindings, is tried again with the
+                // next alternative's (`lower_or_pattern_test`).
+                let on_false = match &retry {
+                    Some((which, resumes)) if !resumes.is_empty() => {
+                        let rb = self.context.append_basic_block(func, &format!("match.arm{}.retry", i));
+                        self.builder
+                            .build_conditional_branch(gv.into_int_value(), body_bb, rb)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder.position_at_end(rb);
+                        let i32_t = self.context.i32_type();
+                        let cases: Vec<_> = resumes
+                            .iter()
+                            .enumerate()
+                            .map(|(k, bb)| (i32_t.const_int(k as u64, false), *bb))
+                            .collect();
+                        self.builder
+                            .build_switch(*which, next_bb, &cases)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        None
+                    }
+                    _ => Some(next_bb),
+                };
+                if let Some(on_false) = on_false {
+                    self.builder
+                        .build_conditional_branch(gv.into_int_value(), body_bb, on_false)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
                 self.builder.position_at_end(body_bb);
             } else {
                 self.builder.position_at_end(body_bb);

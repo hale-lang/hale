@@ -3058,6 +3058,21 @@ assume the others in a build:
   turned its own reproducer into a correct program that the advisory
   still flagged — and the fix it suggested, `@no_block`, is a compile
   error on that program.
+- **String-match advisory — opt-in** (GH #1995 S5). Three or more
+  `if` tests in a row comparing one String place (a local, or `self` and
+  its fields) with string literals by `==` — the links of one `else if`
+  chain, consecutive `if` statements, or both, each condition one
+  comparison or an `||` of comparisons on that place — get a warning at
+  the first test, naming the place and the count and showing the
+  `match` they read as (spec/semantics.md § Or-patterns, § Matching
+  strings). A link testing anything else, a final plain `else` or any
+  other statement ends the run; code that already matches is never
+  flagged. Reported by `hale verify` and `hale check
+  --warn-string-match`; `hale check`, `build`, `run`, `test` and the
+  editor report none. Opt-in as the hot-path lint is, because over the
+  in-tree `dna/` library it names a hundred-odd ladders: a suggestion to
+  ask for, not a warning on every first build. Syntactic, over the
+  program as written (`crate::string_if_chain`).
 - **Hot-path allocation lint — opt-in advisory** (2026-07-16; opt-in
   since GH #1948, 2026-11-15). Its warnings are reported by `hale
   verify` (the discipline gate, which fails on any finding) and by

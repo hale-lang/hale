@@ -347,6 +347,11 @@ pub(crate) fn load_for_check(
     // errors either way.
     config.hot_path_advisory = std::env::args().nth(1).as_deref() == Some("verify")
         || std::env::args().any(|a| a == "--warn-hot-path");
+    // GH #1995 S5: the string-match advisory, asked for as the hot-path
+    // one is: `hale verify` reports it, `hale check --warn-string-match`
+    // shows it.
+    config.string_match_advisory = std::env::args().nth(1).as_deref() == Some("verify")
+        || std::env::args().any(|a| a == "--warn-string-match");
     // `--target`: the target the program is checked for, parsed as
     // `hale build --target` parses it, and the effective target as it
     // is the build's (T1(b)). Without it, a written declaration selects
