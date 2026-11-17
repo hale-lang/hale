@@ -3540,6 +3540,34 @@ pub struct MatchStmt {
     pub scrutinee: Expr,
     pub arms: Vec<MatchArm>,
     pub span: Span,
+    /// The spelling the match was parsed from (GH #1995 E3): a written
+    /// `match`, or one of the forms the parser desugars to a match
+    /// (`if let`, `let … else`, a pattern `let`). Everything downstream
+    /// sees an ordinary match; this says only which rules and words the
+    /// checker uses for it.
+    pub form: MatchForm,
+}
+
+/// What a [`MatchStmt`] was written as (GH #1995 E3). Every form but
+/// `Match` is a match of two arms or one, built by the parser:
+///
+/// * `IfLet` / `IfLetElse`: `if let P = e { A } [else { B }]` is
+///   `match e { P -> { A }, _ -> { B } }` (`{ }` with no `else`).
+/// * `LetElse`: `let P = e else { B };` binds `P`'s names after the
+///   statement: `let x = match e { P -> x, _ -> { B } };` (a tuple of
+///   the names for several, a statement match for none). The `else`
+///   block must leave (F.48's judgment), which the check holds it to.
+/// * `Let`: `let P = e;` with a pattern that is not a name or a tuple
+///   of names: the same, with no `_` arm, so a pattern that can fail to
+///   match is refused by exhaustiveness, worded "add `else { … }`".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MatchForm {
+    #[default]
+    Match,
+    IfLet,
+    IfLetElse,
+    LetElse,
+    Let,
 }
 
 #[derive(Debug, Clone, PartialEq)]

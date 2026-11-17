@@ -1248,6 +1248,23 @@ impl<'a> Emitter<'a> {
         if !callee {
             return false;
         }
+        // A pattern after `let` or `if let` (GH #1995 E3): every group
+        // between the `let` and its `=` is one (`let Side::Other(raw) = s
+        // else { … }`, `if let E::A(x) | E::B(x) = e`), and a pattern's
+        // list takes no trailing comma. Walking back from the opener at
+        // its own depth (through the groups that enclose it, as a
+        // constructor inside a tuple pattern is enclosed), a `let` before
+        // any `=`, `;` or block is that `let`.
+        let mut depth = 0usize;
+        for j in (0..ti).rev() {
+            match t[j].kind {
+                RParen | RBracket => depth += 1,
+                LParen | LBracket => depth = depth.saturating_sub(1),
+                Let if depth == 0 => return false,
+                Eq | Semi | LBrace | RBrace if depth == 0 => break,
+                _ => {}
+            }
+        }
         // Walk the group: an element that opens with `name:` is a
         // parameter or a keyword argument; what follows the closer
         // tells a pattern from a call.

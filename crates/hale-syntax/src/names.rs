@@ -846,7 +846,7 @@ fn if_stmt<'a>(i: &'a IfStmt, f: &mut Visit<'_, 'a>) {
 }
 
 fn match_stmt<'a>(ms: &'a MatchStmt, f: &mut Visit<'_, 'a>) {
-    let MatchStmt { scrutinee, arms, span: _ } = ms;
+    let MatchStmt { scrutinee, arms, span: _, form: _ } = ms;
     expr(scrutinee, f);
     for arm in arms {
         let MatchArm { pattern: p, guard, body, span: _ } = arm;

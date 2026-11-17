@@ -27,6 +27,8 @@ fn main() {
 | Conditional | `if cond { ... } else { ... }` | Yes (when `else` is present) | Both arms must have the same type in expression position |
 | Value match | `match expr { pat -> res, _ -> def }` | Yes | Must be exhaustive; `_` is the wildcard pattern; `p1 \| p2 -> res` matches either |
 | Condition match | `match { c1 -> r1, else -> def }` | Yes | Evaluates boolean guards top-to-bottom; `else` is the catch-all |
+| One-pattern test | `if let P = expr { ... } else { ... }` | Yes (when `else` is present) | A two-arm `match`; `P`'s names are in scope in the first block only |
+| Bind or leave | `let P = expr else { ... };` | No | `P`'s names are bound after the statement; the `else` block must leave (`return`, `fail`, `break`, `continue`) |
 | Conditional loop | `while cond { ... }` | No (`()`) | Use `while true { ... }` for unbounded loops; exit with `break;` |
 | Iterator loop | `for x in 0..n { ... }` | No (`()`) | `a..b` is half-open (`[a, b)`); `a..=b` is inclusive (`[a, b]`) |
 | Block expression | `{ stmt; expr }` | Yes (if final expression omits `;`) | Final expression without `;` becomes the block's value |
@@ -176,6 +178,43 @@ return match {
     else                                          -> not_found(),
 };
 ```
+
+### `if let` and `let … else`
+
+When one pattern is the whole question, `if let` tests it without writing the `_` arm. It is the two-arm `match` `match e { P -> { … }, _ -> { … } }`, and like `if` it is an expression when it has an `else`:
+
+```hale
+type Side = enum { Buy, Sell, Other(String) };
+
+fn label(side: Side) -> String {
+    if let Side::Other(raw) = side { "other: " + raw } else { "known" }
+}
+
+fn note(side: Side) {
+    if let Side::Other(raw) = side {
+        println("unrecognized side ", raw);
+    }
+}
+```
+
+The pattern is any arm's pattern, alternatives included (`if let E::A(p) | E::B(p) = e { … }`), and its names exist only inside the first block. Links chain with plain ones: `if let … { } else if let … { } else if n > 0 { } else { }`.
+
+`let … else` is the other way round: bind the pattern's names for the rest of the block, or leave. The `else` block runs when the pattern does not match, and it must leave, with `return`, `fail`, `break` or `continue` (or `terminate` / `violate` in a locus):
+
+```hale
+type Outcome = enum { Result(Int), Refused(String) };
+
+fn doubled(o: Outcome) -> Int {
+    let Outcome::Result(index) = o else {
+        return -1;
+    };
+    return index * 2;
+}
+```
+
+- An `else` that can finish is refused, and `hale check` names the path that does. A call finishes as far as this rule goes, even `std::process::exit(1)`: write `return` after it.
+- A plain `let` takes a pattern that always matches, such as a tuple of names or a one-variant enum (`let Meters::M(n) = m;`). One that can fail to match is refused with "add `else { … }`".
+- This is the enum counterpart of `or { return …; }` for a fallible call; Hale has no `Option` type to unwrap.
 
 ## Block Values and Statement Rules
 
