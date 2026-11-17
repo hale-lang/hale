@@ -677,9 +677,11 @@ fn a_fn_value_in_scope_shadows_a_fn_in_a_call() {
                        println(q);\n\
                    }\n";
     assert_eq!(build_and_run_probe(variant, "shadowing_variant_payload"), Ok("20\n30\n".to_string()), "{variant}");
-    // A binding the desugar cannot see as a fn value (a tuple pattern's,
-    // whose type the check does not know) would read as the callee and is
-    // not: refused at the call, rather than called past.
+    // A binding the desugar cannot see as a fn value (a tuple pattern's
+    // part, whose declaration does not show it to be one) would read as
+    // the callee and is not: refused at the call, rather than called past.
+    // Since GH #2016 the check knows the part's type, a fn type, and says
+    // so.
     assert_refused_by_the_check(
         &[(
             "fn helper() -> Int { return 1; }\n\
@@ -692,7 +694,7 @@ fn a_fn_value_in_scope_shadows_a_fn_in_a_call() {
                  }\n\
              }\n",
             "helper()",
-            "`helper` is bound here to a value the check cannot type",
+            "`helper` is a fn value bound here, and a call of the name runs the fn `helper`",
         )],
         "shadowing_unseen",
     );
@@ -3902,6 +3904,18 @@ fn the_latent_parity_divergences_check_build_and_run() {
             "unit_or_as_the_tail",
             "touched\n",
         ),
+        (
+            // a match arm's binding in a generic body's specialization is
+            // of its variant's value type (GH #2016): until then it was
+            // unnamed, and the call that passes it was refused
+            "type Link = enum { End, Next(Chain) };\n\
+             type Chain { next: Link = Link::End; v: Int = 3; }\n\
+             fn id<U>(u: U) -> U { return u; }\n\
+             fn get<T>(c: T) -> Int { match c.next { Link::Next(n) -> { return id(n).v; }, _ -> { }, } return 0; }\n\
+             fn main() { println(get(Chain { next: Link::Next(Chain { v: 5 }) })); }\n",
+            "match_binding_into_a_generic_call",
+            "5\n",
+        ),
     ];
     for (src, tag, want) in cases {
         let out = build_and_run_probe(src, &format!("latent_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
@@ -3912,8 +3926,7 @@ fn the_latent_parity_divergences_check_build_and_run() {
 /// The latent gaps the parity gate's stable draw surfaced (GH #2005),
 /// the half refused: a call that leaves out a generic fn's defaulted
 /// parameter (in another fn's default too, whose walk drops what it
-/// finds), an argument a generic body's specialization still cannot type
-/// (a match arm's binding), a method returning nothing handed to a
+/// finds), a method returning nothing handed to a
 /// generic fn in a specialization only, a generic `type` at a perspective or at a
 /// generic locus, a return a specialization does not type, a value of
 /// one interface passed where another is expected (read from an array
@@ -3940,15 +3953,6 @@ fn the_latent_parity_divergences_are_refused_by_the_check_not_the_build() {
                  fn main() { println(read()); }\n",
                 "read",
                 "generic fn `read` takes 1 argument, got 0: hale can't compile",
-            ),
-            (
-                "type Link = enum { End, Next(Chain) };\n\
-                 type Chain { next: Link = Link::End; v: Int = 3; }\n\
-                 fn id<U>(u: U) -> U { return u; }\n\
-                 fn get<T>(c: T) -> Int { match c.next { Link::Next(n) -> { return id(n).v; }, _ -> { }, } return 0; }\n\
-                 fn main() { println(get(Chain { next: Link::Next(Chain { v: 5 }) })); }\n",
-                "n",
-                "generic fn `id` takes `U` from this argument, and hale can't name its type here",
             ),
             (
                 "perspective Router { fn route(code: Int) -> Int; }\n\
@@ -4175,4 +4179,95 @@ fn the_codegen_feature_gaps_at_a_boundary_are_refused_by_the_check() {
         "hale_cb_gap_wire_enum_field",
     );
     assert_built(&xpool("locus Ship { params { n: Int = 0; } }"), "hale_cb_gap_xpool_params");
+}
+
+/// GH #2016: a match arm's binding is a local of its pattern's type, so
+/// one used at another type is refused where it is used (`let t: String
+/// = v` with `v` an `Int` checked and built); a match expression's arms
+/// are one type, a block arm's value its tail and `()` without one (`S::B(v)
+/// -> v, _ -> "s"` and `1 -> 5, _ -> {}` checked, and the build refused
+/// them as mismatched or as a block with no trailing expression). The
+/// neighbours, a binding used at its type, arms of one type, a block arm
+/// with a tail and one that leaves, build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_match_bindings_type_and_its_arms_types_are_held_by_the_check() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type S = enum { A, B(Int) };\n\
+                 fn main() { let s = S::B(4); match s { S::B(v) -> { let t: String = v; println(t); }, _ -> {} } }\n",
+                "v",
+                "let `t`: expected `String`, got `Int`",
+            ),
+            (
+                "type P = enum { Pair(Int, String), Nothing };\n\
+                 fn main() { let p = P::Pair(1, \"a\"); let n = match p { P::Pair(a, b) -> b, P::Nothing -> 0 }; println(n); }\n",
+                "match p { P::Pair(a, b) -> b, P::Nothing -> 0 }",
+                "match expression arms have mismatched types: `String` vs `Int`",
+            ),
+            (
+                "fn main() { let t = (1, \"a\"); match t { (n, s) -> { let k: Int = s; println(k + n); }, _ -> {} } }\n",
+                "s",
+                "let `k`: expected `Int`, got `String`",
+            ),
+            (
+                "type S = enum { A, B(Int) };\n\
+                 fn main() { let s = S::B(4); let x = match s { S::B(v) -> v, _ -> \"s\" }; println(x); }\n",
+                "match s { S::B(v) -> v, _ -> \"s\" }",
+                "match expression arms have mismatched types: `Int` vs `String`",
+            ),
+            (
+                "fn main() { let c = 1; let x = match c { 1 -> 5, _ -> {} }; println(x); }\n",
+                "match c { 1 -> 5, _ -> {} }",
+                "match expression arms have mismatched types: `Int` vs `()`",
+            ),
+            (
+                "fn main() { let c = 1; let x = match c { 1 -> { let k = 2; println(k); }, _ -> 5 }; println(x); }\n",
+                "match c { 1 -> { let k = 2; println(k); }, _ -> 5 }",
+                "match expression arms have mismatched types: `()` vs `Int`",
+            ),
+        ],
+        "match_binding_types",
+    );
+    assert_built(
+        "type S = enum { A, B(Int) };\n\
+         fn main() { let s = S::B(4); match s { S::B(v) -> { let t: Int = v; println(t); }, _ -> {} } }\n",
+        "hale_cb_match_binding_at_its_type",
+    );
+    assert_built(
+        "type S = enum { A, B(Int) };\n\
+         fn main() { let s = S::B(4); let x = match s { S::B(v) -> f\"{v}\", _ -> \"s\" }; println(x); }\n",
+        "hale_cb_match_arms_one_type",
+    );
+    assert_built(
+        "fn pick(c: Int) -> Int { let x = match c { 1 -> 5, 2 -> { let k = c * 2; k }, _ -> { return 0; } }; return x; }\n\
+         fn main() { println(pick(2)); }\n",
+        "hale_cb_match_block_arms_valued_and_leaving",
+    );
+}
+
+/// GH #2016: a block used as a statement ending in a call with no `;`
+/// is the call statement (spec/semantics.md § "Expressions — `if` and
+/// block tails"): `if c { println("x") }` and a statement match's arm
+/// `P -> { println("x") }` checked, and the build refused the call as
+/// having no binding. They build, with a user fn that returns nothing,
+/// and a value-returning call whose value is discarded.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_statement_blocks_tail_call_is_built_as_a_statement() {
+    assert_built("fn main() { let c = true; if c { println(\"x\") } }\n", "hale_cb_if_tail_println");
+    assert_built(
+        "type P = enum { A, B };\n\
+         fn main() { let p = P::A; match p { P::A -> { println(\"x\") }, P::B -> { println(\"y\"); } } }\n",
+        "hale_cb_match_arm_tail_println",
+    );
+    assert_built(
+        "fn note(s: String) { println(s); }\n\
+         fn ping() -> Int { return 1; }\n\
+         fn main() { let c = 2; while c > 3 { note(\"w\") } if c > 1 { note(\"a\") } else { ping(); } if c > 5 { ping() } }\n",
+        "hale_cb_statement_tail_user_calls",
+    );
 }

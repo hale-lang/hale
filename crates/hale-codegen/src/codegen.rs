@@ -13188,6 +13188,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.current_call = previous;
                     lowered?;
                 }
+                // A call ending a block used as a statement (`if c {
+                // println("x") }`, a statement `match`'s arm `P -> {
+                // println("x") }`) is the statement `println("x");`
+                // (spec/semantics.md § "Expressions — `if` and block
+                // tails"): lowered as one, so a builtin or a fn that
+                // returns nothing is the call statement's dispatch, as
+                // a statement `match`'s expression arm already is. Until
+                // GH #2016 it went through `lower_expr`, which has no
+                // value to give for those ("call to `println`: no …
+                // binding"), and the check passed it.
+                Expr::Call { .. } => {
+                    let stmt = Stmt::Expr(tail.as_ref().clone());
+                    if self.lower_stmt(&stmt, scope)? == BlockEnd::Terminated {
+                        return Ok(BlockEnd::Terminated);
+                    }
+                }
                 _ => {
                     let _ = self.lower_expr(tail, scope)?;
                 }

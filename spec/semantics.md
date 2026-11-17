@@ -58,7 +58,12 @@ expression position (let-RHS, fn-call argument, if-arm body)
 the value is consumed; in statement position (loop body,
 `Stmt::If` / `Stmt::Match` block) the trailing expression is
 evaluated for side effects and the value is discarded —
-semantically equivalent to having added the `;`.
+semantically equivalent to having added the `;`. A call there is the
+call statement, a builtin's or a fn's that returns nothing included:
+`if c { println("x") }` and a statement `match`'s arm `P -> {
+println("x") }` build as `if c { println("x"); }` does (GH #2016;
+until then the check passed them and the build refused the call as
+having no binding).
 
 A **fn-shaped body** (free fn, locus method, mode) with a
 declared return type treats its trailing expression as an
@@ -153,7 +158,18 @@ Phase 2b entry in `spec/stdlib.md`.
   typecheck with the match's span; `match` expression works with
   every pattern form the statement supports — literal / binding /
   wildcard / tuple / enum-constructor patterns, guards, and
-  block arm bodies with trailing expressions). F.18
+  block arm bodies with trailing expressions). A block arm's value
+  is its tail, or its trailing `match`'s (below); a block arm with
+  neither that does not leave produces no value, `()`, so it
+  disagrees with a valued arm: `match c { 1 -> 5, _ -> {} }` is
+  refused at the match ("match expression arms have mismatched
+  types: \`Int\` vs \`()\`"), as an `if` expression's mismatched
+  arms are. A block arm that leaves (its last statement a `return`,
+  `fail`, `break`, `continue`, an endless loop, or an `if`/`match`
+  each of whose branches leaves) is a diverging arm and supplies no
+  type. Until GH #2016 the check judged only expression arms (and a
+  binding as an arm's value carried no type), so `S::B(v) -> v, _ ->
+  "s"` and the block arm above checked and the build refused them. F.18
   exhaustiveness applies in both positions. The only reachable
   no-arm-matched case in expression position is a match whose
   arms are all guarded and every guard is false at runtime; it
@@ -197,6 +213,17 @@ Phase 2b entry in `spec/stdlib.md`.
 literal: a nested pattern there (`Op::Pair((a, b))`) is a type error at
 the nested pattern; bind the value and match or read the binding in the
 arm.
+
+**A pattern's bindings** are locals of their arm (its guard and its
+body), each of the type of what it binds: a bare binding is of the
+scrutinee's type, a variant's value of the variant's declared field
+type (a set member's of the member's type), a tuple pattern's part of
+the element's type. A binding is typed at its uses as any other local
+is, so with `type S = enum { A, B(Int) }`, `S::B(v) -> { let t: String
+= v; … }` is a type error at `v`. An or-pattern's bindings are the first
+alternative's (every alternative binds the same names at the same
+types, below). Until GH #2016 a binding was entered untyped, and that
+`let` passed both the check and the build.
 
 **A literal in a pattern** is a value of the type it is matched
 against, compared as lowering compares them (an identity's or a

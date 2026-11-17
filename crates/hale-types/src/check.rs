@@ -17879,19 +17879,11 @@ impl<'a> Checker<'a> {
         let _ = self.check_match_core(stmt, false);
     }
 
-    /// Enter a match arm's pattern binders into the current scope.
-    ///
-    /// Typed `Unknown` deliberately: the binders' types are already
-    /// resolved by codegen (scrutinee for a bare binder, element type
-    /// for a tuple sub-pattern, payload field for a constructor arg),
-    /// and inventing a narrower type here would turn a scope fix into
-    /// a new class of type error on programs that compile today. What
-    /// this establishes is that the NAME exists.
     /// The `views` rows of a pattern's bindings matched against a value of
     /// type `ty` (GH #1554): a binding is the value it binds, a variant's
     /// payload its declared field's type, a tuple's element its element's.
-    /// The checker's own locals stay as `bind_pattern` binds them (its
-    /// diagnostics are unchanged); only the owned-view pass reads these.
+    /// Only the owned-view pass reads these; the checker's own locals are
+    /// `bind_arm_pattern`'s.
     fn note_view_pattern(&mut self, pat: &Pattern, ty: &Ty) {
         match pat {
             Pattern::Binding(id) => self.note_view_binding(id, ty, None),
@@ -17932,6 +17924,26 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Enter a match arm's pattern binders into the current scope, each
+    /// at the type of what it binds against a scrutinee of type `scrut`
+    /// (`pattern_binding_types`: a bare binding is the scrutinee, a
+    /// variant's value its declared field's type, a tuple's part its
+    /// element's), so a binding is typed at its uses as any other local
+    /// is (GH #2016). A name the check cannot type (an alternative's
+    /// name the first alternative does not bind, which
+    /// `check_or_pattern` refuses; a variant it cannot find) is entered
+    /// as `Unknown`, so the name exists. Until GH #2016 every binder was
+    /// `Unknown`, and `let t: String = v` with `v` an `Int` checked and
+    /// built.
+    fn bind_arm_pattern(&mut self, pat: &Pattern, scrut: &Ty) {
+        self.bind_pattern(pat);
+        let mut typed = Vec::new();
+        self.pattern_binding_types(pat, scrut, &mut typed);
+        for (name, ty, _) in typed {
+            self.locals.insert(&name, LocalSym { ty, is_mut: false, cell: None, param_place: false });
+        }
+    }
+
     fn bind_pattern(&mut self, pat: &Pattern) {
         match pat {
             Pattern::Binding(id) => self.locals.insert(
@@ -17959,13 +17971,16 @@ impl<'a> Checker<'a> {
     /// join of its arm-body types: every value arm must agree
     /// (`Unknown` is lenient in either direction), and a mismatch
     /// diags here with the match's span rather than surfacing as a
-    /// codegen error. Block arm bodies type as `Unknown` at v0.1
-    /// (no block-tail typing helper yet); codegen's phi-build
-    /// still validates them.
+    /// codegen error. A block arm body types as a block used as a
+    /// value (its tail's type, or `()`), unless it leaves, when it
+    /// is a diverging arm and types as `Unknown` (GH #2016).
     fn check_match_core(&mut self, stmt: &MatchStmt, as_expr: bool) -> Ty {
         let scrut_ty = self.check_expr(&stmt.scrutinee);
         let mut joined: Option<Ty> = None;
         let mut arm_tys: Vec<Ty> = Vec::with_capacity(stmt.arms.len());
+        // Arms that disagree make the match's type unknown, as an `if`
+        // expression's do, so its consumer adds no refusal of its own.
+        let mut mismatched = false;
         for arm in &stmt.arms {
             // GH #721: an arm's pattern BINDS — `v`, `(a, b)`,
             // `Event::Tick(n)` — and the binders are in scope for the
@@ -17975,7 +17990,7 @@ impl<'a> Checker<'a> {
             // `Unknown` and became a false "unknown identifier" the
             // moment that stopped being free.
             self.locals.push();
-            self.bind_pattern(&arm.pattern);
+            self.bind_arm_pattern(&arm.pattern, &scrut_ty);
             self.note_view_pattern(&arm.pattern, &scrut_ty);
             // GH #1995 E2: each alternative of an or-pattern is checked
             // as the arm's whole pattern would be.
@@ -18005,13 +18020,25 @@ impl<'a> Checker<'a> {
                     arm_tys.push(t.clone());
                     t
                 }
+                // A block arm of a match expression that does not leave
+                // is a block used as a value (`check_block_as_expr`): its
+                // tail's type, its trailing `match`'s as a match
+                // expression, or `()` when it ends in anything else, as
+                // the build lowers it (`lower_block_as_expr`), so `1 -> 5,
+                // _ -> {}` is the mismatch below and not a build refusal
+                // (GH #2016). One that leaves (its last statement returns,
+                // fails, breaks …, or is a `match` whose every arm does) is
+                // a diverging arm, beside the arms that supply the value
+                // (or none, when the whole match expression diverges, as
+                // one whose every arm returns does), and is checked as a
+                // statement; so is every arm of a statement `match`.
+                MatchArmBody::Block(b) if as_expr && !block_leaves(b) => {
+                    let t = self.check_block_as_expr(b);
+                    arm_tys.push(t.clone());
+                    t
+                }
                 MatchArmBody::Block(b) => {
                     arm_tys.push(Ty::Unknown);
-                    // A block arm is checked as a statement: one ending
-                    // in a `match` whose every arm leaves is a diverging
-                    // arm, beside the arms that supply the value (or
-                    // none, when the whole match expression diverges, as
-                    // one whose every arm returns does).
                     self.check_block(b);
                     Ty::Unknown
                 }
@@ -18027,6 +18054,7 @@ impl<'a> Checker<'a> {
                             // `Decimal<S>`: joined below, once every arm
                             // is typed.
                         } else if arm_ty != Ty::Unknown && arm_ty != *prev {
+                            mismatched = true;
                             self.diags.push(Diag::ty(
                                 stmt.span,
                                 format!(
@@ -18055,8 +18083,10 @@ impl<'a> Checker<'a> {
                 ),
             ));
         }
-        if as_expr {
+        if as_expr && !mismatched {
             joined.unwrap_or(Ty::Unknown)
+        } else if as_expr {
+            Ty::Unknown
         } else {
             Ty::Unit
         }
@@ -23384,7 +23414,8 @@ impl<'a> Checker<'a> {
             .zip(arm_tys)
             .filter_map(|(a, t)| match &a.body {
                 MatchArmBody::Expr(e) => Some((e, t)),
-                MatchArmBody::Block(_) => None,
+                // a valued block arm's value is its tail (GH #2016)
+                MatchArmBody::Block(b) => b.tail.as_deref().map(|e| (e, t)),
             })
             .collect();
         let mut own: Option<Ty> = None;
