@@ -28,7 +28,8 @@ type OrgAsk { limit: Int = 200; }
 // `state` `stated` (in the graph) or `proposed` (awaiting the Board, with
 // `review` the Review's id). `parts`: the nodes positions sit under that are
 // not positions themselves, {id, kind, name, text}. `organisms`: as the
-// index lists them.
+// index lists them. `habitat`: the habitat the organization lives in,
+// `{name, face}` (`OrganizationHabitat`).
 type OrgChart {
     ok: Bool = false;
     why: String = "";
@@ -37,6 +38,55 @@ type OrgChart {
     positions: String = "[]";
     parts: String = "[]";
     organisms: String = "[]";
+    // the habitat this organization's organism lives in, as the habitat
+    // told its body and face (`organization_habitat`); both "" for the
+    // habitat itself and for an organism run outside a habitat
+    habitat: OrganizationHabitat = OrganizationHabitat { };
+}
+
+// The habitat an organization knows it lives in: its name, and the
+// absolute origin a person reaches its face at (`http://<address>:<port>`,
+// no path and no trailing `/`), under which the habitat's face hands a
+// signed-in visitor into any of its organisms' faces
+// (`<face>/organisms/<name>/face`). Both "" when the organization is the
+// habitat's own or its organism is run outside a habitat.
+type OrganizationHabitat {
+    name: String = "";
+    face: String = "";
+}
+
+// Whether the record `j` is a habitat's: it holds a `habitat.profile` row.
+@bounded_by(j)
+fn record_is_habitat(j: dna::Journal) -> Bool {
+    let mut i = 0;
+    while i < j.revision() {
+        if j.read(i).kind == "habitat.profile" { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The habitat as the organization of the record `j` knows it, of the name
+// and face the habitat handed its organism's body and face (`name` and
+// `face`): none for a habitat's own record, and none unless both were
+// handed; the face's trailing `/` dropped, so `<face>/<path>` is a URL.
+fn organization_habitat_of(j: dna::Journal, name: String, face: String) -> OrganizationHabitat {
+    let n = std::str::trim(name);
+    let mut f = std::str::trim(face);
+    while len(f) > 0 && f[(len(f) - 1)..len(f)] == "/" { f = f[0..(len(f) - 1)]; }
+    if len(n) == 0 || len(f) == 0 || record_is_habitat(j) { return OrganizationHabitat { }; }
+    return OrganizationHabitat { name: n, face: f };
+}
+
+// The habitat the head's process was handed (`HALE_DNA_HABITAT_NAME`,
+// `HALE_DNA_HABITAT_FACE`, which the habitat sets on the body and the face
+// of every organism it keeps), as the organization of `j` knows it.
+fn organization_habitat(j: dna::Journal) -> OrganizationHabitat {
+    return organization_habitat_of(
+        j,
+        std::env::var(dna::HABITAT_NAME_ENV),
+        std::env::var(dna::HABITAT_FACE_ENV),
+    );
 }
 
 // The ids after `<kind>:<anchor>|` in the graph's edge lines, one a line:
@@ -380,5 +430,6 @@ fn org_chart(root: String, limit: Int, seer: Observer) -> OrgChart {
         positions: positions.result(),
         parts: parts.result(),
         organisms: index_organisms(root, j, cap, seer),
+        habitat: organization_habitat(j),
     };
 }

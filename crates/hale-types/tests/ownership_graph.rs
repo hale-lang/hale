@@ -871,7 +871,10 @@ fn a_generic_fn_call_leaves_no_argument_to_its_default() {
         "fn tag<T>(x: T, s: Ship = Ship { hull: 1 }) -> Int { return s.hull; }\n",
         "        Ship { hull: 7 };\n        tag(3);",
     );
-    assert!(errs.iter().any(|(m, at)| m == "generic fn `tag` takes 2 arguments, got 1" && at == "tag"), "{errs:?}");
+    assert!(
+        errs.iter().any(|(m, at)| m.starts_with("generic fn `tag` takes 2 arguments, got 1: ") && at == "tag"),
+        "{errs:?}"
+    );
 }
 
 /// The same default from two callers: `Driver` (pool `workers`) crosses,

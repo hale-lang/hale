@@ -16392,15 +16392,13 @@ impl<'a> Checker<'a> {
             // a fallible body's success value included.
             let widening = matches!((expected_ret, &got), (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::Int)));
             if !widening && !monomorph && !self.flows_into(expected_ret, &got, e) {
-                self.diags.push(Diag::ty(
-                    e.span(),
-                    format!(
-                        "{said} `{}`, got `{}`{}",
-                        expected_ret.display(),
-                        got.display(),
-                        wide_conversion_hint(expected_ret, &got)
-                    ),
-                ));
+                let message = format!(
+                    "{said} `{}`, got `{}`{}",
+                    expected_ret.display(),
+                    got.display(),
+                    wide_conversion_hint(expected_ret, &got)
+                );
+                self.returned_mismatch(e.span(), message);
             }
         } else if let Some(expected_ret) = self.return_ctx.clone() {
             let expected_ret = &expected_ret;
@@ -16422,17 +16420,41 @@ impl<'a> Checker<'a> {
                 && !monomorph
                 && !self.flows_into(expected_ret, &got, e)
             {
-                self.diags.push(Diag::ty(
-                    e.span(),
-                    format!(
-                        "{said} `{}`, got `{}`{}",
-                        expected_ret.display(),
-                        got.display(),
-                        wide_conversion_hint(expected_ret, &got)
-                    ),
-                ));
+                let message = format!(
+                    "{said} `{}`, got `{}`{}",
+                    expected_ret.display(),
+                    got.display(),
+                    wide_conversion_hint(expected_ret, &got)
+                );
+                self.returned_mismatch(e.span(), message);
             }
         }
+    }
+
+    /// A returned value of another type than the body's. In a generic
+    /// body walked for one of its monomorphs, the walk's diagnostics are
+    /// dropped (the template's own walk judged it), so a mismatch only a
+    /// specialization has (`fn scale<T>(x: T) -> T { return x * 1.5; }`
+    /// at `Int`) passed the check and the build refused the specialized
+    /// return. It is kept, and says which specialization it is.
+    fn returned_mismatch(&mut self, at: Span, message: String) {
+        if self.specializing.is_none() {
+            self.diags.push(Diag::ty(at, message));
+            return;
+        }
+        // (the template's own walk already said it, for every monomorph)
+        if self.diags.iter().any(|d| d.span == at && d.message == message) {
+            return;
+        }
+        let note = self.specialization_note();
+        self.push_or_keep(Diag::ty(
+            at,
+            format!(
+                "{message}{note}: hale compiles a generic body once for each set of type arguments its calls \
+                 make, and this one does not type-check at those. Convert the value to the return type, or \
+                 write the fn over the concrete type"
+            ),
+        ));
     }
 
     /// A fn's body: its block, and its tail, in a body with a declared
@@ -16659,17 +16681,34 @@ impl<'a> Checker<'a> {
         if !matches!(ty, Ty::Unit) {
             return false;
         }
-        self.diags.push(Diag::ty(
+        // In a generic body walked for one of its monomorphs (whose
+        // diagnostics are dropped) a `()` only that specialization has
+        // (`id(self.child.go())` in `Supervisor<T>` at a `T` whose `go`
+        // returns nothing) is kept, naming the specialization: the build
+        // refused the specialized call.
+        let at = self.specialization_note();
+        self.push_or_keep(Diag::ty(
             value.span(),
             format!(
                 "{place} needs a value, and this expression produces none \
-                 (its type is `()`): a call to a fn that returns nothing, an \
+                 (its type is `()`{at}): a call to a fn that returns nothing, an \
                  `or` on a `() fallible(E)` call, or an `if` / `match` / \
                  block with no tail value. Write it as a statement of its \
                  own (`call() or {{ ... }};`), or give it a value to produce."
             ),
         ));
         true
+    }
+
+    /// `, where a call makes `T` = `Int`` while a generic body is walked
+    /// for one of its monomorphs, else nothing.
+    fn specialization_note(&self) -> String {
+        if self.specializing.is_none() {
+            return String::new();
+        }
+        let at_args: Vec<String> =
+            self.generic_bindings.iter().map(|(g, t)| format!("`{g}` = `{}`", t.display())).collect();
+        format!(", where a call makes {}", at_args.join(", "))
     }
 
     /// A fn's name (a program's own, an imported seed's `alias::f`, a
@@ -17145,7 +17184,9 @@ impl<'a> Checker<'a> {
                                 ),
                             ));
                         }
-                        want
+                        // read as the interface it declares, as a
+                        // parameter is (`resolve_param_te`)
+                        self.with_interfaces_named(te, want)
                     }
                     None => {
                         // GH #911 B5: no annotation is no arguments.
@@ -17300,10 +17341,25 @@ impl<'a> Checker<'a> {
                 // `self.cfg = Cfg { .. }` against the place's type.
                 let monomorph = matches!(op, AssignOp::Eq) && self.admit_monomorph_literal(&want, &got, value, true);
                 if !monomorph && !bounded_refused && !self.flows_into(&want, &got, stored) {
+                    // A locus into a place declared as an interface it
+                    // satisfies: the build converts a locus into an
+                    // interface where the place is declared (a `let`, a
+                    // field's initializer, an argument, a return), not
+                    // at an assignment, and refused it there (GH
+                    // #2005: `let mut g: Greeter = Hi { }; g = Hey { };`)
+                    let hint = if self.locus_meets_interface(&want, &got) {
+                        format!(
+                            ": hale can't assign a locus to a place of an interface yet (it converts one where \
+                             the place is declared). Bind a new `let` of `{}`, or pass the locus where it is used",
+                            want.display()
+                        )
+                    } else {
+                        String::new()
+                    };
                     self.diags.push(Diag::ty(
                         value.span(),
                         format!(
-                            "assignment: target type `{}` not assignable from `{}`",
+                            "assignment: target type `{}` not assignable from `{}`{hint}",
                             want.display(),
                             got.display()
                         ),
@@ -18829,23 +18885,49 @@ impl<'a> Checker<'a> {
     /// (friction sweep 2026-10-12). Typed as the interface, the local
     /// offers exactly the interface's methods (`field_ty`'s interface
     /// arm), and a field read or an undeclared method is refused here.
+    ///
+    /// The same holds for a `let` that declares its type, and at any
+    /// depth of an array, a `bounded` or a tuple (`[Greeter; 2]`), and
+    /// for a stdlib interface written as its path (`std::http::Handler`):
+    /// a value read from there is a value of the interface, so passing it
+    /// where ANOTHER interface is expected is refused at the argument as
+    /// the build refuses it (it converts a locus into an interface, never
+    /// one interface's value into another's; GH #2005).
     fn resolve_param_te(&self, te: &TypeExpr) -> Ty {
         let ty = self.resolve_te(te);
-        if !matches!(ty, Ty::Unknown) {
-            return ty;
-        }
-        if let TypeExpr::Named { path, generic_args, .. } = te {
-            if path.segments.len() == 1 && generic_args.is_empty() {
-                let n = &path.segments[0].name;
-                if !self.generic_params.contains(n)
-                    && !self.generic_bindings.contains_key(n)
-                    && matches!(self.top.lookup(n), Some(TopSymbol::Interface(_)))
-                {
-                    return Ty::Named(n.clone());
+        self.with_interfaces_named(te, ty)
+    }
+
+    /// `ty`, `te` resolved, with each place an interface name left
+    /// `Unknown` typed as the interface (see [`Self::resolve_param_te`]).
+    fn with_interfaces_named(&self, te: &TypeExpr, ty: Ty) -> Ty {
+        match (te, ty) {
+            (TypeExpr::Named { path, generic_args, .. }, Ty::Unknown) if generic_args.is_empty() => {
+                let written: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                let name = match written.as_slice() {
+                    [n] if !self.generic_params.iter().any(|g| g == n) && !self.generic_bindings.contains_key(*n) => {
+                        n.to_string()
+                    }
+                    [_] => return Ty::Unknown,
+                    _ => match hale_stdlib::PATH_RENAMES.iter().find(|(p, _)| *p == written.as_slice()) {
+                        Some((_, m)) => m.to_string(),
+                        None => return Ty::Unknown,
+                    },
+                };
+                match self.top.lookup(&name) {
+                    Some(TopSymbol::Interface(_)) => Ty::Named(name),
+                    _ => Ty::Unknown,
                 }
             }
+            (TypeExpr::Array { elem, .. }, Ty::Array(e, n)) => Ty::Array(Box::new(self.with_interfaces_named(elem, *e)), n),
+            (TypeExpr::Bounded { elem, .. }, Ty::Bounded(e, n)) => {
+                Ty::Bounded(Box::new(self.with_interfaces_named(elem, *e)), n)
+            }
+            (TypeExpr::Tuple(parts, _), Ty::Tuple(tys)) if parts.len() == tys.len() => {
+                Ty::Tuple(parts.iter().zip(tys).map(|(p, t)| self.with_interfaces_named(p, t)).collect())
+            }
+            (_, ty) => ty,
         }
-        ty
     }
 
 
@@ -21879,7 +21961,8 @@ impl<'a> Checker<'a> {
     /// reads `u`), for diagnostics.
     /// A generic `type` instantiation inside `te` whose argument is a type
     /// parameter `bindings` binds to a locus: the type's name, the
-    /// parameter and the locus.
+    /// parameter and the locus (`perspective(P)` for a perspective `P`,
+    /// whose slot holds a locus).
     fn generic_type_holding_locus(&self, te: &TypeExpr, bindings: &BTreeMap<String, Ty>) -> Option<(String, String, String)> {
         match te {
             TypeExpr::Named { path, generic_args, .. } => {
@@ -21892,6 +21975,16 @@ impl<'a> Checker<'a> {
                                     if matches!(self.top.lookup(n), Some(TopSymbol::Locus(_))) {
                                         return Some((path.segments[0].name.clone(), g.clone(), n.clone()));
                                     }
+                                    // a generic locus's monomorph is a locus too
+                                    if let Some(shown) = self.locus_monomorph_shown(n) {
+                                        return Some((path.segments[0].name.clone(), g.clone(), shown));
+                                    }
+                                    // a perspective's value is the slot that
+                                    // holds a locus behind it; the build has
+                                    // no monomorph for it either
+                                    if matches!(self.top.lookup(n), Some(TopSymbol::Perspective(_))) {
+                                        return Some((path.segments[0].name.clone(), g.clone(), format!("perspective({n})")));
+                                    }
                                 }
                             }
                         }
@@ -21903,6 +21996,21 @@ impl<'a> Checker<'a> {
             TypeExpr::Tuple(parts, _) => parts.iter().find_map(|p| self.generic_type_holding_locus(p, bindings)),
             _ => None,
         }
+    }
+
+    /// When `n` names a monomorph of a generic locus (`Cache_Int_String`),
+    /// the locus as written (`Cache<Int, String>`): a locus too, though the
+    /// scope declares none by that name.
+    fn locus_monomorph_shown(&self, n: &str) -> Option<String> {
+        let m = self
+            .typed
+            .monomorphs
+            .rows()
+            .iter()
+            .find(|m| m.name == n && matches!(m.kind, crate::typed_bodies::TemplateKind::Locus))?;
+        let template = self.generic_loci.iter().find(|(_, l)| l.id.0 == m.template.0).map(|(name, _)| name.clone())?;
+        let args: Vec<String> = m.args.iter().map(Ty::display).collect();
+        Some(format!("{template}<{}>", args.join(", ")))
     }
 
     /// GH #1963: an argument with no value whatever a template's
@@ -24866,6 +24974,19 @@ impl<'a> Checker<'a> {
                                 if let Err(msg) =
                                     self.check_structural_impl(arg_name, iface_name)
                                 {
+                                    // A value of another interface (a
+                                    // parameter, a `let`, an element
+                                    // declared as one; GH #2005)
+                                    let msg = match self.top.lookup(arg_name) {
+                                        Some(TopSymbol::Interface(_)) => format!(
+                                            "a value of interface `{a}` where interface `{}` is expected: hale \
+                                             converts a locus into an interface, not one interface's value into \
+                                             another's. Declare the parameter as `{a}`, or pass the locus itself",
+                                            param_ty.display(),
+                                            a = arg_ty.display()
+                                        ),
+                                        _ => msg,
+                                    };
                                     let span = args
                                         .get(i)
                                         .map(|e| e.span())
@@ -26135,21 +26256,32 @@ impl<'a> Checker<'a> {
         call_id: NodeId,
     ) -> Ty {
         if args.len() != template.params.len() {
-            self.diags.push(Diag::ty(
-                callee_span,
-                format!(
-                    "generic fn `{}` takes {} \
-                     argument{}, got {}",
-                    shown,
-                    template.params.len(),
-                    if template.params.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    },
-                    args.len()
-                ),
-            ));
+            let mut message = format!(
+                "generic fn `{}` takes {} argument{}, got {}",
+                shown,
+                template.params.len(),
+                if template.params.len() == 1 { "" } else { "s" },
+                args.len()
+            );
+            // A default on a generic fn's parameter is only ever used by a
+            // call that leaves it out, which the build cannot specialize:
+            // it fills no default on a generic template.
+            let left_out = template.params.get(args.len()..).unwrap_or_default();
+            if !left_out.is_empty() && left_out.iter().all(|p| p.default.is_some()) {
+                let names: Vec<String> = left_out.iter().map(|p| format!("`{}`", p.name.name)).collect();
+                message.push_str(&format!(
+                    ": hale can't compile a call that leaves out a generic fn's defaulted parameter yet; pass {} \
+                     here",
+                    names.join(", ")
+                ));
+            }
+            // Kept where a default's walk discards its findings (a call
+            // written in another fn's parameter default, `fn f(n: Int =
+            // read())`): the build lowers that call where the default is
+            // left out, and refused it there. Kept as a quantity rule's
+            // error is (`discard_keeping_unit_errors`), once in the
+            // declaration's result.
+            self.unit_error(Diag::ty(callee_span, message));
         }
         let arg_tys: Vec<Ty> = args
             .iter()
@@ -26274,14 +26406,20 @@ impl<'a> Checker<'a> {
         // monomorph with no location.
         for te in template.ret.iter().chain(template.params.iter().map(|p| &p.ty)) {
             if let Some((ty_name, g, locus)) = self.generic_type_holding_locus(te, &bindings) {
-                let d = Diag::ty(
-                    callee_span,
-                    format!(
+                let message = match locus.strip_prefix("perspective(").and_then(|p| p.strip_suffix(')')) {
+                    Some(p) => format!(
+                        "generic fn `{shown}`: this call makes `{g}` the perspective `{p}`, and its signature's \
+                         `{ty_name}<{g}>` would be a generic `type` holding a perspective slot, which hale can't \
+                         compile yet. Declare a `type` with a `perspective({p})` field for it, or pass the value \
+                         where it is used as a `perspective({p})` parameter"
+                    ),
+                    None => format!(
                         "generic fn `{shown}`: this call makes `{g}` the locus `{locus}`, and its signature's \
                          `{ty_name}<{g}>` would be a `type` holding it: {}",
                         generic_type_at_locus_message(&ty_name, &locus)
                     ),
-                );
+                };
+                let d = Diag::ty(callee_span, message);
                 self.push_or_keep(d);
                 break;
             }
@@ -26292,7 +26430,10 @@ impl<'a> Checker<'a> {
         let any_unknown_arg = arg_tys
             .iter()
             .any(|t| matches!(t, Ty::Unknown));
-        if !any_unknown_arg {
+        // (a call with the wrong count is refused for that above; a
+        // parameter it leaves out pins nothing, and saying so again is
+        // the same refusal twice)
+        if !any_unknown_arg && args.len() == template.params.len() {
             for g in &template.generics {
                 if !bindings.contains_key(&g.name.name)
                 {
@@ -26310,7 +26451,7 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
-        } else if self.specializing.is_none() {
+        } else {
             // GH #1963: an argument the checker gives no type pins
             // nothing, and lowering reads the type arguments from this
             // call's row, so a parameter only such an argument could
@@ -26319,19 +26460,31 @@ impl<'a> Checker<'a> {
             // template a use of its own parameter is typed `Unknown`
             // too, so there only an argument that has no value whatever
             // the parameters are is refused: a capacity slot, a printing
-            // builtin's call, a stdlib path without `std::`.)
-            let in_template = !self.generic_params.is_empty();
+            // builtin's call, a stdlib path without `std::`. The walk of
+            // the template for one of its monomorphs types the
+            // parameter's uses, so there a LOCAL that is still `Unknown`
+            // has no nameable type at that specialization either — a
+            // match arm's binding of a recursive record, say, which is
+            // unnamed in a body over the concrete type too — and the
+            // specialized call is the hole the build refused: kept from
+            // that walk. Anything else the walk leaves `Unknown` (a
+            // `self` read in a generic locus's params default) is the
+            // walk's own gap, which the build types.)
+            let in_template = !self.generic_params.is_empty() && self.specializing.is_none();
+            let walking = self.specializing.is_some();
             for g in &template.generics {
                 if bindings.contains_key(&g.name.name) {
                     continue;
                 }
                 for ((p, at), a) in template.params.iter().zip(&arg_tys).zip(args) {
-                    if matches!(at, Ty::Unknown)
-                        && type_expr_mentions(&p.ty, &g.name.name)
-                        && (!in_template || self.valueless_whatever_the_parameters(a))
-                    {
+                    let refused = if walking {
+                        matches!(a, Expr::Ident(id) if self.locals.lookup(&id.name).is_some())
+                    } else {
+                        !in_template || self.valueless_whatever_the_parameters(a)
+                    };
+                    if matches!(at, Ty::Unknown) && type_expr_mentions(&p.ty, &g.name.name) && refused {
                         let msg = self.untyped_generic_arg_message(shown, &g.name.name, a);
-                        self.diags.push(Diag::ty(a.span(), msg));
+                        self.push_or_keep(Diag::ty(a.span(), msg));
                     }
                 }
             }
