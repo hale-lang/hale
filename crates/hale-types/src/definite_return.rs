@@ -27,7 +27,7 @@
 use std::collections::BTreeSet;
 
 use hale_syntax::ast::{
-    flat_decls, Block, ElseBranch, Expr, FnDecl, IfStmt, Literal, LocusMember, MatchArmBody, MatchStmt,
+    flat_decls, Block, ElseBranch, Expr, FnDecl, IfStmt, Literal, LocusMember, MatchArmBody, MatchForm, MatchStmt,
     PerspectiveMember, Stmt, TopDecl, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
@@ -130,6 +130,16 @@ pub fn fall_through(body: &Block) -> Option<FallThrough> {
     block(body, true)
 }
 
+/// GH #1995 E3: can this block (a `let … else`'s `else`) complete,
+/// as F.48 judges a path? `None` when every path through it leaves
+/// (`return`, `fail`, `break`, `continue`, `terminate`, `violate`, or a
+/// statement every branch of which does); otherwise the path that
+/// completes. Not in result position: a tail is a value, and a value is
+/// completing.
+pub fn completes(b: &Block) -> Option<FallThrough> {
+    block(b, false)
+}
+
 /// Can `b` complete normally? In result position (`result`), its tail and
 /// its last statement's leaves are values, so they do not fall through.
 fn block(b: &Block, result: bool) -> Option<FallThrough> {
@@ -207,9 +217,23 @@ fn match_stmt(m: &MatchStmt, result: bool) -> Option<FallThrough> {
     if m.arms.is_empty() {
         return Some(FallThrough { span: m.span, why: "this `match` has no arms".to_string() });
     }
+    // GH #1995 E3: a `let` of a pattern that binds no name is this match;
+    // its pattern's arm is empty, so the statement completes
+    if matches!(m.form, MatchForm::LetElse | MatchForm::Let) {
+        return Some(FallThrough { span: m.span, why: "the body ends after this statement".to_string() });
+    }
+    let last = m.arms.len() - 1;
     // exhaustive (F.18, refused where it is not): a path leaves the match
     // only through an arm
-    m.arms.iter().find_map(|arm| match &arm.body {
+    m.arms.iter().enumerate().find_map(|(i, arm)| match &arm.body {
+        // an `if let` with no `else`: the arm the parser wrote for it
+        MatchArmBody::Block(b) if m.form == MatchForm::IfLet && i == last && b.stmts.is_empty() && b.tail.is_none() => {
+            Some(FallThrough {
+                span: m.span,
+                why: "this `if let` has no `else`, so when its pattern does not match the body ends after it"
+                    .to_string(),
+            })
+        }
         MatchArmBody::Expr(_) if result => None,
         MatchArmBody::Expr(e) if diverges(e) => None,
         MatchArmBody::Expr(_) => Some(FallThrough {

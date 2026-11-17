@@ -1408,8 +1408,24 @@ statement         = let_stmt
 reperspective_stmt = "reperspective" , "self" , "." , IDENTIFIER ,
                      "as" , qualified_name , ";" ;
 
+(* GH #1995 E3: a `let` of a pattern, or with `else`. `let P = e else
+   { … };` binds P's names after the statement, and its block must leave
+   (semantics.md, "`if let` and `let … else`" under `match`); a `let`
+   of a pattern with no `else` takes one that matches every value of its
+   type. The parser
+   writes each as the match it means. A `let_pattern` is one that is not
+   a name or a tuple of names (those are the first two forms), and takes
+   no type. *)
 let_stmt          = "let" , [ "mut" ] , IDENTIFIER ,
-                    [ ":" , type_expr ] , "=" , expression , ";" ;
+                    [ ":" , type_expr ] , "=" , expression ,
+                    [ "else" , block ] , ";"
+                  | "let" , [ "mut" ] , "(" , IDENTIFIER ,
+                    { "," , IDENTIFIER } , [ "," ] , ")" ,
+                    [ ":" , type_expr ] , "=" , expression ,
+                    [ "else" , block ] , ";"
+                  | "let" , [ "mut" ] , let_pattern , "=" , expression ,
+                    [ "else" , block ] , ";" ;
+let_pattern       = pattern , { "|" , pattern } ;
 
 assign_stmt       = lvalue , assign_op , expression , ";" ;
 assign_op         = "=" | "+=" | "-=" | "*=" | "/=" | "%="
@@ -1438,9 +1454,14 @@ shm_write_stmt    = expression , "." , "write" , "(" , expression , ")" ,
                     "{" , IDENTIFIER , "=>" , { statement } ,
                     [ expression ] , "}" ;
 
-if_stmt           = "if" , expression , block ,
-                    { "else" , "if" , expression , block } ,
+(* GH #1995 E3: `if let P = e { A } else { B }` is the match
+   `match e { P -> { A }, _ -> { B } }`; P is any arm's pattern, its
+   names in scope in A only. *)
+if_stmt           = "if" , if_head , block ,
+                    { "else" , "if" , if_head , block } ,
                     [ "else" , block ] ;
+if_head           = expression
+                  | "let" , pattern , { "|" , pattern } , "=" , expression ;
 
 match_stmt        = "match" , expression , "{" , match_arm ,
                     { "," , match_arm } , [ "," ] , "}" ;
@@ -1747,7 +1768,7 @@ block_expr        = block ;
    branch with a trailing value, and the then- and else-arms'
    trailing-expression types must match; codegen phi-merges
    them at the join. *)
-if_expr           = "if" , expression , block , "else" ,
+if_expr           = "if" , if_head , block , "else" ,
                     ( if_expr | block ) ;
 match_expr        = match_stmt ;
 

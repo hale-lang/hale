@@ -299,6 +299,62 @@ ignore.
 `match {` is not ambiguous with matching on a block expression:
 that shape is written `match (…) { … }`.
 
+**`if let` and `let … else`** (GH #1995 E3). Two spellings of a
+two-arm match, for the test of one pattern:
+
+```hale
+type Side = enum { Buy, Other(String) };
+type Outcome = enum { Result(Int), Refused(String) };
+
+fn note(side: Side) -> String {
+    if let Side::Other(raw) = side { "other: " + raw } else { "buy" }
+}
+
+fn index_of(o: Outcome) -> Int {
+    let Outcome::Result(index) = o else {
+        return -1;
+    };
+    return index * 2;
+}
+```
+
+- `if let P = e { A } else { B }` is `match e { P -> { A }, _ -> { B }
+  }`, written by the parser, so the check, the analyses and lowering see
+  that match. With no `else` the `_` arm is empty. `P` is any arm's
+  pattern, an or-pattern included under the same binding rule, and its
+  names are in scope in the then-block only. It is an expression as
+  `if` is: used as a value it needs an `else`, and both arms are typed
+  as an `if`'s are (a mismatch is "\`if let\` arms have mismatched
+  types: then=…, else=…"); a trailing `if let` every arm of which ends
+  in a value is its block's value, as a trailing `if` is. Links chain
+  both ways: `if let … else if let … else`, and `if c { … } else if
+  let … { … }`.
+- `let P = e else { B };` binds `P`'s names in the enclosing block,
+  after the statement. It is `let x = match e { P -> x, _ -> { B } };`
+  (a tuple of the names when there are several, a statement match when
+  there are none). `B` runs when `P` does not match and must **leave**,
+  as § "Definite return" judges a path: `return`, `fail`, `break`,
+  `continue`, `terminate`, `violate`, or a statement every branch of
+  which does. A call completes, `std::process::exit` included. An
+  `else` that can complete is refused at the block, the completing path
+  named ("the \`else\` of a \`let … else\` must leave …: what follows
+  the statement runs only when \`P\` matches; this \`else\` can
+  complete: …"). A name or a tuple of names takes an `else` too; when
+  `P` matches every value of its type the `else` never runs, and the
+  check warns.
+- A plain `let` takes a pattern that matches every value of its type:
+  a one-variant enum's constructor (`let Meters::M(n) = m;`), a tuple of
+  names, as it always did. One that can fail to match is refused at the
+  pattern, "\`P\` can fail to match a \`T\`, so a plain \`let\` cannot
+  bind it: add \`else { … }\` that leaves when it does not match …".
+  Until GH #1995 a `let` of anything but a name or a tuple of names did
+  not parse.
+- A `let` of a pattern takes no type annotation; `let mut P = e else {
+  … };` binds its names mutable.
+
+`if let` is the enum counterpart of `or { return …; }`, and it
+introduces no `Option` (F.52). No keyword is added.
+
 ## Definite return
 
 A body with a declared return type (a fn, a locus method, a mode with
@@ -351,7 +407,8 @@ a block whose every arm ends in one)
     note: the path that reaches the end without a value at main.hl:2:5
 ```
 
-The paths it names: an `if` with no `else`; a `while` loop whose
+The paths it names: an `if` with no `else`, and an `if let` with
+none (GH #1995); a `while` loop whose
 condition can be false, and a `for` loop; the `break` that leaves a
 `while true`; an arm or block whose last statement completes; an empty
 body, block or arm. The judgment is the program's shape, not its
