@@ -1698,11 +1698,19 @@ typedef struct {
   returns 0. Otherwise computes the wrap index as
   `(head + len) % cap`, memcpys `elem_size` bytes from the
   caller-provided source into the slot, increments `len`,
-  returns 1.
+  returns 1. A cell that owns blocks (a record, a `String`, a
+  `Bytes`) is a pointer in its slot: the push asks whether the
+  ring is full first, and only a push that lands copies the
+  value into the ring locus's arena (the cell copy
+  `@form(vec).push` makes, down to its String and Bytes fields).
+  A refused push copies nothing (GH #2024).
 - **Pop.** `lotus_ring_buffer_pop` checks `len == 0`; if so
   returns 0. Otherwise memcpys from `buf + head * elem_size`
   into the out-pointer, advances `head` modulo cap, decrements
-  `len`, returns 1.
+  `len`, returns 1. A cell that owns blocks is handed to the
+  caller as its own copy, and the ring's block is retired at
+  once, as `@form(vec).pop` retires its element (GH #1037): the
+  next push reuses it.
 - **No growth.** Once init runs, the backing buffer is fixed
   size. Push at capacity refuses; the spec contract is "fixed
   capacity" not "grows on demand."
@@ -1717,9 +1725,11 @@ layout; the backing `buf` is malloc'd from the *system
 allocator*, not from the locus's arena. Dissolution frees
 `buf` via the F.22 dissolve cascade.
 
-For pointer-shaped element types (`String`, `Bytes`), the ring
-buffer stores the pointer by value; the pointed-to bytes live
-in their owning arena per the standard F.22 contract.
+For a cell that owns blocks (a record, `String`, `Bytes`), the
+slot holds a pointer to the ring's own copy in the locus's
+arena. The arena holds at most `cap` such cells, and a popped
+cell's blocks go back to the arena's free list, so a ring in
+steady state (full, or pushed and popped in turn) does not grow.
 
 ## Complexity
 
@@ -1731,8 +1741,11 @@ in their owning arena per the standard F.22 contract.
 | `pop` (empty → fail) | O(1) |
 | `len` / `is_full` | O(1) |
 
-All operations are constant-time and allocation-free after
-locus birth. No realloc, no rehash, no compaction.
+All operations are constant-time. No realloc, no rehash, no
+compaction. A ring of scalar cells allocates nothing after locus
+birth. A ring of cells that own blocks allocates a cell's copy
+in its arena on an accepted push, from the blocks earlier pops
+returned when one fits, and nothing on a refused push.
 
 ## Interaction with the locus tower
 
