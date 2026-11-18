@@ -765,11 +765,11 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/units_form_iteration_test.hl`, whose loops over a form's
     // cells build their assertion messages (GH #2026); 28:
     // `tests/hale/ring_buffer_push_flat_test.hl`, whose `main` builds the
-    // records it pushes in its loops (GH #2024); 28:
+    // records it pushes in its loops (GH #2024); 29:
     // `tests/hale/str_chain_sources_test.hl`, whose chains over text
     // sources push the parts into a vec the same way (GH #1995 S2, chain
     // sources).
-    assert_eq!(moved, 28, "the run-to-exit programs among the targets that lose a site");
+    assert_eq!(moved, 29, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
