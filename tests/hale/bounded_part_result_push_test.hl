@@ -1,0 +1,78 @@
+// A call's result whose record took a parameter's bounded field
+// (`v.tags = r.tags`), pushed into a frame's bounded list (GH #2067).
+// The whole assignment copies the count and the slots and keeps the
+// elements, so the result holds the argument's own elements; the push
+// stores the list's own copy of it (`hale verify` reports that copy as
+// "a call's result holding another name's block"), and neither side's
+// later writes reach the other.
+
+type Tag { name: String = ""; n: Int = 0; }
+type Row { id: String = ""; tags: bounded[Tag; 4]; }
+type Rows { items: bounded[Row; 8]; }
+type Sum { id: String = ""; tags: bounded[Tag; 4]; }
+type Out { items: bounded[Sum; 8]; }
+
+fn summary_of(r: Row) -> Sum {
+    let mut v = Sum { id: r.id };
+    v.tags = r.tags;
+    return v;
+}
+
+fn summaries(rs: Rows) -> Out {
+    let mut out = Out { };
+    for r in rs.items {
+        push(out.items, summary_of(r)) or discard;
+    }
+    return out;
+}
+
+fn tag_n(s: Sum, i: Int) -> Int {
+    let t = at(s.tags, i) or Tag { };
+    return t.n;
+}
+
+fn main() {
+    let mut rs = Rows { };
+    let mut i = 0;
+    while i < 3 {
+        let mut r = Row { id: "r" + to_string(i) };
+        push(r.tags, Tag { name: "t", n: i }) or discard;
+        push(r.tags, Tag { name: "u", n: 10 + i }) or discard;
+        push(rs.items, r) or discard;
+        i = i + 1;
+    }
+    let mut out = summaries(rs);
+    std::test::assert_eq_int(count(out.items), 3, "every row is summarised");
+    let s1 = at(out.items, 1) or Sum { };
+    std::test::assert_eq_str(s1.id, "r1", "the summary's id");
+    std::test::assert_eq_int(count(s1.tags), 2, "the summary's tags are the row's");
+    std::test::assert_eq_int(tag_n(s1, 1), 11, "the summary's second tag");
+
+    // The source's element written and set back: the summary keeps its own.
+    let mut row = at(rs.items, 1) or Row { };
+    let mut t = at(row.tags, 1) or Tag { };
+    t.n = 99;
+    set(row.tags, 1, t) or discard;
+    set(rs.items, 1, row) or discard;
+    let src = at(rs.items, 1) or Row { };
+    std::test::assert_eq_int((at(src.tags, 1) or Tag { }).n, 99, "the source took the write");
+    std::test::assert_eq_int(
+        tag_n(at(out.items, 1) or Sum { }, 1),
+        11,
+        "the pushed summary is the list's own",
+    );
+
+    // The summary's element written and set back: the source keeps its own.
+    let mut s = at(out.items, 2) or Sum { };
+    let mut u = at(s.tags, 0) or Tag { };
+    u.n = 77;
+    set(s.tags, 0, u) or discard;
+    set(out.items, 2, s) or discard;
+    std::test::assert_eq_int(
+        tag_n(at(out.items, 2) or Sum { }, 0),
+        77,
+        "the summary took the write",
+    );
+    let src2 = at(rs.items, 2) or Row { };
+    std::test::assert_eq_int((at(src2.tags, 0) or Tag { }).n, 2, "the source is its own");
+}

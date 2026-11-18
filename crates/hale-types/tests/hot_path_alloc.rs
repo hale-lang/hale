@@ -1355,3 +1355,97 @@ fn the_generated_codecs_lie_past_every_file() {
     }
     assert!(codecs >= 2, "the parser and the emitter: {codecs}");
 }
+
+/// GH #2067: a call's result pushed into a frame's bounded list in a loop,
+/// whose callee assigned a parameter's bounded field into the record it
+/// returns (`v.tags = r.tags`), was reported as "a value another name
+/// reaches" while the advice named a call's result as a value nothing else
+/// names. The result is fresh at its top level, but the whole assignment
+/// copies only the list's count and slots: the elements are still the
+/// argument's (an element already in the arena the callee runs in is
+/// kept, `anchor_bounded_elems_in_place`), so the push's copy is real and
+/// is the one the elements need. It now says so, under its own reason. A
+/// local or parameter pushed while still named keeps the old reason, and a
+/// callee that builds the part from its own values hands back a value the
+/// push keeps.
+#[test]
+fn a_call_result_holding_a_parameters_bounded_part_is_reported_as_such() {
+    let src = r#"
+type Tag { name: String = ""; }
+type Row { id: String = ""; tags: bounded[Tag; 4]; }
+type Rows { items: bounded[Row; 8]; }
+type Sum { id: String = ""; tags: bounded[Tag; 4]; }
+type Out { items: bounded[Sum; 8]; }
+fn summary_of(r: Row) -> Sum {
+    let mut v = Sum { id: r.id };
+    v.tags = r.tags;
+    return v;
+}
+fn rebuilt(r: Row) -> Sum {
+    let mut v = Sum { id: r.id };
+    for t in r.tags {
+        push(v.tags, Tag { name: t.name }) or discard;
+    }
+    return v;
+}
+fn summaries(rs: Rows) -> Out {
+    let mut out = Out { };
+    for r in rs.items {
+        push(out.items, summary_of(r)) or discard;
+    }
+    return out;
+}
+fn fresh(rs: Rows) -> Out {
+    let mut out = Out { };
+    for r in rs.items {
+        push(out.items, rebuilt(r)) or discard;
+    }
+    return out;
+}
+fn named(rs: Rows, t: Tag) -> Row {
+    let mut acc = Row { };
+    for r in rs.items {
+        let mut k = Tag { name: r.id };
+        push(acc.tags, k) or discard;
+        k.name = "after";
+        push(acc.tags, t) or discard;
+    }
+    return acc;
+}
+fn main() {
+    let mut rs = Rows { };
+    let mut r = Row { id: "a" };
+    push(r.tags, Tag { name: "t" }) or discard;
+    push(rs.items, r) or discard;
+    println(count(summaries(rs).items), count(fresh(rs).items), count(named(rs, Tag { }).tags));
+}
+"#;
+    let config = Config { hot_path_advisory: true, ..Config::check(true, false) };
+    let snap = entries::load_files(&[("main.hl", src)], config);
+    // Each copy by the text it is reported at.
+    let copies: Vec<(&str, String)> = entries::checked(&snap)
+        .into_iter()
+        .filter(|d| d.message.contains("hot-path copy"))
+        .map(|d| (&src[d.span.start.0 as usize..d.span.end.0 as usize], d.message))
+        .collect();
+    let part = "copy: a call's result holding another name's block stored into a bounded list";
+    let reached = "copy: a value another name reaches stored into a bounded list";
+    let at = |text: &str| copies.iter().filter(|(t, _)| *t == text).map(|(_, m)| m.as_str()).collect::<Vec<_>>();
+    // `summaries`'s push: the part-holding result, under its own reason,
+    // and its advice no longer names a call's result as nothing else's.
+    let s = at("summary_of(r)");
+    assert_eq!(s.len(), 1, "{copies:?}");
+    assert!(s[0].contains(part) && s[0].contains("`v.tags = r.tags`"), "{copies:?}");
+    assert!(!s[0].contains(reached) && !s[0].contains("a call's result, or"), "{copies:?}");
+    // `fresh`'s push: the callee built the part from literals, so the
+    // result is stored as it is.
+    assert!(at("rebuilt(r)").is_empty(), "{copies:?}");
+    // `named`: a local still used after the push, and a parameter, are
+    // values another name reaches.
+    for text in ["k", "t"] {
+        let m = at(text);
+        assert_eq!(m.len(), 1, "`{text}`: {copies:?}");
+        assert!(m[0].contains(reached) && m[0].contains("a call's fresh result"), "`{text}`: {copies:?}");
+    }
+    assert_eq!(copies.len(), 3, "{copies:?}");
+}
