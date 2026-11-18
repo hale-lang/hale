@@ -7,6 +7,12 @@ memory or its nerves.
 
 - `db/`, `pq/`: `pond/db` and `pond/pq` at `01b8643` (2026-08-12). The
   core opens memory through `db::DbDriver` and `pq::PgConn` (GH #985).
+  One change of this repository's is not in pond yet: transactions on a
+  pooled connection (GH #1792), `PgPool.transaction(body)` and
+  `PgConn.transaction(body)` over the `Transaction` interface (`pool.hl`),
+  which BEGIN, run the body's `apply(tx)` on one held connection, and
+  COMMIT or ROLLBACK before the connection is released. A refresh keeps
+  it until pond has it.
 - `realtime/nats/`: `pond/realtime/nats` at `ef90234` (2026-09-24), its
   source files only (not its tests or examples). The nerves (GH #986):
   the node's host and the organization bind their topics to its

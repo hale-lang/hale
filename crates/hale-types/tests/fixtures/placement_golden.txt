@@ -13864,6 +13864,22 @@ dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/pq_pool_transaction_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
+shared	App@literal1.one	__lib_dna__core__pond__pq___pool__PgPool #e0040251
+shared	App@literal1.pool	__lib_dna__core__pond__pq___pool__PgPool #e0040251
+-- dynamic	sites in core/pond/pq
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdIoTcpStream	on main
+dynamic	__StdSecretCredential	on main
+dynamic	__lib_dna__core__pond__pq___pq__PgConn	on main
+-- dynamic	sites in tests
+dynamic	Insert	on main
+dynamic	Refused	on main
+dynamic	__lib_dna__core__pond__pq___pool__PgPool	on main
+
 == dna/tests/practice_command_recovery_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -19845,6 +19861,11 @@ row	~.work.service	Counting	main	inherited
 row	~.work.service_reconciler	__lib_dna__core___performers__NoEvidence	main	inherited
 row	~.work.software	__lib_dna__core___performers__ScriptedPerformer	main	inherited
 row	~.work.software_reconciler	__lib_dna__core___performers__NoEvidence	main	inherited
+
+== shared __lib_dna__core__pond__pq___pool__PgPool #e0040251
+row	~	__lib_dna__core__pond__pq___pool__PgPool	main	default
+row	~.busy	__lib_dna__core__pond__pq___pool__x5f_FdVec	main	inherited
+row	~.fds	__lib_dna__core__pond__pq___pool__x5f_FdVec	main	inherited
 
 == shared __lib_dna__core__pond__realtime__nats___adapter__NatsConn #bc0bc370
 row	~	__lib_dna__core__pond__realtime__nats___adapter__NatsConn	pinned:~	entry	off owner
