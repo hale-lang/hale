@@ -425,7 +425,10 @@ crates/hale-codegen/tests/bus_routing_keys.rs#14 96390ac8068b4625
 crates/hale-codegen/tests/bus_routing_keys.rs#15 aad51bf366c7927d
 crates/hale-codegen/tests/bus_routing_keys.rs#16 452289ffbd32d200
 crates/hale-codegen/tests/bus_routing_keys.rs#17 6ce1690814c7e497
+crates/hale-codegen/tests/bus_routing_keys.rs#18 81e5ee2180d75578
+crates/hale-codegen/tests/bus_routing_keys.rs#19 5948100ce88e7c56
 crates/hale-codegen/tests/bus_routing_keys.rs#2 4487d028d95e97ae
+crates/hale-codegen/tests/bus_routing_keys.rs#20 7e4a880eba7e3ad7
 crates/hale-codegen/tests/bus_routing_keys.rs#3 8c648c89cee97531
 crates/hale-codegen/tests/bus_routing_keys.rs#4 a69120decd2d9345
 crates/hale-codegen/tests/bus_routing_keys.rs#5 2172e1c9c999bfd8
