@@ -1330,6 +1330,8 @@ pub fn expand(
         /// an `http::Rest` exposure's `hubs:` (GH #1780): each mounted hub's
         /// path and number, and its streams, which the exposure describes.
         mounts: Vec<(String, i64)>,
+        /// for a holder below main, its mounts per chain (`site.chains`)
+        chain_mounts: Vec<Vec<(String, i64)>>,
         mounted_streams: Vec<crate::hub_expand::DescribedStream>,
     }
     let mut plans: Vec<Plan> = Vec::new();
@@ -1558,22 +1560,40 @@ pub fn expand(
                     } else {
                         String::new()
                     };
-                    // the hubs it mounts: each a hub of this main locus the
-                    // hub expansion built (the laws refuse any other)
+                    // the hubs it mounts: each a hub of the main locus the
+                    // hub expansion built (the laws refuse any other), this
+                    // one's, or for a holder below main (GH #1818) the one
+                    // each chain's constructions pass down to the param the
+                    // mount names, per chain (each chain is a listener)
                     let mut mounts: Vec<(String, i64)> = Vec::new();
+                    let mut chain_mounts: Vec<Vec<(String, i64)>> = Vec::new();
                     let mut mounted_streams = Vec::new();
-                    if !routes.is_empty() && l.is_main {
+                    if !routes.is_empty() {
                         if let Some(Ok(ms)) = source_of("hubs").map(|e| mounts_of(&e)) {
-                            for m in ms {
-                                let Some(h) = hub_rows.iter().find(|h| h.mounted && h.locus == l.name.name && h.param == m.field)
-                                else {
-                                    continue;
-                                };
-                                if mounts.iter().any(|(p, id)| *p == m.path || *id == h.id) {
-                                    continue;
+                            let mut table = |main: &str, hub_of: &dyn Fn(&str) -> Option<String>, streams: bool| {
+                                let mut out: Vec<(String, i64)> = Vec::new();
+                                for m in &ms {
+                                    let Some(field) = hub_of(&m.field) else { continue };
+                                    let Some(h) = hub_rows.iter().find(|h| h.mounted && h.locus == main && h.param == field)
+                                    else {
+                                        continue;
+                                    };
+                                    if out.iter().any(|(p, id)| *p == m.path || *id == h.id) {
+                                        continue;
+                                    }
+                                    out.push((m.path.clone(), h.id));
+                                    if streams {
+                                        mounted_streams.extend(h.streams.iter().cloned());
+                                    }
                                 }
-                                mounts.push((m.path.clone(), h.id));
-                                mounted_streams.extend(h.streams.iter().cloned());
+                                out
+                            };
+                            if l.is_main {
+                                mounts = table(&l.name.name, &|f| Some(f.to_string()), true);
+                            } else {
+                                for (i, (c, _)) in chains.iter().enumerate() {
+                                    chain_mounts.push(table(&c.main, &|f| passed_from_main(&loci, c, f), i == 0));
+                                }
                             }
                         }
                     }
@@ -1601,6 +1621,7 @@ pub fn expand(
                         fallback: if routes.is_empty() { None } else { source_of("fallback") },
                         routes,
                         mounts,
+                        chain_mounts,
                         mounted_streams,
                     });
                 }
@@ -1766,18 +1787,18 @@ pub fn expand(
         // born after the authored params its address may read and before
         // what serves through it (so it is subscribed when the exposure
         // attaches), on the pool its placement row names
-        let listener_for = |bind: Expr, fallback: Option<Expr>| -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+        let listener_for = |bind: Expr, fallback: Option<Expr>, mounts: &[(String, i64)]| -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
             match (&unix_path, &http_bind) {
                 (Some(_), _) => parse_unix_listener(id, bind, span),
                 (None, Some(_)) if grpc => parse_grpc_listener(id, bind, span),
-                (None, Some(_)) => parse_http_listener(id, bind, mcp, &plan.routes, fallback, &plan.mounts, span),
+                (None, Some(_)) => parse_http_listener(id, bind, mcp, &plan.routes, fallback, mounts, span),
                 (None, None) => None,
             }
         };
         let field_of = |lp: &ParamDecl| lp.name.name.clone();
         if is_main {
             if let Some((lp, default_entry)) =
-                unix_path.clone().or_else(|| http_bind.clone()).and_then(|b| listener_for(b, plan.fallback.clone()))
+                unix_path.clone().or_else(|| http_bind.clone()).and_then(|b| listener_for(b, plan.fallback.clone(), &plan.mounts))
             {
                 let field = field_of(&lp);
                 insert_param_before(l, lp, &exposure.param);
@@ -1816,7 +1837,7 @@ pub fn expand(
         // is read off the holder as every construction built it), on the
         // pool that param's row names when a listener can run there, else
         // the transport's shared pool
-        for (chain, addr) in &site.chains {
+        for (ci, (chain, addr)) in site.chains.iter().enumerate() {
             // the fallback as this main locus reaches it, as the address is;
             // one that cannot be read there is refused by the serve-site laws
             // (`surfaces`), never served as no fallback
@@ -1825,7 +1846,8 @@ pub fn expand(
                 Some(Err(_)) => continue,
                 None => None,
             };
-            let Some((lp, default_entry)) = listener_for(addr.clone(), fallback) else { continue };
+            let mounts = plan.chain_mounts.get(ci).map(Vec::as_slice).unwrap_or(&[]);
+            let Some((lp, default_entry)) = listener_for(addr.clone(), fallback, mounts) else { continue };
             let field = field_of(&lp);
             let root = chain.fields[0].1.clone();
             let mut placed = false;
@@ -3327,6 +3349,86 @@ pub(crate) fn locus_mounts(l: &LocusDecl) -> Vec<(Mount, Option<Expr>, Option<St
         for m in ms {
             out.push((m, addr.clone(), name.clone()));
         }
+    }
+    out
+}
+
+/// The param of the main locus at the top of `chain` that the
+/// constructions down the chain hand to `field`, a param of the locus the
+/// chain ends at (GH #1818): each literal on the way supplies the field
+/// below it from a `self.<param>` of its own (`Front { hub: self.hub }`).
+/// `None` when some construction on the chain does not.
+pub(crate) fn passed_from_main(loci: &BTreeMap<&str, &LocusDecl>, chain: &Chain, field: &str) -> Option<String> {
+    let mut want = field.to_string();
+    for (owner, f) in chain.fields.iter().rev() {
+        let l = loci.get(owner.as_str())?;
+        let inits = l.members.iter().find_map(|m| match m {
+            LocusMember::Params(pb) => pb.params.iter().find_map(|p| match &p.init {
+                ParamInit::Value(Expr::Struct { inits, .. }) if p.name.name == *f => Some(inits),
+                _ => None,
+            }),
+            _ => None,
+        })?;
+        let value = &inits.iter().find(|i| i.name.name == want)?.value;
+        want = crate::surfaces::self_field(value)?.to_string();
+    }
+    Some(want)
+}
+
+/// A mount an `http::Rest` held below a main locus declares (GH #1818):
+/// the holder, the mount as written there (its field the holder's param),
+/// and the main locus's hub the constructions pass to that param.
+#[derive(Debug, Clone)]
+pub(crate) struct HeldMount {
+    pub holder: String,
+    pub mount: Mount,
+    pub hub: String,
+    pub addr: Option<Expr>,
+    pub name: Option<String>,
+}
+
+/// The mounts of the `http::Rest` exposures the loci below main locus `l`
+/// hold, each reaching a param of `l` down a chain of constructions
+/// ([`passed_from_main`]), one per chain; a mount that reaches none is left
+/// out, for the mount laws to refuse. A held exposure's address is kept
+/// only when it is a string as written, the one form the hub's description
+/// states (the main locus cannot read the holder's fields there).
+pub(crate) fn held_mounts(loci: &BTreeMap<&str, &LocusDecl>, l: &LocusDecl) -> Vec<HeldMount> {
+    let mut out = Vec::new();
+    if !l.is_main {
+        return out;
+    }
+    for holder in loci.values().filter(|h| !h.is_main) {
+        let held = locus_mounts(holder);
+        if held.is_empty() {
+            continue;
+        }
+        for chain in holder_chains(loci, &holder.name.name).iter().filter(|c| c.main == l.name.name) {
+            for (m, addr, name) in &held {
+                let Some(hub) = passed_from_main(loci, chain, &m.field) else { continue };
+                out.push(HeldMount {
+                    holder: holder.name.name.clone(),
+                    mount: m.clone(),
+                    hub,
+                    addr: addr.clone().filter(|a| matches!(a, Expr::Literal(Literal::String(_), _))),
+                    name: name.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Every mount of a main locus's hubs (GH #1780, #1818): those its own
+/// `http::Rest` exposures declare ([`locus_mounts`]), then those held below
+/// it ([`held_mounts`]), each mount's field the main locus's hub.
+pub(crate) fn main_mounts(
+    loci: &BTreeMap<&str, &LocusDecl>,
+    l: &LocusDecl,
+) -> Vec<(Mount, Option<Expr>, Option<String>)> {
+    let mut out = locus_mounts(l);
+    for h in held_mounts(loci, l) {
+        out.push((Mount { field: h.hub, ..h.mount }, h.addr, h.name));
     }
     out
 }

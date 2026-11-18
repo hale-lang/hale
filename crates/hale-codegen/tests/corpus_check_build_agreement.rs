@@ -4456,3 +4456,72 @@ fn a_statement_blocks_tail_call_is_built_as_a_statement() {
         "hale_cb_nested_statement_tails",
     );
 }
+
+/// GH #1818: an `http::Rest` held below the main locus mounts the main
+/// locus's hub, passed down to a `ws::Hub` param with no default. Before
+/// it, the check refused every held mount; now it refuses the ones the
+/// build could not wire (a param the main locus passes no hub of its own,
+/// and a hub the holder builds itself), and the neighbour, the main
+/// locus's hub passed down, builds.
+#[test]
+fn a_held_rest_mounts_the_hub_main_passes_down_and_nothing_else() {
+    let program = |hub_param: &str, pass: &str| {
+        format!(
+            "role operator;
+type Fill {{ qty: Int; }}
+topic Fills {{ payload: Fill; subject: \"desk.fills\"; }}
+type Health {{ status: String; }}
+api Desk {{ rpc Probe::live at \"GET /healthz\"; }}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: \"bearer\", name: \"\" }}; }}
+    fn refused() -> String {{ return \"no\"; }}
+}}
+locus Probe {{ fn live() -> Health {{ return Health {{ status: \"live\" }}; }} }}
+locus Maker {{ bus {{ publish Fills; }} fn make() {{ Fills <- Fill {{ qty: 1 }}; }} }}
+locus Front {{
+    params {{
+        {hub_param}
+        tokens: Tokens = Tokens {{ }};
+        probe: Probe = Probe {{ }};
+        web: api::Exposure = api::serve(Desk, http::Rest {{ bind: \"127.0.0.1:0\", codec: json, principals: self.tokens, hubs: [(\"/hub\", self.hub)] }}, as: \"web\", bound: 8, on_full: refuse);
+    }}
+}}
+main locus App {{
+    params {{
+        tokens: Tokens = Tokens {{ }};
+        hub: ws::Hub = ws::Hub {{ principals: self.tokens, as: \"fills\" }};
+        maker: Maker = Maker {{ }};
+        front: Front = {pass};
+    }}
+    bindings {{ Fills: self.hub requires: [operator], bound: 8, on_full: drop_old; }}
+    placement {{ front: cooperative(pool = edge) where async_io; }}
+    run() {{ }}
+}}
+fn main() {{ App {{ }}; }}
+"
+        )
+    };
+    for (i, (hub_param, pass, head)) in [
+        ("hub: ws::Hub;", "Front { }", "exposure `web` held by `Front` mounts `self.hub`, which `App` does not pass a hub of its own"),
+        (
+            "hub: ws::Hub = ws::Hub { principals: self.tokens, as: \"own\" };",
+            "Front { }",
+            "exposure `web` held by `Front` mounts `self.hub`, a hub `Front` gives a value of its own",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let src = program(hub_param, pass);
+        let parsed = hale_syntax::parse_source(&src).expect("parses");
+        let errors: Vec<hale_syntax::Diag> =
+            entries::check_program(&parsed).into_iter().filter(|d| d.is_error()).collect();
+        assert!(errors.iter().any(|e| e.message.starts_with(head)), "{head}: {errors:#?}");
+        assert_eq!(
+            sweep_verdict(&src, &format!("hale_cb_held_mount_{i}")),
+            Verdict::Skipped("the checker rejects it"),
+            "the check refuses it, so the build is never reached:\n{src}"
+        );
+    }
+    assert_built(&program("hub: ws::Hub;", "Front { hub: self.hub }"), "hale_cb_held_mount_neighbour");
+}

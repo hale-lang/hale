@@ -22495,7 +22495,8 @@ impl<'a> Checker<'a> {
             return Some(format!(
                 "`{head}::Hub` is the standard library's hub (`std::api::{head}::Hub`): a param of the main \
                  locus, built by a `{head}::Hub {{ bind: \"…\", principals: …, roles: …, as: \"…\" }}` literal in \
-                 its `params`, where the compiler builds it (spec/api.md § Streams)"
+                 its `params`, where the compiler builds it; below it, only a `ws::Hub` param with no default that \
+                 the main locus passes its hub to, for an `http::Rest` there to mount (spec/api.md § Streams)"
             ));
         }
         // The names this build's imports registered under this head.
