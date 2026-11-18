@@ -51,7 +51,12 @@ fn pointer_path() -> PathBuf {
 
 /// The pointer to a habitat on another machine, when this machine holds one.
 pub(super) fn pointer() -> Option<serde_json::Value> {
-    let text = std::fs::read_to_string(pointer_path()).ok()?;
+    pointer_at(&PathBuf::from(local_habitat_dir()))
+}
+
+/// GH #1758: the pointer the habitat directory `dir` holds, if any.
+pub(super) fn pointer_at(dir: &std::path::Path) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(dir.join(POINTER)).ok()?;
     serde_json::from_str(&text).ok().filter(|v: &serde_json::Value| v["host"].as_str().is_some_and(|h| !h.is_empty()))
 }
 
@@ -725,7 +730,7 @@ fn same_machine(kept: &str, given: &str) -> bool {
 }
 
 /// Whether something accepts a connection at `url`'s host and port.
-fn answers(url: &str) -> bool {
+pub(super) fn answers(url: &str) -> bool {
     use std::net::ToSocketAddrs;
     let rest = url.split("://").nth(1).unwrap_or(url);
     let hostport = rest.split('/').next().unwrap_or("");

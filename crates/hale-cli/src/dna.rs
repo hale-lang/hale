@@ -342,29 +342,164 @@ fn write_memory_env(root: &Path, head: &str, from: &str) -> Result<(), String> {
 /// allocation in the local habitat.
 const MEMORY_FROM_KEY: &str = "HALE_DNA_MEMORY_FROM";
 
-/// GH #1653: where the local habitat lives, as `dna::local_habitat_dir`
-/// spells it: `${XDG_DATA_HOME:-$HOME/.local/share}/hale/habitat/local`.
+/// GH #1758: where this machine's habitats live, each in a directory of
+/// its own: `${XDG_DATA_HOME:-$HOME/.local/share}/hale/habitat`, as
+/// `dna::habitats_root` spells it.
+pub(crate) fn habitats_root() -> PathBuf {
+    let data = std::env::var("XDG_DATA_HOME").unwrap_or_default();
+    let base = if data.is_empty() { format!("{}/.local/share", std::env::var("HOME").unwrap_or_default()) } else { data };
+    PathBuf::from(base).join("hale/habitat")
+}
+
+/// GH #1758: the directory of the habitat a machine has when nothing names
+/// another, and the one every habitat born before named habitats lives in.
+pub(crate) const DEFAULT_HABITAT_DIR: &str = "local";
+
+/// GH #1758: the file that names the machine's current habitat (`hale
+/// habitat use <name>`): one line, the name.
+pub(crate) fn current_habitat_file() -> PathBuf {
+    habitats_root().join("current")
+}
+
+/// GH #1758: the env var that names the habitat a command acts on, which
+/// `--habitat <name>` sets for the command it runs (and everything it runs).
+pub(crate) const HABITAT_ENV: &str = "HALE_HABITAT";
+
+/// GH #1758: the habitat this command acts on by name, and what named it:
+/// `HALE_HABITAT` (or `--habitat`), else the current habitat (`hale habitat
+/// use`); `None` when neither does, which is the default habitat.
+pub(crate) fn selected_habitat() -> Option<(String, &'static str)> {
+    if let Some(n) = std::env::var(HABITAT_ENV).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+        return Some((n, "HALE_HABITAT or --habitat"));
+    }
+    fs::read_to_string(current_habitat_file()).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).map(|n| (n, "hale habitat use"))
+}
+
+/// GH #1758: whether `dir` holds a habitat: one born here (its name, its
+/// backends or its genome), or a pointer to one on another machine.
+pub(crate) fn habitat_present(dir: &Path) -> bool {
+    ["name", "backends", "remote.json", "genome/hale.toml"].iter().any(|f| dir.join(f).is_file())
+}
+
+/// GH #1758: the name of the habitat `dir` holds: the one it was born with,
+/// else the one its pointer names, else `local` (a habitat born before it
+/// was named); `None` when it holds none.
+pub(crate) fn habitat_name_in(dir: &Path) -> Option<String> {
+    if !habitat_present(dir) {
+        return None;
+    }
+    let kept = fs::read_to_string(dir.join("name")).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let pointed = || {
+        fs::read_to_string(dir.join("remote.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v["name"].as_str().map(str::to_string))
+            .filter(|n| !n.is_empty())
+    };
+    Some(kept.or_else(pointed).unwrap_or_else(|| DEFAULT_HABITAT_DIR.to_string()))
+}
+
+/// GH #1758: the directory of the habitat named `name`: its own,
+/// `<root>/<name>`, unless the default directory holds it (a habitat born
+/// with `--name` before habitats had directories of their own lives in
+/// `local`, and is reached by its name there, with no migration).
+pub(crate) fn habitat_dir_of(name: &str) -> PathBuf {
+    let root = habitats_root();
+    let own = root.join(name);
+    if habitat_present(&own) {
+        return own;
+    }
+    let default = root.join(DEFAULT_HABITAT_DIR);
+    if habitat_name_in(&default).as_deref() == Some(name) {
+        return default;
+    }
+    own
+}
+
+/// GH #1653, #1758: where the habitat this command acts on lives, as
+/// `dna::local_habitat_dir` spells it: the directory `HALE_DNA_HABITAT`
+/// names outright (a test's, a slice's), else the directory of the habitat
+/// `HALE_HABITAT` (`--habitat`) or the current habitat names, else
+/// `${XDG_DATA_HOME:-$HOME/.local/share}/hale/habitat/local`.
 fn local_habitat_dir() -> String {
-    // a habitat named outright (a test's, a slice's): HALE_DNA_HABITAT
     if let Some(named) = std::env::var("HALE_DNA_HABITAT").ok().filter(|v| !v.is_empty()) {
         return named;
     }
-    let data = std::env::var("XDG_DATA_HOME").unwrap_or_default();
-    let base = if data.is_empty() { format!("{}/.local/share", std::env::var("HOME").unwrap_or_default()) } else { data };
-    format!("{base}/hale/habitat/local")
+    match selected_habitat() {
+        Some((name, _)) => habitat_dir_of(&name).display().to_string(),
+        None => habitats_root().join(DEFAULT_HABITAT_DIR).display().to_string(),
+    }
+}
+
+/// GH #1758: `--habitat <name>` (or `--habitat=<name>`) anywhere before a
+/// `--` in `hale dna …` or `hale habitat …`: the command is run again with
+/// the flag taken out and `HALE_HABITAT` naming the habitat, so the command
+/// and everything it runs act on that habitat. `None` when no flag is given.
+pub(crate) fn with_habitat_flag(args: &[String]) -> Option<ExitCode> {
+    let mut rest: Vec<String> = Vec::with_capacity(args.len());
+    let mut name: Option<String> = None;
+    let mut i = 0;
+    let mut passthrough = false;
+    while i < args.len() {
+        let a = &args[i];
+        if !passthrough && i >= 2 {
+            if a == "--" {
+                passthrough = true;
+            } else if a == "--habitat" {
+                match args.get(i + 1) {
+                    Some(v) if !v.starts_with('-') => {
+                        name = Some(v.clone());
+                        i += 2;
+                        continue;
+                    }
+                    _ => {
+                        eprintln!("hale {}: `--habitat` takes a habitat's name", args[1]);
+                        return Some(ExitCode::from(2));
+                    }
+                }
+            } else if let Some(v) = a.strip_prefix("--habitat=") {
+                name = Some(v.to_string());
+                i += 1;
+                continue;
+            }
+        }
+        rest.push(a.clone());
+        i += 1;
+    }
+    let name = name?;
+    if !habitat::habitat_name_ok(&name) {
+        eprintln!("hale {}: `--habitat {name}` is not a habitat name (a DNS label: lowercase letters, digits and `-`, at most 63)", args[1]);
+        return Some(ExitCode::from(2));
+    }
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("hale {}: this toolchain cannot find its own executable: {e}", args[1]);
+            return Some(ExitCode::from(1));
+        }
+    };
+    use std::os::unix::process::CommandExt;
+    let err = Command::new(exe).args(&rest[1..]).env(HABITAT_ENV, &name).exec();
+    eprintln!("hale {}: {err}", args[1]);
+    Some(ExitCode::from(1))
 }
 
 /// What named the local habitat's directory when it is not the default one:
-/// ` (HALE_DNA_HABITAT names it)` or ` (XDG_DATA_HOME names it)`, else "".
+/// ` (HALE_DNA_HABITAT names it)`, ` (HALE_HABITAT or --habitat names it)`,
+/// ` (hale habitat use names it)` or ` (XDG_DATA_HOME names it)`, else "".
 /// Said wherever a habitat is brought up or read, so one in a shell that
 /// still names another habitat's directory is seen at once.
-fn habitat_dir_named_by() -> &'static str {
+fn habitat_dir_named_by() -> String {
     if std::env::var("HALE_DNA_HABITAT").is_ok_and(|v| !v.is_empty()) {
-        " (HALE_DNA_HABITAT names it)"
-    } else if std::env::var("XDG_DATA_HOME").is_ok_and(|v| !v.is_empty()) {
-        " (XDG_DATA_HOME names it)"
+        return " (HALE_DNA_HABITAT names it)".to_string();
+    }
+    if let Some((_, by)) = selected_habitat() {
+        return format!(" ({by} names it)");
+    }
+    if std::env::var("XDG_DATA_HOME").is_ok_and(|v| !v.is_empty()) {
+        " (XDG_DATA_HOME names it)".to_string()
     } else {
-        ""
+        String::new()
     }
 }
 

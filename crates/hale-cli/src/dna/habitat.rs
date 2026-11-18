@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use super::{habitat_dir_named_by, host_run, local_habitat_dir, local_habitat_project, manifest_pin, memory_migrate, nerves_migrate, project, MemoryPlan, NervesPlan};
+use super::{current_habitat_file, habitat_dir_named_by, habitat_dir_of, habitat_name_in, habitat_present, habitats_root, host_run, HABITAT_ENV, local_habitat_dir, local_habitat_project, manifest_pin, memory_migrate, nerves_migrate, project, MemoryPlan, NervesPlan};
 
 #[path = "sapling.rs"]
 mod sapling;
@@ -122,17 +122,25 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat organism <name> dna <verb> [args…]
        hale habitat [--head <url>] brief
        hale habitat [--head <url>] status
+       hale habitat list
+       hale habitat use <name>
        hale habitat down [--forget [--plan]]
        hale habitat migrate [organism]
        hale habitat sweep <root> | --test-vaults [<root>]
        hale habitat resolve <name>
 
+Every verb of `hale habitat` and `hale dna` takes `--habitat <name>` (or
+HALE_HABITAT=<name>): the habitat it acts on, in place of the current one.
+
 The local habitat holds every organism's infrastructure on this machine:
 one docker compose project, named for the habitat, with a service per
 allocation (memory-<id>, nerves-<id>, senses-<id>, <id> the organism's
-record identity), under ${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local.
-It is long-lived: nothing tears it down when work ends, and two checkouts
-of one organism are the same tenant.
+record identity), under ${XDG_DATA_HOME:-~/.local/share}/hale/habitat/<name>
+(`local` for a machine's first). It is long-lived: nothing tears it down
+when work ends, and two checkouts of one organism are the same tenant. A
+machine may hold several habitats, each in its own directory by name (or a
+pointer to one on another machine); the current one is what every verb
+acts on (`use` sets it, `--habitat` overrides it for one command).
 
 up                   birth the habitat the first time, from the genome the
                      toolchain ships (its positions the nursery's `habitat`
@@ -446,6 +454,14 @@ status               the habitat, its genome and body, its face and, while
                      against this toolchain's, how a heart's declared
                      migration last ran, and how many personas its chart
                      has at the habitat's Forgejo.
+list                 each habitat of this machine: its name (the current one
+                     marked `*`), where it runs (this machine, or the host
+                     its pointer names), whether its head answers, and its
+                     directory.
+use <name>           make <name> the current habitat (written to
+                     ${XDG_DATA_HOME:-~/.local/share}/hale/habitat/current):
+                     every verb acts on it until another `use`. `use local`
+                     goes back to the machine's first.
 down                 stop the habitat's body, its face and every service of
                      its compose project (`compose down`); its volumes are
                      kept, and `up` brings them back. --forget removes the
@@ -592,14 +608,21 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("models") => models::cmd(&args[1..]),
         Some("apply") => sapling::apply_cmd(&args[1..]),
         Some("forge") => sapling::forge_cmd(&args[1..]),
+        Some("list") if args.len() == 1 => list(),
+        Some("use") if args.len() == 2 => use_habitat(&args[1]),
         Some("status") if args.len() == 1 => match remote::pointer() {
             Some(p) => remote::status(&p),
             None => status(),
         },
-        Some("down") => match remote::pointer() {
-            Some(p) => remote::down(&p, &args[1..]),
-            None => down(&args[1..]),
-        },
+        Some("down") => {
+            let name = habitat_name_in(Path::new(&local_habitat_dir()));
+            let code = match remote::pointer() {
+                Some(p) => remote::down(&p, &args[1..]),
+                None => down(&args[1..]),
+            };
+            forgot_current(name.as_deref());
+            code
+        }
         Some("resolve") if args.len() == 2 => match first_ipv4(&args[1]) {
             Ok(ip) => {
                 println!("{ip}");
@@ -2155,8 +2178,11 @@ pub(super) fn compose_labels(organism: &str, role: &str) -> String {
 
 /// Whether `name` is a DNS label: 1 to 63 lowercase letters, digits and
 /// `-`, neither first nor last a `-`.
-fn habitat_name_ok(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 63 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !name.starts_with('-') && !name.ends_with('-')
+pub(crate) fn habitat_name_ok(name: &str) -> bool {
+    // GH #1758: `current` is the file that names the current habitat, beside
+    // the habitats' directories
+    name != "current"
+        && !name.is_empty() && name.len() <= 63 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !name.starts_with('-') && !name.ends_with('-')
 }
 
 /// The habitat's name for this run of `up`: the one it was born with (kept
@@ -2205,6 +2231,110 @@ fn backends_of(asked: Option<&str>) -> Result<String, String> {
         return Err("the habitat's backends are the operator's: name them in HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER".to_string());
     }
     Ok(backends)
+}
+
+/// GH #1758: `hale habitat list`: each habitat of this machine, a line each:
+/// `*` for the current one, its name, where it runs, whether its head
+/// answers, and its directory. The default directory is listed when it
+/// holds a habitat; a habitat's directory is listed by its own name.
+fn list() -> ExitCode {
+    let root = habitats_root();
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        for e in rd.flatten() {
+            let dir = e.path();
+            if let (true, Some(name)) = (dir.is_dir(), habitat_name_in(&dir)) {
+                found.push((name, dir));
+            }
+        }
+    }
+    found.sort();
+    if found.is_empty() {
+        println!("no habitat on this machine under {} (`hale habitat up` births one)", root.display());
+        return ExitCode::SUCCESS;
+    }
+    let here = PathBuf::from(local_habitat_dir());
+    let width = found.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    for (name, dir) in &found {
+        let mark = if *dir == here { "*" } else { " " };
+        let pointer = remote::pointer_at(dir);
+        let runs = match &pointer {
+            Some(p) => format!("on {}", p["host"].as_str().unwrap_or("?")),
+            None => "on this machine".to_string(),
+        };
+        let kept = std::fs::read_to_string(dir.join("head.url")).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        let head = kept.or_else(|| pointer.as_ref().and_then(|p| p["head"].as_str().map(str::to_string)));
+        let answers = match head {
+            Some(url) if remote::answers(&url) => format!("head answers at {url}"),
+            Some(url) => format!("head does not answer at {url}"),
+            None => "no head recorded".to_string(),
+        };
+        println!("{mark} {name:<width$}  {runs}; {answers}  {}", dir.display());
+    }
+    ExitCode::SUCCESS
+}
+
+/// GH #1758: `hale habitat use <name>`: write the current habitat. The name
+/// must be a habitat of this machine's (`hale habitat list`).
+fn use_habitat(name: &str) -> ExitCode {
+    if !habitat_name_ok(name) {
+        eprintln!("hale habitat use: `{name}` is not a habitat name (a DNS label: lowercase letters, digits and `-`, at most 63)");
+        return ExitCode::from(2);
+    }
+    let dir = habitat_dir_of(name);
+    if !habitat_present(&dir) {
+        eprintln!("hale habitat use: this machine holds no habitat `{name}` (`hale habitat list` names those it does; `hale habitat up --name {name}` births one)");
+        return ExitCode::from(2);
+    }
+    if let Err(e) = write_current(name) {
+        eprintln!("hale habitat use: {e}");
+        return ExitCode::from(1);
+    }
+    println!("current habitat: {name} ({})", dir.display());
+    if let Ok(v) = std::env::var(HABITAT_ENV) {
+        if !v.trim().is_empty() && v.trim() != name {
+            println!("note: HALE_HABITAT={} names another in this shell, and wins over the current one", v.trim());
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// GH #1758: write `name` as the current habitat.
+fn write_current(name: &str) -> Result<(), String> {
+    let file = current_habitat_file();
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&file, format!("{name}\n")).map_err(|e| format!("write {}: {e}", file.display()))
+}
+
+/// GH #1758: after a `down`, the current habitat is forgotten with it: when
+/// the habitat the current file names (`name`) holds nothing any more, the
+/// file goes, and the machine's default is current again.
+fn forgot_current(name: Option<&str>) {
+    let Some(name) = name else { return };
+    let file = current_habitat_file();
+    let named = std::fs::read_to_string(&file).ok().map(|t| t.trim().to_string());
+    if named.as_deref() == Some(name) && !habitat_present(&habitat_dir_of(name)) {
+        let _ = std::fs::remove_file(&file);
+    }
+}
+
+/// GH #1758: which habitat `up --name <asked>` acts on, when neither
+/// HALE_DNA_HABITAT nor `--habitat`/HALE_HABITAT names one: the habitat of
+/// that name where one is (its own directory, or the default one that holds
+/// it); else the current habitat's directory when it holds none yet (a
+/// first habitat is born where a machine's first always was); else a
+/// directory of its own, `<root>/<asked>`. `None` when that is the
+/// directory this command already acts on.
+fn up_directory(asked: &str) -> Option<PathBuf> {
+    if std::env::var("HALE_DNA_HABITAT").is_ok_and(|v| !v.is_empty()) || std::env::var(HABITAT_ENV).is_ok_and(|v| !v.trim().is_empty()) {
+        return None;
+    }
+    let here = PathBuf::from(local_habitat_dir());
+    let named = habitat_dir_of(asked);
+    let target = if habitat_present(&named) || habitat_present(&here) { named } else { here.clone() };
+    (target != here).then_some(target)
 }
 
 fn up(args: &[String]) -> ExitCode {
@@ -2269,6 +2399,53 @@ fn up(args: &[String]) -> ExitCode {
             }
         }
         i += 1;
+    }
+    // GH #1758: a habitat `--habitat` (HALE_HABITAT) names is born with that
+    // name; `--name` cannot ask another of it
+    if std::env::var("HALE_DNA_HABITAT").map_or(true, |v| v.is_empty()) {
+        if let Some(selected) = std::env::var(HABITAT_ENV).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+            match &asked_name {
+                Some(a) if *a != selected => {
+                    eprintln!("hale habitat up: `--name {a}` and the habitat `{selected}` (`--habitat` or HALE_HABITAT) differ: name one");
+                    return ExitCode::from(2);
+                }
+                _ => asked_name = Some(selected),
+            }
+        }
+    }
+    // GH #1758: `up --name <name>` acts on the habitat of that name, born in
+    // a directory of its own when this machine already holds another, and
+    // makes it the current one
+    if let Some(asked) = asked_name.as_deref() {
+        if !habitat_name_ok(asked) {
+            eprintln!("hale habitat up: `--name {asked}`: a habitat's name is a DNS label: 1 to 63 lowercase letters, digits and `-`, neither first nor last a `-` (and not `current`)");
+            return ExitCode::from(2);
+        }
+        if let Some(dir) = up_directory(asked) {
+            let Ok(exe) = std::env::current_exe() else {
+                eprintln!("hale habitat up: this toolchain cannot find its own executable");
+                return ExitCode::from(1);
+            };
+            // the same `up`, run with the habitat named
+            let status = Command::new(exe).arg("habitat").arg("up").args(args).env(HABITAT_ENV, asked).status();
+            return match status {
+                Ok(s) if s.success() => match write_current(asked) {
+                    Ok(()) => {
+                        println!("{:<8}{asked} is the current habitat ({}); `hale habitat use` changes it", "current", dir.display());
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("hale habitat up: {e}");
+                        ExitCode::from(1)
+                    }
+                },
+                Ok(s) => ExitCode::from(s.code().unwrap_or(1).clamp(1, 255) as u8),
+                Err(e) => {
+                    eprintln!("hale habitat up: {e}");
+                    ExitCode::from(1)
+                }
+            };
+        }
     }
     let on_host = match up_host(on_host, ssh_user.is_some() || ssh_port.is_some()) {
         Ok(h) => h,
@@ -3818,7 +3995,7 @@ pub(crate) fn projects_rooted_in(listed: &str, root: &Path, recorded: &str) -> V
     let text = root.display().to_string();
     let under = format!("{text}/");
     let home = std::env::var("HOME").unwrap_or_default();
-    let mine = habitat_project_at(&format!("{home}/.local/share/hale/habitat/local"));
+    let mine = developer_habitat_projects(&home);
     let here = local_habitat_dir();
     let current = if here == text || here.starts_with(&under) { None } else { Some(habitat_project_at(&here)) };
     let mut projects: Vec<String> = listed
@@ -3827,11 +4004,31 @@ pub(crate) fn projects_rooted_in(listed: &str, root: &Path, recorded: &str) -> V
         .filter(|(p, wd)| !p.is_empty() && (*wd == text || wd.starts_with(&under)))
         .map(|(p, _)| p.to_string())
         .chain(recorded.lines().filter(|l| !l.is_empty()).map(str::to_string))
-        .filter(|p| *p != mine && Some(p) != current.as_ref())
+        .filter(|p| !mine.contains(p) && Some(p) != current.as_ref())
         .collect();
     projects.sort();
     projects.dedup();
     projects
+}
+
+/// GH #1758: the compose projects of the developer's own habitats, every one
+/// under `$HOME` (`<home>/.local/share/hale/habitat/<name>`, the default
+/// `local` always among them), as `dna::developer_habitat_projects` lists
+/// them: none is a teardown's.
+pub(crate) fn developer_habitat_projects(home: &str) -> Vec<String> {
+    let root = PathBuf::from(format!("{home}/.local/share/hale/habitat"));
+    let mut out = vec![habitat_project_at(&root.join(super::DEFAULT_HABITAT_DIR).display().to_string())];
+    if let Ok(rd) = std::fs::read_dir(&root) {
+        for e in rd.flatten() {
+            let dir = e.path();
+            if dir.is_dir() && super::habitat_present(&dir) {
+                out.push(habitat_project_at(&dir.display().to_string()));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The compose projects `root` owns by what lies under it, as
@@ -3839,7 +4036,7 @@ pub(crate) fn projects_rooted_in(listed: &str, root: &Path, recorded: &str) -> V
 /// theirs is left to carry a working directory (a project whose containers
 /// went keeps its network and its volumes): each directory an `ssh` host
 /// was handed a render in (`<home>/.hale/habitat/<project>/…`), and each
-/// habitat born there (`…/hale/habitat/local`, its project
+/// habitat born there (`…/hale/habitat/<name>`, `local` among them, its project
 /// [`habitat_project_at`]). Never a project one of whose containers (in
 /// docker's `listed`) ran from outside `root`.
 pub(crate) fn owned_projects(root: &Path, listed: &str) -> Vec<String> {
@@ -3860,7 +4057,8 @@ pub(crate) fn owned_projects(root: &Path, listed: &str) -> Vec<String> {
             let grand = dir.parent().and_then(|g| g.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             if parent == "habitat" && grand == ".hale" {
                 found.push(name);
-            } else if name == "local" && parent == "habitat" && grand == "hale" {
+            } else if parent == "habitat" && grand == "hale" {
+                // GH #1758: every habitat's directory, `local` and the named ones
                 found.push(habitat_project_at(&path.display().to_string()));
             } else {
                 stack.push(path);
@@ -5130,9 +5328,18 @@ mod tests {
         std::fs::create_dir_all(d.join("home/.hale/habitat/elsewhere/x")).unwrap();
         let born = format!("{}/home/.local/share/hale/habitat/local", d.display());
         std::fs::create_dir_all(format!("{born}/genome")).unwrap();
+        // GH #1758: a named habitat beside it, and the current file
+        let named = format!("{}/home/.local/share/hale/habitat/work", d.display());
+        std::fs::create_dir_all(format!("{named}/genome")).unwrap();
+        std::fs::write(format!("{}/home/.local/share/hale/habitat/current", d.display()), "work\n").unwrap();
         let listed = "elsewhere|/home/someone/.local/share/hale/habitat/local/allocations/x\n";
         assert_eq!(owned_projects(&d, listed), {
-            let mut v = vec!["hale-habitat-local-aa-localhost".to_string(), "hale-habitat-local-aa-localhost-abc".to_string(), habitat_project_at(&born)];
+            let mut v = vec![
+                "hale-habitat-local-aa-localhost".to_string(),
+                "hale-habitat-local-aa-localhost-abc".to_string(),
+                habitat_project_at(&born),
+                habitat_project_at(&named),
+            ];
             v.sort();
             v
         });
@@ -5149,7 +5356,7 @@ mod tests {
             _ => Docker::Answered(String::new()),
         };
         down_under_with(&d, &mut dock).unwrap();
-        assert_eq!(downs.len(), 3, "each owned project is taken down: {downs:?}");
+        assert_eq!(downs.len(), 4, "each owned project is taken down: {downs:?}");
         assert!(!downs.contains(&"elsewhere".to_string()), "never one that runs from outside the root");
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -5207,6 +5414,26 @@ mod tests {
         down_under_with(&d, &mut dock).unwrap();
         assert!(!touched, "nothing was taken down");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// GH #1758: every habitat under a home is the developer's, `local`
+    /// whether or not one is born there, and each named one that holds a
+    /// habitat; a directory that holds none, and the current file, are not.
+    #[test]
+    fn every_habitat_under_home_is_the_developers() {
+        let home = root("developer-habitats");
+        let at = |n: &str| home.join(".local/share/hale/habitat").join(n);
+        std::fs::create_dir_all(at("work").join("genome")).unwrap();
+        std::fs::write(at("work").join("name"), "work\n").unwrap();
+        std::fs::create_dir_all(at("away")).unwrap();
+        std::fs::write(at("away").join("remote.json"), "{\"name\": \"away\", \"host\": \"box\"}").unwrap();
+        std::fs::create_dir_all(at("empty")).unwrap();
+        std::fs::write(at("current"), "work\n").unwrap();
+        let got = developer_habitat_projects(&home.display().to_string());
+        let mut want: Vec<String> = ["local", "work", "away"].iter().map(|n| habitat_project_at(&at(n).display().to_string())).collect();
+        want.sort();
+        assert_eq!(got, want);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// A genome born before its seed was committed at birth: the toolchain's

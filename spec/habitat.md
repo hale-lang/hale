@@ -26,11 +26,51 @@ answers it on `Commands::org` as its `habitat`'s `name`, § A sapling's
 body), and the operator face's first screen shows it
 as the habitat's name.
 
-The local habitat is one docker compose project per machine, named for the
-habitat, with a service per allocation, under
-`${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`. `HALE_DNA_HABITAT`
-names that directory outright (a test's or a suite slice's habitat; the
-developer's stays the default).
+The local habitat is one docker compose project, named for the habitat and
+a short hash of its directory, with a service per allocation, under
+`${XDG_DATA_HOME:-~/.local/share}/hale/habitat/<directory>`.
+
+**A machine may hold several habitats** (GH #1758): a home habitat and a
+work one, a throwaway one beside the real one, a laptop-only one beside one
+on a server. Each lives in a directory of its own under
+`${XDG_DATA_HOME:-~/.local/share}/hale/habitat/`, a habitat born here or a
+pointer to one on another machine (§ A habitat on another machine), and two
+of them share nothing: two compose projects (each project name hashes its
+own directory), two records. Which one a command acts on:
+
+1. the directory `HALE_DNA_HABITAT` names outright (a test's or a suite
+   slice's habitat);
+2. else the habitat `--habitat <name>` names, on any `hale habitat` or
+   `hale dna` verb, or `HALE_HABITAT=<name>` (for a script, or two at
+   once): the flag runs the command with `HALE_HABITAT` set, so whatever
+   the command runs acts on it too;
+3. else the **current habitat**: the name `hale habitat use <name>` wrote
+   to `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/current`;
+4. else `local`, the directory a machine's first habitat has always had.
+
+So a machine with one habitat, no current file and no flag acts on `local`,
+as it always did, and needs no migration. A name reaches its habitat's
+directory, `…/hale/habitat/<name>`, or the `local` directory when that is
+where the habitat of that name lives: a habitat born `--name home` before
+habitats had directories of their own is reached as `home` where it is.
+`current` names no habitat (it is the file's), and `up --name current` is
+refused.
+
+`hale habitat up --name <name>` acts on the habitat of that name and makes
+it current. Where none is, it is born: in the current directory when that
+holds no habitat yet (a machine's first habitat is born in `local`, as
+before), else in `…/hale/habitat/<name>`, beside the others. `up` ends with
+a `current` line when the current habitat changed. `--habitat <name>` with
+`up` births one of that name too, and does not change the current habitat;
+`--habitat` and a different `--name` are refused (exit 2). `hale habitat
+list` prints each habitat of the machine, a line each: `*` for the one this
+command would act on, its name, where it runs (`on this machine`, or `on
+<host>` for a pointer), whether its head answers, and its directory. `hale
+habitat use <name>` takes only a habitat the machine holds (exit 2
+otherwise). A `down` that leaves the current habitat holding nothing (a
+`--forget`) removes the current file, and `local` is current again. No
+teardown ever takes down any habitat under the developer's `$HOME`, the
+current one or another, whatever a fixture's root holds.
 
 ## Hosts, providers and placement
 
@@ -188,8 +228,10 @@ record's identity), `head.url`, and the head's launch token
 (`face-state/head.token`, 0600). `up` and `status`, local or through a
 pointer, end with a `sign in` line while the face answers: the face's URL
 with that token (`/?token=…`), the link that opens the face once and sets
-its session, which is otherwise printed only in the face's own log. A machine points at one habitat, and one
-that runs a habitat of its own points at none. A second `up --host` with the
+its session, which is otherwise printed only in the face's own log. A habitat's
+directory points at one habitat, and one that holds a habitat of its own points
+at none; a machine reaches several through several directories (`up --host
+<h> --name <name>`, above). A second `up --host` with the
 pointer's name upgrades that habitat in place; its host may be named another
 way (a bare `rack-a` for a recorded `rack-a.example.net`, or any name resolving
 to an address the recorded one has), and the pointer keeps the spelling it
@@ -1264,8 +1306,14 @@ Board commands (`Commands::add_host`, `::probe_host`, `::plan_remove_host`,
 `::remove_host`, `spec/dna.md`): they call the head's HTTP surface (or its
 socket), so the habitat's head must be up.
 
+Every `hale habitat` and `hale dna` verb takes `--habitat <name>` (or
+`HALE_HABITAT=<name>`): the habitat it acts on, in place of the current one
+(§ What the habitat is).
+
 | Verb | Behaviour |
 |---|---|
+| `list` | Each habitat of this machine, a line each: `*` for the one a command acts on, its name, `on this machine` or `on <host>` (a pointer), whether its head answers (at the URL it recorded), and its directory. A machine with none says so. |
+| `use <name>` | Makes `<name>` the current habitat, written to `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/current`: every verb acts on it until another `use` (`HALE_HABITAT` or `--habitat` still wins for one command, and `use` says so when the shell names another). Refused, exit 2, for a name the machine holds no habitat of. |
 | `up --host <name> [--user <user>] [--port <n>] [--image <tag>] [--backends own\|operator] [--name <name>] [--attach]` | Runs the habitat on another machine over SSH and keeps a pointer to it here (§ A habitat on another machine). Idempotent. A habitat already running there with no pointer here is refused unless `--attach`. `--host local` is this machine, as it is to `graft`, `place` and the host verbs: the same as `up` without `--host`, a habitat here and no SSH (`--user` and `--port`, another machine's login, are refused with it, exit 2). |
 | `up [--no-body] [--image <tag>] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider (one with no server of its own, every part held by the habitat's servers, is reported `held by the habitat's own servers`), migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its compose project (`docker compose up -d`, its image `--image <tag>` or `HALE_HABITAT_IMAGE` when either names one; else, when this machine has no image of this toolchain, the release's published `ghcr.io/hale-lang/hale:<version>` pulled and used when it runs this very toolchain (`hale --version` alike); else built from the embedded `Dockerfile` and `hale.pin`), waiting on their probes: three minutes once the face has what it runs, and while the face's log says it is still building the head's programs (a first start, or one after the toolchain changed) up to twenty minutes; a face or body that does not come up is reported with its last lines of output. `--no-body` births it, brings its backing allocations up and records its placement, and starts no `body` or `face`. Idempotent, and after an `up` that failed as well (§ Long-lived, and only its acts provision). `--profile` takes `local`; any other is refused (exit 2). |
 | `image build [<checkout>]` | Builds the habitat toolchain image from `<checkout>` (`.` by default) using its `Dockerfile`, tagged `hale-habitat:<pin>`, and prints the tag on stdout. |

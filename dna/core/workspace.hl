@@ -721,7 +721,7 @@ fn scratch_compose_projects(dir: String) -> DockerAnswer {
 @bounded_by(listed)
 fn scratch_owned_projects(listed: String, dir: String) -> String {
     let found = run_tool(
-        "sh\n-c\nfind \"$1\" -type d \\( -path '*/.hale/habitat/*' -o -path '*/hale/habitat/local' \\) -prune -print 2>/dev/null; exit 0\nsh\n"
+        "sh\n-c\nfind \"$1\" -type d \\( -path '*/.hale/habitat/*' -o -path '*/hale/habitat/*' \\) -prune -print 2>/dev/null; exit 0\nsh\n"
             + dir,
     );
     let mut outside = "";
@@ -744,7 +744,8 @@ fn scratch_owned_projects(listed: String, dir: String) -> String {
         let path = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if len(path) == 0 { continue; }
-        let project = if std::str::ends_with(path, "/hale/habitat/local") {
+        // GH #1758: every habitat's directory (`local` and the named ones)
+        let project = if !std::str::contains(path, "/.hale/habitat/") {
             habitat_project_at(path)
         } else {
             path[(last_slash(path) + 1)..len(path)]
@@ -764,7 +765,8 @@ fn scratch_owned_projects(listed: String, dir: String) -> String {
 // with it.
 @bounded_by(listed)
 fn scratch_projects_in(listed: String, dir: String, recorded: String) -> String {
-    let mine = developer_habitat_project();
+    // GH #1758: every habitat of the developer's, not only the default one
+    let mine = developer_habitat_projects();
     let here = local_habitat_dir();
     let current = if here == dir || std::str::starts_with(here, dir + "/") {
         ""
@@ -779,7 +781,12 @@ fn scratch_projects_in(listed: String, dir: String, recorded: String) -> String 
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let bar = std::str::index_of(line, "|");
         let project = if bar < 0 { line } else { line[0..bar] };
-        if len(project) == 0 || project == mine || project == current { continue; }
+        if len(project) == 0
+            || std::str::contains("\n" + mine, "\n" + project + "\n")
+            || project == current
+        {
+            continue;
+        }
         if bar < 0 { out = line_set_add(out, line); continue; }
         let wd = line[(bar + 1)..len(line)];
         if wd == dir || std::str::starts_with(wd, dir + "/") { out = line_set_add(out, project); }
