@@ -4460,6 +4460,78 @@ fn a_match_bindings_type_and_its_arms_types_are_held_by_the_check() {
     );
 }
 
+/// GH #2046: a match expression's block arm that leaves on every path
+/// before its end is a diverging arm, by F.48's judgment, whatever
+/// unreachable statements follow: `0 -> { return 2; println("x"); }` was
+/// judged by its last statement, called a unit arm, and the match refused
+/// in both the check and the build as mixing `()` and `Int` (v0.34.0; v0.33.0
+/// built it). They check, build and run; a block arm whose leaving is
+/// conditional is still a unit arm, refused as one.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_match_arm_that_leaves_before_its_end_diverges() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "fn f(n: Int) -> Int {\n\
+                 return match n {\n\
+                     0 -> { return 2; println(\"unreachable\"); },\n\
+                     _ -> 1,\n\
+                 };\n\
+             }\n\
+             fn main() { println(f(0)); println(f(3)); }\n",
+            "arm_returns_then_dead_code",
+            "2\n1\n",
+        ),
+        (
+            "fn g(n: Int) -> Int {\n\
+                 let x = match n { 0 -> { if n == 0 { return 20; } else { return 30; } println(\"x\"); }, _ -> n + 1 };\n\
+                 return x;\n\
+             }\n\
+             fn main() { println(g(0)); println(g(4)); }\n",
+            "arm_if_else_returns_then_dead_code",
+            "20\n5\n",
+        ),
+        (
+            "fn h(xs: [Int; 3]) -> Int {\n\
+                 let mut t = 0;\n\
+                 for x in xs { let v = match x { 2 -> { continue; t = 100; }, _ -> x * 10 }; t = t + v; }\n\
+                 return t;\n\
+             }\n\
+             fn main() { println(h([1, 2, 3])); }\n",
+            "arm_continues_then_dead_code",
+            "40\n",
+        ),
+        (
+            // a `while true` whose only `break` leaves a nested loop never
+            // completes (F.48), so the arm diverges
+            "fn f(n: Int) -> Int {\n\
+                 let x = match n { 0 -> { while true { for i in 0..3 { break; } } }, _ -> n + 1 };\n\
+                 return x;\n\
+             }\n\
+             fn main() { println(f(1)); }\n",
+            "arm_endless_loop_with_a_nested_break",
+            "2\n",
+        ),
+    ];
+    for (src, tag, want) in cases {
+        let out = build_and_run_probe(src, &format!("arm_leaves_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
+        assert_eq!(out, *want, "{tag}:\n{src}");
+    }
+    assert_refused_by_the_check(
+        &[(
+            "fn f(n: Int) -> Int {\n\
+                 let x = match n { 0 -> { if n > 0 { return 2; } println(\"x\"); }, _ -> 1 };\n\
+                 return x;\n\
+             }\n\
+             fn main() { println(f(0)); }\n",
+            "match n { 0 -> { if n > 0 { return 2; } println(\"x\"); }, _ -> 1 }",
+            "match expression arms have mismatched types: `()` vs `Int`",
+        )],
+        "arm_leaves_conditionally",
+    );
+}
+
 /// GH #2016: a block used as a statement ending in a call with no `;`
 /// is the call statement (spec/semantics.md § "Expressions — `if` and
 /// block tails"): `if c { println("x") }` and a statement match's arm

@@ -168,10 +168,13 @@ Phase 2b entry in `spec/stdlib.md`.
   disagrees with a valued arm: `match c { 1 -> 5, _ -> {} }` is
   refused at the match ("match expression arms have mismatched
   types: \`Int\` vs \`()\`"), as an `if` expression's mismatched
-  arms are. A block arm that leaves (its last statement a `return`,
-  `fail`, `break`, `continue`, an endless loop, or an `if`/`match`
-  each of whose branches leaves) is a diverging arm and supplies no
-  type. Until GH #2016 the check judged only expression arms (and a
+  arms are. A block arm that leaves on every path, as § "Definite
+  return" judges a path (a `return`, `fail`, `break`, `continue`, an
+  endless loop, or an `if`/`match` each of whose branches leaves,
+  wherever it stands in the block: `0 -> { return 2; println("x"); }`
+  leaves before its unreachable last statement), is a diverging arm
+  and supplies no type (GH #2046; v0.34.0 judged only the arm's last
+  statement and refused that arm as `()`). Until GH #2016 the check judged only expression arms (and a
   binding as an arm's value carried no type), so `S::B(v) -> v, _ ->
   "s"` and the block arm above checked and the build refused them. F.18
   exhaustiveness applies in both positions. The only reachable
