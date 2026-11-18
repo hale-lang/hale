@@ -8,6 +8,161 @@ behavior.
 
 ## Unreleased
 
+## v0.35.0 — how a value reads (2026-11-18)
+
+A record or an enum variant now declares how it reads for people, with a `@display` template, and `{x:?}` still shows its structure. `///` doc comments reach every document a surface generates. An admin machine can hold more than one habitat. Most of the remaining work is fixes from a downstream handoff's first-week report: a check that refused at the build, a ring that grew, a publish that was lost, a supervisor that did not restart. Each change that alters a program that built is listed under Breaking with its migration, measured against v0.34.0. `std::json::Builder` now quotes, as v0.33.0 and v0.34.0 announced.
+
+**How a value reads (RFC #2035, F.54).**
+- `@display("${dollars}.{cents:0>2} {currency}")` on a type, or `@display("other: {0}")` on an enum variant, is the text its values render as. `println`, `print`, `to_string`, `String + x` and f-strings all use it, and a nested value renders by its own template.
+- The template is checked as an f-string is, it runs no code, and its output is charged to the caller as the equivalent f-string would be.
+- `{x:?}` renders the structural form at every depth, past every template.
+- `T::display(v)` names the rendering and can be passed as a function value (#2061).
+
+**Doc comments on a surface.** `///` above a type, field, variant, fn, parameter, locus, surface or row is carried into the following, and moves no digest (#2062):
+- the description and the inventory;
+- OpenAPI `summary` and `description`, and JSON Schema `description`;
+- MCP tools, `.proto` comments, and the TypeScript, JavaScript and Hale clients;
+- `hale api describe` and the editor's hover.
+
+**Strings.** `std::str::split`, `lines` and `words` start element chains: `std::str::words(s).filter(len(it) > 2).count()` is the `for` loop's single linear scan, with no list of parts built (#2060). A chain under `!` is rewritten (#2060). `std::net::resolve(host)` lists every address a name resolves to (#2036, experimental).
+
+**`let` means immutable.** A field or element write through a `let` binding (`p.x = 99`, `xs[0] = 7`) warns `deprecated:`, naming the binding to declare `let mut`. v0.36 refuses it (#2055, GH #2022).
+
+**Fixes from a downstream handoff.**
+- `hale check` refuses a misspelled enum variant at the path and suggests the nearest one; it used to pass the check and fail the build (#2041).
+- A `@form(ring_buffer)` of records or strings stays flat in steady state. Before, 4M pushes grew it by ~78 MB (#2044).
+- A publish from an earlier sibling's `birth()` reaches a later sibling when `main` has no `run()` (#2047).
+- `on_unmatched: fail` no longer panics on a delivered `String`-keyed or reserved message, and `K <- v or { … }` builds (#2053).
+- A child that fails from a bus handler is restarted or absorbed as one failing from `run()` is (#2052).
+- Quantities keep their unit through `m.entries` and `v.items` (#2049).
+- The unbounded-allocation and keyed-field notices fire on the right shapes (#2050).
+- A `*_bench.hl` file is a program of its own, so a bench beside its code passes both `hale check` and `hale bench` (#2051).
+- A native `shm_ring` refuses a payload it cannot copy soundly (#2045).
+- A match arm that returns before unreachable code diverges again, fixing a v0.34.0 regression (#2054).
+
+**The habitat.**
+- `hale habitat list`, `hale habitat use <name>`, and `--habitat <name>` on any habitat or dna verb pick between several habitats on one machine. A machine with one habitat behaves as before (#2063).
+- An `http::Rest` exposure below the main locus can mount the main locus's `ws::Hub` (#2056).
+- `pond/pq` runs a transaction on one pooled connection (#2057).
+
+**Runtime, build and CI.**
+- A `--target wasm32` build takes its runtime from the cache and drops unused stdlib functions; a trivial build went from about 4 s to 0.2 s (#2037).
+- On macOS, a `unix://` listener exits promptly (#2040).
+- CI reaches codeberg.org at an IPv4 address after its DNS answered runners with only IPv6 (#2065), and the test suite reaps its served children (#2038).
+
+**Docs.** The book no longer says an annotation joins arms of different members into a set (#2042). The example gallery link points at a page that answers (#2043).
+
+### Breaking
+
+Measured against v0.34.0. The first group changes what a program that built does. The second refuses programs that built. The last is deprecated now and refused in v0.36.
+
+*Programs that built and now behave differently*
+
+- **`std::json::Builder.field(name, value)` and `value(v)` quote and escape their argument** (#2058, GH #1943). They wrote it raw, so `b.field("name", "alice")` wrote `"name": alice`. v0.33.0 and v0.34.0 warned at each call. Migration: hand encoded JSON to `raw_field(name, json)` / `raw_value(json)`.
+- **A parent's publish to its one field child that declares a `closure` or a `birth_check` goes through the bus** (#2052, GH #2028). The child's handler runs at the parent's next drain or `yield`, not inside the publish statement. Migration: `yield;` before reading the child's state, or have the child publish what the parent needs.
+- **A quantity read through `m.entries` or `v.items` prints its unit** (#2049, GH #2026): `1400cent` where it printed `1400`. Migration: divide by the unit (`e.amount / 1cent`) to print the bare count.
+
+*Programs that built and are now refused*
+
+- **A file call under `@no_block`** (#2048, GH #2032). Every `std::io::fs` call that reaches the file system except `extension` is classified `block`. `@no_block`, `@effects(none: {block})` and a cooperative subscriber's `run()` refuse one. Migration: move the file I/O into a `pinned` locus reached over the bus, or drop `block` from the assertion.
+- **A native `shm_ring` whose payload is not flat-shapeable** (#2045, GH #2030): a `String`, `Bytes`, tuple, enum or list in it. The ring copied a `String` as a pointer into the publisher's memory. A `shm_ring` name over 31 bytes is refused too. Migration: carry fixed-size scalars on the ring and send variable data on `unix(...)`; shorten the name.
+- **A declaration in a `*_bench.hl` file used by its directory's seed, or the seed's names used bare in a bench** (#2051, GH #2031). Migration: move shared declarations into an ordinary `.hl` file; have the bench `import "." as app;` and call `app::name(…)`.
+
+*Deprecated, refused in v0.36*
+
+- Deprecated: **a field or element write through a `let` binding** (`p.x = …`, `p.x += …`, `xs[i] = …`, at any depth) warns (#2055, GH #2022). Migration: declare it `let mut`; the warning names the binding.
+
+The item-level notes follow.
+
+### Added
+- `std::net::resolve(host)` (GH #1908, experimental): every address the system resolver gives for a host name, A and AAAA, as a `bounded[String; 32]` of text (`127.0.0.1`, `::1`), so a program can check where a name points before it dials one of those addresses. It fails with an `IoError` whose `kind` is `not_found`, `temporary_failure` or `invalid` (and `detail` the resolver's message); under `target wasm` the namespace is refused at check.
+
+### Changed
+- A `--target wasm32` build compiles the wasm32 runtime once and takes it from the runtime-object cache after that, and drops the stdlib functions the module never calls before optimizing it (GH #1993): a trivial build went from about 4 s to 0.2 s. The module's exports are unchanged.
+
+### Fixed
+- Test suite: a served child process is killed and reaped however its test ends (`child::Reaped`), so a failed or macOS-skipped `api_serve_memory` no longer leaves its echo servers running; the hub's `drop_new` shedding test no longer depends on how fast the kernel drains a loopback socket (its client advertises a 4 KB window), which made it flaky on loaded runners.
+
+### Fixed
+- macOS: a program with a `unix://` listen binding exits promptly. The exit quiesce stopped the listener's reader with a `shutdown()` that Darwin ignores for a listening socket, so every exit waited out the 500 ms bound and printed `[bus] ingress quiesce: reader(s) still draining` (GH #1991). The reader now stops on a pipe it polls, as a `udp://` reader does, after reading what its peers have queued.
+
+### Fixed
+- `hale check` refuses a path to an enum variant the enum does not declare (`Place::Wrok`), as a value, an operand, a constructor call or a `match` pattern, directly or through an alias (a concrete alias of a generic enum, `type I = E<Int>;`, included), at the path and with the nearest variant suggested ("did you mean `Work`?"). It used to check clean and the build refused it (#2023).
+
+### Docs
+- The book no longer says an annotated binding or a `-> Inbound` return joins `if`/`match` arms of different members into a set; it says they are not joined, as the spec does, and names the shapes that work (#2034).
+
+### Docs
+- The README and the book link the example gallery (`https://hale-lang.org/play/`) instead of `play.hale-lang.org`, which answers 404 while its compile service is offline (#2033).
+
+### Fixed
+
+- A `@form(ring_buffer)` of records, `String`s or `Bytes` no longer grows its arena on every `push`. A push into a full ring copies nothing, and `pop` hands back the caller's own copy and returns the ring's block for the next push, so a ring in steady state stays flat. Before, 4M pushes of a two-Int record into a full ring added ~78 MB. spec/forms.md now says what such a ring allocates (GH #2024).
+
+### Fixed
+- A publish from an earlier sibling's `birth()` to a later sibling's subscription is delivered when the `main locus` declares no `run()` (or an empty one). The cell was parked, claimed and posted, but nothing drained main's queue before the teardown reclaimed the tree, so it was lost without a word. Keyed subscriptions too (#2029).
+
+### Changed
+
+- Every `std::io::fs` call that reaches the file system is classified `block` as well as `syscall`. The calls are `read_file`, `read_bytes`, `write_file`, `write_bytes`, `write_file_append`, `rename`, `unlink`, `mkdir`, `mktemp`, `file_size`, `file_exists`, `list_dir_count` and `list_dir_at`. The docs and spec already said a file call blocks, but the effects registry did not. Now the `async_io` placement advisory and the classic-pool advisory warn on a file call, and `@no_block` refuses one. `extension` reads only its argument and is unchanged (GH #2032).
+
+### Fixed
+
+- A quantity field read through a form's iteration surface keeps its unit. Inside `for e in m.entries` over a `@form(hashmap)`, or `for x in v.items` over a `@form(vec)`, `e.amount` used to print `1400`. It now prints `1400cent`, as every other read of the field does, including through a `let` and in an f-string. The check bound the loop variable as an unknown type; it is now the form's cell (GH #2026).
+
+### Fixed
+
+- `hale check` no longer reports an unbounded allocation for a flow child (a type its parent `release`s) built once per iteration of the parent's `run()`. A flow child is reclaimed when its `run()` completes. A flow whose own `run()` loops, and an accepted child with no `release`, are still reported (GH #2027).
+- The notice that assigning a keyed field in `birth()` does not retarget the subscription (GH #737) now sees an assignment anywhere `birth()` runs: inside an `if`, a `match` arm, a loop or a block, and in a method of the locus's own that `birth()` calls (GH #2027).
+
+### Changed
+
+- The accept-without-release advisory now treats a parent as a daemon when its `run()` never returns by the starvation law's reading: `while !self.draining`, or a `while` on a Bool param nothing assigns. Before, only a literal `while true` counted. Such a parent that accepts children without `release` now gets the warning (GH #2027).
+
+### Changed
+
+- A `*_bench.hl` file is a program of its own, as a `*_test.hl` file is: it is never a member of its directory's seed. A bench beside the code it measures imports that directory (`import "." as app;`) and passes both `hale check <dir>` and `hale bench <dir>`. Before, no spelling passed both. `hale check <dir>` notes the bench, `hale check --workspace` checks it as its own program, and the editor checks it alone (GH #2031).
+- On macOS, `hale bench` prints `allocs/op unavailable on macOS` where it printed `- allocs/op`. The allocation-counting shim needs `-Wl,--wrap`, which macOS's linker lacks, so `std::diag::heap_alloc_count()` is `-1` in every macOS build. spec/stdlib.md and spec/testing.md now say so (GH #2031).
+
+### Fixed
+- A child that fails from a bus handler is recovered as one failing from `run()` is. After the supervisor's `restart(c)` its `birth()` and `run()` run again and its subscriptions are put back; after an absorb it stops and drops its subscriptions. Before, a restart re-ran nothing and an absorbed child kept handling messages. When the handler ran inside the child's own `run()`, the decision is carried out once that `run()` returns (#2028).
+
+### Fixed
+- `on_unmatched: fail`: a `String`-keyed publish that a subscriber matches no longer reads as unmatched, so its `or raise` no longer panics on a delivered message (#2025).
+- `on_unmatched: fail`: a publish from an earlier sibling's `birth()` to a later keyed subscriber of the same tree counts as matched. The subscriber's reservation takes the message and delivers it after its `birth()`, so `or raise` no longer panics (#2025).
+- `on_unmatched: fail`: `K <- v or { … }` builds and runs the block on no match, with `err: BusUnmatchedKey` in scope. It used to pass `hale check`, and then the build refused it (#2025).
+
+### Fixed
+- A `match` expression arm that leaves on every path before its end (`0 -> { return 2; println("unreachable"); }`) is a diverging arm again, beside the arms that supply the value. v0.34.0 judged the arm only by its last statement, called it a unit arm and refused the match for mixed arm types (#2046).
+
+### Changed
+
+- A field or element write through a binding declared with `let` warns: `let p = Point { x: 1, y: 2 }; p.x = 99;` and `let xs = [1, 2]; xs[0] = 7;` print `deprecated: … declare it \`let mut p\``. A `let` binding is immutable, and that covers the value it holds (spec/types.md § Mutability). A `push` into a `let` `bounded` list was already refused under the same rule. A parameter, a `for` element, a `match` payload and a binding that holds a locus are not affected (GH #2022).
+
+### Added
+- An `http::Rest` exposure held by a locus below the main locus can mount a `ws::Hub` (GH #1818). The hub stays the main locus's (its literal, sources, stream bindings and `requires`); the holder declares `hub: ws::Hub;` and the main locus passes its hub down (`Front { hub: self.hub }`). The listener, and the hub connections it takes over at the upgrade, run where the main locus places the holder, so a sub-locus on an `async_io` pool serves its REST surface and its hub on one port. A held mount whose param is not passed the main locus's hub, or that builds a hub of its own, is refused by `hale check`.
+
+### Added
+- `pond/pq`: `PgPool.transaction(body)` runs a transaction on one pooled connection, held from `BEGIN` to `COMMIT` (the body answered ok) or `ROLLBACK` (it did not, or a statement in it was refused) and released either way, while other operations use the rest of the pool (GH #1792). The body is a locus with `apply(tx: pq::PgConn) -> db::Status` (`pq::Transaction`); `PgConn.transaction(body)` runs one on a dedicated connection.
+
+### Added
+- `std::str::split(s, sep)`, `std::str::lines(s)` and `std::str::words(s)` start element chains (GH #1995 S2): `std::str::words(s).filter(len(it) > 2).count()`, `std::str::lines(log).any(std::str::starts_with(it, "ERROR"))`, `std::str::words(s).max(len(it)) or ""`. Every stage and terminal applies, a terminal needs no stage before it, and `first`/`find`/`min`/`max` answer the part with an `IndexError` on an empty selection. The chain is the `for` loop's single scan: linear, with no list of the parts built.
+
+### Fixed
+- A chain under a unary operator (`!xs.any(it > 1)`) is rewritten; its `it` was refused as an unknown identifier.
+
+### Added
+
+- `@display("…")` templates (RFC #2035, decisions F.54). A record, or an enum's variant, declares the text its values render as for people: `@display("${dollars}.{cents:0>2} {currency}") type Money { … }`, or `@display("other: {0}") Other(String)`. The holes name fields, or payload positions on a variant, with optional f-string format specs. `println`, `print`, `to_string`, `String + x` and f-strings all render through the template, and a nested value renders by its own. Each hole is checked as an f-string's is, and errors point at the template. A template goes only on a type that is already printable, so it never widens the printable set. It is refused on a locus, a set, an enum as a whole and a generic type.
+- `{x:?}`, a format-spec kind that renders the structural form (`Money { dollars: 12, … }`) past every `@display` template, at every depth.
+- `T::display(v) -> String` names a type's template rendering, and can be passed as a function value. The allocation summary and the `@budget` hot-path check count template rendering as the equivalent hand-written f-string.
+
+### Added
+- `///` doc comments are carried into every document a surface generates (GH #1674): the parser attaches each to the type, field, variant, fn or parameter, locus or param, surface or row it stands above, and the description (compiler and served), OpenAPI (the first line as an operation's `summary`, the rest as its `description`), JSON Schema `description`, MCP tool and input-schema descriptions, `.proto` leading comments, JSDoc in the TypeScript and JavaScript clients, doc comments in the Hale client, `hale api describe` and the editor's hover carry it. Docs move no digest. A doc comment that documents nothing is a warning, and `hale fmt` keeps every one where it is.
+
+### Added
+- An admin machine can hold more than one habitat (GH #1758): each lives in a directory of its own under `~/.local/share/hale/habitat/<name>/`, `hale habitat use <name>` makes one current, `--habitat <name>` (or `HALE_HABITAT`) on any `hale habitat` or `hale dna` verb acts on another for one command, and `hale habitat list` shows each habitat, where it runs and whether its head answers. `up --name <name>` acts on the habitat of that name and makes it current, born beside the others when the machine already holds one. A machine with one habitat behaves as before and needs no migration.
+
 ## v0.34.0 — enums and strings, written the short way (2026-11-17)
 
 This release is mostly RFC #1995: the enum and string code a program writes every day, made short. It also closes the 17 check/build divergences the parity gate surfaced once its draw stopped moving, gives a `match` arm's bindings their types, and puts every organization of a habitat in one list. One change makes a program that built behave differently, and two refuse programs that built; each is listed under Breaking with its migration. The `std::json::Builder` quoting change v0.33.0 announced for this release moves to v0.35.
