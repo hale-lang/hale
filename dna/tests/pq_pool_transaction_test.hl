@@ -1,0 +1,180 @@
+// dna/tests/pq_pool_transaction_test.hl — GH #1792: a transaction on a
+// pooled Postgres connection, in Postgres when HALE_DNA_MEMORY_DSN_OWNER
+// names one (CI's service container; dev's compose).
+//
+// `PgPool.transaction(body)` takes one of the pool's connections, BEGINs,
+// hands the body a PgConn on it, and COMMITs when the body answers ok or
+// ROLLBACKs when it answers not ok or a statement in it was refused; the
+// connection goes back to the pool however it ends. While the body holds
+// its connection, the rest of the pool serves other operations: a read
+// on another connection does not see the body's uncommitted row, and a
+// pool of one has nothing left for them (`busy`).
+
+import "../core" as dna;
+import "../core/pond/pq" as pq;
+import "../core/pond/db" as db;
+
+// The table this run writes: the pid keeps parallel runs apart.
+fn table() -> String { return "pq_pool_tx_" + to_string(std::process::pid()); }
+
+fn count_in(pool: pq::PgPool) -> Int {
+    let r = pool.query_one("SELECT count(*) FROM " + table());
+    std::test::assert(r.ok, "the count reads: " + r.err.kind + " " + r.err.detail);
+    return std::str::parse_int(std::str::trim(r.data)) or - 1;
+}
+
+// Inserts `n`, then reads the table through the pool (another
+// connection) and through its own: the outside read cannot see the row
+// until the transaction commits.
+locus Insert {
+    params {
+        pool: pq::PgPool;
+        n: Int = 1;
+        answer: Bool = true;
+        inside: Int = -1;
+        outside: Int = -1;
+        outside_kind: String = "";
+    }
+    fn apply(tx: pq::PgConn) -> db::Status {
+        let ins = tx.exec("INSERT INTO " + table() + " VALUES (" + to_string(self.n) + ")");
+        if !ins.ok { return db::Status { ok: false, err: ins.err }; }
+        let mine = tx.query_one("SELECT count(*) FROM " + table());
+        self.inside = std::str::parse_int(std::str::trim(mine.data)) or - 1;
+        let theirs = self.pool.query_one("SELECT count(*) FROM " + table());
+        if theirs.ok {
+            self.outside = std::str::parse_int(std::str::trim(theirs.data)) or - 1;
+        }
+        self.outside_kind = theirs.err.kind;
+        if !self.answer {
+            return db::Status {
+                ok: false,
+                err: db::DbError { kind: "declined", detail: "the body said no" },
+            };
+        }
+        return db::Status { ok: true };
+    }
+}
+
+// Runs a statement the server refuses, and answers ok anyway.
+locus Refused {
+    fn apply(tx: pq::PgConn) -> db::Status {
+        tx.exec("INSERT INTO " + table() + " VALUES (100)");
+        tx.exec("INSERT INTO no_such_table_here VALUES (1)");
+        return db::Status { ok: true };
+    }
+}
+
+main locus App {
+    params {
+        pool: pq::PgPool = pq::PgPool { size: 2 };
+        one: pq::PgPool = pq::PgPool { size: 1 };
+    }
+    run() {
+        let owner = std::env::var("HALE_DNA_MEMORY_DSN_OWNER");
+        if len(owner) == 0 {
+            eprintln(
+                "pq_pool_transaction_test: no HALE_DNA_MEMORY_DSN_OWNER; the pool was not exercised here",
+            );
+            return;
+        }
+        let d = dna::parse_dsn(owner);
+        std::test::assert(d.ok, "the DSN parses: " + d.why);
+        self.pool = pq::PgPool {
+            host: dna::reach_host(d.host), port: d.port, user: d.user, password: d.password,
+            database: d.database, sslmode: d.sslmode, size: 2,
+        };
+        let opened = self.pool.open();
+        std::test::assert(opened.ok, "the pool opens: " + opened.err.detail);
+        let made = self.pool.exec("CREATE TABLE " + table() + " (n int)");
+        std::test::assert(made.ok, "the table is made: " + made.err.detail);
+
+        // a body that answers ok commits; while it ran, another
+        // connection of the pool did not see its row, and its own did
+        let a = Insert { pool: self.pool, n: 1 };
+        let st = self.pool.transaction(a);
+        std::test::assert(st.ok, "the transaction commits: " + st.err.kind + " " + st.err.detail);
+        std::test::assert_eq_int(a.inside, 1, "the body's connection sees its own row");
+        std::test::assert_eq_int(
+            a.outside,
+            0,
+            "another connection of the pool does not see it before the commit",
+        );
+        std::test::assert_eq_int(
+            count_in(self.pool),
+            1,
+            "after the commit, every connection sees it",
+        );
+
+        // a body that answers not ok rolls back, and its answer is the call's
+        let b = Insert { pool: self.pool, n: 2, answer: false };
+        let no = self.pool.transaction(b);
+        std::test::assert(
+            !no.ok && no.err.kind == "declined",
+            "the body's answer is the call's: " + no.err.kind,
+        );
+        std::test::assert_eq_int(b.inside, 2, "its row was there inside");
+        std::test::assert_eq_int(count_in(self.pool), 1, "and is gone after the rollback");
+
+        // a statement the server refused leaves the transaction aborted:
+        // it rolls back whatever the body answers
+        let refused = self.pool.transaction(Refused { });
+        std::test::assert(
+            !refused.ok && refused.err.kind == "aborted",
+            "a refused statement rolls back: " + refused.err.kind,
+        );
+        std::test::assert_eq_int(count_in(self.pool), 1, "nothing of it landed");
+
+        // the connections went back idle: each serves a plain statement
+        // and a transaction again, one after another
+        let mut i = 0;
+        while i < 4 {
+            std::test::assert(
+                self.pool.exec("SELECT 1").ok,
+                "a released connection serves a statement",
+            );
+            i = i + 1;
+        }
+        let again = self.pool.transaction(Insert { pool: self.pool, n: 3 });
+        std::test::assert(again.ok, "a transaction runs again: " + again.err.detail);
+        std::test::assert_eq_int(count_in(self.pool), 2, "and commits");
+
+        // a pool of one: the transaction holds its only connection, so an
+        // operation the body asks of the pool finds none free (`busy`);
+        // the connection is the pool's again afterwards
+        self.one = pq::PgPool {
+            host: dna::reach_host(d.host), port: d.port, user: d.user, password: d.password,
+            database: d.database, sslmode: d.sslmode, size: 1,
+        };
+        std::test::assert(self.one.open().ok, "the pool of one opens");
+        let held = Insert { pool: self.one, n: 4 };
+        std::test::assert(self.one.transaction(held).ok, "the pool of one runs a transaction");
+        std::test::assert_eq_str(
+            held.outside_kind,
+            "busy",
+            "nothing is left of a pool of one while it holds a connection",
+        );
+        std::test::assert_eq_int(count_in(self.one), 3, "the connection is free once it ends");
+
+        // the statement-level forms still point at the body form
+        let b2 = self.pool.begin();
+        std::test::assert(
+            !b2.ok && std::str::contains(b2.err.detail, "transaction(body)"),
+            "begin on a pool names transaction(body)",
+        );
+
+        // a dedicated connection runs a body the same way
+        let c = dna::pq_conn(d);
+        std::test::assert(c.open().ok, "a dedicated connection opens");
+        let solo = c.transaction(Insert { pool: self.pool, n: 5 });
+        std::test::assert(solo.ok, "PgConn.transaction commits: " + solo.err.detail);
+        std::test::assert_eq_str(c.tx_status(), "idle", "and leaves the connection idle");
+        std::test::assert_eq_int(count_in(self.pool), 4, "its row landed");
+        c.close();
+
+        self.pool.exec("DROP TABLE " + table());
+        self.one.close();
+        self.pool.close();
+    }
+}
+
+fn main() { App { }; }

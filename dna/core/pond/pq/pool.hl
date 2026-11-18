@@ -20,12 +20,32 @@
 // same fd — exclusion holds for the duration of one pooled op.
 // Acquire→use→release is internal to each method; a caller never
 // holds a checked-out fd across calls. That's also why
-// transactions can't run on the pool (a txn must pin one
-// connection across begin..commit, which means holding it across
-// calls): begin/commit/rollback return an error directing the
-// caller to a dedicated PgConn.
+// begin/commit/rollback on the pool return an error (a txn must pin
+// one connection across begin..commit, which a call-at-a-time API
+// cannot hold).
+//
+// **Transactions** (GH #1792) run through `transaction(body)`: the
+// pool takes one free connection, BEGINs, hands the body a PgConn on
+// it (`Transaction.apply(tx)`), and COMMITs when the body answers ok,
+// ROLLBACKs when it answers not ok or a statement in it was refused
+// (the connection is `aborted`), then releases the connection —
+// however the body ends, since `apply` returns a value and so returns.
+// The body holds that one connection for its whole duration,
+// parked or not, while every other operation, and other
+// transactions, take the rest of the pool. A transaction that finds
+// no free connection answers `busy`, as every pooled op does.
 
 import "../db" as db;
+
+// Transaction — the body of a transaction on a pooled connection
+// (`PgPool.transaction`, and `PgConn.transaction` on a dedicated
+// one): `apply` is handed the connection the transaction holds, issues
+// its statements on it (never BEGIN, COMMIT or ROLLBACK: those are
+// the runner's), and answers ok to commit, not ok to roll back.
+// Implemented structurally by any locus with that method (F.20).
+interface Transaction {
+    fn apply(tx: PgConn) -> db::Status;
+}
 
 @form(vec)
 locus __FdVec {
@@ -238,10 +258,26 @@ locus PgPool {
         return r;
     }
 
-    // Transactions can't span pooled acquire/release cycles — a
-    // txn needs one pinned connection across begin..commit. Route
-    // callers to a dedicated PgConn instead of corrupting a shared
-    // one.
+    // transaction — run `body` in a transaction on one pooled
+    // connection, held from BEGIN to COMMIT or ROLLBACK and released
+    // after either (see the header). The answer is the body's when it
+    // rolled back, COMMIT's when it committed, and `busy` when no
+    // connection was free; a refused BEGIN releases the connection and
+    // runs nothing.
+    fn transaction(body: Transaction) -> db::Status {
+        let idx = self.__acquire();
+        if idx < 0 { return __pool_exhausted_status(); }
+        let fd = self.fds.get(idx) or - 1;
+        let c = PgConn { sock: fd, connected: true, tls: self.pool_tls };
+        let st = __run_transaction(c, body);
+        self.__release(idx);
+        return st;
+    }
+
+    // Statement-level transactions can't span pooled acquire/release
+    // cycles — a txn needs one pinned connection across
+    // begin..commit. Route callers to `transaction(body)`, or to a
+    // dedicated PgConn, instead of corrupting a shared one.
     fn begin() -> db::Status { return __pool_no_tx(); }
     fn commit() -> db::Status { return __pool_no_tx(); }
     fn rollback() -> db::Status { return __pool_no_tx(); }
@@ -251,7 +287,35 @@ locus PgPool {
 fn __pool_no_tx() -> db::Status {
     return db::Status { ok: false,
         err: db::DbError { kind: "unsupported", engine_code: 0,
-            detail: "transactions require a dedicated PgConn, not PgPool" } };
+            detail: "begin/commit/rollback on a PgPool: run the body with transaction(body), or use a dedicated PgConn" } };
+}
+
+fn __pool_exhausted_status() -> db::Status {
+    return db::Status { ok: false,
+        err: db::DbError { kind: "busy", engine_code: 0, detail: "pool exhausted" } };
+}
+
+// __run_transaction — BEGIN on `c`, run `body`, then COMMIT when it
+// answered ok and the connection is not `aborted` (a statement the
+// server refused leaves it so, and COMMIT would roll back), ROLLBACK
+// otherwise. A refused COMMIT is answered as it came, after a
+// ROLLBACK that leaves the connection idle for its next user.
+fn __run_transaction(c: PgConn, body: Transaction) -> db::Status {
+    let b = c.begin();
+    if !b.ok { return b; }
+    let st = body.apply(c);
+    if st.ok && c.tx_status() != "aborted" {
+        let done = c.commit();
+        if !done.ok { c.rollback(); }
+        return done;
+    }
+    c.rollback();
+    if st.ok {
+        return db::Status { ok: false,
+            err: db::DbError { kind: "aborted", engine_code: 0,
+                detail: "a statement of the transaction was refused, so it was rolled back" } };
+    }
+    return st;
 }
 
 fn __pool_exhausted_exec() -> db::ExecResult {
