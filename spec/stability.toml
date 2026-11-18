@@ -96,6 +96,7 @@ schema = 1
 "std::i256" = { tier = "experimental", why = "new (GH #1934)" }
 "std::io::h2" = { tier = "experimental", why = "the HTTP/2 transport is young and its hooks are all internal" }
 "std::io::mirror" = { tier = "experimental", why = "the double-mapped receive ring's hooks; internal to the transports" }
+"std::net" = { tier = "experimental", why = "new (GH #1908): `resolve` only, its return shape may grow a pinned-address dial" }
 "std::metrics" = { tier = "experimental", why = "observability is becoming pluggable; the metric API will move with it" }
 "std::observe" = { tier = "experimental", why = "the observe backends are new (GH #1592) and pluggable observability is in progress" }
 "std::ring" = { tier = "experimental", why = "the SPSC ring's hooks; internal to the shared-memory bus" }

@@ -669,7 +669,7 @@ The hub is built wherever its literal is written in the main locus's `params`, w
 
 ### Mounting a Hub on an `http::Rest` Listener (`hubs:`)
 
-A `ws::Hub` does not need a port of its own. Leave out its `bind:` and list it in the `hubs:` of an `http::Rest` exposure in the same `main locus`, at a path. The REST surface, the hub, and any `fallback:` then share one address and one origin:
+A `ws::Hub` does not need a port of its own. Leave out its `bind:` and list it in the `hubs:` of an `http::Rest` exposure, at a path. The exposure may be the `main locus`'s own, or held by a locus below it (see below). The REST surface, the hub, and any `fallback:` then share one address and one origin:
 
 ```hale,fragment
 main locus Desk {
@@ -692,7 +692,41 @@ main locus Desk {
 - **The hub keeps its own gate**: the hub's `principals`, `roles`, and each stream's `requires:`, `bound:` and `on_full:` judge the connection exactly as on a listener of its own. The credential is still `Authorization: Bearer` or `?access_token=` on the upgrade. The REST exposure's bearer and roles judge only its rows.
 - **No second listener**: the hub opens no socket. Its connections run on the REST listener's `async_io` pool. At most 256 are open at once, and an upgrade beyond that gets `503`. A handed-over connection waits for its subscriber for as long as the subscriber is quiet; the 5-second read limit of a REST request does not apply to it. `self.hub.stop()` closes them with `closed` as before.
 - **Description**: the REST exposure's `GET /.description` lists the hub's streams beside its members, filtered by the caller's roles, and `hale check --api --exposure web` shows the same. The document does not state the mount path yet.
-- **Rules**: the hub is a `ws::Hub` param of the `main locus` with at least one stream bound to it, mounted once and with no `bind:`. The path is letters, digits, `-._~` and `/`, with no trailing `/` and no `{param}`. It is not `/.description`, and no row of the surface may serve it by any method. A `udp::Hub` cannot be mounted, and an `http::Rest` held below the `main locus` cannot mount hubs.
+- **Rules**: the hub is a `ws::Hub` param of the `main locus` with at least one stream bound to it, mounted once and with no `bind:`. The path is letters, digits, `-._~` and `/`, with no trailing `/` and no `{param}`. It is not `/.description`, and no row of the surface may serve it by any method. A `udp::Hub` cannot be mounted.
+
+#### A hub mounted on an exposure held below the main locus
+
+When the `http::Rest` exposure lives in a sub-locus, for example so that the exposure, its receivers and its store share one `async_io` pool, the hub still belongs to the `main locus`. The sub-locus declares a `ws::Hub` param with no default, and the `main locus` passes its hub down:
+
+```hale,fragment
+locus Front {
+    params {
+        hub: ws::Hub;
+        bearer: Tokens = Tokens { };
+        grants: Grants = Grants { operator: "dave" };
+        web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.grants, hubs: [("/admin/v1/hub", self.hub)] }, as: "web", bound: 64, on_full: refuse);
+    }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        hub_roles: Grants = Grants { operator: "dave" };
+        hub: ws::Hub = ws::Hub { principals: self.bearer, roles: self.hub_roles, as: "fills" };
+        front: Front = Front { hub: self.hub };
+    }
+    bindings {
+        Fills: self.hub requires: [operator], bound: 64, on_full: drop_old;
+    }
+    placement {
+        front: cooperative(pool = edge) where async_io;
+    }
+}
+```
+
+- The hub's literal, its `principals` and `roles`, and its stream bindings stay in the `main locus`. Only the connections move: the REST listener runs where the `main locus` places `front` (here `edge`), and the hub connections it takes over run there too.
+- Every construction between the `main locus` and the holder passes the hub on with `self.<param>`. The checker refuses a mount whose param is not passed the `main locus`'s hub, and one whose param builds a hub of its own.
+- The hub can be mounted by only one exposure in the program, whichever locus holds it.
 
 ---
 

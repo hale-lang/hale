@@ -3813,6 +3813,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false),
             None,
         );
+        // declare ptr @lotus_net_resolve(ptr arena, ptr host): GH #1908
+        self.module.add_function(
+            "lotus_net_resolve",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
         // declare i64 @lotus_tls_recv_into(i32 handle, ptr builder, i64 max_bytes)
         let tls_recv_into_ty = i64_t.fn_type(
             &[i32_t.into(), ptr_t.into(), i64_t.into()],

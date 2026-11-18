@@ -340,11 +340,12 @@ fn own_scope_let_block_scope_test() {
             // `std::time::parse_rfc3339` and its digit helper); 525 since
             // `str_helpers.hl` came (GH #1995: std::str's nine splits and
             // trims and their whitespace helper); 533 since the text `for`
-            // sources' eight cursor hooks came (GH #1995 S2)
+            // sources' eight cursor hooks came (GH #1995 S2); 534 since
+            // `net.hl` came (GH #1908: `std::net::resolve`)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 533 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 533 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 534 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 534 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -759,9 +760,11 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/string_append_test.hl`, whose `main` appends to Strings in
     // its loops (GH #1947); 26: `tests/hale/str_split_sources_test.hl`,
     // whose loops push the parts they visit into a vec (GH #1995 S2); 27:
+    // `tests/hale/units_form_iteration_test.hl`, whose loops over a form's
+    // cells build their assertion messages (GH #2026); 28:
     // `tests/hale/ring_buffer_push_flat_test.hl`, whose `main` builds the
     // records it pushes in its loops (GH #2024).
-    assert_eq!(moved, 27, "the run-to-exit programs among the targets that lose a site");
+    assert_eq!(moved, 28, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1163,6 +1166,10 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625361..1610625403 InUnboundedLoop",
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625452..1610625489 InUnboundedLoop",
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625452..1610625482 InUnboundedLoop",
+            // `tests/hale/units_form_iteration_test.hl`: the f-strings its
+            // loops over a form's cells build (GH #2026)
+            "tests/hale/units_form_iteration_test.hl: main StringConcat @1472..1485 InUnboundedLoop",
+            "tests/hale/units_form_iteration_test.hl: main StringConcat @2109..2122 InUnboundedLoop",
         ]
     );
 }
@@ -1236,8 +1243,9 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
         }
     }
     // 34 since `time_rfc3339.hl` came (GH #1948: `std::time::parse_rfc3339`);
-    // 35 since `str_helpers.hl` came (GH #1995: std::str's splits and trims).
-    assert_eq!(sharing, 35, "the stdlib source files that share a name with the copy");
+    // 35 since `str_helpers.hl` came (GH #1995: std::str's splits and trims);
+    // 36 since `net.hl` came (GH #1908: std::net::resolve).
+    assert_eq!(sharing, 36, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the

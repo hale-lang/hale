@@ -1310,6 +1310,7 @@ fn dna_fixture_set_is_complete() {
             "owners_test.hl",
             "ownership_test.hl",
             "plan_routing_test.hl",
+            "pq_pool_transaction_test.hl",
             "practice_command_recovery_test.hl",
             "practice_lifecycle_test.hl",
             "practice_test.hl",

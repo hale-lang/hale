@@ -221,20 +221,20 @@ ns std::io::file open_prefixes=[]
   write_line syscall
 ns std::io::fs open_prefixes=[]
   extension syscall
-  file_exists syscall
-  file_size syscall
-  list_dir_at syscall
-  list_dir_count syscall
-  mkdir syscall
-  mktemp syscall
-  read_bytes syscall
-  read_file syscall
-  rename syscall
-  unlink syscall
-  write_bytes syscall
-  write_file syscall
-  __write_private syscall
-  write_file_append syscall
+  file_exists syscall|block
+  file_size syscall|block
+  list_dir_at syscall|block
+  list_dir_count syscall|block
+  mkdir syscall|block
+  mktemp syscall|block
+  read_bytes syscall|block
+  read_file syscall|block
+  rename syscall|block
+  unlink syscall|block
+  write_bytes syscall|block
+  write_file syscall|block
+  __write_private syscall|block
+  write_file_append syscall|block
 ns std::io::stdin open_prefixes=[]
   read_byte syscall|block
   read_line syscall|block
@@ -455,6 +455,9 @@ ns std::math open_prefixes=[]
   tan pure
   tanh pure
   trunc pure
+ns std::net open_prefixes=[]
+  __resolve syscall|block
+  resolve syscall|block
 ns std::observe open_prefixes=[]
   __registry alloc
   __drop_registry pure
@@ -877,23 +880,23 @@ std::io::file::seek | lookup=io::file@3 | locus=false | effects=syscall | sig=(I
 std::io::file::write_bytes | lookup=io::file@3 | locus=false | effects=syscall | sig=(Int, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_bytes
 std::io::file::write_line | lookup=io::file@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=write_line
 std::io::fs | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::io`
-std::io::fs::__write_private | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__write_private
+std::io::fs::__write_private | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=true | unknown=- | suggest=__write_private
 std::io::fs::extension | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=extension
-std::io::fs::file_exists | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=file_exists
-std::io::fs::file_size | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=file_size
-std::io::fs::list_dir_at | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Int) -> Str ! IoError | ret_ty=? | or=(String, IoError) | parks=false | holds=false | unknown=- | suggest=list_dir_at
-std::io::fs::list_dir_count | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=list_dir_count
-std::io::fs::mkdir | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=mkdir
-std::io::fs::mktemp | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Str) -> Str ! IoError | ret_ty=? | or=(String, IoError) | parks=false | holds=false | unknown=- | suggest=mktemp
-std::io::fs::read_bytes | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=read_bytes
+std::io::fs::file_exists | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=true | unknown=- | suggest=file_exists
+std::io::fs::file_size | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=file_size
+std::io::fs::list_dir_at | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Str ! IoError | ret_ty=? | or=(String, IoError) | parks=false | holds=true | unknown=- | suggest=list_dir_at
+std::io::fs::list_dir_count | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=list_dir_count
+std::io::fs::mkdir | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=true | unknown=- | suggest=mkdir
+std::io::fs::mktemp | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str, Str) -> Str ! IoError | ret_ty=? | or=(String, IoError) | parks=false | holds=true | unknown=- | suggest=mktemp
+std::io::fs::read_bytes | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=true | unknown=- | suggest=read_bytes
 std::io::fs::read_fil | lookup=io::fs@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::fs::read_fil` — did you mean `std::io::fs::read_file`? | suggest=read_file
-std::io::fs::read_file | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str) -> Str ! IoError | ret_ty=? | or=(String, IoError) | parks=false | holds=false | unknown=- | suggest=read_file
+std::io::fs::read_file | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str) -> Str ! IoError | ret_ty=? | or=(String, IoError) | parks=false | holds=true | unknown=- | suggest=read_file
 std::io::fs::read_file::extra | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::io::fs::read_file`
-std::io::fs::rename | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=rename
-std::io::fs::unlink | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=unlink
-std::io::fs::write_bytes | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_bytes
-std::io::fs::write_file | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_file
-std::io::fs::write_file_append | lookup=io::fs@3 | locus=false | effects=syscall | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=write_file_append
+std::io::fs::rename | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=true | unknown=- | suggest=rename
+std::io::fs::unlink | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=true | unknown=- | suggest=unlink
+std::io::fs::write_bytes | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str, Bytes) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=true | unknown=- | suggest=write_bytes
+std::io::fs::write_file | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=true | unknown=- | suggest=write_file
+std::io::fs::write_file_append | lookup=io::fs@3 | locus=false | effects=syscall|block | sig=(Str, Str) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=true | unknown=- | suggest=write_file_append
 std::io::h2::Cmd | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::h2::Conn | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::h2::Event | lookup=io::h2@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -1151,6 +1154,8 @@ std::metrics::labels_two | lookup=metrics@2 | locus=false | effects=pure | sig=-
 std::metrics::metric_key | lookup=metrics@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=metric_key
 std::mth::sqrt | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::mth` — did you mean `std::math`?
 std::name::Convention | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
+std::net::__resolve | lookup=net@2 | locus=false | effects=syscall|block | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=true | unknown=- | suggest=__resolve
+std::net::resolve | lookup=net@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=resolve
 std::observe::Otlp | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Otlp` | suggest=-
 std::observe::Probes | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Probes` | suggest=-
 std::observe::Scrape | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Scrape` | suggest=-

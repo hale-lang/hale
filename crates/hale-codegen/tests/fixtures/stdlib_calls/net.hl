@@ -1,0 +1,8 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::net::__resolve`, the
+// primitive `std::net::resolve`'s body reads, at expression position
+// (GH #1908). Never run; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let answer = std::net::__resolve("localhost");
+    println(len(answer));
+}

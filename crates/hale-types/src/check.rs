@@ -3385,9 +3385,10 @@ fn check_lru_hook_puts(bundle: &Bundle<'_>, summary: &crate::alloc_summary::Allo
 /// run-to-exit program that's fine (and the corpus's accept examples
 /// are exactly that shape), but on a locus whose `run()` never
 /// returns (`while true { accept-and-spawn }` — the daemon idiom)
-/// resident children are O(accepted) growth until OOM. Daemon signal
-/// (deliberately narrow, corpus-clean): the accepting locus's own
-/// `run()` contains a literal `while true` loop.
+/// resident children are O(accepted) growth until OOM. Daemon signal:
+/// the accepting locus's own `run()` contains a literal `while true`
+/// loop, or its run row says it never returns (`never_returns`, the
+/// classifier the starvation law reads; GH #2027).
 fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, diags: &mut Vec<Diag>) {
     fn block_has_while_true(b: &Block) -> bool {
         b.stmts.iter().any(|s| match s {
@@ -3450,7 +3451,12 @@ fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, dia
                     _ => {}
                 }
             }
-            if !run_daemon {
+            // GH #2027 (a): the starvation law's never-returns column
+            // too — a terminal `while !self.draining`, or a `while` on a
+            // Bool flag nothing assigns — not a literal `while true`
+            // alone: the drain-aware loop § Drain cascade recommends is
+            // as much a daemon.
+            if !run_daemon && never_returns(flows, l).is_none() {
                 return;
             }
             for (ld, child_ty) in accepts {
@@ -17483,19 +17489,40 @@ impl<'a> Checker<'a> {
                 // m.entries` (hashmap) / `for x in v.items` (vec).
                 // `entries`/`items` are pseudo-fields the generic
                 // field check would reject — when the receiver is a
-                // locus, check only the receiver and bind the loop
-                // var Unknown (codegen resolves the cell type and
-                // rejects non-form receivers with a focused error).
+                // locus, check only the receiver. The loop var is the
+                // form's cell, as lowering binds it
+                // (`lower_for_hashmap_entries`, `lower_for_vec_items`):
+                // GH #2026, it was bound Unknown, so a quantity field
+                // read through it (`e.amount`) lost its unit and
+                // printed a bare count. A receiver that is no such
+                // form keeps the Unknown binding (codegen rejects it
+                // with a focused error).
                 let mut handled = false;
+                let mut form_cell = Ty::Unknown;
                 if let Expr::Field { receiver, name: fname, .. } = iter {
                     if fname.name == "entries" || fname.name == "items" {
                         let recv_ty = self.check_expr(receiver);
                         if let Ty::Named(ln) = &recv_ty {
-                            if matches!(
-                                self.top.lookup(ln),
-                                Some(TopSymbol::Locus(_))
-                            ) {
+                            if let Some(TopSymbol::Locus(info)) = self.top.lookup(ln) {
                                 handled = true;
+                                let form = self
+                                    .locus_decls
+                                    .get(ln.as_str())
+                                    .and_then(|d| d.form.as_ref())
+                                    .map(|f| f.name.name.clone());
+                                // The cell is what the form's store
+                                // takes: `set(cell)` on a hashmap,
+                                // `push(cell)` on a vec.
+                                let store = match (form.as_deref(), fname.name.as_str()) {
+                                    (Some("hashmap"), "entries") => Some("set"),
+                                    (Some("vec"), "items") => Some("push"),
+                                    _ => None,
+                                };
+                                if let Some(store) = store {
+                                    if let Some(m) = info.methods.iter().find(|m| m.name == store && m.params.len() == 1) {
+                                        form_cell = m.params[0].clone();
+                                    }
+                                }
                             }
                         }
                     }
@@ -17509,7 +17536,7 @@ impl<'a> Checker<'a> {
                 // (spec/units.md). Every other iterand keeps the
                 // permissive binding.
                 let elem = if handled {
-                    Ty::Unknown
+                    form_cell
                 } else {
                     match self.check_expr(iter) {
                         Ty::Bounded(e, _) | Ty::Array(e, _) => *e,
@@ -22617,7 +22644,8 @@ impl<'a> Checker<'a> {
             return Some(format!(
                 "`{head}::Hub` is the standard library's hub (`std::api::{head}::Hub`): a param of the main \
                  locus, built by a `{head}::Hub {{ bind: \"…\", principals: …, roles: …, as: \"…\" }}` literal in \
-                 its `params`, where the compiler builds it (spec/api.md § Streams)"
+                 its `params`, where the compiler builds it; below it, only a `ws::Hub` param with no default that \
+                 the main locus passes its hub to, for an `http::Rest` there to mount (spec/api.md § Streams)"
             ));
         }
         // The names this build's imports registered under this head.

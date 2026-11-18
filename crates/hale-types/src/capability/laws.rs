@@ -463,6 +463,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("wide.hl", &["u256", "i256"]),
         ("time_rfc3339.hl", &["time"]),
         ("str_helpers.hl", &["str"]),
+        ("net.hl", &["net"]),
     ];
     // Codegen's native stdlib modules, by the namespace each lowers.
     const CG: &[(&str, &[&str])] = &[
@@ -484,6 +485,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("io_unix.rs", &["io::unix"]),
         ("math.rs", &["math"]),
         ("mirror.rs", &["io::mirror"]),
+        ("net.rs", &["net"]),
         ("observe.rs", &["observe"]),
         ("process.rs", &["process"]),
         ("rand.rs", &["rand"]),
@@ -554,14 +556,15 @@ fn the_tables_have_the_reviewed_shape() {
         .filter(|(_, _, b)| !b.is_lower())
         .map(|(c, cap, _)| format!("{} × {}", cap.label(), c.name()))
         .collect();
-    assert_eq!((m.behaviours.len(), std), (113, 54), "behaviour rows (all, std::)");
+    assert_eq!((m.behaviours.len(), std), (114, 55), "behaviour rows (all, std::)");
     assert_eq!(m.invocations.len(), 3);
     assert_eq!(m.obligations.len(), 10);
-    // On wasm32: 18 namespaces (the 10 browser-unavailable, T3's 7, R7's HTTP/2 server),
+    // On wasm32: 19 namespaces (the 11 browser-unavailable, `std::net`'s
+    // resolver the eleventh, GH #1908; T3's 7, R7's HTTP/2 server),
     // `[ffi] link`, `@export locus` with `run()`, ProcessSignals, and
     // T2's pinned threads, pools, `async_io` and the three transports;
     // on both POSIX columns the export-only module, `--wrap-main` and
     // T5's `@ffi("js")`; `async_io` on musl; 10 FFI type classes × 2 ABIs
     // × 3 targets (`U256` / `I256`'s, GH #1934, the tenth).
-    assert_eq!(rejects.len(), 94, "{}", rejects.join("\n"));
+    assert_eq!(rejects.len(), 95, "{}", rejects.join("\n"));
 }

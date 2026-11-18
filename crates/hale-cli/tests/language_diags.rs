@@ -1,4 +1,4 @@
-//! The `language_diags` integration-test binary: 12 test files of this area, kept
+//! The `language_diags` integration-test binary: 13 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -11,6 +11,8 @@ mod diag_reporting;
 mod entry_point_placement;
 #[path = "env_matrix.rs"]
 mod env_matrix;
+#[path = "flow_child_and_rekey_advisories.rs"]
+mod flow_child_and_rekey_advisories;
 #[path = "message_spacing.rs"]
 mod message_spacing;
 #[path = "p3_namespace_method_refused.rs"]

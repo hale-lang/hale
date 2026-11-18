@@ -498,28 +498,29 @@ fn api_serve_has_no_seventeen_receiver_cliff() {
     assert!(!built && !bout.contains("codegen error"), "build: {bout}");
 }
 
-/// GH #1943, STABILITY.md § Deprecation: `std::json::Builder.field` and
-/// `.value` write their argument raw, as they always have, and the spec
-/// says they take a string; v0.35 makes them quote. Until then a call
-/// warns `deprecated:` at the call, naming the raw and the string
-/// variants, and still checks, builds and writes what it wrote before.
+/// GH #1943, STABILITY.md § Deprecation: v0.35 makes `std::json::Builder.field`
+/// and `.value` quote and escape their argument as a string, as the spec
+/// always said they take one (v0.33 and v0.34 warned `deprecated:` at each
+/// call, which wrote it raw). A call now checks with no warning and writes
+/// a JSON string; the raw variants still write their JSON as given.
 #[test]
-fn a_builder_field_or_value_call_warns_deprecated_and_writes_raw() {
-    let src = "fn main() {\n    let b = std::json::Builder { };\n    b.begin_object();\n    b.field(\"n\", \"42\");\n    b.begin_array_field(\"xs\");\n    b.value(\"1\");\n    b.end_array();\n    b.end_object();\n    println(b.result());\n}\n";
-    let ((ok, out), (built, bout)) = check_and_build(src, "builder_deprecated");
-    assert!(ok, "check: {out}");
-    assert!(
-        out.contains("main.hl:4:5: warning: deprecated: `std::json::Builder.field(name, value)` writes `value` raw")
-            && out.contains("write `raw_field(name, json)` for encoded JSON or `string_field(name, s)` for a string")
-            && out.contains("main.hl:6:5: warning: deprecated: `std::json::Builder.value(v)` writes `v` raw")
-            && out.matches("deprecated:").count() == 2,
-        "check: {out}"
-    );
-    assert!(built, "build: {bout}");
-    // the raw and string variants raise nothing
-    let quiet = "fn main() {\n    let b = std::json::Builder { };\n    b.begin_object();\n    b.raw_field(\"n\", \"42\");\n    b.string_field(\"s\", \"x\");\n    b.begin_array_field(\"xs\");\n    b.raw_value(\"1\");\n    b.string_value(\"y\");\n    b.end_array();\n    b.end_object();\n    println(b.result());\n}\n";
-    let ((ok, out), _) = check_and_build(quiet, "builder_quiet");
+fn a_builder_field_or_value_call_quotes_its_argument() {
+    let src = "fn main() {\n    let b = std::json::Builder { };\n    b.begin_object();\n    b.field(\"n\", \"42\");\n    b.field(\"q\", \"say \\\"hi\\\"\");\n    b.begin_array_field(\"xs\");\n    b.value(\"1\");\n    b.raw_value(\"2\");\n    b.end_array();\n    b.raw_field(\"r\", \"[3]\");\n    b.end_object();\n    println(b.result());\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(src, "builder_quotes");
     assert!(ok && !out.contains("deprecated"), "check: {out}");
+    assert!(built, "build: {bout}");
+    let d: PathBuf = std::env::temp_dir().join(format!("hale_check_build_refusals_{}_builder_quotes_run", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join("main.hl");
+    std::fs::write(&f, src).unwrap();
+    let (ran, rout) = hale(&["run", &f.to_string_lossy()]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(ran, "run: {rout}");
+    assert!(
+        rout.lines().any(|l| l == "{\"n\": \"42\", \"q\": \"say \\\"hi\\\"\", \"xs\": [\"1\", 2], \"r\": [3]}"),
+        "run: {rout}"
+    );
 }
 
 /// GH #1967: a call through a fn value is held to the value's type. A

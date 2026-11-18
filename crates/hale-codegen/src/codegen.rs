@@ -6349,6 +6349,9 @@ pub(crate) struct LocusInfo<'ctx> {
     /// logical teardown or release its still-retained descendants.
     /// Initialized to zero for each new instance, including slot reuse.
     pub(crate) reclaim_claimed_field_idx: u32,
+    /// GH #2028: index of the synthetic `__run_active: i64` field, 1
+    /// while the run wrapper is inside `run()`.
+    pub(crate) run_active_field_idx: u32,
     /// v1.x-4b: index of the synthetic `__slot_borrowed_mask:
     /// i64` field. Always present (uniform locus-struct layout).
     /// Bit N (LSB = slot 0 in declaration order) is set iff this
@@ -8964,6 +8967,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     call_args.push(ctx);
                     ctx_sub = Some(sub);
                 }
+                // GH #2028: the restart count as the handler begins, the
+                // `pre` a restart its failure asks for is decided against.
+                let restart = self.restart_fns.get(locus_name).copied();
+                let pre = match restart {
+                    Some(_) => Some(self.emit_restart_count(&info, self_arg)?),
+                    None => None,
+                };
                 self.builder
                     .build_call(
                         handler_fn,
@@ -9009,6 +9019,71 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_conditional_branch(set, latch_bb, ret_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(latch_bb);
+                // GH #2028: a handler that failed while no run() of the
+                // child is running is followed here by its supervisor's
+                // decision, as a failure run() raised is followed by the
+                // run wrapper's (spec/semantics.md § Recovery primitives):
+                // a restart re-runs birth() and run() (`__resume_<L>`,
+                // phase 0, which also puts back the subscriptions a stop
+                // set aside); anything else ends it as below, a held
+                // child stopping. A failure whose handler the runtime runs
+                // at settle on this thread is resumed there. While run()
+                // runs, its wrapper decides once it returns.
+                if let (Some(rf), Some(pre)) = (restart, pre) {
+                    let decide_bb = self.context.append_basic_block(wrap, "hwrap.decide");
+                    let await_bb = self.context.append_basic_block(wrap, "hwrap.await");
+                    let resume_bb = self.context.append_basic_block(wrap, "hwrap.restart");
+                    let end_bb = self.context.append_basic_block(wrap, "hwrap.end");
+                    let in_run_bb = self.context.append_basic_block(wrap, "hwrap.in_run");
+                    let active = self.emit_run_active(&info, self_arg)?;
+                    self.builder
+                        .build_conditional_branch(active, in_run_bb, await_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // Inside run() (a delivery at one of its yields, or
+                    // at the drain its body ends with): a held child
+                    // stops now, and the run wrapper decides the rest
+                    // once run() returns — the restart, or the reclaim
+                    // `__run_end_<L>` performs, which must not free the
+                    // instance under the run() still on this stack, nor
+                    // before a posted failure's handler has run.
+                    self.builder.position_at_end(in_run_bb);
+                    let kept_in_run = self.emit_failed_child_is_kept(&info, self_arg)?;
+                    self.emit_stop_kept_child(kept_in_run, self_arg)?;
+                    self.builder
+                        .build_unconditional_branch(ret_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(await_bb);
+                    let a = self.emit_failure_await(self_arg, Some(rf.resume), 0, pre)?;
+                    let later = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            a,
+                            i64_t.const_int(2, false),
+                            &format!("{}.hwrap.resumed_at_settle", handler_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_conditional_branch(later, ret_bb, decide_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(decide_bb);
+                    let req = self.emit_restart_requested(&info, self_arg, pre)?;
+                    self.builder
+                        .build_conditional_branch(req, resume_bb, end_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(resume_bb);
+                    self.builder
+                        .build_call(
+                            rf.resume,
+                            &[self_arg.into(), i64_t.const_zero().into(), pre.into()],
+                            &format!("{}.hwrap.resume", handler_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_unconditional_branch(ret_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(end_bb);
+                }
                 let kept = self.emit_failed_child_is_kept(&info, self_arg)?;
                 self.emit_stop_kept_child(kept, self_arg)?;
                 self.builder
@@ -9513,6 +9588,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder.build_unconditional_branch(loop_bb).map_err(e)?;
                 self.builder.position_at_end(loop_bb);
                 let pre = self.emit_restart_count(&info, self_arg)?;
+                // GH #2028: a handler failing meanwhile leaves the
+                // decision to this loop, once run() returns.
+                self.emit_set_run_active(&info, self_arg, 1)?;
                 self.lc_in_spine("PoolRun", |cx| {
                     cx.lc_step("Run", Some(self_arg), Some(locus_name), |cx| {
                         cx.builder
@@ -9521,6 +9599,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         Ok(())
                     })
                 })?;
+                self.emit_set_run_active(&info, self_arg, 0)?;
                 let now = self.emit_restart_count(&info, self_arg)?;
                 let a = self.emit_failure_await(self_arg, Some(rf.resume), 0, now)?;
                 let resumed_later = self
@@ -13315,7 +13394,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// ("call to `println`: no … binding"), so `if c { println("x") }`
     /// and a trailing `if c { println("a") } else { println("b") }` checked
     /// and the build refused them.
-    fn lower_discarded(&mut self, e: &Expr, scope: &mut Scope<'ctx>) -> Result<BlockEnd, CodegenError> {
+    pub(crate) fn lower_discarded(&mut self, e: &Expr, scope: &mut Scope<'ctx>) -> Result<BlockEnd, CodegenError> {
         match e {
             Expr::Call { .. } => self.lower_stmt(&Stmt::Expr(e.clone()), scope),
             Expr::If(ifs) => self.lower_stmt(&Stmt::If((**ifs).clone()), scope),
@@ -17953,6 +18032,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.lower_send(&subject, value, None, scope, Some(receiver))?;
         self.builder.build_unconditional_branch(join).map_err(e)?;
         self.builder.position_at_end(direct);
+        // GH #2028: a locus's publish to its own subscription is a direct
+        // call that no handler wrapper surrounds, so a failure the handler
+        // raises is carried out here, as the wrapper would (an ordinary
+        // method its owner calls after its run() returned has no other
+        // step that would restart or stop it).
+        let own_decision = match (callee, self.current_self.clone()) {
+            (Expr::Field { receiver, .. }, Some(cs)) if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
+                match (self.restart_fns.get(&cs.locus_name).copied(), self.user_loci.get(&cs.locus_name).cloned()) {
+                    (Some(rf), Some(info)) => {
+                        // A child that failed and was not restarted stops
+                        // handling: what it publishes to itself then takes
+                        // the bus to its own registration, which its stop
+                        // retired, so the payload is evaluated as any send's
+                        // is and the delivery is dropped.
+                        let dr_ptr = self
+                            .builder
+                            .build_struct_gep(info.struct_ty, cs.self_ptr, info.drain_requested_field_idx, "direct.pre.dr.ptr")
+                            .map_err(e)?;
+                        let dr = self
+                            .builder
+                            .build_load(self.context.i64_type(), dr_ptr, "direct.pre.dr")
+                            .map_err(e)?
+                            .into_int_value();
+                        let failed = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                dr,
+                                self.context.i64_type().const_int(crate::LATCH_FAILED, false),
+                                "direct.pre.failed",
+                            )
+                            .map_err(e)?;
+                        let call_bb = self.context.append_basic_block(func, "publish.direct.live");
+                        let stopped_bb = self.context.append_basic_block(func, "publish.direct.stopped");
+                        self.builder.build_conditional_branch(failed, stopped_bb, call_bb).map_err(e)?;
+                        self.builder.position_at_end(stopped_bb);
+                        self.lower_send(&subject, value, None, scope, Some(cs.self_ptr.into()))?;
+                        self.builder.build_unconditional_branch(join).map_err(e)?;
+                        self.builder.position_at_end(call_bb);
+                        let pre = self.emit_restart_count(&info, cs.self_ptr)?;
+                        Some((info, cs.self_ptr, rf, pre))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
         if let Some(target) = self.intra_locus_rewrite(id, args)? {
             self.lower_reclaimed_publish_call(callee, args, target, scope)?;
         } else {
@@ -17969,6 +18095,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.xpool_check_off = off;
                 r?;
             }
+        }
+        if let Some((info, self_ptr, rf, pre)) = own_decision {
+            self.emit_direct_handler_decision(&info, self_ptr, rf, pre)?;
         }
         self.builder.build_unconditional_branch(join).map_err(e)?;
         self.builder.position_at_end(join);
@@ -30451,6 +30580,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTcpIoErrorDetailRaw => {
                 self.lower_std_io_tcp_io_error_detail(args, scope)
             }
+            Id::NetResolveRaw => self.lower_std_net_resolve(args, scope),
             // 2026-05-26 — named socket-option constants. Each
             // resolves to a zero-arg call into the matching C
             // getter, which returns the platform's numeric
@@ -31470,6 +31600,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpConnectRaw
             | Id::IoTcpIoErrorKindRaw
             | Id::IoTcpIoErrorDetailRaw
+            | Id::NetResolveRaw
             | Id::IoTcpLastIoStatusRaw
             | Id::IoTcpLastRecvKernelNs
             | Id::IoTcpLastRecvUserNs

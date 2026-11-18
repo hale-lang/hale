@@ -81,6 +81,7 @@ compiler consults, with the reasons it gives.
 | `std::term` | terminal control (`std::term`) isn't available in the browser | (no terminal in the browser) |
 | `std::process` | OS process control (`std::process`) isn't available in the browser | (no OS process control) |
 | `std::http` | the `std::http` server is built on raw TCP and isn't available in the browser | (server is built on raw TCP) |
+| `std::net` | name resolution (`std::net::resolve`) is getaddrinfo, which the browser sandbox does not have | a lookup on the host, through an `@ffi("js")` host import |
 | `std::env` | the browser has no process environment: the shim's inline `getenv` returns NULL | configuration handed in through an `@ffi("js")` host import or an `@export` fn's arguments |
 | `std::io::mirror` | a shared-memory ring is mapped with `shm_open` and `mmap`, which the browser sandbox does not have | (no shared memory in the browser) |
 | `std::io::sockopt` | socket options are syscalls the browser sandbox does not have | (no sockets in the browser) |

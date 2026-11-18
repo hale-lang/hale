@@ -1,0 +1,49 @@
+// tests/hale/net_resolve_test.hl — `std::net::resolve` (GH #1908): every
+// address a name resolves to, so a program can check where a name points
+// before it dials. No external network: `localhost`, literals, and names
+// the resolver refuses without asking a server.
+
+fn has(addrs: bounded[String; 32], want: String) -> Bool {
+    for a in addrs {
+        if a == want { return true; }
+    }
+    return false;
+}
+
+fn why(host: String) -> String {
+    let mut kind = "ok";
+    let empty: bounded[String; 32] = [];
+    let none = std::net::resolve(host) or { kind = err.kind; empty };
+    std::test::assert_eq_int(count(none), 0, "a failed lookup answers nothing");
+    return kind;
+}
+
+fn main() {
+    // localhost: the loopback, in one family or both
+    let local = std::net::resolve("localhost") or raise;
+    std::test::assert(count(local) >= 1, "localhost has an address");
+    std::test::assert(has(local, "127.0.0.1") || has(local, "::1"), "localhost is the loopback");
+    for a in local {
+        std::test::assert(
+            a == "127.0.0.1" || a == "::1",
+            "localhost resolves only to the loopback",
+        );
+    }
+
+    // a literal is itself, an IPv6 one bracketed or bare
+    let v4 = std::net::resolve("127.0.0.1") or raise;
+    std::test::assert_eq_int(count(v4), 1, "a literal is one address");
+    std::test::assert_eq_str(at(v4, 0) or "", "127.0.0.1", "an IPv4 literal is itself");
+    let v6 = std::net::resolve("[::1]") or raise;
+    std::test::assert_eq_int(count(v6), 1, "a bracketed literal is one address");
+    std::test::assert_eq_str(at(v6, 0) or "", "::1", "an IPv6 literal, unbracketed");
+
+    // an empty host names nothing, refused before any lookup
+    std::test::assert_eq_str(why(""), "invalid", "an empty host is invalid");
+
+    // a name no resolver answers: a label longer than DNS allows (63
+    // bytes), refused without a query
+    let long = "a234567890123456789012345678901234567890123456789012345678901234.invalid";
+    let k = why(long);
+    std::test::assert(k != "ok", "an unresolvable name fails");
+}
