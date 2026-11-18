@@ -883,7 +883,7 @@ fn main() {
     let mut c: Cfg<Int> = Cfg { n: 1, label: "one" };
     c = Cfg { n: 3, label: "three" };
     println(c.label, c.n);
-    let o = Outer { c: Cfg { n: 1, label: "one" } };
+    let mut o = Outer { c: Cfg { n: 1, label: "one" } };
     o.c = Cfg { n: 4, label: "four" };
     println(o.c.label, o.c.n);
     let a: Cfg<Int> = Cfg { n: 1, label: "a" };
