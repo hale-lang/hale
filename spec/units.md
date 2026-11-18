@@ -391,7 +391,12 @@ the store.
 **A loop variable.** The variable of `for x in xs`, where `xs` is a
 `bounded[T; N]` or an array of `T`, is a `T`, and the algebra reads it
 as one: over a `bounded[Money; N]`, `x / 1cent` is the `Int` count and
-`x` prints with its unit; over instants, `x - t` is a `Duration`.
+`x` prints with its unit; over instants, `x - t` is a `Duration`. The
+variable of a form's iteration surface, `for e in m.entries` over a
+`@form(hashmap)` or `for x in v.items` over a `@form(vec)`, is the
+form's cell, so a quantity field read through it (`e.amount`) keeps its
+quantity: it prints with its unit, in an f-string too, and sums as a
+quantity (GH #2026).
 
 ## Literals
 
