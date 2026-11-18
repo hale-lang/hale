@@ -3359,8 +3359,25 @@ pub(crate) fn locus_mounts(l: &LocusDecl) -> Vec<(Mount, Option<Expr>, Option<St
 /// below it from a `self.<param>` of its own (`Front { hub: self.hub }`).
 /// `None` when some construction on the chain does not.
 pub(crate) fn passed_from_main(loci: &BTreeMap<&str, &LocusDecl>, chain: &Chain, field: &str) -> Option<String> {
+    passed_down(loci, chain, field).map(|(hub, _)| hub)
+}
+
+/// [`passed_from_main`]'s param of the main locus, and every param it is
+/// forwarded through on the way down, `(locus, param)`, the holder's
+/// `field` first: each one below the main locus (GH #1818: each is a
+/// `ws::Hub` param the hub expansion types as the standard library's).
+pub(crate) fn passed_down(
+    loci: &BTreeMap<&str, &LocusDecl>,
+    chain: &Chain,
+    field: &str,
+) -> Option<(String, Vec<(String, String)>)> {
     let mut want = field.to_string();
+    let mut via: Vec<(String, String)> = Vec::new();
+    // the locus the chain ends at: its last field's type
+    let (last_owner, last_field) = chain.fields.last()?;
+    let mut below = locus_param_ty(loci.get(last_owner.as_str())?, last_field)?;
     for (owner, f) in chain.fields.iter().rev() {
+        via.push((below.clone(), want.clone()));
         let l = loci.get(owner.as_str())?;
         let inits = l.members.iter().find_map(|m| match m {
             LocusMember::Params(pb) => pb.params.iter().find_map(|p| match &p.init {
@@ -3371,8 +3388,9 @@ pub(crate) fn passed_from_main(loci: &BTreeMap<&str, &LocusDecl>, chain: &Chain,
         })?;
         let value = &inits.iter().find(|i| i.name.name == want)?.value;
         want = crate::surfaces::self_field(value)?.to_string();
+        below = owner.clone();
     }
-    Some(want)
+    Some((want, via))
 }
 
 /// A mount an `http::Rest` held below a main locus declares (GH #1818):
@@ -3383,6 +3401,9 @@ pub(crate) struct HeldMount {
     pub holder: String,
     pub mount: Mount,
     pub hub: String,
+    /// The params below the main locus the hub is passed through, the
+    /// holder's first ([`passed_down`]).
+    pub via: Vec<(String, String)>,
     pub addr: Option<Expr>,
     pub name: Option<String>,
 }
@@ -3405,11 +3426,12 @@ pub(crate) fn held_mounts(loci: &BTreeMap<&str, &LocusDecl>, l: &LocusDecl) -> V
         }
         for chain in holder_chains(loci, &holder.name.name).iter().filter(|c| c.main == l.name.name) {
             for (m, addr, name) in &held {
-                let Some(hub) = passed_from_main(loci, chain, &m.field) else { continue };
+                let Some((hub, via)) = passed_down(loci, chain, &m.field) else { continue };
                 out.push(HeldMount {
                     holder: holder.name.name.clone(),
                     mount: m.clone(),
                     hub,
+                    via,
                     addr: addr.clone().filter(|a| matches!(a, Expr::Literal(Literal::String(_), _))),
                     name: name.clone(),
                 });

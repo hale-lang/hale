@@ -4524,4 +4524,14 @@ fn main() {{ App {{ }}; }}
         );
     }
     assert_built(&program("hub: ws::Hub;", "Front { hub: self.hub }"), "hale_cb_held_mount_neighbour");
+    // passed down through a locus between: each forwarding param is the
+    // main locus's hub too (review of #2056: `Mid.h` was left unexpanded)
+    let two_step = program("hub: ws::Hub;", "Mid { h: self.hub }")
+        .replace("front: Front = Mid", "front: Mid = Mid")
+        .replace("main locus App {", "locus Mid {\n    params {\n        h: ws::Hub;\n        front: Front = Front { hub: self.h };\n    }\n}\nmain locus App {");
+    assert_built(&two_step, "hale_cb_held_mount_two_step");
+    let three_step = two_step
+        .replace("front: Mid = Mid { h: self.hub };", "front: Top = Top { t: self.hub };")
+        .replace("locus Mid {", "locus Top {\n    params {\n        t: ws::Hub;\n        mid: Mid = Mid { h: self.t };\n    }\n}\nlocus Mid {");
+    assert_built(&three_step, "hale_cb_held_mount_three_step");
 }

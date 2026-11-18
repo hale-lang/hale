@@ -105,8 +105,9 @@ struct HubPlan {
     /// mounted on an `http::Rest` (`hubs:`): no listener of its own
     mounted: bool,
     /// the params of loci below the main locus that the hub is passed down
-    /// to for an `http::Rest` they hold to mount (GH #1818), `(holder,
-    /// field)`: each typed `ws::Hub`, the standard library's once expanded
+    /// through for an `http::Rest` one of them holds to mount (GH #1818),
+    /// `(locus, field)`, the holder's and every forwarding one between:
+    /// each typed `ws::Hub`, the standard library's once expanded
     held: Vec<(String, String)>,
     principals: Option<Expr>,
     roles: Option<Expr>,
@@ -436,7 +437,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                             crate::rpc_expand::held_mounts(&loci, l)
                                 .into_iter()
                                 .filter(|h| h.hub == field)
-                                .map(|h| (h.holder, h.mount.field))
+                                .flat_map(|h| h.via)
                                 .collect()
                         } else {
                             Vec::new()
