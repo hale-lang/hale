@@ -11826,6 +11826,11 @@ struct LocalSym {
     /// element `push`/`set` stores through it would be kept in this
     /// call's arena, not where the caller's place lives.
     param_place: bool,
+    /// GH #2022: declared by a `let` (or a tuple `let`), not a parameter,
+    /// a loop variable or a pattern binding. A field or element write
+    /// through a `let` that is not `let mut` is deprecated
+    /// (`deprecations::let_write_warning`).
+    from_let: bool,
 }
 
 /// F.22: where a `Cell<T>` came from: the slot of the locus whose body
@@ -15658,7 +15663,7 @@ impl<'a> Checker<'a> {
                         }
                     };
                     self.note_view_binding(&p.name, &ty, Some(&p.ty));
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true, from_let: false });
                 }
                 self.check_block(&lc.body);
                 self.locals.pop();
@@ -15672,7 +15677,7 @@ impl<'a> Checker<'a> {
                 for p in &md.params {
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true, from_let: false });
                 }
                 // A mode that declares `-> T` returns a value; one that
                 // does not returns nothing, like a hook. The value's
@@ -15749,7 +15754,7 @@ impl<'a> Checker<'a> {
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
                     self.note_view_binding(&p.name, &ty, Some(&p.ty));
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true, from_let: false });
                 }
                 self.check_block(&fd.body);
                 self.locals.pop();
@@ -16487,7 +16492,7 @@ impl<'a> Checker<'a> {
         for p in &decl.params {
             let ty = self.resolve_param_te(&p.ty);
             self.note_view_binding(&p.name, &ty, Some(&p.ty));
-            self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
+            self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true, from_let: false });
         }
         self.check_fn_body(&decl.body);
         self.locals.pop();
@@ -17346,7 +17351,7 @@ impl<'a> Checker<'a> {
                 let param_place = false;
                 self.locals.insert(
                     &name.name,
-                    LocalSym { ty: bound, is_mut: *is_mut, cell, param_place },
+                    LocalSym { ty: bound, is_mut: *is_mut, cell, param_place, from_let: true },
                 );
             }
             Stmt::LetTuple { is_mut, names, ty, value, .. } => {
@@ -17392,7 +17397,7 @@ impl<'a> Checker<'a> {
                     self.note_view_binding(n, t, None);
                     self.locals.insert(
                         &n.name,
-                        LocalSym { ty: t.clone(), is_mut: *is_mut, cell: None, param_place: false },
+                        LocalSym { ty: t.clone(), is_mut: *is_mut, cell: None, param_place: false, from_let: true },
                     );
                 }
             }
@@ -17519,6 +17524,51 @@ impl<'a> Checker<'a> {
                 // stay allowed even when the head binding is
                 // immutable. `self.field = ...` is also allowed
                 // because `self` is locus state, not a binding.
+                // GH #2022: a field or element write through a `let`
+                // binding (not `let mut`) is deprecated: `let` makes the
+                // binding immutable, the value it holds included
+                // (spec/types.md § Mutability), as a `push` into a `let`
+                // bounded list already is refused. A warning this minor
+                // (STABILITY.md § Deprecation), a refusal in the next.
+                // Not through a parameter, a loop variable or a pattern
+                // binding (no `mut` spelling exists for them), a cell
+                // (it names a slot, not a value of the binding's own),
+                // or a locus handle (the write is the locus's state, as
+                // `self.f = …` is).
+                if !target.tail.is_empty() && target.head.name != "self" {
+                    if let Some(sym) = self.locals.lookup(&target.head.name) {
+                        // A handle: a locus, a generic locus's monomorph
+                        // (`Counter<Int>` is `Counter_Int`, which the scope
+                        // declares as no locus), the template itself, or an
+                        // interface or perspective a locus is held through.
+                        let locus_handle = match self.through_aliases(sym.ty.clone()) {
+                            Ty::Named(n) => {
+                                matches!(
+                                    self.top.lookup(&n),
+                                    Some(TopSymbol::Locus(_) | TopSymbol::Interface(_) | TopSymbol::Perspective(_))
+                                ) || self.generic_loci.contains_key(n.as_str())
+                                    || self.locus_monomorph_shown(&n).is_some()
+                            }
+                            _ => false,
+                        };
+                        if sym.from_let && !sym.is_mut && sym.cell.is_none() && !locus_handle {
+                            let mut written = target.head.name.clone();
+                            for seg in &target.tail {
+                                match seg {
+                                    hale_syntax::ast::LValueSeg::Field(f) => {
+                                        written.push('.');
+                                        written.push_str(&f.name);
+                                    }
+                                    _ => written.push_str("[..]"),
+                                }
+                            }
+                            self.diags.push(Diag::warn(
+                                *span,
+                                crate::deprecations::let_write_warning(&target.head.name, &written),
+                            ));
+                        }
+                    }
+                }
                 if target.tail.is_empty() && target.head.name != "self" {
                     if let Some(sym) = self.locals.lookup(&target.head.name) {
                         if !sym.is_mut {
@@ -17614,7 +17664,7 @@ impl<'a> Checker<'a> {
                 };
                 self.locals.push();
                 self.note_view_binding(name, &elem, None);
-                self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false, cell: None, param_place: false });
+                self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false, cell: None, param_place: false, from_let: false });
                 self.check_block(body);
                 self.locals.pop();
             }
@@ -17905,7 +17955,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 self.locals.insert(
                     &binding.name,
-                    LocalSym { ty: Ty::Unknown, is_mut: false, cell: None, param_place: false },
+                    LocalSym { ty: Ty::Unknown, is_mut: false, cell: None, param_place: false, from_let: false },
                 );
                 for s in &body.stmts {
                     self.check_stmt(s);
@@ -18088,7 +18138,7 @@ impl<'a> Checker<'a> {
         let mut typed = Vec::new();
         self.pattern_binding_types(pat, scrut, &mut typed);
         for (name, ty, _) in typed {
-            self.locals.insert(&name, LocalSym { ty, is_mut: false, cell: None, param_place: false });
+            self.locals.insert(&name, LocalSym { ty, is_mut: false, cell: None, param_place: false, from_let: false });
         }
     }
 
@@ -18096,7 +18146,7 @@ impl<'a> Checker<'a> {
         match pat {
             Pattern::Binding(id) => self.locals.insert(
                 &id.name,
-                LocalSym { ty: Ty::Unknown, is_mut: false, cell: None, param_place: false },
+                LocalSym { ty: Ty::Unknown, is_mut: false, cell: None, param_place: false, from_let: false },
             ),
             Pattern::Constructor { args, .. } => {
                 for a in args {
@@ -18392,6 +18442,7 @@ impl<'a> Checker<'a> {
                                 is_mut: false,
                                 cell: None,
                                 param_place: false,
+                                from_let: false,
                             },
                         );
                         let _ = self.check_expr(rhs);
@@ -18408,6 +18459,7 @@ impl<'a> Checker<'a> {
                                 is_mut: false,
                                 cell: None,
                                 param_place: false,
+                                from_let: false,
                             },
                         );
                         let new_payload_ty =
@@ -20590,7 +20642,7 @@ impl<'a> Checker<'a> {
         // a set as any value of the member does
         if let Some(v) = vs.iter().find(|v| v.name == member.name) {
             if let ([Pattern::Binding(id)], Some(ty)) = (args.as_slice(), v.fields.first()) {
-                self.locals.insert(&id.name, LocalSym { ty: ty.clone(), is_mut: false, cell: None, param_place: false });
+                self.locals.insert(&id.name, LocalSym { ty: ty.clone(), is_mut: false, cell: None, param_place: false, from_let: false });
             }
             return;
         }
@@ -26618,6 +26670,7 @@ impl<'a> Checker<'a> {
                                 is_mut: false,
                                 cell: None,
                                 param_place: false,
+                                from_let: false,
                             },
                         );
                         let new_payload_ty = self.check_expr(payload_expr);
@@ -26663,6 +26716,7 @@ impl<'a> Checker<'a> {
                                 is_mut: false,
                                 cell: None,
                                 param_place: false,
+                                from_let: false,
                             },
                         );
                         self.next_handling = crate::typed_bodies::Handling::Handler(*span);

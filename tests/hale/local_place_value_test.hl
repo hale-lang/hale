@@ -55,7 +55,7 @@ locus App {
         std::test::assert(shape_k(self.r.shape) == 3, "a payload's write never reaches the field");
 
         // From a local, both ways.
-        let r = self.r;
+        let mut r = self.r;
         let held = r.cells;
         r.cells[0].k = 50;
         std::test::assert(held[0].k == 1, "writing the source never reaches a local bound from it");

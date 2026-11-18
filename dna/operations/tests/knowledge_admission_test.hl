@@ -558,7 +558,7 @@ locus KnowledgeAdmissionCases {
             codec.edge_id(c.from_id, c.to_id, c.rel),
             "pending reviewed receipt still identifies its exact tuple",
         );
-        let bad = dna::Event {
+        let mut bad = dna::Event {
             kind: event.kind,
             entity: event.entity,
             prev: event.prev,
@@ -852,7 +852,7 @@ locus KnowledgeAdmissionCases {
         let head = std::str::clone(record.head("journal").id);
         let command = self.removal(context, endpoints, head, "remove");
         let codec = ops::KnowledgeCommandCodec { };
-        let bad = self.removal(context, endpoints, head, "wrong-edge"); bad.edge_id = MISSING;
+        let mut bad = self.removal(context, endpoints, head, "wrong-edge"); bad.edge_id = MISSING;
         std::test::assert_eq_str(
             provider.submit(context, bad).code,
             "invalid_command",
