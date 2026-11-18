@@ -3491,6 +3491,7 @@ pub fn summarize_within(
     let no_cell_copies: BTreeMap<(u32, u32), &'static str> = BTreeMap::new();
     let no_raises: BTreeMap<(u32, u32), String> = BTreeMap::new();
     let no_cursors: BTreeSet<(u32, u32)> = BTreeSet::new();
+    let no_renders: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
     let cell_copies: BTreeMap<usize, BTreeMap<(u32, u32), &'static str>> = identified
         .iter()
         .map(|(_, ids)| {
@@ -3601,6 +3602,11 @@ pub fn summarize_within(
                 .filter(|d| d.universe == SiteUniverse::User && !is_stdlib_copy(ids))
                 .and_then(|d| calls.cursors.get(&d.index))
                 .unwrap_or(&no_cursors),
+            renders: key
+                .decl
+                .filter(|d| d.universe == SiteUniverse::User && !is_stdlib_copy(ids))
+                .and_then(|d| calls.renders.get(&d.index))
+                .unwrap_or(&no_renders),
         };
         w.walk_block(body, 0, Escape::Local);
         let starts = std::mem::take(&mut w.starts);
@@ -6055,6 +6061,9 @@ struct Walker<'a> {
     /// `bounded` or an array, by the callee's span), which the check typed:
     /// each is the collection's `at`, not a method of an untyped receiver.
     cursors: &'a BTreeSet<(u32, u32)>,
+    /// RFC #2035: the template functions each rendering calls, by the
+    /// rendered value's span ([`crate::typed_bodies::CheckedCalls::renders`]).
+    renders: &'a BTreeMap<(u32, u32), Vec<String>>,
 }
 
 impl<'a> Walker<'a> {
@@ -7045,47 +7054,13 @@ impl<'a> Walker<'a> {
     }
 
     /// RFC #2035 (F.54): the `@display` template functions a rendering of
-    /// `value` calls. Empty when the walk cannot type the value.
+    /// `value` calls, as the check recorded them from the value's type
+    /// ([`crate::typed_bodies::CheckedCalls::renders`]): its own type's
+    /// template, or what its structural rendering reaches through fields,
+    /// payloads and elements, each occurrence once.
     fn display_templates_of(&self, value: &Expr) -> Vec<String> {
-        let Some(t) = self.receiver_type_name(value) else { return Vec::new() };
-        let mut out = Vec::new();
-        self.display_templates_of_type(&t, &mut BTreeSet::new(), &mut out);
-        out
-    }
-
-    /// The template functions rendering a value of type `t` calls: its
-    /// record's template, or every templated variant's of its enum; and,
-    /// where it renders structurally, those its fields' renderings call,
-    /// at any depth (GH #2061 review: `Outer { v: Inner }` renders `v` by
-    /// `Inner`'s template, so `to_string(o)` costs what that template
-    /// allocates). A record's template renders its own fields, and its
-    /// function's rows carry what they call. Each occurrence counts: two
-    /// fields of one templated type render it twice, so its function is
-    /// listed twice (GH #2061 review); `path` holds the types being walked,
-    /// only to stop at a type that contains itself.
-    fn display_templates_of_type(&self, t: &str, path: &mut BTreeSet<String>, out: &mut Vec<String>) {
-        let record = hale_syntax::display::record_fn(t);
-        if self.known.contains_key(&(None, record.clone())) {
-            out.push(record);
-            return;
-        }
-        if !path.insert(t.to_string()) {
-            return;
-        }
-        let variants = hale_syntax::display::variant_fn_prefix(t);
-        out.extend(
-            self.known
-                .keys()
-                .filter(|(l, n)| l.is_none() && n.starts_with(&variants))
-                .map(|(_, n)| n.clone()),
-        );
-        if let Some(fields) = self.all_struct_fields.get(t) {
-            let tys: Vec<String> = fields.values().cloned().collect();
-            for ft in tys {
-                self.display_templates_of_type(&ft, path, out);
-            }
-        }
-        path.remove(t);
+        let at = value.span();
+        self.renders.get(&(at.start.0, at.end.0)).cloned().unwrap_or_default()
     }
 
     /// A rendering of `value` at `span`: a call of each template function
@@ -7678,10 +7653,15 @@ impl<'a> Walker<'a> {
                 }
                 // RFC #2035: `s + x` renders `x`, through its type's
                 // `@display` template when it has one.
+                // A side that is already a String renders nothing here: a
+                // `to_string(x)` (an f-string's hole) counted its own
+                // rendering at the call, and shares `x`'s span.
                 if matches!(op, BinOp::Add) {
                     let at = left.span().merge(right.span());
                     for side in [left.as_ref(), right.as_ref()] {
-                        self.record_template_renders(side, at, NodeId::NONE, depth, Escape::Local);
+                        if !self.is_string_expr(side) {
+                            self.record_template_renders(side, at, NodeId::NONE, depth, Escape::Local);
+                        }
                     }
                 }
                 self.walk_expr(left, depth, Escape::Local);

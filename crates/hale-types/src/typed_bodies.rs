@@ -701,6 +701,9 @@ pub struct TypedBody {
     /// GH #1984: the element cursors over a collection, by the callee's
     /// span ([`CheckedCalls::cursors`]).
     pub cursors: std::collections::BTreeSet<(u32, u32)>,
+    /// RFC #2035: the `@display` template functions rendering each value
+    /// calls, by the rendered value's span ([`CheckedCalls::renders`]).
+    pub renders: BTreeMap<(u32, u32), Vec<String>>,
 }
 
 /// How a raised error becomes the enclosing fn's (GH #1951, item 2):
@@ -731,6 +734,14 @@ pub struct CheckedCalls {
     /// reached (a local, a param, a record's or a locus's field, a path
     /// of them) and whatever it is named. An element chain rides one.
     pub cursors: BTreeMap<u32, std::collections::BTreeSet<(u32, u32)>>,
+    /// RFC #2035 (F.54): the `@display` template functions a rendering
+    /// calls, by the rendered value's span: the value's own type's
+    /// template, or what its structural rendering reaches through a
+    /// record's fields, an enum's payloads and a tuple's elements, each
+    /// occurrence once (two fields of one templated type, twice). The
+    /// rendering (`to_string`, an f-string's hole, `println`, `String +
+    /// x`) is a call of each, as lowering makes it.
+    pub renders: BTreeMap<u32, BTreeMap<(u32, u32), Vec<String>>>,
 }
 
 /// [`CheckedCalls`] of a record's bodies.
@@ -742,6 +753,9 @@ fn checked_calls_of(bodies: &BTreeMap<u32, TypedBody>) -> CheckedCalls {
                 continue;
             };
             out.raises.entry(*body).or_default().insert((*start, *end), name.clone());
+        }
+        if !typed.renders.is_empty() {
+            out.renders.insert(*body, typed.renders.clone());
         }
         if !typed.cursors.is_empty() {
             out.cursors.insert(*body, typed.cursors.clone());
@@ -1452,6 +1466,15 @@ impl TypingRecord {
             return;
         }
         self.body(body).cursors.insert((callee.start.0, callee.end.0));
+    }
+
+    /// RFC #2035: rendering the value at `at` in the body `body` calls the
+    /// template functions `fns`.
+    pub fn render(&mut self, body: NodeId, at: Span, fns: Vec<String>) {
+        if body.is_none() || fns.is_empty() {
+            return;
+        }
+        self.body(body).renders.insert((at.start.0, at.end.0), fns);
     }
 
     /// GH #1951 (item 2): the error raised at `site` of the body `body`

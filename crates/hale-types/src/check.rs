@@ -21353,10 +21353,74 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// RFC #2035 (F.54): a value of `t`, the expression `e`, rendered as
+    /// text: the `@display` template functions the rendering calls, for the
+    /// allocation summary, which cannot type the value itself.
+    fn note_render(&mut self, e: &Expr, t: &Ty) {
+        if self.specializing.is_some() {
+            return;
+        }
+        let mut fns = Vec::new();
+        self.display_reach(t, &mut BTreeSet::new(), &mut fns);
+        self.typed.render(self.body, e.span(), fns);
+    }
+
+    /// The template functions rendering a value of `t` calls: its record's,
+    /// or each templated variant's of its enum; and where a value renders
+    /// structurally, what its fields, payloads and elements reach, at any
+    /// depth, each occurrence once. `path` holds the types being walked,
+    /// only to stop at one that contains itself.
+    fn display_reach(&self, t: &Ty, path: &mut BTreeSet<String>, out: &mut Vec<String>) {
+        let has_fn = |n: &str| matches!(self.top.lookup(n), Some(TopSymbol::Fn(_)));
+        match self.through_aliases(t.clone()) {
+            Ty::Named(n) => {
+                let record = hale_syntax::display::record_fn(&n);
+                if has_fn(&record) {
+                    out.push(record);
+                    return;
+                }
+                if !path.insert(n.clone()) {
+                    return;
+                }
+                if let Some(TopSymbol::Type(info)) = self.top.lookup(&n) {
+                    match &info.kind {
+                        TypeKind::Struct(fields) => {
+                            for f in fields {
+                                self.display_reach(&f.ty, path, out);
+                            }
+                        }
+                        TypeKind::Enum(vs) => {
+                            for v in vs {
+                                let f = hale_syntax::display::variant_fn(&n, &v.name);
+                                if has_fn(&f) {
+                                    out.push(f);
+                                } else {
+                                    for p in &v.fields {
+                                        self.display_reach(p, path, out);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                path.remove(&n);
+            }
+            Ty::Tuple(es) => {
+                for e in &es {
+                    self.display_reach(e, path, out);
+                }
+            }
+            Ty::Array(e, _) | Ty::Bounded(e, _) => self.display_reach(&e, path, out),
+            _ => {}
+        }
+    }
+
     /// GH #1076 (U3): a value of `t`, the expression `e`, printed: a
     /// quantity's row says the unit lowering writes after its count.
     fn record_printed(&mut self, e: &Expr, t: &Ty) {
         use crate::typed_bodies::{ConversionKind, ConversionRow};
+        self.note_render(e, t);
         if self.specializing.is_some() || !self.scalars.has_quantities() {
             return;
         }
@@ -27353,6 +27417,11 @@ impl<'a> Checker<'a> {
         let Ok(spec) = FormatSpec::parse(spec_text) else {
             return;
         };
+        // RFC #2035: a hole renders through the value's templates, but `?`
+        // past every one.
+        if spec.kind != SpecKind::Debug {
+            self.note_render(&args[0], &vt);
+        }
         // Precision applies to the FRACTIONAL types only. Int and
         // Duration are excluded even though they are numbers:
         // `{n:.2}` on an integer has no meaning, and accepting it

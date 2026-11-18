@@ -224,3 +224,58 @@ fn main() {
         "two renderings of `Inner`'s template, three allocations each: {ds:?}"
     );
 }
+
+/// GH #2061 review: the rendering edges run through every printable shape,
+/// as lowering's do: an enum's payload, a tuple's element, an alias, a
+/// record holding an enum. The check records them from the value's type,
+/// so the allocation summary counts what lowering calls. `{x:?}` reaches no
+/// template.
+#[test]
+fn a_budget_counts_templates_reached_through_enums_tuples_and_aliases() {
+    let src = r#"
+@display("inner {x} and {y}")
+type Inner { x: Int; y: Int; }
+
+type Maybe = enum { Some(Inner), Nothing };
+type Holder { m: Maybe; }
+type Pair { a: Inner; b: Inner; }
+type Twin = Pair;
+
+@budget(alloc_per_call = 0)
+fn payload(m: Maybe) -> String { return to_string(m); }
+
+@budget(alloc_per_call = 0)
+fn element(t: (Inner, Int)) -> String { return to_string(t); }
+
+@budget(alloc_per_call = 0)
+fn held(h: Holder) -> String { return to_string(h); }
+
+@budget(alloc_per_call = 3)
+fn aliased(t: Twin) -> String { return to_string(t); }
+
+@budget(alloc_per_call = 0)
+fn structural(h: Holder) -> String { return f"{h:?}"; }
+
+fn main() {
+    let i = Inner { x: 1, y: 2 };
+    println(payload(Maybe::Some(i)), element((i, 3)), held(Holder { m: Maybe::Nothing }));
+    println(aliased(Pair { a: i, b: i }), structural(Holder { m: Maybe::Some(i) }));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let ds = entries::check_program(&program);
+    for (f, budget, counted) in [("payload", 0, 3), ("element", 0, 3), ("held", 0, 3), ("aliased", 3, 6)] {
+        assert!(
+            ds.iter().any(|d| d.is_error()
+                && d.message.contains(&format!(
+                    "`{f}` declares `@budget(alloc_per_call = {budget})` but the compiler counts {counted}"
+                ))),
+            "`{f}` renders through `Inner`'s template, {counted} allocations: {ds:?}"
+        );
+    }
+    let structural: Vec<_> = ds.iter().filter(|d| d.is_error() && d.message.contains("`structural`")).collect();
+    assert!(
+        structural.iter().all(|d| !d.message.contains("counts 3")),
+        "`{{h:?}}` reaches no template: {structural:?}"
+    );
+}

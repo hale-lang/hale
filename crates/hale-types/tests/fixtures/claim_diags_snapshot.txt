@@ -261,6 +261,28 @@ Claim [1..30] counts against `show`'s alloc budget: a string concatenation (each
 Claim [1..30] counts against `show`'s alloc budget: a string concatenation (each `+` builds a fresh String)
 Claim [1..30] counts against `show`'s alloc budget: a string concatenation (each `+` builds a fresh String)
 Claim [1..30] counts against `show`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+--- crates/hale-types/tests/display_templates.rs#3 ---
+Claim [217..224] hot-path budget exceeded: `payload` declares `@budget(alloc_per_call = 0)` but the compiler counts 3 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [1..30] counts against `payload`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `payload`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `payload`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [302..309] hot-path budget exceeded: `element` declares `@budget(alloc_per_call = 0)` but the compiler counts 3 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [1..30] counts against `element`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `element`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `element`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [394..398] hot-path budget exceeded: `held` declares `@budget(alloc_per_call = 0)` but the compiler counts 3 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [1..30] counts against `held`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `held`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `held`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [477..484] hot-path budget exceeded: `aliased` declares `@budget(alloc_per_call = 3)` but the compiler counts 6 arena allocation(s) per call. Reduce per-call allocations (hoist to reused fields, use `recv_into`), raise the budget, or drop `@budget` for `@unbounded fn` if the allocation is intentional.
+Claim [1..30] counts against `aliased`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `aliased`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `aliased`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `aliased`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `aliased`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `aliased`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [561..571] hot-path budget exceeded: `structural` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [602..610] counts against `structural`'s alloc budget: a string concatenation (each `+` builds a fresh String)
 --- crates/hale-types/tests/frontier_items.rs#0 ---
 Claim [394..400] declared causal set violated: `Api::handle` can transitively cause syscall, block through the bus, which its `@effects(causes: …)` does not declare. Path: `Api::handle` -> subject `Orders` -> `Audit::on_order`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/interface_dispatch.rs#4 ---

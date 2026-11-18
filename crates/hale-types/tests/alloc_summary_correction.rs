@@ -286,8 +286,10 @@ const CALL_LINES_ONLY: [(&str, usize); 36] = [
     // `std::crypto::sha256` comparisons are the renames'
     ("tests/hale/crypto_sha256_stream_test.hl", 2),
     // RFC #2035's test: the library's `ticket`, called through the alias,
-    // which only the renames name
-    ("tests/hale/display_test.hl", 1),
+    // which only the renames name, and the 39 `@display` template calls its
+    // renderings make, which the check records from the rendered values'
+    // types (`CheckedCalls::renders`) and the comparison's walk is not given
+    ("tests/hale/display_test.hl", 40),
     // RFC #1995 E1's test: the library's `slow` and `label`, called
     // through the alias, which only the renames name (an imported enum's
     // `lib::Mode::name(v)` calls the function written for it, by its own
