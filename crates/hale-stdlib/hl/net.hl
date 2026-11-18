@@ -1,0 +1,51 @@
+// std::net: name resolution (GH #1908).
+//
+// `resolve` answers every address the system resolver gives for a host
+// name, so a program can hold a name to what it points at (a fetch that
+// refuses loopback and private ranges checks each address, then dials
+// one of them) instead of matching the name as written.
+
+/// Every address the system resolver gives for `host`, A and AAAA, in the
+/// resolver's order and each once, as text: `127.0.0.1`, `::1`, an IPv6
+/// address unbracketed with its zone when it has one (`fe80::1%en0`). A
+/// literal address is itself (`[::1]` is `::1`). At most 32, the first 32
+/// the resolver answers.
+///
+/// Fails with an `IoError` whose `kind` says why, `path` the host and
+/// `detail` the resolver's message: `not_found` (no such name, or no
+/// address for it), `temporary_failure` (the resolver could not answer
+/// now), `invalid` (an empty or malformed host), `unsupported` (wasm32,
+/// which has no resolver), or the errno's kind (`io` otherwise). The
+/// lookup is getaddrinfo(3) on the calling thread, unbounded, as a dial's
+/// is.
+fn __std_net_resolve(host: String) -> bounded[String; 32] fallible(IoError) {
+    let text = std::net::__resolve(host);
+    let n = len(text);
+    let mut out: bounded[String; 32] = [];
+    if std::str::starts_with(text, "err\n") {
+        let rest = text[4..n];
+        let nl = std::str::index_of(rest, "\n");
+        let mut kind = rest;
+        let mut detail = "";
+        if nl >= 0 {
+            kind = rest[0..nl];
+            detail = rest[(nl + 1)..len(rest)];
+        }
+        fail IoError { kind: kind, errno: 0, path: host, detail: detail };
+    }
+    // "ok", then one address a line
+    let mut at = 3;
+    let mut kept = 0;
+    while at < n && kept < 32 {
+        let mut end = std::str::index_of_from(text, "\n", at);
+        if end < 0 {
+            end = n;
+        }
+        if end > at {
+            push(out, text[at..end]) or discard;
+            kept = kept + 1;
+        }
+        at = end + 1;
+    }
+    return out;
+}

@@ -67,6 +67,7 @@ namespace or spec file cannot land without a tier.
 | `std::log` | stable |  |
 | `std::math` | stable |  |
 | `std::metrics` | experimental | observability is becoming pluggable; the metric API will move with it |
+| `std::net` | experimental | new (GH #1908): `resolve` only, its return shape may grow a pinned-address dial |
 | `std::observe` | experimental | the observe backends are new (GH #1592) and pluggable observability is in progress |
 | `std::os` | stable |  |
 | `std::process` | stable |  |
