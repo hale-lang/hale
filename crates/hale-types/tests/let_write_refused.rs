@@ -116,3 +116,52 @@ fn a_binding_of_unsettled_type_is_not_refused() {
     assert!(let_writes(&ds).is_empty(), "{ds:?}");
     assert!(ds.iter().any(|(e, _)| *e), "the unbound call is still an error: {ds:?}");
 }
+
+/// A generic fn's binding of its parameter's type is `Unknown` in the
+/// template's walk, which leaves the write alone (the argument may be a
+/// locus); the walk of the monomorph, with `T` bound to a record, refuses
+/// it, once however many monomorphs reach it (codex review of #2079).
+#[test]
+fn a_write_through_a_let_in_a_generic_fn_is_refused_at_its_record_monomorph() {
+    let src = r#"
+type P { x: Int; }
+type Q { x: Int; }
+locus L { params { x: Int = 0; } }
+fn touch<T>(x: T) -> T {
+    let q = x;
+    q.x = 2;
+    return q;
+}
+fn own<T>(x: T) -> Int {
+    let p = P { x: 1 };
+    p.x = 3;
+    return p.x;
+}
+fn main() {
+    println(touch(P { x: 1 }).x);
+    println(touch(Q { x: 1 }).x);
+    println(own(1) + own("a"));
+}
+"#;
+    let prog = hale_syntax::parse_source(src).unwrap_or_else(|e| panic!("parse failed: {:?}", e));
+    let ds: Vec<(bool, String)> = entries::check_program(&prog).into_iter().map(|d| (d.is_error(), d.message)).collect();
+    let hits = let_writes(&ds);
+    assert_eq!(hits.len(), 2, "`q.x` once for both monomorphs, `p.x` once: {ds:?}");
+    assert!(hits.iter().all(|(e, _)| *e), "{ds:?}");
+    assert!(hits.iter().any(|(_, m)| m.contains("`q.x` writes into `q`")), "{ds:?}");
+    assert!(hits.iter().any(|(_, m)| m.contains("`p.x` writes into `p`")), "{ds:?}");
+
+    // At a locus monomorph the write is the locus's state.
+    let src = r#"
+locus L { params { x: Int = 0; } }
+fn touch<T>(x: T) -> Int {
+    let q = x;
+    q.x = 2;
+    return q.x;
+}
+fn main() { println(touch(L { })); }
+"#;
+    let prog = hale_syntax::parse_source(src).unwrap_or_else(|e| panic!("parse failed: {:?}", e));
+    let ds: Vec<(bool, String)> = entries::check_program(&prog).into_iter().map(|d| (d.is_error(), d.message)).collect();
+    assert!(let_writes(&ds).is_empty(), "{ds:?}");
+}

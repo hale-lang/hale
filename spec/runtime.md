@@ -4873,8 +4873,8 @@ Erlang.
 
 ## Open questions for runtime
 
-- **Async / await integration.** Reserved keywords, no v0
-  semantics. The lifecycle state machine + cooperative yield
+- **Async / await integration.** Not designed (F.47 unreserved the
+  words). The lifecycle state machine + cooperative yield
   points subsume most of what async is for; explicit
   async/await may not be necessary.
 - **FFI to existing languages.** Generic FFI in stdlib;

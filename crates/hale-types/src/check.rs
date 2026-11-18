@@ -1434,8 +1434,14 @@ fn walk_bundle(
         by_decl.insert(key.clone(), per);
     }
     cx.specialize_generic_bodies();
-    let kept = std::mem::take(&mut cx.kept_specialization_diags);
-    cx.diags.extend(kept);
+    // A finding the ordinary walk already reported (a template's own
+    // write through a `let` of a concrete type, which every monomorph's
+    // walk reaches again) is not reported twice.
+    for d in std::mem::take(&mut cx.kept_specialization_diags) {
+        if !cx.diags.iter().any(|e| e.span == d.span && e.message == d.message) {
+            cx.diags.push(d);
+        }
+    }
     cx.settle_decimal_literals();
     // The walks per monomorph keep their param accesses alone: an access
     // through a value of a parameter type is judged there, against every
@@ -17580,7 +17586,11 @@ impl<'a> Checker<'a> {
                                     _ => written.push_str("[..]"),
                                 }
                             }
-                            self.diags.push(Diag::ty(*span, let_write_error(&target.head.name, &written)));
+                            // The template walk types a parameter-typed
+                            // binding `Unknown` and leaves its write alone (it
+                            // may hold a locus); a monomorph's walk, with the
+                            // arguments bound, knows, and keeps its refusal.
+                            self.push_or_keep(Diag::ty(*span, let_write_error(&target.head.name, &written)));
                         }
                     }
                 }

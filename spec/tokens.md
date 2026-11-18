@@ -93,7 +93,7 @@ name — is a parse error reported **once, at the word**, naming the
 word and the declaration it was written in:
 
 ```text
-work.hl:8:9: parse error: `await` is a reserved word and cannot name
+work.hl:8:9: parse error: `while` is a reserved word and cannot name
 a params field; rename it (Hale has no escaped-identifier form —
 spec/tokens.md lists every reserved word)
 ```

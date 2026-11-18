@@ -3035,10 +3035,11 @@ The grammar in v0 does **not** specify:
   tracking is currently a runtime concern enforced by closure
   tests. A future version may move it into the type system as
   effect annotations.
-- **Async / await.** Reserved keywords. Concurrency in v0 is
-  expressed via the lifecycle state machine + bus interface;
-  explicit async functions await a future spec.
-- **Macros.** Reserved keyword `macro`. No grammar surface yet.
+- **Async / await.** Not designed; F.47 unreserved both words.
+  Concurrency is expressed via the lifecycle state machine + bus
+  interface and the pools (F.35).
+- **Macros.** Not designed; F.47 unreserved `macro`. Compile-time
+  generation is the annotation families' desugar sequence.
 - **Pattern guards beyond `if`.** Match arms support `if` guards;
   more sophisticated pattern logic awaits a future version.
 - **First-class modules.** `module IDENTIFIER { ... }` is in the
@@ -4090,8 +4091,8 @@ keyword set is frozen (STABILITY.md).
   but full formal modeling deferred.
 - **Memory-model formalization** as a happens-before relation.
   Currently informal; formal in v1+.
-- **Async / await semantics.** Reserved keywords; no operational
-  semantics in v0.
+- **Async / await semantics.** Not designed: concurrency is the locus
+  and the pool (F.35), and F.47 unreserved both words.
 
 
 ### types — What's deferred
@@ -4108,8 +4109,8 @@ Per `notes/open-questions.md` and design-rationale §16:
 - **Effect / capability system.** Substrate-derivation tracking
   is currently runtime-enforced via closure tests; future
   version may move into type system as effects.
-- **Async / await.** Reserved keywords; no v0 typing.
-- **Macros.** Reserved keyword; no v0 typing.
+- **Async / await.** Not designed (F.47 unreserved the words).
+- **Macros.** Not designed (F.47 unreserved the word).
 - **Sum-type-typed `self.children`** for multi-accept-type loci.
   v0 is single-accept-type only (F.11).
 - **Projection-class-annotated translation impls** (per F.14
@@ -4372,8 +4373,8 @@ locus.* A locus is never printable.
   but full formal modeling deferred.
 - **Memory-model formalization** as a happens-before relation.
   Currently informal; formal in v1+.
-- **Async / await semantics.** Reserved keywords; no operational
-  semantics in v0.
+- **Async / await semantics.** Not designed: concurrency is the locus
+  and the pool (F.35), and F.47 unreserved both words.
 
 
 ### types — What's deferred
@@ -4390,8 +4391,8 @@ Per `notes/open-questions.md` and design-rationale §16:
 - **Effect / capability system.** Substrate-derivation tracking
   is currently runtime-enforced via closure tests; future
   version may move into type system as effects.
-- **Async / await.** Reserved keywords; no v0 typing.
-- **Macros.** Reserved keyword; no v0 typing.
+- **Async / await.** Not designed (F.47 unreserved the words).
+- **Macros.** Not designed (F.47 unreserved the word).
 - **Sum-type-typed `self.children`** for multi-accept-type loci.
   v0 is single-accept-type only (F.11).
 - **Projection-class-annotated translation impls** (per F.14

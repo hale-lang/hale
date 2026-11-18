@@ -1509,6 +1509,9 @@ slot: the rule reaches neither. Nor does it reach a binding whose type
 the check could not settle (its initializer is itself an error, or
 names a declaration the checked files do not hold): such a binding may
 hold a locus, and the error it would raise belongs to the initializer.
+A generic fn's binding of a parameter's type is judged at each
+monomorph, with the argument bound: the write is refused where `T` is
+a record or an array, and is the locus's state where `T` is a locus.
 
 For `params` / locus state, the implicit rule is that fields
 are mutable through `self.x = ...` (per F.3). The locus's
