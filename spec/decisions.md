@@ -4082,6 +4082,32 @@ keyword set is frozen (STABILITY.md).
 Superseded in part by F.55: perspectives were removed, so an item
 no longer names a `perspective`.
 
+### F.56 — A contextual keyword has a production
+
+**Problem.** `spec/keywords.txt` lists the contextual keywords, and
+the highlighters and the editor colour what it lists. Five of its
+words had stopped being keywords anywhere: `schedule` (the per-locus
+`: schedule …` annotation went with F.31), `http`, `principals` and
+`roles` (the structural `bindings { api: … }` entry they belonged to
+was retired with GH #1417; today `http` is a stdlib module and
+`principals` and `roles` are params of the transports and hubs) and
+`serve` (the call `api::serve( … )` is recognized by its path, as the
+`std::api` fn; the bare word introduces nothing). The list coloured
+them as syntax although the parser reads each as a plain name.
+
+**Decision.** A word is in the contextual list only while the parser
+or the checker recognizes it in some position. The five words leave
+the list. Every other contextual word keeps a live production, named
+in the audit that accompanied this decision. Nothing about a
+program changes: a contextual keyword lexes as an identifier, and
+these five were already read as names everywhere.
+
+**Considered and rejected.** *Drop words a production still reads but
+few programs write* (the recognition sub-modes, the binding
+constraints, the rounding policies). The test is whether the word is
+recognized, not how often it is written: dropping a word whose
+position still parses would leave the list short of the language.
+
 ## Deferred & future work
 ## Deferred & future work
 

@@ -265,7 +265,7 @@ can't name a domain — use a plain identifier. `cores` range
 bounds and set elements are integer literals; the range reuses
 the expression tokens `..` (exclusive) / `..=` (inclusive).
 
-The pre-F.31 `schedule` keyword is gone — the `: schedule
+`schedule` is no keyword (F.56): the pre-F.31 `: schedule
 cooperative | pinned` per-locus annotation no longer exists.
 Placement is a `main`-only deployment seam (`bindings`'s
 sibling), not a per-locus annotation.
@@ -551,6 +551,11 @@ everywhere else:
 `api::serve( … )` is a call whose arguments after the surface and the
 transport are named (`as:`, `receivers:`, `bound:`, `on_full:`); no
 other call takes named arguments (spec/api.md § Serving).
+`serve` itself is no keyword: the call is recognized by its path, and
+`serve` is a name everywhere. Nor are `http`, `principals` and
+`roles` (F.56): `http` is the stdlib module of the `http::Rpc`
+transport, and `principals:` and `roles:` are ordinary params of the
+transports and hubs.
 
 ### Fleet words (phase 4)
 
