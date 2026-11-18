@@ -14,18 +14,14 @@
 // never gains the right to settle a decision by being selected
 // (that lives with the Review/AutonomyBoundary).
 
-// Routing policy is a PERSPECTIVE (#521 comment 1: "live selection
-// may become a perspective"): one program-global slot the assembly
-// designates at construction (#525 item 2) and the owning WorkSystem
-// re-points with `reperspective` — a routing-policy mutation without
-// replacing or restarting its owner. Every impl shares one footprint
-// (the three order params), the perspective soundness rule. Back as
-// a perspective since GH #534 (dna/FRICTION.md F.10).
-perspective WorkRouting {
+// The routing policy: an interface the WorkSystem holds, which the
+// assembly substitutes at construction (#525 item 2), as it does the
+// performers.
+interface WorkRouting {
     // Returns a performer CLASS: "human" | "agent" | "software" | "service".
     fn select(req: WorkRequest, attempt_no: Int, last: String) -> String;
     fn policy_name() -> String;
-    // the shared state every policy continues on
+    // how many selections the policy has made
     fn decisions() -> Int;
 }
 
@@ -45,14 +41,9 @@ fn nth_class(order: String, n: Int) -> String {
     return last;
 }
 
-// `reperspective` swaps CODE and preserves STATE (spec/semantics.md
-// "state-preserving"), so a policy lives in its impl's methods, and
-// the shared footprint holds only the state every policy continues
-// on — here, how many selections have been made.
-
 // Capability first, then the cheapest; escalates to a person only
 // after the cheaper performers declined or failed.
-locus CapabilityFirstSelection : serves WorkRouting {
+locus CapabilityFirstSelection {
     params { decisions: Int = 0; }
     fn policy_name() -> String { return "capability-first"; }
     fn decisions() -> Int { return self.decisions; }
@@ -69,8 +60,8 @@ locus CapabilityFirstSelection : serves WorkRouting {
 }
 
 // A person first, everywhere: the conservative posture an assembly
-// can designate, or a WorkSystem can swap to under pressure.
-locus HumanFirstSelection : serves WorkRouting {
+// can hand its WorkSystem.
+locus HumanFirstSelection {
     params { decisions: Int = 0; }
     fn policy_name() -> String { return "human-first"; }
     fn decisions() -> Int { return self.decisions; }
@@ -351,7 +342,7 @@ locus WorkSystem {
         software_reconciler: Reconciler = NoEvidence { };
         edit_reconciler: Reconciler = IdempotentReplay { };
         organism_reconciler: Reconciler = IdempotentReplay { };
-        selection: perspective(WorkRouting) = CapabilityFirstSelection { };
+        selection: WorkRouting = CapabilityFirstSelection { };
     }
     // The scope the relays answer under: the assembly's id, bound once at
     // its birth; a relay a program gave its own scope keeps it.
@@ -363,11 +354,6 @@ locus WorkSystem {
     }
     fn relayed() -> Bool { return len(self.scope) > 0; }
     fn policy() -> String { return self.selection.policy_name(); }
-    // A routing-policy mutation: re-point the program's WorkRouting
-    // slot. Only the slot's owner may (the ownership tree is the
-    // redeploy authority); the swap is one store, state preserved.
-    fn route_human_first() { reperspective self.selection as HumanFirstSelection; }
-    fn route_capability_first() { reperspective self.selection as CapabilityFirstSelection; }
     // The identity of the performer a kind selects: what its reply must
     // say it is (card 08).
     fn identity_of(kind: String) -> String {

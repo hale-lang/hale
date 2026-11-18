@@ -76,7 +76,7 @@ prose, never shape: no digest, shape hash or identity covers it.
 
 - Match: `[a-zA-Z_][a-zA-Z0-9_]*`.
 - Case conventions are enforced by lints, not the lexer:
-  - `PascalCase` for type names, locus names, perspective names.
+  - `PascalCase` for type names, locus names, interface names.
   - `snake_case` for variables, fields, function names.
   - `SCREAMING_SNAKE_CASE` for constants.
 - Hard keywords (see below) are not legal identifiers. Contextual
@@ -146,9 +146,8 @@ would collide with the syntax the word introduces at the use site:
 ### Declaration keywords (hard)
 
 ```
-locus           perspective     type            const
-fn              import          export          module
-interface
+locus           type            const           fn
+import          export          module          interface
 ```
 
 `interface` (F.20) declares a structural interface — a named set
@@ -161,6 +160,15 @@ fn params, fn returns, locus param/field values, and
 arrays remain gated on the broader composite-construction
 coercion design (same gap as tuple-of-`LocusRef` escape).
 
+`perspective` is no keyword, and neither are `reperspective`,
+`serves`, `serialize_as` and `stable_when`: perspectives were
+removed (F.55), and each is an ordinary identifier. A program that
+still writes one of the removed forms — `perspective P { … }`, a
+`: serves P` clause, a `perspective(P)` type or `reperspective
+self.<field> as <Impl>;` — gets a located parse error naming the
+replacement: declare an `interface` and take it as a param, generic
+where the implementation's type matters.
+
 ### Locus member keywords (contextual)
 
 ```
@@ -169,8 +177,7 @@ as_parent_for   indexed_by
 ```
 
 `params`, `contract`, `bus` and `capacity` are keywords at
-locus-member position, where each introduces its block (`params` and
-`bus` also at perspective-member position). `capacity` introduces an
+locus-member position, where each introduces its block. `capacity` introduces an
 F.22 `capacity { ... }` block carrying
 zero or more `pool X of T;` / `heap Y of T;` slot declarations.
 `as_parent_for` and `indexed_by` are keywords only
@@ -211,7 +218,7 @@ bulk            harmonic        resolution
 
 `mode` is a **contextual keyword**: recognized only
 at locus-member position (as the leading token of a `mode_decl`
-production in `grammar.ebnf` § 11). Outside that position it
+production in `grammar.ebnf` § 7). Outside that position it
 lexes as an ordinary Ident, so `cam.mode: Int` and similar
 param/field uses are admissible — relevant for raylib-style
 bindings where `mode` is a natural API name. Same F.10-style
@@ -309,7 +316,7 @@ restart = …`, `fn restart()` in a locus); a free fn may not take one
 `violate` (v1.x-VIOLATE, F.27) is a **contextual keyword**:
 recognized only as the leading token of a statement inside a
 locus method body (the `violate_stmt` production in
-`grammar.ebnf` § 14). Outside that position it lexes as an
+`grammar.ebnf` § 13). Outside that position it lexes as an
 ordinary Ident, so `let violate = ...` and `fn violate(...)`
 stay admissible. The optional trailing `with` in
 `violate NAME with EXPR;` is the previously-reserved keyword
@@ -340,30 +347,6 @@ claim (`publish T;` / `subscribe T;` grants, `bound C <= N on paths
 from G`) and after a binding entry (`where same_process`). `publish`
 is also an effect-class name and an `@effects(publish: { … })` key.
 
-### Perspective keywords (contextual)
-
-```
-stable_when     serialize_as    serves          reperspective
-```
-
-`stable_when` and `serialize_as` lead a member of a `perspective`
-block.
-
-`serves` (Phase 2a) is a **contextual keyword** —
-recognized only in a locus header's post-`:` list, as the
-`serves P` conformance clause (`locus RouterV1 : serves Router`).
-`reperspective` (Phase 2b) is a **contextual keyword**
-recognized only as a statement head followed by `self`
-(`reperspective self.<field> as <Impl>;`). Outside those positions
-both lex as ordinary Idents, so `fn serves(...)` /
-`let reperspective = ...` stay admissible. Same F.10-style
-narrowing the placement / closure keyword families use.
-
-`perspective` (a **hard** declaration keyword) doubles as a type
-constructor: `perspective(P)` in type position is a handle to the
-contract `P`. The parser recognizes it by the `perspective`
-token followed by `(`.
-
 ### Statement / expression keywords (hard)
 
 ```
@@ -375,8 +358,7 @@ false           nil             self
 
 These are hard keywords. `tier` moved to the projection-class words
 (contextual); `in` after `.` is a member name (`d.in(s)`), and
-`locus`, `type` and `perspective` are member names after `.` too
-(`err.locus`).
+`locus` and `type` are member names after `.` too (`err.locus`).
 
 Bindings are immutable by default. `let mut x = ...` declares a
 mutable binding; reassignment via `x = ...` is permitted. Without
@@ -1058,8 +1040,7 @@ printer is reachable that way is an accident of what the library
 happens to call today, so all four are claimed.
 
 The rule is on the **declaration**, not the name. A locus
-method, an `interface` method and a `perspective` contract `fn`
-may all still be called `sum`, `len` or `contains` — they are
+method and an `interface` method may both still be called `sum`, `len` or `contains` — they are
 reached through a receiver (`self.sum()`, `b.len()`), which no
 builtin claims, and the standard library's own `mirror_ring.hl`
 and `bytes_builder.hl` declare `fn len()`. A `module { }` item

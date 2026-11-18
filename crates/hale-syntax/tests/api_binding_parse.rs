@@ -58,10 +58,6 @@ fn gated_is_refused_everywhere_with_the_replacement() {
         (roles_program("role r;\n", "", "", "@gated(role: r)\n    "), "a locus fn"),
         (roles_program("role r;\n", "", "", "@hot @gated(role: r)\n    "), "a stacked fn decorator"),
         (roles_program("role r;\n@gated(role: r)\nfn free() { }\n", "", "", ""), "a free fn"),
-        (
-            roles_program("role r;\nperspective V {\n    @gated(role: r)\n    fn f(p: P) -> Int;\n}\n", "", "", ""),
-            "a perspective fn",
-        ),
     ] {
         let err = parse_source(&src).expect_err(place);
         // The recovery after a refused member may add its own follow-on

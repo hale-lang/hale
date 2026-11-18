@@ -177,7 +177,6 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         export: true,
         generics: Vec::new(),
         annotations: Vec::new(),
-        serves: Vec::new(),
         form: None,
         locality: None,
         bounded: false,
@@ -467,7 +466,6 @@ fn each_stmt_in_stmt_mut(s: &mut Stmt, f: &mut dyn FnMut(&mut Stmt)) {
         | Stmt::Continue(_)
         | Stmt::Yield(_)
         | Stmt::Terminate(_)
-        | Stmt::Reperspective { .. }
         | Stmt::Violate { payload: None, .. } => {}
     }
     f(s);
@@ -879,8 +877,7 @@ fn acc_stmt(s: &mut Stmt, w: &WireLayouts) {
         | Stmt::Break(_)
         | Stmt::Continue(_)
         | Stmt::Yield(_)
-        | Stmt::Terminate(_)
-        | Stmt::Reperspective { .. } => {}
+        | Stmt::Terminate(_) => {}
     }
 }
 
@@ -1722,13 +1719,6 @@ pub fn desugar_tail_returns(program: &mut Program) {
                             LocusMember::Fn(f) => fn_body(f),
                             LocusMember::Mode(md) if md.ret.is_some() => body(&mut md.body),
                             _ => {}
-                        }
-                    }
-                }
-                TopDecl::Perspective(p) => {
-                    for m in &mut p.members {
-                        if let PerspectiveMember::Fn(f) = m {
-                            fn_body(f);
                         }
                     }
                 }

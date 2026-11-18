@@ -79,7 +79,6 @@ pub enum TokenKind {
 
     // Keywords — declaration
     Locus,
-    Perspective,
     Type,
     Const,
     Fn,
@@ -89,11 +88,10 @@ pub enum TokenKind {
 
     // GH friction sweep 2026-10-12 ("can't the compiler be smart
     // about context?"): the locus-member, lifecycle, mode, projection,
-    // closure, recovery, contract, bus, perspective and placement-tier
-    // words are CONTEXTUAL. They lex as `Ident` and the parser recognizes
-    // each in the one position where it introduces syntax (`run() { }`
-    // at locus-member position, `restart(c);` at statement head,
-    // `capacity { }`, `epoch tick;` inside a closure body, ...), so a
+    // closure, recovery, contract, bus and placement-tier words are
+    // CONTEXTUAL. They lex as `Ident` and the parser recognizes each in
+    // the one position where it introduces syntax (`run() { }` at
+    // locus-member position, `restart(c);` at statement head, `capacity { }`, `epoch tick;` inside a closure body, ...), so a
     // field, parameter, local, enum variant or fn may be named `run`,
     // `epoch`, `restart` or `capacity`. `keywords::CONTEXTUAL_KEYWORDS`
     // lists them; spec/tokens.md § Reserved words says where each one
@@ -200,7 +198,6 @@ impl TokenKind {
     pub fn keyword_lexeme(&self) -> Option<&'static str> {
         Some(match self {
             TokenKind::Locus => "locus",
-            TokenKind::Perspective => "perspective",
             TokenKind::Type => "type",
             TokenKind::Const => "const",
             TokenKind::Fn => "fn",
@@ -444,7 +441,6 @@ impl<'a> Lexer<'a> {
         let kind = match text {
             // Declaration
             "locus" => TokenKind::Locus,
-            "perspective" => TokenKind::Perspective,
             "type" => TokenKind::Type,
             "const" => TokenKind::Const,
             "fn" => TokenKind::Fn,
@@ -458,8 +454,8 @@ impl<'a> Lexer<'a> {
             // Same pattern as `approx`/`within`/`pool`/`heap`.
 
             // Every other locus, lifecycle, mode, projection,
-            // placement, closure, recovery, contract, bus and
-            // perspective word (`run`, `epoch`, `restart`, `capacity`,
+            // placement, closure, recovery, contract and bus word
+            // (`run`, `epoch`, `restart`, `capacity`,
             // `publish`, `of`, `tier`, `where`, `yield`, ...) is a
             // contextual keyword: it lexes as Ident and the parser
             // recognizes it in position. See the note on `TokenKind`.

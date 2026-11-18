@@ -165,7 +165,7 @@ fn ty_shape(ty: &Ty, top: &TopScope) -> Result<Option<WireShape>, &'static str> 
                 TypeKind::Scalar(_) => WireShape::Scalar,
                 TypeKind::Alias(inner) => return ty_shape(inner, top),
             },
-            Some(TopSymbol::Locus(_) | TopSymbol::Interface(_) | TopSymbol::Perspective(_)) => return Err(refusal::HANDLE),
+            Some(TopSymbol::Locus(_) | TopSymbol::Interface(_)) => return Err(refusal::HANDLE),
             _ => return Ok(None),
         },
         Ty::Bounded(e, _) => match ty_shape(e, top)? {
@@ -248,7 +248,7 @@ fn walk_ty(ty: &Ty, top: &TopScope, path: &mut Vec<String>, open: &mut BTreeSet<
 
 
 /// The declarations the rules read: the bundle's types and the names of
-/// its loci, interfaces and perspectives (a handle, which no wire
+/// its loci and interfaces (a handle, which no wire
 /// carries).
 pub struct WireDecls<'a> {
     types: BTreeMap<&'a str, &'a TypeDecl>,
@@ -277,9 +277,6 @@ impl<'a> WireDecls<'a> {
                     }
                     TopDecl::Interface(i) => {
                         handles.insert(i.name.name.as_str());
-                    }
-                    TopDecl::Perspective(p) => {
-                        handles.insert(p.name.name.as_str());
                     }
                     TopDecl::Module(m) => collect(&m.items, types, handles),
                     _ => {}
@@ -349,7 +346,6 @@ impl<'a> WireDecls<'a> {
             }
             TypeExpr::Tuple(..) => refuse("a tuple"),
             TypeExpr::Function { .. } => refuse("a fn value"),
-            TypeExpr::Perspective { .. } => refuse("a locus handle"),
             TypeExpr::Projection { .. } => refuse("a projection"),
             TypeExpr::Bounded { elem, .. } => match elem.as_ref() {
                 TypeExpr::Primitive(PrimType::String | PrimType::Bytes, _) => refuse("a `bounded` buffer of pointers"),
@@ -428,7 +424,6 @@ impl<'a> WireDecls<'a> {
             },
             TypeExpr::Tuple(..) => refuse("a tuple"),
             TypeExpr::Function { .. } => refuse("a fn value"),
-            TypeExpr::Perspective { .. } => refuse("a locus handle"),
             TypeExpr::Projection { .. } | TypeExpr::Bounded { .. } => refuse("a type the spawn does not marshal"),
         }
     }

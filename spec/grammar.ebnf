@@ -73,7 +73,6 @@ import_decl       = "import" , STRING_LIT , "as" , IDENTIFIER ,
 import_item       = IDENTIFIER , [ "as" , IDENTIFIER ] ;
 
 top_decl          = locus_decl
-                  | perspective_decl
                   | type_decl
                   | positional_type       (* spec/api.md § Codecs *)
                   | wire_case_type        (* spec/types.md § An enum's names *)
@@ -206,7 +205,7 @@ interface_method_sig
    (lexed as IDENTIFIER) — only the top-level decl position
    recognizes it, so `topic` remains usable as a struct field or
    local name. A topic's name shares the one top-level namespace with
-   types, loci, perspectives and interfaces: `topic Tick { payload:
+   types, loci and interfaces: `topic Tick { payload:
    Tick; }` beside `type Tick` is a duplicate top-level name, and the
    diagnostic says so and names the rename.
 
@@ -386,21 +385,15 @@ bounded_annotation = "@" , "bounded" ;
 (* F.31 (2026-05-23): `schedule` removed from locus_annotation.
    Placement is a deployment seam; it lives in a `placement { }`
    block on `main` only. See `placement_block` below. *)
-(* Phase 2a (perspectives): the post-`:` list may also carry
-   `serves P` conformance clauses, intermixed with annotations —
-   `locus RouterV1 : serves Router, tier 2 { ... }`. `serves` is a
-   contextual ident recognized only in this position. *)
-(* GH #724 (2026-09-19): the contract may be an IMPORTED perspective,
-   named through its import alias — `serves lib::Routing`. The path
-   resolves through the same cross-seed rename table as a qualified
-   type or `alias::fn()` call; an alias path that resolves to nothing
-   (a nested alias, a typo) is a located resolution error, not a
-   parse error. `perspective_type` and `reperspective_stmt` take the
-   same qualified form. *)
-locus_annotations = ":" , locus_header_item ,
-                    { "," , locus_header_item } ;
-locus_header_item = locus_annotation
-                  | "serves" , qualified_name ;
+(* F.55 (2026-11-18): perspectives were removed. A `serves P` item in
+   this list is a located parse error naming the replacement: declare
+   an `interface` and take it as a param, generic where the
+   implementation's type matters (spec/decisions.md F.55). A
+   `perspective P { ... }` declaration, a `perspective(P)` type and a
+   `reperspective` statement are refused the same way; `perspective`
+   is otherwise an ordinary identifier. *)
+locus_annotations = ":" , locus_annotation ,
+                    { "," , locus_annotation } ;
 locus_annotation  = "tier" , INT_LIT
                   | "projection" , projection_class
                   ;
@@ -1018,42 +1011,7 @@ epoch_spec        = "tick"
                   ;
 
 
-(* === 10. Perspective declaration ============================== *)
-
-(* Shipped (Phase 2): a perspective is a CONTRACT — bodyless `fn`
-   signatures (and optionally a bus surface) forming a stable ABI,
-   reached through a live-swappable program-global slot (see the
-   Phase 2a/2c comments below and spec/semantics.md). The
-   params_block / stable_when / serialize_as members below are the
-   serializable-parameter-bundle form used by the aspirational
-   transport-driven hot-load path. *)
-
-perspective_decl  = "perspective" , IDENTIFIER , [ generic_params ] ,
-                    "{" , { perspective_member } , "}" ;
-
-perspective_member= params_block
-                  | "stable_when" , block
-                  | "serialize_as" , type_expr , ";"
-                  | contract_fn
-                  | bus_block
-                  ;
-(* Phase 2c (2026-07-06): a perspective contract may declare its BUS
-   surface (`bus { subscribe/publish ... }`, the locus bus-block
-   shape). These edges are part of the swappable ABI; a `serves`
-   impl must provide each declared subject. Swapping a bus-backed
-   perspective needs the async mailbox re-point (a follow-up); until
-   then `reperspective` on such a perspective is rejected. *)
-(* Phase 2a: a perspective's `fn` members are CONTRACT signatures
-   — a bodyless `fn route(r: Req) -> Resp;` declares the ABI a
-   `serves`-ing locus must provide. A bodied `fn { ... }` is still
-   accepted (a default / helper). Same grammar as `function_decl`
-   except the body may be replaced by `;`. *)
-contract_fn       = "fn" , IDENTIFIER , [ generic_params ] ,
-                    "(" , [ param_list ] , ")" , [ "->" , type_expr ] ,
-                    [ fallible_marker ] , ( block | ";" ) ;
-
-
-(* === 11. Type declarations ==================================== *)
+(* === 10. Type declarations ==================================== *)
 
 (* `@positional` marks a record the JSON codecs carry as an array of its
    fields in declaration order (spec/api.md § Codecs, Positional
@@ -1183,7 +1141,7 @@ generic_param     = IDENTIFIER , [ ":" , type_expr ] ;
 generic_args      = "<" , type_expr , { "," , type_expr } , ">" ;
 
 
-(* === 12. Type expressions ===================================== *)
+(* === 11. Type expressions ===================================== *)
 
 type_expr         = primitive_type
                   | named_type
@@ -1192,17 +1150,8 @@ type_expr         = primitive_type
                   | bounded_type
                   | tuple_type
                   | function_type
-                  | perspective_type
                   | "(" , type_expr , ")"
                   ;
-
-(* Phase 2a: `perspective(P)` — a live-rebindable handle to the
-   perspective contract `P`. A holder programs against `P`'s
-   methods and reaches the current impl only through `P`'s
-   program-global slot. GH #724: `P` may be qualified by an import
-   alias (`perspective(lib::Routing)`), so a consumer can hold a slot
-   of a contract an imported seed declares. *)
-perspective_type  = "perspective" , "(" , qualified_name , ")" ;
 
 (* bounded[T; N] (2026-07-02): fixed-capacity counted collection,
    laid out inline as { i64 len, [N x T] }. `bounded` is a
@@ -1254,7 +1203,7 @@ function_type     = "fn" , "(" , [ type_expr , { "," , type_expr } ] , ")" ,
                     [ "->" , type_expr ] ;
 
 
-(* === 13. Const and function decls ============================= *)
+(* === 12. Const and function decls ============================= *)
 
 (* The type may be left out when the initializer is a literal (`3`,
    `-1.5`, `2.50d`, `"x"`, `true`, `b"x"`): the const takes the
@@ -1394,7 +1343,7 @@ param_list        = parameter , { "," , parameter } ;
 parameter         = IDENTIFIER , ":" , type_expr , [ "=" , expression ] ;
 
 
-(* === 14. Statements =========================================== *)
+(* === 13. Statements =========================================== *)
 
 (* Phase 2b (2026-05-11): a block's last item may be an
    expression without a trailing `;`. That trailing expression
@@ -1420,23 +1369,12 @@ statement         = let_stmt
                   | continue_stmt
                   | yield_stmt
                   | terminate_stmt
-                  | reperspective_stmt
                   | recovery_stmt
                   | violate_stmt
                   | fail_stmt
                   | block
                   | expr_stmt
                   ;
-
-(* Perspectives Phase 2b (2026-07-06): the live redeploy. Re-points
-   the perspective slot named by `self.<field>`'s `perspective(P)`
-   type at a fresh instance of the given impl locus (which must
-   `serve P`). `reperspective` is a contextual keyword — recognized
-   only as a statement head immediately followed by `self`; `as` is
-   contextual here too. GH #724: the impl may be an imported locus,
-   named through its alias (`reperspective self.r as lib::Double`). *)
-reperspective_stmt = "reperspective" , "self" , "." , IDENTIFIER ,
-                     "as" , qualified_name , ";" ;
 
 (* GH #1995 E3: a `let` of a pattern, or with `else`. `let P = e else
    { … };` binds P's names after the statement, and its block must leave
@@ -1582,7 +1520,7 @@ violate_stmt      = "violate" , IDENTIFIER ,
 expr_stmt         = expression , ";" ;
 
 
-(* === 15. Expressions ========================================== *)
+(* === 14. Expressions ========================================== *)
 
 (* Expression productions follow the precedence table in
    precedence.md. The grammar below is presented top-down for
@@ -1713,7 +1651,6 @@ serve_option      = "as" , ":" , expression
    arrives as an IDENTIFIER. *)
 member_name       = IDENTIFIER
                   | "locus"
-                  | "perspective"
                   | "type"
                   | "in"              (* #1076: `d.in(s)` *)
                   ;
@@ -1814,7 +1751,7 @@ argument_list     = expression , { "," , expression } , [ "," ] ;   (* a trailin
 identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 
 
-(* === 16. Lexical tokens (referenced) ========================== *)
+(* === 15. Lexical tokens (referenced) ========================== *)
 
 (* These are produced by the lexer; their full rules live in
    tokens.md. Listed here for completeness. *)

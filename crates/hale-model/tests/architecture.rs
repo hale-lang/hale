@@ -1057,7 +1057,7 @@ fn declared_in_covers_the_full_declaration_universe() {
 /// The declaration-universe canary, covering every variant the
 /// compiler's `top_decl_name` names — not a hand-picked subset:
 /// locus, fn, topic, type, interface, group (specialized sorts)
-/// PLUS perspective, const, ring layout, target (opaque
+/// PLUS const, ring layout, target (opaque
 /// Declaration rows). Module/Claims/Constitution are deliberately
 /// nameless there and absent here. A new nameable TopDecl variant
 /// must extend this test alongside the schema.
@@ -1100,17 +1100,11 @@ fn the_nameable_declaration_universe_is_complete() {
             display: "edge_node".to_string(),
             provenance: p,
         },
-        Declaration {
-            kind: DeclKind::Perspective,
-            name: "public_api".to_string(),
-            display: "public_api".to_string(),
-            provenance: p,
-        },
     ];
     m.entities
         .declarations
         .sort_by(|a, b| (&a.name, a.kind).cmp(&(&b.name, b.kind)));
-    // ALL ten nameable kinds join the seed sort.
+    // ALL nine nameable kinds join the seed sort.
     m.relations.declared_in = vec![
         DeclaredIn {
             entity: EntityRef::Function(FunctionId(1)),
@@ -1157,25 +1151,20 @@ fn the_nameable_declaration_universe_is_complete() {
             seed: SeedId(0),
             provenance: p,
         },
-        DeclaredIn {
-            entity: EntityRef::Declaration(DeclarationId(3)),
-            seed: SeedId(0),
-            provenance: p,
-        },
     ];
     m.validate()
-        .expect("all ten nameable declaration kinds join the seed sort");
-    // Kind is part of the DeclKind vocabulary — all four opaque
+        .expect("all nine nameable declaration kinds join the seed sort");
+    // Kind is part of the DeclKind vocabulary — all three opaque
     // kinds are present in this model.
     let kinds: std::collections::BTreeSet<_> =
         m.entities.declarations.iter().map(|d| d.kind).collect();
     assert_eq!(
         kinds.len(),
-        4,
-        "perspective, const, ring layout, target all representable"
+        3,
+        "const, ring layout, target all representable"
     );
     // Dangling opaque-declaration ref is refused.
-    m.relations.declared_in[9].entity = EntityRef::Declaration(DeclarationId(9));
+    m.relations.declared_in[8].entity = EntityRef::Declaration(DeclarationId(9));
     assert!(m.validate().is_err());
 }
 

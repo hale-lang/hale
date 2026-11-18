@@ -132,6 +132,9 @@ initializer holds the slot (`spec/semantics.md` "Holding without
 designating"); the reproducer prints `total=126`. The build refuses a
 held perspective nothing built designates, and a call through an empty
 held slot stops the program naming it. `tests/hale/perspective_hold_test.hl`.
+**Superseded:** perspectives were removed (spec/decisions.md F.55); the
+reproducer and its test went with them. An interface-typed param the
+assembly substitutes at construction is the route that remains.
 
 The obvious answer to F.3 is the program-global slot: the assembly
 designates `perspective(Performing)` once (`#525` item 2 made that
@@ -148,7 +151,8 @@ birth, clobbering the assembly's choice (last designation wins).
 There is no way to say "hold the slot, dispatch through whatever the
 program designated".
 
-**Reproducer:** `dna/friction/f4-perspective-must-designate/`.
+**Reproducer:** `dna/friction/f4-perspective-must-designate/` (removed
+with perspectives, F.55).
 
 **Request shape:** `p: perspective(P);` with no initializer means
 *hold, do not designate*; `hale check` errors if no locus in the
@@ -303,6 +307,10 @@ the call as Unit, so:
 library.
 **Status:** FIXED (GH #534, hale PR #538, 2026-09-08); see the
 resolution line. Re-run on main 2026-10-12: the app builds and runs.
+**Superseded:** perspectives were removed (spec/decisions.md F.55).
+`WorkRouting` in `dna/core/work_system.hl` is an interface the assembly
+substitutes at construction; the live policy swap went with
+`reperspective`, which has no replacement.
 
 `perspective WorkRouting`, two `: serves WorkRouting` impls and a
 `selection: perspective(WorkRouting) = CapabilityFirstSelection { }`
@@ -317,7 +325,8 @@ so a library cannot offer a live-rebindable policy slot at all; only
 interfaces cross the seed boundary. This is the same class as F.1
 (enums): a name family the mangler does not rewrite.
 
-**Reproducer:** `dna/friction/f10-perspective-across-seeds/`.
+**Reproducer:** `dna/friction/f10-perspective-across-seeds/` (removed
+with perspectives, F.55).
 
 **Resolution:** FIXED upstream (GH #534, hale PR #538, 2026-09-08):
 `serves` lists are renamed with their perspective. `WorkRouting` is a

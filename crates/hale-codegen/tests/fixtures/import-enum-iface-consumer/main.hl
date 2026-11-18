@@ -1,9 +1,9 @@
-// import-enum-persp-consumer — GH #534 regression. Everything the
-// consumer does here crosses the seed boundary into lib-enum-persp:
-// a fn that matches the lib's enum, a variant handed across, and a
-// perspective holder whose slot the consumer designates (#525).
+// import-enum-iface-consumer — GH #534 regression. Everything the
+// consumer does here crosses the seed boundary into lib-enum-iface:
+// a fn that matches the lib's enum, a variant handed across, and an
+// interface-typed param the consumer substitutes at construction (#525).
 
-import "../lib-enum-persp" as lib;
+import "../lib-enum-iface" as lib;
 
 main locus App {
     params {
@@ -13,8 +13,6 @@ main locus App {
         println("first=", lib::first());
         println("green=", lib::is_green(lib::Color::Green));
         println("which=", self.r.which());
-        self.r.swap();
-        println("after=", self.r.which());
         // a consumer-side match over the library's enum
         let label = match lib::Color::Blue {
             lib::Color::Red -> "r",

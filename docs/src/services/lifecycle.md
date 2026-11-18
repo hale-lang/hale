@@ -182,15 +182,12 @@ Because every default `Node` would construct another `Node`, initialization coul
 
 How a child is supplied to a `params` field determines whether the parent owns it or borrows it:
 
-- **Owned child**: Constructed directly in the `params` initializer (via a literal `Leaf { }`, a factory `make_leaf()`, an `or` fallback `make_leaf_f() or backup_leaf()`, an `interface` slot `j: Counter = Churner { }`, or a `perspective` slot `router: perspective(Router) = RouterV1 { }`). The child's lifecycle is tied to the parent's tree.
-- **Borrowed handle**: Passed in by referencing an existing variable or field (`Mid { leaf: shared }`, or assigning `self.journal = shared` on an interface/perspective slot). The parent's teardown cascade skips borrowed handles; the scope that originally created `shared` remains responsible for dissolving it.
+- **Owned child**: Constructed directly in the `params` initializer (via a literal `Leaf { }`, a factory `make_leaf()`, an `or` fallback `make_leaf_f() or backup_leaf()`, or an `interface` slot `j: Counter = Churner { }`). The child's lifecycle is tied to the parent's tree.
+- **Borrowed handle**: Passed in by referencing an existing variable or field (`Mid { leaf: shared }`, or assigning `self.journal = shared` on an interface slot). The parent's teardown cascade skips borrowed handles; the scope that originally created `shared` remains responsible for dissolving it.
 
 ```hale,fragment
 locus Queries {
-    params { j: Counter = Churner { }; }                  // owned interface child
-}
-locus Gateway {
-    params { router: perspective(Router) = RouterV1 { }; } // owned perspective child
+    params { j: Counter = Churner { }; }   // owned interface child
 }
 ```
 

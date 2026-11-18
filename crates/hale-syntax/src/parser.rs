@@ -458,9 +458,8 @@ impl Parser {
     ///
     /// Reported at the NAME, in the `reserved_word_as_name` shape,
     /// and recorded so the call sites recover as ordinary calls.
-    /// Locus methods, interface methods and perspective contract fns
-    /// are NOT affected: they are reached through a receiver
-    /// (`self.sum()`), which no builtin claims — `free` is false for
+    /// Locus methods and interface methods are NOT affected: they are
+    /// reached through a receiver (`self.sum()`), which no builtin claims — `free` is false for
     /// those call sites.
     fn reject_builtin_call_form_as_fn(&mut self, name: &Ident) {
         let Some((word, why)) = builtin_call_form(&name.name) else {
@@ -638,11 +637,10 @@ impl Parser {
         }
     }
 
-    /// GH #724: a perspective-contract reference that may be
-    /// QUALIFIED by an import alias — `serves lib::Routing`,
-    /// `perspective(lib::Routing)`, `reperspective self.f as
-    /// lib::Impl`. The three positions keep their `Ident` shape with
-    /// the path joined by `::`, exactly as a `bindings { }` entry's
+    /// A declaration reference that may be QUALIFIED by an import
+    /// alias — a role named in `requires: [lib::reader]` or a role's
+    /// `includes`. The position keeps its `Ident` shape with the path
+    /// joined by `::`, exactly as a `bindings { }` entry's
     /// imported topic does (GH #527 B6); the cross-seed rename pass
     /// collapses the joined name to the mangled decl before
     /// typecheck, so the checker and codegen both see the one name
@@ -738,7 +736,6 @@ impl Parser {
             self.peek(),
             TokenKind::Eof
                 | TokenKind::Locus
-                | TokenKind::Perspective
                 | TokenKind::Type
                 | TokenKind::Const
                 | TokenKind::Fn
@@ -1085,7 +1082,7 @@ impl Parser {
                              `@locality(...)` / `@export locus`",
                         ));
                     }
-                    let mut fn_decl = self.parse_fn_decl_with_ffi(None, false, true)?;
+                    let mut fn_decl = self.parse_fn_decl_with_ffi(None, true)?;
                     if fn_decl.ffi.is_some() {
                         return Err(Diag::parse(
                             at.span,
@@ -1128,7 +1125,7 @@ impl Parser {
                         "expected `fn` after `@ffi(...)` annotation",
                     ));
                 }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(Some(ffi.clone()), false, true)?;
+                let mut fn_decl = self.parse_fn_decl_with_ffi(Some(ffi.clone()), true)?;
                 fn_decl.span = ffi.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
             }
@@ -1267,7 +1264,7 @@ impl Parser {
                         ),
                     ));
                 }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false, true)?;
+                let mut fn_decl = self.parse_fn_decl_with_ffi(None, true)?;
                 decos.apply_to_fn(&mut fn_decl);
                 return Ok(TopDecl::Fn(fn_decl));
             }
@@ -1567,7 +1564,12 @@ impl Parser {
         }
         match self.peek() {
             TokenKind::Locus => self.parse_locus_decl().map(TopDecl::Locus),
-            TokenKind::Perspective => self.parse_perspective_decl().map(TopDecl::Perspective),
+            // F.55: perspectives were removed; `perspective` is a name
+            // again, and a declaration that still opens with it is told
+            // what replaces it.
+            TokenKind::Ident(s) if s == "perspective" && matches!(self.peek_at(1), TokenKind::Ident(_)) => {
+                Err(removed_perspective(self.peek_token().span, "`perspective`"))
+            }
             TokenKind::Type => self.parse_type_decl().map(TopDecl::Type),
             TokenKind::Const => self.parse_const_decl().map(TopDecl::Const),
             TokenKind::Fn => self.parse_fn_decl(true).map(TopDecl::Fn),
@@ -1944,8 +1946,8 @@ impl Parser {
         let mut roles = Vec::new();
         while !self.at(&TokenKind::RBracket) {
             // T1: a role another seed declares is named through its
-            // import alias (`lib::reader`), joined as a perspective
-            // reference is; the rename pass collapses it to the role
+            // import alias (`lib::reader`), its path joined into one
+            // name; the rename pass collapses it to the role
             roles.push(self.expect_qualified_ident("role name")?);
             if !self.eat(&TokenKind::Comma) {
                 break;
@@ -4085,15 +4087,10 @@ impl Parser {
         let generics = self.parse_generic_params_opt()?;
 
         let mut annotations = Vec::new();
-        // Phase 2a: `serves P, Q` conformance clauses share the
-        // post-`:` list with tier/projection annotations. Each
-        // comma-item is either `serves <Name>` (contextual ident)
-        // or a regular annotation.
-        let mut serves = Vec::new();
         if self.eat(&TokenKind::Colon) {
-            self.parse_locus_header_item(&mut annotations, &mut serves)?;
+            self.parse_locus_header_item(&mut annotations)?;
             while self.eat(&TokenKind::Comma) {
-                self.parse_locus_header_item(&mut annotations, &mut serves)?;
+                self.parse_locus_header_item(&mut annotations)?;
             }
         }
 
@@ -4171,7 +4168,6 @@ impl Parser {
             export: false,
             generics,
             annotations,
-            serves,
             form: None,
             locality: None,
             bounded: false,
@@ -4339,26 +4335,15 @@ impl Parser {
         Ok(out)
     }
 
-    /// Phase 2a: one item in a locus header's post-`:` list —
-    /// either a `serves <Name>` conformance clause (contextual
-    /// ident `serves`) or a tier/projection annotation.
-    fn parse_locus_header_item(
-        &mut self,
-        annotations: &mut Vec<LocusAnnotation>,
-        serves: &mut Vec<Ident>,
-    ) -> Result<(), Diag> {
-        if matches!(self.peek(), TokenKind::Ident(s) if s == "serves") {
-            self.bump(); // `serves`
-            // GH #724: the contract may be an IMPORTED perspective,
-            // named through its alias — `serves lib::Routing`.
-            serves.push(
-                self.expect_qualified_ident("perspective contract name")?,
-            );
-            Ok(())
-        } else {
-            annotations.push(self.parse_locus_annotation()?);
-            Ok(())
+    /// One item in a locus header's post-`:` list: a tier or projection
+    /// annotation. `serves <Contract>` was a perspective conformance
+    /// clause; perspectives were removed (F.55), and it is told so.
+    fn parse_locus_header_item(&mut self, annotations: &mut Vec<LocusAnnotation>) -> Result<(), Diag> {
+        if matches!(self.peek(), TokenKind::Ident(s) if s == "serves") && matches!(self.peek_at(1), TokenKind::Ident(_)) {
+            return Err(removed_perspective(self.peek_token().span, "`serves`"));
         }
+        annotations.push(self.parse_locus_annotation()?);
+        Ok(())
     }
 
     fn parse_locus_annotation(&mut self) -> Result<LocusAnnotation, Diag> {
@@ -4431,8 +4416,7 @@ impl Parser {
                 format!(
                     "expected a locus header annotation after `:` — \
                      `tier <N>` (memory locality), `projection \
-                     <rich|chunked|recognition(...)>`, or `serves \
-                     <Contract>` — got {:?}. (Thread placement is not \
+                     <rich|chunked|recognition(...)>` — got {:?}. (Thread placement is not \
                      a locus annotation; it lives in main's \
                      `placement {{ }}` block.)",
                     other
@@ -6804,50 +6788,6 @@ impl Parser {
         Ok(RecoveryEventName { event: RecoveryEvent::named(&name.name), name })
     }
 
-    fn parse_perspective_decl(&mut self) -> Result<PerspectiveDecl, Diag> {
-        let kw = self.expect(TokenKind::Perspective, "perspective")?;
-        let name = self.expect_decl_name("perspective name")?;
-        let generics = self.parse_generic_params_opt()?;
-        self.expect(TokenKind::LBrace, "{")?;
-        let mut members = Vec::new();
-        while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
-            members.push(self.parse_perspective_member()?);
-        }
-        let close = self.expect(TokenKind::RBrace, "}")?;
-        Ok(PerspectiveDecl {
-            name,
-            generics,
-            members,
-            span: kw.span.merge(close.span),
-            id: NodeId::NONE,
-        })
-    }
-
-    fn parse_perspective_member(&mut self) -> Result<PerspectiveMember, Diag> {
-        match self.peek() {
-            TokenKind::Ident(kw) if kw == "params" => self.parse_params_block().map(PerspectiveMember::Params),
-            TokenKind::Ident(kw) if kw == "stable_when" => {
-                self.bump();
-                let block = self.parse_block()?;
-                Ok(PerspectiveMember::StableWhen(block))
-            }
-            TokenKind::Ident(kw) if kw == "serialize_as" => {
-                self.bump();
-                let ty = self.parse_type_expr()?;
-                self.expect(TokenKind::Semi, ";")?;
-                Ok(PerspectiveMember::SerializeAs(ty))
-            }
-            TokenKind::Fn => self.parse_contract_fn().map(PerspectiveMember::Fn),
-            TokenKind::At if self.at_gated() => Err(self.gated_refusal()),
-            // Phase 2c: the perspective contract's bus surface.
-            TokenKind::Ident(kw) if kw == "bus" => self.parse_bus_block().map(PerspectiveMember::Bus),
-            other => Err(Diag::parse(
-                self.peek_token().span,
-                format!("expected perspective member, got {:?}", other),
-            )),
-        }
-    }
-
     fn parse_type_decl(&mut self) -> Result<TypeDecl, Diag> {
         let kw = self.expect(TokenKind::Type, "type")?;
         let name = self.expect_decl_name("type name")?;
@@ -7449,18 +7389,7 @@ impl Parser {
     /// namespace) and false for a locus member — see GH #863 and
     /// [`Parser::reject_builtin_call_form_as_fn`].
     fn parse_fn_decl(&mut self, free: bool) -> Result<FnDecl, Diag> {
-        self.parse_fn_decl_with_ffi(None, false, free)
-    }
-
-    /// Phase 2a: a perspective CONTRACT method — a bodyless `fn`
-    /// signature (`fn route(r: Request) -> Response;`) that
-    /// declares the ABI a `serves`-ing locus must provide. A
-    /// bodied `fn { ... }` in a perspective is still accepted
-    /// (a default / helper) via the same path.
-    fn parse_contract_fn(&mut self) -> Result<FnDecl, Diag> {
-        // Reached through a `serves`-ing locus, never as a bare
-        // call — not a free fn for GH #863 purposes.
-        self.parse_fn_decl_with_ffi(None, true, false)
+        self.parse_fn_decl_with_ffi(None, free)
     }
 
     /// Stage-1 FFI: when `ffi` is `Some(_)`, the fn declaration
@@ -7474,7 +7403,6 @@ impl Parser {
     fn parse_fn_decl_with_ffi(
         &mut self,
         ffi: Option<FfiAnnotation>,
-        allow_bodyless: bool,
         free: bool,
     ) -> Result<FnDecl, Diag> {
         let kw = self.expect(TokenKind::Fn, "fn")?;
@@ -7530,39 +7458,6 @@ impl Parser {
             // Synthesize an empty block so downstream consumers
             // keep the existing `body: Block` shape. The block's
             // span points at the trailing `;` of the declaration.
-            let body = Block {
-                stmts: Vec::new(),
-                tail: None,
-                span: semi.span,
-            };
-            return Ok(FnDecl {
-                doc: crate::ast::Doc::NONE,
-                name,
-                generics,
-                params,
-                ret,
-                fallible,
-                ffi,
-                export: false,
-                unbounded: false,
-                bounded_by: None,
-                                rpc: None,
-                budget: None,
-                hot: false,
-                effects: Vec::new(),
-                quantities: Vec::new(),
-                decorators: Vec::new(),
-                span: kw.span.merge(semi.span),
-                body,
-                id: NodeId::NONE,
-            });
-        }
-        // Phase 2a: a bodyless contract signature (`fn foo(...);`)
-        // — allowed only in a perspective contract. Synthesize an
-        // empty block so downstream keeps the `body: Block` shape,
-        // same as the FFI path above.
-        if allow_bodyless && matches!(self.peek(), TokenKind::Semi) {
-            let semi = self.bump();
             let body = Block {
                 stmts: Vec::new(),
                 tail: None,
@@ -7736,22 +7631,10 @@ impl Parser {
                 }
                 Ok(TypeExpr::Primitive(prim, start))
             }
-            // Phase 2a: `perspective(P)` — a handle to contract P.
-            TokenKind::Perspective => {
-                let kw = self.bump();
-                self.expect(TokenKind::LParen, "expected `(` after `perspective`")?;
-                // GH #724: `perspective(lib::Routing)` — the slot's
-                // contract may live in an imported seed.
-                let name =
-                    self.expect_qualified_ident("perspective contract name")?;
-                let close = self.expect(
-                    TokenKind::RParen,
-                    "expected `)` after `perspective(P)`",
-                )?;
-                Ok(TypeExpr::Perspective {
-                    name,
-                    span: kw.span.merge(close.span),
-                })
+            // F.55: `perspective(P)` named a perspective slot's type;
+            // perspectives were removed, and the form is told so.
+            TokenKind::Ident(kw) if kw == "perspective" && matches!(self.peek_at(1), TokenKind::LParen) => {
+                Err(removed_perspective(self.peek_token().span, "`perspective(P)`"))
             }
             // The projection-class words are contextual: in type
             // position they are the projection type when a `<` follows.
@@ -7965,16 +7848,14 @@ impl Parser {
             stmts.push(self.parse_violate_stmt()?);
             return Ok(None);
         }
-        // Perspectives Phase 2b: `reperspective self.<field> as
-        // <Impl>;`. Contextual keyword at statement-leading position
-        // — triggers only when `reperspective` is followed by `self`
-        // (the target owner), so `let reperspective = 0;` and
-        // `reperspective()` stay ordinary ident uses.
+        // F.55: `reperspective self.<field> as <Impl>;` re-pointed a
+        // perspective slot; it was removed with perspectives and has no
+        // replacement. Only the statement form (followed by `self`) is
+        // told so; `reperspective` is a name everywhere.
         if matches!(self.peek(), TokenKind::Ident(s) if s == "reperspective")
             && matches!(self.peek_at(1), TokenKind::KwSelf)
         {
-            stmts.push(self.parse_reperspective_stmt()?);
-            return Ok(None);
+            return Err(removed_perspective(self.peek_token().span, "`reperspective`"));
         }
         // WS3.2 (2026-06-11): a *trailing* `if` (immediately before
         // the block's `}`, with no `;`) becomes the block's tail
@@ -8099,44 +7980,6 @@ impl Parser {
         Ok(Stmt::Violate {
             name,
             payload,
-            span: kw.span.merge(semi.span),
-        })
-    }
-
-    /// Perspectives Phase 2b: `reperspective self.<field> as
-    /// <Impl>;`. The target is a `self`-field of `perspective(P)`
-    /// type; `as <Impl>` names the new implementation. `as` is a
-    /// contextual keyword recognized only in this position here.
-    fn parse_reperspective_stmt(&mut self) -> Result<Stmt, Diag> {
-        let kw = self.bump(); // consume `reperspective` Ident
-        self.expect(TokenKind::KwSelf, "expected `self` after `reperspective`")?;
-        self.expect(
-            TokenKind::Dot,
-            "expected `.` after `self` in `reperspective self.<field>`",
-        )?;
-        let field = self.expect_ident("perspective field name")?;
-        // contextual `as`
-        match self.peek() {
-            TokenKind::Ident(s) if s == "as" => {
-                self.bump();
-            }
-            _ => {
-                return Err(Diag::parse(
-                    self.peek_token().span,
-                    "expected `as <Impl>` in `reperspective self.<field> \
-                     as <Impl>`"
-                        .to_string(),
-                ));
-            }
-        }
-        // GH #724: the new impl may be an IMPORTED locus,
-        // `reperspective self.f as lib::Impl;`.
-        let impl_name =
-            self.expect_qualified_ident("implementation locus name")?;
-        let semi = self.expect(TokenKind::Semi, ";")?;
-        Ok(Stmt::Reperspective {
-            field,
-            impl_name,
             span: kw.span.merge(semi.span),
         })
     }
@@ -10119,7 +9962,7 @@ const PRINTER_CLAIM: &str =
 ///   `enumerate`, `count`, `into`, `sort_into`, `reverse_into`,
 ///   `group_count_into`) is recognized only AFTER a `.`, so a free
 ///   fn of that name is called as written —
-///   `crates/hale-codegen/tests/fixtures/lib-enum-persp/lib.hl`
+///   `crates/hale-codegen/tests/fixtures/lib-enum-iface/lib.hl`
 ///   really does declare `fn first()`.
 /// - The `bounded[T; N]` intrinsics (`count`, `clear`, `truncate`,
 ///   `push`, `at`, `set`) and the accumulator vocabulary (`count`,
@@ -10246,7 +10089,6 @@ fn is_lifecycle_word(s: &str) -> bool {
 fn try_member_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
     Some(match k {
         TokenKind::Locus => "locus",
-        TokenKind::Perspective => "perspective",
         TokenKind::Type => "type",
         // GH #1076: `d.in(s)`, the conversion the unit dialect gives
         // meaning to, is an ordinary method call.
@@ -10262,7 +10104,6 @@ fn starts_type_expr(k: &TokenKind) -> bool {
     matches!(
         k,
         TokenKind::Ident(_)
-            | TokenKind::Perspective
             | TokenKind::LBracket
             | TokenKind::LParen
             | TokenKind::Fn
@@ -10397,6 +10238,21 @@ fn synthesize_optional_flags(fields: Vec<StructField>) -> Result<Vec<StructField
     Ok(out)
 }
 
+
+/// F.55: perspectives (`perspective P { … }`, `serves P`, `perspective(P)`,
+/// `reperspective`) were removed. A program that still writes one gets this
+/// at the word that opened it, naming what replaces it.
+fn removed_perspective(span: Span, what: &str) -> Diag {
+    Diag::parse(
+        span,
+        format!(
+            "{what}: perspectives were removed (spec/decisions.md F.55); declare an \
+             `interface` and take it as a param, generic where the implementation's \
+             type matters; `reperspective` has no replacement"
+        ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10441,8 +10297,8 @@ fn main() {
     }
 
     /// Friction sweep 2026-10-12: every contextual keyword (the
-    /// lifecycle, mode, closure, recovery, locus-member, contract, bus,
-    /// perspective and statement words) is a name wherever a name is
+    /// lifecycle, mode, closure, recovery, locus-member, contract, bus
+    /// and statement words) is a name wherever a name is
     /// written: a type field, a params field, a parameter, a local, an
     /// enum variant, a struct-literal field, a member read and — but for
     /// the recovery words — a free fn.
@@ -10456,8 +10312,8 @@ fn main() {
             "closure", "epoch", "persists_through", "resets_on",
             "resets_per_epoch", "restart", "restart_in_place", "quarantine",
             "reorganize", "bubble", "expose", "consume", "inferred",
-            "subscribe", "publish", "on", "of", "stable_when",
-            "serialize_as", "yield", "terminate", "where",
+            "subscribe", "publish", "on", "of", "yield", "terminate",
+            "where",
         ];
         for w in WORDS {
             assert!(
@@ -13159,201 +13015,38 @@ fn main() { L { }; }
         assert!(kf.is_none());
     }
 
-    // === Perspectives Phase 2a: contract fn / serves / slot type ==
+    // === F.55: perspectives were removed ==
 
+    /// Each form a perspective program wrote is refused at the word
+    /// that opened it, naming what replaces it.
     #[test]
-    fn parse_perspective_contract_bodyless_fn() {
-        let src = r#"
-perspective Router {
-    fn route(code: Int) -> Int;
-    fn health() -> Int;
-}
-fn main() { }
-"#;
-        let prog = parse_str(src).expect("parse");
-        let p = prog.items.iter().find_map(|d| match d {
-            TopDecl::Perspective(p) => Some(p),
-            _ => None,
-        }).expect("perspective");
-        let fns: Vec<&str> = p.members.iter().filter_map(|m| match m {
-            PerspectiveMember::Fn(f) => Some(f.name.name.as_str()),
-            _ => None,
-        }).collect();
-        assert_eq!(fns, vec!["route", "health"]);
-    }
-
-    #[test]
-    fn parse_locus_serves_clause() {
-        let src = r#"
-perspective Router { fn route(c: Int) -> Int; }
-locus RouterV1 : serves Router {
-    fn route(c: Int) -> Int { return c; }
-}
-fn main() { }
-"#;
-        let prog = parse_str(src).expect("parse");
-        let l = prog.items.iter().find_map(|d| match d {
-            TopDecl::Locus(l) if l.name.name == "RouterV1" => Some(l),
-            _ => None,
-        }).expect("locus");
-        assert_eq!(
-            l.serves.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
-            vec!["Router"]
-        );
-    }
-
-    #[test]
-    fn parse_qualified_serves_and_perspective_slot() {
-        // GH #724: all three perspective positions accept a path
-        // qualified by an import alias. The path is kept as ONE
-        // `Ident` joined by `::` (the `bindings { }` shape) — the
-        // cross-seed rename pass collapses it to the imported decl's
-        // mangled name before typecheck.
-        let src = r#"
-import "lib" as lib;
-locus RouterV1 : serves lib::Router, tier 2 {
-    fn route(c: Int) -> Int { return c; }
-}
-main locus App {
-    params { r: perspective(lib::Router) = RouterV1 { }; }
-    run() { reperspective self.r as lib::RouterV2; }
-}
-fn main() { App { }; }
-"#;
-        let prog = parse_str(src).expect("parse");
-        let l = prog.items.iter().find_map(|d| match d {
-            TopDecl::Locus(l) if l.name.name == "RouterV1" => Some(l),
-            _ => None,
-        }).expect("locus");
-        assert_eq!(l.serves.len(), 1);
-        assert_eq!(l.serves[0].name, "lib::Router");
-        assert_eq!(l.annotations.len(), 1);
-        let app = prog.items.iter().find_map(|d| match d {
-            TopDecl::Locus(l) if l.name.name == "App" => Some(l),
-            _ => None,
-        }).expect("main locus");
-        let slot = app.members.iter().find_map(|m| match m {
-            LocusMember::Params(pb) => pb.params[0].ty.clone(),
-            _ => None,
-        }).expect("slot type");
-        match slot {
-            TypeExpr::Perspective { name, .. } => {
-                assert_eq!(name.name, "lib::Router")
-            }
-            other => panic!("expected a perspective slot, got {:?}", other),
+    fn a_removed_perspective_form_is_refused_where_it_is_written() {
+        for (src, word, shown) in [
+            ("perspective Router { fn route(c: Int) -> Int; }\nfn main() { }\n", "perspective", "`perspective`"),
+            ("locus V1 : serves Router { }\nfn main() { }\n", "serves", "`serves`"),
+            ("locus G { params { r: perspective(Router); } }\nfn main() { }\n", "perspective", "`perspective(P)`"),
+            ("locus G { fn swap() { reperspective self.r as V2; } }\nfn main() { }\n", "reperspective", "`reperspective`"),
+        ] {
+            let errs = parse_str(src).expect_err(src);
+            let e = &errs[0];
+            assert_eq!(&src[e.span.start.as_usize()..e.span.start.as_usize() + word.len()], word, "{src}: {e:?}");
+            assert!(e.message.starts_with(&format!("{shown}: perspectives were removed")), "{}", e.message);
+            assert!(e.message.contains("F.55") && e.message.contains("`interface`"), "{}", e.message);
+            assert!(e.message.contains("`reperspective` has no replacement"), "{}", e.message);
         }
-        let swapped = app.members.iter().find_map(|m| match m {
-            LocusMember::Lifecycle(lc) => lc.body.stmts.iter().find_map(|s| {
-                match s {
-                    Stmt::Reperspective { impl_name, .. } => {
-                        Some(impl_name.name.clone())
-                    }
-                    _ => None,
-                }
-            }),
-            _ => None,
-        }).expect("reperspective stmt");
-        assert_eq!(swapped, "lib::RouterV2");
     }
 
+    /// The five words are names again: a binding, a field, a param, a fn.
     #[test]
-    fn parse_serves_composes_with_annotation() {
-        // `: tier 2, serves Router` — serves shares the post-colon
-        // list with annotations, in any order.
-        let src = r#"
-perspective Router { fn route(c: Int) -> Int; }
-locus RouterV1 : serves Router, tier 2 {
-    fn route(c: Int) -> Int { return c; }
-}
-fn main() { }
-"#;
-        let prog = parse_str(src).expect("parse");
-        let l = prog.items.iter().find_map(|d| match d {
-            TopDecl::Locus(l) if l.name.name == "RouterV1" => Some(l),
-            _ => None,
-        }).expect("locus");
-        assert_eq!(l.serves.len(), 1);
-        assert_eq!(l.serves[0].name, "Router");
-        assert_eq!(l.annotations.len(), 1);
-    }
-
-    #[test]
-    fn parse_perspective_bus_surface() {
-        let src = r#"
-type Order { id: Int; }
-perspective OrderRouter {
-    fn health() -> Int;
-    bus { subscribe "orders" as on_order of type Order; }
-}
-fn main() { }
-"#;
-        let prog = parse_str(src).expect("parse");
-        let p = prog.items.iter().find_map(|d| match d {
-            TopDecl::Perspective(p) => Some(p),
-            _ => None,
-        }).expect("perspective");
-        let has_bus = p.members.iter().any(|m| matches!(m, PerspectiveMember::Bus(_)));
-        assert!(has_bus, "expected a Bus member in the perspective contract");
-    }
-
-    #[test]
-    fn parse_reperspective_stmt() {
-        let src = r#"
-perspective Router { fn route(c: Int) -> Int; }
-locus RouterV2 : serves Router { fn route(c: Int) -> Int { return c; } }
-locus Gateway {
-    params { router: perspective(Router) = RouterV2 { }; }
-    run() { reperspective self.router as RouterV2; }
-}
-fn main() { }
-"#;
-        let prog = parse_str(src).expect("parse");
-        let l = prog.items.iter().find_map(|d| match d {
-            TopDecl::Locus(l) if l.name.name == "Gateway" => Some(l),
-            _ => None,
-        }).expect("locus");
-        let run = l.members.iter().find_map(|m| match m {
-            LocusMember::Lifecycle(lc) => Some(lc),
-            _ => None,
-        }).expect("run");
-        let found = run.body.stmts.iter().any(|s| matches!(
-            s, Stmt::Reperspective { field, impl_name, .. }
-               if field.name == "router" && impl_name.name == "RouterV2"));
-        assert!(found, "expected a Reperspective stmt");
-    }
-
-    #[test]
-    fn parse_reperspective_ident_not_stmt() {
-        // `reperspective` not followed by `self` stays an ordinary ident.
-        let src = r#"
-fn main() { let reperspective = 3; }
-"#;
-        parse_str(src).expect("reperspective as a plain binding parses");
-    }
-
-    #[test]
-    fn parse_perspective_slot_type() {
-        let src = r#"
-perspective Router { fn route(c: Int) -> Int; }
-locus Gateway {
-    params { r: perspective(Router); }
-}
-fn main() { }
-"#;
-        let prog = parse_str(src).expect("parse");
-        let l = prog.items.iter().find_map(|d| match d {
-            TopDecl::Locus(l) if l.name.name == "Gateway" => Some(l),
-            _ => None,
-        }).expect("locus");
-        let params = l.members.iter().find_map(|m| match m {
-            LocusMember::Params(p) => Some(p),
-            _ => None,
-        }).expect("params");
-        match &params.params[0].ty {
-            Some(TypeExpr::Perspective { name, .. }) => {
-                assert_eq!(name.name, "Router");
-            }
-            other => panic!("expected perspective(Router) type, got {:?}", other),
+    fn the_removed_perspective_words_are_names() {
+        for w in ["perspective", "reperspective", "serves", "serialize_as", "stable_when"] {
+            let src = format!(
+                "type R {{ {w}: Int; }}\n\
+                 fn {w}(x: Int) -> Int {{ return x; }}\n\
+                 fn main() {{ let {w} = R {{ {w}: 1 }}; println({w}.{w}); }}\n"
+            );
+            parse_str(&src).unwrap_or_else(|e| panic!("`{w}` as a name: {e:?}"));
+            assert!(!crate::keywords::all().contains(&w), "`{w}` is no keyword");
         }
     }
 }

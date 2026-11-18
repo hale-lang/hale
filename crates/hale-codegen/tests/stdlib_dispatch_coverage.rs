@@ -606,22 +606,6 @@ impl CallWalk {
     fn top_decl(&mut self, d: &TopDecl) {
         match d {
             TopDecl::Locus(l) => self.locus(l),
-            TopDecl::Perspective(p) => {
-                self.owner = p.name.name.clone();
-                self.generics(&p.generics);
-                for member in &p.members {
-                    match member {
-                        PerspectiveMember::Params(pb) => self.params_block(pb),
-                        PerspectiveMember::StableWhen(b) => self.block(b),
-                        PerspectiveMember::SerializeAs(t) => self.ty(t),
-                        PerspectiveMember::Fn(fd) => {
-                            self.owner = format!("{}.{}", p.name.name, fd.name.name);
-                            self.fn_decl(fd);
-                        }
-                        PerspectiveMember::Bus(_) => {}
-                    }
-                }
-            }
             TopDecl::Type(t) => self.type_decl(t),
             // A unit declaration holds names and numbers, no call.
             TopDecl::Unit(_) | TopDecl::Api(_) | TopDecl::Fleet(_) => {}
@@ -838,7 +822,7 @@ impl CallWalk {
                     self.ty(r);
                 }
             }
-            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+            TypeExpr::Primitive(..) => {}
         }
     }
 
@@ -902,8 +886,7 @@ impl CallWalk {
             Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => {}
+            | Stmt::Terminate(_) => {}
         }
     }
 

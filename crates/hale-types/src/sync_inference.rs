@@ -468,8 +468,7 @@ fn walk_stmt(s: &Stmt, cx: &mut WalkCx<'_>) {
         Stmt::Return(None, _)
         | Stmt::Break(_)
         | Stmt::Continue(_)
-        | Stmt::Yield(_) | Stmt::Terminate(_)
-        | Stmt::Reperspective { .. } => {}
+        | Stmt::Yield(_) | Stmt::Terminate(_) => {}
     }
 }
 

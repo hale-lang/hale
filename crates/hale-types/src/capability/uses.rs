@@ -1233,8 +1233,7 @@ impl<'w, 'a> Walker<'w, 'a> {
                 Stmt::Break(_)
                 | Stmt::Continue(_)
                 | Stmt::Yield(_)
-                | Stmt::Terminate(_)
-                | Stmt::Reperspective { .. } => {}
+                | Stmt::Terminate(_) => {}
             }
         }
         if let Some(t) = &b.tail {

@@ -1,3 +1,5 @@
+> Superseded: perspectives and `reperspective` were removed (spec/decisions.md F.55).
+
 # Perspectives as live redeploy + topology-aware placement
 
 **Status: ✅ SHIPPED (2026-07-06).** Designed 2026-07-04; the core of both

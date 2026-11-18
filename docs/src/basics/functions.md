@@ -120,7 +120,7 @@ fn main() {
 }
 ```
 
-Any expression that evaluates to a fn value can be called directly: a call that returns one (`pick()(2)`), an array element (`handlers[i](req)`), a tuple part (`pair.0(x)`), or an `if` that picks one (`(if fast { dbl } else { tri })(5)`). A fn value can return any type, a `StringView` included, and so can an interface or perspective method.
+Any expression that evaluates to a fn value can be called directly: a call that returns one (`pick()(2)`), an array element (`handlers[i](req)`), a tuple part (`pair.0(x)`), or an `if` that picks one (`(if fast { dbl } else { tri })(5)`). A fn value can return any type, a `StringView` included, and so can an interface method.
 
 ### Function Value Capabilities and Restrictions
 

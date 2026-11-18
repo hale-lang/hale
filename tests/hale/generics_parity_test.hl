@@ -9,7 +9,7 @@
 // - `or` over a call to a generic fallible fn (GH #1966);
 // - a generic fn at a stdlib record's field the checker now types, the
 //   output of `std::process::run` (GH #1963);
-// - a generic fn at a perspective (GH #1974), and at an interface whose
+// - a generic fn at an interface-typed field, and at an interface whose
 //   value is a locus behind it, in a `release` (GH #1975).
 import "./generics_parity_lib" as g;
 
@@ -28,17 +28,17 @@ fn id<T>(x: T) -> T {
     return x;
 }
 
-perspective Router {
+interface Router {
     fn health() -> Int;
 }
 
-locus RouterV1 : serves Router {
+locus RouterV1 {
     fn health() -> Int { return 7; }
 }
 
 locus App {
     params {
-        router: perspective(Router) = RouterV1 { };
+        router: Router = RouterV1 { };
     }
     fn probe() -> Int {
         return id(self.router).health();
@@ -94,9 +94,9 @@ fn main() {
     let out = std::process::run("true") or raise;
     std::test::assert_eq_int(len(id(out.stderr)), 0, "a generic fn at a ProcessOutput field");
 
-    // a perspective, and an interface in a release
+    // an interface-typed field, and an interface in a release
     let a = App { };
-    std::test::assert_eq_int(a.probe(), 7, "a generic fn at a perspective");
+    std::test::assert_eq_int(a.probe(), 7, "a generic fn at an interface-typed field");
     let p = Pool { };
     std::test::assert_eq_int(p.n, 7, "both releases read their child");
 }

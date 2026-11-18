@@ -582,6 +582,9 @@ This catches typo bugs that would otherwise be silent
 runtime no-ops (`self.greting` returning `Ty::Unknown` and
 sneaking through every check downstream).
 
+Superseded in part by F.55: perspectives were removed; the rule holds
+for locus and type values.
+
 ### F.18 Match exhaustiveness checked at typecheck
 
 A `match` whose arms don't cover all scrutinee values is a
@@ -793,6 +796,9 @@ File order in the merged bundle is **alphabetical by filename**
 flattens all top-level decls into one bundle scope before name
 lookup, so a fn declared in `z.hl` is callable from `a.hl`
 without ceremony.
+
+Superseded in part by F.55: perspectives were removed, so a
+`perspective` is no longer one of the seed's top-level decls.
 
 There is no per-file visibility (no `pub`, no Go-style
 uppercase-exported convention). Anything declared at the top
@@ -3283,6 +3289,10 @@ param owns a factory's result exactly as an `interface`-typed one
 does, and a carrier or composite `let` RHS inside a loop is reclaimed
 per ITERATION like every other loop-bound locus.
 
+Superseded in part by F.55: perspectives were removed, and with them
+the `reperspective` swap's synthesized literal and the
+`perspective(P)`-typed param.
+
 **The lifetime of a borrow is checked (GH #730, 2026-09-22).** The
 `Borrowed` row says the holder never reclaims; `spec/semantics.md`
 § "A borrow outlives its holder" says who must, and `hale check`
@@ -3700,6 +3710,8 @@ safe only while every caller remembers the guard.
    perspective call lowers; `build::violate_build`'s
    `a_fallible_perspective_call_is_refused_at_the_build` pins the
    refusal so that day is visible.
+   Superseded by F.55: perspectives were removed, and the gap with
+   them.
 
 **F.27 stands.** Allocation failure is structural: a builder that
 cannot grow violates `alloc_failed`, and its owner's `on_failure`
@@ -3757,6 +3769,9 @@ with the syntax at the call: a locus METHOD named like a hook, the
 failure handler or a mode (`fn run()` in a locus — that name IS the
 hook), and a free fn named like a recovery statement (`restart(x);`
 at statement head is the recovery).
+
+Superseded in part by F.55: perspectives were removed, and the
+perspective words (`stable_when`, `serialize_as`) with them.
 
 The declaration and statement words (`locus`, `type`, `fn`, `let`,
 `if`, `match`, `return`, `self`, ...) stay hard: they begin items,
@@ -4064,6 +4079,9 @@ what the imported seed hides. *Re-export as a separate keyword
 (`export`).* A new word for what the list already says, and the
 keyword set is frozen (STABILITY.md).
 
+Superseded in part by F.55: perspectives were removed, so an item
+no longer names a `perspective`.
+
 ## Deferred & future work
 ## Deferred & future work
 
@@ -4107,16 +4125,6 @@ Per `notes/open-questions.md` and design-rationale §16:
 ### memory — Future work
 
 
-- **Hot-load preservation across perspective updates.** The
-  in-process live swap (`reperspective`, Phase 3) preserves the
-  receiving locus's arena state across the swap: the perspective
-  slot is `{ data, vtable }`, so re-pointing at a new impl of the
-  same footprint stores only the new vtable — `data` (the
-  arena-backed state) is untouched and the new impl's methods
-  continue on it. The remaining future piece is the same
-  preservation for a *transport-driven* wire redeploy whose new
-  impl changes the footprint (the `migrate` case). See
-  `spec/semantics.md` § "The live swap".
 - **Region size hints.** Initial chunk sizes per locus are
   taken from declared params. Per The Design's locus-as-region
   invariant, the load-bearing property is *lifetime* (wholesale
@@ -4347,6 +4355,65 @@ its own; per-variant templates express every case it was for. *A
 template on a set.* A set renders as its member does. *A template on a
 locus.* A locus is never printable.
 
+### F.55 — Perspectives are removed; an interface and generics carry a contract
+
+**Problem.** Hale had two ways to declare a contract a locus
+provides. An `interface` is structural: a locus whose methods cover
+it satisfies it, and an interface-typed param takes whichever
+implementation the construction names. A `perspective P { … }` was a
+second one: bodyless contract `fn`s (with `params { }`,
+`stable_when { }`, `serialize_as T;` and a `bus { }` surface as
+members), conformance declared with `locus L : serves P`, and holders
+typed `perspective(P)` that dispatched through one program-global
+slot per perspective, designated by a holder's default or a
+constructor's override, or held without designating (GH #731).
+`reperspective self.<field> as <Impl>;` re-pointed that slot at
+another implementation while the program ran, keeping its state. The
+contract half duplicates what an interface already does, at the cost
+of a second conformance rule, a second fallibility rule (F.42's
+stated gap), slot and vtable machinery in codegen, and five keywords.
+The live swap was the only thing a perspective did that an interface
+does not, and its transport-driven path (`stable_when`,
+`serialize_as`, a redeploy from the wire) was never completed.
+
+**Decision.** Perspectives are removed, without a deprecation cycle.
+`perspective`, `reperspective`, `serves`, `serialize_as` and
+`stable_when` are no longer keywords: `perspective` was a hard
+keyword and is an ordinary identifier now, and the other four were
+contextual and stop being special anywhere (`params` stays; loci use
+it). The `perspective` declaration, the `serves` clause, the
+`perspective(P)` type, the program-global slot, designation and the
+`reperspective` statement are gone, and so are the checks that
+existed only for them: serves-conformance, the perspective
+fallibility rule, the warning about a violation in a
+perspective-served method, and the GH #731 refusal of a slot held
+without designating. A program that still writes one of the old forms
+gets a located parse error that names the replacement:
+"\`perspective\`: perspectives were removed (spec/decisions.md
+F.55); declare an \`interface\` and take it as a param, generic where
+the implementation's type matters; \`reperspective\` has no
+replacement", led by the word written (`perspective`, `serves`,
+`perspective(P)` or `reperspective`).
+
+**Migration.** A `perspective P { … }` becomes an `interface P { … }`
+of the same `fn` signatures. Its implementations drop `: serves P`
+and satisfy the interface structurally. A `perspective(P)` field
+becomes an interface-typed param (`router: Router = RouterV1 { }`),
+which a construction overrides by naming another implementation; a
+generic param carries the implementation's type where it matters.
+Each holder holds its own implementation: there is no program-global
+slot. `reperspective` has no replacement.
+
+**Considered and rejected.** *Keep the live swap and drop the rest.*
+The swap is what needs the program-global slot, designation, the
+one-footprint rule and the bus re-registration; on its own it would
+keep all of that machinery for a path whose transport-driven half was
+never completed. *A deprecation window.* A warning would have carried
+the slot machinery through a minor release for forms with a direct
+replacement; the parse error names that replacement at the site.
+*Keep `perspective` reserved.* The word has no other use, and a hard
+keyword costs every program a field or local of that name.
+
 ## Deferred & future work
 
 ### semantics — What's deferred
@@ -4389,16 +4456,6 @@ Per `notes/open-questions.md` and design-rationale §16:
 ### memory — Future work
 
 
-- **Hot-load preservation across perspective updates.** The
-  in-process live swap (`reperspective`, Phase 3) preserves the
-  receiving locus's arena state across the swap: the perspective
-  slot is `{ data, vtable }`, so re-pointing at a new impl of the
-  same footprint stores only the new vtable — `data` (the
-  arena-backed state) is untouched and the new impl's methods
-  continue on it. The remaining future piece is the same
-  preservation for a *transport-driven* wire redeploy whose new
-  impl changes the footprint (the `migrate` case). See
-  `spec/semantics.md` § "The live swap".
 - **Region size hints.** Initial chunk sizes per locus are
   taken from declared params. Per The Design's locus-as-region
   invariant, the load-bearing property is *lifetime* (wholesale

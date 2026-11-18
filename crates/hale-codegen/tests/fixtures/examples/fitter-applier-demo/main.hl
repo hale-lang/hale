@@ -78,9 +78,8 @@ locus ApplierL {
     }
 
     fn on_kernel(k: Kernel) {
-        // Hot-load: replace the current kernel atomically. In
-        // production this is the perspective hot-load
-        // mechanism (F.7) — torn-read-free.
+        // Hot-load: replace the current kernel atomically, one
+        // store of the field (F.7) — torn-read-free.
         self.current_kernel = k;
         println("applier: hot-loaded kernel id=", k.perspective_id);
     }

@@ -4,7 +4,7 @@ The testing pipeline is part of the language toolchain, not an
 add-on. `hale test` ships in the same binary as `hale build`.
 Test infrastructure exists from day 1 because the language's
 discipline (closure tests, k_max bounds, projection-class
-invariants, multi-perspective stability commit-rules) needs
+invariants) needs
 testing infrastructure to be enforced.
 
 `hale test` (Layer 1 + Layer 2), `hale bench` (Layer 3
@@ -61,10 +61,6 @@ The framework's commitments need test infrastructure:
 - **Projection-class invariants.** A locus declared `projection
   rich` cannot be instantiated with N > rich's bound; etc.
   Tests assert mismatches are rejected.
-- **Multi-perspective stability commit-rules.** A `perspective`
-  with `stable_when |perspectives| >= 3` cannot be serialized
-  with fewer perspectives validated. Tests assert violations
-  fail at runtime.
 - **Substrate-derivation discipline.** When a value carries
   anchor metadata, anchor-self-consistent uses are flagged.
   Tests assert anchor-self-consistency triggers a warning or
@@ -527,9 +523,7 @@ columns is broken by the width rule below):
   field name and ends one, so `err.closure + " "` stays binary —
   GH #1064), `.`/`::`/`..` tight,
   nothing inside `(` `)` `[` `]`, literal braces spaced
-  (`Rec { key: 1 }`, `{ }`), `:` tight-left (except the spaced
-  `locus X : serves P` conformance colon, per this spec's own
-  examples), generic angles tight (`Holder<Int>`), lifecycle
+  (`Rec { key: 1 }`, `{ }`), `:` tight-left, generic angles tight (`Holder<Int>`), lifecycle
   parens tight (`run()`).
 - **Blank lines** — collapsed to at most one; none at file start;
   exactly one trailing newline. Intra-line alignment padding

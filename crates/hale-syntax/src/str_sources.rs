@@ -157,13 +157,6 @@ fn items(items_: &mut [TopDecl], n: &mut usize) {
                     }
                 }
             }
-            TopDecl::Perspective(p) => {
-                for m in &mut p.members {
-                    if let PerspectiveMember::Fn(f) = m {
-                        body(&mut f.body, n);
-                    }
-                }
-            }
             TopDecl::Module(m) => items(&mut m.items, n),
             _ => {}
         }

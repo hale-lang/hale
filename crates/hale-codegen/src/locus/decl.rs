@@ -255,16 +255,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             let ascribed = p.ty.as_ref().expect("required param has ty");
                             let ty = self.type_expr_to_codegen_ty(ascribed)?;
                             fields.insert(p.name.name.clone(), (idx, ty.clone()));
-                            // GH #731: a perspective handle with no
-                            // initializer holds the slot rather than
-                            // demanding an impl at every birth
-                            let init = if let CodegenTy::Perspective(persp) = &ty {
-                                self.perspectives_holdable.insert(persp.clone());
-                                DefaultInit::HoldsSlot
-                            } else {
-                                DefaultInit::Required
-                            };
-                            defaults.push((p.name.name.clone(), init));
+                            defaults.push((p.name.name.clone(), DefaultInit::Required));
                             // Inline fixed arrays (array_inline_spec).
                             llvm_field_tys.push(self.llvm_field_storage_type(&ty));
                             idx += 1;
@@ -1222,12 +1213,10 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
 
         // GH #871: append one synthetic `__owned_child_reclaim_<f>:
         // ptr` per param field that can hold a locus without naming
-        // one — an `interface` slot or a `perspective(P)` handle.
-        // The field itself carries the child (a fat pointer for an
-        // interface, the impl's self pointer for a perspective), but
-        // not the child's TYPE, and the teardown cascade is emitted
-        // once per owner type while the impl is chosen per
-        // instantiation. The instantiation stores the child's
+        // one — an `interface` slot. The field itself carries the
+        // child (a fat pointer), but not the child's TYPE, and the
+        // teardown cascade is emitted once per owner type while the
+        // impl is chosen per instantiation. The instantiation stores the child's
         // `__reclaim_<Impl>` here; the cascade loads it. Zero (the
         // zero-init) means "no owned child" and the cascade skips.
         // Same per-field-append shape as `__owner_for_<I>` above, so
@@ -1240,7 +1229,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             if let Some((_, ty)) = fields.get(fname) {
                 if matches!(
                     ty,
-                    CodegenTy::Interface(_) | CodegenTy::Perspective(_)
+                    CodegenTy::Interface(_)
                 ) {
                     owned_child_reclaim_field_idxs.insert(fname.clone(), idx);
                     llvm_field_tys.push(ptr_t.into());
@@ -1332,11 +1321,10 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // declaration order; we filter for fields whose codegen
         // type can hold a locus.
         //
-        // GH #871: `interface` and `perspective(P)` fields hold a
-        // parent-owned child exactly as a `LocusRef` field does —
-        // `Queries { j: Churner { } }` and `Gateway { router:
-        // RouterV1 { } }` are the same ownership transfer — so they
-        // take a bit too. Without one they had no ownership signal
+        // GH #871: `interface` fields hold a parent-owned child
+        // exactly as a `LocusRef` field does — `Queries { j:
+        // Churner { } }` and `Gateway { router: RouterV1 { } }` are
+        // the same ownership transfer — so they take a bit too. Without one they had no ownership signal
         // at all, and the cascade skipped them unconditionally:
         // every such child (and its whole subtree) survived its
         // owner's teardown.
@@ -1349,7 +1337,6 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     ty,
                     CodegenTy::LocusRef(_)
                         | CodegenTy::Interface(_)
-                        | CodegenTy::Perspective(_)
                 ) || crate::locus::dissolve::composite_loci(ty).is_some()
                 {
                     locus_ref_bit_per_field.insert(fname.clone(), next_bit);
@@ -1919,7 +1906,6 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 | CodegenTy::Tuple(_)
                                 | CodegenTy::FnPtr { .. }
                                 | CodegenTy::Interface(_)
-                                | CodegenTy::Perspective(_)
                                 | CodegenTy::Cell(_, _)
                                 | CodegenTy::Drain(_) => self
                                     .context
@@ -2090,7 +2076,6 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 | CodegenTy::Tuple(_)
                                 | CodegenTy::FnPtr { .. }
                                 | CodegenTy::Interface(_)
-                                | CodegenTy::Perspective(_)
                                 | CodegenTy::Cell(_, _)
                                 | CodegenTy::Drain(_) => self
                                     .context

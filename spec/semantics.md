@@ -518,7 +518,7 @@ into a `Float`, F.23):
 | `Bool` | `==` `!=`, `&&` `\|\|`, unary `!` |
 | `String` | `+` (concatenation; `String + <printable>` renders the other side), every comparison |
 | an enum | `==` `!=`: the tag, then each payload by its own `==` (a nested enum's included), so only when every payload type of every variant has `==`; a generic enum's instance by its payloads with its arguments in place (`Value<P>` compares only when `P` does) |
-| `Bytes`, a struct, a tuple, an array, a `bounded`, a locus, an interface, a perspective | none |
+| `Bytes`, a struct, a tuple, an array, a `bounded`, a locus, an interface | none |
 
 Anything else is refused at the operator, naming the operand and
 what its type has: "\`<\` does not apply to \`Bool\`: a \`Bool\` has
@@ -1324,27 +1324,20 @@ tuple of loci holds its elements.
 
 **What the field is DECLARED as does not change any of this.**
 A param typed by a *contract* — an `interface` the child
-satisfies (`params { j: Counter = Churner { } }`) or a
-`perspective(P)` the child serves (`params { router:
-perspective(Router) = RouterV1 { } }`) — holds a parent-owned
-child exactly as a locus-typed param does, and the cascade
-reaches it and everything under it. Which locus satisfies the
-contract is a per-instantiation choice: a designation written
-at the literal (`Gateway { router: RouterV2 { } }`) overrides
-one written as the param's default, and the child torn down is
-the one that was actually constructed. Both spellings of
-construction reach a param typed by a contract, whichever
-contract it is: `Queries { j: make_churner() }` is the same
-transfer as `Queries { j: Churner { } }`, and so is `Gateway {
-router: make_router_v1() }` into a `perspective(P)` param. The
-child reclaimed is the impl that was actually built rather than
+satisfies (`params { j: Counter = Churner { } }`) — holds a
+parent-owned child exactly as a locus-typed param does, and the
+cascade reaches it and everything under it. Which locus satisfies
+the contract is a per-instantiation choice: an impl written at the
+literal overrides one written as the param's default, and the child
+torn down is the one that was actually constructed. Both spellings
+of construction reach a param typed by a contract: `Queries { j:
+make_churner() }` is the same transfer as `Queries { j: Churner { }
+}`. The child reclaimed is the impl that was actually built rather than
 the one the param's default names (GH #895), and the `or`
 spellings transfer here exactly as they do into a locus-typed
 param — the diverging ones, where the factory's result is the
 only value the field can hold, and `or <substitute>`, where the
-field owns whichever branch ran. A `reperspective` swap
-does not change it either — the swap replaces code and keeps
-state, so the holder still owns the impl its designation built.
+field owns whichever branch ran.
 
 A locus literal written as a call's **argument** is an expression-position
 temporary of the frame unless the callee keeps it (GH #1566): a free fn
@@ -2158,7 +2151,7 @@ to overwrite the first silently.)
 
 `accept`'s param (and `release`'s) names a child: a locus type, or
 an interface the child's locus satisfies (§ "Locus instantiation").
-A param of any other type — a primitive, a `type`, a perspective —
+A param of any other type — a primitive, a `type` —
 is a typecheck error at the param's type:
 
 ```text
@@ -2446,7 +2439,7 @@ Three remedies, all existing shapes:
   and needs none of this.
 
 **Contract-typed fields hold a borrow when assigned a handle (GH
-#967).** An `interface`- or `perspective(P)`-typed field cannot be
+#967).** An `interface`-typed field cannot be
 assigned a locus literal (the literal's type is not the field's), and
 the only values that reach `self.<field> = v` are interface VALUES —
 a parameter, another field: a handle somebody else owns. That store
@@ -2473,7 +2466,7 @@ leaked.
 
 **A borrow outlives its holder (GH #730, 2026-09-22).** A handle
 stored by name into a locus-carrying param field — `LocusRef`,
-`interface`, `perspective(P)` — is borrowed, never the holder's to
+`interface` — is borrowed, never the holder's to
 reclaim, so what owns it must outlive the holder. Ownership is
 structural and reclamation a tree cascade, so the checker decides
 this from position, with no annotation — on the path `hale check`,
@@ -3660,7 +3653,7 @@ into `fn main`'s prelude, right after the bus queue is published:
   expression of a free fn: no `self`, no enclosing locus. A read of
   `self` anywhere in its inits (`Remote: Relay { url: self.url }`), a
   statement that acts on an enclosing locus (`terminate`, `violate`,
-  `<-`, `reperspective`), an unknown name or a field of the wrong type is
+  `<-`), an unknown name or a field of the wrong type is
   refused at check time, where it is written, with the free fn's
   diagnostic and why it applies, rather than reaching lowering. Its
   values are written in the literal or are the adapter's own `params`
@@ -4479,9 +4472,7 @@ main locus App {
     field it is rejected outright at that position's literal, loop
     or no loop, and the fix is to build it in a locus's `params` or
     a fn body. A root literal in an adapter's inits is built once,
-    by the bindings prelude, and one in a perspective's members is
-    never lowered (a contract fn's body is not the `serves`-ing
-    locus's method); neither is judged. A `const` or `type` written
+    by the bindings prelude, and is not judged. A `const` or `type` written
     in a locus body is refused on its own rule. The test harness's
     build, which skips the rest of the check, judges it too, so
     lowering keeps no refusal of its own. (GH #826, 2026-09-20;
@@ -4513,7 +4504,7 @@ main locus App {
     is written: the placement table's constructions of the root (a
     literal in a fn or locus body), and the literals the table records
     where no body reaches — another locus's `params` default, at any
-    depth of defaults, a perspective's `params`, a const, a type's
+    depth of defaults, a const, a type's
     field default — which lowering expands wherever their holder is
     built (`locus Holder { params { app: App = App { w:
     make_worker() }; } }` is rejected at `make_worker()`). The root's
@@ -5558,22 +5549,6 @@ caller.
   a warning with the law's wording and "This becomes a law in a
   later release". Nothing else changes for it.
 
-**A stated gap: a method serving a perspective.** A locus method
-that implements a perspective fn (`serves`, matched by name as
-conformance matches it) is exempt from the law and the lint, and a
-call to it does not make its caller one that may violate. A
-perspective call cannot carry the failure yet: conformance holds
-the method to the perspective fn's fallibility (§ "Perspectives"),
-and `hale check` refuses a call to a `fallible` perspective fn, so
-no spelling of such a method both checks and runs. Until that call lowers, the
-method keeps today's behaviour, and a warning names the shape:
-"\`RouterV1.route\` serves \`Router.route\` and may violate
-(\`violate c\`); a perspective call cannot carry the failure yet,
-so the method keeps today's behaviour (the caller of a violated
-perspective call must not read the value)". The value a violated
-call returns when the owner's `on_failure` absorbs the violation is
-undefined, as it was before F.42.
-
 The call to a `fallible(ClosureViolation)` method follows the
 bare-call law unchanged: an `or` disposition is required, and the
 `err` that `or handler(err)`, `or { … }` and `or fail` see is the
@@ -5708,229 +5683,6 @@ bodies, bus-handler methods (`subscribe X as foo` → `fn foo`),
 `run()`, lifecycle methods (`birth()`, `dissolve()`, `drain()`),
 mode-method bodies. The same body shape gets the same primitive.
 
-## Perspectives: contract, `serves`, and the slot (Phase 2a)
-
-A `perspective P { ... }` is a **contract** — a set of bodyless
-`fn` signatures that form a stable ABI boundary — plus a
-program-global, live-rebindable **slot** that holders dispatch
-through. Phase 2a ships the contract, conformance,
-the slot type, and dispatch; the live swap (`reperspective`)
-followed in Phase 2b + 3 (see "The live swap" below).
-
-```hale
-perspective Router {
-    fn route(code: Int) -> Int;   // bodyless contract signature
-    fn health() -> Int;
-}
-
-locus RouterV1 : serves Router {  // declares conformance
-    fn route(code: Int) -> Int { return code + 100; }
-    fn health() -> Int { return 1; }
-}
-
-locus Gateway {
-    params { router: perspective(Router) = RouterV1 { }; }  // holds the slot
-    fn handle(c: Int) -> Int { return self.router.route(c); } // calls through it
-}
-```
-
-**`serves` conformance (error).** A `locus L : serves P` must
-provide every contract method P declares — matching arity, param
-types, return type and fallibility — **and** (Phase 2c) every bus edge P's
-contract declares: a `bus { subscribe/publish ... }` block in the
-perspective is part of the ABI, so a serving impl must subscribe /
-publish each named subject. A missing or mismatched method, a
-missing bus edge, or `serves` naming an unknown / non-perspective
-symbol, is a typecheck error. Live-swapping a bus-backed
-perspective (re-pointing its subscriptions) is a follow-up; until
-then `reperspective` on such a perspective is rejected. This is the perspective analog of interface
-structural satisfaction (and reuses its shape). The synthesized
-`is_stable` (from `stable_when`) is not a contract method the impl
-must provide.
-
-Fallibility matches both ways, unlike an interface's (an infallible
-method may satisfy a `fallible` interface method): a perspective
-call lowers the perspective fn's signature against the impl's
-body, so a `fallible` impl behind an infallible perspective fn
-would hand the caller a failure path the call never reads, and the
-reverse a failure the impl never sets. Either is a typecheck error
-naming both: "\`RouterV1.route\` is
-\`fallible(ClosureViolation)\` but \`Router.route\` is not: a
-method serving a perspective matches its fallibility". A
-call to a `fallible` perspective fn is a type error at the method
-name: "\`Router.route\` is \`fallible(ClosureViolation)\`, and a
-perspective call cannot carry a failure yet (F.42): a \`fallible\`
-perspective fn is not callable" (the build refused it, with no
-location, before the check did).
-
-A perspective handle reaches the locus behind it through the
-contract's methods only: a field read through it (`self.p.tag`) is
-refused as no field of the perspective, and so is a store through it
-(`self.p.tag = s;`, at the field name). And the handle's type is the
-slot type `perspective(P)`; the bare `P` is no type a value has, and
-`hale check` refuses it in a type position (`p: P = V1 { }`), naming
-`perspective(P)`.
-
-**Qualified contract names (2026-09-19, GH #724).** `P` may be an
-**imported** perspective, named through its import alias:
-`locus X : serves lib::Routing`, `perspective(lib::Routing)` and
-`reperspective self.r as lib::Double` all take a qualified path. The
-path resolves through the same cross-seed rename table as a
-qualified type or an `alias::fn()` call, so conformance is checked
-against the imported contract and every seed's holders reach the one
-program-global slot. A path that resolves to nothing — a nested
-alias, a typo — is a located typecheck error at the path, reported
-with the alias as written. The one exception is a tool that holds a
-seed *without* its imports (a partial program a harness assembles;
-`hale lsp` is not one, it loads the seed and every import as `hale
-check <dir>` does): there a path behind an unresolved alias is
-opaque, exactly as `lib::Grid` or `lib::f()` already is, and the
-contract is checked when the whole seed is.
-
-**The slot type `perspective(P)`.** A holder programs against
-`perspective(P)`, never a concrete impl. It is a handle: at the
-LLVM level a single pointer stored in the holder's field, but
-dispatch does **not** read that field.
-
-**One global slot (1-1, not 1-N).** Each perspective P has exactly
-one program-global slot — a `{ data, vtable }` cell (the interface
-fat-pointer layout) named `__persp.<P>`. Every holder of
-`perspective(P)` funnels through it: `self.router.route(x)` loads
-the global slot, indexes the vtable at the contract-method
-position, and indirect-calls with `data` (the current impl's
-self) as the implicit receiver. Because the interop is closed-
-world and 1-1, the compiler sees every call site and there is
-exactly one target — which is what makes the Phase-2b swap a
-single atomic store that redirects the whole program. (Contrast
-`interface`, which is a *per-value* fat pointer, many impls, no
-global slot.)
-
-**Designation.** A `perspective(P) = Impl { }` field default
-*designates* the slot: it instantiates `Impl` (an owned child of
-the holder, torn down normally) and stores `{ impl_self, vtable(Impl,
-P) }` into the global slot. The field itself stores the impl's
-self-pointer for ownership; the slot holds the same pointer plus
-the vtable for dispatch.
-
-A containing constructor may designate instead (2026-09-04, GH
-#525): `App { gw: Gateway { router: RouterV2 { } } }` overrides the
-holder's default with `RouterV2`, which is instantiated as the
-holder's owned child and stored into the slot exactly as the
-default would have been. The override must name a locus that
-`serves P`; one that does not is a typecheck error naming the
-missing `serves` clause. Because the slot is program-global and
-1-1, an override designates the *program's* impl, not a
-per-instance one — two holders constructed with different impls
-race on one slot, last designation wins, the same as two holders
-with different defaults.
-
-**Holding without designating (GH #731).** A `perspective(P)`
-param with **no initializer** holds the slot: a construction may
-omit it (it is not a required param, unlike any other field with no
-initializer), and omitted it builds no impl, owns nothing, stores no
-impl pointer in the field and leaves `__persp.<P>` as it is — calls
-through the field dispatch to whatever the program designated, and a
-later `reperspective` by any holder reaches it through the same slot.
-A construction that does name an impl
-(`Attempt { performer: Impl { } }`) designates, exactly as the
-override above. Two rules keep the
-slot from being read empty:
-
-- **The build** refuses a program in which an instantiation it lowers
-  holds `P` this way and no instantiation it lowers designates `P`
-  — the error names `P` and the holding field `L.f`: "holds its slot
-  without designating it, and nothing in the program designates it".
-  A designation in a locus nothing builds does not count.
-- **At run time**, a call through a perspective that some declared
-  holder may hold without designating first checks the slot; a call
-  that runs before any designation — a field constructed ahead of the
-  designating one, whose birth calls through it — stops the program
-  with "runtime error: perspective `P`: `m` was called before
-  anything designated the perspective" on stderr and exit status 1.
-  Designation is ordered as construction is: a holder's fields in declaration
-  order, each child's birth before its next sibling's construction.
-  A perspective every holder designates is not checked: its slot is
-  written before any holder can call.
-
-What a call through a held slot reaches is, to every analysis that reads
-the call graph (effects, the portable capability check, the allocation
-summary), each locus that `serves P` — the only loci a designation may
-name — so a held slot is judged as the impls it can hold, never as an
-unknown receiver.
-
-**Cost.** Steady state is one load + one predicted indirect call
-per call into a perspective — near-direct. The mechanism is
-Linux/native-agnostic (no new runtime dependency); a program that
-declares no perspectives pays nothing.
-
-### The live swap: `reperspective` (Phase 2b + 3)
-
-`reperspective self.<field> as <Impl>;` is the live redeploy. It
-re-points the perspective's global slot — identified by the
-`self`-field's `perspective(P)` type — at `Impl` (which must
-`serve P`). Because every holder funnels through the one slot, the
-swap redirects **every** call site at once: the same
-`self.router.route(...)` resolves to the new impl immediately after.
-
-- **State-preserving (Phase 3).** The slot is `{ data, vtable }`:
-  `data` is the running state (an arena-backed struct), `vtable` is
-  the code. They are already separate, so the swap is a single store
-  of the new impl's vtable into the slot — `data` is untouched and
-  the new impl's methods continue on the **same live state** (the
-  note's layout-identity "zero migration"). No re-instantiation, no
-  birth defaults, nothing to tear down.
-- **Footprint identity (soundness).** The vtable swap is layout-safe
-  only if the new impl's field offsets match the retained state, so
-  the typechecker requires **every** impl of a perspective to share
-  one footprint (same params, by name and type, in order). A
-  footprint *change* is the `migrate` case — rejected for now with an
-  actionable diagnostic rather than silently reinterpreting bytes.
-- **Rebind authority.** The statement runs on the locus that owns
-  the slot (`self.<field>`), never a mere caller — the ownership
-  tree is the redeploy authority. The typechecker requires the field
-  to be a `perspective(P)` param of the current locus and the new
-  impl to `serve P`.
-- **Bus edges swap too (Phase 2c-runtime).** When the perspective
-  declares a bus surface, the swap also re-points its subscriptions:
-  it tombstones the current impl's registrations on the shared slot
-  `data` (`lotus_bus_quarantine_self`) and re-registers the new
-  impl's handlers on that same `data`. A message published after the
-  swap dispatches to the new handler, operating on the carried
-  state. Cooperative dispatch is deferred (a publish captures the
-  handler current at that moment; handlers run at drain), so the
-  swap boundary is respected per message. Perspective impls are
-  designated (never `placement`-pinned), so they are cooperative —
-  the re-registration routes through the global queue, no mailbox
-  hand-off. (Cost: tombstoned entries are skipped, not compacted — a
-  bounded per-swap cost.)
-
-## Perspective hot-load
-
-> **Status:** Phase 2b + 3 + 2c ship the `reperspective` swap
-> (above): the atomic slot re-point, state-preserving across impls
-> of one footprint, re-pointing sync dispatch AND bus subscriptions.
-> A footprint-changing `migrate`, and the bus-arrival / decode /
-> `stable_when` / drain flow below (transport-driven redeploy from
-> the wire), remain the aspirational path.
-
-For each `perspective P { ... }` instance currently active:
-
-1. New perspective arrives via bus (or explicit
-   `load_perspective(P, bytes)` call).
-2. Runtime decodes against P's compiled-in schema. Type-
-   mismatch → reject; emit `PerspectiveDecodeError`.
-3. Validates `stable_when` predicate. If false → reject;
-   emit `PerspectiveNotStable`.
-4. Atomically swaps the active perspective:
-   - Pause all readers (readers within the locus see the
-     pre-swap perspective).
-   - Replace.
-   - Resume.
-5. Emit `PerspectiveLoaded` event.
-
-Old perspective is freed only after the swap completes; no
-torn read possible.
-
 ## Recovery primitives
 
 ### `restart(child)` / `restart(child) for N`
@@ -6003,7 +5755,7 @@ once, from the literal; a restart never re-evaluates a default. So
 `Worker { tag: "a" }` restarts with `tag` `"a"`, whatever its
 declared default says, and a default that builds a locus or reads
 the clock is not run again. A param that holds a locus (or an
-interface or perspective handle) keeps its child: a restart re-runs
+interface handle) keeps its child: a restart re-runs
 this instance, not its children's construction. The retry bound
 and the default cap are shared with `restart`.
 
@@ -6521,7 +6273,7 @@ today, not part of the rule:
   a locus's member fn called on `self`, a local or a field of `self`.
   Any other fallible handler is refused with the nested spelling that
   works, `or (f(err) or raise)`. That covers a stdlib entry point, a
-  generic fn, an interface's or a perspective's method, and a
+  generic fn, an interface's method, and a
   container's, an array's or a stdlib handle's method.
 - **A call through an interface-typed value.** The checker types a
   local or parameter whose declared type is an interface as unknown
@@ -6749,7 +6501,7 @@ The consequence is a rule, not an implementation detail:
 > declaration written at the top level.
 
 This holds for each kind: a `type` (struct, enum or alias), a
-`locus`, a `perspective`, an `interface`, a `topic`, a `const`, a
+`locus`, an `interface`, a `topic`, a `const`, a
 generic template, and a free `fn`. It holds through an `import`
 in both directions: a library's module-nested declaration gets a
 mangled name and a rename-table row like any other, so the
@@ -6863,7 +6615,7 @@ References to library decls go through the alias as
 **A qualified literal checks like a local one.** `alias::Type {
 ... }` resolves to the merged declaration before its
 initializers are validated, so field names, field types,
-interface and perspective coercions, and missing required
+interface coercions, and missing required
 fields are all checked exactly as they are for a literal on a
 locally declared type — an unknown field is the same
 `type T has no field f` error, at the offending initializer's

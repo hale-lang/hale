@@ -14,7 +14,6 @@ This chapter provides a quick-reference cheat sheet of Hale's syntax, decorators
 | `enum Name { VariantA, VariantB(Int), VariantC { x: Int } }` | Tagged union (sum type) |
 | `type Union = TypeA \| TypeB;` | Set type (message union for `seam` pipelines) |
 | `interface Name { fn method(x: Int) -> String; }` | Structural interface satisfied by any locus with matching methods |
-| `perspective Name { field: Type; }` | Cross-process projection schema |
 | `topic Name { payload: Type; keyed_by field; }` | Typed message bus channel |
 | `locus Name { ... }` | Stateful component owning an arena, `params`, methods, and lifecycle |
 | `main locus Name { ... }` | Process entrypoint declaring `placement`, `bindings`, and `claims` |

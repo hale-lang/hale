@@ -39,7 +39,7 @@
 - [Concurrency & Thread Placement](./services/concurrency.md)
 - [Ownership, Children & Flow Reclamation](./services/parents-children.md)
 - [Supervision & Structural Failure](./services/failure.md)
-- [Interfaces, Contracts & Perspectives](./services/perspectives.md)
+- [Interfaces & Contracts](./services/interfaces.md)
 - [Seams & Typed Pipelines](./services/seams.md)
 - [Repositories (`@repo`)](./services/repositories.md)
 - [Service Composition Patterns](./services/patterns.md)

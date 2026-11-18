@@ -114,8 +114,8 @@ pub struct Entities {
     pub interfaces: Vec<InterfaceDecl>,
     /// Declared/referenced USER effect classes (GH #476 Change 4).
     pub effect_classes: Vec<EffectClassDecl>,
-    /// Seed-membership-only declarations (perspective, const, ring
-    /// layout, target) — the rest of the nameable universe.
+    /// Seed-membership-only declarations (const, ring layout,
+    /// target) — the rest of the nameable universe.
     pub declarations: Vec<Declaration>,
     /// GH #1417: the surfaces, by name, each with its contract digest.
     pub surfaces: Vec<crate::surface::Surface>,

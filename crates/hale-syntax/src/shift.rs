@@ -189,7 +189,6 @@ impl Shift for TopDecl {
     fn shift(&mut self, d: Move) {
         match self {
             TopDecl::Locus(x) => x.shift(d),
-            TopDecl::Perspective(x) => x.shift(d),
             TopDecl::Type(x) => x.shift(d),
             TopDecl::Const(x) => x.shift(d),
             TopDecl::Fn(x) => x.shift(d),
@@ -327,7 +326,6 @@ shift_struct!(LocusDecl {
     export,
     generics,
     annotations,
-    serves,
     form,
     locality,
     bounded,
@@ -597,21 +595,9 @@ impl Shift for EpochSpec {
     }
 }
 
-// Perspectives, types, consts.
+// Types, consts.
 
-shift_struct!(PerspectiveDecl { name, generics, members, span, id });
 
-impl Shift for PerspectiveMember {
-    fn shift(&mut self, d: Move) {
-        match self {
-            PerspectiveMember::Params(x) => x.shift(d),
-            PerspectiveMember::StableWhen(x) => x.shift(d),
-            PerspectiveMember::SerializeAs(x) => x.shift(d),
-            PerspectiveMember::Fn(x) => x.shift(d),
-            PerspectiveMember::Bus(x) => x.shift(d),
-        }
-    }
-}
 
 shift_struct!(TypeDecl { name, display, generics, body, span, id, synthetic, positional, doc, template });
 shift_struct!(DisplayTemplate { text, span, parts });
@@ -749,7 +735,6 @@ impl Shift for TypeExpr {
             TypeExpr::Bounded { elem, cap, span } => sh!(d; elem, cap, span),
             TypeExpr::Tuple(elems, span) => sh!(d; elems, span),
             TypeExpr::Function { params, ret, span } => sh!(d; params, ret, span),
-            TypeExpr::Perspective { name, span } => sh!(d; name, span),
         }
     }
 }
@@ -801,7 +786,6 @@ impl Shift for Stmt {
             Stmt::Fail { value, span } => sh!(d; value, span),
             Stmt::Yield(span) => sh!(d; span),
             Stmt::Terminate(span) => sh!(d; span),
-            Stmt::Reperspective { field, impl_name, span } => sh!(d; field, impl_name, span),
             Stmt::Block(x) => x.shift(d),
             Stmt::Recovery { op, args, modifier, span } => sh!(d; op, args, modifier, span),
             Stmt::Violate { name, payload, span } => sh!(d; name, payload, span),

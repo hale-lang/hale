@@ -387,7 +387,7 @@ pub fn rewrite_import_alias_heads(
 ///
 /// Three positions carry a construction path, and this pass is
 /// attached to the walker that already visits all three:
-/// `Expr::Struct` (a struct / locus / perspective literal),
+/// `Expr::Struct` (a struct / locus literal),
 /// `Expr::Path` (an enum-variant construction, with or without a
 /// payload) and `Pattern::Constructor` (the same variant path in
 /// match position — check refuses an aliased arm as non-exhaustive
@@ -486,9 +486,6 @@ fn construction_alias_targets(
                 }
                 TopDecl::Locus(l) => {
                     declared.insert(l.name.name.clone());
-                }
-                TopDecl::Perspective(p) => {
-                    declared.insert(p.name.name.clone());
                 }
                 TopDecl::Module(m) => collect(&m.items, aliases, declared),
                 _ => {}
@@ -618,7 +615,7 @@ fn construction_alias_targets(
 /// * **Declaration signatures, at any module depth** — this pass,
 ///   and only this pass. A fn signature, a struct field, a
 ///   `params` entry, a `capacity` slot, an alias target, a bus
-///   payload, a `serves` clause, a `bindings` topic. The
+///   payload, a `bindings` topic. The
 ///   top-level-only walk left every one of them unresolved inside
 ///   `module { }`; the `TopDecl::Module` arm below closes that.
 /// * **A type annotation in a BODY** (`let x: lib::T`) — the
@@ -692,15 +689,12 @@ struct QualifiedRenameApplier<'a> {
 
 impl<'a> QualifiedRenameApplier<'a> {
     /// GH #724: canonicalize an `Ident` that carries a QUALIFIED path
-    /// joined by `::` — the shape the parser gives a `serves
-    /// lib::Routing` clause, a `perspective(lib::Routing)` slot type
-    /// and a `reperspective self.f as lib::Impl` target (and, since
-    /// GH #527 B6, a `bindings { }` entry's topic). Collapses to the
-    /// mangled single name the imported declaration ends up at, so
-    /// the checker resolves it exactly as it resolves a same-seed
-    /// perspective. A path with no rename entry is LEFT AS WRITTEN,
-    /// so the checker's `serves unknown perspective` / `unknown
-    /// perspective` diagnostic still cites the path the author typed
+    /// joined by `::` — the shape the parser gives a `bindings { }`
+    /// entry's topic (GH #527 B6). Collapses to the mangled single
+    /// name the imported declaration ends up at, so the checker
+    /// resolves it exactly as it resolves a same-seed declaration. A
+    /// path with no rename entry is LEFT AS WRITTEN, so the checker's
+    /// unknown-name diagnostic still cites the path the author typed
     /// (a nested alias, a typo).
     /// T1: a role named through an import alias (`lib::reader`) in a
     /// role position — a `requires` list, an `includes` — collapses to
@@ -874,11 +868,6 @@ impl<'a> QualifiedRenameApplier<'a> {
                     }
                 }
             }
-            // GH #724: `reperspective self.f as lib::Impl;` — the new
-            // implementation may be an imported locus.
-            Stmt::Reperspective { impl_name, .. } => {
-                self.rewrite_joined_ident(impl_name)
-            }
             Stmt::If(i) => self.rewrite_sends_in_if(i),
             Stmt::While { body, .. } | Stmt::For { body, .. } => {
                 self.rewrite_sends_in_block(body)
@@ -891,13 +880,6 @@ impl<'a> QualifiedRenameApplier<'a> {
     fn rewrite_type_expr(&self, t: &mut TypeExpr) {
         match t {
             TypeExpr::Primitive(_, _) => {}
-            // Phase 2a: `perspective(P)` names its contract with one
-            // Ident. GH #724: that Ident may carry a qualified path
-            // joined by `::` (`perspective(lib::Routing)`) — collapse
-            // it like any other cross-seed reference.
-            TypeExpr::Perspective { name, .. } => {
-                self.rewrite_joined_ident(name)
-            }
             TypeExpr::Named { path, generic_args, .. } => {
                 if path.segments.len() >= 2 {
                     let path_segs: Vec<String> = path
@@ -950,14 +932,6 @@ impl<'a> QualifiedRenameApplier<'a> {
     fn walk_top_decl(&mut self, d: &mut TopDecl) {
         match d {
             TopDecl::Locus(l) => {
-                // GH #724: `locus L : serves lib::Routing` — the
-                // contract can be an imported perspective. Collapse
-                // the alias path here, before typecheck, so
-                // conformance is checked against the real contract
-                // instead of failing as an unknown perspective.
-                for sv in &mut l.serves {
-                    self.rewrite_joined_ident(sv);
-                }
                 for m in &mut l.members {
                     self.walk_locus_member(m);
                 }
@@ -1008,48 +982,6 @@ impl<'a> QualifiedRenameApplier<'a> {
             // ring_layout members are layout tokens (idents/ints) — no
             // TypeExpr to path-rewrite for cross-seed imports.
             TopDecl::RingLayout(_) => {}
-            TopDecl::Perspective(p) => {
-                for m in &mut p.members {
-                    match m {
-                        PerspectiveMember::Params(pb) => {
-                            for p in &mut pb.params {
-                                if let Some(ty) = &mut p.ty {
-                                    self.rewrite_type_expr(ty);
-                                }
-                            }
-                        }
-                        PerspectiveMember::SerializeAs(te) => {
-                            self.rewrite_type_expr(te);
-                        }
-                        PerspectiveMember::Fn(fd) => {
-                            for p in &mut fd.params {
-                                self.rewrite_type_expr(&mut p.ty);
-                            }
-                            if let Some(r) = &mut fd.ret {
-                                self.rewrite_type_expr(r);
-                            }
-                            if let Some(fal) = &mut fd.fallible {
-                                self.rewrite_type_expr(fal);
-                            }
-                        }
-                        PerspectiveMember::StableWhen(_) => {}
-                        // Phase 2c: contract bus surface — rewrite
-                        // subject payload types like a locus bus block.
-                        PerspectiveMember::Bus(bb) => {
-                            for bm in &mut bb.members {
-                                match bm {
-                                    BusMember::Subscribe { ty, .. }
-                                    | BusMember::Publish { ty, .. } => {
-                                        if let Some(t) = ty {
-                                            self.rewrite_type_expr(t);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
             // GH #854: a module is a namespace, not a boundary —
             // its declarations carry TypeExprs (a signature, a
             // struct field, a `params` entry, a bus payload) that
@@ -1465,7 +1397,6 @@ fn walk_fleet_members(fl: &mut FleetDecl, walk: &mut dyn FnMut(&mut LocusMember)
 fn top_decl_name(d: &TopDecl) -> Option<&str> {
     match d {
         TopDecl::Locus(l) => Some(&l.name.name),
-        TopDecl::Perspective(p) => Some(&p.name.name),
         TopDecl::Type(t) => Some(&t.name.name),
         TopDecl::Const(c) => Some(&c.name.name),
         TopDecl::Fn(f) => Some(&f.name.name),
@@ -1734,7 +1665,6 @@ impl<'a> Mangler<'a> {
         self.push_scope();
         match d {
             TopDecl::Locus(l) => self.walk_locus(l),
-            TopDecl::Perspective(p) => self.walk_perspective(p),
             TopDecl::Type(t) => self.walk_type_decl(t),
             TopDecl::Const(c) => {
                 self.walk_type_expr(&mut c.ty);
@@ -1871,13 +1801,6 @@ impl<'a> Mangler<'a> {
 
     fn walk_locus(&mut self, l: &mut LocusDecl) {
         self.rewrite_ident(&mut l.name.name);
-        // GH #534 (DNA F.10): `locus L : serves P` names a perspective
-        // declared in this seed; the declaration was renamed and the
-        // `serves` list was not, so every impl served an unknown
-        // perspective once imported.
-        for sv in &mut l.serves {
-            self.rewrite_ident(&mut sv.name);
-        }
         for g in &l.generics {
             self.bind(&g.name.name);
         }
@@ -2188,66 +2111,6 @@ impl<'a> Mangler<'a> {
         }
     }
 
-    fn walk_perspective(&mut self, p: &mut PerspectiveDecl) {
-        self.rewrite_ident(&mut p.name.name);
-        for g in &p.generics {
-            self.bind(&g.name.name);
-        }
-        for m in &mut p.members {
-            match m {
-                PerspectiveMember::Params(pb) => {
-                    for pd in &mut pb.params {
-                        if let Some(ty) = &mut pd.ty {
-                            self.walk_type_expr(ty);
-                        }
-                        if let ParamInit::Value(e) = &mut pd.init {
-                            self.walk_expr(e);
-                        }
-                    }
-                }
-                PerspectiveMember::StableWhen(b) => self.walk_block(b),
-                PerspectiveMember::SerializeAs(t) => self.walk_type_expr(t),
-                // GH #542: a contract method's name lives in member
-                // position, exactly like a locus method's (pond P1
-                // below) — looked up on the perspective by its
-                // authored name, never through the seed rename map.
-                // `walk_fn_decl` renamed it when a top-level fn shared
-                // the name, so every `serves` impl (whose own method
-                // correctly kept its name) was "missing" the contract
-                // method once imported.
-                PerspectiveMember::Fn(f) => self.walk_method_decl(f),
-                // Phase 2c: contract bus surface.
-                PerspectiveMember::Bus(bb) => {
-                    for bm in &mut bb.members {
-                        match bm {
-                            BusMember::Subscribe { subject, handler, ty, .. } => {
-                                self.rewrite_bus_subject_head(subject);
-                                if let BusSubject::Topic(id) = subject {
-                                    self.rewrite_ident(&mut id.name);
-                                }
-                                // GH #542: a contract handler is a member
-                                // method name; see the locus case.
-                                let _ = &handler;
-                                if let Some(t) = ty {
-                                    self.walk_type_expr(t);
-                                }
-                            }
-                            BusMember::Publish { subject, ty, .. } => {
-                                self.rewrite_bus_subject_head(subject);
-                                if let BusSubject::Topic(id) = subject {
-                                    self.rewrite_ident(&mut id.name);
-                                }
-                                if let Some(t) = ty {
-                                    self.walk_type_expr(t);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     fn walk_type_decl(&mut self, t: &mut TypeDecl) {
         self.rewrite_ident(&mut t.name.name);
         for g in &t.generics {
@@ -2410,9 +2273,6 @@ impl<'a> Mangler<'a> {
                     self.walk_expr(e);
                 }
             }
-            Stmt::Reperspective { impl_name, .. } => {
-                self.rewrite_ident(&mut impl_name.name)
-            }
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
             Stmt::Fail { value, .. } => self.walk_expr(value),
             Stmt::Block(b) => self.walk_block(b),
@@ -2511,11 +2371,6 @@ impl<'a> Mangler<'a> {
     fn walk_type_expr(&mut self, t: &mut TypeExpr) {
         match t {
             TypeExpr::Primitive(_, _) => {}
-            // Phase 2a: rewrite the perspective contract name like
-            // any other intra-seed single-name type reference.
-            TypeExpr::Perspective { name, .. } => {
-                self.rewrite_ident(&mut name.name)
-            }
             TypeExpr::Named { path, generic_args, .. } => {
                 self.rewrite_single_segment_path(path);
                 for g in generic_args {
@@ -2581,7 +2436,7 @@ impl<'a> Mangler<'a> {
                 }
             }
             Expr::Struct { path, inits, .. } => {
-                // GH #831: a struct / locus / perspective literal —
+                // GH #831: a struct / locus literal —
                 // the WHOLE path names the type, so the whole path
                 // is the alias key.
                 let n = path.segments.len();

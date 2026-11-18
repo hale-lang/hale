@@ -69,7 +69,7 @@ Every declaration in a `.hl` file populates rows in a specific compiler graph cl
 |---|---|---|---|---|
 | `locus`, `params`, `accept`, `on_failure`, `birth`, `run` | $\Sigma$, `H1`, `H8`, `H9` | Component instances, ownership, supervision | Rooted tree (vertical-only) | Entry's root (`main`) |
 | `type` | $\Sigma\text{-proto}$ | Value record layouts (no lifecycle/flow) | Directed acyclic record graph | Its declaration |
-| `interface`, `contract`, `expose`, `consume`, `perspective` | $\Pi$, `H4`, `H5` | Surface visibility across depth/process edges | Bipartite graph over depth edges | The contract / process edge |
+| `interface`, `contract`, `expose`, `consume` | $\Pi$, `H4`, `H5` | Surface visibility across depth/process edges | Bipartite graph over depth edges | The contract / process edge |
 | `topic`, `bus { publish; subscribe; }`, `<-` | $\Delta$, `H3`, `H10` | Pub/sub channels, publishers, subscribers | Directed multigraph (cycles allowed) | The seed |
 | `bindings { }` | $\bowtie$, `H12` | Topic-to-transport mappings and codecs | Edge labeling of the bus graph | `main` / `fleet` |
 | `placement { }` | `I1`, `I2` | Instance-to-thread/pool assignment | Partition of locus instances | `main` / `fleet` |

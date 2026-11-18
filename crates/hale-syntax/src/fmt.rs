@@ -666,16 +666,8 @@ impl<'a> SpaceCx<'a> {
             );
         }
 
-        // `locus X : serves Y` — the conformance-clause colon is
-        // SPACED both sides by spec convention (spec/tokens.md's
-        // own examples); every other colon is tight-left. Detected
-        // by the contextual `serves` ident that must follow it.
+        // A colon is tight-left.
         if matches!(n, Colon) {
-            if let Some(next) = self.tokens.get(ni + 1) {
-                if matches!(&next.kind, Ident(nm) if nm == "serves") {
-                    return true;
-                }
-            }
             return false;
         }
         // Never a space BEFORE these.
@@ -742,13 +734,13 @@ impl<'a> SpaceCx<'a> {
         // `(` / `[` openers: tight after a callee/indexee (ident,
         // closer, self) — the contextual keywords among them, so the
         // hooks (`run()`, `release(c: T)`, `on_failure(c: C)`) and the
-        // recovery statements (`restart(c) for 3;`) read like calls —
-        // and after `perspective(P)`; spaced after the hard keywords
-        // and operators (`if (`, `return (`).
+        // recovery statements (`restart(c) for 3;`) read like calls;
+        // spaced after the hard keywords and operators (`if (`,
+        // `return (`).
         if matches!(n, LParen | LBracket) {
             if matches!(
                 p,
-                Ident(_) | KwSelf | RParen | RBracket | Gt | Perspective
+                Ident(_) | KwSelf | RParen | RBracket | Gt
             ) {
                 return false;
             }
