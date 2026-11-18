@@ -7059,14 +7059,17 @@ impl<'a> Walker<'a> {
     /// at any depth (GH #2061 review: `Outer { v: Inner }` renders `v` by
     /// `Inner`'s template, so `to_string(o)` costs what that template
     /// allocates). A record's template renders its own fields, and its
-    /// function's rows carry what they call.
-    fn display_templates_of_type(&self, t: &str, seen: &mut BTreeSet<String>, out: &mut Vec<String>) {
-        if !seen.insert(t.to_string()) {
-            return;
-        }
+    /// function's rows carry what they call. Each occurrence counts: two
+    /// fields of one templated type render it twice, so its function is
+    /// listed twice (GH #2061 review); `path` holds the types being walked,
+    /// only to stop at a type that contains itself.
+    fn display_templates_of_type(&self, t: &str, path: &mut BTreeSet<String>, out: &mut Vec<String>) {
         let record = hale_syntax::display::record_fn(t);
         if self.known.contains_key(&(None, record.clone())) {
             out.push(record);
+            return;
+        }
+        if !path.insert(t.to_string()) {
             return;
         }
         let variants = hale_syntax::display::variant_fn_prefix(t);
@@ -7079,9 +7082,10 @@ impl<'a> Walker<'a> {
         if let Some(fields) = self.all_struct_fields.get(t) {
             let tys: Vec<String> = fields.values().cloned().collect();
             for ft in tys {
-                self.display_templates_of_type(&ft, seen, out);
+                self.display_templates_of_type(&ft, path, out);
             }
         }
+        path.remove(t);
     }
 
     /// A rendering of `value` at `span`: a call of each template function

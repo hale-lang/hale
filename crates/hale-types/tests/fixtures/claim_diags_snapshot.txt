@@ -253,6 +253,14 @@ Claim [311..315] hot-path budget exceeded: `deep` declares `@budget(alloc_per_ca
 Claim [1..30] counts against `deep`'s alloc budget: a string concatenation (each `+` builds a fresh String)
 Claim [1..30] counts against `deep`'s alloc budget: a string concatenation (each `+` builds a fresh String)
 Claim [1..30] counts against `deep`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+--- crates/hale-types/tests/display_templates.rs#2 ---
+Claim [130..134] hot-path budget exceeded: `show` declares `@budget(alloc_per_call = 3)` but the compiler counts 6 arena allocation(s) per call. Reduce per-call allocations (hoist to reused fields, use `recv_into`), raise the budget, or drop `@budget` for `@unbounded fn` if the allocation is intentional.
+Claim [1..30] counts against `show`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `show`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `show`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `show`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `show`'s alloc budget: a string concatenation (each `+` builds a fresh String)
+Claim [1..30] counts against `show`'s alloc budget: a string concatenation (each `+` builds a fresh String)
 --- crates/hale-types/tests/frontier_items.rs#0 ---
 Claim [394..400] declared causal set violated: `Api::handle` can transitively cause syscall, block through the bus, which its `@effects(causes: …)` does not declare. Path: `Api::handle` -> subject `Orders` -> `Audit::on_order`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/interface_dispatch.rs#4 ---

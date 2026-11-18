@@ -198,3 +198,29 @@ fn main() {
         );
     }
 }
+
+/// GH #2061 review: each rendered occurrence counts. Two fields of one
+/// templated type render it twice, so the record costs twice the template.
+#[test]
+fn a_budget_counts_each_rendered_field() {
+    let src = r#"
+@display("inner {x} and {y}")
+type Inner { x: Int; y: Int; }
+
+type Outer { a: Inner; b: Inner; }
+
+@budget(alloc_per_call = 3)
+fn show(o: Outer) -> String { return to_string(o); }
+
+fn main() {
+    let i = Inner { x: 1, y: 2 };
+    println(show(Outer { a: i, b: i }));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let ds = entries::check_program(&program);
+    assert!(
+        ds.iter().any(|d| d.is_error() && d.message.contains("`show` declares `@budget(alloc_per_call = 3)` but the compiler counts 6")),
+        "two renderings of `Inner`'s template, three allocations each: {ds:?}"
+    );
+}
