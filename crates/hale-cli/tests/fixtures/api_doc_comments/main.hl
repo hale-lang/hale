@@ -1,0 +1,103 @@
+// The doc-comment fixture (GH #1674): a surface whose types, fields,
+// variants, rows, handlers and request parameter carry `///` doc
+// comments, served over the Unix socket.
+// `crates/hale-cli/tests/api_doc_comments.rs` holds every generated
+// document beside it, and holds the digests to the same program with
+// its doc comments removed.
+
+role clerk;
+
+unit cent;
+/// An amount of money, counted in cents.
+type Money = quantity Int in cent;
+
+/// A request to place an order.
+///
+/// The desk fills it at the limit or better.
+type PlaceOrder {
+    /// The instrument's ticker symbol.
+    symbol: String;
+    /// How many units to buy.
+    qty: Int;
+    limit: Money;
+    /// Where the order came from.
+    origin: Origin;
+}
+
+/// Where an order came from.
+type Origin = enum {
+    /// Typed by a person.
+    Desk,
+    Api,
+};
+
+/// What the desk did with an order.
+type Receipt {
+    /// The order's number on the desk.
+    order: Int;
+    notional: Money;
+}
+
+/// Why an order was not placed.
+type OrderError = enum {
+    /// No instrument has the symbol.
+    @not_found UnknownSymbol,
+    /// The desk is closed for the day.
+    @unavailable Closed,
+    Rejected(String),
+};
+
+type Ticket { order: Int; }
+
+/// The order desk.
+locus Desk {
+    params {
+        /// The last order number handed out.
+        last: Int = 0;
+    }
+
+    /// Place an order (the handler's doc, which the row's replaces).
+    fn place(
+        /// The order to place.
+        o: PlaceOrder
+    ) -> Receipt fallible(OrderError) {
+        if o.qty <= 0 { fail OrderError::Rejected("qty must be positive"); }
+        self.last = self.last + 1;
+        return Receipt { order: self.last, notional: o.limit * o.qty };
+    }
+
+    /// Cancel an order.
+    fn cancel(t: Ticket) -> Ticket { return t; }
+
+    fn count(t: Ticket) -> Int { return self.last; }
+}
+
+/// The order desk's public surface.
+api Orders {
+    /// Place an order.
+    /// It is filled at the limit or better; a desk that is closed refuses it.
+    rpc Desk::place requires: [clerk];
+    rpc Desk::cancel;
+    rpc Desk::count;
+}
+
+main locus Shop {
+    params {
+        desk: Desk = Desk { };
+        staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk" };
+        orders: api::Exposure = api::serve(
+            Orders,
+            unix::Rpc { path: "/tmp/hale-api-doc-comments-fixture.sock", roles: self.staff },
+            as: "orders",
+            receivers: { Desk: self.desk },
+            bound: 8,
+            on_full: refuse
+        );
+    }
+    run() {
+        while !self.draining { std::time::sleep(100ms); }
+        self.orders.stop();
+    }
+}
+
+fn main() { Shop { }; }

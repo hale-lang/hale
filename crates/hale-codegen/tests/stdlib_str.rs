@@ -280,6 +280,10 @@ fn a_find_line_scan_scales_linearly() {
 /// copies stay near 128 MiB; words are 4 KiB for the same reason.
 /// Measured on an M1: the source 0.69 / 2.8 ms (4.0x), the hand loop
 /// 1.0 / 14.7 ms (14.5x).
+///
+/// A chain over the source (GH #1995 S2) is held to the same bound, both
+/// a counting one and `max`, whose element-valued terminal keeps the best
+/// part's offsets rather than the part.
 #[test]
 fn words_source_scales_linearly_where_the_hand_loop_does_not() {
     let src = r#"
@@ -301,13 +305,25 @@ fn words_source_scales_linearly_where_the_hand_loop_does_not() {
             }
             return n;
         }
+        // GH #1995 S2, chain sources: the same scan as a chain, and the
+        // element-valued terminal that keeps the best part's offsets
+        fn chain(s: String) -> Int {
+            return std::str::words(s).filter(len(it) > 0).count();
+        }
+        fn longest(s: String) -> Int {
+            let w = std::str::words(s).max(len(it)) or "";
+            return len(w);
+        }
         fn best(s: String, by_hand: Bool, rounds: Int, label: String) {
+            best_of(s, if by_hand { 1 } else { 0 }, rounds, label);
+        }
+        fn best_of(s: String, kind: Int, rounds: Int, label: String) {
             let mut best = -1;
             let mut counted = 0;
             let mut k = 0;
             while k < rounds {
                 let t0 = std::time::monotonic_ns();
-                let c = if by_hand { hand(s) } else { source(s) };
+                let c = if kind == 1 { hand(s) } else if kind == 2 { chain(s) } else if kind == 3 { longest(s) } else { source(s) };
                 let ns = std::time::monotonic_ns() - t0;
                 counted = c;
                 if best < 0 || ns < best { best = ns; }
@@ -324,6 +340,10 @@ fn words_source_scales_linearly_where_the_hand_loop_does_not() {
             best(four, false, 9, "source4m");
             best(quarter, true, 5, "hand256k");
             best(one, true, 5, "hand1m");
+            best_of(one, 2, 9, "chain1m");
+            best_of(four, 2, 9, "chain4m");
+            best_of(one, 3, 9, "max1m");
+            best_of(four, 3, 9, "max4m");
         }
     "#;
     let (stdout, status) = build_and_run("words_source_scaling", src);
@@ -352,6 +372,78 @@ fn words_source_scales_linearly_where_the_hand_loop_does_not() {
          ({h1} -> {h4} ns): the source should grow slower"
     );
     assert!(s1 < h4, "`words` over 1 MiB took {s1} ns, the hand loop {h4} ns: the source should be faster");
+    // a chain over the source is the same scan (GH #1995 S2): linear, and
+    // `max` keeps offsets, not the parts
+    assert_eq!(read("chain1m", "count="), 256, "the chain counts every word of 1 MiB");
+    assert_eq!(read("chain4m", "count="), 1024, "the chain counts every word of 4 MiB");
+    assert_eq!(read("max1m", "count="), 4095, "max picks a 4095-byte word");
+    for (label, (one, four)) in [
+        ("chain", (read("chain1m", "ns="), read("chain4m", "ns="))),
+        ("max", (read("max1m", "ns="), read("max4m", "ns="))),
+    ] {
+        let growth = four.max(1) as f64 / one.max(100_000) as f64;
+        println!("{label} 1 MiB {one} ns, 4 MiB {four} ns ({growth:.1}x)");
+        assert!(growth < 10.0, "4x the text took {growth:.1}x the time through a `{label}` chain ({one} -> {four} ns): not linear");
+        assert!(growth < hand_growth, "a `{label}` chain grew {growth:.1}x, the quadratic hand loop {hand_growth:.1}x: it should grow slower");
+    }
+}
+
+/// GH #1995 S2 (review of #2060): `min` and `max` over a text source keep
+/// the best part where it lies. A long first word followed by many short
+/// ones is the shape that would copy the winner out once per later part
+/// (quadratic when the two are the same size); keyed and bare, each runs
+/// at two sizes 4x apart, best of 5, and its growth is held under 10x.
+#[test]
+fn min_max_over_a_text_source_never_recopy_the_best_part() {
+    let src = r#"
+        fn keyed(s: String) -> Int {
+            let w = std::str::words(s).max(len(it)) or "";
+            return len(w);
+        }
+        fn bare(s: String) -> Int {
+            let w = std::str::words(s).max() or "";
+            return len(w);
+        }
+        fn best(s: String, kind: Int, label: String) {
+            let mut best = -1;
+            let mut got = 0;
+            let mut k = 0;
+            while k < 5 {
+                let t0 = std::time::monotonic_ns();
+                let c = if kind == 0 { keyed(s) } else { bare(s) };
+                let ns = std::time::monotonic_ns() - t0;
+                got = c;
+                if best < 0 || ns < best { best = ns; }
+                k = k + 1;
+            }
+            println(label, " len=", got, " ns=", best);
+        }
+        fn main() {
+            let small = std::str::repeat("x", 131072) + " " + std::str::repeat("a ", 131072);
+            let large = std::str::repeat("x", 524288) + " " + std::str::repeat("a ", 524288);
+            best(small, 0, "keyed1");
+            best(large, 0, "keyed4");
+            best(small, 1, "bare1");
+            best(large, 1, "bare4");
+        }
+    "#;
+    let (stdout, status) = build_and_run("text_min_max_scaling", src);
+    assert!(status.success(), "build/run failed: {:?}", stdout);
+    let read = |label: &str, key: &str| -> i64 {
+        let line = stdout.lines().find(|l| l.starts_with(label)).unwrap_or_else(|| panic!("no {label} line in:\n{stdout}"));
+        line.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no {key} in {line:?}"))
+    };
+    assert_eq!(read("keyed1", "len="), 131072, "max(len(it)) picks the long word");
+    assert_eq!(read("keyed4", "len="), 524288, "max(len(it)) picks the long word");
+    assert_eq!(read("bare1", "len="), 131072, "max() picks the long word");
+    assert_eq!(read("bare4", "len="), 524288, "max() picks the long word");
+    for label in ["keyed", "bare"] {
+        let (one, four) = (read(&format!("{label}1"), "ns="), read(&format!("{label}4"), "ns="));
+        let growth = four.max(1) as f64 / one.max(100_000) as f64;
+        println!("{label}: {one} ns, 4x the text {four} ns ({growth:.1}x)");
+        assert!(growth < 10.0, "`{label}` max over 4x the text took {growth:.1}x ({one} -> {four} ns): the best part is copied again per part");
+    }
 }
 
 /// GH #1947: `len` and slicing on a String local or parameter measure its

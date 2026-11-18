@@ -303,7 +303,21 @@ fn main() {
 - Offsets are bytes. A UTF-8 separator never cuts a character, and a non-ASCII space is text to `words`.
 - The loop does nothing but read the text, so it is legal in `@deterministic @no_syscall` code.
 
-The sources are `for` sources, not values. Hale has no sequence value for them to return, so `let parts = std::str::split(s, ",");` is refused, and the message points at `std::str::split_into` (below), which writes the parts into storage you own. Over 1 MiB of 4 KiB words, `words` takes 0.7 ms and the re-slicing loop above takes 15 ms; four times the text costs `words` four times as long and the loop sixteen.
+Each source also starts an [element chain](../everyday/collections.md#collection-query-chains), the same single pass with a stage or a terminal in place of the loop body. Every part is the chain's `it`:
+
+```hale
+fn main() {
+    let text = "id,name,,note";
+    println(std::str::split(text, ",").filter(len(it) > 0).count());       // 3
+    println(std::str::words("a an the tree").filter(len(it) > 2).count()); // 2
+    let longest = std::str::words("pear fig banana").max(len(it)) or "";
+    println(longest);                                                     // banana
+}
+```
+
+Every stage and terminal works over a text source, without a stage too (`std::str::words(s).count()`). `first`, `find`, `min` and `max` give back the part they picked, and an empty selection fails with an `IndexError`, so `or` supplies the fallback, as it does over a vec. The chain keeps no list of the parts: like the loop, it builds one `String` per part, for that iteration.
+
+The sources are not values. Hale has no sequence value for them to return, so `let parts = std::str::split(s, ",");` is refused, and the message points at a chain's `into(v)` and at `std::str::split_into` (below), each of which writes the parts into storage you own. Over 1 MiB of 4 KiB words, `words` takes 0.7 ms and the re-slicing loop above takes 15 ms; four times the text costs `words` four times as long and the loop sixteen. A chain over a source scales the same way.
 
 ### Walking Large Strings with `ByteView`
 

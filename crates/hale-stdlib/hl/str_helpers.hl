@@ -237,3 +237,24 @@ fn __str_word_end(v: std::str::ByteView, lo: Int) -> Int {
     }
     return i;
 }
+
+/// How the part of view `v` from `lo` to `hi` compares with `s`, byte by
+/// byte as `<` compares two Strings: negative when the part is less, 0
+/// when they are equal, positive when it is greater. A chain over a text
+/// source keeps the best part's offsets for `min()` and `max()` and
+/// compares each later part with it where it lies, so the best part is
+/// never copied out again (GH #1995 S2).
+fn __str_view_cmp(v: std::str::ByteView, lo: Int, hi: Int, s: String) -> Int {
+    let n = len(s);
+    let m = hi - lo;
+    let mut j = 0;
+    while j < m && j < n {
+        let a = std::str::byte_at_unchecked(v.text, lo + j);
+        let b = std::str::byte_at_unchecked(s, j);
+        if a != b {
+            return a - b;
+        }
+        j = j + 1;
+    }
+    return m - n;
+}

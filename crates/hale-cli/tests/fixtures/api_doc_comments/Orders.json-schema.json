@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hale:surface:Orders@fnv1a64:9a75ae7111b187d5",
+  "title": "Orders surface",
+  "description": "The order desk's public surface.",
+  "x-hale-surface": "Orders",
+  "x-hale-digest": "fnv1a64:9a75ae7111b187d5",
+  "x-hale-members": {
+    "Desk::cancel": {
+      "name": "Desk::cancel",
+      "digest": "fnv1a64:13ee0952e84c2ee1",
+      "request": {
+        "$ref": "#/$defs/Ticket"
+      },
+      "response": {
+        "$ref": "#/$defs/Ticket"
+      },
+      "error": null,
+      "requires": [],
+      "description": "Cancel an order."
+    },
+    "Desk::count": {
+      "name": "Desk::count",
+      "digest": "fnv1a64:8bcb2e80431bc3b4",
+      "request": {
+        "$ref": "#/$defs/Ticket"
+      },
+      "response": {
+        "type": "integer"
+      },
+      "error": null,
+      "requires": []
+    },
+    "Desk::place": {
+      "name": "Desk::place",
+      "digest": "fnv1a64:cd8504051ff3f597",
+      "request": {
+        "$ref": "#/$defs/PlaceOrder",
+        "description": "The order to place."
+      },
+      "response": {
+        "$ref": "#/$defs/Receipt"
+      },
+      "error": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "UnknownSymbol",
+              "Closed"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "Rejected": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "Rejected"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "x-hale-type": "OrderError",
+        "x-hale-error-classes": {
+          "UnknownSymbol": "not_found",
+          "Closed": "unavailable"
+        },
+        "x-hale-variant-descriptions": {
+          "UnknownSymbol": "No instrument has the symbol.",
+          "Closed": "The desk is closed for the day."
+        },
+        "description": "Why an order was not placed."
+      },
+      "requires": [
+        "clerk"
+      ],
+      "description": "Place an order.\nIt is filled at the limit or better; a desk that is closed refuses it."
+    }
+  },
+  "$defs": {
+    "PlaceOrder": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "The instrument's ticker symbol."
+        },
+        "qty": {
+          "type": "integer",
+          "description": "How many units to buy."
+        },
+        "limit": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)",
+          "description": "An amount of money, counted in cents."
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "Desk",
+            "Api"
+          ],
+          "x-hale-type": "Origin",
+          "x-hale-variant-descriptions": {
+            "Desk": "Typed by a person."
+          },
+          "description": "Where the order came from."
+        }
+      },
+      "required": [
+        "symbol",
+        "qty",
+        "limit",
+        "origin"
+      ],
+      "description": "A request to place an order.\n\nThe desk fills it at the limit or better."
+    },
+    "Receipt": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer",
+          "description": "The order's number on the desk."
+        },
+        "notional": {
+          "type": "integer",
+          "x-hale-type": "Money",
+          "x-hale-unit": "q(cent)",
+          "description": "An amount of money, counted in cents."
+        }
+      },
+      "required": [
+        "order",
+        "notional"
+      ],
+      "description": "What the desk did with an order."
+    },
+    "Ticket": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "order"
+      ]
+    }
+  }
+}

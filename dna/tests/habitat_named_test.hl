@@ -1,0 +1,223 @@
+// dna/tests/habitat_named_test.hl — more than one habitat on one admin
+// machine (GH #1758).
+//
+// A machine's habitats each live in a directory of their own under
+// `${XDG_DATA_HOME}/hale/habitat/`, and one of them is current: `hale habitat
+// use <name>` writes it, `--habitat <name>` (or HALE_HABITAT) names another
+// for one command, and with neither every verb acts on `local`, as a machine
+// with one habitat always did. `hale habitat list` names each: the current
+// one marked, where it runs, whether its head answers.
+//
+// The first part needs no docker: the habitats are directories that hold a
+// habitat's marks (a born habitat's name, a pointer to one on another
+// machine), which is all `list`, `use` and `--habitat` read. The second part
+// births two habitats side by side on their own backends (`up --no-body`),
+// stops one and finds the other still answering; without docker compose it
+// is not exercised. Everything lives under this fixture's scratch root, its
+// own XDG_DATA_HOME, never the developer's habitats.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` (newline-separated, `NAME=value` lines first for the command's own
+// environment) with `data` as XDG_DATA_HOME and no habitat named by the
+// test harness or the shell: the habitats are the ones under `data`.
+fn hab(data: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\nexport XDG_DATA_HOME=\"$1\" HALE_DNA_COMPOSE=off HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && unset HALE_DNA_HABITAT HALE_HABITAT HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY && shift && exec env \"$@\"\nsh\n"
+            + data + "\n" + argv,
+    );
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// The line of `out` that names the habitat `name` in a listing ("" for none).
+@bounded_by(out)
+fn listed(out: String, name: String) -> String {
+    let mut rest = out;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) > 2 && std::str::starts_with(line[2..len(line)], name + " ") { return line; }
+    }
+    return "";
+}
+
+fn current_mark(out: String, name: String) -> Bool {
+    return std::str::starts_with(listed(out, name), "* ");
+}
+
+fn main() {
+    let scratch = dna::scratch_root("habitat-named");
+    let data = scratch + "/data";
+    let root = data + "/hale/habitat";
+    let hale = toolchain();
+
+    // ---- none yet
+    let none = hab(data, hale + "\nhabitat\nlist");
+    std::test::assert(
+        none.code == 0 && std::str::contains(none.stdout, "no habitat on this machine"),
+        "list on a machine with no habitat: " + none.stdout + none.stderr,
+    );
+
+    // ---- a habitat born before habitats had directories of their own (in
+    // `local`, named `home`), and a pointer to one on another machine, its
+    // head at a port nothing listens on
+    std::io::fs::mkdir(data) or discard;
+    std::io::fs::mkdir(data + "/hale") or discard;
+    std::io::fs::mkdir(root) or discard;
+    std::io::fs::mkdir(root + "/local") or discard;
+    std::io::fs::mkdir(root + "/away") or discard;
+    std::io::fs::write_file(root + "/local/name", "home\n") or discard;
+    std::io::fs::write_file(root + "/local/backends", "own\n") or discard;
+    let dead = dna::free_port(0);
+    std::io::fs::write_file(
+        root + "/away/remote.json",
+        "{\"name\": \"away\", \"host\": \"box.invalid\", \"head\": \"http://127.0.0.1:"
+            + to_string(dead) + "\"}\n",
+    )
+    or discard;
+
+    let first = hab(data, hale + "\nhabitat\nlist");
+    std::test::assert(first.code == 0, "list: " + first.stderr);
+    std::test::assert(
+        current_mark(first.stdout, "home"),
+        "with nothing current, the default directory's habitat is: " + first.stdout,
+    );
+    std::test::assert(
+        std::str::contains(listed(first.stdout, "home"), "on this machine"),
+        "home runs here: " + first.stdout,
+    );
+    let away = listed(first.stdout, "away");
+    std::test::assert(
+        !current_mark(first.stdout, "away")
+            && std::str::contains(away, "on box.invalid")
+            && std::str::contains(away, "head does not answer"),
+        "away is a pointer whose head does not answer: " + first.stdout,
+    );
+
+    // ---- use: the current habitat, by name
+    let used = hab(data, hale + "\nhabitat\nuse\naway");
+    std::test::assert(
+        used.code == 0 && dna::trim_nl(text_of(root + "/current")) == "away",
+        "use away writes the current file: " + used.stdout + used.stderr,
+    );
+    let now = hab(data, hale + "\nhabitat\nlist");
+    std::test::assert(
+        current_mark(now.stdout, "away") && !current_mark(now.stdout, "home"),
+        "away is current: " + now.stdout,
+    );
+    let missing = hab(data, hale + "\nhabitat\nuse\nnowhere");
+    std::test::assert(
+        missing.code == 2 && std::str::contains(missing.stderr, "no habitat `nowhere`"),
+        "use of a habitat the machine does not hold is refused: " + missing.stderr,
+    );
+    std::test::assert(
+        dna::trim_nl(text_of(root + "/current")) == "away",
+        "a refused use changes nothing",
+    );
+    // the habitat born in `local` before is reached by its name
+    let home = hab(data, hale + "\nhabitat\nuse\nhome");
+    std::test::assert(
+        home.code == 0 && std::str::contains(home.stdout, root + "/local"),
+        "use home reaches the default directory: " + home.stdout + home.stderr,
+    );
+
+    // ---- one command on another habitat: the flag, and HALE_HABITAT
+    let flagged = hab(data, hale + "\nhabitat\n--habitat\naway\nlist");
+    std::test::assert(
+        flagged.code == 0 && current_mark(flagged.stdout, "away"),
+        "--habitat away acts on away: " + flagged.stdout + flagged.stderr,
+    );
+    let by_env = hab(data, "HALE_HABITAT=away\n" + hale + "\nhabitat\nlist");
+    std::test::assert(
+        by_env.code == 0 && current_mark(by_env.stdout, "away"),
+        "HALE_HABITAT acts as the flag: " + by_env.stdout,
+    );
+    std::test::assert(
+        dna::trim_nl(text_of(root + "/current")) == "home",
+        "neither changes the current habitat",
+    );
+    let bad = hab(data, hale + "\nhabitat\n--habitat\nNot_A_Name\nlist");
+    std::test::assert(bad.code == 2, "a name that is no DNS label is refused: " + bad.stderr);
+    let reserved = hab(data, hale + "\nhabitat\nuse\ncurrent");
+    std::test::assert(reserved.code == 2, "`current` names no habitat: " + reserved.stderr);
+
+    // ---- two habitats side by side, on their own backends
+    let compose = dna::run_tool("docker\ncompose\nversion");
+    if compose.code != 0 {
+        eprintln("habitat_named_test: two live habitats not exercised (no docker compose)");
+        dna::scratch_done(scratch);
+        return;
+    }
+    let cleared = dna::run_tool("rm\n-rf\n" + root);
+    std::test::assert(cleared.code == 0, "the first part's habitats cleared: " + cleared.stderr);
+    let alpha = hab(data, hale + "\nhabitat\nup\n--no-body\n--name\nalpha");
+    std::test::assert(alpha.code == 0, "up --name alpha: " + alpha.stdout + alpha.stderr);
+    std::test::assert(
+        dna::trim_nl(text_of(root + "/local/name")) == "alpha",
+        "a machine's first habitat is born where the first always was",
+    );
+    let beta = hab(data, hale + "\nhabitat\nup\n--no-body\n--name\nbeta");
+    std::test::assert(beta.code == 0, "up --name beta: " + beta.stdout + beta.stderr);
+    std::test::assert(
+        dna::trim_nl(text_of(root + "/beta/name")) == "beta",
+        "the second habitat is born beside it, in its own directory",
+    );
+    std::test::assert(
+        dna::trim_nl(text_of(root + "/current")) == "beta"
+            && std::str::contains(beta.stdout, "beta is the current habitat"),
+        "up --name makes it current: " + beta.stdout,
+    );
+    std::test::assert(
+        std::io::fs::file_exists(root + "/beta/genome/hale.toml"),
+        "beta's genome is its own",
+    );
+
+    let both = hab(data, hale + "\nhabitat\nlist");
+    std::test::assert(
+        listed(both.stdout, "alpha") != "" && current_mark(both.stdout, "beta"),
+        "both listed, beta current: " + both.stdout,
+    );
+
+    let sa = hab(data, hale + "\nhabitat\n--habitat\nalpha\nstatus");
+    let sb = hab(data, hale + "\nhabitat\nstatus");
+    std::test::assert(
+        sa.code == 0 && std::str::contains(sa.stdout, "name    alpha"),
+        "alpha answers: " + sa.stdout + sa.stderr,
+    );
+    std::test::assert(
+        sb.code == 0 && std::str::contains(sb.stdout, "name    beta"),
+        "beta answers: " + sb.stdout + sb.stderr,
+    );
+    std::test::assert(
+        std::str::contains(sa.stdout, dna::habitat_project_at(root + "/local"))
+            && std::str::contains(sb.stdout, dna::habitat_project_at(root + "/beta"))
+            && dna::habitat_project_at(root + "/local") != dna::habitat_project_at(root + "/beta"),
+        "two compose projects, each named for its own directory",
+    );
+
+    // ---- one comes down; the other keeps answering
+    let down = hab(data, hale + "\nhabitat\n--habitat\nbeta\ndown");
+    std::test::assert(down.code == 0, "down beta: " + down.stdout + down.stderr);
+    let after = hab(data, hale + "\nhabitat\n--habitat\nalpha\nstatus");
+    std::test::assert(
+        after.code == 0 && std::str::contains(after.stdout, "name    alpha"),
+        "alpha still answers with beta down: " + after.stdout + after.stderr,
+    );
+    let back = hab(data, hale + "\nhabitat\nuse\nalpha");
+    std::test::assert(
+        back.code == 0 && dna::trim_nl(text_of(root + "/current")) == "alpha",
+        "use alpha: " + back.stderr,
+    );
+
+    let last = hab(data, hale + "\nhabitat\n--habitat\nalpha\ndown");
+    std::test::assert(last.code == 0, "down alpha: " + last.stderr);
+    dna::scratch_done(scratch);
+}

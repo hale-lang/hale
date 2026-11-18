@@ -208,11 +208,15 @@ fn lsp_v2_hover_and_bus_graph() {
 topic Posted { payload: Msg; subject: "posted"; keyed_by room; }
 
 locus Room {
-    params { name: String = "lobby"; }
+    params {
+        /// The room this one serves.
+        name: String = "lobby";
+    }
     bus { subscribe Posted as on_post where key == self.name; }
     fn on_post(m: Msg) { println(self.name, m.text); }
 }
 
+/// Sums the integers from `lo` up to `hi`.
 @hot @budget(alloc_per_call = 0) fn add_range(lo: Int, hi: Int) -> Int {
     let mut i = lo;
     let mut acc = 0;
@@ -281,6 +285,8 @@ fn main() { App { }; }
     assert!(h.contains("fn add_range(lo: Int, hi: Int) -> Int"), "{}", h);
     assert!(h.contains("`@hot`"), "{}", h);
     assert!(h.contains("@budget(alloc_per_call = 0)"), "{}", h);
+    // GH #1674: and the fn's doc comment
+    assert!(h.contains("Sums the integers from `lo` up to `hi`."), "{}", h);
 
     // Keyed topic hover names the routing field.
     let h = hover_at("Posted <- ", 0);
@@ -303,6 +309,8 @@ fn main() { App { }; }
         .unwrap_or("");
     assert!(h.contains("self.name: String"), "{}", h);
     assert!(h.contains("locus Room"), "{}", h);
+    // GH #1674: the param's doc comment
+    assert!(h.contains("The room this one serves."), "{}", h);
 
     // hale/busGraph: both subjects, keyed one honestly ineligible.
     lsp.send(serde_json::json!({

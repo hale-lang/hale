@@ -1,23 +1,23 @@
-/// The brain: keeps the route table (../README.md, "The route table").
-///
-/// It shares nothing with the api but Postgres. Only one brain works at a
-/// time: it holds a Postgres advisory lock on its connection, and a second
-/// brain process is a standby that tries the lock every tick and takes
-/// over when the first one's session ends (the lock goes with it). The
-/// session ends when the brain's connection drops, when its host stops
-/// answering TCP keepalives, and when the brain stops talking for ten
-/// seconds (`idle_session_timeout`, so a stopped process frees it too).
-///
-/// Each tick, while it holds the lock, it reclaims what dead api instances
-/// held (each instance in a transaction of its own, a failure logged and
-/// left for the next tick), then, in one transaction, writes each node's
-/// liveness and the route table (`route_table`, store.md), and publishes
-/// the table's new version to the notifier (notifier.hl), which tells
-/// `<root>.route` (`voice.route` standalone; internal.yaml) on a thread of its own, so an api
-/// instance can tell a newer table is there and the tick never waits on
-/// NATS. Per-tick work runs in a method, so each tick's memory is
-/// reclaimed. It needs Postgres 14 or newer (`idle_session_timeout`), and
-/// says so and stops on an older one.
+// The brain: keeps the route table (../README.md, "The route table").
+//
+// It shares nothing with the api but Postgres. Only one brain works at a
+// time: it holds a Postgres advisory lock on its connection, and a second
+// brain process is a standby that tries the lock every tick and takes
+// over when the first one's session ends (the lock goes with it). The
+// session ends when the brain's connection drops, when its host stops
+// answering TCP keepalives, and when the brain stops talking for ten
+// seconds (`idle_session_timeout`, so a stopped process frees it too).
+//
+// Each tick, while it holds the lock, it reclaims what dead api instances
+// held (each instance in a transaction of its own, a failure logged and
+// left for the next tick), then, in one transaction, writes each node's
+// liveness and the route table (`route_table`, store.md), and publishes
+// the table's new version to the notifier (notifier.hl), which tells
+// `<root>.route` (`voice.route` standalone; internal.yaml) on a thread of its own, so an api
+// instance can tell a newer table is there and the tick never waits on
+// NATS. Per-tick work runs in a method, so each tick's memory is
+// reclaimed. It needs Postgres 14 or newer (`idle_session_timeout`), and
+// says so and stops on an older one.
 
 import "../lib/logfmt" as logfmt;
 import "../store" as st;

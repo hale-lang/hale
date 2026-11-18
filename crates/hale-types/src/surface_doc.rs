@@ -373,11 +373,27 @@ impl<'s, 'a> Book<'s, 'a> {
     /// The collected schemas as a document's `schemas` object, each `$ref`
     /// under `base`.
     fn render(&self, base: &str) -> J {
-        J::Obj(self.types.iter().map(|(k, t)| (k.clone(), type_schema(t, base))).collect())
+        J::Obj(self.types.iter().map(|(k, t)| (k.clone(), type_schema(k, t, base, self.schemas))).collect())
     }
 }
 
-fn field_schema(f: &FieldSchema, base: &str) -> J {
+/// GH #1674: `j` with `doc` as its `description`, the schema's last key (a
+/// `description` it has is replaced: a field's doc says more of the field
+/// than its type's doc does). `j` itself when there is no doc.
+fn described(j: J, doc: Option<&str>) -> J {
+    match (j, doc) {
+        (J::Obj(mut pairs), Some(d)) => {
+            pairs.retain(|(k, _)| k != "description");
+            pairs.push(("description".to_string(), s(d)));
+            J::Obj(pairs)
+        }
+        (j, _) => j,
+    }
+}
+
+/// A field's, a member's or a stream's schema as a document writes it,
+/// with what the doc comments of the types it names say (GH #1674).
+pub(crate) fn field_schema(f: &FieldSchema, base: &str, sc: &Schemas<'_>) -> J {
     match f {
         // any JSON: no constraint, marked so a reader does not look inside
         FieldSchema::Any => o(vec![("x-hale-any", J::Bool(true))]),
@@ -394,7 +410,7 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
         FieldSchema::Ref(name) => o(vec![("$ref", s(&format!("{base}{name}")))]),
         FieldSchema::Time => o(vec![("type", s("string")), ("format", s("date-time")), ("x-hale-type", s("Time"))]),
         FieldSchema::List { items, max, exact } => {
-            let mut pairs = vec![("type".to_string(), s("array")), ("items".to_string(), field_schema(items, base))];
+            let mut pairs = vec![("type".to_string(), s("array")), ("items".to_string(), field_schema(items, base, sc))];
             if *exact {
                 pairs.push(("minItems".to_string(), J::Int(*max as i64)));
             }
@@ -402,11 +418,11 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
             J::Obj(pairs)
         }
         FieldSchema::Nullable { inner, clear: None, .. } => {
-            o(vec![("anyOf", J::Arr(vec![field_schema(inner, base), o(vec![("type", s("null"))])]))])
+            o(vec![("anyOf", J::Arr(vec![field_schema(inner, base, sc), o(vec![("type", s("null"))])]))])
         }
         // a presence triple's field: `null` clears it
         FieldSchema::Nullable { inner, clear: Some(_), .. } => o(vec![
-            ("anyOf", J::Arr(vec![field_schema(inner, base), o(vec![("type", s("null"))])])),
+            ("anyOf", J::Arr(vec![field_schema(inner, base, sc), o(vec![("type", s("null"))])])),
             ("x-hale-null", s("clear")),
         ]),
         // no key of its own: `type_schema` leaves it out
@@ -439,7 +455,16 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
                         J::Obj(classes.iter().map(|(v, c)| (v.clone(), s(c))).collect()),
                     ));
                 }
-                J::Obj(pairs)
+                // GH #1674: the enum's doc and its variants', by variant
+                let docs = sc.docs(name);
+                let documented: Vec<(String, J)> = variants
+                    .iter()
+                    .filter_map(|(v, _)| Some((v.clone(), s(docs?.variant(v)?))))
+                    .collect();
+                if !documented.is_empty() {
+                    pairs.push(("x-hale-variant-descriptions".to_string(), J::Obj(documented)));
+                }
+                described(J::Obj(pairs), docs.and_then(|d| d.doc.as_deref()))
             };
             // the variants with a wire name of their own: all but a lossless
             // catch-all, which is the string it holds
@@ -458,10 +483,10 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
             }
             for (v, values) in carried.iter().filter(|(_, v)| !v.is_empty()) {
                 let value = match values.as_slice() {
-                    [only] => field_schema(only, base),
+                    [only] => field_schema(only, base, sc),
                     many => o(vec![
                         ("type", s("array")),
-                        ("prefixItems", J::Arr(many.iter().map(|f| field_schema(f, base)).collect())),
+                        ("prefixItems", J::Arr(many.iter().map(|f| field_schema(f, base, sc)).collect())),
                         ("minItems", J::Int(many.len() as i64)),
                         ("maxItems", J::Int(many.len() as i64)),
                     ]),
@@ -476,15 +501,15 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
             }
             classed(vec![("oneOf".to_string(), J::Arr(one)), ("x-hale-type".to_string(), s(name))])
         }
-        FieldSchema::Map { key, value, max, of: None, .. } => o(vec![
+        FieldSchema::Map { name, key, value, max, of: None, .. } => o(vec![
             ("type", s("object")),
-            ("additionalProperties", type_schema(value, base)),
+            ("additionalProperties", type_schema(name, value, base, sc)),
             ("maxProperties", J::Int(*max as i64)),
             ("x-hale-key", s(key)),
         ]),
         FieldSchema::Map { key, max, of: Some((field, schema)), .. } => o(vec![
             ("type", s("object")),
-            ("additionalProperties", field_schema(schema, base)),
+            ("additionalProperties", field_schema(schema, base, sc)),
             ("maxProperties", J::Int(*max as i64)),
             ("x-hale-key", s(key)),
             ("x-hale-value", s(field)),
@@ -492,21 +517,27 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
     }
 }
 
-fn type_schema(t: &TypeSchema, base: &str) -> J {
-    o(vec![
-        ("type", s("object")),
-        (
-            "properties",
-            J::Obj(
-                t.properties
-                    .iter()
-                    .filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. }))
-                    .map(|(k, f)| (k.clone(), field_schema(f, base)))
-                    .collect(),
+/// The schema of the record a document names `name`, each property with its
+/// field's doc and the record with its own (GH #1674).
+pub(crate) fn type_schema(name: &str, t: &TypeSchema, base: &str, sc: &Schemas<'_>) -> J {
+    let docs = sc.docs(name);
+    described(
+        o(vec![
+            ("type", s("object")),
+            (
+                "properties",
+                J::Obj(
+                    t.properties
+                        .iter()
+                        .filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. }))
+                        .map(|(k, f)| (k.clone(), described(field_schema(f, base, sc), docs.and_then(|d| d.field(k)))))
+                        .collect(),
+                ),
             ),
-        ),
-        ("required", strs(t.required.iter().map(String::as_str))),
-    ])
+            ("required", strs(t.required.iter().map(String::as_str))),
+        ]),
+        docs.and_then(|d| d.doc.as_deref()),
+    )
 }
 
 const DOC_REFS: &str = "#/schemas/";
@@ -516,21 +547,27 @@ fn member(row: &Row, book: &mut Book<'_, '_>, base: &str) -> J {
     let Handled::Fn(h) = &row.handler else {
         return o(vec![("name", s(&row.member))]);
     };
+    let sc = book.schemas;
     let mut ty = |t: Option<&crate::surfaces::RowTy>| match t {
-        Some(t) => field_schema(&book.type_ref(&t.te), base),
+        Some(t) => field_schema(&book.type_ref(&t.te), base, sc),
         None => J::Null,
     };
-    let request = ty(h.request.as_ref());
+    // GH #1674: the request's parameter's doc says what the request is here
+    let request = described(ty(h.request.as_ref()), h.request_doc.as_deref());
     let response = ty(h.response.as_ref());
     let error = if h.server_error { s("ClosureViolation") } else { ty(h.error.as_ref()) };
-    o(vec![
+    let mut pairs = vec![
         ("name", s(&row.member)),
         ("digest", s(&digest_text(row.member_digest()))),
         ("request", request),
         ("response", response),
         ("error", error),
         ("requires", strs(row.requires.iter().map(|(r, _)| r.as_str()))),
-    ])
+    ];
+    if let Some(d) = &row.doc {
+        pairs.push(("description", s(d)));
+    }
+    o(pairs)
 }
 
 fn listener(transport: &str, address: Option<&str>) -> J {
@@ -559,7 +596,7 @@ fn stream(st: &Stream, book: &mut Book<'_, '_>, base: &str, transport: &str) -> 
         ("topic", s(&st.topic)),
         ("subject", s(&st.subject)),
         ("direction", s(st.direction)),
-        ("payload", st.payload.as_ref().map_or(J::Null, |p| field_schema(&book.type_ref(&p.te), base))),
+        ("payload", st.payload.as_ref().map_or(J::Null, |p| field_schema(&book.type_ref(&p.te), base, book.schemas))),
         ("codec", s(&st.codec)),
         ("bound", J::Int(st.bound.unwrap_or(0) as i64)),
         ("on_full", s(on_full)),
@@ -654,7 +691,11 @@ fn inventory_of(rows: &SurfaceRows, schemas: &Schemas<'_>, only: Option<&str>) -
         .filter(|sf| only.is_none_or(|o| o == sf.name))
         .map(|sf| {
             let members: Vec<J> = rows.rows_of(&sf.name).map(|r| member(r, &mut book, DOC_REFS)).collect();
-            o(vec![("name", s(&sf.name)), ("digest", s(&digest_text(sf.digest))), ("members", J::Arr(members))])
+            let mut pairs = vec![("name", s(&sf.name)), ("digest", s(&digest_text(sf.digest))), ("members", J::Arr(members))];
+            if let Some(d) = &sf.doc {
+                pairs.push(("description", s(d)));
+            }
+            o(pairs)
         })
         .collect();
     let exposures = serves_by_name(rows)
@@ -923,7 +964,7 @@ pub fn hub_pieces(hub: &Hub, schemas: &Schemas<'_>) -> HubPieces {
         let mut book = Book::new(schemas);
         streams.push(stream(st, &mut book, DOC_REFS, &t.kind).compact());
         for (n, ts) in &book.types {
-            let json = format!("{}:{}", s(n).compact(), type_schema(ts, DOC_REFS).compact());
+            let json = format!("{}:{}", s(n).compact(), type_schema(n, ts, DOC_REFS, schemas).compact());
             let e = types.entry(n.clone()).or_insert((json, 0));
             e.1 |= 1u64 << i;
         }
@@ -1040,20 +1081,32 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
                 }
             }
         }
+        // GH #1674: a documented row's doc is its summary (the first line)
+        // and its description (the rest), the authorization note after it
+        let authorizes = format!("{}; the server still authorizes every request.", requires_text(row));
+        let doc = hale_syntax::ast::Doc(row.doc.clone());
+        let (summary, description) = match doc.summary() {
+            Some(first) => (first.to_string(), doc.rest().map_or(authorizes.clone(), |rest| format!("{rest}\n\n{authorizes}"))),
+            None => (format!("rpc {}", row.member), authorizes),
+        };
         let mut op = vec![
             ("operationId".to_string(), s(&row.member)),
-            ("summary".to_string(), s(&format!("rpc {}", row.member))),
-            ("description".to_string(), s(&format!("{}; the server still authorizes every request.", requires_text(row)))),
+            ("summary".to_string(), s(&summary)),
+            ("description".to_string(), s(&description)),
             ("parameters".to_string(), J::Arr(parameters)),
         ];
         if let (Some(req), false) = (&h.request, bodyless) {
-            let schema = field_schema(&book.type_ref(&req.te), REFS);
-            op.push(("requestBody".to_string(), J::Obj(vec![("required".to_string(), J::Bool(true)), content(schema)])));
+            let schema = field_schema(&book.type_ref(&req.te), REFS, schemas);
+            let mut body = vec![("required".to_string(), J::Bool(true)), content(schema)];
+            if let Some(d) = &h.request_doc {
+                body.insert(0, ("description".to_string(), s(d)));
+            }
+            op.push(("requestBody".to_string(), J::Obj(body)));
         }
         let mut responses = Vec::new();
         let mut ok = vec![("description".to_string(), s("result: the handler returned"))];
         if let Some(t) = &h.response {
-            ok.push(content(field_schema(&book.type_ref(&t.te), REFS)));
+            ok.push(content(field_schema(&book.type_ref(&t.te), REFS, schemas)));
         }
         let ok = J::Obj(ok);
         let ok_status = route.as_ref().map_or(200, |r| r.status);
@@ -1073,7 +1126,7 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
         let mut classed: Vec<(u16, String, J)> = Vec::new();
         if let (Some(e), false) = (&h.error, h.server_error) {
             let fs = book.type_ref(&e.te);
-            let schema = field_schema(&fs, REFS);
+            let schema = field_schema(&fs, REFS, schemas);
             responses.push((
                 "422".to_string(),
                 J::Obj(vec![("description".to_string(), s(&format!("handler error: {}", schemas.show(e)))), content(schema.clone())]),
@@ -1189,8 +1242,10 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
                 (
                     "description",
                     s(&format!(
-                        "The surface {surface} over HTTP (spec/api.md § Outcomes): {served}, the body by \
-                         the JSON codec. {NOTE_AUTHORIZATION}; {NOTE_LIFECYCLE}."
+                        "{}The surface {surface} over HTTP (spec/api.md § Outcomes): {served}, the body by \
+                         the JSON codec. {NOTE_AUTHORIZATION}; {NOTE_LIFECYCLE}.",
+                        // GH #1674: the surface's own doc first
+                        rows.surface(surface).and_then(|sf| sf.doc.as_deref()).map_or(String::new(), |d| format!("{d}\n\n"))
                     )),
                 ),
                 ("x-hale-surface", s(surface)),
@@ -1225,15 +1280,22 @@ pub fn json_schema(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> 
     let (digest, members) = surface_members(rows, surface)?;
     let mut book = Book::new(schemas);
     let members: Vec<(String, J)> = members.into_iter().map(|r| (r.member.clone(), member(r, &mut book, REFS))).collect();
-    Ok(o(vec![
+    let mut head = vec![
         ("$schema", s("https://json-schema.org/draft/2020-12/schema")),
         ("$id", s(&format!("urn:hale:surface:{surface}@{}", digest_text(digest)))),
         ("title", s(&format!("{surface} surface"))),
+    ];
+    // GH #1674: the surface's doc
+    if let Some(d) = rows.surface(surface).and_then(|sf| sf.doc.as_deref()) {
+        head.push(("description", s(d)));
+    }
+    head.extend(vec![
         ("x-hale-surface", s(surface)),
         ("x-hale-digest", s(&digest_text(digest))),
         ("x-hale-members", J::Obj(members)),
         ("$defs", book.render(REFS)),
-    ]))
+    ]);
+    Ok(o(head))
 }
 
 /// One identifier of a member in a tool name: itself, unless it holds `__`
@@ -1276,7 +1338,9 @@ pub fn mcp(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<J
             (
                 "description",
                 s(&format!(
-                    "rpc {} of {surface}: returns {returns}{fails}. {}; the server still authorizes every request.",
+                    "{}rpc {} of {surface}: returns {returns}{fails}. {}; the server still authorizes every request.",
+                    // GH #1674: the row's doc first
+                    row.doc.as_deref().map_or(String::new(), |d| format!("{d}\n\n")),
                     row.member,
                     requires_text(row)
                 )),
@@ -1301,7 +1365,9 @@ fn tool_input(schemas: &Schemas<'_>, h: &crate::surfaces::Handler) -> J {
     match &h.request {
         Some(req) => match book.type_ref(&req.te) {
             FieldSchema::Ref(name) => {
-                let mut root = match book.types.get(&name).map(|t| type_schema(t, REFS)) {
+                // GH #1674: the request's parameter's doc over its type's
+                let root = book.types.get(&name).map(|t| described(type_schema(&name, t, REFS, schemas), h.request_doc.as_deref()));
+                let mut root = match root {
                     Some(J::Obj(p)) => p,
                     _ => Vec::new(),
                 };
@@ -1309,7 +1375,7 @@ fn tool_input(schemas: &Schemas<'_>, h: &crate::surfaces::Handler) -> J {
                     .types
                     .iter()
                     .filter(|(k, _)| **k != name)
-                    .map(|(k, t)| (k.clone(), type_schema(t, REFS)))
+                    .map(|(k, t)| (k.clone(), type_schema(k, t, REFS, schemas)))
                     .collect();
                 if !defs.is_empty() {
                     root.push(("$defs".to_string(), J::Obj(defs)));
@@ -1323,7 +1389,7 @@ fn tool_input(schemas: &Schemas<'_>, h: &crate::surfaces::Handler) -> J {
                 let param = h.params.first().map_or("request", |p| p.0.as_str());
                 o(vec![
                     ("type", s("object")),
-                    ("properties", o(vec![(param, field_schema(&other, REFS))])),
+                    ("properties", o(vec![(param, described(field_schema(&other, REFS, schemas), h.request_doc.as_deref()))])),
                     ("required", strs([param])),
                 ])
             }
@@ -1359,7 +1425,15 @@ pub fn leg_tools(
         let returns = h.response.as_ref().map_or("nothing".to_string(), |t| schemas.show(t));
         tools.push(o(vec![
             ("name", s(&format!("{surface}.{method}"))),
-            ("description", s(&format!("rpc {} of {surface}: returns {returns}. {}.", row.member, requires_text(row)))),
+            (
+                "description",
+                s(&format!(
+                    "{}rpc {} of {surface}: returns {returns}. {}.",
+                    row.doc.as_deref().map_or(String::new(), |d| format!("{d}\n\n")),
+                    row.member,
+                    requires_text(row)
+                )),
+            ),
             ("inputSchema", tool_input(schemas, h)),
             ("x-hale-member", s(&row.member)),
             ("x-hale-requires", strs(row.requires.iter().map(|(r, _)| r.as_str()))),
@@ -1400,6 +1474,8 @@ pub struct ClientMember {
     pub response: Option<FieldSchema>,
     pub error: ClientError,
     pub requires: Vec<String>,
+    /// GH #1674: the row's doc comment (or its handler's).
+    pub doc: Option<String>,
 }
 
 /// One stream row of a hub, as a generated client subscribes to it.
@@ -1426,6 +1502,16 @@ pub struct ClientModel {
     /// Every struct a member or stream names, by its document name.
     pub types: BTreeMap<String, TypeSchema>,
     pub streams: Vec<ClientStream>,
+    /// GH #1674: the doc comments of every documented type the members and
+    /// streams name (a struct of `types`, or an enum), by document name.
+    pub docs: BTreeMap<String, crate::surfaces::TypeDocs>,
+}
+
+impl ClientModel {
+    /// The docs of the type a document names `name`.
+    pub fn docs_of(&self, name: &str) -> Option<&crate::surfaces::TypeDocs> {
+        self.docs.get(name)
+    }
 }
 
 pub fn client_model(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<ClientModel, String> {
@@ -1448,6 +1534,7 @@ pub fn client_model(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) ->
             response,
             error,
             requires: row.requires.iter().map(|(r, _)| r.clone()).collect(),
+            doc: row.doc.clone(),
         });
     }
     let mut streams = Vec::new();
@@ -1462,7 +1549,60 @@ pub fn client_model(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) ->
             });
         }
     }
-    Ok(ClientModel { surface: surface.to_string(), digest: digest_text(digest), members: out, types: book.types, streams })
+    // the docs of the records collected and of every enum reached through them
+    let mut docs = BTreeMap::new();
+    let mut note = |name: &str| {
+        if let Some(d) = schemas.docs(name) {
+            docs.insert(name.to_string(), d.clone());
+        }
+    };
+    fn enums<'f>(f: &'f FieldSchema, out: &mut Vec<&'f str>) {
+        match f {
+            FieldSchema::Enum { name, variants, .. } => {
+                out.push(name);
+                for (_, vs) in variants {
+                    for v in vs {
+                        enums(v, out);
+                    }
+                }
+            }
+            FieldSchema::List { items, .. } => enums(items, out),
+            FieldSchema::Nullable { inner, .. } => enums(inner, out),
+            FieldSchema::Map { value, of, .. } => {
+                for (_, f) in &value.properties {
+                    enums(f, out);
+                }
+                if let Some((_, f)) = of {
+                    enums(f, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut reached: Vec<&str> = Vec::new();
+    for (name, t) in &book.types {
+        reached.push(name);
+        for (_, f) in &t.properties {
+            enums(f, &mut reached);
+        }
+    }
+    for m in &out {
+        for f in m.request.iter().chain(&m.response) {
+            enums(f, &mut reached);
+        }
+        if let ClientError::Type(f) = &m.error {
+            enums(f, &mut reached);
+        }
+    }
+    for st in &streams {
+        if let Some(f) = &st.payload {
+            enums(f, &mut reached);
+        }
+    }
+    for name in reached {
+        note(name);
+    }
+    Ok(ClientModel { surface: surface.to_string(), digest: digest_text(digest), members: out, types: book.types, streams, docs })
 }
 
 /// The `.proto` of a surface (R8b): a pure function of its rows, and the file

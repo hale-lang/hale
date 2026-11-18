@@ -7,6 +7,60 @@
 
 use crate::span::Span;
 
+/// GH #1674: the text of the `///` doc comment written before a
+/// declaration (spec/tokens.md § Doc comments, spec/api.md § Documenting
+/// a surface): its lines with the `///` and one space after it removed,
+/// joined by `\n`; `None` when the declaration has none. The parser
+/// attaches it (`docs::attach`); the generated documents carry it.
+///
+/// Prose is not shape. A doc carries no position (`shift` leaves it be),
+/// and its `Debug` form is the same whatever it says, so a fingerprint
+/// built from a declaration's `Debug` text (the duplicate-declaration
+/// rule's, the secret-reveal fingerprint) does not move when a comment is
+/// reworded. Equality compares the text, so an edit to a doc is an edit
+/// to the declaration for the editor's reuse.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Doc(pub Option<String>);
+
+impl std::fmt::Debug for Doc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Doc")
+    }
+}
+
+impl Doc {
+    /// No doc comment.
+    pub const NONE: Doc = Doc(None);
+
+    /// The whole text, when there is one.
+    pub fn text(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+
+    /// The first line: an OpenAPI operation's `summary`.
+    pub fn summary(&self) -> Option<&str> {
+        self.text().map(|t| t.lines().next().unwrap_or(""))
+    }
+
+    /// Everything after the first line, its leading blank lines dropped:
+    /// an OpenAPI operation's `description`. `None` for a one-line doc.
+    pub fn rest(&self) -> Option<&str> {
+        let t = self.text()?;
+        let (_, rest) = t.split_once('\n')?;
+        let rest = rest.trim_start_matches('\n');
+        (!rest.is_empty()).then_some(rest)
+    }
+}
+
+/// GH #1674: a `///` doc comment no declaration reads (spec/tokens.md §
+/// Doc comments): the checker warns at it. `trailing` when it follows code
+/// on its own line, which documents nothing after it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StrayDoc {
+    pub span: Span,
+    pub trailing: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     /// #345: names of user-declared effect classes, indexed by
@@ -34,6 +88,9 @@ pub struct Program {
     pub imports: Vec<Import>,
     pub items: Vec<TopDecl>,
     pub span: Span,
+    /// GH #1674: the `///` doc comments of this seed's files that document
+    /// nothing, which the checker warns at.
+    pub stray_docs: Vec<StrayDoc>,
 }
 
 /// #345, F.40 phase 3: the user effect-class table of one load, the
@@ -340,6 +397,8 @@ pub struct RoleDecl {
     pub name: Ident,
     pub includes: Vec<Ident>,
     pub span: Span,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 /// GH #1417: `api NAME { rpc Locus::fn [requires: [ROLE, …]]; … }` — a
@@ -363,6 +422,8 @@ pub struct ApiDecl {
     /// (spec/api.md § Imported surfaces). `None` for a surface the program
     /// declares itself.
     pub source: Option<ApiSource>,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 /// Where an imported surface came from: the kind of document and its
@@ -419,6 +480,8 @@ pub struct RpcRow {
     pub signature: Option<RpcSignature>,
     /// The route the row is served at over `http::Rest`.
     pub route: Option<RpcRoute>,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 /// GH #1417: `@rpc` or `@rpc(requires: [ROLE, …])` on a locus fn: the
@@ -949,6 +1012,8 @@ pub struct TopicDecl {
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
     pub id: NodeId,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 /// shm-ring-interop Proposal B: a declared byte layout for an
@@ -1087,6 +1152,8 @@ pub struct InterfaceDecl {
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
     pub id: NodeId,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1099,6 +1166,8 @@ pub struct InterfaceMethodSig {
     /// a fallible method does.
     pub fallible: Option<TypeExpr>,
     pub span: Span,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1219,6 +1288,8 @@ pub struct LocusDecl {
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
     pub id: NodeId,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 /// v1.x-FORM-1: `@form(<name>, <args>...)` annotation.
@@ -2145,6 +2216,8 @@ pub struct ParamDecl {
     /// the site here; nothing lowers it. `None` for every other param, and
     /// for an exposure param the expansion has not built.
     pub serve: Option<Box<Expr>>,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2621,6 +2694,8 @@ pub struct TypeDecl {
     /// `String + x`, an f-string). An enum's templates are its variants'
     /// ([`EnumVariant::template`]); the parser refuses one on any other form.
     pub template: Option<DisplayTemplate>,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 /// RFC #2035 (F.54): a declared display template, `@display("${dollars}
@@ -2737,6 +2812,8 @@ pub struct StructField {
     /// `x?: T` (spec/types.md § Optional fields).
     pub optional: FieldOptional,
     pub span: Span,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 /// How a record field takes part in a declared optional field (GH #1951
@@ -2807,6 +2884,8 @@ pub struct EnumVariant {
     /// RFC #2035 (F.54): `@display("…")` before the variant, how a value of
     /// it renders; `{0}`, `{1}` name its payload. A set's member has none.
     pub template: Option<DisplayTemplate>,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 impl TypeDecl {
@@ -2825,6 +2904,8 @@ pub struct ConstDecl {
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
     pub id: NodeId,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 /// GH #265 step 6: a phase-indexed effect contract on a LOCUS —
@@ -3148,6 +3229,8 @@ pub struct FnDecl {
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
     pub id: NodeId,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3177,6 +3260,8 @@ pub struct Param {
     /// mistake (a key or token in a log line).
     pub secret: bool,
     pub span: Span,
+    /// GH #1674: the `///` doc comment before it.
+    pub doc: Doc,
 }
 
 // === Type expressions =====================================

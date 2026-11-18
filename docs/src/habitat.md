@@ -16,6 +16,20 @@ hale habitat graft voice
 hale habitat status
 ```
 
+### More than one habitat on a machine
+
+A laptop can administer several habitats: a home one and a work one, a throwaway habitat to try a branch beside the real one, or a laptop-only habitat beside one on a server. Each lives in a directory of its own under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/`, and one of them is **current**: the one every `hale habitat` and `hale dna` verb acts on.
+
+```sh
+hale habitat up --name work           # born beside the first habitat, and now current
+hale habitat list                     # each habitat: * current, where it runs, whether its head answers
+hale habitat use home                 # make another current
+hale habitat --habitat work status    # one command on another habitat
+HALE_HABITAT=work hale dna show       # the same, for a script
+```
+
+A machine with one habitat needs nothing of this: with no current habitat named, every verb acts on `local`, the directory a machine's first habitat has always had, and a habitat born `--name home` there is still reached as `home`. `up --host <h> --name <name>` keeps the pointer to a habitat on another machine in that name's directory, so a machine can point at several. The habitats share nothing on the machine: each has its own directory, compose project and record.
+
 > [!NOTE]
 > **Implemented Today vs. Architectural Design:** This chapter covers both the production habitat commands shipped today (`hale habitat up`, `graft`, `migrate`, `nursery`, `host`, `handover`, `brief`, `status`, `down`) and the broader multi-record architecture (`runs_under` principal projections, cross-record `extract`/`absorb`, and financial books). See [Implementation Status](#implementation-status) at the end of this page for a complete feature matrix.
 

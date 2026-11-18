@@ -34,6 +34,24 @@
    =================================================================== *)
 
 
+(* Doc comments (GH #1674, spec/tokens.md § Doc comments). A run of
+   `///` lines is no token: the lexer skips it as it skips every
+   comment, so no production below names it. The parser attaches it,
+   by position, to the declaration whose head it stands in (before
+   the declaration's name, after the `;`, `,`, `{` or `}` ending what
+   precedes; annotations, modifiers and keywords between are part of
+   the head). The productions it documents:
+
+     doc_comment     = { ?a `///` line? } ;
+     documented      = type_decl | positional_type | struct_field
+                     | enum_variant | function_decl | parameter
+                     | locus_decl | param_decl | api_decl | rpc_row
+                     | const_decl | interface_decl
+                     | interface_method_sig | topic_decl | role_decl ;
+
+   A doc comment before anything else documents nothing and is a
+   warning, not a parse error. *)
+
 (* === 1. Top level ============================================== *)
 
 program           = { import_decl } , { top_decl } ;

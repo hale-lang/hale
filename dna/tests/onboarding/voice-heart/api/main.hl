@@ -1,19 +1,19 @@
-/// The voice api. Every endpoint in ../spec/openapi.yaml is routed: the
-/// ones with a row in the surface (surface.hl) by their handlers, over the
-/// store (store.hl: Postgres when the api is given a database, the process
-/// otherwise); the rest answer their happy path with a canned body from
-/// `canned/`, named by the endpoint's operationId, until each is made real.
-/// See endpoints.hl. `api migrate` brings a database's schema up to date
-/// and exits.
-///
-/// Attached to an organization (Hale's DNA), the api tells it each
-/// request's usage as an event (events.hl) on the organization's nerves,
-/// from the teller (teller.hl), a pinned locus of its own with a bounded
-/// queue: no answer waits on the nerves. The attach hands the api its
-/// server, user, the vault entry of that user's password and the
-/// organization's token (`HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_USER_APP`,
-/// `HALE_DNA_NATS_VAULT_APP`, `HALE_DNA_NATS_ORG`); without the token
-/// nothing is published and no connection is made.
+// The voice api. Every endpoint in ../spec/openapi.yaml is routed: the
+// ones with a row in the surface (surface.hl) by their handlers, over the
+// store (store.hl: Postgres when the api is given a database, the process
+// otherwise); the rest answer their happy path with a canned body from
+// `canned/`, named by the endpoint's operationId, until each is made real.
+// See endpoints.hl. `api migrate` brings a database's schema up to date
+// and exits.
+//
+// Attached to an organization (Hale's DNA), the api tells it each
+// request's usage as an event (events.hl) on the organization's nerves,
+// from the teller (teller.hl), a pinned locus of its own with a bounded
+// queue: no answer waits on the nerves. The attach hands the api its
+// server, user, the vault entry of that user's password and the
+// organization's token (`HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_USER_APP`,
+// `HALE_DNA_NATS_VAULT_APP`, `HALE_DNA_NATS_ORG`); without the token
+// nothing is published and no connection is made.
 
 import "../lib/logfmt" as logfmt;
 import "../lib/broker" as broker;

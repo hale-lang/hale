@@ -217,10 +217,14 @@ Filter these reflexes before they cost you time.
   ",") { … }` (empty parts kept), `for line in std::str::lines(s)`
   (CRLF stripped, no final empty line), `for w in
   std::str::words(s)` (ASCII-whitespace runs, no empties). One pass,
-  each part a `String`, `break`/`continue` work, pure. They are not
-  values: to keep the parts, `std::str::split_into(s, sep, v)` into a
-  `@form(vec)`. For any other scan, `std::str::bytes_view` once and
-  walk it by index.
+  each part a `String`, `break`/`continue` work, pure. Each also
+  starts an element chain, the same one pass:
+  `std::str::words(s).filter(len(it) > 2).count()`,
+  `std::str::lines(s).find(std::str::starts_with(it, "#")) or ""`.
+  They are not values: to keep the parts,
+  `std::str::split(s, sep).into(v)` or `std::str::split_into(s, sep,
+  v)` into a `@form(vec)`. For any other scan, `std::str::bytes_view`
+  once and walk it by index.
 - **No printf-style format strings.** `println(a, b, c)`
   concatenates its args. F-strings `f"hello {name}"` interpolate.
 - **String operations are `std::str` free functions**, not methods:

@@ -1,21 +1,21 @@
-/// The node's session on NATS (../spec/protocol.yaml), on a thread of its
-/// own.
-///
-/// It takes what registration gave the node from the plane (plane.hl):
-/// where NATS is, its subject, its assignment. Then it holds NATS on its
-/// subject: an `assign` replaces the assignment, a `serve` is answered at
-/// once (accepted or refused) and then served on its seat, the events and
-/// the result on the reply subject the request named, and a `cancel` stops
-/// the request it names. Every time it is on NATS again it asks the plane
-/// to read the assignment, since an `assign` sent while it was not is lost.
-///
-/// It makes no call to the api: those wait on the api, which serves its
-/// callers one at a time, and a session waiting there could not answer a
-/// `serve`. It serves one request at a time; a `serve` that arrives while
-/// it serves is refused at once, so the coordinator offers the request
-/// elsewhere.
-///
-/// What the admin API shows of it is in `<data>/session.json`.
+// The node's session on NATS (../spec/protocol.yaml), on a thread of its
+// own.
+//
+// It takes what registration gave the node from the plane (plane.hl):
+// where NATS is, its subject, its assignment. Then it holds NATS on its
+// subject: an `assign` replaces the assignment, a `serve` is answered at
+// once (accepted or refused) and then served on its seat, the events and
+// the result on the reply subject the request named, and a `cancel` stops
+// the request it names. Every time it is on NATS again it asks the plane
+// to read the assignment, since an `assign` sent while it was not is lost.
+//
+// It makes no call to the api: those wait on the api, which serves its
+// callers one at a time, and a session waiting there could not answer a
+// `serve`. It serves one request at a time; a `serve` that arrives while
+// it serves is refused at once, so the coordinator offers the request
+// elsewhere.
+//
+// What the admin API shows of it is in `<data>/session.json`.
 
 import "../lib/pond/realtime/nats" as nats;
 

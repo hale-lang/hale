@@ -24,7 +24,7 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> Result<Program, Vec<Diag>> {
 /// parse left it, whether or not the parse succeeded.
 pub fn parse_in(
     tokens: Vec<Token>,
-    _source: &str,
+    source: &str,
     classes: &mut EffectClasses,
 ) -> Result<Program, Vec<Diag>> {
     let mut p = Parser::new(tokens);
@@ -37,6 +37,10 @@ pub fn parse_in(
     classes.defs = std::mem::take(&mut p.effect_defs);
     match prog {
         Ok(mut prog) if p.diags.is_empty() => {
+            // GH #1674: each `///` doc comment to the declaration it
+            // precedes, the rest recorded for the checker to warn at
+            let (found, stray) = crate::docs::scan(source, &p.tokens);
+            crate::docs::attach(&mut prog, &p.tokens, found, stray);
             // #353 cluster B: rewrite recognized element chains into
             // ordinary loops here, so typecheck and codegen both see a
             // `while` and neither needs to learn about chains.
@@ -715,6 +719,7 @@ impl Parser {
                 start,
                 end,
             },
+            stray_docs: Vec::new(),
         })
     }
 
@@ -1772,6 +1777,7 @@ impl Parser {
         }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(RoleDecl {
+            doc: crate::ast::Doc::NONE,
             name,
             includes,
             span: kw_tok.span.merge(semi.span),
@@ -1877,10 +1883,10 @@ impl Parser {
                 default_requires.clone().unwrap_or_default()
             };
             let semi = self.expect(TokenKind::Semi, ";")?;
-            rows.push(RpcRow { locus, written, method, requires, span: tok.span.merge(semi.span), signature: None, route });
+            rows.push(RpcRow { doc: crate::ast::Doc::NONE, locus, written, method, requires, span: tok.span.merge(semi.span), signature: None, route });
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
-        Ok(ApiDecl { name, rows, span: kw.span.merge(close.span), origin: None, source })
+        Ok(ApiDecl { doc: crate::ast::Doc::NONE, name, rows, span: kw.span.merge(close.span), origin: None, source })
     }
 
     /// The rest of a signature row after its name: `(Request) [->
@@ -1912,6 +1918,7 @@ impl Parser {
         }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(RpcRow {
+            doc: crate::ast::Doc::NONE,
             locus: Ident::new(String::new(), name.span),
             written: String::new(),
             method: name,
@@ -3090,6 +3097,7 @@ impl Parser {
             )
         })?;
         Ok(TopicDecl {
+            doc: crate::ast::Doc::NONE,
             display: None,
             name,
             parent,
@@ -4037,6 +4045,7 @@ impl Parser {
             let fallible = self.parse_fallible_marker_opt()?;
             self.expect(TokenKind::Semi, ";")?;
             methods.push(InterfaceMethodSig {
+                doc: crate::ast::Doc::NONE,
                 name: mname,
                 params,
                 ret,
@@ -4046,6 +4055,7 @@ impl Parser {
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
         Ok(InterfaceDecl {
+            doc: crate::ast::Doc::NONE,
             name,
             methods,
             span: kw.span.merge(close.span),
@@ -4148,6 +4158,7 @@ impl Parser {
             }
         }
         Ok(LocusDecl {
+            doc: crate::ast::Doc::NONE,
             imported: false,
             display: None,
             phase_effects: None,
@@ -4753,7 +4764,7 @@ impl Parser {
             self.expect(TokenKind::Colon, ":")?;
             let ty = self.parse_type_expr()?;
             let close = self.expect(TokenKind::RParen, ")")?;
-            let param = Param { span: pname.span.merge(close.span), name: pname, ty, default: None, secret: false };
+            let param = Param { doc: crate::ast::Doc::NONE, span: pname.span.merge(close.span), name: pname, ty, default: None, secret: false };
             let ret = if self.eat(&TokenKind::Arrow) { Some(self.parse_type_expr()?) } else { None };
             (Some(name), Some(param), ret)
         } else {
@@ -6072,6 +6083,7 @@ impl Parser {
                 self.bump();
                 let semi = self.expect(TokenKind::Semi, ";")?;
                 return Ok(ParamDecl {
+                    doc: crate::ast::Doc::NONE,
                     span: name.span.merge(semi.span),
                     name,
                     ty: None,
@@ -6108,6 +6120,7 @@ impl Parser {
         };
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(ParamDecl {
+            doc: crate::ast::Doc::NONE,
             span: name.span.merge(semi.span),
             name,
             ty,
@@ -6492,6 +6505,7 @@ impl Parser {
         };
         let span = name.span.merge(ty.span());
         Ok(Param {
+            doc: crate::ast::Doc::NONE,
             name,
             ty,
             default,
@@ -6893,6 +6907,7 @@ impl Parser {
                     }
                 }
                 return Ok(TypeDecl {
+                    doc: crate::ast::Doc::NONE,
                     display: None,
                     name,
                     generics,
@@ -6976,6 +6991,7 @@ impl Parser {
                     }
                     let last = path.segments.last().expect("a path has a segment").clone();
                     variants.push(EnumVariant {
+                        doc: crate::ast::Doc::NONE,
                         name: last,
                         fields: vec![m.clone()],
                         class: None,
@@ -6986,6 +7002,7 @@ impl Parser {
                     });
                 }
                 return Ok(TypeDecl {
+                    doc: crate::ast::Doc::NONE,
                     display: None,
                     name,
                     generics,
@@ -7026,6 +7043,7 @@ impl Parser {
             };
             if is_scalar {
                 return Ok(TypeDecl {
+                    doc: crate::ast::Doc::NONE,
                     display: None,
                     name,
                     generics,
@@ -7043,6 +7061,7 @@ impl Parser {
                 });
             }
             Ok(TypeDecl {
+                doc: crate::ast::Doc::NONE,
                 display: None,
                 name,
                 generics,
@@ -7063,6 +7082,7 @@ impl Parser {
             let fields = synthesize_optional_flags(fields)?;
             let close = self.expect(TokenKind::RBrace, "}")?;
             Ok(TypeDecl {
+                doc: crate::ast::Doc::NONE,
                 display: None,
                 name,
                 generics,
@@ -7253,6 +7273,7 @@ impl Parser {
         }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(StructField {
+            doc: crate::ast::Doc::NONE,
             span: name.span.merge(semi.span),
             name,
             ty,
@@ -7352,7 +7373,7 @@ impl Parser {
                 return Err(d);
             }
         }
-        Ok(EnumVariant { name, fields, class, span, member: false, tag, template })
+        Ok(EnumVariant { doc: crate::ast::Doc::NONE, name, fields, class, span, member: false, tag, template })
     }
 
     fn parse_generic_params_opt(&mut self) -> Result<Vec<GenericParam>, Diag> {
@@ -7414,6 +7435,7 @@ impl Parser {
         };
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(ConstDecl {
+            doc: crate::ast::Doc::NONE,
             span: kw.span.merge(semi.span),
             name,
             ty,
@@ -7514,6 +7536,7 @@ impl Parser {
                 span: semi.span,
             };
             return Ok(FnDecl {
+                doc: crate::ast::Doc::NONE,
                 name,
                 generics,
                 params,
@@ -7546,6 +7569,7 @@ impl Parser {
                 span: semi.span,
             };
             return Ok(FnDecl {
+                doc: crate::ast::Doc::NONE,
                 name,
                 generics,
                 params,
@@ -7574,6 +7598,7 @@ impl Parser {
         let body = self.parse_block()?;
         self.in_fallible_body = prev_fallible;
         Ok(FnDecl {
+            doc: crate::ast::Doc::NONE,
             name,
             generics,
             params,
@@ -10354,6 +10379,7 @@ fn synthesize_optional_flags(fields: Vec<StructField>) -> Result<Vec<StructField
         out.push(f);
         let Some((x, span, clearable)) = declared else { continue };
         let flag = |name: String, optional: FieldOptional| StructField {
+            doc: crate::ast::Doc::NONE,
             name: Ident::new(name, x.span),
             ty: TypeExpr::Primitive(PrimType::Bool, x.span),
             default: Some(Expr::Literal(Literal::Bool(false), x.span)),

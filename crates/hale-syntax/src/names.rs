@@ -101,10 +101,10 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
             for_each_spelled(items, f);
         }
         TopDecl::Interface(i) => {
-            let InterfaceDecl { name: n, methods, span: _, id: _ } = i;
+            let InterfaceDecl { doc: _, name: n, methods, span: _, id: _ } = i;
             name(n, f);
             for sig in methods {
-                let InterfaceMethodSig { name: n, params: ps, ret, fallible, span: _ } = sig;
+                let InterfaceMethodSig { doc: _, name: n, params: ps, ret, fallible, span: _ } = sig;
                 name(n, f);
                 params(ps, f);
                 opt_ty(ret, f);
@@ -113,6 +113,7 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
         }
         TopDecl::Topic(t) => {
             let TopicDecl {
+                doc: _,
                 name: n,
                 display,
                 parent,
@@ -168,7 +169,7 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
             }
         }
         TopDecl::Role(r) => {
-            let RoleDecl { name: n, includes, span: _ } = r;
+            let RoleDecl { doc: _, name: n, includes, span: _ } = r;
             name(n, f);
             names(includes, f);
         }
@@ -189,14 +190,14 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
             }
         }
         TopDecl::Api(a) => {
-            let ApiDecl { name: n, rows, span: _, origin: _, source } = a;
+            let ApiDecl { doc: _, name: n, rows, span: _, origin: _, source } = a;
             name(n, f);
             if let Some(ApiSource { kind, location, span: _ }) = source {
                 name(kind, f);
                 text(location, f);
             }
             for r in rows {
-                let RpcRow { locus, written: _, method, requires, span: _, signature, route: _ } = r;
+                let RpcRow { doc: _, locus, written: _, method, requires, span: _, signature, route: _ } = r;
                 // a signature row's locus is empty: it names no handler
                 if signature.is_none() {
                     name(locus, f);
@@ -352,6 +353,7 @@ fn topic_ref<'a>(t: &'a TopicRef, f: &mut Visit<'_, 'a>) {
 
 fn locus<'a>(l: &'a LocusDecl, f: &mut Visit<'_, 'a>) {
     let LocusDecl {
+        doc: _,
         name: n,
         imported: _,
         display,
@@ -546,7 +548,7 @@ fn pin_affinity<'a>(a: &'a PinAffinity, f: &mut Visit<'_, 'a>) {
 fn params_block<'a>(pb: &'a ParamsBlock, f: &mut Visit<'_, 'a>) {
     let ParamsBlock { params: ps, span: _ } = pb;
     for p in ps {
-        let ParamDecl { name: n, ty: t, init, span: _, id: _, serve: _ } = p;
+        let ParamDecl { doc: _, name: n, ty: t, init, span: _, id: _, serve: _ } = p;
         name(n, f);
         opt_ty(t, f);
         match init {
@@ -590,6 +592,7 @@ fn bus_subject<'a>(s: &'a BusSubject, f: &mut Visit<'_, 'a>) {
 
 fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
     let FnDecl {
+        doc: _,
         name: n,
         generics: gs,
         params: ps,
@@ -642,7 +645,7 @@ fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
 }
 
 fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
-    let TypeDecl { name: n, display, generics: gs, body, span: _, id: _, synthetic: _, positional: _, template: _ } = t;
+    let TypeDecl { doc: _, name: n, display, generics: gs, body, span: _, id: _, synthetic: _, positional: _, template: _ } = t;
     name(n, f);
     opt_text(display, f);
     generics(gs, f);
@@ -650,7 +653,7 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
         TypeDeclBody::Alias(a) => ty(a, f),
         TypeDeclBody::Struct(fields) => {
             for sf in fields {
-                let StructField { name: n, ty: t, default, tag, indexed_by, map_value, optional: _, span: _ } = sf;
+                let StructField { doc: _, name: n, ty: t, default, tag, indexed_by, map_value, optional: _, span: _ } = sf;
                 name(n, f);
                 opt_name(indexed_by, f);
                 opt_name(map_value, f);
@@ -661,7 +664,7 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
         }
         TypeDeclBody::Enum(variants) => {
             for v in variants {
-                let EnumVariant { name: n, fields, class: _, span: _, member: _, tag: _, template: _ } = v;
+                let EnumVariant { doc: _, name: n, fields, class: _, span: _, member: _, tag: _, template: _ } = v;
                 name(n, f);
                 for t in fields {
                     ty(t, f);
@@ -689,7 +692,7 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
 }
 
 fn const_decl<'a>(c: &'a ConstDecl, f: &mut Visit<'_, 'a>) {
-    let ConstDecl { name: n, ty: t, value, span: _, id: _ } = c;
+    let ConstDecl { doc: _, name: n, ty: t, value, span: _, id: _ } = c;
     name(n, f);
     ty(t, f);
     expr(value, f);
@@ -705,7 +708,7 @@ fn generics<'a>(gs: &'a [GenericParam], f: &mut Visit<'_, 'a>) {
 
 fn params<'a>(ps: &'a [Param], f: &mut Visit<'_, 'a>) {
     for p in ps {
-        let Param { name: n, ty: t, default, secret: _, span: _ } = p;
+        let Param { doc: _, name: n, ty: t, default, secret: _, span: _ } = p;
         name(n, f);
         ty(t, f);
         opt_expr(default, f);

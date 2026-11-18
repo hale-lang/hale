@@ -431,6 +431,11 @@ impl<'a> Shapes<'a> {
         }
     }
 
+    /// Every declared type, by its (post-merge) name.
+    pub fn declared(&self) -> impl Iterator<Item = (&'a str, &'a TypeDecl)> + '_ {
+        self.types.iter().map(|(n, t)| (*n, *t))
+    }
+
     /// `te` as a document spells it: [`Shapes::display_name`] of a bare
     /// name, `None` for any other type expression.
     pub fn display_of(&self, te: &TypeExpr) -> Option<String> {

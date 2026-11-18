@@ -511,6 +511,7 @@ pub fn resolve_rewritten(
          and the mint added, removed or reordered a top-level item"
     );
     let mut stdlib = Program {
+        stray_docs: Vec::new(),
         effect_names: Vec::new(),
         declared_effects: Vec::new(),
         effect_defs: Vec::new(),

@@ -485,7 +485,8 @@ record per declaration (`file`/`kind`/`name`/`signature`/`doc`/
 are internal and skipped; a file that doesn't parse is reported
 and skipped with exit 1. Doc text is recovered positionally (the
 lines directly above the declaration, stepping over decorator
-lines), so the lexer and AST are untouched.
+lines). The parser attaches the same `///` comments to declarations
+for the documents a surface generates (spec/tokens.md § Doc comments).
 
 `hale doc --stdlib` renders the `std::` surface instead: the
 rename table supplies public paths, the bundled stdlib source

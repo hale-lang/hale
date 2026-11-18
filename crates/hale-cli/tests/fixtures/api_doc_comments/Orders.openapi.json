@@ -1,0 +1,566 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Orders surface",
+    "version": "fnv1a64:9a75ae7111b187d5",
+    "description": "The order desk's public surface.\n\nThe surface Orders over HTTP (spec/api.md § Outcomes): POST /call/<member>, the body by the JSON codec. requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths; a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back.",
+    "x-hale-surface": "Orders",
+    "x-hale-digest": "fnv1a64:9a75ae7111b187d5"
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "The exposure serving this surface: a deployment fact the document does not carry, so every path is relative to where it listens."
+    }
+  ],
+  "paths": {
+    "/call/Desk::cancel": {
+      "post": {
+        "operationId": "Desk::cancel",
+        "summary": "Cancel an order.",
+        "description": "Requires no role; the server still authorizes every request.",
+        "parameters": [
+          {
+            "name": "Hale-Surface-Digest",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "const": "fnv1a64:9a75ae7111b187d5"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Ticket"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "result: the handler returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ticket"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "refusal: malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refusal: unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "refusal: unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "refusal: digest_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "refusal: full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "refusal: shutting_down, unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-hale-requires": []
+      }
+    },
+    "/call/Desk::count": {
+      "post": {
+        "operationId": "Desk::count",
+        "summary": "rpc Desk::count",
+        "description": "Requires no role; the server still authorizes every request.",
+        "parameters": [
+          {
+            "name": "Hale-Surface-Digest",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "const": "fnv1a64:9a75ae7111b187d5"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Ticket"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "result: the handler returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "refusal: malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refusal: unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "refusal: unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "refusal: digest_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "refusal: full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "refusal: shutting_down, unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-hale-requires": []
+      }
+    },
+    "/call/Desk::place": {
+      "post": {
+        "operationId": "Desk::place",
+        "summary": "Place an order.",
+        "description": "It is filled at the limit or better; a desk that is closed refuses it.\n\nRequires clerk under the exposure's role source; the server still authorizes every request.",
+        "parameters": [
+          {
+            "name": "Hale-Surface-Digest",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "const": "fnv1a64:9a75ae7111b187d5"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The order to place.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaceOrder"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "result: the handler returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "refusal: malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "refusal: unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "refusal: unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "handler error: OrderError (UnknownSymbol, @not_found)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "UnknownSymbol",
+                        "Closed"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "Rejected": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "Rejected"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "x-hale-type": "OrderError",
+                  "x-hale-error-classes": {
+                    "UnknownSymbol": "not_found",
+                    "Closed": "unavailable"
+                  },
+                  "x-hale-variant-descriptions": {
+                    "UnknownSymbol": "No instrument has the symbol.",
+                    "Closed": "The desk is closed for the day."
+                  },
+                  "description": "Why an order was not placed."
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "refusal: digest_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "handler error: OrderError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "UnknownSymbol",
+                        "Closed"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "Rejected": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "Rejected"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "x-hale-type": "OrderError",
+                  "x-hale-error-classes": {
+                    "UnknownSymbol": "not_found",
+                    "Closed": "unavailable"
+                  },
+                  "x-hale-variant-descriptions": {
+                    "UnknownSymbol": "No instrument has the symbol.",
+                    "Closed": "The desk is closed for the day."
+                  },
+                  "description": "Why an order was not placed."
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "refusal: full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hale.Refusal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "refusal: shutting_down, unavailable; or handler error: OrderError (Closed, @unavailable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/hale.Refusal"
+                    },
+                    {
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "UnknownSymbol",
+                            "Closed"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "Rejected": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "Rejected"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ],
+                      "x-hale-type": "OrderError",
+                      "x-hale-error-classes": {
+                        "UnknownSymbol": "not_found",
+                        "Closed": "unavailable"
+                      },
+                      "x-hale-variant-descriptions": {
+                        "UnknownSymbol": "No instrument has the symbol.",
+                        "Closed": "The desk is closed for the day."
+                      },
+                      "description": "Why an order was not placed."
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "x-hale-requires": [
+          "clerk"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "PlaceOrder": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "The instrument's ticker symbol."
+          },
+          "qty": {
+            "type": "integer",
+            "description": "How many units to buy."
+          },
+          "limit": {
+            "type": "integer",
+            "x-hale-type": "Money",
+            "x-hale-unit": "q(cent)",
+            "description": "An amount of money, counted in cents."
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "Desk",
+              "Api"
+            ],
+            "x-hale-type": "Origin",
+            "x-hale-variant-descriptions": {
+              "Desk": "Typed by a person."
+            },
+            "description": "Where the order came from."
+          }
+        },
+        "required": [
+          "symbol",
+          "qty",
+          "limit",
+          "origin"
+        ],
+        "description": "A request to place an order.\n\nThe desk fills it at the limit or better."
+      },
+      "Receipt": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "integer",
+            "description": "The order's number on the desk."
+          },
+          "notional": {
+            "type": "integer",
+            "x-hale-type": "Money",
+            "x-hale-unit": "q(cent)",
+            "description": "An amount of money, counted in cents."
+          }
+        },
+        "required": [
+          "order",
+          "notional"
+        ],
+        "description": "What the desk did with an order."
+      },
+      "Ticket": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order"
+        ]
+      },
+      "hale.Refusal": {
+        "type": "object",
+        "properties": {
+          "refusal": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "served": {
+                "type": "string"
+              },
+              "requires": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "refusal"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}
