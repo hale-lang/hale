@@ -195,7 +195,7 @@ jobs:
           # the test binary links zstd from Homebrew (hale-cli's build.rs
           # adds the dir for the `hale` binary only)
           LIBRARY_PATH: /opt/homebrew/lib
-        run: cargo test --release -p hale-codegen --test bus_topics binding_ingest_468::
+        run: "cargo test --release -p hale-codegen --test bus_topics binding_ingest_468::"
 
       - name: (d) GH 231 — emitted binaries link OpenSSL statically
         run: |
