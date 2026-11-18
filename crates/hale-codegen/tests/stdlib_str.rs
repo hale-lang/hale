@@ -388,6 +388,64 @@ fn words_source_scales_linearly_where_the_hand_loop_does_not() {
     }
 }
 
+/// GH #1995 S2 (review of #2060): `min` and `max` over a text source keep
+/// the best part where it lies. A long first word followed by many short
+/// ones is the shape that would copy the winner out once per later part
+/// (quadratic when the two are the same size); keyed and bare, each runs
+/// at two sizes 4x apart, best of 5, and its growth is held under 10x.
+#[test]
+fn min_max_over_a_text_source_never_recopy_the_best_part() {
+    let src = r#"
+        fn keyed(s: String) -> Int {
+            let w = std::str::words(s).max(len(it)) or "";
+            return len(w);
+        }
+        fn bare(s: String) -> Int {
+            let w = std::str::words(s).max() or "";
+            return len(w);
+        }
+        fn best(s: String, kind: Int, label: String) {
+            let mut best = -1;
+            let mut got = 0;
+            let mut k = 0;
+            while k < 5 {
+                let t0 = std::time::monotonic_ns();
+                let c = if kind == 0 { keyed(s) } else { bare(s) };
+                let ns = std::time::monotonic_ns() - t0;
+                got = c;
+                if best < 0 || ns < best { best = ns; }
+                k = k + 1;
+            }
+            println(label, " len=", got, " ns=", best);
+        }
+        fn main() {
+            let small = std::str::repeat("x", 131072) + " " + std::str::repeat("a ", 131072);
+            let large = std::str::repeat("x", 524288) + " " + std::str::repeat("a ", 524288);
+            best(small, 0, "keyed1");
+            best(large, 0, "keyed4");
+            best(small, 1, "bare1");
+            best(large, 1, "bare4");
+        }
+    "#;
+    let (stdout, status) = build_and_run("text_min_max_scaling", src);
+    assert!(status.success(), "build/run failed: {:?}", stdout);
+    let read = |label: &str, key: &str| -> i64 {
+        let line = stdout.lines().find(|l| l.starts_with(label)).unwrap_or_else(|| panic!("no {label} line in:\n{stdout}"));
+        line.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no {key} in {line:?}"))
+    };
+    assert_eq!(read("keyed1", "len="), 131072, "max(len(it)) picks the long word");
+    assert_eq!(read("keyed4", "len="), 524288, "max(len(it)) picks the long word");
+    assert_eq!(read("bare1", "len="), 131072, "max() picks the long word");
+    assert_eq!(read("bare4", "len="), 524288, "max() picks the long word");
+    for label in ["keyed", "bare"] {
+        let (one, four) = (read(&format!("{label}1"), "ns="), read(&format!("{label}4"), "ns="));
+        let growth = four.max(1) as f64 / one.max(100_000) as f64;
+        println!("{label}: {one} ns, 4x the text {four} ns ({growth:.1}x)");
+        assert!(growth < 10.0, "`{label}` max over 4x the text took {growth:.1}x ({one} -> {four} ns): the best part is copied again per part");
+    }
+}
+
 /// GH #1947: `len` and slicing on a String local or parameter measure its
 /// text once per value it holds, so the byte loop `while i < len(s) {
 /// s[i..(i + 1)] … }` and the build loop `while len(out) < n { out += …

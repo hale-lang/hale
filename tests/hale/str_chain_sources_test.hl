@@ -189,6 +189,61 @@ fn main() {
         "x"
     };
     std::test::assert_eq_str(missed + none, "missedx", "an or block runs on the empty selection");
+    // a key is compared with the kept key of the best part; the stages
+    // before it hold across the whole scan, and a tie keeps the first
+    let ws = "a bbbb cc ddddd e";
+    std::test::assert_eq_str(
+        std::str::words(ws).skip(1).take(3).max(len(it)) or "-",
+        "ddddd",
+        "skip and take before max(key)",
+    );
+    std::test::assert_eq_str(
+        std::str::words(ws).filter(len(it) < 5).max(len(it)) or "-",
+        "bbbb",
+        "filter before max(key)",
+    );
+    std::test::assert_eq_str(
+        std::str::words(ws).take(1).max(len(it)) or "-",
+        "a",
+        "max(key) of one part",
+    );
+    std::test::assert_eq_str(
+        std::str::words(ws).take(0).max(len(it)) or "-",
+        "-",
+        "max(key) of no parts",
+    );
+    std::test::assert_eq_str(
+        std::str::words("bb aa cc").min(len(it)) or "-",
+        "bb",
+        "a tie keeps the first",
+    );
+    std::test::assert_eq_str(
+        std::str::words(ws).enumerate().filter(idx % 2 == 1).min(len(it)) or "-",
+        "bbbb",
+        "enumerate before min(key)",
+    );
+    // with no key, parts compare as `<` compares Strings, bytes included
+    let u = "zeta été alpha";
+    let mut best = "";
+    let mut least = "";
+    let mut seen = false;
+    for w in std::str::words(u) {
+        if !seen || w > best { best = w; }
+        if !seen || w < least { least = w; }
+        seen = true;
+    }
+    std::test::assert_eq_str(std::str::words(u).max() or "-", best, "max() is the loop's `>`");
+    std::test::assert_eq_str(std::str::words(u).min() or "-", least, "min() is the loop's `<`");
+    std::test::assert_eq_str(
+        std::str::split("ab,a,abc,ab", ",").min() or "-",
+        "a",
+        "a prefix is less",
+    );
+    std::test::assert_eq_str(
+        std::str::split("ab,a,abc,ab", ",").max() or "-",
+        "abc",
+        "a longer text past a prefix is greater",
+    );
     // the part picked survives the scan: it is the chain's value
     let kept = std::str::split("keep,me", ",").find(it == "me") or "-";
     std::test::assert_eq_str(std::str::upper(kept), "ME", "the picked part outlives the scan");

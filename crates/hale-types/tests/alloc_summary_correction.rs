@@ -326,11 +326,11 @@ const CALL_LINES_ONLY: [(&str, usize); 36] = [
     ("tests/hale/rand_rng_test.hl", 12),
     ("tests/hale/secret_write_private_test.hl", 10),
     ("tests/hale/std_secret_test.hl", 8),
-    // GH #1995 S2, chain sources: each of its 11 element-valued terminals
+    // GH #1995 S2, chain sources: each of its 21 element-valued terminals
     // over a text source (`first`, `find`, `min`, `max`) reads the part it
     // picked through a one-element array's `get`, the array's `at`, which
     // only the check's typing names (as GH #1984's cursors above)
-    ("tests/hale/str_chain_sources_test.hl", 11),
+    ("tests/hale/str_chain_sources_test.hl", 21),
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.

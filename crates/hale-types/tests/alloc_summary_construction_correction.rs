@@ -340,11 +340,13 @@ fn own_scope_let_block_scope_test() {
             // `std::time::parse_rfc3339` and its digit helper); 525 since
             // `str_helpers.hl` came (GH #1995: std::str's nine splits and
             // trims and their whitespace helper); 533 since the text `for`
-            // sources' eight cursor hooks came (GH #1995 S2)
+            // sources' eight cursor hooks came (GH #1995 S2); 534 since a
+            // chain over a text source compares a part with the best one in
+            // place (`__str_view_cmp`, GH #1995 S2, chain sources)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 533 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 533 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 534 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 534 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -1109,8 +1111,8 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @4405..4442 InUnboundedLoop",
             "tests/hale/str_chain_sources_test.hl: main StringConcat @4668..4687 InUnboundedLoop",
             "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @4605..4696 InUnboundedLoop",
-            "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @7022..7079 InUnboundedLoop",
-            "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @7194..7239 InUnboundedLoop",
+            "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @8923..8980 InUnboundedLoop",
+            "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @9095..9140 InUnboundedLoop",
             "tests/hale/str_chain_sources_test.hl: words_by_loop CollectionInsert(\"vec\") @977..986 InUnboundedLoop",
             // `tests/hale/str_split_sources_test.hl`: the vec pushes that keep
             // each part a text source's loop visits (GH #1995 S2)

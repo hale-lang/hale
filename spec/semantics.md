@@ -673,8 +673,8 @@ can be hiding behind it. `first`, `find`, `min` and `max` answer the part
 they picked, and an empty selection fails with the `IndexError` an empty
 vec's does, so `or` supplies the fallback. A chain over a source keeps
 no list of the parts: like the loop, it makes one `String` per part, for
-that iteration, and `min` and `max` keep the best part's offsets, not
-the part.
+that iteration, and `min` and `max` keep the best part's offsets (and
+its key), not the part.
 
 A source used as anything other than a loop's iterand or a chain's
 source is refused at the check, with the ways to keep the parts:
@@ -4946,7 +4946,13 @@ before the stages run. An element-valued terminal (`first`, `find`,
 `min`, `max`) cannot re-fetch its pick through `get`, so it keeps the
 picked part's offsets in the scan's view, two `Int`s, and its value is
 that part read through a one-element array's own `get`: index 0 when a
-part was picked, -1 when none was, the ordinary `IndexError`. No other
+part was picked, -1 when none was, the ordinary `IndexError`. The best
+part is never copied out again to be compared: `min()` and `max()`
+compare each later part with it where it lies in the view, byte by byte
+as `<` compares Strings, and `min(key)` and `max(key)` keep the best
+part's key. A key's type is known only from the first part picked, so
+the scan that finds it goes on inside its body, from the same cursor,
+with the key bound, and leaves when that inner scan ends. No other
 source is a cursor; a form keeps answering `get`. Unlike every other
 source, a text source's chain allocates, one `String` per part (the
 part itself), so property 1 above holds for it only in the sense that

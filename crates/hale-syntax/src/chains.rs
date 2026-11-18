@@ -115,8 +115,14 @@
 //! stages run, and an element-valued terminal keeps its pick's offsets
 //! in the scan's view; the chain's value is that part, through a
 //! one-element array's own `get` (index 0, or -1 for none: the ordinary
-//! IndexError). The source is recognized by its call, so every terminal
-//! is recognized on it, a stage or none.
+//! IndexError). `min()` / `max()` compare each part with the best where
+//! it lies (`__str_view_cmp`), and `min(key)` / `max(key)` keep the
+//! best's key, whose type only the first pick gives: the scan that finds
+//! it goes on inside its body (`str_sources::scan_loop` again, from the
+//! same cursor) with the key bound. The source is recognized by its call
+//! at its own arity, so every terminal is recognized on it, a stage or
+//! none; a call of another arity keeps the indexed loop, whose `get` on
+//! it is the checker's arity refusal.
 
 use crate::ast::*;
 use crate::span::Span;
@@ -961,8 +967,10 @@ fn build_loop(
     // cursor moves to the next part before the body runs, so
     // `continue` and `break` keep their meaning, and each part is the
     // element, bound once per iteration (GH #1995 S2).
+    // (only at the source's own arity: any other call keeps the indexed
+    // loop, whose `get` on the call is the checker's refusal to report)
     if let Expr::Call { callee, args, span: call_span, .. } = src {
-        if let Some((source, _)) = crate::str_sources::source_of(callee) {
+        if let Some((source, _)) = crate::str_sources::source_of(callee).filter(|(_, arity)| args.len() == *arity) {
             return crate::str_sources::scan(
                 source,
                 args.clone(),
@@ -1299,44 +1307,80 @@ fn lower_text_indexed(
         assign(&best_lo, var(&lo, sp), sp),
         assign(&best_hi, var(&hi, sp), sp),
     ];
-    let action: Vec<Stmt> = match c.terminal.as_str() {
-        "first" | "find" => {
+    let is_min = c.terminal == "min";
+    let order = if is_min { BinOp::Lt } else { BinOp::Gt };
+    let (head, inner_loop): (Vec<Stmt>, Option<Stmt>) = match (c.terminal.as_str(), c.term_args.first().cloned()) {
+        ("first" | "find", _) => {
             let mut a = keep;
+            a.push(Stmt::Break(sp));
+            (a, None)
+        }
+        // min/max with no key compare the parts themselves: the best one
+        // is compared where it lies in the view (`__str_view_cmp`, best
+        // against the candidate), never copied out again
+        (_, None) => {
+            let cmp = Expr::Call {
+                id: NodeId::NONE,
+                callee: Box::new(var("__str_view_cmp", sp)),
+                args: vec![var(&view, sp), var(&best_lo, sp), var(&best_hi, sp), var(&elem0, sp)],
+                span: sp,
+            };
+            let better = bin(if is_min { BinOp::Gt } else { BinOp::Lt }, cmp, int(0, sp), sp);
+            (
+                vec![
+                    if_then(bin(BinOp::Lt, var(idx, sp), int(0, sp), sp), keep.clone(), sp),
+                    if_then(better, keep, sp),
+                ],
+                None,
+            )
+        }
+        // min/max by a key: the best part's key is kept once it is
+        // known. Its type is the key's, which only the first part picked
+        // can give it before any type is known, so the scan that finds
+        // that part goes on inside its body (a second `while` from the
+        // same cursor), comparing each later part's key with the kept
+        // one, and then leaves: no part is copied out to be compared
+        (_, Some(k)) => {
+            let best_key = format!("__hale_chain_key{}", uid);
+            let cand_key = format!("__hale_chain_kc{}", uid);
+            let key_of = |e: &str| {
+                let mut ke = k.clone();
+                subst_expr(&mut ke, "it", e);
+                ke
+            };
+            let later = vec![
+                let_val(&cand_key, key_of(&elem0), sp),
+                if_then(
+                    bin(order, var(&cand_key, sp), var(&best_key, sp), sp),
+                    vec![
+                        assign(&best_key, var(&cand_key, sp), sp),
+                        assign(&best_lo, var(&lo, sp), sp),
+                        assign(&best_hi, var(&hi, sp), sp),
+                    ],
+                    sp,
+                ),
+            ];
+            let (_, later_body) = apply_stages(&c.stages, &elem0, uid, later, sp);
+            let mut a = keep;
+            a.push(let_mut(&best_key, key_of(&elem0), sp));
+            (a, Some(Stmt::Block(Block { stmts: later_body, tail: None, span: sp })))
+        }
+    };
+    let source = c.text.unwrap_or("words");
+    let (call_args, call_span) = match &c.src {
+        Expr::Call { args, span, .. } => (args.clone(), *span),
+        other => (Vec::new(), other.span()),
+    };
+    let action: Vec<Stmt> = match inner_loop {
+        None => head,
+        Some(Stmt::Block(later)) => {
+            let mut a = head;
+            a.push(crate::str_sources::scan_loop(source, call_span, &text_tag(uid), id(&elem0, sp), later, sp));
             a.push(Stmt::Break(sp));
             a
         }
-        // min/max: keep the best part's offsets; its key is re-derived
-        // from the part those offsets cut, as a vec's is from `get`.
-        _ => {
-            let is_min = c.terminal == "min";
-            let key_of = |e: Expr| -> Expr {
-                match c.term_args.first() {
-                    Some(k) => {
-                        let kname = format!("__hale_k{}", uid);
-                        let mut ke = k.clone();
-                        subst_expr(&mut ke, "it", &kname);
-                        Expr::Block(Block {
-                            stmts: vec![let_val(&kname, e, sp)],
-                            tail: Some(Box::new(ke)),
-                            span: sp,
-                        })
-                    }
-                    None => e,
-                }
-            };
-            let cmp = bin(
-                if is_min { BinOp::Lt } else { BinOp::Gt },
-                key_of(var(&elem0, sp)),
-                key_of(slice(&best_lo, &best_hi)),
-                sp,
-            );
-            vec![
-                if_then(bin(BinOp::Lt, var(idx, sp), int(0, sp), sp), keep.clone(), sp),
-                if_then(cmp, keep, sp),
-            ]
-        }
+        Some(_) => unreachable!("the later scan's body is a block"),
     };
-
     let (stage_inits, body) =
         apply_stages(&c.stages, &elem0, uid, action, sp);
     let mut stmts = vec![
@@ -1345,7 +1389,15 @@ fn lower_text_indexed(
         let_mut(&best_hi, int(0, sp), sp),
     ];
     stmts.extend(stage_inits);
-    stmts.extend(build_loop(&c.src, uid, body, c.accessor, c.anchor, sp));
+    stmts.extend(crate::str_sources::scan_head(source, call_args, call_span, &text_tag(uid)));
+    stmts.push(crate::str_sources::scan_loop(
+        source,
+        call_span,
+        &text_tag(uid),
+        id(&elem0, sp),
+        Block { stmts: body, tail: None, span: sp },
+        sp,
+    ));
     stmts.push(let_val(&pick, Expr::Array(vec![slice(&best_lo, &best_hi)], sp), sp));
     let get_tail = method(var(&pick, sp), "get", vec![var(idx, sp)], sp);
     let tail = match disposition {

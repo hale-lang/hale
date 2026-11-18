@@ -215,43 +215,60 @@ pub fn scan_names(tag: &str) -> (String, String, String) {
 }
 
 /// The statements of one scan over a source (the module's table): the
-/// arguments' and the view's `let`s, then the `while` whose iteration
-/// binds `name` to the part and runs `user_body`, a block of its own.
-/// `tag` names the scan's bindings: a loop's number, or `c` and a
-/// chain's (`crate::chains`, which splices the statements into its own
-/// block and reads [`scan_names`] after them). `sp` is the source call's
-/// span, `for_span` the loop's.
-pub fn scan(source: &str, mut args: Vec<Expr>, sp: Span, tag: &str, name: Ident, user_body: Block, for_span: Span) -> Vec<Stmt> {
-    let (v, lo, hi) = scan_names(tag);
+/// arguments' and the view's `let`s ([`scan_head`]), then the `while`
+/// whose iteration binds `name` to the part and runs `user_body`, a block
+/// of its own ([`scan_loop`]). `tag` names the scan's bindings: a loop's
+/// number, or `c` and a chain's (`crate::chains`, which splices the
+/// statements into its own block and reads [`scan_names`] after them).
+/// `sp` is the source call's span, `for_span` the loop's.
+pub fn scan(source: &str, args: Vec<Expr>, sp: Span, tag: &str, name: Ident, user_body: Block, for_span: Span) -> Vec<Stmt> {
+    let mut out = scan_head(source, args, sp, tag);
+    out.push(scan_loop(source, sp, tag, name, user_body, for_span));
+    out
+}
+
+/// A scan's `let`s: the arguments, evaluated once, the view of the text
+/// and the cursor at the first part.
+pub fn scan_head(source: &str, mut args: Vec<Expr>, sp: Span, tag: &str) -> Vec<Stmt> {
+    let (v, _, _) = scan_names(tag);
     let at = format!("__hale_str_at{tag}");
     let text = argument_binding(source, "s", tag);
     let sep = argument_binding(source, "sep", tag);
     let mut outer = vec![let_(&text, false, args.remove(0), sp)];
-    let with_sep = source == "split";
-    if with_sep {
+    if source == "split" {
         outer.push(let_(&sep, false, args.remove(0), sp));
     }
     outer.push(let_(&v, false, call(&["std", "str", "bytes_view"], vec![ident(&text, sp)], sp), sp));
-    // The hook arguments before the offset: the view, and split's separator.
-    let lead = |with_sep: bool| {
+    let first = match source {
+        "split" => call(&["__str_split_first"], vec![ident(&v, sp), ident(&sep, sp)], sp),
+        "lines" => Expr::Literal(Literal::Int(0), sp),
+        _ => call(&["__str_word_start"], vec![ident(&v, sp), Expr::Literal(Literal::Int(0), sp)], sp),
+    };
+    outer.push(let_(&at, true, first, sp));
+    outer
+}
+
+/// A scan's `while`, from wherever its cursor is: each iteration takes
+/// the part at the cursor, moves the cursor past it, binds `name` to the
+/// part and runs `user_body`. A chain whose terminal keeps a key of the
+/// best part so far runs a second one inside the first's body, to go on
+/// from the part it first picked (`crate::chains`).
+pub fn scan_loop(source: &str, sp: Span, tag: &str, name: Ident, user_body: Block, for_span: Span) -> Stmt {
+    let (v, lo, hi) = scan_names(tag);
+    let at = format!("__hale_str_at{tag}");
+    let sep = argument_binding(source, "sep", tag);
+    let with_sep = source == "split";
+    let (end, next, inclusive) = match source {
+        "split" => ("__str_split_end", "__str_split_next", true),
+        "lines" => ("__str_line_end", "__str_line_next", false),
+        _ => ("__str_word_end", "__str_word_start", false),
+    };
+    // The hook arguments: the view, split's separator, and the offset.
+    let with = |e: &str| {
         let mut a = vec![ident(&v, sp)];
         if with_sep {
             a.push(ident(&sep, sp));
         }
-        a
-    };
-    let (first, end, next, inclusive) = match source {
-        "split" => (call(&["__str_split_first"], lead(true), sp), "__str_split_end", "__str_split_next", true),
-        "lines" => (Expr::Literal(Literal::Int(0), sp), "__str_line_end", "__str_line_next", false),
-        _ => {
-            let mut a = lead(false);
-            a.push(Expr::Literal(Literal::Int(0), sp));
-            (call(&["__str_word_start"], a, sp), "__str_word_end", "__str_word_start", false)
-        }
-    };
-    outer.push(let_(&at, true, first, sp));
-    let with = |e: &str| {
-        let mut a = lead(with_sep);
         a.push(ident(e, sp));
         a
     };
@@ -283,6 +300,5 @@ pub fn scan(source: &str, mut args: Vec<Expr>, sp: Span, tag: &str, name: Ident,
         },
         Stmt::Block(user_body),
     ];
-    outer.push(Stmt::While { cond, body: Block { stmts: step, tail: None, span: body_span }, span: for_span });
-    outer
+    Stmt::While { cond, body: Block { stmts: step, tail: None, span: body_span }, span: for_span }
 }

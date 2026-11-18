@@ -3751,6 +3751,19 @@ fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
                 "std::str::words(\"a\", \"b\")",
                 "`std::str::words(s)` takes 1 argument, got 2",
             ),
+            (
+                // a chain over a source of the wrong arity is refused as
+                // the loop is, its extra argument never dropped (review of
+                // #2060: the scan took the source by name alone)
+                "fn more() -> String { return \"x\"; }\nfn main() { println(std::str::words(\"a b\", more()).filter(len(it) > 0).count()); }\n",
+                "std::str::words(\"a b\", more())",
+                "`std::str::words(s)` takes 1 argument, got 2",
+            ),
+            (
+                "fn main() { println(std::str::split(\"a,b\").filter(len(it) > 0).count()); }\n",
+                "std::str::split(\"a,b\")",
+                "`std::str::split(s, sep)` takes 2 arguments, got 1",
+            ),
         ],
         "codegen_gap",
     );
