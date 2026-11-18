@@ -3745,7 +3745,7 @@ row	~.bag	Bag_In	main	inherited
 row	~	Tally	main	default
 row	~.bag	Bag_Int	main	inherited
 
-== crates/hale-codegen/tests/generic_monomorph_agreement.rs#53f91391
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#35a0fcf8
 row	Keeper@main1	Keeper	main	default
 
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#00b09b2e
