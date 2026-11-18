@@ -21,9 +21,15 @@ const PREAMBLE: &str = include_str!("js_preamble.js");
 /// only by a client whose surface names a map.
 const MAP_HELPERS: &str = include_str!("js_map.js");
 
-fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
+fn struct_decl(name: &str, t: &TypeSchema, docs: Option<&hale_types::surfaces::TypeDocs>) -> Result<String, String> {
     let ident = type_ident(name);
-    let mut out = String::from("/**\n * @typedef {{\n");
+    let mut out = String::from("/**\n");
+    // GH #1674: the record's doc and its fields', before the typedef
+    let doc = super::type_doc_lines(docs, true);
+    for l in &doc {
+        out.push_str(&super::jsdoc_line("", l));
+    }
+    out.push_str(" * @typedef {{\n");
     // an optional field is an optional property; its flag is the property's presence
     for (key, f) in t.properties.iter().filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. })) {
         let q = if matches!(f, FieldSchema::Nullable { .. }) { "?" } else { "" };
@@ -79,12 +85,18 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
     };
     Ok(format!(
         "/** @typedef {{__Outcome<{value}, {error}>}} {outcome} */\n\n\
-         /**\n * {name}{requires}\n * @param {{ClientOptions}} opts\n{param_doc} * @returns {{globalThis.Promise<{outcome}>}}\n */\n\
+         /**\n{doc} * {name}{requires}\n * @param {{ClientOptions}} opts\n{param_doc} * @returns {{globalThis.Promise<{outcome}>}}\n */\n\
          export function {fn_name}(opts{param}) {{\n  \
          return __apiCall(opts, {member}, {digest}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
         name = m.name,
         member = json_quote(&m.name),
         digest = json_quote(&m.digest),
+        // GH #1674: the row's doc, then what the member is
+        doc = super::doc_lines(m.doc.as_deref())
+            .iter()
+            .map(|l| super::jsdoc_line("", l))
+            .chain(m.doc.as_ref().map(|_| " *\n".to_string()))
+            .collect::<String>(),
     ))
 }
 
@@ -154,13 +166,13 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
         claim(type_ident(name))?;
         claim(format!("encode_{}", type_ident(name)))?;
         claim(format!("decode_{}", type_ident(name)))?;
-        out.push_str(&enum_decl(name, variants, true)?);
+        out.push_str(&enum_decl(name, variants, true, model.docs_of(name))?);
     }
     for (name, t) in &model.types {
         claim(type_ident(name))?;
         claim(format!("encode_{}", type_ident(name)))?;
         claim(format!("decode_{}", type_ident(name)))?;
-        out.push_str(&struct_decl(name, t)?);
+        out.push_str(&struct_decl(name, t, model.docs_of(name))?);
     }
     for m in &model.members {
         claim(lower_camel(&m.name))?;

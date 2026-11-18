@@ -1,0 +1,87 @@
+{
+  "x-hale-surface": "Orders",
+  "x-hale-digest": "fnv1a64:9a75ae7111b187d5",
+  "tools": [
+    {
+      "name": "Desk__cancel",
+      "description": "Cancel an order.\n\nrpc Desk::cancel of Orders: returns Ticket. Requires no role; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order"
+        ]
+      },
+      "x-hale-requires": []
+    },
+    {
+      "name": "Desk__count",
+      "description": "rpc Desk::count of Orders: returns Int. Requires no role; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order"
+        ]
+      },
+      "x-hale-requires": []
+    },
+    {
+      "name": "Desk__place",
+      "description": "Place an order.\nIt is filled at the limit or better; a desk that is closed refuses it.\n\nrpc Desk::place of Orders: returns Receipt; its failure is the handler error OrderError. Requires clerk under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "The instrument's ticker symbol."
+          },
+          "qty": {
+            "type": "integer",
+            "description": "How many units to buy."
+          },
+          "limit": {
+            "type": "integer",
+            "x-hale-type": "Money",
+            "x-hale-unit": "q(cent)",
+            "description": "An amount of money, counted in cents."
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "Desk",
+              "Api"
+            ],
+            "x-hale-type": "Origin",
+            "x-hale-variant-descriptions": {
+              "Desk": "Typed by a person."
+            },
+            "description": "Where the order came from."
+          }
+        },
+        "required": [
+          "symbol",
+          "qty",
+          "limit",
+          "origin"
+        ],
+        "description": "The order to place."
+      },
+      "x-hale-requires": [
+        "clerk"
+      ]
+    }
+  ],
+  "notes": {
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back"
+  }
+}

@@ -10031,6 +10031,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 let sp = self.program.span.clone();
                 FnDecl {
+                    doc: hale_syntax::ast::Doc::NONE,
                     name: Ident::new("main", sp.clone()),
                     generics: Vec::new(),
                     params: Vec::new(),
@@ -13653,11 +13654,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             span,
         };
         let result_decl = TypeDecl {
+            doc: hale_syntax::ast::Doc::NONE,
             display: None,
             name: mk_ident("Result"),
             generics: vec![mk_param("T"), mk_param("E")],
             body: TypeDeclBody::Enum(vec![
                 EnumVariant {
+                    doc: hale_syntax::ast::Doc::NONE,
                     name: mk_ident("Ok"),
                     fields: vec![mk_t("T")],
                     class: None,
@@ -13666,6 +13669,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     tag: None,
                 },
                 EnumVariant {
+                    doc: hale_syntax::ast::Doc::NONE,
                     name: mk_ident("Err"),
                     fields: vec![mk_t("E")],
                     class: None,
@@ -13680,11 +13684,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             positional: false,
         };
         let option_decl = TypeDecl {
+            doc: hale_syntax::ast::Doc::NONE,
             display: None,
             name: mk_ident("Option"),
             generics: vec![mk_param("T")],
             body: TypeDeclBody::Enum(vec![
                 EnumVariant {
+                    doc: hale_syntax::ast::Doc::NONE,
                     name: mk_ident("Some"),
                     fields: vec![mk_t("T")],
                     class: None,
@@ -13693,6 +13699,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     tag: None,
                 },
                 EnumVariant {
+                    doc: hale_syntax::ast::Doc::NONE,
                     name: mk_ident("None"),
                     fields: Vec::new(),
                     class: None,
@@ -13915,6 +13922,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map(|m| Self::substitute_locus_member(m, &subst))
             .collect();
         Ok(LocusDecl {
+            doc: hale_syntax::ast::Doc::NONE,
             imported: template.imported,
             display: template.display.clone(),
             phase_effects: None,
@@ -13950,6 +13958,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .params
                     .iter()
                     .map(|p| ParamDecl {
+                        doc: hale_syntax::ast::Doc::NONE,
                         name: p.name.clone(),
                         ty: p.ty.as_ref().map(|t| {
                             Self::substitute_type_expr(t, subst)
@@ -14010,6 +14019,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .params
                         .iter()
                         .map(|p| Param {
+                            doc: hale_syntax::ast::Doc::NONE,
                             name: p.name.clone(),
                             ty: Self::substitute_type_expr(&p.ty, subst),
                             default: p.default.clone(),
@@ -14032,12 +14042,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 },
             ),
             LocusMember::Fn(fd) => LocusMember::Fn(FnDecl {
+                doc: hale_syntax::ast::Doc::NONE,
                 name: fd.name.clone(),
                 generics: fd.generics.clone(),
                 params: fd
                     .params
                     .iter()
                     .map(|p| Param {
+                        doc: hale_syntax::ast::Doc::NONE,
                         name: p.name.clone(),
                         ty: Self::substitute_type_expr(&p.ty, subst),
                         default: p.default.clone(),
@@ -14073,6 +14085,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 id: fd.id,
             }),
             LocusMember::Const(c) => LocusMember::Const(ConstDecl {
+                doc: hale_syntax::ast::Doc::NONE,
                 name: c.name.clone(),
                 ty: Self::substitute_type_expr(&c.ty, subst),
                 value: c.value.clone(),
@@ -14268,6 +14281,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .params
             .iter()
             .map(|p| Param {
+                doc: hale_syntax::ast::Doc::NONE,
                 name: p.name.clone(),
                 ty: Self::substitute_type_expr(&p.ty, &subst),
                 default: p.default.clone(),
@@ -14288,6 +14302,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .as_ref()
             .map(|t| Self::substitute_type_expr(t, &subst));
         Ok(FnDecl {
+            doc: hale_syntax::ast::Doc::NONE,
             name: Ident::new(mangled_name, template.name.span.clone()),
             generics: Vec::new(),
             params: new_params,
@@ -14870,6 +14885,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let new_fields: Vec<StructField> = fields
                     .iter()
                     .map(|f| StructField {
+                        doc: hale_syntax::ast::Doc::NONE,
                         name: f.name.clone(),
                         ty: Self::substitute_type_expr(&f.ty, &subst),
                         default: f.default.clone(),
@@ -14907,6 +14923,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let new_variants: Vec<EnumVariant> = variants
                     .iter()
                     .map(|v| EnumVariant {
+                        doc: hale_syntax::ast::Doc::NONE,
                         name: v.name.clone(),
                         fields: v
                             .fields
@@ -14926,6 +14943,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
 
         Ok(TypeDecl {
+            doc: hale_syntax::ast::Doc::NONE,
             display: None,
             name: Ident::new(mangled, template.name.span.clone()),
             generics: Vec::new(),

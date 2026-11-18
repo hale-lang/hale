@@ -32,6 +32,13 @@ use std::path::{Path, PathBuf};
 /// `(crate-relative path, enclosing fn, why)`.
 const ALIGNED: &[(&str, &str, &str)] = &[
     (
+        "crates/hale-syntax/src/docs.rs",
+        "hale_fmt_keeps_every_doc_comment",
+        "the formatter's input is misaligned on purpose (`type   T`, a deep \
+         field indent, a doc line's own indent) and its expected output is \
+         the canonical indentation: no message, source text",
+    ),
+    (
         "crates/hale-cli/src/dna.rs",
         "push_graph_lines",
         "`hale habitat graft` prints its report as label-aligned lines (`graph   …`, \

@@ -46,6 +46,13 @@
 //! over a source is legal wherever its body is (`@deterministic
 //! @no_syscall` included).
 //!
+//! A chain over a source (`std::str::words(s).filter(len(it) > 2).count()`,
+//! GH #1995 S2) is the same scan: `crate::chains`, which runs at parse,
+//! before this pass, splices [`scan`]'s statements into the chain's
+//! block with its stages and terminal as the body, tagged `c` and the
+//! chain's number, and reads [`scan_names`] for the part an
+//! element-valued terminal keeps.
+//!
 //! Only a call of the source's own arity is rewritten. Anything else
 //! named `std::str::split` / `lines` / `words` (a call as a value, or a
 //! loop over a call with the wrong arguments) is left as written, and the
@@ -90,18 +97,18 @@ pub fn refusal(name: &str, arity: usize, got: usize) -> String {
         );
     }
     format!(
-        "`std::str::{name}` is a `for` source, not a value: write `for part in \
-         std::str::{name}({params}) {{ … }}`. Hale has no sequence value to return; to keep \
-         the parts, write them into storage you own with `std::str::split_into(s, sep, v)` \
-         (spec/semantics.md § Text sources)"
+        "`std::str::{name}` is a `for` source and a chain's source, not a value: write `for part in \
+         std::str::{name}({params}) {{ … }}`, or a chain over it (`std::str::{name}({params}).filter(…).count()`). \
+         Hale has no sequence value to return; to keep the parts, write them into storage you own with \
+         `std::str::split_into(s, sep, v)` or a chain's `into(v)` (spec/semantics.md § Text sources)"
     )
 }
 
 /// The binding the desugar gives a source's argument: `__hale_str_` then
-/// the source, the parameter and the loop's number
-/// (`__hale_str_split_sep3`).
-fn argument_binding(source: &str, param: &str, k: usize) -> String {
-    format!("__hale_str_{source}_{param}{k}")
+/// the source, the parameter and the scan's tag, a loop's number or `c`
+/// and a chain's (`__hale_str_split_sep3`, `__hale_str_words_sc2`).
+fn argument_binding(source: &str, param: &str, tag: &str) -> String {
+    format!("__hale_str_{source}_{param}{tag}")
 }
 
 /// The source and the parameter a binding the desugar wrote holds
@@ -112,7 +119,10 @@ pub fn argument_of(binding: &str) -> Option<(&'static str, &'static str)> {
     for (source, _) in SOURCES {
         let Some(tail) = rest.strip_prefix(source).and_then(|t| t.strip_prefix('_')) else { continue };
         for param in ["s", "sep"] {
-            if tail.strip_prefix(param).is_some_and(|k| !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit())) {
+            // a loop's number, or a chain's (`c` then its number, the
+            // chain source's scan, `crate::chains`)
+            let numbered = |k: &str| !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit());
+            if tail.strip_prefix(param).is_some_and(|k| numbered(k) || k.strip_prefix('c').is_some_and(numbered)) {
                 return Some((source, param));
             }
         }
@@ -173,8 +183,8 @@ fn body(b: &mut Block, n: &mut usize) {
         let k = *n;
         *n += 1;
         let user_body = std::mem::replace(body, Block { stmts: Vec::new(), tail: None, span: *span });
-        let rewritten = lower(source, std::mem::take(args), *call_span, name.clone(), user_body, *span, k);
-        *s = rewritten;
+        let stmts = scan(source, std::mem::take(args), *call_span, &k.to_string(), name.clone(), user_body, *span);
+        *s = Stmt::Block(Block { stmts, tail: None, span: *span });
     });
 }
 
@@ -196,39 +206,69 @@ fn let_(name: &str, is_mut: bool, value: Expr, span: Span) -> Stmt {
     Stmt::Let { is_mut, name: Ident::new(name, span), ty: None, value, span, id: NodeId::NONE }
 }
 
-fn lower(source: &str, mut args: Vec<Expr>, sp: Span, name: Ident, user_body: Block, for_span: Span, k: usize) -> Stmt {
-    let v = format!("__hale_str_v{k}");
-    let at = format!("__hale_str_at{k}");
-    let lo = format!("__hale_str_lo{k}");
-    let hi = format!("__hale_str_hi{k}");
-    let text = argument_binding(source, "s", k);
-    let sep = argument_binding(source, "sep", k);
+/// The names a scan tagged `tag` binds: the view of the text, and the
+/// current part's start and end offsets in it (each part is
+/// `std::str::slice(view, lo, hi)`). A chain over a source reads them
+/// after and during its scan (`crate::chains`).
+pub fn scan_names(tag: &str) -> (String, String, String) {
+    (format!("__hale_str_v{tag}"), format!("__hale_str_lo{tag}"), format!("__hale_str_hi{tag}"))
+}
+
+/// The statements of one scan over a source (the module's table): the
+/// arguments' and the view's `let`s ([`scan_head`]), then the `while`
+/// whose iteration binds `name` to the part and runs `user_body`, a block
+/// of its own ([`scan_loop`]). `tag` names the scan's bindings: a loop's
+/// number, or `c` and a chain's (`crate::chains`, which splices the
+/// statements into its own block and reads [`scan_names`] after them).
+/// `sp` is the source call's span, `for_span` the loop's.
+pub fn scan(source: &str, args: Vec<Expr>, sp: Span, tag: &str, name: Ident, user_body: Block, for_span: Span) -> Vec<Stmt> {
+    let mut out = scan_head(source, args, sp, tag);
+    out.push(scan_loop(source, sp, tag, name, user_body, for_span));
+    out
+}
+
+/// A scan's `let`s: the arguments, evaluated once, the view of the text
+/// and the cursor at the first part.
+pub fn scan_head(source: &str, mut args: Vec<Expr>, sp: Span, tag: &str) -> Vec<Stmt> {
+    let (v, _, _) = scan_names(tag);
+    let at = format!("__hale_str_at{tag}");
+    let text = argument_binding(source, "s", tag);
+    let sep = argument_binding(source, "sep", tag);
     let mut outer = vec![let_(&text, false, args.remove(0), sp)];
-    let with_sep = source == "split";
-    if with_sep {
+    if source == "split" {
         outer.push(let_(&sep, false, args.remove(0), sp));
     }
     outer.push(let_(&v, false, call(&["std", "str", "bytes_view"], vec![ident(&text, sp)], sp), sp));
-    // The hook arguments before the offset: the view, and split's separator.
-    let lead = |with_sep: bool| {
+    let first = match source {
+        "split" => call(&["__str_split_first"], vec![ident(&v, sp), ident(&sep, sp)], sp),
+        "lines" => Expr::Literal(Literal::Int(0), sp),
+        _ => call(&["__str_word_start"], vec![ident(&v, sp), Expr::Literal(Literal::Int(0), sp)], sp),
+    };
+    outer.push(let_(&at, true, first, sp));
+    outer
+}
+
+/// A scan's `while`, from wherever its cursor is: each iteration takes
+/// the part at the cursor, moves the cursor past it, binds `name` to the
+/// part and runs `user_body`. A chain whose terminal keeps a key of the
+/// best part so far runs a second one inside the first's body, to go on
+/// from the part it first picked (`crate::chains`).
+pub fn scan_loop(source: &str, sp: Span, tag: &str, name: Ident, user_body: Block, for_span: Span) -> Stmt {
+    let (v, lo, hi) = scan_names(tag);
+    let at = format!("__hale_str_at{tag}");
+    let sep = argument_binding(source, "sep", tag);
+    let with_sep = source == "split";
+    let (end, next, inclusive) = match source {
+        "split" => ("__str_split_end", "__str_split_next", true),
+        "lines" => ("__str_line_end", "__str_line_next", false),
+        _ => ("__str_word_end", "__str_word_start", false),
+    };
+    // The hook arguments: the view, split's separator, and the offset.
+    let with = |e: &str| {
         let mut a = vec![ident(&v, sp)];
         if with_sep {
             a.push(ident(&sep, sp));
         }
-        a
-    };
-    let (first, end, next, inclusive) = match source {
-        "split" => (call(&["__str_split_first"], lead(true), sp), "__str_split_end", "__str_split_next", true),
-        "lines" => (Expr::Literal(Literal::Int(0), sp), "__str_line_end", "__str_line_next", false),
-        _ => {
-            let mut a = lead(false);
-            a.push(Expr::Literal(Literal::Int(0), sp));
-            (call(&["__str_word_start"], a, sp), "__str_word_end", "__str_word_start", false)
-        }
-    };
-    outer.push(let_(&at, true, first, sp));
-    let with = |e: &str| {
-        let mut a = lead(with_sep);
         a.push(ident(e, sp));
         a
     };
@@ -260,6 +300,5 @@ fn lower(source: &str, mut args: Vec<Expr>, sp: Span, name: Ident, user_body: Bl
         },
         Stmt::Block(user_body),
     ];
-    outer.push(Stmt::While { cond, body: Block { stmts: step, tail: None, span: body_span }, span: for_span });
-    Stmt::Block(Block { stmts: outer, tail: None, span: for_span })
+    Stmt::While { cond, body: Block { stmts: step, tail: None, span: body_span }, span: for_span }
 }

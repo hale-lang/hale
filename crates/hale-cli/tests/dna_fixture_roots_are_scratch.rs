@@ -224,6 +224,10 @@ fn a_teardown_never_takes_the_developers_habitat() {
     assert!(read("crates/hale-cli/tests/support/reap.rs").contains(".args([\"habitat\", \"sweep\"])"), "the CLI tests' reap sweeps through the toolchain");
     assert!(read("crates/hale-cli/src/verbs/test.rs").contains("crate::dna::habitat::down_under(dir)"), "hale test's teardown is the sweep's");
     let habitat = read("crates/hale-cli/src/dna/habitat.rs");
-    assert!(habitat.contains("*p != mine && Some(p) != current.as_ref()"), "the sweep refuses the developer's habitat");
-    assert!(read("dna/core/workspace.hl").contains("project == mine"), "dna::scratch_projects_in refuses the developer's habitat");
+    // GH #1758: every habitat of the developer's, each under `$HOME`
+    assert!(habitat.contains("!mine.contains(p) && Some(p) != current.as_ref()"), "the sweep refuses the developer's habitats");
+    assert!(habitat.contains("let mine = developer_habitat_projects(&home);"), "the sweep's refusal names every habitat under $HOME");
+    let workspace = read("dna/core/workspace.hl");
+    assert!(workspace.contains("std::str::contains(\"\\n\" + mine, \"\\n\" + project + \"\\n\")"), "dna::scratch_projects_in refuses the developer's habitats");
+    assert!(workspace.contains("let mine = developer_habitat_projects();"), "dna::scratch_projects_in's refusal names every habitat under $HOME");
 }

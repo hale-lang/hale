@@ -87,7 +87,8 @@
       "properties": {
         "name": { "$ref": "#/$defs/surface_name" },
         "digest": { "$ref": "#/$defs/digest" },
-        "members": { "type": "array", "items": { "$ref": "#/$defs/member" } }
+        "members": { "type": "array", "items": { "$ref": "#/$defs/member" } },
+        "description": { "type": "string", "$comment": "GH #1674: the doc comment of the surface's api block; not part of the digest" }
       }
     },
     "exposure": {
@@ -168,7 +169,8 @@
         "response": { "$ref": "#/$defs/type_ref" },
         "error": { "$ref": "#/$defs/error" },
         "requires": { "$ref": "#/$defs/requires" },
-        "route": { "type": "string", "$comment": "present for a row that declares a route (http::Rest): METHOD /path/:param STATUS; part of the digest" }
+        "route": { "type": "string", "$comment": "present for a row that declares a route (http::Rest): METHOD /path/:param STATUS; part of the digest" },
+        "description": { "type": "string", "$comment": "GH #1674: the row's doc comment, or its handler's; not part of the digest" }
       }
     },
     "stream": {

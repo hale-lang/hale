@@ -83,6 +83,11 @@ pub(crate) struct Row {
     pub(crate) server_error: bool,
     /// Where `http::Rest` serves the row (`at "METHOD /path"`).
     pub(crate) route: Option<hale_syntax::ast::RpcRoute>,
+    /// GH #1674: the row's doc comment, or its handler's, and the request
+    /// parameter's, which the served description carries as the compiler's
+    /// does.
+    pub(crate) doc: Option<String>,
+    pub(crate) request_doc: Option<String>,
 }
 
 /// A serve site, owned.
@@ -142,7 +147,14 @@ pub(crate) fn rows_of_surface(
             }
         }
     }
-    let row_of = |member: String, locus: &str, method: &str, requires: Vec<String>, at: usize, route: Option<hale_syntax::ast::RpcRoute>| -> Option<Row> {
+    let row_of = |member: String,
+                  locus: &str,
+                  method: &str,
+                  requires: Vec<String>,
+                  at: usize,
+                  route: Option<hale_syntax::ast::RpcRoute>,
+                  doc: Option<String>|
+     -> Option<Row> {
         let l = loci.get(locus)?;
         let f = l.members.iter().find_map(|m| match m {
             LocusMember::Fn(f) if f.name.name == method => Some(f),
@@ -175,6 +187,8 @@ pub(crate) fn rows_of_surface(
             error: f.fallible.clone(),
             server_error,
             route,
+            doc: doc.or_else(|| f.doc.0.clone()),
+            request_doc: value.first().and_then(|p| p.doc.0.clone()),
         })
     };
     let mut rows: Vec<Row> = Vec::new();
@@ -183,7 +197,7 @@ pub(crate) fn rows_of_surface(
             continue;
         }
         let requires = m.requires.iter().map(|(n, _)| n.clone()).collect();
-        match row_of(m.member, &m.locus, &m.method, requires, m.written_at, m.route) {
+        match row_of(m.member, &m.locus, &m.method, requires, m.written_at, m.route, m.doc) {
             Some(row) => rows.push(row),
             None if m.origin == crate::surfaces::MemberOrigin::Block => return Vec::new(),
             None => {}
@@ -547,6 +561,8 @@ fn grpc_files(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, surface: &st
                 (None, false) => ClientError::None,
             },
             requires: r.requires.clone(),
+            // a descriptor carries no comment
+            doc: None,
         })
         .collect();
     let model = ClientModel {
@@ -555,6 +571,7 @@ fn grpc_files(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, surface: &st
         members,
         types,
         streams: Vec::new(),
+        docs: BTreeMap::new(),
     };
     let Ok(file) = crate::proto_gen::from_model(&model) else { return String::new() };
     let mut out = String::new();
@@ -2498,115 +2515,19 @@ fn surface_src(
 
 /// A string as a JSON string, compact.
 fn jstr(v: &str) -> String {
-    let mut o = String::from("\"");
-    for c in v.chars() {
-        match c {
-            '"' => o.push_str("\\\""),
-            '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"),
-            c => o.push(c),
-        }
-    }
-    o.push('"');
-    o
+    // escaped as every document escapes (a doc comment may hold a tab)
+    crate::surface_doc::J::Str(v.to_string()).compact()
 }
 
-/// A schema as compact JSON (the form `hale check --api` prints, pretty).
-fn field_json(f: &crate::surfaces::FieldSchema) -> String {
-    use crate::surfaces::FieldSchema;
-    match f {
-        FieldSchema::Any => "{\"x-hale-any\":true}".to_string(),
-        FieldSchema::Scalar { json, hale_type, unit } => {
-            let mut o = format!("{{\"type\":{}", jstr(json));
-            if let Some(t) = hale_type {
-                o.push_str(&format!(",\"x-hale-type\":{}", jstr(t)));
-            }
-            if let Some(u) = unit {
-                o.push_str(&format!(",\"x-hale-unit\":{}", jstr(u)));
-            }
-            o.push('}');
-            o
-        }
-        FieldSchema::Ref(name) => format!("{{\"$ref\":{}}}", jstr(&format!("#/schemas/{name}"))),
-        FieldSchema::Time => "{\"type\":\"string\",\"format\":\"date-time\",\"x-hale-type\":\"Time\"}".to_string(),
-        FieldSchema::List { items, max, exact } => {
-            let min = if *exact { format!(",\"minItems\":{max}") } else { String::new() };
-            format!("{{\"type\":\"array\",\"items\":{}{min},\"maxItems\":{max}}}", field_json(items))
-        }
-        FieldSchema::Nullable { inner, clear: None, .. } => format!("{{\"anyOf\":[{},{{\"type\":\"null\"}}]}}", field_json(inner)),
-        FieldSchema::Nullable { inner, clear: Some(_), .. } => {
-            format!("{{\"anyOf\":[{},{{\"type\":\"null\"}}],\"x-hale-null\":\"clear\"}}", field_json(inner))
-        }
-        // no key of its own: `type_json` leaves it out
-        FieldSchema::Presence { .. } | FieldSchema::Unformed => "{}".to_string(),
-        FieldSchema::Enum { name, variants, classes, wire } => {
-            // what the variants' `json:` tags say, then the declared error
-            // classes, as `surface_doc` renders them
-            let mut classed = String::new();
-            if !wire.is_plain() {
-                let vs: Vec<String> = variants
-                    .iter()
-                    .filter(|(v, _)| !wire.is_lossless_other(v))
-                    .map(|(v, _)| format!("{}:{}", jstr(v), jstr(wire.name(v))))
-                    .collect();
-                classed.push_str(&format!(",\"x-hale-variants\":{{{}}}", vs.join(",")));
-                if let Some(other) = wire.other_variant() {
-                    classed.push_str(&format!(",\"x-hale-other\":{}", jstr(other)));
-                }
-            }
-            if !classes.is_empty() {
-                let cs: Vec<String> = classes.iter().map(|(v, c)| format!("{}:{}", jstr(v), jstr(c))).collect();
-                classed.push_str(&format!(",\"x-hale-error-classes\":{{{}}}", cs.join(",")));
-            }
-            let carried: Vec<&(String, Vec<FieldSchema>)> = variants.iter().filter(|(v, _)| !wire.is_lossless_other(v)).collect();
-            let units: Vec<String> = carried.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| jstr(wire.name(n))).collect();
-            let unit = format!("{{\"type\":\"string\",\"enum\":[{}]", units.join(","));
-            if units.len() == carried.len() {
-                return format!("{unit},\"x-hale-type\":{}{classed}}}", jstr(name));
-            }
-            let mut one: Vec<String> = Vec::new();
-            if !units.is_empty() {
-                one.push(format!("{unit}}}"));
-            }
-            for (v, values) in carried.iter().filter(|(_, v)| !v.is_empty()) {
-                let value = match values.as_slice() {
-                    [only] => field_json(only),
-                    many => format!(
-                        "{{\"type\":\"array\",\"prefixItems\":[{}],\"minItems\":{n},\"maxItems\":{n}}}",
-                        many.iter().map(field_json).collect::<Vec<_>>().join(","),
-                        n = many.len()
-                    ),
-                };
-                let key = jstr(wire.name(v));
-                one.push(format!(
-                    "{{\"type\":\"object\",\"properties\":{{{key}:{value}}},\"required\":[{key}],\"additionalProperties\":false}}"
-                ));
-            }
-            format!("{{\"oneOf\":[{}],\"x-hale-type\":{}{classed}}}", one.join(","), jstr(name))
-        }
-        FieldSchema::Map { key, value, max, of: None, .. } => format!(
-            "{{\"type\":\"object\",\"additionalProperties\":{},\"maxProperties\":{max},\"x-hale-key\":{}}}",
-            type_json(value),
-            jstr(key)
-        ),
-        FieldSchema::Map { key, max, of: Some((field, schema)), .. } => format!(
-            "{{\"type\":\"object\",\"additionalProperties\":{},\"maxProperties\":{max},\"x-hale-key\":{},\"x-hale-value\":{}}}",
-            field_json(schema),
-            jstr(key),
-            jstr(field)
-        ),
-    }
+/// A schema as compact JSON: the form `hale check --api` prints pretty,
+/// rendered by the one renderer (`surface_doc`), so a served description's
+/// schemas are the compiler's, doc comments included (GH #1674).
+fn field_json(f: &crate::surfaces::FieldSchema, schemas: &crate::surfaces::Schemas<'_>) -> String {
+    crate::surface_doc::field_schema(f, "#/schemas/", schemas).compact()
 }
 
-fn type_json(t: &crate::surfaces::TypeSchema) -> String {
-    let props: Vec<String> = t
-        .properties
-        .iter()
-        .filter(|(_, f)| !matches!(f, crate::surfaces::FieldSchema::Presence { .. }))
-        .map(|(k, f)| format!("{}:{}", jstr(k), field_json(f)))
-        .collect();
-    let req: Vec<String> = t.required.iter().map(|r| jstr(r)).collect();
-    format!("{{\"type\":\"object\",\"properties\":{{{}}},\"required\":[{}]}}", props.join(","), req.join(","))
+fn type_json(name: &str, t: &crate::surfaces::TypeSchema, schemas: &crate::surfaces::Schemas<'_>) -> String {
+    crate::surface_doc::type_schema(name, t, "#/schemas/", schemas).compact()
 }
 
 /// The static parts of a description (the rows adapter's `member_doc`,
@@ -2627,17 +2548,26 @@ fn description_src(
     for (r, digest) in rows.iter().zip(digests) {
         let mut mine: BTreeMap<String, crate::surfaces::TypeSchema> = BTreeMap::new();
         let mut ty = |t: &Option<TypeExpr>| match t {
-            Some(te) => field_json(&schemas.type_ref(te, &mut mine)),
+            Some(te) => field_json(&schemas.type_ref(te, &mut mine), schemas),
             None => "null".to_string(),
         };
-        let request = ty(&r.request);
+        let mut request = ty(&r.request);
+        // GH #1674: the request parameter's doc, as `surface_doc::member` writes it
+        if let (Some(d), true) = (&r.request_doc, request.ends_with('}')) {
+            request.pop();
+            if !request.ends_with('{') {
+                request.push(',');
+            }
+            request.push_str(&format!("\"description\":{}}}", jstr(d)));
+        }
         let response = ty(&r.response);
         let error = if r.server_error { jstr("ClosureViolation") } else { ty(&r.error) };
         let req: Vec<String> = r.requires.iter().map(|x| jstr(x)).collect();
         // a routed row states its route (`METHOD /path/:param STATUS`)
         let route = canonical(r).map_or(String::new(), |c| format!(",\"route\":{}", jstr(&c)));
+        let doc = r.doc.as_ref().map_or(String::new(), |d| format!(",\"description\":{}", jstr(d)));
         docs.push(format!(
-            "{{\"name\":{},\"digest\":{},\"request\":{request},\"response\":{response},\"error\":{error},\"requires\":[{}]{route}}}",
+            "{{\"name\":{},\"digest\":{},\"request\":{request},\"response\":{response},\"error\":{error},\"requires\":[{}]{route}{doc}}}",
             jstr(&r.member),
             jstr(digest),
             req.join(",")
@@ -2692,8 +2622,8 @@ fn description_src(
         s.push_str(&format!("        if k == {k} {{ return {}; }}\n", q(name)));
     }
     s.push_str("        return \"\";\n    }\n    fn schema_doc(k: Int) -> String {\n");
-    for (k, t) in all.values().enumerate() {
-        s.push_str(&format!("        if k == {k} {{ return {}; }}\n", q(&type_json(t))));
+    for (k, (name, t)) in all.iter().enumerate() {
+        s.push_str(&format!("        if k == {k} {{ return {}; }}\n", q(&type_json(name, t, schemas))));
     }
     s.push_str(&format!(
         "        return \"\";\n    }}\n    fn roles() -> String {{ return {}; }}\n",

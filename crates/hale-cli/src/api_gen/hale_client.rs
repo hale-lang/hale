@@ -240,8 +240,14 @@ fn default_of(model: &ClientModel, f: &FieldSchema) -> Option<String> {
 fn struct_decl(model: &ClientModel, name: &str, t: &TypeSchema) -> Result<String, String> {
     let ident = type_ident(name);
     let idents = field_idents(t);
-    let mut out = format!("type {ident} {{\n");
+    // GH #1674: the server's doc comments, as doc comments
+    let docs = model.docs_of(name);
+    let mut out = hale_doc("", &super::type_doc_lines(docs, false));
+    out.push_str(&format!("type {ident} {{\n"));
     for ((key, f), field) in t.properties.iter().zip(&idents) {
+        if !matches!(f, FieldSchema::Presence { .. }) {
+            out.push_str(&hale_doc("    ", &super::doc_lines(docs.and_then(|d| d.field(key)))));
+        }
         // a Decimal the server writes as a JSON string (`json:"...,string"`)
         // is written so by the client too
         let quoted = {
@@ -305,7 +311,12 @@ fn struct_decl(model: &ClientModel, name: &str, t: &TypeSchema) -> Result<String
 /// An enum as the client declares it: the server's variants, each with its
 /// values' types and its `json:` tag (its wire name, the catch-all), so the
 /// api codec carries it as the server's does.
-fn enum_decl(name: &str, e: &super::ClientEnum) -> Result<String, String> {
+/// GH #1674: `lines` as `///` doc comment lines at `indent`.
+fn hale_doc(indent: &str, lines: &[String]) -> String {
+    lines.iter().map(|l| if l.is_empty() { format!("{indent}///\n") } else { format!("{indent}/// {l}\n") }).collect()
+}
+
+fn enum_decl(name: &str, e: &super::ClientEnum, docs: Option<&hale_types::surfaces::TypeDocs>) -> Result<String, String> {
     let vs = e
         .variants
         .iter()
@@ -325,7 +336,7 @@ fn enum_decl(name: &str, e: &super::ClientEnum) -> Result<String, String> {
             Ok(format!("{v}({}){tag}", tys.join(", ")))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Ok(format!("type {} = enum {{ {} }};\n\n", type_ident(name), vs.join(", ")))
+    Ok(format!("{}type {} = enum {{ {} }};\n\n", hale_doc("", &super::type_doc_lines(docs, true)), type_ident(name), vs.join(", ")))
 }
 
 fn member_fn(m: &ClientMember) -> Result<String, String> {
@@ -356,6 +367,7 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
         ),
         None => (String::new(), "\"{}\"".to_string()),
     };
+    out.push_str(&hale_doc("", &super::doc_lines(m.doc.as_deref())));
     out.push_str(&format!("fn {fn_name}(endpoint: String, bearer: String{params}) -> {outcome} {{\n"));
     out.push_str(&format!("    let raw = api_call(endpoint, bearer, {}, {}, {payload});\n", hale_lit(&m.name), hale_lit(&m.digest)));
     // a reply the codec refuses is a lost answer, named
@@ -512,7 +524,7 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
     }
     for (name, variants) in &super::model_enums(model) {
         claim(type_ident(name))?;
-        out.push_str(&enum_decl(name, variants)?);
+        out.push_str(&enum_decl(name, variants, model.docs_of(name))?);
     }
     for (name, t) in &model.types {
         claim(type_ident(name))?;

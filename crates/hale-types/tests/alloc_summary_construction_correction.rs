@@ -341,11 +341,13 @@ fn own_scope_let_block_scope_test() {
             // `str_helpers.hl` came (GH #1995: std::str's nine splits and
             // trims and their whitespace helper); 533 since the text `for`
             // sources' eight cursor hooks came (GH #1995 S2); 534 since
-            // `net.hl` came (GH #1908: `std::net::resolve`)
+            // `net.hl` came (GH #1908: `std::net::resolve`); 535 since a
+            // chain over a text source compares a part with the best one in
+            // place (`__str_view_cmp`, GH #1995 S2, chain sources)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 534 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 534 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 535 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 535 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -763,8 +765,11 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/units_form_iteration_test.hl`, whose loops over a form's
     // cells build their assertion messages (GH #2026); 28:
     // `tests/hale/ring_buffer_push_flat_test.hl`, whose `main` builds the
-    // records it pushes in its loops (GH #2024).
-    assert_eq!(moved, 28, "the run-to-exit programs among the targets that lose a site");
+    // records it pushes in its loops (GH #2024); 29:
+    // `tests/hale/str_chain_sources_test.hl`, whose chains over text
+    // sources push the parts into a vec the same way (GH #1995 S2, chain
+    // sources).
+    assert_eq!(moved, 29, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1102,6 +1107,16 @@ fn own_entries_run_to_exit_programs() {
             // build to push, and the fallback a pop in a loop builds (GH #2024)
             "tests/hale/ring_buffer_push_flat_test.hl: main StructLit(\"Sample\") @2309..2334 InUnboundedLoop",
             "tests/hale/ring_buffer_push_flat_test.hl: Names::take StructLit(\"Named\") @2009..2034 InvokedUnboundedly",
+            // `tests/hale/str_chain_sources_test.hl` (GH #1995 S2, chain sources): the
+            // pushes of its `into` / `sort_into` / `reverse_into` chains and its
+            // control loop, and the `map` stage's concatenation, per part
+            "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @4216..4285 InUnboundedLoop",
+            "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @4405..4442 InUnboundedLoop",
+            "tests/hale/str_chain_sources_test.hl: main StringConcat @4668..4687 InUnboundedLoop",
+            "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @4605..4696 InUnboundedLoop",
+            "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @8923..8980 InUnboundedLoop",
+            "tests/hale/str_chain_sources_test.hl: main CollectionInsert(\"vec\") @9095..9140 InUnboundedLoop",
+            "tests/hale/str_chain_sources_test.hl: words_by_loop CollectionInsert(\"vec\") @977..986 InUnboundedLoop",
             // `tests/hale/str_split_sources_test.hl`: the vec pushes that keep
             // each part a text source's loop visits (GH #1995 S2)
             "tests/hale/str_split_sources_test.hl: lines_of CollectionInsert(\"vec\") @902..914 InUnboundedLoop",
@@ -1582,7 +1597,10 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 511",
+                // GH #1758: 9 more, the named habitats' resolver and
+                // `developer_habitat_projects`' loop over the habitat
+                // directories under `$HOME`
+                "dna__core: 520",
                 "dna__core__pond__pq: 16",
                 "dna__core__pond__realtime__nats: 2",
                 "dna__host: 824",

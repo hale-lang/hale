@@ -548,11 +548,13 @@ fn tools_of(doc: &Value) -> Vec<(String, String, Value)> {
             .unwrap_or_default();
         let needs = if requires.is_empty() { "Requires no role".to_string() } else { format!("Requires {}", requires.join(", ")) };
         let tool_name = hale_types::surface_doc::tool_name(name);
+        // GH #1674: the member's doc comment first, as `hale check --api --mcp` writes it
+        let doc = m.get("description").and_then(Value::as_str).map_or(String::new(), |d| format!("{d}\n\n"));
         let tool = json!({
             "name": tool_name,
             "description": format!(
-                "rpc {} of {}. {} under the exposure's role source; the server still authorizes every request.",
-                name, surface, needs
+                "{}rpc {} of {}. {} under the exposure's role source; the server still authorizes every request.",
+                doc, name, surface, needs
             ),
             "inputSchema": input,
             "x-hale-requires": requires,

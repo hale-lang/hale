@@ -74,7 +74,7 @@ locus Todos {
     }
     bus { publish TodoChanged; publish TodoOverdue; }
 
-    /// The sense runs on a one-second tick of its own.
+    // The sense runs on a one-second tick of its own.
     run() {
         while !self.draining {
             std::time::sleep(1s);

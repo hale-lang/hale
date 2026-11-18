@@ -9,6 +9,56 @@ pub(crate) mod hale_client;
 pub(crate) mod js_client;
 pub(crate) mod ts_client;
 
+/// GH #1674: a doc comment's lines.
+pub(crate) fn doc_lines(doc: Option<&str>) -> Vec<String> {
+    doc.map_or_else(Vec::new, |d| d.lines().map(str::to_string).collect())
+}
+
+/// One line of a JSDoc block, ` * <line>`, a `*/` in it broken so it cannot
+/// end the block.
+pub(crate) fn jsdoc_line(indent: &str, l: &str) -> String {
+    if l.is_empty() {
+        format!("{indent} *\n")
+    } else {
+        format!("{indent} * {}\n", l.replace("*/", "*\\/"))
+    }
+}
+
+/// GH #1674: the lines of a type's doc for a client: its own doc, then each
+/// documented field or variant as `` `name`: doc ``.
+pub(crate) fn type_doc_lines(docs: Option<&hale_types::surfaces::TypeDocs>, parts: bool) -> Vec<String> {
+    let Some(d) = docs else { return Vec::new() };
+    let mut out = doc_lines(d.doc.as_deref());
+    if parts {
+        let listed: Vec<&(String, String)> = d.fields.iter().chain(&d.variants).collect();
+        if !listed.is_empty() && !out.is_empty() {
+            out.push(String::new());
+        }
+        for (name, doc) in listed {
+            let mut lines = doc_lines(Some(doc)).into_iter();
+            out.push(format!("`{name}`: {}", lines.next().unwrap_or_default()));
+            out.extend(lines.map(|l| format!("  {l}")));
+        }
+    }
+    out
+}
+
+/// GH #1674: a JSDoc block of `lines` at `indent`; nothing for no lines.
+pub(crate) fn jsdoc(indent: &str, lines: &[String]) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    if let [one] = lines {
+        return format!("{indent}/** {} */\n", one.replace("*/", "*\\/"));
+    }
+    let mut out = format!("{indent}/**\n");
+    for l in lines {
+        out.push_str(&jsdoc_line(indent, l));
+    }
+    out.push_str(&format!("{indent} */\n"));
+    out
+}
+
 /// An enum a client declares: its variants, each with its values' schemas,
 /// and what their `json:` tags say of the wire (GH #1951 item 5).
 pub(crate) struct ClientEnum {

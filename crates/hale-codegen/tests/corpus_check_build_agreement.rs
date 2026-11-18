@@ -3744,12 +3744,25 @@ fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
                 // GH #1995 S2: a text source is a `for` source, not a value
                 "fn main() { let xs = std::str::split(\"a,b\", \",\"); }\n",
                 "std::str::split(\"a,b\", \",\")",
-                "`std::str::split` is a `for` source, not a value",
+                "`std::str::split` is a `for` source and a chain's source, not a value",
             ),
             (
                 "fn main() { for w in std::str::words(\"a\", \"b\") { println(w); } }\n",
                 "std::str::words(\"a\", \"b\")",
                 "`std::str::words(s)` takes 1 argument, got 2",
+            ),
+            (
+                // a chain over a source of the wrong arity is refused as
+                // the loop is, its extra argument never dropped (review of
+                // #2060: the scan took the source by name alone)
+                "fn more() -> String { return \"x\"; }\nfn main() { println(std::str::words(\"a b\", more()).filter(len(it) > 0).count()); }\n",
+                "std::str::words(\"a b\", more())",
+                "`std::str::words(s)` takes 1 argument, got 2",
+            ),
+            (
+                "fn main() { println(std::str::split(\"a,b\").filter(len(it) > 0).count()); }\n",
+                "std::str::split(\"a,b\")",
+                "`std::str::split(s, sep)` takes 2 arguments, got 1",
             ),
         ],
         "codegen_gap",
@@ -3765,6 +3778,13 @@ fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
          for p in std::str::split(s, \",\") { println(p); } for l in std::str::lines(s) { println(l); }\n\
          for w in std::str::words(s) { println(w); } }\n",
         "hale_cb_gap_string_sources",
+    );
+    // GH #1995 S2: a source starts a chain, the same scan; a stage-less
+    // terminal, an element-valued one under `or`, and one under `!`
+    assert_built(
+        "fn main() { let s = \"a,bb\\nccc d\"; println(std::str::split(s, \",\").filter(len(it) > 1).count(), std::str::lines(s).count());\n\
+         println(std::str::words(s).max(len(it)) or \"\", !std::str::words(s).any(it == \"zz\")); }\n",
+        "hale_cb_gap_string_chain_sources",
     );
     assert_built("fn main() { let a = [1, 2]; println(len(a), Int(2.5), Float(2)); }\n", "hale_cb_gap_casts");
     assert_built(

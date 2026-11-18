@@ -42,6 +42,7 @@ crates/hale-cli/tests/env_matrix.rs#2 db15bd17f8200c1b
 crates/hale-cli/tests/ffi_export_reentry.rs#2 14987858efde423b
 crates/hale-cli/tests/fixtures/api_clients/main.hl 0ca49f61c63c4271
 crates/hale-cli/tests/fixtures/api_description/main.hl 9db49752ab36c36c
+crates/hale-cli/tests/fixtures/api_doc_comments/main.hl 8510ab994d08fb6b
 crates/hale-cli/tests/fixtures/api_shapes/main.hl a949aa1b221591dd
 crates/hale-cli/tests/fixtures/bounded-annotation/app.hl c1c2e181fb34f20c
 crates/hale-cli/tests/fixtures/bounded-annotation/bounded-by.hl 8f5063eb4b200eb0
@@ -1515,9 +1516,10 @@ crates/hale-codegen/tests/stdlib_stdin.rs#4 90a46b25eba2caaf
 crates/hale-codegen/tests/stdlib_str.rs#0 a880bd5d068dbc80
 crates/hale-codegen/tests/stdlib_str.rs#2 d26132b88fdb7c61
 crates/hale-codegen/tests/stdlib_str.rs#3 6ce3483e679d3eae
-crates/hale-codegen/tests/stdlib_str.rs#4 0ef7ab57465185ab
-crates/hale-codegen/tests/stdlib_str.rs#5 27e606d9959b93b7
-crates/hale-codegen/tests/stdlib_str.rs#6 d4275fdcef4d5b13
+crates/hale-codegen/tests/stdlib_str.rs#4 22c5863c1c7c7376
+crates/hale-codegen/tests/stdlib_str.rs#5 ffbc588bc4e814ee
+crates/hale-codegen/tests/stdlib_str.rs#6 27e606d9959b93b7
+crates/hale-codegen/tests/stdlib_str.rs#7 d4275fdcef4d5b13
 crates/hale-codegen/tests/stdlib_stream.rs#0 40e49049d6e84ede
 crates/hale-codegen/tests/stdlib_stream.rs#1 cf1765cd492768c7
 crates/hale-codegen/tests/stdlib_stream.rs#5 d4275fdcef4d5b13
@@ -1762,7 +1764,7 @@ crates/hale-stdlib/hl/process.hl 42d1930e7e552fa7
 crates/hale-stdlib/hl/rand.hl 0fcacf844a971187
 crates/hale-stdlib/hl/secret.hl 799fd5bff954db1c
 crates/hale-stdlib/hl/source.hl 68ad5351cc9df943
-crates/hale-stdlib/hl/str_helpers.hl 9b14b4d8ae4ea308
+crates/hale-stdlib/hl/str_helpers.hl 4b370b6b954782d0
 crates/hale-stdlib/hl/str_view.hl c5e644fc5d3b4ffd
 crates/hale-stdlib/hl/tagged.hl 7b514c1ecd3e9de5
 crates/hale-stdlib/hl/term.hl f643d32e6ab5d1e6

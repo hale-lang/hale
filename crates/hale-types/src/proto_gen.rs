@@ -110,6 +110,9 @@ pub struct PField {
     pub oneof: Option<usize>,
     /// What the field is in Hale, where the wire type is not all of it.
     pub comment: Option<String>,
+    /// GH #1674: the field's (or the variant's) doc comment, its lines the
+    /// field's leading comment.
+    pub doc: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -144,6 +147,8 @@ pub struct PEnum {
     pub name: String,
     pub comment: Vec<String>,
     pub values: Vec<(String, u32)>,
+    /// GH #1674: each documented value's doc lines, by value name.
+    pub value_docs: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,7 +165,12 @@ pub struct ProtoFile {
 }
 
 fn field(name: &str, number: u32, ty: Ty, label: Label) -> PField {
-    PField { name: name.to_string(), number, ty, label, oneof: None, comment: None }
+    PField { name: name.to_string(), number, ty, label, oneof: None, comment: None, doc: Vec::new() }
+}
+
+/// GH #1674: a doc comment's lines, as a leading comment writes them.
+fn doc_lines(doc: Option<&str>) -> Vec<String> {
+    doc.map_or_else(Vec::new, |d| d.lines().map(str::to_string).collect())
 }
 
 fn message(name: &str, fields: Vec<PField>) -> PMessage {
@@ -355,7 +365,7 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
         }
     }
     let mut messages: Vec<PMessage> = Vec::new();
-    let mut extra = Extra::default();
+    let mut extra = Extra { docs: model.docs.clone(), ..Extra::default() };
     for (display, schema) in model.types.iter().filter(|(d, _)| reached.contains(&d.as_str())) {
         messages.push(record(display, schema, surface, &mut extra)?);
     }
@@ -364,7 +374,12 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
     let mut methods = Vec::new();
     let mut uses_empty = false;
     for m in &model.members {
-        let mut comment = vec![format!("rpc {}", m.name)];
+        // GH #1674: the row's doc leads the rpc's comment
+        let mut comment = doc_lines(m.doc.as_deref());
+        if !comment.is_empty() {
+            comment.push(String::new());
+        }
+        comment.push(format!("rpc {}", m.name));
         comment.push(if m.requires.is_empty() {
             "requires no role".to_string()
         } else {
@@ -457,6 +472,8 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
 struct Extra {
     enums: Vec<PEnum>,
     messages: Vec<PMessage>,
+    /// GH #1674: the model's type docs, which the declarations carry.
+    docs: BTreeMap<String, crate::surfaces::TypeDocs>,
 }
 
 /// The records a schema reaches, through a list's items and an enum's values.
@@ -512,14 +529,22 @@ fn enum_ty(
     if !is_ident(&name) {
         return Err(format!("the type `{display}` is not a proto3 enum or message name"));
     }
-    let mut comment = if display != name { vec![format!("Hale: {display}")] } else { Vec::new() };
+    let docs = extra.docs.get(display).cloned().unwrap_or_default();
+    let mut comment = doc_lines(docs.doc.as_deref());
+    if display != name {
+        comment.push(format!("Hale: {display}"));
+    }
     if let Some((other, false)) = &wire.other {
         comment.push(format!("Hale: a number no value has reads as {}", crate::api_names::proto_variant(&name, other)));
     }
     if variants.iter().all(|(_, v)| v.is_empty()) {
         if !extra.enums.iter().any(|e| e.name == name) {
             let values = variants.iter().enumerate().map(|(i, (v, _))| (crate::api_names::proto_variant(&name, v), i as u32)).collect();
-            extra.enums.push(PEnum { name: name.clone(), comment, values });
+            let value_docs = variants
+                .iter()
+                .filter_map(|(v, _)| Some((crate::api_names::proto_variant(&name, v), doc_lines(Some(docs.variant(v)?)))))
+                .collect();
+            extra.enums.push(PEnum { name: name.clone(), comment, values, value_docs });
         }
         return Ok(Ty::Enum(name));
     }
@@ -553,6 +578,7 @@ fn enum_ty(
         };
         let mut f = field(v, number, ty, Label::Plain);
         f.oneof = Some(0);
+        f.doc = doc_lines(docs.variant(v));
         fields.push(f);
     }
     let mut m = message(&name, fields);
@@ -720,11 +746,13 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
                 None => format!("Hale: {note}"),
             });
         }
+        p.doc = doc_lines(extra.docs.get(display).and_then(|d| d.field(key)));
         fields.push(p);
     }
     let mut m = message(&name, fields);
+    m.comment = doc_lines(extra.docs.get(display).and_then(|d| d.doc.as_deref()));
     if display != name {
-        m.comment = vec![format!("Hale: {display}")];
+        m.comment.push(format!("Hale: {display}"));
     }
     Ok(m)
 }
@@ -787,9 +815,7 @@ impl ProtoFile {
                 if i > 0 {
                     o.push('\n');
                 }
-                for c in &m.comment {
-                    o.push_str(&format!("  // {c}\n"));
-                }
+                leading(&mut o, "  ", &m.comment);
                 let (cs, ss) = (if m.client_stream { "stream " } else { "" }, if m.server_stream { "stream " } else { "" });
                 o.push_str(&format!("  rpc {}({cs}{}) returns ({ss}{});\n", m.name, m.input, m.output));
             }
@@ -797,9 +823,7 @@ impl ProtoFile {
         }
         for m in &self.messages {
             o.push('\n');
-            for c in &m.comment {
-                o.push_str(&format!("// {c}\n"));
-            }
+            leading(&mut o, "", &m.comment);
             if m.fields.is_empty() {
                 o.push_str(&format!("message {} {{}}\n", m.name));
                 continue;
@@ -808,22 +832,25 @@ impl ProtoFile {
             for (k, name) in m.oneofs.iter().enumerate() {
                 o.push_str(&format!("  oneof {name} {{\n"));
                 for f in m.fields.iter().filter(|f| f.oneof == Some(k)) {
+                    leading(&mut o, "    ", &f.doc);
                     o.push_str(&format!("    {}\n", field_text(f)));
                 }
                 o.push_str("  }\n");
             }
             for f in m.fields.iter().filter(|f| f.oneof.is_none()) {
+                leading(&mut o, "  ", &f.doc);
                 o.push_str(&format!("  {}\n", field_text(f)));
             }
             o.push_str("}\n");
         }
         for e in &self.enums {
             o.push('\n');
-            for c in &e.comment {
-                o.push_str(&format!("// {c}\n"));
-            }
+            leading(&mut o, "", &e.comment);
             o.push_str(&format!("enum {} {{\n", e.name));
             for (v, n) in &e.values {
+                if let Some((_, doc)) = e.value_docs.iter().find(|(d, _)| d == v) {
+                    leading(&mut o, "  ", doc);
+                }
                 o.push_str(&format!("  {v} = {n};\n"));
             }
             o.push_str("}\n");
@@ -849,6 +876,17 @@ impl ProtoFile {
             out.push(q(&e.name));
         }
         out
+    }
+}
+
+/// A leading comment: each line `// <line>` at `indent`, an empty one `//`.
+fn leading(o: &mut String, indent: &str, lines: &[String]) {
+    for l in lines {
+        if l.is_empty() {
+            o.push_str(&format!("{indent}//\n"));
+        } else {
+            o.push_str(&format!("{indent}// {l}\n"));
+        }
     }
 }
 
@@ -1198,9 +1236,11 @@ mod tests {
                 response: None,
                 error: ClientError::None,
                 requires: Vec::new(),
+                doc: None,
             }],
             types: types.into_iter().map(|(n, t)| (n.to_string(), t)).collect(),
             streams: Vec::new(),
+            docs: Default::default(),
         }
     }
 

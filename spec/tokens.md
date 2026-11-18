@@ -27,11 +27,50 @@ simplifies tooling.
 - Line comment: `// ...` to end of line.
 - Block comment: `/* ... */`. Block comments do not nest in v0.
 - Doc comment: `///` lines directly above a declaration attach to
-  it (decorator lines like `@hot` may sit between). Rendered by
-  `hale doc` into the seed's API reference (spec/testing.md).
-  Tooling recovers doc text positionally from the source — the
-  lexer itself skips all comments. `/** */` stays reserved for a
-  future block form; `hale doc` v1 reads `///` only.
+  it. `/** */` stays reserved for a future block form. § Doc comments
+  below has the rules.
+
+### Doc comments
+
+GH #1674. A **doc comment** is the run of lines between two tokens
+that each begin, after indentation, with `///` (and not `////`, which
+is an ordinary comment). Its **text** is those lines, each with the
+`///` and one space after it removed, joined by a line feed, with
+leading and trailing blank lines dropped. Blank lines and ordinary
+comments may sit among the doc lines and after them; they are not
+part of the text.
+
+The lexer skips a doc comment like any comment: it is never a token,
+so it changes nothing the grammar reads. The parser attaches it, by
+position, to the declaration it stands in the head of: before the
+declaration's name, after the `;`, `,`, `{` or `}` that ends what
+comes before. Annotations, modifiers and keywords in that head do
+not separate a doc from its declaration, so a doc may stand above
+`@rpc(requires: [clerk])` or between it and `fn`. The declarations a
+doc comment documents:
+
+- a `type`, each field of a record and each variant of an enum (an
+  error class's variant among them);
+- a `fn`, free or a locus member (an rpc handler among them), and
+  each of its parameters;
+- a `locus` and each of its params;
+- an `api` surface and each `rpc` row of it;
+- a `const`, an `interface` and each of its methods, a `topic` and a
+  `role`.
+
+A doc comment anywhere else documents nothing: before a statement,
+a lifecycle hook, a block, an `import`, or at the end of a file. So
+does a `///` after code on its own line, which would otherwise read
+as documenting the code before it. Such a comment is a **warning**,
+never an error: "this doc comment documents nothing: …" (or "this
+doc comment follows code on its line, …"), and the program means
+what it meant without it. A seed's own files are warned about; an
+imported seed's are its own check's.
+
+What reads the text: the documents a surface generates (spec/api.md §
+Documenting a surface), the editor's hover, and `hale doc`
+(spec/testing.md), which renders a seed's reference. The text is
+prose, never shape: no digest, shape hash or identity covers it.
 
 ## Identifiers
 
@@ -1109,8 +1148,8 @@ its named alias `span_max`.
 - Numeric literals are recognized greedily up to the first
   non-numeric character (after handling `0x`, `0o`, `0b`
   prefixes, decimal point, exponent, and type suffix).
-- Comments are stripped before parsing, doc comments included:
-  tooling recovers `///` text by position (see Comments above).
+- Comments never reach the token stream, doc comments included: the
+  parser attaches `///` text by position (see § Doc comments above).
 
 ## Reserved character classes
 
