@@ -1796,6 +1796,18 @@ impl AllocSummary {
     /// long-lived frame. A method or bus handler it calls stops the walk,
     /// as it stops the propagation: its own per-call scratch takes what
     /// its loops allocate, and the verdicts of its sites are its own.
+    /// Whether the flow locus `locus` has a `run()` and every `run()`
+    /// row of it is one activation ([`Self::flow_run_is_activation`]):
+    /// its instance is reclaimed when the run returns, which it does.
+    fn flow_completes(&self, locus: &str) -> bool {
+        let mut runs = self
+            .fns
+            .values()
+            .filter(|f| f.entry == Some(EntryKind::Run) && f.key.locus.as_deref() == Some(locus))
+            .peekable();
+        runs.peek().is_some() && runs.all(|f| self.flow_run_is_activation(f))
+    }
+
     fn flow_run_is_activation(&self, f: &FnSummary) -> bool {
         if f.entry != Some(EntryKind::Run) || !f.key.locus.as_ref().is_some_and(|l| self.flow_loci.contains(l)) {
             return false;
@@ -1970,6 +1982,17 @@ impl AllocSummary {
         // its arena is destroyed at the statement, every iteration.
         if let AllocKind::StructLit(n) = &site.kind {
             if self.eager_only_loci.contains(n) {
+                return SiteVerdict::PerIterationReclaim;
+            }
+            // GH #2027 (b): a flow child — a type some `release(c: T)`
+            // names — is reclaimed when its `run()` completes
+            // (spec/semantics.md § "`release(c)` and flow children"), so
+            // an instantiation of one in its parent's loop is that
+            // iteration's, as an eager-only locus's is. Only when its
+            // `run()` is one activation (`flow_run_is_activation`): a
+            // flow whose run loops without a bound keeps its arena for
+            // as long as it runs.
+            if self.flow_loci.contains(n) && self.flow_completes(n) {
                 return SiteVerdict::PerIterationReclaim;
             }
         }

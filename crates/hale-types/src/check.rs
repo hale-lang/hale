@@ -3386,9 +3386,10 @@ fn check_lru_hook_puts(bundle: &Bundle<'_>, summary: &crate::alloc_summary::Allo
 /// run-to-exit program that's fine (and the corpus's accept examples
 /// are exactly that shape), but on a locus whose `run()` never
 /// returns (`while true { accept-and-spawn }` — the daemon idiom)
-/// resident children are O(accepted) growth until OOM. Daemon signal
-/// (deliberately narrow, corpus-clean): the accepting locus's own
-/// `run()` contains a literal `while true` loop.
+/// resident children are O(accepted) growth until OOM. Daemon signal:
+/// the accepting locus's own `run()` contains a literal `while true`
+/// loop, or its run row says it never returns (`never_returns`, the
+/// classifier the starvation law reads; GH #2027).
 fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, diags: &mut Vec<Diag>) {
     fn block_has_while_true(b: &Block) -> bool {
         b.stmts.iter().any(|s| match s {
@@ -3451,7 +3452,12 @@ fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, dia
                     _ => {}
                 }
             }
-            if !run_daemon {
+            // GH #2027 (a): the starvation law's never-returns column
+            // too — a terminal `while !self.draining`, or a `while` on a
+            // Bool flag nothing assigns — not a literal `while true`
+            // alone: the drain-aware loop § Drain cascade recommends is
+            // as much a daemon.
+            if !run_daemon && never_returns(flows, l).is_none() {
                 return;
             }
             for (ld, child_ty) in accepts {
@@ -22711,7 +22717,8 @@ impl<'a> Checker<'a> {
             return Some(format!(
                 "`{head}::Hub` is the standard library's hub (`std::api::{head}::Hub`): a param of the main \
                  locus, built by a `{head}::Hub {{ bind: \"…\", principals: …, roles: …, as: \"…\" }}` literal in \
-                 its `params`, where the compiler builds it (spec/api.md § Streams)"
+                 its `params`, where the compiler builds it; below it, only a `ws::Hub` param with no default that \
+                 the main locus passes its hub to, for an `http::Rest` there to mount (spec/api.md § Streams)"
             ));
         }
         // The names this build's imports registered under this head.

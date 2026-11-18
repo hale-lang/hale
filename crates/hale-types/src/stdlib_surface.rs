@@ -1343,6 +1343,16 @@ pub const SURFACES: &[NsSurface] = &[
     // the snapshot. A series update is a write to the program's own
     // memory, as the registry's own map write is.
     NsSurface {
+        // GH #1908: name resolution. `resolve` is `net.hl`'s body over
+        // the `__resolve` primitive (getaddrinfo on the calling thread).
+        ns: &["net"],
+        fns: &[
+            row!("__resolve", SYSCALL | BLOCK, [Str] -> Str, Intrinsic(NetResolveRaw)),
+            row!("resolve", SYSCALL | BLOCK, _, Renamed),
+        ],
+        open_prefixes: &[],
+    },
+    NsSurface {
         ns: &["observe"],
         fns: &[
             row!("__registry", ALLOC, [Str] -> Int, Intrinsic(ObserveRegistryRaw)),
@@ -1914,6 +1924,8 @@ pub enum IntrinsicId {
     IoTcpConnectRaw,
     IoTcpIoErrorKindRaw,
     IoTcpIoErrorDetailRaw,
+    /// `std::net::__resolve` (GH #1908).
+    NetResolveRaw,
     IoTcpLastIoStatusRaw,
     IoTcpListenSocketRaw,
     IoTcpParksRaw,

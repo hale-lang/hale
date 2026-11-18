@@ -1304,6 +1304,16 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let adopted_field_idx = idx;
         llvm_field_tys.push(self.context.i64_type().into());
         idx += 1;
+        // GH #2028: synthetic `__run_active: i64` — 1 while the run
+        // wrapper of a locus a failure can come from is inside its
+        // `run()`. A handler that fails while it is 0 is followed by the
+        // supervisor's decision in its handler wrapper (a restart
+        // re-runs birth() and run(), an absorb stops it); while it is 1
+        // the run wrapper decides once `run()` returns, as for a failure
+        // `run()` raised itself.
+        let run_active_field_idx = idx;
+        llvm_field_tys.push(self.context.i64_type().into());
+        idx += 1;
         let _ = idx;
 
         let struct_ty = self
@@ -1398,6 +1408,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 held_by_owner_field_idx,
                 domain_field_idx,
                 adopted_field_idx,
+                run_active_field_idx,
                 built_params_field_idx,
                 reclaim_claimed_field_idx,
                 slot_borrowed_mask_field_idx,

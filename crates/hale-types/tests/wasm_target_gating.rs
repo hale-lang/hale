@@ -43,6 +43,8 @@ fn target_wasm_rejects_posix_stdlib() {
         ("std::io::tls::close(0);", "std::io::tls::close"),
         ("let _ = std::term::is_tty(1);", "std::term::is_tty"),
         ("let _ = std::process::pid();", "std::process::pid"),
+        // GH #1908: no resolver in the browser
+        ("let _ = std::net::resolve(\"localhost\") or raise;", "std::net::resolve"),
     ];
     for (call, path) in cases {
         let src = format!("target wasm {{ }}\nfn main() {{ {} }}", call);

@@ -455,6 +455,9 @@ ns std::math open_prefixes=[]
   tan pure
   tanh pure
   trunc pure
+ns std::net open_prefixes=[]
+  __resolve syscall|block
+  resolve syscall|block
 ns std::observe open_prefixes=[]
   __registry alloc
   __drop_registry pure
@@ -1151,6 +1154,8 @@ std::metrics::labels_two | lookup=metrics@2 | locus=false | effects=pure | sig=-
 std::metrics::metric_key | lookup=metrics@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=metric_key
 std::mth::sqrt | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::mth` — did you mean `std::math`?
 std::name::Convention | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
+std::net::__resolve | lookup=net@2 | locus=false | effects=syscall|block | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=true | unknown=- | suggest=__resolve
+std::net::resolve | lookup=net@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=resolve
 std::observe::Otlp | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Otlp` | suggest=-
 std::observe::Probes | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Probes` | suggest=-
 std::observe::Scrape | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Scrape` | suggest=-

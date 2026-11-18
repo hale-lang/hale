@@ -510,6 +510,7 @@ admitted.
 | `std::term` | (no terminal in the browser) |
 | `std::process` | (no OS process control) |
 | `std::http` | (server is built on raw TCP) |
+| `std::net` | a lookup on the host, through an `@ffi("js")` host import |
 | `std::env` | configuration handed in through an `@ffi("js")` host import or an `@export` fn's arguments |
 | `std::io::mirror` | (no shared memory in the browser) |
 | `std::io::sockopt` | (no sockets in the browser) |

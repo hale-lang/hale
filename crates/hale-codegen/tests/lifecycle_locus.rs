@@ -41,6 +41,8 @@ mod perspective_ctor_override_agreement;
 mod pure_read_accessors;
 #[path = "repr_field_accessors.rs"]
 mod repr_field_accessors;
+#[path = "handler_failure_recovery.rs"]
+mod handler_failure_recovery;
 #[path = "restart_bound.rs"]
 mod restart_bound;
 #[path = "restart_in_place_params.rs"]
