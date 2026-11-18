@@ -1004,7 +1004,7 @@ root	CounterApp	the entry
 row	CounterApp@literal1	CounterApp	main	default
 row	CounterApp@literal1.c	Counter	main	default
 
-== crates/hale-cli/tests/flow_child_and_rekey_advisories.rs#a75c63d5
+== crates/hale-cli/tests/flow_child_and_rekey_advisories.rs#66d7a555
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.n	Nested	main	default

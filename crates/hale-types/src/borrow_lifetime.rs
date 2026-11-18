@@ -1862,9 +1862,7 @@ fn self_assigns_in_block(b: &Block, out: &mut Vec<(String, Span)>, called: &mut 
             }
             Expr::Or { inner, disposition, .. } => {
                 calls(inner, out, called);
-                if let hale_syntax::ast::OrDisposition::Substitute(sub) = disposition {
-                    calls(sub, out, called);
-                }
+                disposition_expr(disposition, out, called);
             }
             // GH #2027 review: an expression-valued `if`, `match` or
             // block (`let x = if c { self.k = 7; 1 } else { 0 };`) runs
@@ -1896,6 +1894,16 @@ fn self_assigns_in_block(b: &Block, out: &mut Vec<(String, Span)>, called: &mut 
             _ => {}
         }
     }
+    fn disposition_expr(d: &hale_syntax::ast::OrDisposition, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
+        disposition(Some(d), out, called)
+    }
+    fn disposition(d: Option<&hale_syntax::ast::OrDisposition>, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
+        match d {
+            Some(hale_syntax::ast::OrDisposition::Substitute(e)) => calls(e, out, called),
+            Some(hale_syntax::ast::OrDisposition::Fail(e, _)) => calls(e, out, called),
+            _ => {}
+        }
+    }
     fn if_stmt(i: &hale_syntax::ast::IfStmt, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
         calls(&i.cond, out, called);
         self_assigns_in_block(&i.then_block, out, called);
@@ -1913,8 +1921,28 @@ fn self_assigns_in_block(b: &Block, out: &mut Vec<(String, Span)>, called: &mut 
                         out.push((f.name.clone(), *span));
                     }
                 }
+                for seg in &target.tail {
+                    if let hale_syntax::ast::LValueSeg::Index(ix) = seg {
+                        calls(ix, out, called);
+                    }
+                }
                 calls(value, out, called);
             }
+            // GH #2027 review: a publish's subject, payload and its
+            // disposition's expression run too (`K <- self.make();`).
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                calls(subject, out, called);
+                calls(value, out, called);
+                disposition(or_disposition.as_ref(), out, called);
+            }
+            Stmt::Fail { value, .. } => calls(value, out, called),
+            Stmt::Recovery { args, .. } => {
+                for a in args {
+                    calls(a, out, called);
+                }
+            }
+            Stmt::Violate { payload: Some(e), .. } => calls(e, out, called),
+            Stmt::ShmWrite { body, .. } => self_assigns_in_block(body, out, called),
             Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Expr(value) => calls(value, out, called),
             Stmt::If(i) => if_stmt(i, out, called),
             Stmt::Match(m) => {

@@ -120,11 +120,12 @@ topic K {
 
 locus Nested {
     params { my_id: Int = 0; enabled: Bool = true; }
-    bus { subscribe K as on_k where key == self.my_id; }
+    bus { subscribe K as on_k where key == self.my_id; publish K; }
     birth() {
         BODY
     }
     fn set_key() { self.my_id = 9; }
+    fn make() -> Ev { self.my_id = 7; return Ev { id: 7 }; }
     fn on_k(e: Ev) { println("got ", e.id); }
 }
 
@@ -153,6 +154,8 @@ fn the_rekey_notice_sees_nested_assignments_in_birth() {
         "let x = match self.my_id { 0 -> { self.my_id = 7; 1 }, _ -> 0, }; println(x);",
         "let x = { self.my_id = 7; 1 }; println(x);",
         "let x = if self.enabled { self.set_key(); 1 } else { 0 }; println(x);",
+        // a publish's payload runs too
+        "K <- self.make();",
     ] {
         let ws = warnings(&KEYED.replace("BODY", body));
         assert!(
