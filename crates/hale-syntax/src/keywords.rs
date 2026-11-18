@@ -24,10 +24,12 @@
 /// Mirrors the match in `lexer.rs` (minus the `true`/`false`/`nil`
 /// literals, which highlighters colour as literals, not keywords).
 pub const HARD_KEYWORDS: &[&str] = &[
-    "locus", "perspective", "type", "const", "fn", "import", "export", "module",
+    "locus", "perspective", "type", "const", "fn", "import", "module",
     "let", "mut", "if", "else", "match", "for", "in", "while",
-    "return", "break", "continue", "self",
-    "trait", "impl", "interface", "async", "await", "macro",
+    "return", "break", "continue", "self", "interface",
+    // F.47: `trait`, `impl`, `async`, `await` and `macro` (reserved for
+    // future use) and `export` (an annotation name, `@export`) are
+    // ordinary identifiers, in neither list.
 ];
 
 /// Contextual keywords — lexed as `Ident`, coloured as keywords (matching

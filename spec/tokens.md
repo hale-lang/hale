@@ -111,19 +111,19 @@ again. This section is the canonical list the diagnostic points at.
 Hale has two kinds of keyword (decision F.43):
 
 - **Hard keywords** lex as their own tokens and are never names: the
-  declaration keywords, the statement / expression keywords, and the
-  words reserved for future use.
+  declaration keywords and the statement / expression keywords.
 - **Contextual keywords** lex as identifiers and are recognized only
   in the position that gives them meaning. Everywhere else they are
   ordinary names: a field, a `params` field, a parameter, a local, an
   enum variant, a struct-literal field, a member read, a `fn`. Every
-  family below other than the declaration, statement / expression and
-  future-use words is contextual, and each section says where its
-  words are keywords.
+  family below other than the declaration and statement / expression
+  words is contextual, and each section says where its words are
+  keywords.
 
-The list is frozen: [`keywords.txt`](./keywords.txt) holds every hard
+The list is pinned: [`keywords.txt`](./keywords.txt) holds every hard
 and contextual keyword, a test holds it equal to the compiler's, and a
-change to it is an RFC (STABILITY.md § Keywords).
+change to it is a decision entry in `decisions.md` and a CHANGELOG
+fragment (STABILITY.md § Keywords).
 
 Two declarations of a contextual word stay refused, because the name
 would collide with the syntax the word introduces at the use site:
@@ -147,9 +147,12 @@ would collide with the syntax the word introduces at the use site:
 
 ```
 locus           perspective     type            const
-fn              import          export          module
-interface
+fn              import          module          interface
 ```
+
+`export` is no keyword (F.47): `@export` is an annotation, read as the
+identifier `export` after `@` like every other annotation name (§
+Annotation inventory), and `export` is free as a name elsewhere.
 
 `interface` (F.20) declares a structural interface — a named set
 of method signatures. Any locus whose method set is a superset
@@ -424,21 +427,18 @@ compiler warning. A scalar declaration (a quantity, a point, an
 identity, a range) or a `unit` of such a name is an error
 (spec/units.md § The laws, law 12).
 
-### Reserved for future use (hard; not yet legal)
+### Reserved for future use
 
-```
-trait           impl            async           await
-macro
-```
+None. `trait`, `impl`, `async`, `await` and `macro` were reserved here
+with no grammar; F.47 unreserved all five, and each is an ordinary
+identifier, free as a field, parameter, local, type or fn name. A
+feature that ever takes one of them takes it as a contextual keyword
+(F.43).
 
-F.47 (proposed, awaiting confirmation) unreserves all five before
-1.0. Until it is confirmed and implemented they stay reserved.
-
-(`with` is no longer in this list — v1.x-VIOLATE recognizes it
-as a contextual keyword inside the `violate_stmt` production.
-`where` is no longer in this list either — Form K
-recognizes it as the suffix keyword on `binding_entry` carrying
-operational constraints.)
+(`with` and `where` left this list earlier: v1.x-VIOLATE recognizes
+`with` as a contextual keyword inside the `violate_stmt` production,
+and Form K recognizes `where` as the suffix keyword on
+`binding_entry` carrying operational constraints.)
 
 `yield` is a statement keyword (m26b) — explicit
 cooperative yield point; lowers to a bus-queue drain in

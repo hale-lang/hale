@@ -84,7 +84,6 @@ pub enum TokenKind {
     Const,
     Fn,
     Import,
-    Export,
     Module,
 
     // GH friction sweep 2026-10-12 ("can't the compiler be smart
@@ -124,12 +123,11 @@ pub enum TokenKind {
     // meaning and may be used as ordinary identifiers / namespaces
     // (e.g. `time::sleep`).)
 
-    // Keywords — reserved (parse-error if used)
-    Trait,
-    Impl,
-    Async,
-    Await,
-    Macro,
+    // F.47: `trait`, `impl`, `async`, `await` and `macro` were reserved
+    // for future use and are ordinary identifiers now, as `export` is
+    // (`@export` is an annotation name, read after `@` like `@form`).
+    // A feature that ever takes one of them takes it as a contextual
+    // keyword (F.43).
     // v1.x-VIOLATE (F.27): `with` is no longer reserved at the
     // lexer level. The lexer emits it as an Ident; the parser
     // recognizes it contextually inside `violate_stmt`.
@@ -205,7 +203,6 @@ impl TokenKind {
             TokenKind::Const => "const",
             TokenKind::Fn => "fn",
             TokenKind::Import => "import",
-            TokenKind::Export => "export",
             TokenKind::Module => "module",
             TokenKind::Let => "let",
             TokenKind::Mut => "mut",
@@ -223,11 +220,6 @@ impl TokenKind {
             TokenKind::Nil => "nil",
             TokenKind::KwSelf => "self",
             TokenKind::Interface => "interface",
-            TokenKind::Trait => "trait",
-            TokenKind::Impl => "impl",
-            TokenKind::Async => "async",
-            TokenKind::Await => "await",
-            TokenKind::Macro => "macro",
             _ => return None,
         })
     }
@@ -449,7 +441,6 @@ impl<'a> Lexer<'a> {
             "const" => TokenKind::Const,
             "fn" => TokenKind::Fn,
             "import" => TokenKind::Import,
-            "export" => TokenKind::Export,
             "module" => TokenKind::Module,
             // `topic` is contextually keyworded — recognized only
             // in top-level declaration position (see
@@ -485,13 +476,9 @@ impl<'a> Lexer<'a> {
             // through to the `Ident` case below and are recognized
             // by the parser in type position.)
 
-            // Reserved
-            "trait" => TokenKind::Trait,
-            "impl" => TokenKind::Impl,
             "interface" => TokenKind::Interface,
-            "async" => TokenKind::Async,
-            "await" => TokenKind::Await,
-            "macro" => TokenKind::Macro,
+            // F.47: `trait`, `impl`, `async`, `await`, `macro` and
+            // `export` are not here: they lex as Ident.
             // `with` is NOT in this list — v1.x-VIOLATE (F.27)
             // makes it a contextual keyword inside the
             // `violate_stmt` production. It lexes as Ident so

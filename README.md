@@ -521,17 +521,17 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 ## Where the language stands
 
 Hale is at **v0.35.0** (2026-11-18) and pre-1.0. What a release may
-change is written down in [`STABILITY.md`](./STABILITY.md): a patch
-release fixes bugs and changes nothing a correct program means; a
-minor release may break programs, and every release's CHANGELOG opens
-with a *Breaking* heading listing each break with its migration (or
-`None.`). In the **stable** tier (the core language and the everyday
-stdlib, per [`spec/stability.toml`](./spec/stability.toml)) a removed
-form warns for a minor release before it is refused. The
-**experimental** tier (the unit dialect, the api binding, `U256`,
-observability, DNA's surfaces among others) may change in any minor
-release. The keyword list is frozen behind a golden, and changing it
-takes an RFC. Breaks have been frequent: v0.22.0, for one, carried
+change is written down in [`STABILITY.md`](./STABILITY.md): before 1.0
+any release may change the language or the stdlib, with no deprecation
+window. A break migrates the project's own Hale code in the same
+change, and every release's CHANGELOG opens with a *Breaking* heading
+listing each break with a one-line migration (or `None.`).
+[`spec/stability.toml`](./spec/stability.toml) marks what is settled
+(**stable**: the core language and the everyday stdlib) and what is
+still moving (**experimental**: the unit dialect, the api binding,
+`U256`, observability, DNA's surfaces among others); at 1.0 the stable
+tier becomes the compatibility promise. The keyword list is pinned
+behind a golden, and changing it takes a decision entry. Breaks have been frequent: v0.22.0, for one, carried
 nine (a bare call to a fallible stdlib function became an error, a
 revealed secret is consumed in the statement that reveals it, a second
 `on_failure` for one child type is refused). 1.0 waits on the exit

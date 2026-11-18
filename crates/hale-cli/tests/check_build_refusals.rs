@@ -498,7 +498,7 @@ fn api_serve_has_no_seventeen_receiver_cliff() {
     assert!(!built && !bout.contains("codegen error"), "build: {bout}");
 }
 
-/// GH #1943, STABILITY.md § Deprecation: v0.35 makes `std::json::Builder.field`
+/// GH #1943: v0.35 makes `std::json::Builder.field`
 /// and `.value` quote and escape their argument as a string, as the spec
 /// always said they take one (v0.33 and v0.34 warned `deprecated:` at each
 /// call, which wrote it raw). A call now checks with no warning and writes

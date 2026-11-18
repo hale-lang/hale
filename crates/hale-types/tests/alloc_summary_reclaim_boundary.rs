@@ -648,6 +648,10 @@ fn per_target_moves() {
 /// temporaries go, each in a fn that frees at return (the check above
 /// holds every site that goes to that), and three tags of values its fns
 /// hand back move into the caller's arena; no leak site appears.
+///
+/// `freed_keywords_test` (F.47) is a new target: six tags of the values
+/// its fns hand back move into the caller's arena; no leak site goes or
+/// appears.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -701,6 +705,7 @@ const PINNED: &[&str] = &[
     "tests/hale/factory_field_owner_test.hl: 2 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
     "tests/hale/float_ieee_compare_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/float_widening_surfaces_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/freed_keywords_test.hl: 0 go, 0 appear; dump 6 tags, 0 reclaim, 0 verdicts",
     "tests/hale/identities_and_ranges_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/imported_fn_value_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/json_escape_runs_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",

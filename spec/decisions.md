@@ -3848,12 +3848,15 @@ would drown in them; the checked calls cover the sites that expect a
 failure. *Literal suffixes (`5u256`)*: a unit may be named `u256`, so a
 suffix collides with the unit dialect's literals.
 
-### F.47 — The five future-use words are unreserved before 1.0 (proposed)
+### F.47 — The five future-use words are unreserved before 1.0
 
-**Status: proposed, awaiting confirmation; not implemented.** The
-keyword list is frozen (STABILITY.md § Keywords), so the change, once
-confirmed, lands as its own PR that edits `spec/keywords.txt`, the
-lexer and spec/tokens.md § Reserved for future use together.
+**Status: accepted and implemented (2026-11-18).** Proposed while the
+keyword list was frozen behind an RFC; confirmed under the pre-1.0
+policy (STABILITY.md), which takes a decision entry and a CHANGELOG
+fragment for a keyword change. The implementing PR edited
+`spec/keywords.txt`, the lexer, `keywords.rs`, spec/tokens.md and
+spec/grammar.ebnf together, and unreserved `export` with the five (see
+"`export`" below).
 
 **Problem.** `trait`, `impl`, `async`, `await` and `macro` are hard
 keywords with no grammar (spec/tokens.md § Reserved for future use):
@@ -3862,7 +3865,7 @@ the lexer refuses them as names, and no production uses them. Before
 carried into 1.x is a promise of syntax nobody has designed, kept at
 the price of five ordinary words.
 
-**Decision (proposed).** Unreserve all five: each lexes as an
+**Decision.** Unreserve all five: each lexes as an
 identifier, free as a field, parameter, local or fn name. Each word's
 feature already has a Hale answer that took a different shape:
 
@@ -3899,6 +3902,15 @@ and keep others* (for example, keep `async`/`await` for an
 effect-typed future). Nothing in the effect system (effect classes and
 budgets) needs a keyword at a call site, and the split would need
 a reason per word that none of them has.
+
+**`export`.** `export` was a hard keyword too, but the language only
+ever spells it `@export` (spec/ffi.md § WASM host interface), and an
+annotation name needs no reserved word: `@form`, `@ffi`, `@positional`
+and every other annotation are identifiers read after `@`. The parser
+now reads `@export` the same way, as the identifier `export` after `@`,
+so the annotation is unchanged and `export` is free as a name
+everywhere else. Unreserving it accepts strictly more programs, as the
+five do.
 
 ### F.48 — A body that returns a value ends in one, and its last statement is its value
 

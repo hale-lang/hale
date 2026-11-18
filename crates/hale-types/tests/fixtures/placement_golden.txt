@@ -8690,6 +8690,9 @@ row	App@literal1	App	main	default
 row	~	Keeper	main	default
 row	~.rows	Rows	main	inherited
 
+== tests/hale/freed_keywords_test.hl
+row	Holder@main1	Holder	main	default
+
 == tests/hale/generic_monomorph_test.hl
 row	Cache_Int_String@main1	Cache_Int_String	main	default
 row	Holder_Int@main2	Holder_Int	main	default

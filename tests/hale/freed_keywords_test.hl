@@ -1,0 +1,46 @@
+// F.47: `trait`, `impl`, `async`, `await` and `macro` were reserved for
+// future use, and `export` was a hard keyword the language only spells
+// `@export`. All six are ordinary identifiers now: each names a field,
+// a local and a fn here, and the program computes with them.
+
+type Words {
+    trait: Int = 1;
+    impl: Int = 2;
+    async: Int = 3;
+    await: Int = 4;
+    macro: Int = 5;
+    export: Int = 6;
+}
+
+fn trait(n: Int) -> Int { return n + 10; }
+fn impl(n: Int) -> Int { return n + 20; }
+fn async(n: Int) -> Int { return n + 30; }
+fn await(n: Int) -> Int { return n + 40; }
+fn macro(n: Int) -> Int { return n + 50; }
+fn export(n: Int) -> Int { return n + 60; }
+
+locus Holder {
+    params { await: Int = 7; }
+    fn macro() -> Int { return self.await * 2; }
+}
+
+fn main() {
+    let w = Words { };
+    let trait = w.trait;
+    let impl = w.impl;
+    let async = w.async;
+    let await = w.await;
+    let macro = w.macro;
+    let export = w.export;
+    std::test::assert_eq_int(
+        trait + impl + async + await + macro + export,
+        21,
+        "the six fields, read into six locals",
+    );
+    std::test::assert_eq_int(trait(trait), 11, "a fn and a local of one name");
+    std::test::assert_eq_int(impl(impl) + async(async), 55, "impl and async as fns");
+    std::test::assert_eq_int(await(await) + macro(macro), 99, "await and macro as fns");
+    std::test::assert_eq_int(export(export), 66, "export as a fn, beside the @export annotation");
+    let h = Holder { };
+    std::test::assert_eq_int(h.macro(), 14, "a locus method and a params field");
+}

@@ -1,4 +1,4 @@
-//! The keyword list is frozen (STABILITY.md § Keywords, GH #1950).
+//! The keyword list is pinned (STABILITY.md § Keywords, GH #1950).
 //!
 //! `spec/keywords.txt` holds every hard and every contextual keyword.
 //! `keywords_are_frozen` fails on any difference between it and
@@ -7,12 +7,13 @@
 //! other direction is `keyword_sync.rs`'s), so a keyword cannot be added,
 //! dropped or moved between the two kinds by editing one file.
 //!
-//! Changing the list is a language change and goes through an RFC: an
-//! issue titled `RFC: …`, decided and recorded in `spec/decisions.md`.
-//! The PR that implements the decision edits `spec/keywords.txt` by hand
-//! and names the decision in its CHANGELOG fragment's `### Breaking`
-//! section (a new hard keyword breaks every program using the word as a
-//! name; a new contextual one may, in its position).
+//! Changing the list is a deliberate language change. Before 1.0 it
+//! needs no RFC: it needs a decision entry in `spec/decisions.md` and a
+//! CHANGELOG fragment. The PR that implements the decision edits
+//! `spec/keywords.txt` by hand and names the decision in its fragment,
+//! under `### Breaking` when it can break a program (a new hard keyword
+//! breaks every program using the word as a name; a new contextual one
+//! may, in its position).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -20,11 +21,11 @@ use std::path::PathBuf;
 
 use hale_syntax::keywords::{CONTEXTUAL_KEYWORDS, HARD_KEYWORDS};
 
-const RFC: &str = "The keyword list is frozen: adding, removing or reclassifying a keyword \
-     takes an RFC (an issue titled `RFC: ...`, its decision recorded in spec/decisions.md; \
-     see STABILITY.md § Keywords). With the decision in hand, update spec/keywords.txt \
-     to the expected text above in the same PR and list the change under `### Breaking` \
-     in its CHANGELOG fragment.";
+const HOW_TO_CHANGE: &str = "The keyword list is pinned: adding, removing or reclassifying a keyword \
+     is a deliberate language change. It needs a decision entry in spec/decisions.md and a \
+     CHANGELOG fragment (see STABILITY.md § Keywords). With the decision in hand, update \
+     spec/keywords.txt to the expected text above in the same PR, and list the change in \
+     its fragment, under `### Breaking` when it can break a program.";
 
 const LITERALS: &[&str] = &["true", "false", "nil"];
 
@@ -38,9 +39,10 @@ fn sorted(words: &[&'static str]) -> BTreeSet<&'static str> {
 
 fn render() -> String {
     let mut out = String::from(
-        "# Hale's keywords, frozen (STABILITY.md § Keywords).\n\
+        "# Hale's keywords, pinned (STABILITY.md § Keywords).\n\
          # Held equal to crates/hale-syntax/src/keywords.rs by\n\
-         # crates/hale-syntax/tests/keyword_freeze.rs. A change is an RFC.\n\
+         # crates/hale-syntax/tests/keyword_freeze.rs. A change is a\n\
+         # decision entry (spec/decisions.md) and a CHANGELOG fragment.\n\
          #\n\
          # hard: lexed as their own token, never a name (spec/tokens.md\n\
          # § Reserved words). contextual: lexed as a name, a keyword only in\n\
@@ -81,7 +83,7 @@ fn keywords_are_frozen() {
         "spec/keywords.txt differs from crates/hale-syntax/src/keywords.rs.\n\
          lines in keywords.rs but not the golden: {added:?}\n\
          lines in the golden but not keywords.rs: {removed:?}\n\
-         expected spec/keywords.txt:\n{want}\n{RFC}"
+         expected spec/keywords.txt:\n{want}\n{HOW_TO_CHANGE}"
     );
 }
 
@@ -108,11 +110,11 @@ fn lexer_reserves_exactly_the_hard_keywords() {
     let unlisted: Vec<&&str> = reserved.difference(&listed).collect();
     assert!(
         unlisted.is_empty(),
-        "the lexer reserves {unlisted:?}, which HARD_KEYWORDS (and spec/keywords.txt) do not list.\n{RFC}"
+        "the lexer reserves {unlisted:?}, which HARD_KEYWORDS (and spec/keywords.txt) do not list.\n{HOW_TO_CHANGE}"
     );
     let unreserved: Vec<&&str> = listed.difference(&reserved).collect();
     assert!(
         unreserved.is_empty(),
-        "HARD_KEYWORDS lists {unreserved:?}, which the lexer's keyword match does not reserve.\n{RFC}"
+        "HARD_KEYWORDS lists {unreserved:?}, which the lexer's keyword match does not reserve.\n{HOW_TO_CHANGE}"
     );
 }

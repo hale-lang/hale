@@ -1,36 +1,31 @@
-# Hale's keywords, frozen (STABILITY.md § Keywords).
+# Hale's keywords, pinned (STABILITY.md § Keywords).
 # Held equal to crates/hale-syntax/src/keywords.rs by
-# crates/hale-syntax/tests/keyword_freeze.rs. A change is an RFC.
+# crates/hale-syntax/tests/keyword_freeze.rs. A change is a
+# decision entry (spec/decisions.md) and a CHANGELOG fragment.
 #
 # hard: lexed as their own token, never a name (spec/tokens.md
 # § Reserved words). contextual: lexed as a name, a keyword only in
 # its position (F.43).
 
 [hard]
-async
-await
 break
 const
 continue
 else
-export
 fn
 for
 if
-impl
 import
 in
 interface
 let
 locus
-macro
 match
 module
 mut
 perspective
 return
 self
-trait
 type
 while
 
