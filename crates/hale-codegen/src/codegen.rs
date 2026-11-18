@@ -22456,7 +22456,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.str_concat(acc, close.into())
     }
 
-    /// RFC #2035: call the template function `f` (`__display_tpl_…`) on
+    /// RFC #2035: call the template function `f` (`display::record_fn`, `variant_fn`) on
     /// `v`, the value it renders, as the call `f(v)` is lowered: the
     /// call site's arena is the callee's caller arena, so the text lands
     /// where the equivalent f-string's would. `None` when the program has

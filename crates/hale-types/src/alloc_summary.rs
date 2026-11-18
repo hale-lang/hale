@@ -7045,18 +7045,43 @@ impl<'a> Walker<'a> {
     }
 
     /// RFC #2035 (F.54): the `@display` template functions a rendering of
-    /// `value` calls: its record's (`__display_tpl_T`), or every templated
-    /// variant's of its enum (`__display_tpl_E__V`). Empty when the walk
-    /// cannot type the value or its type declares no template.
+    /// `value` calls. Empty when the walk cannot type the value.
     fn display_templates_of(&self, value: &Expr) -> Vec<String> {
         let Some(t) = self.receiver_type_name(value) else { return Vec::new() };
-        let record = hale_syntax::display::record_fn(&t);
-        let variant = format!("{record}__");
-        self.known
-            .keys()
-            .filter(|(l, n)| l.is_none() && (*n == record || n.starts_with(&variant)))
-            .map(|(_, n)| n.clone())
-            .collect()
+        let mut out = Vec::new();
+        self.display_templates_of_type(&t, &mut BTreeSet::new(), &mut out);
+        out
+    }
+
+    /// The template functions rendering a value of type `t` calls: its
+    /// record's template, or every templated variant's of its enum; and,
+    /// where it renders structurally, those its fields' renderings call,
+    /// at any depth (GH #2061 review: `Outer { v: Inner }` renders `v` by
+    /// `Inner`'s template, so `to_string(o)` costs what that template
+    /// allocates). A record's template renders its own fields, and its
+    /// function's rows carry what they call.
+    fn display_templates_of_type(&self, t: &str, seen: &mut BTreeSet<String>, out: &mut Vec<String>) {
+        if !seen.insert(t.to_string()) {
+            return;
+        }
+        let record = hale_syntax::display::record_fn(t);
+        if self.known.contains_key(&(None, record.clone())) {
+            out.push(record);
+            return;
+        }
+        let variants = hale_syntax::display::variant_fn_prefix(t);
+        out.extend(
+            self.known
+                .keys()
+                .filter(|(l, n)| l.is_none() && n.starts_with(&variants))
+                .map(|(_, n)| n.clone()),
+        );
+        if let Some(fields) = self.all_struct_fields.get(t) {
+            let tys: Vec<String> = fields.values().cloned().collect();
+            for ft in tys {
+                self.display_templates_of_type(&ft, seen, out);
+            }
+        }
     }
 
     /// A rendering of `value` at `span`: a call of each template function

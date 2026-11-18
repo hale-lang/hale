@@ -16239,7 +16239,7 @@ impl<'a> Checker<'a> {
         let prev_body = std::mem::replace(&mut self.body, decl.id);
         let prev_tpl = std::mem::replace(
             &mut self.in_display_template,
-            decl.name.name.starts_with("__display_tpl_"),
+            decl.name.name.starts_with(hale_syntax::display::TEMPLATE_PREFIX),
         );
         self.check_fn_at(decl, locus);
         self.in_display_template = prev_tpl;

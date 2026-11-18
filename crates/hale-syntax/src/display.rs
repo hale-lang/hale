@@ -13,13 +13,13 @@
 //! literal brace.
 //!
 //! The desugar writes one function per template ([`generate_displays_in`]):
-//! `__display_tpl_<T>(__v: T) -> String` for a record, and
-//! `__display_tpl_<E>__<V>(__v: E) -> String` for an enum's variant. Each
+//! [`record_fn`] `(__v: T) -> String` for a record, and [`variant_fn`]
+//! `(__v: E) -> String` for an enum's variant. Each
 //! hole is `to_string(field)` or `__fmt(field, "spec")`, the calls an
 //! f-string makes, placed at the hole's span. So the checker holds each
 //! hole to the f-string rules (a printable value, a spec that fits it) at
 //! the template, and lowering renders a value of the type by calling the
-//! function. `T::display(v)` is written as `__display_<T>`, whose body is
+//! function. `T::display(v)` is written as [`display_fn`], whose body is
 //! `to_string(v)`, and a use of it is rewritten to call it. Both are
 //! ordinary functions: what they allocate lands in the caller's frame, as
 //! the f-string they stand for does, and the analyses read them as they
@@ -35,32 +35,51 @@ use crate::error::Diag;
 use crate::json_gen::{hale_str, next_synth_base, rewrite_items};
 use crate::span::Span;
 
-/// The function a record's template renders through.
+/// The prefix every template function's name starts with.
+pub const TEMPLATE_PREFIX: &str = "__display_tpl_";
+
+/// The function a record's template renders through:
+/// `__display_tpl_r<len>_<T>`. The kind letter and the type name's
+/// length keep every generated name distinct: a record named `E__V` and
+/// enum `E`'s variant `V` name two functions (GH #2061 review), and so do
+/// `E = A__B, V = C` and `E = A, V = B__C`.
 pub fn record_fn(t: &str) -> String {
-    format!("__display_tpl_{t}")
+    format!("{TEMPLATE_PREFIX}r{}_{t}", t.len())
 }
 
-/// The function an enum variant's template renders through.
+/// The function an enum variant's template renders through:
+/// `__display_tpl_v<len>_<E>_<V>`, `len` the enum name's.
 pub fn variant_fn(e: &str, v: &str) -> String {
-    format!("__display_tpl_{e}__{v}")
+    format!("{TEMPLATE_PREFIX}v{}_{e}_{v}", e.len())
 }
 
-/// The function `T::display` names.
+/// The prefix of every variant template function of the enum `e`.
+pub fn variant_fn_prefix(e: &str) -> String {
+    format!("{TEMPLATE_PREFIX}v{}_{e}_", e.len())
+}
+
+/// The function `T::display` names: `__display_of_<T>`, a family no
+/// template function's name is in.
 pub fn display_fn(t: &str) -> String {
-    format!("__display_{t}")
+    format!("__display_of_{t}")
 }
 
 /// A function the desugar wrote, as a diagnostic names it: `T::display`,
 /// and a template's `@display(T)` or `@display(E::V)`; `None` for any
 /// other name.
 pub fn generated_display(f: &str) -> Option<String> {
-    if let Some(rest) = f.strip_prefix("__display_tpl_") {
-        return Some(match rest.split_once("__") {
-            Some((e, v)) => format!("@display({e}::{v})"),
-            None => format!("@display({rest})"),
-        });
+    if let Some(rest) = f.strip_prefix(TEMPLATE_PREFIX) {
+        let (kind, rest) = rest.split_at_checked(1)?;
+        let (len, rest) = rest.split_once('_')?;
+        let len: usize = len.parse().ok()?;
+        let name = rest.get(..len)?;
+        return match kind {
+            "r" if rest.len() == len => Some(format!("@display({name})")),
+            "v" => rest.get(len + 1..).filter(|v| !v.is_empty()).map(|v| format!("@display({name}::{v})")),
+            _ => None,
+        };
     }
-    f.strip_prefix("__display_").filter(|t| !t.is_empty()).map(|t| format!("{t}::display"))
+    f.strip_prefix("__display_of_").filter(|t| !t.is_empty()).map(|t| format!("{t}::display"))
 }
 
 /// Parse a template's text. `lit` is the string literal's span (quotes
@@ -434,9 +453,25 @@ mod tests {
 
     #[test]
     fn generated_names_display_as_written() {
-        assert_eq!(generated_display("__display_Money").as_deref(), Some("Money::display"));
-        assert_eq!(generated_display("__display_tpl_Money").as_deref(), Some("@display(Money)"));
-        assert_eq!(generated_display("__display_tpl_Side__Buy").as_deref(), Some("@display(Side::Buy)"));
+        assert_eq!(generated_display(&display_fn("Money")).as_deref(), Some("Money::display"));
+        assert_eq!(generated_display(&record_fn("Money")).as_deref(), Some("@display(Money)"));
+        assert_eq!(generated_display(&variant_fn("Side", "Buy")).as_deref(), Some("@display(Side::Buy)"));
+        assert_eq!(generated_display(&record_fn("E__V")).as_deref(), Some("@display(E__V)"));
+        assert_eq!(generated_display(&variant_fn("A__B", "C")).as_deref(), Some("@display(A__B::C)"));
+    }
+
+    /// GH #2061 review: no two templates share a function. A record named
+    /// like an enum's variant function, and two enum/variant pairs that
+    /// join to one string, each name a function of their own.
+    #[test]
+    fn generated_names_never_collide() {
+        assert_ne!(record_fn("E__V"), variant_fn("E", "V"));
+        assert_ne!(record_fn("E_V"), variant_fn("E", "V"));
+        assert_ne!(variant_fn("A__B", "C"), variant_fn("A", "B__C"));
+        assert_ne!(variant_fn("A_B", "C"), variant_fn("A", "B_C"));
+        assert_ne!(display_fn("tpl_r1_X"), record_fn("X"));
+        assert!(variant_fn("E", "V").starts_with(&variant_fn_prefix("E")));
+        assert!(!variant_fn("E2", "V").starts_with(&variant_fn_prefix("E")));
         assert_eq!(generated_display("__enum_name_Side"), None);
     }
 }

@@ -14,7 +14,8 @@
 //   - `{x:?}`, recursively structural, quoting a String inside a
 //     composite; and padding a templated value (`{m:>12}`);
 //   - an alias and an imported type keep their declaration's template;
-//   - `T::display(v)`, called and passed as a function value.
+//   - `T::display(v)`, called and passed as a function value;
+//   - a record named like an enum variant's template keeps its own.
 //
 // Every String a template holds is built at run time
 // (`std::str::upper`), so a read after its block was freed is one ASan
@@ -66,6 +67,17 @@ type Gauge {
 }
 
 type Cash = Money;
+
+// A record named like an enum variant's template function, beside that
+// enum (GH #2061 review): each renders by its own template.
+@display("record {n}")
+type Pick__Left {
+    n: Int;
+}
+
+type Pick = enum {
+    @display("left {0}") Left(Int),
+};
 
 fn usd(d: Int, c: Int) -> Money {
     return Money { dollars: d, cents: c, currency: std::str::upper("usd") };
@@ -147,6 +159,13 @@ fn main() {
         "an imported enum's",
     );
     std::test::assert_eq_str(lib::Ticket::display(t), "#7", "an imported type's `display`");
+
+    // Two templates whose names could meet each render by their own.
+    std::test::assert_eq_str(
+        f"{Pick__Left { n: 4 }} / {Pick::Left(9)}",
+        "record 4 / left 9",
+        "a record and a variant never share a template",
+    );
 
     // `T::display`, called and passed as a value.
     std::test::assert_eq_str(Money::display(m), "$12.05 USD", "T::display(v)");

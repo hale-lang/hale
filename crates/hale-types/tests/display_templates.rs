@@ -158,3 +158,43 @@ fn main() {
     let ds = entries::check_program(&program);
     assert!(ds.iter().all(|d| !d.is_error()), "{ds:?}");
 }
+
+/// GH #2061 review: what a rendering allocates includes the templates its
+/// structural rendering reaches. `Outer { v: Inner }` renders `v` by
+/// `Inner`'s template, so `to_string(o)` costs what that template
+/// allocates, at any depth, and a zero-alloc budget refuses it as it
+/// refuses `to_string(inner)`. `{d:?}` reaches no template.
+#[test]
+fn a_budget_counts_templates_reached_through_a_structural_record() {
+    let src = r#"
+@display("inner {x} and {y}")
+type Inner { x: Int; y: Int; }
+
+type Outer { v: Inner; }
+
+type Deep { o: Outer; }
+
+@budget(alloc_per_call = 0)
+fn direct(i: Inner) -> String { return to_string(i); }
+
+@budget(alloc_per_call = 0)
+fn show(o: Outer) -> String { return to_string(o); }
+
+@budget(alloc_per_call = 0)
+fn deep(d: Deep) -> String { return to_string(d); }
+
+fn main() {
+    let o = Outer { v: Inner { x: 1, y: 2 } };
+    println(direct(o.v), show(o), deep(Deep { o: o }));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let ds = entries::check_program(&program);
+    for f in ["direct", "show", "deep"] {
+        assert!(
+            ds.iter().any(|d| d.is_error()
+                && d.message.contains(&format!("`{f}` declares `@budget(alloc_per_call = 0)` but the compiler counts 3"))),
+            "`{f}` renders through `Inner`'s template, three allocations: {ds:?}"
+        );
+    }
+}
