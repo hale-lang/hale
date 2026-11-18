@@ -18037,6 +18037,7 @@ impl<'a> Checker<'a> {
             for alt in arm.pattern.alternatives() {
                 self.check_set_pattern(alt, &scrut_ty);
                 self.check_bare_variant_pattern(alt, &scrut_ty);
+                self.check_pattern_variants(alt);
                 self.check_pattern_literals(alt, &scrut_ty);
                 // `Decimal<S>`: a Decimal literal pattern is a value of the
                 // scrutinee's scale, judged at it.
@@ -22418,6 +22419,101 @@ impl<'a> Checker<'a> {
         ))
     }
 
+    /// GH #2023: why `E::V` (`alias::E::V` through an import) names no
+    /// variant of the enum `E`, or `None` when it does, when its head is
+    /// no enum, or when the last segment is one of the enum's own names
+    /// (`E::name`, `E::parse`, `E::variants`, `E::index`; RFC #1995 E1,
+    /// `enum_name_refusal` speaks about those). Every position reaches
+    /// this: a value, an operand, a constructor call's callee and a
+    /// constructor pattern. Lowering refuses every such path (`enum `E`
+    /// has no variant `V``), so until GH #2023 the check passed a typo'd
+    /// variant and the build refused it.
+    fn missing_variant(&self, qn: &QualifiedName) -> Option<String> {
+        let n = qn.segments.len();
+        if n < 2 {
+            return None;
+        }
+        let variant = qn.segments[n - 1].name.as_str();
+        if hale_syntax::enum_names::Op::of(variant).is_some() {
+            return None;
+        }
+        let head: Vec<&str> = qn.segments[..n - 1].iter().map(|s| s.name.as_str()).collect();
+        let shown = head.join("::");
+        let name = if n == 2 { shown.clone() } else { self.known.import_target(&shown)?.to_string() };
+        let names = self.enum_variant_names(&name)?;
+        if names.contains(&variant) {
+            return None;
+        }
+        let hint = match closest_bare_name(variant, &names) {
+            Some(h) => format!(" — did you mean `{h}`?"),
+            None if names.is_empty() => String::new(),
+            None => format!("; its variants are {}", names.join(", ")),
+        };
+        // A concrete alias of a generic enum reaches here as the
+        // monomorph's mangled name (`E_Int`); it is shown as written.
+        let shown = match self.typed.monomorphs.named(&shown) {
+            Some(m) => match self.templates.get(m.template) {
+                Some(t) => format!("{}<{}>", t.name(), m.args.iter().map(Ty::display).collect::<Vec<_>>().join(", ")),
+                None => shown,
+            },
+            None => shown,
+        };
+        Some(format!("enum `{shown}` has no variant `{variant}`{hint}"))
+    }
+
+    /// GH #2023: the variant names of the enum `name` spells, or `None`
+    /// when it spells no enum: a generic enum's template (`E`), a
+    /// concrete enum, or an alias of either, followed to its target —
+    /// a concrete alias of a generic enum (`type I = E<Int>;`) resolves
+    /// to the monomorph's mangled name (`E_Int`), whose template's
+    /// variants are the instantiation's.
+    fn enum_variant_names(&self, name: &str) -> Option<Vec<&str>> {
+        let mut cur = name.to_string();
+        for _ in 0..16 {
+            if let Some(td) = self.generic_types.get(cur.as_str()) {
+                let TypeDeclBody::Enum(vs) = &td.body else { return None };
+                return Some(vs.iter().map(|v| v.name.name.as_str()).collect());
+            }
+            match self.top.symbols.get(cur.as_str()) {
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                    return Some(vs.iter().map(|v| v.name.as_str()).collect());
+                }
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Alias(Ty::Named(n)), .. })) => {
+                    cur = n.clone();
+                    continue;
+                }
+                Some(_) => return None,
+                None => {}
+            }
+            let (GenericTemplate::Type(td), _) = self.resolve_generic_monomorph(&cur)? else { return None };
+            let TypeDeclBody::Enum(vs) = &td.body else { return None };
+            return Some(vs.iter().map(|v| v.name.name.as_str()).collect());
+        }
+        None
+    }
+
+    /// GH #2023: the constructor patterns of `pat` (its alternatives, a
+    /// variant's values and a tuple's parts too) that name no variant of
+    /// their enum.
+    fn check_pattern_variants(&mut self, pat: &Pattern) {
+        match pat {
+            Pattern::Constructor { path, args, span } => {
+                if let Some(why) = self.missing_variant(path) {
+                    self.diags.push(Diag::ty(*span, why));
+                }
+                for a in args {
+                    self.check_pattern_variants(a);
+                }
+            }
+            Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => {
+                for p in ps {
+                    self.check_pattern_variants(p);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) | Pattern::Binding(_) => {}
+        }
+    }
+
     fn check_qualified_path(&mut self, path: &QualifiedName) {
         if let Some(msg) = self.unresolved_qualified(path) {
             self.diags.push(Diag::ty(path.span, msg));
@@ -23894,6 +23990,12 @@ impl<'a> Checker<'a> {
                             return Ty::Named(enum_name.clone());
                         }
                     }
+                }
+                // GH #2023: `E::V` where the enum `E` declares no `V`, as a
+                // value, an operand or a constructor call's callee.
+                if let Some(why) = self.missing_variant(qn) {
+                    self.diags.push(Diag::ty(qn.span, why));
+                    return Ty::Unknown;
                 }
                 // RFC #1995 E1: `E::variants` of an enum it does not apply
                 // to, and `E::name` / `E::parse` / `E::index` not called
