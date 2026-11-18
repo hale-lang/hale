@@ -3607,10 +3607,13 @@ Out of scope for v1 (fall through to bus dispatch unchanged):
   raises is carried out by its handler wrapper, which the direct
   call bypassed: after the supervisor's `restart(c)` neither
   `birth()` nor `run()` ran again, and after an absorb the child
-  kept handling the next message. (The intra-locus shape stays a
-  direct call: its handler runs inside the publisher's own body,
-  whose wrapper decides after it, and it reaches that instance
-  alone.)
+  kept handling the next message. The intra-locus shape stays a
+  direct call, since it reaches that instance alone; a failure its
+  handler raises is carried out right after the call as the handler
+  wrapper would (a held child stops; outside a `run()` of it, a
+  restart re-runs `birth()` and `run()`), and a child that failed
+  and was not restarted does not handle what it publishes to itself
+  afterwards.
 - **Bus adapters (GH #1032).** A locus named as an adapter in a
   `bindings { }` entry is never the publisher of a rewrite: the
   runtime calls its `send` on the publisher's thread, so a publish

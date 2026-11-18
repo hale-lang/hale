@@ -123,3 +123,77 @@ fn the_publish_to_a_field_child_that_can_fail_takes_the_bus() {
     let app_run = &app_run[..app_run.find("\n}\n").unwrap_or(app_run.len())];
     assert!(!app_run.contains("@Worker.on_job("), "App.run calls the handler directly:\n{app_run}");
 }
+
+/// Review of #2052: a locus's publish to its own subscription stays a
+/// direct call (it reaches this instance alone), and no handler wrapper
+/// surrounds it when an ordinary method its owner calls makes it, after
+/// the child's `run()` returned. The decision is carried out after the
+/// direct call instead.
+fn self_publish(recovery: &str) -> String {
+    format!(
+        r#"
+type Job {{ n: Int; }}
+
+topic Jobs {{
+    payload: Job;
+    subject: "jobs";
+}}
+
+locus Worker {{
+    params {{ births: Int = 0; runs: Int = 0; last: Int = 0; }}
+    bus {{ subscribe Jobs as on_job; publish Jobs; }}
+    closure bad_job {{ captures: last; epoch inline; }}
+    birth() {{
+        self.births = self.births + 1;
+        println("birth ", self.births);
+    }}
+    run() {{
+        self.runs = self.runs + 1;
+        println("run ", self.runs);
+    }}
+    fn send(n: Int) {{
+        Jobs <- Job {{ n: n }};
+    }}
+    fn on_job(j: Job) {{
+        println("job ", j.n);
+        self.last = j.n;
+        if j.n == 2 {{
+            violate bad_job;
+        }}
+    }}
+}}
+
+main locus App {{
+    params {{ w: Worker = Worker {{ }}; }}
+    on_failure(c: Worker, err: ClosureViolation) {{
+        println("failed ", err.closure);
+        {recovery}
+    }}
+    run() {{
+        self.w.send(1);
+        self.w.send(2);
+        self.w.send(3);
+        println("births ", self.w.births, " runs ", self.w.runs);
+    }}
+}}
+
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+#[test]
+fn a_restart_after_a_self_publishs_handler_failure_reruns_birth_and_run() {
+    let out = run("self_restart", &self_publish("restart(c);"));
+    assert_eq!(
+        out,
+        ["birth 1", "run 1", "job 1", "job 2", "failed bad_job", "birth 2", "run 2", "job 3", "births 2 runs 2"],
+        "{out:?}"
+    );
+}
+
+#[test]
+fn an_absorbed_self_publishs_handler_failure_stops_the_child() {
+    let out = run("self_absorb", &self_publish(""));
+    assert_eq!(out, ["birth 1", "run 1", "job 1", "job 2", "failed bad_job", "births 1 runs 1"], "{out:?}");
+}

@@ -145,6 +145,71 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(self.builder.build_int_compare(inkwell::IntPredicate::NE, v, i64_t.const_zero(), "run_active.set").map_err(e)?)
     }
 
+    /// GH #2028: after a handler of `self_ptr` ran as a direct call (a
+    /// locus's publish to its own subscription, which the intra-locus
+    /// rewrite turns into `self.handler(v)`), carry out a failure it
+    /// raised as its handler wrapper would: a held child stops; and
+    /// outside a `run()` of it, the supervisor's restart re-runs
+    /// `birth()` and `run()` (`__resume_<L>`, phase 0), awaited first
+    /// when the failure is outstanding. Never a reclaim: the instance's
+    /// own body is still on this stack. `pre` is the restart count read
+    /// before the call.
+    pub(crate) fn emit_direct_handler_decision(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        rf: RestartFns<'ctx>,
+        pre: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let i64_t = self.context.i64_type();
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
+        let latched_bb = self.context.append_basic_block(func, "direct.failed");
+        let await_bb = self.context.append_basic_block(func, "direct.await");
+        let decide_bb = self.context.append_basic_block(func, "direct.decide");
+        let resume_bb = self.context.append_basic_block(func, "direct.restart");
+        let stop_bb = self.context.append_basic_block(func, "direct.stop");
+        let cont_bb = self.context.append_basic_block(func, "direct.cont");
+        let dr_ptr = self
+            .builder
+            .build_struct_gep(info.struct_ty, self_ptr, info.drain_requested_field_idx, "direct.dr.ptr")
+            .map_err(e)?;
+        let dr = self.builder.build_load(i64_t, dr_ptr, "direct.dr").map_err(e)?.into_int_value();
+        let set = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::NE, dr, i64_t.const_zero(), "direct.dr.set")
+            .map_err(e)?;
+        self.builder.build_conditional_branch(set, latched_bb, cont_bb).map_err(e)?;
+        self.builder.position_at_end(latched_bb);
+        let active = self.emit_run_active(info, self_ptr)?;
+        self.builder.build_conditional_branch(active, stop_bb, await_bb).map_err(e)?;
+        self.builder.position_at_end(await_bb);
+        let a = self.emit_failure_await(self_ptr, Some(rf.resume), 0, pre)?;
+        let later = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::EQ, a, i64_t.const_int(2, false), "direct.resumed_at_settle")
+            .map_err(e)?;
+        self.builder.build_conditional_branch(later, cont_bb, decide_bb).map_err(e)?;
+        self.builder.position_at_end(decide_bb);
+        let req = self.emit_restart_requested(info, self_ptr, pre)?;
+        self.builder.build_conditional_branch(req, resume_bb, stop_bb).map_err(e)?;
+        self.builder.position_at_end(resume_bb);
+        self.builder
+            .build_call(rf.resume, &[self_ptr.into(), i64_t.const_zero().into(), pre.into()], "direct.resume")
+            .map_err(e)?;
+        self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
+        self.builder.position_at_end(stop_bb);
+        let kept = self.emit_failed_child_is_kept(info, self_ptr)?;
+        self.emit_stop_kept_child(kept, self_ptr)?;
+        self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
+        self.builder.position_at_end(cont_bb);
+        Ok(())
+    }
+
     /// The child's `__restart_count`, now.
     pub(crate) fn emit_restart_count(
         &mut self,

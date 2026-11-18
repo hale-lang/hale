@@ -17937,6 +17937,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.lower_send(&subject, value, None, scope, Some(receiver))?;
         self.builder.build_unconditional_branch(join).map_err(e)?;
         self.builder.position_at_end(direct);
+        // GH #2028: a locus's publish to its own subscription is a direct
+        // call that no handler wrapper surrounds, so a failure the handler
+        // raises is carried out here, as the wrapper would (an ordinary
+        // method its owner calls after its run() returned has no other
+        // step that would restart or stop it).
+        let own_decision = match (callee, self.current_self.clone()) {
+            (Expr::Field { receiver, .. }, Some(cs)) if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
+                match (self.restart_fns.get(&cs.locus_name).copied(), self.user_loci.get(&cs.locus_name).cloned()) {
+                    (Some(rf), Some(info)) => {
+                        // A child that failed and was not restarted stops
+                        // handling: what it publishes to itself then is not
+                        // delivered (its bus registration is stopped too).
+                        let dr_ptr = self
+                            .builder
+                            .build_struct_gep(info.struct_ty, cs.self_ptr, info.drain_requested_field_idx, "direct.pre.dr.ptr")
+                            .map_err(e)?;
+                        let dr = self
+                            .builder
+                            .build_load(self.context.i64_type(), dr_ptr, "direct.pre.dr")
+                            .map_err(e)?
+                            .into_int_value();
+                        let failed = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                dr,
+                                self.context.i64_type().const_int(crate::LATCH_FAILED, false),
+                                "direct.pre.failed",
+                            )
+                            .map_err(e)?;
+                        let call_bb = self.context.append_basic_block(func, "publish.direct.live");
+                        self.builder.build_conditional_branch(failed, join, call_bb).map_err(e)?;
+                        self.builder.position_at_end(call_bb);
+                        let pre = self.emit_restart_count(&info, cs.self_ptr)?;
+                        Some((info, cs.self_ptr, rf, pre))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
         if let Some(target) = self.intra_locus_rewrite(id, args)? {
             self.lower_reclaimed_publish_call(callee, args, target, scope)?;
         } else {
@@ -17953,6 +17994,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.xpool_check_off = off;
                 r?;
             }
+        }
+        if let Some((info, self_ptr, rf, pre)) = own_decision {
+            self.emit_direct_handler_decision(&info, self_ptr, rf, pre)?;
         }
         self.builder.build_unconditional_branch(join).map_err(e)?;
         self.builder.position_at_end(join);
