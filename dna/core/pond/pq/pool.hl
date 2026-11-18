@@ -295,12 +295,22 @@ fn __pool_exhausted_status() -> db::Status {
         err: db::DbError { kind: "busy", engine_code: 0, detail: "pool exhausted" } };
 }
 
-// __run_transaction — BEGIN on `c`, run `body`, then COMMIT when it
+// __run_transaction — refuse a `c` that is not idle (`in_transaction`,
+// nothing sent), else BEGIN on `c`, run `body`, then COMMIT when it
 // answered ok and the connection is not `aborted` (a statement the
 // server refused leaves it so, and COMMIT would roll back), ROLLBACK
 // otherwise. A refused COMMIT is answered as it came, after a
 // ROLLBACK that leaves the connection idle for its next user.
 fn __run_transaction(c: PgConn, body: Transaction) -> db::Status {
+    // a connection already in a transaction is refused untouched: its
+    // BEGIN would only warn, and the COMMIT or ROLLBACK after the body
+    // would end the caller's own transaction with it
+    if c.tx_status() != "idle" {
+        return db::Status { ok: false,
+            err: db::DbError { kind: "in_transaction", engine_code: 0,
+                detail: "the connection is already in a transaction (" + c.tx_status()
+                    + "): end it before running a body" } };
+    }
     let b = c.begin();
     if !b.ok { return b; }
     let st = body.apply(c);

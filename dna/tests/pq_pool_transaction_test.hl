@@ -169,6 +169,24 @@ main locus App {
         std::test::assert(solo.ok, "PgConn.transaction commits: " + solo.err.detail);
         std::test::assert_eq_str(c.tx_status(), "idle", "and leaves the connection idle");
         std::test::assert_eq_int(count_in(self.pool), 4, "its row landed");
+
+        // a connection already in a transaction is refused untouched: the
+        // body runs nothing, and the caller's own transaction is still the
+        // caller's to roll back
+        std::test::assert(c.begin().ok, "the caller begins its own transaction");
+        std::test::assert(c.exec("INSERT INTO " + table() + " VALUES (6)").ok, "and writes in it");
+        let nested = c.transaction(Insert { pool: self.pool, n: 7 });
+        std::test::assert(
+            !nested.ok && nested.err.kind == "in_transaction",
+            "a body on a connection in a transaction is refused: " + nested.err.kind,
+        );
+        std::test::assert_eq_str(c.tx_status(), "in_tx", "the caller's transaction is still open");
+        std::test::assert(c.rollback().ok, "the caller rolls it back");
+        std::test::assert_eq_int(
+            count_in(self.pool),
+            4,
+            "nothing of the caller's or the body's landed",
+        );
         c.close();
 
         self.pool.exec("DROP TABLE " + table());
