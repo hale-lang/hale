@@ -160,12 +160,15 @@ pub(super) fn decode_in(f: &FieldSchema, json: &str, what: &str, js: bool) -> Re
     }
 }
 
-fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
+fn struct_decl(name: &str, t: &TypeSchema, docs: Option<&hale_types::surfaces::TypeDocs>) -> Result<String, String> {
     let ident = type_ident(name);
-    let mut out = format!("export interface {ident} {{\n");
+    // GH #1674: the record's doc, and each field's, as JSDoc
+    let mut out = super::jsdoc("", &super::type_doc_lines(docs, false));
+    out.push_str(&format!("export interface {ident} {{\n"));
     // an optional field is an optional property; its flag is the property's presence
     for (key, f) in t.properties.iter().filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. })) {
         let q = if matches!(f, FieldSchema::Nullable { .. }) { "?" } else { "" };
+        out.push_str(&super::jsdoc("  ", &super::doc_lines(docs.and_then(|d| d.field(key)))));
         out.push_str(&format!("  {}{q}: {};\n", prop(key), ts_type(f, &format!("{name}.{key}"))?));
     }
     out.push_str("}\n\n");
@@ -189,7 +192,12 @@ fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
 /// catch-all (`json:",other"`, GH #1951 item 5) takes any other string too,
 /// `(string & {})`, which keeps the names an editor offers. In JavaScript
 /// (`js`) the type is a JSDoc typedef and the casts JSDoc ones.
-pub(super) fn enum_decl(name: &str, e: &super::ClientEnum, js: bool) -> Result<String, String> {
+pub(super) fn enum_decl(
+    name: &str,
+    e: &super::ClientEnum,
+    js: bool,
+    docs: Option<&hale_types::surfaces::TypeDocs>,
+) -> Result<String, String> {
     let ident = type_ident(name);
     // the variants with a wire name: all but a lossless catch-all, which is
     // the string it holds
@@ -220,7 +228,22 @@ pub(super) fn enum_decl(name: &str, e: &super::ClientEnum, js: bool) -> Result<S
             (false, false) => format!("(({e}) as {ty})"),
         }
     };
-    let mut out = if js {
+    // GH #1674: the enum's doc and its variants', as JSDoc
+    let doc = super::type_doc_lines(docs, true);
+    let mut out = if js && !doc.is_empty() {
+        let mut lines = doc;
+        lines.push(format!("@typedef {{{union}}} {ident}"));
+        format!(
+            "{}
+/**
+ * @param {{{ident}}} v
+ * @returns {{unknown}}
+ */
+export function encode_{ident}(v) {{
+",
+            super::jsdoc("", &lines)
+        )
+    } else if js {
         format!("/** @typedef {{{union}}} {ident} */
 
 /**
@@ -230,10 +253,13 @@ pub(super) fn enum_decl(name: &str, e: &super::ClientEnum, js: bool) -> Result<S
 export function encode_{ident}(v) {{
 ")
     } else {
-        format!("export type {ident} = {union};
+        format!(
+            "{}export type {ident} = {union};
 
 export function encode_{ident}(v: {ident}): unknown {{
-")
+",
+            super::jsdoc("", &doc)
+        )
     };
     let payloads = variants.iter().any(|(_, values)| !values.is_empty());
     if payloads {
@@ -317,11 +343,13 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
     };
     Ok(format!(
         "/** {name}{requires} */\nexport type {outcome} = __Outcome<{value}, {error}>;\n\n\
-         export function {fn_name}(opts: ClientOptions{param}): __Promise<{outcome}> {{\n  \
+         {doc}export function {fn_name}(opts: ClientOptions{param}): __Promise<{outcome}> {{\n  \
          return __apiCall(opts, {member}, {digest}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
         name = m.name,
         member = json_quote(&m.name),
         digest = json_quote(&m.digest),
+        // GH #1674: the row's doc
+        doc = super::jsdoc("", &super::doc_lines(m.doc.as_deref())),
     ))
 }
 
@@ -388,13 +416,13 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
         claim(type_ident(name))?;
         claim(format!("encode_{}", type_ident(name)))?;
         claim(format!("decode_{}", type_ident(name)))?;
-        out.push_str(&enum_decl(name, variants, false)?);
+        out.push_str(&enum_decl(name, variants, false, model.docs_of(name))?);
     }
     for (name, t) in &model.types {
         claim(type_ident(name))?;
         claim(format!("encode_{}", type_ident(name)))?;
         claim(format!("decode_{}", type_ident(name)))?;
-        out.push_str(&struct_decl(name, t)?);
+        out.push_str(&struct_decl(name, t, model.docs_of(name))?);
     }
     for m in &model.members {
         claim(lower_camel(&m.name))?;

@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     flat_decls, Block, ElseBranch, Expr, FnDecl, LifecycleKind, LocusDecl, LocusMember, MatchArmBody, ModeKind,
-    ParamDecl, ParamInit, Program, ServeSite, Stmt, TopDecl, TypeExpr,
+    ParamDecl, ParamInit, Program, ServeSite, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
 
@@ -171,6 +171,9 @@ pub struct Surface {
     pub span: Span,
     /// The contract digest over the surface's rows.
     pub digest: u64,
+    /// GH #1674: the doc comment of the first `api` block of the name that
+    /// has one; none for a default surface. Not part of the digest.
+    pub doc: Option<String>,
 }
 
 /// One row: an `rpc` line, or an `@rpc` handler.
@@ -199,6 +202,9 @@ pub struct Row {
     /// surface's rows in the order its author wrote them.
     pub written_at: usize,
     pub handler: Handled,
+    /// GH #1674: the row's doc comment, or its handler's when the row has
+    /// none (an `@rpc` row's is its handler's). Not part of the digest.
+    pub doc: Option<String>,
 }
 
 /// What a row's `Locus::fn` resolves to.
@@ -238,6 +244,11 @@ pub struct Handler {
     pub server_error: bool,
     /// Every pool an instance of the locus runs on, sorted.
     pub pools: Vec<String>,
+    /// GH #1674: the handler fn's doc comment.
+    pub doc: Option<String>,
+    /// GH #1674: the doc comment of the request's parameter, which a
+    /// document states for the request in place of its type's.
+    pub request_doc: Option<String>,
 }
 
 /// A type a row names.
@@ -697,6 +708,8 @@ pub struct SelectedMember {
     pub alias: Option<String>,
     /// The position among the members selected, in source order.
     pub written_at: usize,
+    /// GH #1674: an `api` block row's own doc comment.
+    pub doc: Option<String>,
 }
 
 /// The one selection rule of the `surface` family, shared by
@@ -743,6 +756,7 @@ pub fn select_members(
                             origin: if signature { MemberOrigin::Signature } else { MemberOrigin::Block },
                             alias: None,
                             written_at: 0,
+                            doc: r.doc.0.clone(),
                         });
                     }
                 }
@@ -766,6 +780,7 @@ pub fn select_members(
                             origin: MemberOrigin::Rpc,
                             alias,
                             written_at: 0,
+                            doc: None,
                         });
                     }
                 }
@@ -783,6 +798,7 @@ pub fn select_members(
                         origin: MemberOrigin::Rpc,
                         alias: None,
                         written_at: 0,
+                        doc: None,
                     });
                 }
                 _ => {}
@@ -888,9 +904,16 @@ pub fn surface_rows(
                     };
                     let server_error = matches!(&f.fallible, Some(TypeExpr::Named { path, .. })
                         if path.segments.last().is_some_and(|s| s.name == "ClosureViolation"));
+                    let request_doc = f
+                        .params
+                        .iter()
+                        .find(|p| params.first().is_some_and(|(n, _, _)| *n == p.name.name))
+                        .and_then(|p| p.doc.0.clone());
                     return Handled::Fn(Handler {
                         key: Some(FnKey::method(DeclId::user(f.id), l.name.name.clone(), f.name.name.clone())),
                         name_span: f.name.span,
+                        doc: f.doc.0.clone(),
+                        request_doc,
                         request: params.first().map(|(_, t, _)| row_ty(t)),
                         params,
                         response,
@@ -954,6 +977,8 @@ pub fn surface_rows(
             error: None,
             server_error: false,
             pools: Vec::new(),
+            doc: None,
+            request_doc: None,
         })
     };
 
@@ -963,14 +988,20 @@ pub fn surface_rows(
     let mut rows: Vec<Row> = Vec::new();
     for m in select_members(&programs, None, &bundle.import_renames, &default_surface) {
         surface_spans.entry(m.surface.clone()).or_insert(m.surface_span);
+        let handler = if m.origin == MemberOrigin::Signature {
+            signature(&m.surface, &m.method)
+        } else if m.locus.is_empty() {
+            Handled::FreeFn
+        } else {
+            resolve(&m.locus, &m.method)
+        };
+        let doc = m.doc.clone().or_else(|| match &handler {
+            Handled::Fn(h) => h.doc.clone(),
+            _ => None,
+        });
         rows.push(Row {
-            handler: if m.origin == MemberOrigin::Signature {
-                signature(&m.surface, &m.method)
-            } else if m.locus.is_empty() {
-                Handled::FreeFn
-            } else {
-                resolve(&m.locus, &m.method)
-            },
+            handler,
+            doc,
             surface: m.surface,
             member: m.member,
             locus: m.locus,
@@ -984,10 +1015,14 @@ pub fn surface_rows(
         });
     }
     // a block with no rows is still a surface
+    let mut surface_docs: BTreeMap<String, String> = BTreeMap::new();
     for p in &programs {
         for d in flat_decls(&p.items) {
             if let TopDecl::Api(a) = d {
                 surface_spans.entry(a.name.name.clone()).or_insert(a.span);
+                if let Some(doc) = a.doc.text() {
+                    surface_docs.entry(a.name.name.clone()).or_insert_with(|| doc.to_string());
+                }
             }
         }
     }
@@ -1027,7 +1062,12 @@ pub fn surface_rows(
                     }
                 })
                 .collect();
-            Surface { name: name.clone(), span: *span, digest: hale_model::surface::surface_digest(&lines) }
+            Surface {
+                name: name.clone(),
+                span: *span,
+                digest: hale_model::surface::surface_digest(&lines),
+                doc: surface_docs.get(name).cloned(),
+            }
         })
         .collect();
     surfaces.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
@@ -3037,6 +3077,49 @@ fn tagged_schema(tag: Option<&str>, schema: FieldSchema) -> FieldSchema {
     quote(schema, string, hex)
 }
 
+/// GH #1674: the docs of every declared type that has any, by document name.
+fn type_docs(shapes: &Shapes<'_>) -> BTreeMap<String, TypeDocs> {
+    let declared: BTreeMap<&str, &hale_syntax::ast::TypeDecl> = shapes.declared().collect();
+    // a scalar's or an enum's doc, which a field of it without one states
+    let inline_doc = |te: &TypeExpr| -> Option<String> {
+        let TypeExpr::Named { path, generic_args, .. } = te else { return None };
+        if path.segments.len() != 1 || !generic_args.is_empty() {
+            return None;
+        }
+        let td = declared.get(path.segments[0].name.as_str())?;
+        match &td.body {
+            TypeDeclBody::Scalar(_) | TypeDeclBody::Alias(_) | TypeDeclBody::Enum(_) => td.doc.0.clone(),
+            TypeDeclBody::Struct(_) => None,
+        }
+    };
+    let mut out = BTreeMap::new();
+    for (name, td) in &declared {
+        let mut docs = TypeDocs { doc: td.doc.0.clone(), ..TypeDocs::default() };
+        match &td.body {
+            TypeDeclBody::Struct(fields) => {
+                for f in fields {
+                    let key = hale_syntax::json_gen::json_tag_key(f.tag.as_deref()).unwrap_or_else(|| f.name.name.clone());
+                    if let Some(d) = f.doc.0.clone().or_else(|| inline_doc(&f.ty)) {
+                        docs.fields.push((key, d));
+                    }
+                }
+            }
+            TypeDeclBody::Enum(variants) => {
+                for v in variants {
+                    if let Some(d) = &v.doc.0 {
+                        docs.variants.push((v.name.name.clone(), d.clone()));
+                    }
+                }
+            }
+            TypeDeclBody::Scalar(_) | TypeDeclBody::Alias(_) => {}
+        }
+        if docs != TypeDocs::default() {
+            out.insert(shapes.display_name(name), docs);
+        }
+    }
+    out
+}
+
 /// A struct's schema: its properties in declaration order, each its
 /// JSON key (a `json:"key"` tag renames it) and schema, and the keys a
 /// value must carry (every field without a literal default).
@@ -3046,10 +3129,37 @@ pub struct TypeSchema {
     pub required: Vec<String>,
 }
 
+/// GH #1674: what the doc comments of a declared type say, as a document
+/// names its parts (spec/api.md § Documenting a surface): the type's own,
+/// each field's by its JSON key, and each variant's. A field with none
+/// takes the doc of the named scalar or enum it is declared with, which
+/// a document states inline. Prose is not shape: nothing here reaches a
+/// shape hash or a digest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TypeDocs {
+    pub doc: Option<String>,
+    pub fields: Vec<(String, String)>,
+    pub variants: Vec<(String, String)>,
+}
+
+impl TypeDocs {
+    /// The doc of the field whose JSON key is `key`.
+    pub fn field(&self, key: &str) -> Option<&str> {
+        self.fields.iter().find(|(k, _)| k == key).map(|(_, d)| d.as_str())
+    }
+
+    /// The doc of the variant `v`.
+    pub fn variant(&self, v: &str) -> Option<&str> {
+        self.variants.iter().find(|(n, _)| n == v).map(|(_, d)| d.as_str())
+    }
+}
+
 /// The schemas of the types a bundle declares, read as the JSON codec
 /// reads them (law 5's classification).
 pub struct Schemas<'a> {
     shapes: Shapes<'a>,
+    /// GH #1674: each documented type's docs, by the name a document gives it.
+    docs: BTreeMap<String, TypeDocs>,
 }
 
 impl<'a> Schemas<'a> {
@@ -3061,7 +3171,15 @@ impl<'a> Schemas<'a> {
 
     pub fn of(programs: &[&'a Program]) -> Schemas<'a> {
         let slices: Vec<&'a [TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
-        Schemas { shapes: Shapes::of_all(&slices) }
+        let shapes = Shapes::of_all(&slices);
+        let docs = type_docs(&shapes);
+        Schemas { shapes, docs }
+    }
+
+    /// GH #1674: the docs of the type a document names `name`, when any of
+    /// it is documented.
+    pub fn docs(&self, name: &str) -> Option<&TypeDocs> {
+        self.docs.get(name)
     }
 
     /// A row's type as a document spells it: the author's spelling of an

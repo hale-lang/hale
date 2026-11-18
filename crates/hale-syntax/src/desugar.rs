@@ -164,6 +164,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         synthesized: false,
     };
     let locus = LocusDecl {
+        doc: crate::ast::Doc::NONE,
         imported: false,
         display: None,
         phase_effects: None,

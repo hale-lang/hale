@@ -56,7 +56,9 @@
 //! Safety gate: `format_source` re-lexes its own output and requires
 //! the semantic token stream (kind + raw text) to be IDENTICAL to
 //! the input's — for a block string, kind + value, since its raw text
-//! is re-indented. A formatter bug can therefore mangle whitespace at
+//! is re-indented — and the `///` doc comments to be the same text in
+//! the same order (GH #1674), since a declaration's doc is part of what
+//! the documents generated from it say. A formatter bug can therefore mangle whitespace at
 //! worst — it cannot change what the compiler sees. Callers get
 //! `FmtError::Changed` (a formatter bug, never written to disk) or
 //! `FmtError::Parse` (the input didn't lex).
@@ -151,6 +153,15 @@ pub fn wrap_report(source: &str, width: Option<usize>) -> Result<(String, bool),
     // each at the offset it recorded.
     match lex(&out) {
         Ok(out_tokens) => {
+            // GH #1674: and the same doc comments, each as it was (a line of
+            // its own, or after code), in the same order
+            let docs = |src: &str, toks: &[Token]| {
+                let (found, stray) = crate::docs::scan(src, toks);
+                (found.into_iter().map(|f| f.text).collect::<Vec<_>>(), stray.into_iter().map(|d| d.trailing).collect::<Vec<_>>())
+            };
+            if docs(source, &tokens) != docs(&out, &out_tokens) {
+                return Err(FmtError::Changed(out));
+            }
             let kept: Vec<Token> = out_tokens
                 .into_iter()
                 .filter(|t| {

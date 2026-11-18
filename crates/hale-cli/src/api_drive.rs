@@ -256,6 +256,17 @@ fn render(doc: &Value) -> String {
         };
         let req = requires_of(m);
         out.push_str(&format!("  {name}({}) -> {result}{error}  requires: {}\n", fields.join(", "), if req.is_empty() { "-".to_string() } else { req.join(", ") }));
+        // GH #1674: the member's doc comment, then each documented field's
+        if let Some(d) = m.get("description").and_then(Value::as_str) {
+            for l in d.lines() {
+                out.push_str(&if l.is_empty() { "\n".to_string() } else { format!("    {l}\n") });
+            }
+        }
+        for (n, sc, _) in payload_fields(doc, m) {
+            if let Some(d) = sc.get("description").and_then(Value::as_str) {
+                out.push_str(&format!("    {n}: {}\n", d.lines().next().unwrap_or("")));
+            }
+        }
     }
     out
 }

@@ -73,7 +73,7 @@ locus Todos {
     }
     bus { publish TodoChanged; publish TodoOverdue; }
 
-    /// The sense runs on a tick of its own, every two seconds.
+    // The sense runs on a tick of its own, every two seconds.
     run() {
         while !self.draining {
             std::time::sleep(2s);

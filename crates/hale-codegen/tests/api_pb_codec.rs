@@ -326,9 +326,10 @@ fn data_file(fields: &[&str]) -> Result<hale_types::proto_gen::ProtoFile, String
     hale_types::proto_gen::from_model(&ClientModel {
         surface: "S".to_string(),
         digest: "fnv1a64:0".to_string(),
-        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Data".to_string())), response: None, error: ClientError::None, requires: Vec::new() }],
+        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Data".to_string())), response: None, error: ClientError::None, requires: Vec::new(), doc: None }],
         types: [("Data".to_string(), data)].into_iter().collect(),
         streams: Vec::new(),
+        docs: Default::default(),
     })
 }
 
@@ -451,9 +452,10 @@ fn main() {{ Desk {{ }}; }}
     let file = hale_types::proto_gen::from_model(&ClientModel {
         surface: "S".to_string(),
         digest: "fnv1a64:0".to_string(),
-        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Data".to_string())), response: None, error: ClientError::None, requires: Vec::new() }],
+        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Data".to_string())), response: None, error: ClientError::None, requires: Vec::new(), doc: None }],
         types: [("Data".to_string(), data), ("Part".to_string(), part)].into_iter().collect(),
         streams: Vec::new(),
+        docs: Default::default(),
     })
     .expect("a file");
     let (compiled, reflected) = compiled_and_reflected(&file, "repeated");
@@ -689,9 +691,10 @@ fn main() {{ Desk {{ }}; }}
     let file = hale_types::proto_gen::from_model(&ClientModel {
         surface: "S".to_string(),
         digest: "fnv1a64:0".to_string(),
-        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Holder".to_string())), response: None, error: ClientError::None, requires: Vec::new() }],
+        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Holder".to_string())), response: None, error: ClientError::None, requires: Vec::new(), doc: None }],
         types: [("Holder".to_string(), holder)].into_iter().collect(),
         streams: Vec::new(),
+        docs: Default::default(),
     })
     .expect("a file");
     let (compiled, reflected) = compiled_and_reflected(&file, "enum");
@@ -781,9 +784,10 @@ fn main() {{ Desk {{ }}; }}
     let file = hale_types::proto_gen::from_model(&ClientModel {
         surface: "S".to_string(),
         digest: "fnv1a64:0".to_string(),
-        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Health".to_string())), response: None, error: ClientError::None, requires: Vec::new() }],
+        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Health".to_string())), response: None, error: ClientError::None, requires: Vec::new(), doc: None }],
         types: [("Health".to_string(), health_schema), ("Check".to_string(), check_schema)].into_iter().collect(),
         streams: Vec::new(),
+        docs: Default::default(),
     })
     .expect("a file");
     assert!(file.text().contains("map<string, Check> checks = 1;"), "{}", file.text());
@@ -881,11 +885,12 @@ fn main() {{ Desk {{ }}; }}
     let file = hale_types::proto_gen::from_model(&ClientModel {
         surface: "S".to_string(),
         digest: "fnv1a64:0".to_string(),
-        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Health".to_string())), response: None, error: ClientError::None, requires: Vec::new() }],
+        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Health".to_string())), response: None, error: ClientError::None, requires: Vec::new(), doc: None }],
         types: [("Health".to_string(), health_schema), ("Check".to_string(), check_schema), ("Gauge".to_string(), gauge_schema)]
             .into_iter()
             .collect(),
         streams: Vec::new(),
+        docs: Default::default(),
     })
     .expect("a file");
     assert!(file.text().contains("map<string, string> checks = 1;"), "{}", file.text());

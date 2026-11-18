@@ -351,7 +351,7 @@ impl Pattern {
     }
 }
 
-fn errors_against_schema(doc: &Value) -> Vec<String> {
+pub(crate) fn errors_against_schema(doc: &Value) -> Vec<String> {
     let root = schema();
     let mut errs = Vec::new();
     validate(&root, &root, doc, "$", &mut errs);

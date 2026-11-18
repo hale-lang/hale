@@ -708,6 +708,10 @@ fn fingerprint(fd: &FnDecl, renames: &[(Vec<String>, String)]) -> String {
         // GH #1490: the same for `@bounded_by(<name>)` (a fn with one
         // keeps it in the text, and it is a change).
         text = text.replace("bounded_by: None, ", "");
+        // GH #1674: a doc comment is prose, not body (its `Debug` form is
+        // the bare `Doc` whatever it says), so its field goes too: a body
+        // reviewed before docs existed keeps its fingerprint
+        text = text.replace(", doc: Doc", "");
         text
     });
     let mut text = text;

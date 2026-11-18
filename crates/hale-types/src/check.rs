@@ -928,6 +928,31 @@ fn literal_default_missing_field_diags(bundle: &Bundle<'_>, top: &crate::resolve
     out
 }
 
+/// GH #1674: a `///` doc comment no declaration reads is a warning, not a
+/// refusal (spec/tokens.md § Doc comments): the parse records each one
+/// (`hale_syntax::docs`), and the comment is otherwise ignored.
+fn stray_doc_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
+    let mut out = Vec::new();
+    for prog in bundle.programs.values() {
+        for d in &prog.stray_docs {
+            out.push(Diag::warn(
+                d.span,
+                if d.trailing {
+                    "this doc comment follows code on its line, and a `///` comment documents the declaration \
+                     after it: put it on its own line above that declaration, or write `//`"
+                } else {
+                    "this doc comment documents nothing: a `///` comment documents the declaration after it (a \
+                     type, a field, a variant, a fn or one of its parameters, a locus or one of its params, a \
+                     constant, an interface, a topic, a role, a surface or one of its rows); write `//` for a \
+                     comment that documents nothing"
+                }
+                .to_string(),
+            ));
+        }
+    }
+    out
+}
+
 fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     use crate::listener_window::{visit_expr, Visited};
     fn sends(e: &Expr, out: &mut Vec<Diag>) {
@@ -1477,6 +1502,7 @@ pub fn check_bundle_rules(
     // the program's own sources, with its witness.
     diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
     diags.extend(publish_in_default_diags(bundle));
+    diags.extend(stray_doc_diags(bundle));
     diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
     if inputs.string_match_advisory {
         diags.extend(crate::string_if_chain::string_if_chain_diags(bundle));

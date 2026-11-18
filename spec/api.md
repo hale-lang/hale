@@ -274,7 +274,10 @@ role changes, and for nothing else. It never covers:
   digest; the exposure identity, § The description, carries the name);
 - the build identity (`exec_digest`) or the runtime incarnation;
 - the `includes` hierarchy of the roles, which says who holds a role,
-  as a role source does, not what a member requires.
+  as a role source does, not what a member requires;
+- prose: the doc comments of the surface, its rows and handlers and the
+  types they name (§ Documenting a surface). Rewording one is no change
+  a client can notice, so no digest or shape hash reads it.
 
 **The hash input**, byte for byte. A UTF-8 text of lines, each ended by
 one LF (0x0A):
@@ -3098,6 +3101,68 @@ type is namespaced `hale.` (`hale.Refusal`), a name no Hale identifier
 can spell, so none collides with the program's types; the fixture
 program's are pinned beside the R0 documents
 (`<Surface>.<form>.json`).
+
+## Documenting a surface
+
+GH #1674. A `///` doc comment (spec/tokens.md § Doc comments) on the
+declarations a surface names is carried into every document generated
+from it, so a caller, a reviewer and an agent reading a tool list see
+what the author wrote and not only the names:
+
+```hale,fragment
+/// A request to place an order.
+type PlaceOrder {
+    /// The instrument's ticker symbol.
+    symbol: String;
+    qty: Int;
+}
+
+/// The order desk's public surface.
+api Orders {
+    /// Place an order.
+    /// It is filled at the limit or better.
+    rpc Desk::place requires: [clerk];
+}
+```
+
+**What is read.** A surface's doc is its `api` block's (the first block
+of the name that has one; a default surface has none). A row's doc is
+its own, written above its `rpc` line, or its handler fn's when the row
+has none; an `@rpc` row's is its handler's. The request's doc is the
+doc of the handler's request parameter, which says what the request is
+here and takes the place of its type's. A record's doc and each
+field's, an enum's and each variant's (an error class's variant among
+them), are the type's: they follow the type into every row that names
+it, an imported type's included, and a field with no doc of its own
+states the doc of the named scalar or enum it is declared with.
+
+**Where it goes.** Each form states the doc in its own place:
+
+| form | the surface | a row | the request parameter | a type | a field | a variant |
+|---|---|---|---|---|---|---|
+| inventory and description | the surface's `description` | the member's `description` | the request schema's `description` | the schema's `description` | the property's `description` | the enum's `x-hale-variant-descriptions` |
+| OpenAPI | first in `info.description` | the first line the operation's `summary`, the rest its `description` before the authorization note | the `requestBody`'s `description` | as the description's | as the description's | as the description's |
+| JSON Schema | the root's `description` | the member's `description` | the request's `description` | as the description's | as the description's | as the description's |
+| MCP | — | first in the tool's `description` | the input schema's `description` | as the description's | as the description's | as the description's |
+| `.proto` | — | the rpc's leading comment | — | the message's or enum's leading comment | the field's leading comment | the value's (or `oneof` member's) leading comment |
+| TypeScript and JavaScript clients | — | JSDoc on the member's function | — | JSDoc on the type | JSDoc on the property (in JavaScript, a line of the typedef) | a line of the enum's JSDoc |
+| Hale client | — | a doc comment on the member's fn | — | a doc comment on the type | a doc comment on the field | a line of the enum's doc comment |
+
+A schema's `description` is its last key, and a field's doc replaces
+the `description` its enum or scalar would have given it. A row with no
+doc keeps the text it always had (`rpc Orders::place` as its OpenAPI
+summary). A served description (`GET /.description`, `Describe`) carries
+the docs as the compiler's does, `mcp::Rpc`'s `tools/list` puts a row's
+doc first in its tool's description, and `hale mcp --app` and `hale
+describe` show them too. The text is passed through: no Markdown is
+rendered or checked.
+
+**Prose is not shape.** A doc comment is part of no shape hash, no
+member digest and no surface digest (§ The contract digest): a surface
+whose docs are reworded keeps its digest, so no client is refused for
+it. The bundle `hale api export --check` compares is the documents
+themselves, so a committed bundle whose docs moved is reported as
+drifted while its digest holds, and is current again once regenerated.
 
 ## The clients
 
