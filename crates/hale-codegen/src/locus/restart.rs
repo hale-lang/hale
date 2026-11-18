@@ -113,6 +113,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })
     }
 
+    /// GH #2028: store `value` (0 or 1) in the child's `__run_active`.
+    pub(crate) fn emit_set_run_active(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        value: u64,
+    ) -> Result<(), CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr = self
+            .builder
+            .build_struct_gep(info.struct_ty, self_ptr, info.run_active_field_idx, "run_active.ptr")
+            .map_err(e)?;
+        self.builder.build_store(ptr, self.context.i64_type().const_int(value, false)).map_err(e)?;
+        Ok(())
+    }
+
+    /// GH #2028: i1, is the child's run wrapper inside its `run()` now?
+    pub(crate) fn emit_run_active(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let i64_t = self.context.i64_type();
+        let ptr = self
+            .builder
+            .build_struct_gep(info.struct_ty, self_ptr, info.run_active_field_idx, "run_active.ptr")
+            .map_err(e)?;
+        let v = self.builder.build_load(i64_t, ptr, "run_active").map_err(e)?.into_int_value();
+        Ok(self.builder.build_int_compare(inkwell::IntPredicate::NE, v, i64_t.const_zero(), "run_active.set").map_err(e)?)
+    }
+
     /// The child's `__restart_count`, now.
     pub(crate) fn emit_restart_count(
         &mut self,

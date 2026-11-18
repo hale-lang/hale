@@ -4148,6 +4148,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 };
                 let run_empty = info.empty_lifecycle.contains("run");
                 let run_method = *method;
+                // GH #2028: as the run wrapper does
+                if restart.is_some() && !run_empty {
+                    self.emit_set_run_active(&info, thread_self, 1)?;
+                }
                 self.lc_in_spine("PinnedMain", |cx| {
                     cx.lc_step("Run", Some(thread_self), Some(locus_name), |cx| {
                         if !run_empty {
@@ -4162,6 +4166,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         Ok(())
                     })
                 })?;
+                if restart.is_some() && !run_empty {
+                    self.emit_set_run_active(&info, thread_self, 0)?;
+                }
                 // m42: tick fires after run() on the pinned
                 // thread too. Use the wrapper here (it loads
                 // parent fields from the struct) since we're
@@ -5986,6 +5993,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1069: held by something that reclaims it later — everything
         // but a bare statement literal.
         store(self, info.held_by_owner_field_idx, i64_t.const_int(u64::from(held), false).into(), "__held_by_owner")?;
+        // GH #2028: not inside its run() yet
+        store(self, info.run_active_field_idx, zero, "__run_active")?;
         // GH #1566: built on this domain
         let domain: inkwell::values::BasicValueEnum<'ctx> =
             if self.xpool_check && !self.xpool_shared { self.domain_now()?.into() } else { zero };
