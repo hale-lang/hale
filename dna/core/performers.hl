@@ -17,9 +17,8 @@ interface Performer {
 // 18): the identity the admitted kind selects, one performance of one
 // attempt, and what the kind's adapter can say after a restart. The
 // `WorkSystem` serves it; the engine's default performs nothing, so a
-// runtime constructed with no system designates no routing policy of
-// its own (a routing policy is a program-global perspective, and only
-// the assembly's — or the program's — `WorkSystem` should name it).
+// runtime constructed with no system has no routing policy of its own
+// (the assembly's — or the program's — `WorkSystem` holds it).
 interface Performing {
     fn identity_of(kind: String) -> String;
     fn perform_as(kind: String, req: WorkRequest) -> WorkResult;

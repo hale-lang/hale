@@ -75,7 +75,7 @@ v0 does not provide turbofish; we'll add it if needed.
 
 - `.` accesses a field or method of a runtime value:
   `foo.bar`, `book.bid_side()`.
-- `::` accesses a name through a path: module, type, perspective:
+- `::` accesses a name through a path: module, type, interface:
   `messages::Book`, `Strategy::default()`.
 
 ### Fallible disposition (`or`) binds looser than everything except assignment

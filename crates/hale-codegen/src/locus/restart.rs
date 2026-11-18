@@ -618,7 +618,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// The params a restart-in-place restores: every param that holds a
     /// value (a scalar, text, bytes, a record, a tuple, an array). A
-    /// param holding a locus, an interface or a perspective keeps its
+    /// param holding a locus or an interface keeps its
     /// child — a restart re-runs this instance, not its children's
     /// construction — and a `bounded` field is not a first-class value.
     fn built_param_fields(&self, info: &LocusInfo<'ctx>) -> Vec<(u32, crate::codegen::CodegenTy)> {
@@ -629,7 +629,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .filter(|(_, ty)| match ty {
                 CodegenTy::LocusRef(_)
                 | CodegenTy::Interface(_)
-                | CodegenTy::Perspective(_)
                 | CodegenTy::Drain(_)
                 | CodegenTy::Bounded(_, _) => false,
                 // an array or a tuple of loci holds children, as a

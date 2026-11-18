@@ -107,7 +107,7 @@ use std::collections::BTreeMap;
 
 use hale_syntax::ast::{
     Block, BusMember, ClosureAssertion, ContractKind, ElseBranch, Expr, Ident, IfStmt, LValueSeg, LocusMember,
-    MatchArmBody, MatchStmt, NodeId, OrDisposition, ParamInit, PerspectiveMember, QualifiedName,
+    MatchArmBody, MatchStmt, NodeId, OrDisposition, ParamInit, QualifiedName,
     RecoveryModifier, ScalarClause, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::Span;
@@ -237,8 +237,8 @@ pub enum CalleeKind {
     /// one), an imported fn or a bundled stdlib fn by its path, a
     /// locus's member fn on `self`, a local or a field of `self`.
     Declared,
-    /// Any other call that types as `Fallible`: a generic fn, a
-    /// perspective's or an interface's method, a method on a receiver
+    /// Any other call that types as `Fallible`: a generic fn, an
+    /// interface's method, a method on a receiver
     /// of another shape, a stdlib handle's fallible method, a
     /// container's or an array's `get`, a bounded intrinsic.
     Typed,
@@ -948,7 +948,7 @@ pub enum CalleeRef {
     HandleFn(String),
     /// A method of the locus `owner` declares (its type, as resolved).
     Method { owner: String, name: String },
-    /// A method through an interface or a perspective: whichever
+    /// A method through an interface: whichever
     /// declaration's of the name serves it.
     Dispatch(String),
     /// A form's synthesized method on the `@form` locus it names.
@@ -1116,7 +1116,7 @@ impl ViewTypes {
 /// Every node of `item` a `views` row may name, in one fixed order: each
 /// body's parameters' names and every expression, binding name and
 /// assignment target of the body (a fn's, a locus member's, a
-/// perspective's, a module's items' in turn). Two parses of one
+/// module's items' in turn). Two parses of one
 /// declaration visit their nodes pairwise.
 pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
     fn params(ps: &[hale_syntax::ast::Param], out: &mut Vec<usize>) {
@@ -1212,7 +1212,7 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
             }
             Stmt::Block(b) => block(b, out),
             Stmt::Expr(e) => expr(e, out),
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) | Stmt::Reperspective { .. } => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
         }
     }
     fn disposition(d: &OrDisposition, out: &mut Vec<usize>) {
@@ -1286,14 +1286,6 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
                         block(&d.body, out);
                     }
                     _ => {}
-                }
-            }
-        }
-        TopDecl::Perspective(d) => {
-            for m in &d.members {
-                if let PerspectiveMember::Fn(f) = m {
-                    params(&f.params, out);
-                    block(&f.body, out);
                 }
             }
         }
@@ -2054,17 +2046,6 @@ pub fn for_each_type_spelling<'a>(items: &'a [TopDecl], f: &mut dyn FnMut(TypeSp
                     }
                     if let Some(e) = &m.fallible {
                         ann(e, f);
-                    }
-                }
-            }
-            TopDecl::Perspective(p) => {
-                for m in &p.members {
-                    match m {
-                        PerspectiveMember::Params(pb) => params(pb, f),
-                        PerspectiveMember::StableWhen(b) => block(b, f),
-                        PerspectiveMember::SerializeAs(t) => ann(t, f),
-                        PerspectiveMember::Fn(fd) => fn_decl(fd, f),
-                        PerspectiveMember::Bus(bb) => bus(bb, f),
                     }
                 }
             }

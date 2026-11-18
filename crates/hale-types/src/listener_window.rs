@@ -13,7 +13,7 @@
 //!
 //! | construction step in the window | walked |
 //! |---|---|
-//! | where the main locus is built | every literal of it anywhere the programs hold an expression: a free fn's body and its params' defaults, a const, a record type's field defaults, a locus's param defaults, hooks (`birth`, `run`, …), modes, failure handlers (each with its params' defaults), `birth_check`, closure assertions, fns (with theirs), consts and subscription keys, a perspective's param defaults, `stable_when` and fns; each site's window judged on each evaluation path the checker typed it on (the typed-body table's `literal_paths`: a literal in a default is a construction per literal or call that leaves the default, in that one's scope), the program refused if any may not return; with no literal anywhere (built only dynamically), the declaration's defaults |
+//! | where the main locus is built | every literal of it anywhere the programs hold an expression: a free fn's body and its params' defaults, a const, a record type's field defaults, a locus's param defaults, hooks (`birth`, `run`, …), modes, failure handlers (each with its params' defaults), `birth_check`, closure assertions, fns (with theirs), consts and subscription keys; each site's window judged on each evaluation path the checker typed it on (the typed-body table's `literal_paths`: a literal in a default is a construction per literal or call that leaves the default, in that one's scope), the program refused if any may not return; with no literal anywhere (built only dynamically), the declaration's defaults |
 //! | a param of the main locus, up to and including the server's | its value: the literal's field, else its default, else (no default, typed as a record whose every field has one) the `T { }` the compiler builds for it |
 //! | a literal anywhere in a walked expression (a param's value, an array or tuple element, a block's statement or tail, an `if`/`match` arm, a call's argument, another literal's field, a default) | a construction: below |
 //! | a locus construction `C { … }` | each param of `C` the literal does not supply (its default, or the synthesized `T { }` of an all-defaulted record param, walked); the `where key == …` key of each of `C`'s subscriptions; `C`'s `birth()` (awaited even when `C` is placed on a pool) and `birth_check`; `C`'s `run()`, run where `C` is born, except the server's own param's when it is placed off the main thread |
@@ -29,9 +29,7 @@
 //! (integer literals the compiler reads); an array type's size and a
 //! scalar's `range:` (compile-time constants); `placement`, `topology`,
 //! `bindings` and `claims` (the compiler's, emitting no user code); a
-//! closure assertion (judged at closure, not at birth); a perspective's
-//! `params` (not lowered: a perspective is a contract, its slot holds a
-//! locus built by a literal walked above).
+//! closure assertion (judged at closure, not at birth).
 //!
 //! A step **may not return** when, and the window refuses it then (it
 //! proves no termination, so each of these is refused whether or not it
@@ -189,7 +187,7 @@ pub fn visit_stmt<'a>(s: &'a Stmt, f: &mut dyn FnMut(Visited<'a>)) {
             visit_block(body, f);
         }
         Stmt::Expr(e) => visit_expr(e, f),
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) | Stmt::Reperspective { .. } => {}
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
     }
 }
 
@@ -256,10 +254,9 @@ pub enum Root<'a> {
 /// defaults; a const's value; a record type's field defaults; a locus's
 /// param defaults, hooks, modes, failure handlers (each with its params'
 /// defaults), closure assertions, fns (with theirs), consts, record types'
-/// field defaults and subscriptions' `where key == …` keys; a
-/// perspective's param defaults, `stable_when` and fns (with theirs).
+/// field defaults and subscriptions' `where key == …` keys.
 pub fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl], f: &mut dyn FnMut(Root<'a>)) {
-    use hale_syntax::ast::{PerspectiveMember, TopDecl};
+    use hale_syntax::ast::{TopDecl};
     let defaults = |params: &'a [Param], f: &mut dyn FnMut(Root<'a>)| {
         for p in params {
             if let Some(d) = &p.default {
@@ -332,25 +329,6 @@ pub fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl], f: &
                         | LocusMember::Topology(_)
                         | LocusMember::Claims(_)
                         | LocusMember::Seam(_) => {}
-                    }
-                }
-            }
-            TopDecl::Perspective(pd) => {
-                for m in &pd.members {
-                    match m {
-                        PerspectiveMember::Params(pb) => {
-                            for p in &pb.params {
-                                if let ParamInit::Value(e) = &p.init {
-                                    f(Root::Expr(e));
-                                }
-                            }
-                        }
-                        PerspectiveMember::StableWhen(b) => f(Root::Block(b)),
-                        PerspectiveMember::Fn(func) => {
-                            defaults(&func.params, f);
-                            f(Root::Block(&func.body));
-                        }
-                        PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
                     }
                 }
             }

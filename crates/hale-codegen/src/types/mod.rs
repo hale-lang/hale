@@ -358,12 +358,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ret: ret_ty,
                 })
             }
-            // Phase 2a: a `perspective(P)` slot handle. Stored as a
-            // single pointer (the current impl's self); dispatch
-            // reads the program-global slot.
-            TypeExpr::Perspective { name, .. } => {
-                Ok(CodegenTy::Perspective(name.name.clone()))
-            }
             other => Err(CodegenError::Unsupported(format!(
                 "{} in a signature is not lowered",
                 other.form_name()
@@ -790,7 +784,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Array(_, _)
             | CodegenTy::Tuple(_)
             | CodegenTy::Interface(_)
-            | CodegenTy::Perspective(_)
             | CodegenTy::Cell(_, _)
             | CodegenTy::Drain(_) => {
                 self.context.ptr_type(AddressSpace::default()).into()
@@ -1394,10 +1387,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }
             | CodegenTy::LocusRef(_)
-            // Phase 2a: a perspective handle is a pointer to the
-            // impl (which owns its own arena) — pass-through like
-            // a LocusRef, no deep-copy.
-            | CodegenTy::Perspective(_)
             | CodegenTy::BytesView
             | CodegenTy::StringView
             | CodegenTy::Cell(_, _)

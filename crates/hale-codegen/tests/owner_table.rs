@@ -455,61 +455,6 @@ fn a_receiver_inside_a_field_initialiser_is_not_the_fields() {
     );
 }
 
-/// The declarations behind the `perspective(P)`-typed field shape —
-/// `ownership_matrix.rs`'s `persp_field_factory` position, added by
-/// GH #921 A3 because no cell covered it.
-const PERSP_DECLS: &str = "
-perspective PRoute { fn pv() -> Int; }
-
-locus PRouteV1 : serves PRoute {
-    params { n: Int = 1; }
-    dissolve() { println(\"D:proute\"); }
-    fn pv() -> Int { return self.n; }
-}
-
-locus PHolder {
-    params { r: perspective(PRoute) = PRouteV1 { }; }
-    fn peek() -> Int { return self.r.pv(); }
-}
-
-fn makep() -> PRouteV1 { return PRouteV1 { }; }
-";
-
-#[test]
-fn a_factory_into_a_perspective_field_is_the_fields() {
-    // F.39 says a param field's initialiser is `Owner::Field` whether
-    // the field is locus-, interface- or perspective-typed. Lowering
-    // used to disagree for the third: the F.17 gate covered
-    // `LocusRef` and `Interface` only, so the value took the GH #402
-    // frame temporary and the owner's mask bit deliberately did not
-    // claim it. GH #921 A3 commit 1 retires that gate with
-    // `suppress_fresh_temp`, so the bit has to claim it.
-    let src = [
-        PERSP_DECLS,
-        "\nfn main() {\n    let h = PHolder { r: makep() };\n",
-        "    println(\"u=\", h.peek());\n}\n",
-    ]
-    .concat();
-    let t = table_of(&src);
-    let e = row(&t, "fn main", "param-field initialiser", "PRouteV1");
-    assert!(
-        matches!(&e.owner, Owner::Field { field, .. } if field == "r"),
-        "{:?}",
-        e.owner
-    );
-}
-
-#[test]
-fn every_locus_is_decided_in_a_factory_into_a_perspective_field() {
-    let src = [
-        PERSP_DECLS,
-        "\nfn main() {\n    let h = PHolder { r: makep() };\n",
-        "    println(\"u=\", h.peek());\n}\n",
-    ]
-    .concat();
-    agrees(&src, "persp_field_factory");
-}
-
 #[test]
 fn a_placed_field_is_a_placement_entry() {
     let src = concat!(

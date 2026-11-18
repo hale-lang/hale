@@ -4177,7 +4177,6 @@ fn an_adapter_binding_literal_is_checked_as_a_free_fns_expression() {
         ("{ terminate; \"nats://h:4222\" }", "`terminate` is only valid inside a locus method"),
         ("{ violate nope; \"nats://h:4222\" }", "free fns can't use `violate`"),
         ("{ Ticks <- Tick { n: 2 }; \"nats://h:4222\" }", "bus send (`<-`) only valid inside a locus body"),
-        ("{ reperspective self.r as Relay; \"nats://h:4222\" }", "`reperspective` is only valid inside a locus method"),
         ("{ restart(child); \"nats://h:4222\" }", "unknown identifier `child`"),
     ] {
         let src = adapter_literal(init);

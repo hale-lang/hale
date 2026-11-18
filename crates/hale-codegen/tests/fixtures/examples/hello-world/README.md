@@ -73,7 +73,6 @@ These appear in subsequent examples (planned, not yet written):
 - **Failure handling** (`on_failure(c, err) { ... }`) — no
   child to fail; runtime root handles `birth` panics with
   default exit.
-- **Perspectives** — no analyst/executor split here.
 - **Projection-class generics** (`Rich<T>`, `Chunked<T>`,
   `Recognition<T>`) — no parametric-projection-class data
   structures.

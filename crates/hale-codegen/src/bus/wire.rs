@@ -2009,7 +2009,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Array(_, _) => WireShape::Array,
             CodegenTy::Tuple(_) => WireShape::Tuple,
             CodegenTy::BytesView | CodegenTy::StringView | CodegenTy::BytesMut => return Err(wire_carriage::refusal::VIEW),
-            CodegenTy::LocusRef(_) | CodegenTy::Interface(_) | CodegenTy::Perspective(_) => {
+            CodegenTy::LocusRef(_) | CodegenTy::Interface(_) => {
                 return Err(wire_carriage::refusal::HANDLE)
             }
             CodegenTy::FnPtr { .. } => return Err(wire_carriage::refusal::FN_VALUE),

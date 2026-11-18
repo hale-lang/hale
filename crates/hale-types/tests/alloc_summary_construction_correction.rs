@@ -457,7 +457,7 @@ fn unreached(target: &str, stdlib: &BTreeSet<FnKey>) -> Option<Unreached> {
     })
 }
 
-/// The seven targets pinned below are the only ones whose own fns or leak
+/// The four targets pinned below are the only ones whose own fns or leak
 /// sites the reached correction moves.
 #[test]
 fn reached_no_other_target_changes() {
@@ -472,13 +472,10 @@ fn reached_no_other_target_changes() {
     assert_eq!(
         corrected,
         [
-            "crates/hale-codegen/tests/fixtures/examples/60-perspective-slot",
-            "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
             "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
             "dna/oidc",
             "tests/hale/codegen_gaps_test.hl",
             "tests/hale/is_route_test.hl",
-            "tests/hale/perspective_ctor_override_test.hl",
         ]
     );
 }
@@ -514,25 +511,6 @@ fn pinned_unreached(target: &str, invoked: (usize, usize), own: &[&str], leaks: 
         (strs(own), strs(leaks), strs(lines), invoked),
         "{target}: what the reached correction moves is pinned; a difference is classified before the pin moves"
     );
-}
-
-/// The two perspective fixtures and their `tests/hale` twin implement the
-/// HTTP handler interface and never start the HTTP loop.
-#[test]
-fn reached_perspective_examples() {
-    let lines = [
-        "- fn Gateway::handle   [invoked-unboundedly]",
-        "+ fn Gateway::handle",
-        "- fn RouterV1::route   [invoked-unboundedly]",
-        "+ fn RouterV1::route",
-    ];
-    for t in [
-        "crates/hale-codegen/tests/fixtures/examples/60-perspective-slot",
-        "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
-        "tests/hale/perspective_ctor_override_test.hl",
-    ] {
-        pinned_unreached(t, (133, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
-    }
 }
 
 /// 90-unowned-literal-positions declares its own `Server` with a

@@ -149,7 +149,6 @@ impl ImportItem {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TopDecl {
     Locus(LocusDecl),
-    Perspective(PerspectiveDecl),
     Type(TypeDecl),
     Const(ConstDecl),
     Fn(FnDecl),
@@ -271,7 +270,6 @@ impl TopDecl {
     pub fn span(&self) -> Span {
         match self {
             TopDecl::Locus(l) => l.span,
-            TopDecl::Perspective(p) => p.span,
             TopDecl::Type(t) => t.span,
             TopDecl::Const(c) => c.span,
             TopDecl::Fn(f) => f.span,
@@ -1205,13 +1203,6 @@ pub struct LocusDecl {
     /// emit no LLVM IR directly.
     pub generics: Vec<GenericParam>,
     pub annotations: Vec<LocusAnnotation>,
-    /// Phase 2a (perspectives): the perspective contracts this
-    /// locus declares it implements — `locus L : serves P, Q`.
-    /// Empty for loci that serve no perspective. Each name must
-    /// resolve to a `perspective` decl whose contract methods the
-    /// locus provides (checked at typecheck, like interface
-    /// conformance).
-    pub serves: Vec<Ident>,
     /// v1.x-FORM-1: optional `@form(<name>, <args>...)` annotation
     /// that sits above the `locus` keyword. Picks an efficient
     /// lowering and synthesizes a standard method set. One form
@@ -1337,8 +1328,8 @@ pub enum LocalityTier {
 ///
 /// `abi` is currently always `"c"`; future ABIs (e.g. `"system"`
 /// for Windows stdcall) would extend the set. Annotation only
-/// valid on top-level free fns at Stage 1; locus methods,
-/// perspective methods, and interface signatures may not carry it.
+/// valid on top-level free fns at Stage 1; locus methods
+/// and interface signatures may not carry it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FfiAnnotation {
     pub abi: String,
@@ -2642,31 +2633,6 @@ pub enum EpochSpec {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PerspectiveDecl {
-    pub name: Ident,
-    pub generics: Vec<GenericParam>,
-    pub members: Vec<PerspectiveMember>,
-    pub span: Span,
-    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
-    pub id: NodeId,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PerspectiveMember {
-    Params(ParamsBlock),
-    StableWhen(Block),
-    SerializeAs(TypeExpr),
-    Fn(FnDecl),
-    /// Phase 2c (2026-07-06): the perspective contract's BUS surface
-    /// — `bus { subscribe "..." ...; publish "..." ...; }`. These
-    /// edges are part of the swappable ABI (a perspective reached
-    /// over the bus dispatches to "the current impl's mailbox"), so
-    /// a `serves` impl must provide them, exactly as it must provide
-    /// the contract `fn`s. Reuses the locus `bus { }` block shape.
-    Bus(BusBlock),
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct TypeDecl {
     pub name: Ident,
     /// GH #1107: the author-facing spelling of an imported type
@@ -3301,13 +3267,6 @@ pub enum TypeExpr {
         ret: Option<Box<TypeExpr>>,
         span: Span,
     },
-    /// Phase 2a (perspectives): `perspective(P)` — a live-
-    /// rebindable handle to the perspective contract `P`. A
-    /// holder programs against `P`'s methods and reaches the
-    /// current impl only through the perspective's global slot;
-    /// the impl behind it can be re-pointed (Phase 2b
-    /// `reperspective`) without the holder changing.
-    Perspective { name: Ident, span: Span },
 }
 
 impl TypeExpr {
@@ -3323,7 +3282,6 @@ impl TypeExpr {
             TypeExpr::Bounded { .. } => "a bounded array",
             TypeExpr::Tuple(..) => "a tuple",
             TypeExpr::Function { .. } => "a fn type",
-            TypeExpr::Perspective { .. } => "a perspective",
         }
     }
     pub fn span(&self) -> Span {
@@ -3335,7 +3293,6 @@ impl TypeExpr {
             TypeExpr::Bounded { span, .. } => *span,
             TypeExpr::Tuple(_, s) => *s,
             TypeExpr::Function { span, .. } => *span,
-            TypeExpr::Perspective { span, .. } => *span,
         }
     }
 }
@@ -3505,17 +3462,6 @@ pub enum Stmt {
     /// accept'd child (e.g. a connection that hit EOF) — it INVOKES
     /// the declarative teardown early, never a manual free.
     Terminate(Span),
-    /// Perspectives Phase 2b: `reperspective self.<field> as <Impl>;`
-    /// — the live redeploy. Re-points the perspective's global slot
-    /// (identified by `field`'s `perspective(P)` type) at a fresh
-    /// instance of `impl_name`, freeing the previous impl. `field`
-    /// is a `self`-field the current locus owns; `impl_name` is a
-    /// locus that `serves` the same perspective P.
-    Reperspective {
-        field: Ident,
-        impl_name: Ident,
-        span: Span,
-    },
     Block(Block),
     Recovery {
         op: RecoveryOp,
@@ -3592,7 +3538,6 @@ impl Stmt {
             | Stmt::Fail { span, .. }
             | Stmt::Yield(span)
             | Stmt::Terminate(span)
-            | Stmt::Reperspective { span, .. }
             | Stmt::Recovery { span, .. }
             | Stmt::Violate { span, .. }
             | Stmt::Send { span, .. }

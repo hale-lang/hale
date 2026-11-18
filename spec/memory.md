@@ -1326,8 +1326,8 @@ unless it can hand a value to the next iteration through the frame:
 
   1. it assigns a binding declared before the loop (whole, through
      a field or through an index) whose type is not a scalar (Int,
-     Uint, Float, Decimal, Bool, Duration, Time) or a locus,
-     interface or perspective reference;
+     Uint, Float, Decimal, Bool, Duration, Time) or a locus or
+     interface reference;
   2. it names an outside `bounded[T; N]` or `BytesMut` at all (a
      `bounded` write into a field or record is a call, rule 3);
   3. it hands a call (any but a builtin that only reads, by a name
@@ -1361,8 +1361,7 @@ unless it can hand a value to the next iteration through the frame:
   4. it makes a locus (a literal or a fresh factory call: the
      instance, its slot and its GH #815 teardown outlive the
      iteration);
-  5. it holds a `reperspective`, a recovery op, a `violate` or a
-     shared-memory write.
+  5. it holds a recovery op, a `violate` or a shared-memory write.
 
 Everything else an iteration hands on keeps the lifetime it has
 without the rule: a store into `self` or any locus copies into that

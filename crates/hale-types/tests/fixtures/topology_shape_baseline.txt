@@ -15,11 +15,6 @@ crates/hale-cli/tests/claims_artifact_unknowns.rs#3 0bf63ec1a65dcd45
 crates/hale-cli/tests/cross_seed_arity.rs#0 35ab8ae1973a4a20
 crates/hale-cli/tests/cross_seed_interface_fallible.rs#1 6a1e6a93791b967a
 crates/hale-cli/tests/cross_seed_interface_fallible.rs#2 ee22ee009e99a097
-crates/hale-cli/tests/cross_seed_qualified_serves.rs#0 b8c97b016886b822
-crates/hale-cli/tests/cross_seed_qualified_serves.rs#1 1901286188388298
-crates/hale-cli/tests/cross_seed_qualified_serves.rs#2 1901286188388298
-crates/hale-cli/tests/cross_seed_qualified_serves.rs#3 1901286188388298
-crates/hale-cli/tests/cross_seed_qualified_serves.rs#4 1901286188388298
 crates/hale-cli/tests/debug_info.rs#0 764e7548a321f48e
 crates/hale-cli/tests/dispatch_payload_flat.rs#0 a376b430407a0f89
 crates/hale-cli/tests/dispatch_plan_cli.rs#0 948e6cf1a2963b5c
@@ -584,10 +579,8 @@ crates/hale-codegen/tests/cross_pool_backstop.rs#3 0c14690320d49985
 crates/hale-codegen/tests/cross_pool_backstop.rs#4 f0a4a385aedb177f
 crates/hale-codegen/tests/cross_pool_backstop.rs#8 ccb5d1560b7129ee
 crates/hale-codegen/tests/cross_seed_imports.rs#1 81b9c0de85d3895e
-crates/hale-codegen/tests/cross_seed_imports.rs#3 89a7431e3e28532a
-crates/hale-codegen/tests/cross_seed_imports.rs#4 d4275fdcef4d5b13
-crates/hale-codegen/tests/cross_seed_imports.rs#5 d4e741f73d4026f0
-crates/hale-codegen/tests/cross_seed_imports.rs#6 eff44b364f76e157
+crates/hale-codegen/tests/cross_seed_imports.rs#3 d4e741f73d4026f0
+crates/hale-codegen/tests/cross_seed_imports.rs#4 eff44b364f76e157
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#0 378fb322aa1631f1
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#1 378fb322aa1631f1
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#2 3f427dff04bfba66
@@ -721,13 +714,7 @@ crates/hale-codegen/tests/fixtures/examples/57-geom-velocity/main.hl 267f79155f2
 crates/hale-codegen/tests/fixtures/examples/58-stat-correlate/main.hl b726a72e2fa2048e
 crates/hale-codegen/tests/fixtures/examples/59-locality-budget/main.hl 58d0aea2b4d94ee7
 crates/hale-codegen/tests/fixtures/examples/60-lru-cache/main.hl 388db814249d4845
-crates/hale-codegen/tests/fixtures/examples/60-perspective-slot/main.hl d8b8b11136f0b39b
-crates/hale-codegen/tests/fixtures/examples/61-reperspective-swap/main.hl 071d9850af3c17d1
-crates/hale-codegen/tests/fixtures/examples/62-perspective-bus-contract/main.hl caba3748f0dd624d
-crates/hale-codegen/tests/fixtures/examples/63-reperspective-migrate/main.hl 62ca322b672da1c8
-crates/hale-codegen/tests/fixtures/examples/64-perspective-bus-swap/main.hl a05510df2f4e5af4
 crates/hale-codegen/tests/fixtures/examples/65-hashmap-anchor-churn/main.hl b0caba26b6563c74
-crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override/main.hl 7d3ef6de4b0a0294
 crates/hale-codegen/tests/fixtures/examples/66-self-field-retire/main.hl ca211d90b3303603
 crates/hale-codegen/tests/fixtures/examples/67-match-expression/main.hl 20259ead9922e8fb
 crates/hale-codegen/tests/fixtures/examples/68-hot-certified/main.hl e14d122cb3e32c8f
@@ -752,7 +739,7 @@ crates/hale-codegen/tests/fixtures/examples/claim-forms.hl fc7429933db197c9
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl 3e28431eef6c20e2
 crates/hale-codegen/tests/fixtures/examples/docs-server/main.hl 00fad529a6856cb6
 crates/hale-codegen/tests/fixtures/examples/fitter-applier-demo/main.hl 47f17ef41213b69c
-crates/hale-codegen/tests/fixtures/examples/fitter-applier-pair/shared.hl af67c9605fa68550
+crates/hale-codegen/tests/fixtures/examples/fitter-applier-pair/shared.hl c694f9853ba73c4c
 crates/hale-codegen/tests/fixtures/examples/hello-world/main.hl 7310d76b870a9c8f
 crates/hale-codegen/tests/fixtures/examples/http-hello/main.hl e0012c41f4457416
 crates/hale-codegen/tests/fixtures/examples/interface-fallible.hl 6024ad9b86d29c99
@@ -1266,8 +1253,7 @@ crates/hale-codegen/tests/os_getrandom.rs#1 5fbdc44a9f9ace2f
 crates/hale-codegen/tests/os_getrandom.rs#3 5fbdc44a9f9ace2f
 crates/hale-codegen/tests/os_getrandom.rs#4 35f29b5ec9bd8d36
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#0 ad89ba2b4e132f42
-crates/hale-codegen/tests/owned_child_arena_reclaim.rs#5 e0d3479b61ffe11c
-crates/hale-codegen/tests/owned_child_arena_reclaim.rs#8 99ed6a38edf1c086
+crates/hale-codegen/tests/owned_child_arena_reclaim.rs#5 99ed6a38edf1c086
 crates/hale-codegen/tests/owned_views_over_checker_types.rs#0 50a1ce639712a9c4
 crates/hale-codegen/tests/owned_views_over_checker_types.rs#1 9b33b35288666267
 crates/hale-codegen/tests/owned_views_over_checker_types.rs#10 b262ddaa7c411965
@@ -1304,7 +1290,6 @@ crates/hale-codegen/tests/parse_float_and_base64_decode.rs#3 f21fbc665a9c2254
 crates/hale-codegen/tests/parse_float_and_base64_decode.rs#4 d4275fdcef4d5b13
 crates/hale-codegen/tests/parse_float_and_base64_decode.rs#5 d4275fdcef4d5b13
 crates/hale-codegen/tests/parse_float_and_base64_decode.rs#6 d4275fdcef4d5b13
-crates/hale-codegen/tests/perspective_ctor_override_agreement.rs#0 c1eb6094c0eecf4b
 crates/hale-codegen/tests/phase_b_fixes.rs#0 d884775ac9800a80
 crates/hale-codegen/tests/phase_b_fixes.rs#1 d4275fdcef4d5b13
 crates/hale-codegen/tests/phase_b_fixes.rs#10 f21fbc665a9c2254
@@ -1702,7 +1687,7 @@ crates/hale-codegen/tests/view_storage_e2.rs#3 713a51ac2b9d6862
 crates/hale-codegen/tests/view_storage_e2.rs#4 d4275fdcef4d5b13
 crates/hale-codegen/tests/violate_build.rs#0 48937802f2c450fa
 crates/hale-codegen/tests/violate_build.rs#1 8518dfaddbd22f65
-crates/hale-codegen/tests/violate_build.rs#11 50be7925f1fa40e1
+crates/hale-codegen/tests/violate_build.rs#10 50be7925f1fa40e1
 crates/hale-codegen/tests/violate_build.rs#2 ab5080e23d0fc889
 crates/hale-codegen/tests/violate_build.rs#3 f5699957f5801951
 crates/hale-codegen/tests/violate_build.rs#4 48937802f2c450fa
@@ -1724,7 +1709,6 @@ crates/hale-codegen/tests/wasm_target.rs#21 24d144539c4d28a6
 crates/hale-codegen/tests/wasm_target.rs#22 538b1364817465e5
 crates/hale-codegen/tests/wasm_target.rs#23 7409ee5e1bea5782
 crates/hale-codegen/tests/wasm_target.rs#24 9e7240d456a5a42c
-crates/hale-codegen/tests/wasm_target.rs#25 59ad3cb1fefefc89
 crates/hale-codegen/tests/wasm_target.rs#5 3218fa9dbdc01510
 crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#1 92a76dd386139cb9
 crates/hale-codegen/tests/ws3_int_float_conversion.rs#0 f21fbc665a9c2254
@@ -2129,12 +2113,6 @@ crates/hale-types/tests/ownership_graph.rs#6 988dc0459891b89d
 crates/hale-types/tests/ownership_graph.rs#7 f4cebc02ecc78733
 crates/hale-types/tests/ownership_graph.rs#8 116cd359c01d0203
 crates/hale-types/tests/ownership_graph.rs#9 230efc00c106f71f
-crates/hale-types/tests/perspective_serves.rs#0 f21b62040e0c874a
-crates/hale-types/tests/perspective_serves.rs#11 6d6475d19d1277c1
-crates/hale-types/tests/perspective_serves.rs#12 ae46862519d0c480
-crates/hale-types/tests/perspective_serves.rs#17 1901286188388298
-crates/hale-types/tests/perspective_serves.rs#6 9d87f878c811fca5
-crates/hale-types/tests/perspective_serves.rs#9 346f6dea45e5833a
 crates/hale-types/tests/phase_effects.rs#5 3feb2df4ea2f1631
 crates/hale-types/tests/phase_effects.rs#8 ba01440788264395
 crates/hale-types/tests/placement.rs#0 eb89d2367f0fe029
@@ -2249,6 +2227,6 @@ crates/hale-types/tests/violate.rs#1 d85d74c1f266771b
 crates/hale-types/tests/violate.rs#10 d85d74c1f266771b
 crates/hale-types/tests/violate.rs#12 becc6f9d604aac64
 crates/hale-types/tests/violate_fallible.rs#2 98a166845d5da99c
-crates/hale-types/tests/violate_fallible.rs#8 dbed799af95a80c1
+crates/hale-types/tests/violate_fallible.rs#7 dbed799af95a80c1
 crates/hale-types/tests/wasm_target_gating.rs#0 d4275fdcef4d5b13
 crates/hale-types/tests/wasm_target_gating.rs#1 53cadec6decfbc54

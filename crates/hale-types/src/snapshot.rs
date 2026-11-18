@@ -35,7 +35,7 @@ use hale_graph::ids::{SeedId, SiteId};
 use hale_syntax::ast::{
     Block, BusMember, ClosureClause, ElseBranch, EpochSpec, Expr, IfStmt, KeyFilter,
     LValueSeg, LocusMember, MatchArmBody, MatchStmt, NodeId, OrDisposition, ParamInit, Pattern,
-    PerspectiveMember, Program, RecoveryModifier, Stmt, TopDecl, TransportSpec, TypeDeclBody,
+    Program, RecoveryModifier, Stmt, TopDecl, TransportSpec, TypeDeclBody,
 };
 use hale_syntax::sites::{
     for_each_named_site, for_each_site, for_each_site_in_item, for_each_site_mut, SiteKind,
@@ -350,20 +350,6 @@ impl<'p> UseScopes<'p, '_> {
                         self.locus_member(m);
                     }
                 }
-                TopDecl::Perspective(pd) => {
-                    for m in &pd.members {
-                        match m {
-                            PerspectiveMember::Params(pb) => self.params_block(pb),
-                            PerspectiveMember::StableWhen(b) => {
-                                self.frames.push(Vec::new());
-                                self.block(b);
-                                self.frames.pop();
-                            }
-                            PerspectiveMember::Fn(fd) => self.fn_decl(fd),
-                            PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
-                        }
-                    }
-                }
                 TopDecl::Module(md) => self.items(&md.items),
                 TopDecl::Const(c) => self.detached(&c.value),
                 TopDecl::Type(t) => self.type_decl(t),
@@ -636,8 +622,7 @@ impl<'p> UseScopes<'p, '_> {
             Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => {}
+            | Stmt::Terminate(_) => {}
         }
     }
 

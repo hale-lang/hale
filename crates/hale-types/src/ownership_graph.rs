@@ -2281,8 +2281,7 @@ fn collect_sites_stmt(
             }
         }
         // No sub-expressions to walk.
-        Stmt::Reperspective { .. }
-        | Stmt::Yield(_)
+        Stmt::Yield(_)
         | Stmt::Break(_)
         | Stmt::Continue(_)
         | Stmt::Terminate(_) => {}

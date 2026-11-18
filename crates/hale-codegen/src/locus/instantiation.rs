@@ -111,7 +111,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // taken on the same one-shot discipline as the flags below so
         // a nested literal does not read its parent's. GH #921 A3
         // commit 2: `declared_owner` is the same answer for a literal
-        // codegen SYNTHESISES — a prelude, a `reperspective` swap —
+        // codegen SYNTHESISES — a prelude —
         // which has no source expression for a table row to key on
         // and so states its owner at the site instead.
         let owner_site = std::mem::take(&mut self.owner_site);
@@ -3111,27 +3111,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 locus_name, fname, locus_name, fname
                             )));
                         }
-                        DefaultInit::HoldsSlot => {
-                            // GH #731: the field holds the program's
-                            // slot as the designating holder set it —
-                            // no impl is built, none is owned, the slot
-                            // is not written. The field stores null.
-                            let declared = info
-                                .fields
-                                .get(fname)
-                                .map(|(_, t)| t.clone())
-                                .expect("field declared by declare_locus_struct");
-                            if let CodegenTy::Perspective(persp) = &declared {
-                                self.perspectives_held
-                                    .entry(persp.clone())
-                                    .or_insert_with(|| format!("{}.{}", locus_name, fname));
-                            }
-                            let null = self
-                                .context
-                                .ptr_type(AddressSpace::default())
-                                .const_null();
-                            (null.into(), declared, false, false)
-                        }
                     }
                 };
             // #1534: nor the tree flag, where the value built no literal.
@@ -3169,12 +3148,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .expect("field declared by declare_locus_struct");
             // GH #871: which locus is about to land in this field,
             // when the field's declared type doesn't say? Set by the
-            // two coercion branches below — an interface slot and a
-            // perspective handle both take a concrete `LocusRef` and
-            // erase its name. The teardown cascade needs that name to
-            // pick a `__reclaim_<Impl>`, and it is only knowable here,
-            // at the instantiation, so we record the fn pointer in the
-            // owner's per-field slot once the value is stored.
+            // coercion branch below — an interface slot takes a
+            // concrete `LocusRef` and erases its name. The teardown
+            // cascade needs that name to pick a `__reclaim_<Impl>`,
+            // and it is only knowable here, at the instantiation, so
+            // we record the fn pointer in the owner's per-field slot
+            // once the value is stored.
             let mut owned_child_impl: Option<String> = None;
             // 2026-05-16 — locus → interface coercion at struct/
             // locus literal init. Mirrors the call-site coercion in
@@ -3220,50 +3199,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{}.{}", locus_name, fname),
                 )?;
                 (fat.into(), declared_ty.clone())
-            } else if let (
-                CodegenTy::Perspective(persp),
-                CodegenTy::LocusRef(impl_locus),
-            ) = (&declared_ty, &val_ty)
-            {
-                // Phase 2a designation: `perspective(P) = Impl { }`
-                // points P's program-global slot at this impl — its
-                // self_ptr (data) + a vtable of its contract methods
-                // — so every holder of `perspective(P)` dispatches to
-                // it. The field itself stores the impl self_ptr for
-                // ownership / teardown (the impl is an owned child).
-                owned_child_impl = Some(impl_locus.clone());
-                self.perspectives_designated.insert(persp.clone());
-                let impl_self = val.into_pointer_value();
-                let vtable =
-                    self.ensure_perspective_vtable(impl_locus, persp)?;
-                let slot = self.ensure_perspective_slot(persp);
-                let fat_struct_ty = self.iface_fat_struct_ty();
-                let slot_ptr = slot.as_pointer_value();
-                let data_gep = self
-                    .builder
-                    .build_struct_gep(
-                        fat_struct_ty,
-                        slot_ptr,
-                        0,
-                        "persp.designate.data.gep",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder
-                    .build_store(data_gep, impl_self)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let vt_gep = self
-                    .builder
-                    .build_struct_gep(
-                        fat_struct_ty,
-                        slot_ptr,
-                        1,
-                        "persp.designate.vtable.gep",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder
-                    .build_store(vt_gep, vtable.as_pointer_value())
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                (val, declared_ty.clone())
             } else if came_from_literal
                 && matches!(
                     (&val_ty, &declared_ty),
@@ -3460,7 +3395,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(slot, bitmap)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                // GH #871: and, for an interface / perspective field,
+                // GH #871: and, for an interface field,
                 // record WHICH locus the bit is about. The cascade is
                 // emitted once per owner type and the field's declared
                 // type names a contract, not an impl, so the teardown
@@ -6339,7 +6274,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     DefaultInit::Const(pv) => self.const_param(pv),
                     DefaultInit::Expr(e) => self.in_body(info.decl, |cx| cx.lower_expr(e, scope))?,
-                    DefaultInit::Required | DefaultInit::HoldsSlot => {
+                    DefaultInit::Required => {
                         return Err(CodegenError::Unsupported(format!(
                             "cross-pool spawn `{}`: param `{}` is required — \
                              supply it as `{} {{ {}: ... }};`",

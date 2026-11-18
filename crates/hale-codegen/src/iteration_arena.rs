@@ -62,7 +62,7 @@ fn outer_local(ty: &CodegenTy) -> OuterLocal {
         | CodegenTy::U256
         | CodegenTy::I256
         | CodegenTy::Time => OuterLocal::Scalar,
-        CodegenTy::LocusRef(_) | CodegenTy::Interface(_) | CodegenTy::Perspective(_) => OuterLocal::Locus,
+        CodegenTy::LocusRef(_) | CodegenTy::Interface(_) => OuterLocal::Locus,
         CodegenTy::Bounded(..) | CodegenTy::BytesMut => OuterLocal::Buffer,
         _ => OuterLocal::Heap,
     }

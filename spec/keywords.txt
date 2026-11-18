@@ -27,7 +27,6 @@ macro
 match
 module
 mut
-perspective
 return
 self
 trait
@@ -135,7 +134,6 @@ recognition
 refuse
 release
 reorganize
-reperspective
 replicas
 require
 requires
@@ -154,14 +152,11 @@ rpc
 run
 schedule
 seed
-serialize_as
 serve
-serves
 shared_slab
 shm_ring
 slot_count
 spillover
-stable_when
 subject
 subscribe
 sum

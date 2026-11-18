@@ -176,7 +176,6 @@ pub fn top_decl_ident(d: &hale_syntax::ast::TopDecl) -> Option<&str> {
     use hale_syntax::ast::TopDecl as T;
     match d {
         T::Locus(l) => Some(&l.name.name),
-        T::Perspective(p) => Some(&p.name.name),
         T::Type(t) => Some(&t.name.name),
         T::Const(c) => Some(&c.name.name),
         T::Fn(f) => Some(&f.name.name),

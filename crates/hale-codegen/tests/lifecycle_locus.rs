@@ -35,8 +35,6 @@ mod method_call_from_free_fn;
 mod returned_aggregate_of_loci;
 #[path = "params_default_scalar_self_ref.rs"]
 mod params_default_scalar_self_ref;
-#[path = "perspective_ctor_override_agreement.rs"]
-mod perspective_ctor_override_agreement;
 #[path = "pure_read_accessors.rs"]
 mod pure_read_accessors;
 #[path = "repr_field_accessors.rs"]

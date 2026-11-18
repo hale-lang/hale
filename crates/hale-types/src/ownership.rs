@@ -60,7 +60,7 @@
 //! |---|---|
 //! | `let x = …`, `x = …` | [`Owner::Binding`] |
 //! | `return …` | [`Owner::Caller`] |
-//! | a locus / interface / perspective param field's initialiser | [`Owner::Field`] |
+//! | a locus / interface param field's initialiser | [`Owner::Field`] |
 //! | the same field initialised from a NAME | [`Owner::Borrowed`] |
 //! | a `placement { }`'d field, a `bindings { }` transport | [`Owner::Placement`] |
 //! | an argument a callee hands back unchanged (`id(W { })`) | the call's owner |
@@ -192,7 +192,7 @@ pub enum ScopeKind {
 pub enum Owner {
     /// `let x = …` / `x = …` into a local slot.
     Binding(SlotId),
-    /// A param field's initialiser — locus, interface or perspective
+    /// A param field's initialiser — locus or interface
     /// typed. `owner` is the literal that built the holder, or
     /// [`ExprId::DECLARED`] for the declaring locus's own default
     /// text.
@@ -203,9 +203,8 @@ pub enum Owner {
     FrameTemp(ScopeId),
     /// The value a `return` hands out, in every arm of a carrier.
     Caller,
-    /// A handle passed in — an interface value from a parent's field,
-    /// a designated perspective slot. Never torn down here (GH #730 /
-    /// #731).
+    /// A handle passed in — an interface value from a parent's field.
+    /// Never torn down here (GH #730 / #731).
     Borrowed(ExprId),
     /// A `placement { }` entry's instance (pinned thread, program
     /// lifetime), including the bindings transport (GH #893).
@@ -258,7 +257,7 @@ pub enum Site {
     /// decision; the span is carried so a report can say WHICH node.
     Unindexed(Span),
     /// Lowering with no source expression at all: the `@export`
-    /// singleton's prelude, a `reperspective` swap.
+    /// singleton's prelude.
     Synthesized(&'static str),
 }
 
@@ -608,7 +607,7 @@ fn node_id(e: &Expr) -> Option<NodeId> {
 /// What a field of a locus can hold.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FieldKind {
-    /// A locus, interface or perspective handle — the field can OWN a
+    /// A locus or interface handle — the field can OWN a
     /// locus, so an initialiser that builds one transfers into it.
     Holder,
     /// Anything else.
@@ -957,8 +956,7 @@ impl<'e> BodyWalk<'e, '_> {
             Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => {}
+            | Stmt::Terminate(_) => {}
         }
     }
 
@@ -1236,8 +1234,7 @@ pub fn stack_array_names(params: &[Param], body: &Block) -> BTreeSet<String> {
             Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => true,
+            | Stmt::Terminate(_) => true,
             Stmt::Fail { value, .. } => expr_uses_are_elementwise(value, name),
             Stmt::Block(b) => block_uses_are_elementwise(b, name),
             Stmt::Recovery { args, .. } => {
@@ -1569,8 +1566,7 @@ fn body_lets<'e>(b: &'e Block, out: &mut Vec<(&'e Ident, NodeId)>) {
             Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => {}
+            | Stmt::Terminate(_) => {}
         }
     }
     fn expr<'e>(e: &'e Expr, out: &mut Vec<(&'e Ident, NodeId)>) {
@@ -1958,9 +1954,6 @@ fn interface_names(items: &[TopDecl]) -> BTreeSet<String> {
                 TopDecl::Interface(i) => {
                     out.insert(i.name.name.clone());
                 }
-                TopDecl::Perspective(p) => {
-                    out.insert(p.name.name.clone());
-                }
                 TopDecl::Module(m) => go(&m.items, out),
                 _ => {}
             }
@@ -1991,7 +1984,7 @@ fn param_field_kind(
     };
     // GH #1566 follow-up: an array or tuple of a locus type holds its
     // elements as the owner's children, as a locus-typed field holds
-    // its one (an element of an interface or a perspective type has no
+    // its one (an element of an interface type has no
     // recorded teardown of its own, and stays a value)
     fn of_loci(t: &TypeExpr, is_locus: &dyn Fn(&QualifiedName) -> bool) -> bool {
         match t {
@@ -2007,7 +2000,6 @@ fn param_field_kind(
     if let Some(t) = ty {
         return match t {
             TypeExpr::Array { .. } | TypeExpr::Tuple(..) if of_loci(t, &is_locus) => FieldKind::Holder,
-            TypeExpr::Perspective { .. } => FieldKind::Holder,
             TypeExpr::Named { path, .. } => {
                 // `std::http::RouteHandler` is declared as
                 // `__StdHttpRouteHandler`, so the bare last segment
@@ -2452,7 +2444,7 @@ fn stmt_name_uses(s: &Stmt, name: &str) -> usize {
         Stmt::For { iter, body, .. } => expr_name_uses(iter, name) + block_name_uses(body, name),
         Stmt::While { cond, body, .. } => expr_name_uses(cond, name) + block_name_uses(body, name),
         Stmt::Return(v, _) => v.as_ref().map_or(0, |e| expr_name_uses(e, name)),
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) | Stmt::Reperspective { .. } => 0,
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => 0,
         Stmt::Block(b) => block_name_uses(b, name),
         Stmt::Recovery { args, .. } => args.iter().map(|a| expr_name_uses(a, name)).sum(),
         Stmt::Violate { payload, .. } => payload.as_ref().map_or(0, |e| expr_name_uses(e, name)),
@@ -4359,8 +4351,7 @@ impl Resolver<'_> {
             Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => {}
+            | Stmt::Terminate(_) => {}
         }
     }
 
@@ -4423,7 +4414,6 @@ impl Resolver<'_> {
                 TopDecl::Fn(f) => self.walk_fn(f, prefix, "fn"),
                 TopDecl::Locus(l) => self.walk_locus(l, prefix),
                 TopDecl::Module(m) => self.walk_module(m, prefix),
-                TopDecl::Perspective(p) => self.walk_perspective(p, prefix),
                 TopDecl::Const(c) => {
                     let saved = self.open_frame(&format!(
                         "{}const {}",
@@ -4483,34 +4473,6 @@ impl Resolver<'_> {
     fn walk_module(&mut self, m: &ModuleDecl, prefix: &str) {
         let inner = format!("{}{}::", prefix, m.name.name);
         self.walk_decls(&m.items, &inner);
-    }
-
-    fn walk_perspective(
-        &mut self,
-        p: &hale_syntax::ast::PerspectiveDecl,
-        prefix: &str,
-    ) {
-        use hale_syntax::ast::PerspectiveMember;
-        let pname = format!("{}{}", prefix, p.name.name);
-        for m in p.members.iter() {
-            match m {
-                PerspectiveMember::Fn(f) => {
-                    self.walk_fn(f, &format!("{}.", pname), "perspective fn")
-                }
-                PerspectiveMember::StableWhen(b) => {
-                    let saved =
-                        self.open_frame(&format!("{}.stable_when", pname));
-                    self.walk_block(b, None);
-                    self.close_frame(saved);
-                }
-                PerspectiveMember::Params(pb) => {
-                    let owner = pname.clone();
-                    self.walk_params_block(pb, &owner);
-                }
-                PerspectiveMember::SerializeAs(_)
-                | PerspectiveMember::Bus(_) => {}
-            }
-        }
     }
 
     fn walk_fn(&mut self, f: &FnDecl, prefix: &str, what: &str) {

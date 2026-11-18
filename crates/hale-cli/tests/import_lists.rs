@@ -59,7 +59,7 @@ fn an_unknown_item_is_refused_at_the_item() {
         assert!(
             out.contains(
                 "main.hl:1:37: type error: `Nope` is not a top-level name of the library imported as `st` \
-                 (\"../store\"): an import list names a type, locus, fn, const, topic, interface or perspective \
+                 (\"../store\"): an import list names a type, locus, fn, const, topic or interface \
                  that library declares or re-exports; `st` provides: ModelRow, count"
             ),
             "`hale {verb}`: the item, located, with what `st` provides:\n{out}"

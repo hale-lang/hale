@@ -500,9 +500,6 @@ pub fn derive_unit_rows(bundle: &Bundle<'_>) -> UnitRows {
                 TopDecl::Interface(i) => {
                     names.others.entry(i.name.name.as_str()).or_insert("an interface");
                 }
-                TopDecl::Perspective(p) => {
-                    names.others.entry(p.name.name.as_str()).or_insert("a perspective");
-                }
                 _ => {}
             }
         }

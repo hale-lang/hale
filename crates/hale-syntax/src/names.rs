@@ -78,20 +78,6 @@ fn qualified<'a>(q: &'a QualifiedName, f: &mut Visit<'_, 'a>) {
 fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
     match d {
         TopDecl::Locus(l) => locus(l, f),
-        TopDecl::Perspective(p) => {
-            let PerspectiveDecl { name: n, generics: gs, members, span: _, id: _ } = p;
-            name(n, f);
-            generics(gs, f);
-            for m in members {
-                match m {
-                    PerspectiveMember::Params(pb) => params_block(pb, f),
-                    PerspectiveMember::StableWhen(b) => block(b, f),
-                    PerspectiveMember::SerializeAs(t) => ty(t, f),
-                    PerspectiveMember::Fn(fd) => fn_decl(fd, f),
-                    PerspectiveMember::Bus(bb) => bus(bb, f),
-                }
-            }
-        }
         TopDecl::Type(t) => type_decl(t, f),
         TopDecl::Const(c) => const_decl(c, f),
         TopDecl::Fn(fd) => fn_decl(fd, f),
@@ -361,7 +347,6 @@ fn locus<'a>(l: &'a LocusDecl, f: &mut Visit<'_, 'a>) {
         export: _,
         generics: gs,
         annotations: _,
-        serves,
         form,
         locality: _,
         bounded: _,
@@ -380,7 +365,6 @@ fn locus<'a>(l: &'a LocusDecl, f: &mut Visit<'_, 'a>) {
     }
     opt_text(display, f);
     generics(gs, f);
-    names(serves, f);
     if let Some(FormAnnotation { name: n, args, span: _ }) = form {
         name(n, f);
         for a in args {
@@ -749,7 +733,6 @@ fn ty<'a>(t: &'a TypeExpr, f: &mut Visit<'_, 'a>) {
                 ty(r, f);
             }
         }
-        TypeExpr::Perspective { name: n, span: _ } => name(n, f),
     }
 }
 
@@ -799,10 +782,6 @@ fn stmt<'a>(s: &'a Stmt, f: &mut Visit<'_, 'a>) {
         }
         Stmt::Return(e, _) => opt_expr(e, f),
         Stmt::Fail { value, span: _ } => expr(value, f),
-        Stmt::Reperspective { field, impl_name, span: _ } => {
-            name(field, f);
-            name(impl_name, f);
-        }
         Stmt::Block(b) => block(b, f),
         Stmt::Recovery { op: _, args, modifier, span: _ } => {
             for a in args {

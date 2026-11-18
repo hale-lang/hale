@@ -187,9 +187,6 @@ fn type_descriptor(ty: &TypeExpr) -> String {
                 None => String::new(),
             }
         ),
-        TypeExpr::Perspective { name, .. } => {
-            format!("perspective({})", name.name)
-        }
     }
 }
 
@@ -324,11 +321,6 @@ pub fn derive_application_model_over(
                 TopDecl::Fn(f) => {
                     out.free_fns.insert(f.name.name.as_str());
                 }
-                TopDecl::Perspective(p) => out.others.push((
-                    DeclKind::Perspective,
-                    p.name.name.as_str(),
-                    p.name.span,
-                )),
                 TopDecl::Const(c) => out.others.push((
                     DeclKind::Const,
                     c.name.name.as_str(),
@@ -1173,7 +1165,6 @@ pub fn derive_application_model_over(
             return Some(EntityRef::Interface(*id));
         }
         for kind in [
-            DeclKind::Perspective,
             DeclKind::Const,
             DeclKind::RingLayout,
             DeclKind::Target,

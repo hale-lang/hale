@@ -1419,7 +1419,7 @@ fn seat_row(j: String) -> SeatRow {
         id: id,
         engine: pg_text(j, "engine"),
         account: pg_text(j, "account"),
-        serves : serves,
+        serves: serves,
         data_classes: pg_names(std::json::find_field_raw(j, "data_classes")),
         concurrency: std::json::find_int_field(j, "concurrency"),
         enabled: std::json::find_bool_field(j, "enabled"),

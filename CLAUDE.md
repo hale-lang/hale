@@ -220,10 +220,10 @@ developer-tools update recompiles it instead of failing the link on
 
 Locus ownership has a generated matrix rather than hand-written
 cases: `crates/hale-codegen/tests/ownership_matrix.rs` builds every
-position × type × context (1792 cells) and runs four oracles on each
+position × type × context (1519 cells) and runs four oracles on each
 — `dissolve()` tag counts, `LOTUS_ARENA_RESIDENCY=1`, an ASan run,
 and the inline-vs-`let` differential. The default is a ~90-cell
-sample (~16 s); `HALE_MATRIX=full` runs all 1792 (~190 s) and belongs
+sample (~16 s); `HALE_MATRIX=full` runs all 1519 (~160 s) and belongs
 in a nightly job:
 
 ```sh
@@ -232,12 +232,12 @@ HALE_MATRIX=full cargo test --release -p hale-codegen --test ownership_matrix
 ```
 
 The lifecycle has one too: `crates/hale-codegen/tests/lifecycle_matrix.rs`
-generates a program per failure phase × tree position × domain (192
-cells, 121 of them programs; the rest are named as unwritable under
+generates a program per failure phase × tree position × domain (168
+cells, 109 of them programs; the rest are named as unwritable under
 the rule that refuses them, or as having no path) and holds each to
 its outcome word, the lifecycle trace against its plan, ASan on the
-sample and the `let`-bound differential. The default is a 60-program
-sample (~10 s); `HALE_MATRIX=full` runs all 121 (~12 s), and
+sample and the `let`-bound differential. The default is a 52-program
+sample (~10 s); `HALE_MATRIX=full` runs all 109 (~12 s), and
 `HALE_MATRIX_ASAN=full` puts ASan on every cell it runs, not only the
 sample's:
 

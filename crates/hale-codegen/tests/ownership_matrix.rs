@@ -17,20 +17,19 @@
 //! renderer:
 //!
 //!   * **position** — where the locus-producing expression is
-//!     written (32 of them: `let`, bare statement, receiver, a
+//!     written (31 of them: `let`, bare statement, receiver, a
 //!     receiver holder literal with a literal in its field,
 //!     argument retained / dropped, an argument to an interface
 //!     parameter whose callee writes its fields, field read, `return` of a
 //!     literal / factory / carrier, `return` through a call that
 //!     hands back its argument, param-field literal / factory /
 //!     `or raise` / `or <literal>` / `or <call>` / default / nested
-//!     receiver, the same against an INTERFACE-typed field and a
-//!     factory into a `perspective(P)`-typed one, `if` / `match` /
+//!     receiver, the same against an INTERFACE-typed field, `if` / `match` /
 //!     block tails, array and tuple elements);
 //!   * **type** — the shape of the tree being instantiated (plain,
 //!     a `@form(vec)` child, one whose elements carry a nested
 //!     record, a `@form(hashmap)` child whose cells do, a grandchild,
-//!     an interface-typed child, a `perspective(P)` child, one whose
+//!     an interface-typed child, one whose
 //!     `bounded` lists hold an enum with payloads);
 //!   * **context** — the frame the payload runs in (`fn main`, a
 //!     free fn, a locus METHOD, a `while` loop of four iterations, a
@@ -88,7 +87,7 @@
 //!
 //! ## Size
 //!
-//! The full matrix (32 × 8 × 7 = 1792 cells, ~170 s on seven threads)
+//! The full matrix (31 × 7 × 7 = 1519 cells, ~150 s on seven threads)
 //! is behind `HALE_MATRIX=full`, for a nightly job. The per-PR
 //! default runs a deterministic sample (~90 cells, ~17 s) that
 //! always contains one
@@ -144,7 +143,7 @@ const KNOWN_OPEN: &[(&str, &str)] = &[];
 /// How many cells the per-PR sample aims for.
 const TARGET_SAMPLE: usize = 60;
 
-/// A stride co-prime with the cell count (32 · 8 · 7 = 1792 = 2⁸·7),
+/// A stride co-prime with the cell count (31 · 7 · 7 = 1519 = 7²·31),
 /// so topping the sample up visits the space evenly and
 /// deterministically.
 const FILL_STRIDE: usize = 101;
@@ -328,27 +327,6 @@ locus Subj {
 }
 ";
 
-/// A `perspective(P)` handle: the field holds the designated impl
-/// for OWNERSHIP alone, since dispatch goes through the
-/// program-global slot. Declarable without a `main locus`, as
-/// `owned_child_arena_reclaim.rs` already relies on — so the brief's
-/// "skip and say so" escape is not needed.
-const SHAPE_PERSP_CHILD: &str = "
-perspective Route { fn v() -> Int; }
-
-locus RouteV1 : serves Route {
-    dissolve() { println(\"D:routev1\"); }
-    fn v() -> Int { return 1; }
-}
-
-locus Subj {
-    params { n: Int = 0; r: perspective(Route) = RouteV1 { }; }
-    dissolve() { println(\"D:subj\"); }
-    fn probe() -> Int { return self.n + self.r.v(); }
-    fn bump(k: Int) -> Int { self.n = self.n + k; return self.probe(); }
-}
-";
-
 /// A subject whose own `bounded` list, and a record field's, hold an
 /// enum with payloads (GH #1951 item 4): each slot points at its cell,
 /// and the cell's variant owns a String, a Bytes or a nested enum's
@@ -429,11 +407,6 @@ const SHAPES: &[Shape] = &[
         id: "iface_child",
         decls: SHAPE_IFACE_CHILD,
         tags: &["D:subj", "D:impl"],
-    },
-    Shape {
-        id: "persp_child",
-        decls: SHAPE_PERSP_CHILD,
-        tags: &["D:subj", "D:routev1"],
     },
     Shape { id: "payload_enum", decls: SHAPE_PAYLOAD_ENUM, tags: &["D:subj"] },
 ];
@@ -817,51 +790,7 @@ const POSITIONS: &[Position] = &[
         "",
         "let h = IHolder { c: make_f(1) or make2(1) };\nprintln(\"u=\", h.peek());",
     ),
-    // --- and against a `perspective(P)`-typed field --------------
-    //
-    // GH #921 A3. This shape had NO cell: the `persp_child` type
-    // axis puts a perspective field on the SUBJECT, and every field
-    // position puts the subject behind a locus- or interface-typed
-    // one, so "a factory's result stored into a perspective-typed
-    // field" was never generated. It is the one place F.39 and
-    // lowering disagreed outside the four families — the F.17 gate
-    // covered `LocusRef` and `Interface` and not `Perspective`, so
-    // the value took the GH #402 frame temporary while F.39 says the
-    // field owns it. The impl holds the subject so the type axis
-    // still bites.
-    Position {
-        id: "persp_field_factory",
-        decls: PERSP_FIELD_DECLS,
-        stmts: "let h = PHolder { r: makep() };\nprintln(\"u=\", h.peek());",
-        twin_decls: None,
-        twin_stmts: None,
-        instances: 1,
-        extra_tags: &[("D:proute", 1)],
-        needs_fallible: false,
-    },
 ];
-
-/// The declarations `persp_field_factory` needs. A second
-/// perspective, so the `persp_child` shape's own `Route` is
-/// untouched, and an impl that holds the subject so the shape axis
-/// is not vacuous for this position.
-const PERSP_FIELD_DECLS: &str = "
-perspective PRoute { fn pv() -> Int; }
-
-locus PRouteV1 : serves PRoute {
-    params { s: Subj = Subj { n: 1 }; }
-    dissolve() { println(\"D:proute\"); }
-    fn pv() -> Int { return self.s.probe(); }
-}
-
-locus PHolder {
-    params { r: perspective(PRoute) = PRouteV1 { }; }
-    fn peek() -> Int { return self.r.pv(); }
-}
-
-fn makep() -> PRouteV1 { return PRouteV1 { }; }
-";
-
 
 // ===================================================================
 // Axis 3 — the context
@@ -1520,12 +1449,12 @@ fn matrix_behind_an_untaken_guard() {
 /// generator that silently produces two cells passes every oracle.
 #[test]
 fn the_matrix_is_rectangular_and_non_vacuous() {
-    assert_eq!(POSITIONS.len(), 32, "position axis changed size");
-    assert_eq!(SHAPES.len(), 8, "type axis changed size");
+    assert_eq!(POSITIONS.len(), 31, "position axis changed size");
+    assert_eq!(SHAPES.len(), 7, "type axis changed size");
     assert_eq!(CONTEXTS.len(), 7, "context axis changed size");
 
     let all = all_cells();
-    assert_eq!(all.len(), 32 * 8 * 7);
+    assert_eq!(all.len(), 31 * 7 * 7);
     let ids: BTreeSet<String> = all.iter().map(|c| cell_id(*c)).collect();
     assert_eq!(ids.len(), all.len(), "two cells share an id");
 

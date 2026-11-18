@@ -663,14 +663,6 @@ struct TypeSizeInfo {
 fn type_size_info(ty: &TypeExpr, idx: &Index<'_>) -> TypeSizeInfo {
     match ty {
         TypeExpr::Primitive(p, _) => primitive_size_info(*p),
-        // Phase 2a: a `perspective(P)` field stores a single
-        // pointer to the current impl (the dispatch reads the
-        // global slot), so it's pointer-sized like a LocusRef.
-        TypeExpr::Perspective { .. } => TypeSizeInfo {
-            size: 8,
-            align: 8,
-            unbounded: false,
-        },
         TypeExpr::Bounded { elem, cap, .. } => {
             // { i64 len, [N x T] } inline.
             let e = type_size_info(elem, idx);
@@ -933,8 +925,7 @@ fn stmt_scratch_bytes(s: &hale_syntax::ast::Stmt, idx: &Index<'_>) -> u64 {
         Stmt::Return(None, _)
         | Stmt::Break(_)
         | Stmt::Continue(_)
-        | Stmt::Yield(_) | Stmt::Terminate(_)
-        | Stmt::Reperspective { .. } => 0,
+        | Stmt::Yield(_) | Stmt::Terminate(_) => 0,
     }
 }
 

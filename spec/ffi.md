@@ -37,13 +37,12 @@ The annotation is rejected on:
 
 - Locus methods (`locus L { fn ...; }`).
 - Mode bodies (`mode bulk { ... }`, `mode harmonic { ... }`, ...).
-- Perspective method signatures.
 - Interface method signatures.
 - Closure declarations.
 
 The position restriction matches the substrate's expectation that
 the C-ABI boundary crosses at top-level program scope only; locus
-and perspective methods carry implicit Hale-side context
+methods carry implicit Hale-side context
 (`self`, scratch arena, lifecycle hooks) that doesn't translate
 to C.
 
@@ -340,8 +339,8 @@ Typecheck errors:
 
 A named type crosses only as a user struct (by pointer, its C struct
 kept layout-compatible by the library author), an identity, a range
-or a quantity (its `Int`). An enum, a locus, an interface or a
-perspective has no C layout at Stage 1, and is refused at the
+or a quantity (its `Int`). An enum, a locus or an interface has no
+C layout at Stage 1, and is refused at the
 annotation (GH #1942):
 
 - `\`@ffi\` fn \`<name>\` parameter \`<p>\` has type Color — \`Color\`

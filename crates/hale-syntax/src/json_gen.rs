@@ -2972,8 +2972,7 @@ fn rewrite_stmt(s: &mut Stmt, visit: &mut dyn FnMut(&mut Expr)) {
         | Stmt::Break(_)
         | Stmt::Continue(_)
         | Stmt::Yield(_)
-        | Stmt::Terminate(_)
-        | Stmt::Reperspective { .. } => {}
+        | Stmt::Terminate(_) => {}
     }
 }
 

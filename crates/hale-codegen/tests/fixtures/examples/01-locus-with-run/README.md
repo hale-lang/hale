@@ -64,7 +64,7 @@ fn main() {
 - closure tests — 03
 - mode declarations — 04
 - bus interface — 05
-- failure handling, perspectives — later
+- failure handling — later
 
 ## What writing this surfaced (for the spec)
 

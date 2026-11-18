@@ -44,7 +44,7 @@ A locus declares that it can parent dynamic instances of `Child` by implementing
 
 ### Polymorphic Acceptance via an Interface
 
-To parent multiple child locus types under a single supervisor, declare `accept(j: Interface)` (and optionally `release(j: Interface)`) using an [interface](./perspectives.md#interface-or-perspective):
+To parent multiple child locus types under a single supervisor, declare `accept(j: Interface)` (and optionally `release(j: Interface)`) using an [interface](./interfaces.md):
 
 ```hale
 interface Job { fn weight() -> Int; }

@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     Block, BusMember, ClosureClause, ElseBranch, EpochSpec, Expr, FnDecl, IfStmt, LValueSeg, LifecycleKind, LocusDecl,
-    LocusMember, MatchArmBody, MatchStmt, OrDisposition, ParamInit, ParamsBlock, PerspectiveMember, Program,
+    LocusMember, MatchArmBody, MatchStmt, OrDisposition, ParamInit, ParamsBlock, Program,
     RecoveryModifier, Stmt, StructInit, TopDecl, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::{Diag, Span, SpanOrigin};
@@ -589,9 +589,9 @@ pub(crate) fn literals<'a, F: FnMut(&'a Expr, bool)>(f: F) -> Literals<F> {
 
 impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
     /// Every expression written in `items`: the bodies, and the positions
-    /// no body reaches (a params default of a locus or a perspective, a
+    /// no body reaches (a params default of a locus, a
     /// const, a type's field default, a closure's assertion, an adapter's
-    /// inits, a perspective's members).
+    /// inits).
     pub(crate) fn items(&mut self, items: &'a [TopDecl]) {
         for item in items {
             match item {
@@ -620,16 +620,6 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
                                 }
                             }
                             _ => {}
-                        }
-                    }
-                }
-                TopDecl::Perspective(p) => {
-                    for m in &p.members {
-                        match m {
-                            PerspectiveMember::Params(pb) => self.params(pb),
-                            PerspectiveMember::StableWhen(b) => self.block(b),
-                            PerspectiveMember::Fn(fd) => self.fn_decl(fd),
-                            PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
                         }
                     }
                 }
@@ -790,8 +780,7 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
                 self.expr(max);
                 self.block(body);
             }
-            Stmt::Reperspective { .. }
-            | Stmt::Yield(_)
+            Stmt::Yield(_)
             | Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Terminate(_) => {}
@@ -1493,8 +1482,8 @@ struct RecordEdge<'a> {
 /// The edges are the by-value ones only. A `bounded[T; N]` starts empty
 /// and an enum variant's payload is one variant among others, so a
 /// record holding a `bounded` or an enum of its own kind has a floor and
-/// is not refused; neither is a fn type, an interface, a locus or a
-/// perspective, which hold no record value. A generic record's fields
+/// is not refused; neither is a fn type, an interface or a locus,
+/// which hold no record value. A generic record's fields
 /// are followed with its type arguments substituted (`b: Box<Cfg>` with
 /// `type Box<T> { v: T; }`), an alias to its target, and a qualified
 /// path through the bundle's import renames. A record this bundle does
@@ -1671,8 +1660,7 @@ fn record_values_held(
         | TypeExpr::Bounded { .. }
         | TypeExpr::Primitive(..)
         | TypeExpr::Projection { .. }
-        | TypeExpr::Function { .. }
-        | TypeExpr::Perspective { .. } => {}
+        | TypeExpr::Function { .. } => {}
     }
 }
 

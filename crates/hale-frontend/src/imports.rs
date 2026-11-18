@@ -66,9 +66,9 @@ pub struct AliasScopes {
     pub files: BTreeMap<PathBuf, Vec<PathBuf>>,
     /// GH #1951 item 6 (F.51): what an import list may name in each
     /// imported seed, keyed like `files`: its own declarations of the
-    /// listable kinds (type, locus, fn, const, topic, interface,
-    /// perspective) and the names its own import lists bring in,
-    /// re-exported — each to the declaration's mangled symbol.
+    /// listable kinds (type, locus, fn, const, topic, interface)
+    /// and the names its own import lists bring in, re-exported —
+    /// each to the declaration's mangled symbol.
     pub exports: BTreeMap<PathBuf, std::collections::HashMap<String, String>>,
     /// The bare names each seed's import lists bound, by seed: a seed's
     /// own names for the alias-scoping rule (`unscoped_alias_uses`).
@@ -531,7 +531,6 @@ pub fn listable_decls(
     for d in hale_syntax::ast::flat_decls(items) {
         let name = match d {
             T::Locus(l) => &l.name,
-            T::Perspective(p) => &p.name,
             T::Type(t) => &t.name,
             T::Const(c) => &c.name,
             T::Fn(f) => &f.name,
@@ -633,7 +632,7 @@ pub fn listed_import_names(
                     item.name.span,
                     format!(
                         "`{name}` is not a top-level name of the library imported as `{alias}` (\"{}\"): an \
-                         import list names a type, locus, fn, const, topic, interface or perspective that \
+                         import list names a type, locus, fn, const, topic or interface that \
                          library declares or re-exports{tail}",
                         imp.path,
                     ),

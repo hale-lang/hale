@@ -47,7 +47,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     BinOp, Block, ElseBranch, Expr, FnDecl, IfStmt, Literal, LocusMember, MatchArmBody, MatchStmt, OrDisposition, Param,
-    ParamInit, Pattern, PerspectiveMember, Program, Stmt, TopDecl, TypeDeclBody, TypeExpr,
+    ParamInit, Pattern, Program, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::error::Diag;
 use hale_syntax::Span;
@@ -870,37 +870,6 @@ fn walk_items(world: &World, key: &str, items: &[TopDecl], diags: &mut Vec<Diag>
                     walk_member(world, key, locus, &l.name.name, m, diags);
                 }
             }
-            TopDecl::Perspective(p) => {
-                let locus = Some(p.name.name.as_str());
-                for m in &p.members {
-                    match m {
-                        PerspectiveMember::Fn(fd) => walk_fn(world, key, locus, fd, diags),
-                        PerspectiveMember::Params(pb) => {
-                            let mut b =
-                                Body::new(world, locus, Context::of(locus, "params"), &[], Deferral::None, diags);
-                            for pd in &pb.params {
-                                if let ParamInit::Value(e) = &pd.init {
-                                    b.expr(e, &Flow::leaks("is a param default, which the perspective keeps"));
-                                }
-                            }
-                            b.finish();
-                        }
-                        PerspectiveMember::StableWhen(blk) => {
-                            let mut b = Body::new(
-                                world,
-                                locus,
-                                Context::of(locus, "stable_when"),
-                                &[],
-                                Deferral::None,
-                                diags,
-                            );
-                            b.block(blk, &Flow::leaks("decides whether the perspective is stable"));
-                            b.finish();
-                        }
-                        other => backstop(format!("{:?}", other), p.span, diags),
-                    }
-                }
-            }
             other => backstop(format!("{:?}", other), other.span(), diags),
         }
     }
@@ -1220,7 +1189,6 @@ impl<'a> Body<'a> {
                     self.expr(p, &Flow::leaks("is a violation payload"));
                 }
             }
-            Stmt::Reperspective { .. } => {}
             Stmt::Expr(e) => self.expr(e, &Flow::leaks("is not consumed")),
         }
     }

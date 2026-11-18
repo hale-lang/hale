@@ -45,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
     Block, ElseBranch, Expr, FailureDecl, IfStmt, Literal, LocusDecl, LocusMember, LValueSeg,
-    MatchArmBody, NodeId, OrDisposition, PerspectiveMember, Program, RecoveryModifier,
+    MatchArmBody, NodeId, OrDisposition, Program, RecoveryModifier,
     RecoveryOp, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::Span;
@@ -748,16 +748,6 @@ impl OpWalk {
                     self.locus_member(m);
                 }
             }
-            TopDecl::Perspective(p) => {
-                for m in &p.members {
-                    match m {
-                        PerspectiveMember::Params(pb) => self.params_block(pb),
-                        PerspectiveMember::StableWhen(b) => self.block(b),
-                        PerspectiveMember::Fn(f) => self.fn_decl(f),
-                        PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
-                    }
-                }
-            }
             TopDecl::Fn(f) => self.fn_decl(f),
             TopDecl::Const(c) => self.expr(&c.value),
             _ => {}
@@ -924,8 +914,7 @@ impl OpWalk {
             Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => {}
+            | Stmt::Terminate(_) => {}
         }
     }
 

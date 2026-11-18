@@ -26,7 +26,7 @@ pub struct TopScope {
     /// checker reads a bus subject through them.
     pub topics: crate::topic_identity::TopicRows,
     /// The name table the checker resolves a type expression against:
-    /// every locus, type and perspective the scope declares (the
+    /// every locus and type the scope declares (the
     /// bundled stdlib's and the injected error types included), each
     /// alias's expanded target, and the bundle's import renames. A
     /// projection of `symbols`, built once with them, so the checker
@@ -68,7 +68,7 @@ impl TopScope {
         for (name, sym) in &self.symbols {
             if matches!(
                 sym,
-                TopSymbol::Locus(_) | TopSymbol::Type(_) | TopSymbol::Perspective(_)
+                TopSymbol::Locus(_) | TopSymbol::Type(_)
             ) {
                 m.insert(name.clone(), sym.span());
             }
@@ -342,7 +342,7 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     let mut diags = Vec::new();
 
     // First pass: register every top-level *type-like* name
-    // (locus, type, perspective) so type expressions in a
+    // (locus, type) so type expressions in a
     // second pass can resolve cross-file references.
     let mut known_names = KnownNames::default();
     // GH #833: before anything resolves a type expression, so a
@@ -680,7 +680,6 @@ fn collect_type_names(
         let (kind, name) = match item {
             TopDecl::Locus(l) => ("locus", &l.name),
             TopDecl::Type(t) => ("type", &t.name),
-            TopDecl::Perspective(p) => ("perspective", &p.name),
             TopDecl::Interface(i) => ("interface", &i.name),
             TopDecl::Topic(t) => ("topic", &t.name),
             TopDecl::RingLayout(r) => ("ring layout", &r.name),
@@ -723,7 +722,7 @@ fn insert_name(
             (a, b) if a == b => String::new(),
             (a, b) => format!(
                 ": `{n}` is declared as a {a} and as a {b}, and every \
-                 top-level declaration (type, locus, perspective, \
+                 top-level declaration (type, locus, \
                  interface, topic) shares one namespace — rename one"
             ),
         };
@@ -839,7 +838,6 @@ fn register_top_decls(
                 if matches!(t.body, TypeDeclBody::Scalar(_))
                     && hale_syntax::parser::primitive_from_name(&t.name.name).is_some() => {}
             TopDecl::Type(t) => register_type(t, known, scope, diags),
-            TopDecl::Perspective(p) => register_perspective(p, known, scope, diags),
             TopDecl::Const(c) => register_const(c, known, scope, diags),
             TopDecl::Fn(f) => register_fn(f, known, scope, diags),
             TopDecl::Module(m) => {
@@ -1158,11 +1156,7 @@ fn register_locus(
                             ParamInit::Inferred => Ty::Unknown,
                         },
                     };
-                    // GH #731: a `perspective(P)` param with no
-                    // initializer holds the program's slot without
-                    // designating it — a construction may omit it
-                    let has_default = matches!(p.init, ParamInit::Value(_))
-                        || matches!(p.ty, Some(TypeExpr::Perspective { .. }));
+                    let has_default = matches!(p.init, ParamInit::Value(_));
                     params.push(ParamInfo {
                         name: p.name.name.clone(),
                         ty,
@@ -1423,7 +1417,6 @@ fn register_locus(
     let info = LocusInfo {
         name: decl.name.name.clone(),
         sealed: decl.sealed,
-        serves: decl.serves.iter().map(|s| s.name.clone()).collect(),
         params,
         bus_publishes,
         bus_subscribes,
@@ -1494,127 +1487,6 @@ fn register_type(
         span: decl.span,
     };
     register_symbol(scope, &decl.name.name, TopSymbol::Type(info), decl.span, diags);
-}
-
-/// Phase 2c: a canonical string key for a bus subject, used to
-/// compare a perspective contract's bus edges against a serving
-/// locus's. Literal subjects use their text; topic refs use the
-/// topic name; qualified refs join the segments.
-fn bus_subject_key(subject: &BusSubject) -> String {
-    match subject {
-        BusSubject::Literal { subject, .. } => subject.clone(),
-        BusSubject::Topic(id) => id.name.clone(),
-        BusSubject::QualifiedTopic(path) => path
-            .segments
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect::<Vec<_>>()
-            .join("::"),
-    }
-}
-
-fn register_perspective(
-    decl: &PerspectiveDecl,
-    known: &KnownNames,
-    scope: &mut TopScope,
-    diags: &mut Vec<Diag>,
-) {
-    let mut params = Vec::new();
-    let mut serialize_as = None;
-    let mut methods: Vec<MethodInfo> = Vec::new();
-    let mut bus_subscribes: Vec<String> = Vec::new();
-    let mut bus_publishes: Vec<String> = Vec::new();
-    for member in &decl.members {
-        match member {
-            // Phase 2c: contract bus surface — collect subject keys.
-            PerspectiveMember::Bus(bb) => {
-                for bm in &bb.members {
-                    match bm {
-                        BusMember::Subscribe { subject, .. } => {
-                            bus_subscribes.push(bus_subject_key(subject));
-                        }
-                        BusMember::Publish { subject, .. } => {
-                            bus_publishes.push(bus_subject_key(subject));
-                        }
-                    }
-                }
-            }
-            PerspectiveMember::Params(pb) => {
-                for p in &pb.params {
-                    let ty = match &p.ty {
-                        Some(te) => resolve_type_expr(te, known),
-                        None => match &p.init {
-                            ParamInit::Value(e) => infer_literal_ty(e),
-                            ParamInit::Inferred => Ty::Unknown,
-                        },
-                    };
-                    params.push(ParamInfo {
-                        name: p.name.name.clone(),
-                        ty,
-                        has_default: matches!(p.init, ParamInit::Value(_)),
-                        span: p.span,
-                    });
-                }
-            }
-            PerspectiveMember::SerializeAs(te) => {
-                serialize_as = Some(resolve_type_expr(te, known));
-            }
-            PerspectiveMember::Fn(f) => {
-                let scoped = known.with_parameters(&f.generics);
-                let known = scoped.as_ref();
-                let ret = match &f.ret {
-                    Some(te) => resolve_type_expr(te, known),
-                    None => Ty::Unit,
-                };
-                let fallible = f
-                    .fallible
-                    .as_ref()
-                    .map(|te| resolve_type_expr(te, known));
-                methods.push(MethodInfo {
-                    name: f.name.name.clone(),
-                    params: f
-                        .params
-                        .iter()
-                        .map(|p| resolve_type_expr(&p.ty, known))
-                        .collect(),
-                    // GH #229: see FnSig::min_params.
-                    min_params: f
-                        .params
-                        .iter()
-                        .position(|p| p.default.is_some()),
-                    ret,
-                    fallible,
-                });
-            }
-            PerspectiveMember::StableWhen(_) => {
-                // stable_when is a built-in method on every
-                // perspective: `p.is_stable() -> Bool`.
-                methods.push(MethodInfo {
-                    name: "is_stable".to_string(),
-                    params: Vec::new(),
-                    min_params: None,
-                    ret: Ty::Prim(PrimType::Bool),
-                    fallible: None,
-                });
-            }
-        }
-    }
-    let info = PerspectiveInfo {
-        name: decl.name.name.clone(),
-        params,
-        serialize_as,
-        methods,
-        bus_subscribes,
-        bus_publishes,
-        span: decl.span,
-    };
-    register_symbol(
-        scope,
-        &decl.name.name,
-        TopSymbol::Perspective(info),
-        decl.span,
-        diags,
-    );
 }
 
 fn register_const(
@@ -1758,28 +1630,6 @@ pub(crate) fn resolve_type_expr_with(
 ) -> Ty {
     match te {
         TypeExpr::Primitive(p, _) => Ty::Prim(*p),
-        // Phase 2a: `perspective(P)` resolves to the contract name
-        // as a Named type — method/param resolution then goes
-        // through the `TopSymbol::Perspective` branch, exactly the
-        // way an interface-typed value resolves through
-        // `TopSymbol::Interface`.
-        // GH #724: a name that still carries `::` is an UNRESOLVED
-        // cross-seed reference. A resolvable `perspective(lib::Routing)`
-        // was collapsed to the imported declaration's single mangled
-        // name by the import-rename pass before anything reaches here,
-        // so what is left is a path this bundle cannot see — type it
-        // `Unknown`, exactly as a multi-segment named type resolves.
-        // That keeps a tool holding one seed WITHOUT its imports (the
-        // LSP bundles a directory's own files) tolerant of the path
-        // instead of reporting a missing method on every use of the
-        // slot, the same way it already tolerates `lib::Grid`.
-        TypeExpr::Perspective { name, .. } => {
-            if name.name.contains("::") {
-                Ty::Unknown
-            } else {
-                Ty::Named(name.name.clone())
-            }
-        }
         TypeExpr::Named { path, generic_args, .. } => {
             if path.segments.len() == 1 {
                 let name = &path.segments[0].name;
@@ -2681,8 +2531,7 @@ fn scan_stmt_for_stdlib_usage(s: &Stmt, out: &mut StdlibErrorUsage) {
         Stmt::Return(None, _)
         | Stmt::Break(_)
         | Stmt::Continue(_)
-        | Stmt::Yield(_) | Stmt::Terminate(_)
-        | Stmt::Reperspective { .. } => {}
+        | Stmt::Yield(_) | Stmt::Terminate(_) => {}
     }
 }
 

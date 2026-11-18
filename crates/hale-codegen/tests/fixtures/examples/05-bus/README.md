@@ -191,5 +191,5 @@ finish; then dissolves.
 `fitter-applier-pair` — analyst and executor binaries on a shared
 schema, communicating via UDP multicast. The full first
 program. Exercises everything we've built so far plus
-perspective serialization, the analyst↔executor cyclic-closure
-check, multi-binary deployment.
+the analyst↔executor cyclic-closure check, multi-binary
+deployment.

@@ -314,7 +314,7 @@ fn no_other_chains_word_is_reserved() {
     // The true list, pinned: everything else in the chains
     // vocabulary is recognized only after a `.`, so a free fn may
     // take the name. `crates/hale-codegen/tests/fixtures/
-    // lib-enum-persp/lib.hl` really does declare `fn first()`.
+    // lib-enum-iface/lib.hl` really does declare `fn first()`.
     for word in [
         "map",
         "filter",

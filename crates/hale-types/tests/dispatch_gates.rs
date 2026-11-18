@@ -117,7 +117,7 @@ fn hold_over(targets: &[PathBuf], min_views: usize) -> usize {
 
 #[test]
 fn the_corpus_examples_gates_are_lowerings() {
-    hold_over(&entries("crates/hale-codegen/tests/fixtures/examples", true), 200);
+    hold_over(&entries("crates/hale-codegen/tests/fixtures/examples", true), 190);
 }
 
 #[test]

@@ -107,9 +107,9 @@ entry-relative imports but lose the workspace fallback.
 ## Seeds — the per-directory model (F.19)
 
 **A directory of `.hl` files compiles as one seed.** Every
-top-level decl (locus, type, free fn, perspective, const,
-interface) declared in any file in the directory is visible to
-every other file in the same directory, in one shared scope.
+top-level decl (locus, type, free fn, const, interface) declared in
+any file in the directory is visible to every other file in the same
+directory, in one shared scope.
 
 `hale build <dir>`, `hale run <dir>`, and `hale check
 <dir>` accept directory targets and bundle every `.hl` file
@@ -221,7 +221,7 @@ fn tally(n: StoreNames) -> Int { return st::count(n); }
 
 - **An item names a top-level declaration of the imported seed**: a
   `type` (records, enums and aliases), `locus`, `fn`, `const`,
-  `topic`, `interface` or `perspective`, declared at the top level
+  `topic` or `interface`, declared at the top level
   or in a `module { }` — or a name the imported seed's own import
   lists bring in (below). Any other name is refused, located at the
   item, with what the library provides. There are no globs: every

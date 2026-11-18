@@ -97,7 +97,6 @@ impl<'a> Bundle<'a> {
 pub enum TopSymbol {
     Locus(LocusInfo),
     Type(TypeInfo),
-    Perspective(PerspectiveInfo),
     Const(ConstInfo),
     Fn(FnSig),
     Interface(InterfaceInfo),
@@ -110,7 +109,6 @@ impl TopSymbol {
         match self {
             TopSymbol::Locus(l) => l.span,
             TopSymbol::Type(t) => t.span,
-            TopSymbol::Perspective(p) => p.span,
             TopSymbol::Const(c) => c.span,
             TopSymbol::Fn(f) => f.span,
             TopSymbol::Interface(i) => i.span,
@@ -195,11 +193,6 @@ pub struct LocusInfo {
     /// GH #436: declared `@sealed` — its `params` are readable only
     /// from inside its own methods. Others may still call it.
     pub sealed: bool,
-    /// Phase 2a: perspective contracts this locus `serves` — the
-    /// `locus L : serves P, Q` clause names. Empty for non-impl
-    /// loci. Consulted by `reperspective` (Phase 2b) to verify the
-    /// new impl serves the target perspective.
-    pub serves: Vec<String>,
     pub params: Vec<ParamInfo>,
     pub bus_publishes: Vec<BusPublishInfo>,
     pub bus_subscribes: Vec<BusSubscribeInfo>,
@@ -365,21 +358,6 @@ pub struct VariantInfo {
     /// for its catch-all option by the refusals of `E::parse` and
     /// `E::variants` (RFC #1995 E1).
     pub tag: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PerspectiveInfo {
-    pub name: String,
-    pub params: Vec<ParamInfo>,
-    pub serialize_as: Option<Ty>,
-    pub methods: Vec<MethodInfo>,
-    /// Phase 2c: the contract's bus surface — the subjects the
-    /// perspective subscribes / publishes (as canonical subject
-    /// keys). A `serves` impl must subscribe / publish each of
-    /// these. Empty for a sync-only perspective.
-    pub bus_subscribes: Vec<String>,
-    pub bus_publishes: Vec<String>,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
