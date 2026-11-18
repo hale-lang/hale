@@ -307,3 +307,51 @@ pub fn unique_dir(name: &str) -> PathBuf {
     std::fs::create_dir_all(&dir).expect("create the scratch directory");
     dir
 }
+
+/// Run `cmd` to its end or for at most `limit`, whichever comes first,
+/// and hand back its output: a child still running at the limit is
+/// killed, and its status says so (a signal, no exit code). Its stdout
+/// and stderr are captured either way.
+///
+/// The bounded run a test used to get from coreutils' `timeout`, which
+/// a macOS runner does not have (GH #2075: `Command::new("timeout")`
+/// failed with `NotFound` there before the program ran).
+#[allow(dead_code)]
+pub fn output_within(cmd: &mut std::process::Command, limit: std::time::Duration) -> std::process::Output {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn the program");
+    let mut out = child.stdout.take().expect("piped stdout");
+    let mut err = child.stderr.take().expect("piped stderr");
+    let out_reader = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = out.read_to_end(&mut b);
+        b
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = err.read_to_end(&mut b);
+        b
+    });
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for the program") {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            break child.wait().expect("reap the killed program");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    std::process::Output {
+        status,
+        stdout: out_reader.join().unwrap_or_default(),
+        stderr: err_reader.join().unwrap_or_default(),
+    }
+}

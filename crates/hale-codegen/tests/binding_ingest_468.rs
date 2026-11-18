@@ -27,7 +27,8 @@
 //!
 //! The windows are made deterministic by two test-only env hooks
 //! (LOTUS_BUS_TEST_BOOT_HOLD_MS stretches realize→registration;
-//! LOTUS_BUS_TEST_READER_STALL_MS deschedules the reader), the
+//! LOTUS_BUS_TEST_READER_STALL_MS deschedules the reader, for a
+//! time or, set to `stop`, until the exit quiesce stops it), the
 //! honest stand-ins for what a loaded CI runner does at random.
 
 #![cfg(unix)]
@@ -143,6 +144,45 @@ fn exiting_sub_src(sock: &str) -> String {
     )
 }
 
+/// Subscriber whose run ends when the test says so: it waits for the
+/// file `gate` to exist (bounded: exit 3 after ~30 s), then prints what
+/// it has seen and returns. The teardown canary of
+/// `exit_quiesce_delivers_the_kernel_queued_tail`: the test opens the
+/// gate only once the publisher has written its burst and exited, so the
+/// burst is surely in the kernel when main returns (GH #2075).
+fn gated_sub_src(sock: &str, gate: &str) -> String {
+    format!(
+        r#"
+        type T {{ n: Int = 0; }}
+        topic Evt {{ payload: T; subject: "evt468"; }}
+        locus Sub {{
+            params {{ seen: Int = 0; }}
+            bus {{ subscribe Evt as on_evt; }}
+            fn on_evt(t: T) {{
+                self.seen = self.seen + 1;
+                println("got=", t.n);
+            }}
+        }}
+        main locus App {{
+            params {{ sub: Sub = Sub {{ }}; }}
+            bindings {{ Evt: unix("{sock}", role: listen); }}
+            run() {{
+                let mut waited = 0;
+                while !std::io::fs::file_exists("{gate}") {{
+                    std::time::sleep(10ms);
+                    waited = waited + 1;
+                    if waited > 3000 {{
+                        std::process::exit(3);
+                    }}
+                }}
+                println("exiting seen=", self.sub.seen);
+            }}
+        }}
+        fn main() {{ App {{ }}; }}
+    "#
+    )
+}
+
 /// Publisher: connect (with the transport's built-in retry), send
 /// the burst back-to-back — deliberately NO settle sleep before
 /// the first send; racing the subscriber's boot is the point —
@@ -232,33 +272,43 @@ fn boot_window_publishes_are_buffered_and_delivered_mid_run() {
     let _ = std::fs::remove_file(&pub_bin);
 }
 
-/// 2. The teardown tail: the reader is descheduled for 250ms —
-///    past the subscriber's entire (120ms) run — so the whole
-///    burst is still in the kernel when main returns. The exit
-///    quiesce must deliver it: listener half-closes, the stalled
-///    reader wakes, accepts the queued backlog connection, drains
-///    to EOF through the intact registry, and the final local
-///    drain runs the handler on still-alive loci. Old behavior:
-///    the registry was freed first and the tail vanished silently.
+/// 2. The teardown tail: the reader is held until the exit
+///    quiesce stops it (`LOTUS_BUS_TEST_READER_STALL_MS=stop`), and
+///    the subscriber's run ends only once the test opens its gate,
+///    after the publisher has written the whole burst and exited —
+///    so the burst is in the kernel, undelivered, when main
+///    returns, on any runner at any speed. The exit quiesce must
+///    deliver it: the stop wakes the held reader, which accepts the
+///    queued backlog connection, drains it to EOF through the intact
+///    registry, and the final local drain runs the handler on
+///    still-alive loci. Old behavior: the registry was freed first
+///    and the tail vanished silently. Until GH #2075 the reader was
+///    stalled 250 ms against a 120 ms run, and a slow macOS runner's
+///    run outlasted the stall, so the burst arrived before exit.
 #[test]
 fn exit_quiesce_delivers_the_kernel_queued_tail() {
     let sock = unique_socket_path("tail");
-    let sub_bin = build("tail_sub", &exiting_sub_src(&sock));
+    let gate = harness::unique_bin("hale_test_468_tail_gate");
+    let _ = std::fs::remove_file(&gate);
+    let sub_bin = build("tail_sub", &gated_sub_src(&sock, &gate.display().to_string()));
     let pub_bin = build("tail_pub", &burst_pub_src(&sock));
 
-    let sub = Command::new(&sub_bin)
-        .env("LOTUS_BUS_TEST_READER_STALL_MS", "250")
+    let mut sub = Command::new(&sub_bin)
+        .env("LOTUS_BUS_TEST_READER_STALL_MS", "stop")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn subscriber");
     let p = Command::new(&pub_bin).output().expect("run publisher");
-    assert!(
-        p.status.success(),
-        "publisher failed: {}",
-        String::from_utf8_lossy(&p.stderr)
-    );
+    if !p.status.success() {
+        let _ = sub.kill();
+        let _ = sub.wait();
+        panic!("publisher failed: {}", String::from_utf8_lossy(&p.stderr));
+    }
+    // The burst is written and its sender gone: let the run end.
+    std::fs::write(&gate, b"").expect("open the gate");
     let out = sub.wait_with_output().expect("subscriber exit");
+    let _ = std::fs::remove_file(&gate);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -266,11 +316,11 @@ fn exit_quiesce_delivers_the_kernel_queued_tail() {
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    // run() printed seen=0 (reader was stalled the whole run) …
+    // run() printed seen=0 (the reader was held the whole run) …
     assert!(
         stdout.contains("exiting seen=0"),
         "test premise: nothing may be delivered before exit \
-         (stall covers the run); got:\n{}",
+         (the reader is held until the quiesce); got:\n{}",
         stdout
     );
     // … and the quiesce then delivered ALL of it before teardown.
