@@ -677,3 +677,40 @@ fn a_variant_the_enum_does_not_declare_is_refused_at_the_path() {
     assert!(ok, "check: {out}");
     assert!(built, "build: {bout}");
 }
+
+/// GH #2023, on review: a concrete alias of a generic enum (`type I =
+/// E<Int>;`) is neither the template nor a declared enum, so the lookup
+/// passed a typo through it in a constructor call, a unit variant and a
+/// match pattern, and the build refused each (`enum `E_Int` has no
+/// variant `Wrok``). The alias resolves to the monomorph, whose template
+/// declares the variants; the right spellings still build.
+#[test]
+fn a_variant_a_generic_enums_alias_does_not_declare_is_refused_at_the_path() {
+    let decl = "type E<T> = enum { Work(T), Home };\ntype I = E<Int>;\n";
+    refused(
+        &format!("{decl}fn main() {{ let x: I = I::Wrok(1); }}\n"),
+        "variant_alias_ctor",
+        "3:24",
+        "enum `E<Int>` has no variant `Wrok` — did you mean `Work`?",
+    );
+    refused(
+        &format!("{decl}fn main() {{ let x: I = I::Hme; }}\n"),
+        "variant_alias_unit",
+        "3:24",
+        "enum `E<Int>` has no variant `Hme` — did you mean `Home`?",
+    );
+    refused(
+        &format!(
+            "{decl}fn f(x: I) -> Int {{\n    return match x {{\n        I::Wrok(n) -> n,\n        _ -> 0,\n    }};\n}}\nfn main() {{ println(f(I::Home)); }}\n"
+        ),
+        "variant_alias_pattern",
+        "5:9",
+        "enum `E<Int>` has no variant `Wrok` — did you mean `Work`?",
+    );
+    let ok_src = format!(
+        "{decl}fn f(x: I) -> Int {{\n    return match x {{\n        I::Work(n) -> n,\n        I::Home -> 0,\n    }};\n}}\nfn main() {{ let a: I = I::Work(3); let b: I = I::Home; println(f(a) + f(b)); }}\n"
+    );
+    let ((ok, out), (built, bout)) = check_and_build(&ok_src, "variant_alias_ok");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}

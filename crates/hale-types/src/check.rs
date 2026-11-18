@@ -22440,15 +22440,7 @@ impl<'a> Checker<'a> {
         let head: Vec<&str> = qn.segments[..n - 1].iter().map(|s| s.name.as_str()).collect();
         let shown = head.join("::");
         let name = if n == 2 { shown.clone() } else { self.known.import_target(&shown)?.to_string() };
-        let names: Vec<&str> = if let Some(td) = self.generic_types.get(name.as_str()) {
-            let TypeDeclBody::Enum(vs) = &td.body else { return None };
-            vs.iter().map(|v| v.name.name.as_str()).collect()
-        } else {
-            let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) = self.top.symbols.get(&name) else {
-                return None;
-            };
-            vs.iter().map(|v| v.name.as_str()).collect()
-        };
+        let names = self.enum_variant_names(&name)?;
         if names.contains(&variant) {
             return None;
         }
@@ -22457,7 +22449,47 @@ impl<'a> Checker<'a> {
             None if names.is_empty() => String::new(),
             None => format!("; its variants are {}", names.join(", ")),
         };
+        // A concrete alias of a generic enum reaches here as the
+        // monomorph's mangled name (`E_Int`); it is shown as written.
+        let shown = match self.typed.monomorphs.named(&shown) {
+            Some(m) => match self.templates.get(m.template) {
+                Some(t) => format!("{}<{}>", t.name(), m.args.iter().map(Ty::display).collect::<Vec<_>>().join(", ")),
+                None => shown,
+            },
+            None => shown,
+        };
         Some(format!("enum `{shown}` has no variant `{variant}`{hint}"))
+    }
+
+    /// GH #2023: the variant names of the enum `name` spells, or `None`
+    /// when it spells no enum: a generic enum's template (`E`), a
+    /// concrete enum, or an alias of either, followed to its target —
+    /// a concrete alias of a generic enum (`type I = E<Int>;`) resolves
+    /// to the monomorph's mangled name (`E_Int`), whose template's
+    /// variants are the instantiation's.
+    fn enum_variant_names(&self, name: &str) -> Option<Vec<&str>> {
+        let mut cur = name.to_string();
+        for _ in 0..16 {
+            if let Some(td) = self.generic_types.get(cur.as_str()) {
+                let TypeDeclBody::Enum(vs) = &td.body else { return None };
+                return Some(vs.iter().map(|v| v.name.name.as_str()).collect());
+            }
+            match self.top.symbols.get(cur.as_str()) {
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                    return Some(vs.iter().map(|v| v.name.as_str()).collect());
+                }
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Alias(Ty::Named(n)), .. })) => {
+                    cur = n.clone();
+                    continue;
+                }
+                Some(_) => return None,
+                None => {}
+            }
+            let (GenericTemplate::Type(td), _) = self.resolve_generic_monomorph(&cur)? else { return None };
+            let TypeDeclBody::Enum(vs) = &td.body else { return None };
+            return Some(vs.iter().map(|v| v.name.name.as_str()).collect());
+        }
+        None
     }
 
     /// GH #2023: the constructor patterns of `pat` (its alternatives, a
