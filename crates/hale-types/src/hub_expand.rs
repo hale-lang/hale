@@ -20,7 +20,10 @@
 //!   self.hub)]`, GH #1780) gets no listener: its connections are the Rest
 //!   listener's, handed to the hub at the upgrade (`rpc_expand` writes the
 //!   mount table into that listener), and the Rest exposure describes its
-//!   streams ([`HubExpansion::streams`]);
+//!   streams ([`HubExpansion::streams`]); so does one an `http::Rest` held
+//!   below the main locus mounts (GH #1818), through a `ws::Hub` param of
+//!   the holder the main locus passes it down to, which this pass types as
+//!   the standard library's hub;
 //! - for each stream, an adapter binding in the main locus's `bindings`
 //!   block (`Topic: __StdApiHubStream { hub: N, stream: I } codec(…)`), so
 //!   the publish fanout reaches the hub as it reaches any adapter, and the
@@ -101,6 +104,11 @@ struct HubPlan {
     bind: Expr,
     /// mounted on an `http::Rest` (`hubs:`): no listener of its own
     mounted: bool,
+    /// the params of loci below the main locus that the hub is passed down
+    /// through for an `http::Rest` one of them holds to mount (GH #1818),
+    /// `(locus, field)`, the holder's and every forwarding one between:
+    /// each typed `ws::Hub`, the standard library's once expanded
+    held: Vec<(String, String)>,
     principals: Option<Expr>,
     roles: Option<Expr>,
     expiring: bool,
@@ -276,8 +284,9 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                 // the hubs this locus declares, built or bound, in
                 // declaration order
                 let order = hub_params(l);
-                // the hubs an `http::Rest` of this locus mounts (GH #1780)
-                let mounts = crate::rpc_expand::locus_mounts(l);
+                // the hubs an `http::Rest` mounts: one of this locus's (GH
+                // #1780), or one a locus below it holds (GH #1818)
+                let mounts = crate::rpc_expand::main_mounts(&loci, l);
                 for field in order {
                     // a hub is a param built by a `ws::Hub` literal, once
                     let Some(lit) = hub_literal(l, field) else { continue };
@@ -424,6 +433,15 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                         name: name.clone(),
                         bind: fresh(bind),
                         mounted: mount.is_some(),
+                        held: if kind == "ws" {
+                            crate::rpc_expand::held_mounts(&loci, l)
+                                .into_iter()
+                                .filter(|h| h.hub == field)
+                                .flat_map(|h| h.via)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        },
                         expiring: has_fn(principals.as_ref(), "expiry"),
                         revised: has_fn(roles.as_ref(), "grants"),
                         principals,
@@ -541,6 +559,25 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                     entry.topic = s.topic.clone();
                     bb.entries.push(entry);
                 }
+            }
+        }
+        // the params below the main locus it is passed down to, typed as it
+        // is (GH #1818): `hub: ws::Hub;` is the standard library's hub
+        for (holder, field) in &plan.held {
+            for p in programs.iter_mut() {
+                let Some(h) = find_locus_mut(&mut p.items, holder) else { continue };
+                for m in h.members.iter_mut() {
+                    let LocusMember::Params(pb) = m else { continue };
+                    for p in pb.params.iter_mut().filter(|p| p.name.name == *field) {
+                        if let Some(TypeExpr::Named { path, .. }) = &mut p.ty {
+                            if is_ws_hub(path) {
+                                let sp = path.span;
+                                path.segments = ["std", "api", "ws", "Hub"].iter().map(|n| Ident::new(*n, sp)).collect();
+                            }
+                        }
+                    }
+                }
+                break;
             }
         }
         out.push(HubExpansion {

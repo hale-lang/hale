@@ -1234,36 +1234,106 @@ fn a_mount_is_a_plain_path_no_row_serves_of_a_ws_hub_once() {
     }
 }
 
-#[test]
-fn a_rest_below_the_main_locus_mounts_no_hub() {
-    let src = "
-type Fill { qty: Int; }
-topic Fills { payload: Fill; subject: \"desk.fills\"; }
-type Health { status: String; }
-api Desk { rpc Probe::live at \"GET /healthz\"; }
-locus Tokens {
-    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: \"bearer\", name: \"\" }; }
-    fn refused() -> String { return \"no\"; }
+/// GH #1818: an `http::Rest` held below the main locus mounts the main
+/// locus's hub, passed down to a `ws::Hub` param the holder declares with
+/// no default. `hub_param` is that param of `Server`, `pass` the literal
+/// that builds `Server` in `App`, `extra` more of `App`'s params and
+/// `bindings` its `bindings` rows.
+fn held_mount(hub_param: &str, pass: &str, extra: &str, bindings: &str) -> String {
+    format!(
+        "
+role operator;
+type Fill {{ qty: Int; }}
+topic Fills {{ payload: Fill; subject: \"desk.fills\"; }}
+type Health {{ status: String; }}
+api Desk {{ rpc Probe::live at \"GET /healthz\"; }}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: \"bearer\", name: \"\" }}; }}
+    fn refused() -> String {{ return \"no\"; }}
+}}
+locus Probe {{ fn live() -> Health {{ return Health {{ status: \"live\" }}; }} }}
+locus Maker {{ bus {{ publish Fills; }} fn make() {{ Fills <- Fill {{ qty: 1 }}; }} }}
+locus Server {{
+    params {{
+        {hub_param}
+        tokens: Tokens = Tokens {{ }};
+        probe: Probe = Probe {{ }};
+        web: api::Exposure = api::serve(Desk, http::Rest {{ bind: \"127.0.0.1:0\", codec: json, principals: self.tokens, hubs: [(\"/hub\", self.hub)] }}, as: \"web\", bound: 8, on_full: refuse);
+    }}
+}}
+main locus App {{
+    params {{
+        tokens: Tokens = Tokens {{ }};
+        hub: ws::Hub = ws::Hub {{ principals: self.tokens, as: \"fills\" }};
+        maker: Maker = Maker {{ }};
+        {extra}
+        server: Server = {pass};
+    }}
+    bindings {{ {bindings} }}
+    placement {{ server: cooperative(pool = edge) where async_io; }}
+    run() {{ }}
+}}
+fn main() {{ App {{ }}; }}
+"
+    )
 }
-locus Probe { fn live() -> Health { return Health { status: \"live\" }; } }
-locus Server {
+
+const FILLS: &str = "Fills: self.hub requires: [operator], bound: 8, on_full: drop_old;";
+
+#[test]
+fn a_rest_below_the_main_locus_mounts_the_hub_main_passes_down() {
+    // the main locus's hub, passed to `Server`'s `hub: ws::Hub;`
+    let ok = held_mount("hub: ws::Hub;", "Server { hub: self.hub }", "", FILLS);
+    assert_eq!(errors(&ok), Vec::<String>::new());
+    // down a longer chain: each construction passes it on
+    let src = ok
+        .replace("main locus App {", "locus Mid {
     params {
-        tokens: Tokens = Tokens { };
-        probe: Probe = Probe { };
-        hub: Int = 0;
-        web: api::Exposure = api::serve(Desk, http::Rest { bind: \"127.0.0.1:0\", codec: json, principals: self.tokens, hubs: [(\"/hub\", self.hub)] }, as: \"web\", bound: 8, on_full: refuse);
+        h: ws::Hub;
+        server: Server = Server { hub: self.h };
     }
 }
-main locus App {
-    params { server: Server = Server { }; }
-    placement { server: cooperative(pool = edge) where async_io; }
-    run() { }
+main locus App {")
+        .replace("server: Server = Server { hub: self.hub };", "mid: Mid = Mid { h: self.hub };")
+        .replace("placement { server:", "placement { mid:");
+    assert_eq!(errors(&src), Vec::<String>::new());
 }
-fn main() { App { }; }
-";
-    let errs = errors(src);
+
+#[test]
+fn a_rest_below_the_main_locus_mounts_only_the_main_locus_hub() {
+    let one = |hub_param: &str, pass: &str, extra: &str, bindings: &str| errors(&held_mount(hub_param, pass, extra, bindings));
+    // not a hub at all
+    let errs = one("hub: Int = 0;", "Server { }", "", FILLS);
     assert!(
-        errs.iter().any(|e| e.contains("exposure `web` held by `Server` mounts hubs: a hub is the main locus's")),
+        errs.iter().any(|e| e.contains("exposure `web` held by `Server` mounts `self.hub`, which is not a hub: a mount below the main locus names a param `hub: ws::Hub;`")),
         "{errs:#?}"
     );
+    // a hub the holder builds itself is not the main locus's
+    let errs = one("hub: ws::Hub = ws::Hub { principals: self.tokens, as: \"own\" };", "Server { }", "", FILLS);
+    assert!(
+        errs.iter().any(|e| e.contains("exposure `web` held by `Server` mounts `self.hub`, a hub `Server` gives a value of its own")),
+        "{errs:#?}"
+    );
+    // main passes it nothing, or something that is not its hub
+    for pass in ["Server { }", "Server { hub: self.maker }"] {
+        let errs = one("hub: ws::Hub;", pass, "", FILLS);
+        assert!(
+            errs.iter().any(|e| e.contains("exposure `web` held by `Server` mounts `self.hub`, which `App` does not pass a hub of its own: down `App.server`")),
+            "{pass}: {errs:#?}"
+        );
+    }
+    // a hub with no stream bound to it
+    let errs = one("hub: ws::Hub;", "Server { hub: self.hub }", "", "");
+    assert!(
+        errs.iter().any(|e| e.contains("exposure `web` mounts `self.hub`, to which no stream is bound") && e.contains("in `App`")),
+        "{errs:#?}"
+    );
+    // the main locus mounts it too: one listener takes a hub's connections
+    let errs = one(
+        "hub: ws::Hub;",
+        "Server { hub: self.hub }",
+        "probe: Probe = Probe { };\n        own: api::Exposure = api::serve(Desk, http::Rest { bind: \"127.0.0.1:0\", codec: json, principals: self.tokens, hubs: [(\"/hub\", self.hub)] }, as: \"own\", bound: 8, on_full: refuse);",
+        FILLS,
+    );
+    assert!(errs.iter().any(|e| e.contains("hub `self.hub` of `App` is mounted twice")), "{errs:#?}");
 }
