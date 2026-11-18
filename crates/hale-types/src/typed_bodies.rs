@@ -1469,12 +1469,22 @@ impl TypingRecord {
     }
 
     /// RFC #2035: rendering the value at `at` in the body `body` calls the
-    /// template functions `fns`.
+    /// template functions `fns`. A generic body is checked once per
+    /// specialization, each rendering its own type: the row keeps, for each
+    /// function, the most calls any of them makes, so the body is charged
+    /// at least what its costliest specialization renders (GH #2061 review).
     pub fn render(&mut self, body: NodeId, at: Span, fns: Vec<String>) {
         if body.is_none() || fns.is_empty() {
             return;
         }
-        self.body(body).renders.insert((at.start.0, at.end.0), fns);
+        let row = self.body(body).renders.entry((at.start.0, at.end.0)).or_default();
+        let mut merged: Vec<String> = Vec::new();
+        let names: std::collections::BTreeSet<String> = row.iter().chain(fns.iter()).cloned().collect();
+        for n in names {
+            let k = row.iter().filter(|f| **f == n).count().max(fns.iter().filter(|f| **f == n).count());
+            merged.extend(std::iter::repeat_n(n, k));
+        }
+        *row = merged;
     }
 
     /// GH #1951 (item 2): the error raised at `site` of the body `body`

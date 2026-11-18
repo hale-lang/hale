@@ -21363,9 +21363,9 @@ impl<'a> Checker<'a> {
     /// text: the `@display` template functions the rendering calls, for the
     /// allocation summary, which cannot type the value itself.
     fn note_render(&mut self, e: &Expr, t: &Ty) {
-        if self.specializing.is_some() {
-            return;
-        }
+        // A generic body records each specialization's rendering too: its
+        // type parameter is known only there (`fn show<T>(i: T)` called
+        // with a templated `T`). The rows merge (`TypingRecord::render`).
         let mut fns = Vec::new();
         self.display_reach(t, &mut BTreeSet::new(), &mut fns);
         self.typed.render(self.body, e.span(), fns);
@@ -24570,7 +24570,10 @@ impl<'a> Checker<'a> {
                     let shadowed = self.top.lookup(&id.name).is_some();
                     if !shadowed {
                         match id.name.as_str() {
-                            "println" | "print" | "to_string" => {
+                            // RFC #2035 review: `eprintln` / `eprint` render as
+                            // `println` does, so they are held to the one rule
+                            // and record the template calls they make.
+                            "println" | "print" | "eprintln" | "eprint" | "to_string" => {
                                 for a in args {
                                     self.warn_if_meant_an_fstring(a);
                                     let at = self.check_expr(a);

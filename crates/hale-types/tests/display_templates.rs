@@ -279,3 +279,47 @@ fn main() {
         "`{{h:?}}` reaches no template: {structural:?}"
     );
 }
+
+/// GH #2061 review: every rendering path records its template calls:
+/// `eprintln` and `eprint` as `println` does, and a generic helper by each
+/// type it is specialized at, the costliest charged (a helper never called
+/// with a templated type stays at no allocation).
+#[test]
+fn a_budget_counts_stderr_and_generic_renderings() {
+    let src = r#"
+@display("inner {x} and {y}")
+type Inner { x: Int; y: Int; }
+
+@budget(alloc_per_call = 0)
+fn to_err(i: Inner) { eprintln(i); }
+
+@budget(alloc_per_call = 0)
+fn to_err_bare(i: Inner) { eprint(i); }
+
+@budget(alloc_per_call = 0)
+fn show<T>(v: T) -> String { return to_string(v); }
+
+@budget(alloc_per_call = 0)
+fn plain<T>(v: T) -> Int { println(v); return 1; }
+
+fn main() {
+    let i = Inner { x: 1, y: 2 };
+    to_err(i);
+    to_err_bare(i);
+    println(show(i), show(3), plain(4));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let ds = entries::check_program(&program);
+    for f in ["to_err", "to_err_bare", "show"] {
+        assert!(
+            ds.iter().any(|d| d.is_error()
+                && d.message.contains(&format!("`{f}` declares `@budget(alloc_per_call = 0)` but the compiler counts 3"))),
+            "`{f}` renders through `Inner`'s template: {ds:?}"
+        );
+    }
+    assert!(
+        !ds.iter().any(|d| d.is_error() && d.message.contains("`plain` declares")),
+        "`plain` is never specialized at a templated type: {ds:?}"
+    );
+}
