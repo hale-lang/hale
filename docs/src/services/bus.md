@@ -215,7 +215,7 @@ Configure how a keyed topic handles messages whose key matches no active subscri
 | Policy | Syntax | Behavior when No Subscriber Matches |
 |---|---|---|
 | **Swallow** *(default)* | `on_unmatched: swallow;` | Drops the message silently. Set `LOTUS_BUS_LOG_UNMATCHED=1` to log unmatched drops during debugging. |
-| **Fail** | `on_unmatched: fail;` | Makes publishing fallible; every send site must specify `Topic <- msg or raise;` or `Topic <- msg or discard;`. |
+| **Fail** | `on_unmatched: fail;` | Makes publishing fallible; every send site says what a publish no subscriber matches does: `or raise`, `or discard`, `or note(err)` or a block `or { … }` (with `err: BusUnmatchedKey` in scope), or `or fail …` in a fallible fn. A subscriber whose key matches (a `String` key by its text), or one of the same tree still being built that will claim the message, counts as a match. |
 | **Fallback** | `on_unmatched: fallback;` | Delivers unmatched messages to catch-all subscribers registered with `where key == _`. Requires at least one catch-all subscriber in the program. |
 
 ```hale

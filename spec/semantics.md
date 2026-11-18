@@ -3906,7 +3906,21 @@ are now supported:
   with `err: BusUnmatchedKey` in scope. The expression's value
   is discarded (Send is statement-level). Canonical use:
   `or log_unmatched(err)` — a free fn that takes the err
-  payload and logs / metrics / etc.
+  payload and logs / metrics / etc. A block is such an
+  expression, `or { println("unmatched: ", err.subject); }`, and
+  one that leaves (`return`) ends the statement there (until
+  GH #2025 the block form checked and the build refused it).
+
+What counts as a match is what the dispatch delivers to: a
+specific-key subscriber whose key equals the publish's, a
+`String` key compared by its text (until GH #2025 the signal
+compared a `String` key's hash and the publisher's pointer, so a
+delivered publish read as unmatched and `or raise` panicked); and
+an open reservation (`runtime.md` § "Lifecycle obligations", line
+6), a subscriber of the same static tree still being built, which
+takes its key when it claims and is owed what it parked. A cell a
+reservation holds for a key no claimant takes is reported on
+stderr when the reservation closes.
 - `or fail <payload>` — only legal inside an enclosing
   `fallible(E)` fn. On no-match, evaluates `<payload>` (with
   `err: BusUnmatchedKey` in scope), stores it into the

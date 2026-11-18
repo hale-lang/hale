@@ -13220,7 +13220,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// ("call to `println`: no … binding"), so `if c { println("x") }`
     /// and a trailing `if c { println("a") } else { println("b") }` checked
     /// and the build refused them.
-    fn lower_discarded(&mut self, e: &Expr, scope: &mut Scope<'ctx>) -> Result<BlockEnd, CodegenError> {
+    pub(crate) fn lower_discarded(&mut self, e: &Expr, scope: &mut Scope<'ctx>) -> Result<BlockEnd, CodegenError> {
         match e {
             Expr::Call { .. } => self.lower_stmt(&Stmt::Expr(e.clone()), scope),
             Expr::If(ifs) => self.lower_stmt(&Stmt::If((**ifs).clone()), scope),
