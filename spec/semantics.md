@@ -2879,7 +2879,9 @@ Transport surface:
   intrinsically. Slot size is derived at codegen from the
   topic's payload type, which must satisfy `is_flat_shapeable`
   (§ "Payload-shape compatibility" below) on every native ring,
-  whether or not the binding says `where zero_copy`: the publish
+  whether or not the binding says `where zero_copy` or carries a
+  `codec(...)` clause (the native publish never calls its
+  encoder): the publish
   copies the payload's bytes into the slot, so a `String` field
   would cross as a pointer into the publisher's arena. A binding
   whose payload is not flat is a type error at the binding

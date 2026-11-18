@@ -615,6 +615,21 @@ fn a_native_shm_ring_is_refused_a_payload_that_is_not_flat_and_a_long_name() {
         "23:23",
         "`Notes: shm_ring(\"/hale-triage-shm-ring-with-a-long-name-09e\", ...)`: the ring's name is 42 bytes, and a POSIX shm name is at most 31 bytes on macOS",
     );
+    // A `codec(...)` clause does not serialize a native ring's slot (the
+    // native publish never calls its encoder), so it changes nothing.
+    let codec = prog("id: Int; text: String = \"\";", "/hale-2030-c")
+        .replace(
+            "on_overflow: drop); }",
+            "on_overflow: drop) codec(C { }); }",
+        )
+        .replace(
+            "\n\nmain locus App",
+            "\n\ntype EncErr { kind: String = \"\"; }\ntype DecErr { kind: String = \"\"; }\nlocus C {\n    fn encode(v: Note) -> Bytes fallible(EncErr) { return std::bytes::from_string(v.text); }\n    fn decode(b: Bytes) -> Note fallible(DecErr) { return Note { id: 0 }; }\n}\n\nmain locus App",
+        );
+    let ((ok, out), (built, bout)) = check_and_build(&codec, "shm_codec");
+    let head = "`Notes: shm_ring(...)`: topic `Notes`'s payload `Note` is not flat-shapeable";
+    assert!(!ok && out.contains(head), "check: {out}");
+    assert!(!built && bout.contains(head) && !bout.contains("codegen error"), "build: {bout}");
     // A flat payload and a 31-byte name still check and build.
     let ((ok, out), (built, bout)) = check_and_build(&prog("id: Int; v: Int = 0;", "/hale-2030-abcdefghijklmnopqrst"), "shm_flat");
     assert!(ok, "check: {out}");

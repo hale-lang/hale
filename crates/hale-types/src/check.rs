@@ -11270,16 +11270,27 @@ fn check_bus_payload_carriable(
                     t = row.topic
                 ),
             ));
+        }
+    }
+    // GH #2030: the native ring's publish is a raw claim + memcpy +
+    // commit of the payload struct, a `codec(...)` clause on the entry
+    // notwithstanding (the native path never calls its encoder), so a
+    // payload that is not flat puts a pointer into the publisher's arena
+    // in the slot.
+    for row in bindings.rows.iter().filter(|r| !r.imported) {
+        let Some(entry) = row.entry(bundle) else { continue };
+        if !matches!(entry.transport, TransportSpec::ShmRing { layout: None, .. }) {
             continue;
         }
-        // GH #2030: the native ring's publish is a raw claim + memcpy +
-        // commit of the payload struct, so a payload that is not flat
-        // (a `String`, `Bytes`, a tuple, a list of records, ...) puts a
-        // pointer into the publisher's arena in the slot: a use-after-free
-        // in process, an empty or foreign value across processes. The
-        // spec always said the payload must be flat-shapeable; only a
-        // binding that said `where zero_copy` was held to it (that rule
-        // reports such a binding at its `zero_copy`).
+        let Some(topic) = top.topics.named(&row.topic) else { continue };
+        if let Ty::Named(n) = resolve_type_expr(&topic.payload, known) {
+            if let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. })) = top.lookup(&n) {
+                // refused above (a codec-free entry) as an enum payload
+                if row.codec.is_none() {
+                    continue;
+                }
+            }
+        }
         let zero_copy = entry.constraints.iter().any(|c| matches!(c.kind, BindingConstraint::ZeroCopy));
         let payload = resolve_type_expr(&topic.payload, known);
         // A bare primitive payload (`payload: String`) is refused at its
