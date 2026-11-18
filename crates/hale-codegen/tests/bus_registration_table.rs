@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -50,13 +51,12 @@ fn registrations_on_an_anchors_thread_never_free_the_table_under_a_walk() {
         let image = std::fs::read(&bin).expect("read the ASan binary");
         assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");
         for run in 0..RUNS {
-            let out = Command::new("timeout")
-                .arg("60")
-                .arg(&bin)
-                .env("ASAN_OPTIONS", harness::ASAN_LEAKS)
-                .env("LOTUS_NO_CHUNK_POOL", "1")
-                .output()
-                .expect("run the fixture");
+            // Bounded in-process: a macOS runner has no coreutils
+            // `timeout` (GH #2075).
+            let out = harness::output_within(
+                Command::new(&bin).env("ASAN_OPTIONS", harness::ASAN_LEAKS).env("LOTUS_NO_CHUNK_POOL", "1"),
+                Duration::from_secs(60),
+            );
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
             let what = format!("no_bus_devirt={no_bus_devirt}, run {run}");

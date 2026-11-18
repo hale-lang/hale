@@ -28687,10 +28687,29 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
 
 /* GH #468 test hook: deterministically stretch the reader's
  * "descheduled under load" window. Test-only (mirrors the
- * HALE_REPLAY_TEST_HOLD precedent); unset = zero cost. */
-static void lotus_bus_test_reader_stall(void) {
+ * HALE_REPLAY_TEST_HOLD precedent); unset = zero cost.
+ *
+ * `LOTUS_BUS_TEST_READER_STALL_MS=stop` holds the reader until its
+ * stop pipe is written (the exit quiesce, or a teardown) instead of for
+ * a time: whatever a peer sends meanwhile stays in the kernel until the
+ * stop, however slowly the program runs (GH #2075: a fixed stall that
+ * a slow runner's run outlasted let the burst through before exit). The
+ * byte is left on the pipe for the reader's own poll to see, and the
+ * hold ends anyway when the entry closes or after 60 s. */
+static void lotus_bus_test_reader_stall(lotus_bus_remote_entry_t *e) {
     const char *s = getenv("LOTUS_BUS_TEST_READER_STALL_MS");
     if (!s || !*s) return;
+    if (strcmp(s, "stop") == 0) {
+        int stop_fd = e ? e->stop_pipe[0] : -1;
+        if (stop_fd < 0) return;
+        for (int waited_ms = 0; waited_ms < 60000 && !e->closing; waited_ms += 100) {
+            struct pollfd p = { stop_fd, POLLIN, 0 };
+            int pr = poll(&p, 1, 100);
+            if (pr > 0) return;
+            if (pr < 0 && errno != EINTR) return;
+        }
+        return;
+    }
     long ms = strtol(s, NULL, 10);
     if (ms <= 0) return;
     struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
@@ -28712,7 +28731,7 @@ static void lotus_bus_test_boot_hold(void) {
 
 static void *lotus_bus_reader_thread_main(void *arg) {
     lotus_bus_reader_args_t *args = (lotus_bus_reader_args_t *)arg;
-    lotus_bus_test_reader_stall();
+    lotus_bus_test_reader_stall(args->entry);
     lotus_bus_unix_serve(args->entry);
     /* GH #468: drained-and-done signal for the exit quiesce. */
     __atomic_store_n(&args->entry->serve_done, 1, __ATOMIC_RELEASE);
@@ -28965,7 +28984,7 @@ typedef struct lotus_bus_udp_reader_args {
 
 static void *lotus_bus_udp_reader_thread_main(void *arg) {
     lotus_bus_udp_reader_args_t *args = (lotus_bus_udp_reader_args_t *)arg;
-    lotus_bus_test_reader_stall();
+    lotus_bus_test_reader_stall(args->entry);
     /* Snapshot the fd: destroy_all resets entry->udp_fd to -1
      * after the join, never before, so the snapshot is stable
      * for this thread's lifetime. */
