@@ -1,0 +1,149 @@
+// A `@form(ring_buffer)` of records holds a fixed number of cells and
+// stays flat however many pushes it takes (spec/forms.md §
+// `@form(ring_buffer)`, GH #2024). A record cell is a block in the
+// ring locus's arena: a push copies the value in only once it is known
+// to land, so a push into a full ring allocates nothing, and `pop`
+// hands the caller its own copy and retires the ring's block, which the
+// next push reuses. Until 2026-11-17 every push copied before the full
+// check and no block ever came back: ~20 B a push of a two-Int record,
+// refused or not.
+//
+// Pinned here:
+//   - a full ring refuses a push, keeps its length and its oldest cell;
+//   - a push into a full ring allocates nothing (4M refused pushes);
+//   - push then pop in a locus method stays flat (4M rounds);
+//   - a cell with a String field survives the frame that pushed it, and
+//     a popped cell is the caller's: it reads the same after the ring
+//     reuses the block for later pushes.
+//
+// Every String is built at run time (`std::str::upper`), so a read
+// after its block was freed is one ASan sees. The RSS assertions run
+// on Linux (`/proc` answers); elsewhere they are skipped.
+
+type Sample {
+    t: Int;
+    v: Int;
+}
+
+type Named {
+    name: String;
+    v: Int;
+}
+
+@form(ring_buffer, cap = 64)
+locus Recent {
+    capacity { pool history of Sample; }
+}
+
+@form(ring_buffer, cap = 4)
+locus RecentNamed {
+    capacity { pool history of Named; }
+}
+
+locus Churn {
+    params { rb: Recent = Recent { }; sum: Int = 0; }
+
+    fn round(i: Int) {
+        let _ = self.rb.push(Sample { t: i, v: 1 });
+        let got = self.rb.pop() or Sample { t: 0, v: 0 };
+        self.sum = self.sum + got.v;
+    }
+
+    fn total() -> Int {
+        return self.sum;
+    }
+}
+
+locus Names {
+    params { rb: RecentNamed = RecentNamed { }; }
+
+    fn add(i: Int) -> Bool {
+        return self.rb.push(Named { name: std::str::upper("cell-") + to_string(i), v: i });
+    }
+
+    fn take() -> Named {
+        return self.rb.pop() or Named { name: "", v: -1 };
+    }
+}
+
+fn on_linux() -> Bool {
+    return (std::io::fs::read_file("/proc/self/statm") or "") != "";
+}
+
+fn main() {
+    // A full ring refuses, and the refusal costs nothing.
+    let rb = Recent { };
+    let mut i = 0;
+    while i < 64 {
+        std::test::assert(rb.push(Sample { t: i, v: i * 2 }), "a ring with room takes the push");
+        i = i + 1;
+    }
+    std::test::assert(rb.is_full(), "64 pushes fill a cap-64 ring");
+    let s = Sample { t: 99, v: 99 };
+    std::test::assert(!rb.push(s), "a full ring refuses the push");
+    // A warm-up first: the process starts with resident arena space a
+    // leak would fill before RSS moved at all.
+    i = 0;
+    while i < 4000000 {
+        let _ = rb.push(s);
+        i = i + 1;
+    }
+    let before = std::process::rss_bytes();
+    while i < 8000000 {
+        let _ = rb.push(s);
+        i = i + 1;
+    }
+    let grew = std::process::rss_bytes() - before;
+    std::test::assert_eq_int(rb.len(), 64, "refused pushes leave the length alone");
+    let oldest = rb.pop() or Sample { t: -1, v: -1 };
+    std::test::assert_eq_int(oldest.t, 0, "the oldest cell is still the first pushed");
+    if on_linux() {
+        std::test::assert(
+            grew < 4 * 1048576,
+            "4000000 refused pushes grew the process by " + to_string(grew / 1024) + " KiB",
+        );
+    }
+
+    // Push then pop, each round in a method's own frame: the popped
+    // block is the next push's.
+    let churn = Churn { };
+    i = 0;
+    while i < 4000000 {
+        churn.round(i);
+        i = i + 1;
+    }
+    let before2 = std::process::rss_bytes();
+    while i < 8000000 {
+        churn.round(i);
+        i = i + 1;
+    }
+    let grew2 = std::process::rss_bytes() - before2;
+    std::test::assert_eq_int(churn.total(), 8000000, "every round popped what it pushed");
+    if on_linux() {
+        std::test::assert(
+            grew2 < 4 * 1048576,
+            "4000000 push+pop rounds grew the process by " + to_string(grew2 / 1024) + " KiB",
+        );
+    }
+
+    // String cells outlive the frame that pushed them; a popped cell is
+    // the caller's own.
+    let names = Names { };
+    std::test::assert(names.add(1), "push 1");
+    std::test::assert(names.add(2), "push 2");
+    let first = names.take();
+    i = 3;
+    while i < 40 {
+        let _ = names.add(i);
+        let _ = names.take();
+        i = i + 1;
+    }
+    std::test::assert_eq_str(
+        first.name,
+        "CELL-1",
+        "a popped cell reads the same after the ring reused its block",
+    );
+    std::test::assert_eq_int(first.v, 1, "the popped cell's Int");
+    let last = names.take();
+    std::test::assert_eq_str(last.name, "CELL-39", "the cell left is the last pushed");
+}

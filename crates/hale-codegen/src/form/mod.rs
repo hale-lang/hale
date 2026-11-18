@@ -463,6 +463,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.user_loci.get(name).is_some_and(|info| {
             info.capacity_slots.iter().any(|sl| match sl.form {
                 Some(SlotForm::Vec) => true,
+                // GH #2024: `pop` retires the cell it hands out.
+                Some(SlotForm::RingBuffer) => matches!(
+                    sl.elem_ty,
+                    CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_)
+                ),
                 Some(SlotForm::LruCache) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
                 Some(SlotForm::Hashmap) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
                 _ => false,
@@ -1702,9 +1707,55 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let join_bb = self
             .context
             .append_basic_block(func, "rb.pop.lazy_join");
-        self.builder
-            .build_conditional_branch(is_err, lazy_err_bb, join_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #2024: the popped cell leaves the ring, so its blocks do
+        // too. Hand the caller an OWNED copy (`@form(vec).pop`'s
+        // clone-on-read, GH #1037) and retire the ring's block against
+        // it, so the next push reuses it instead of growing the arena.
+        let owns_blocks = matches!(
+            elem_ty,
+            CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_)
+        );
+        if owns_blocks {
+            let ok_bb = self.context.append_basic_block(func, "rb.pop.ok");
+            self.builder
+                .build_conditional_branch(is_err, lazy_err_bb, ok_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(ok_bb);
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let llvm_elem_ty = self.llvm_basic_type(&elem_ty);
+            let popped = self
+                .builder
+                .build_load(llvm_elem_ty, out_val_slot, &format!("{}.pop.elem", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let owned = self.emit_vec_get_owned(popped, &elem_ty, locus_name)?;
+            let arena_field_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    locus_self_ptr,
+                    info.arena_field_idx,
+                    &format!("{}.__arena.for_pop.ptr", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let ring_arena = self
+                .builder
+                .build_load(ptr_t, arena_field_ptr, &format!("{}.__arena.for_pop", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            // `out_val_slot` still holds the ring's pointer: the retire
+            // reads it there before the owned copy replaces it.
+            self.emit_vec_retire(locus_name, &elem_ty, ring_arena, out_val_slot, owned, "rbpop")?;
+            self.builder
+                .build_store(out_val_slot, owned)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(join_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        } else {
+            self.builder
+                .build_conditional_branch(is_err, lazy_err_bb, join_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         self.builder.position_at_end(lazy_err_bb);
         let ee_ptr = self.emit_empty_error_alloc("empty")?;
@@ -3586,66 +3637,169 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         locus_name, slot.elem_ty, arg_ty
                     )));
                 }
-                // Bus-arena reclaim follow-up (2026-05-21): same
-                // cross-arena deep-copy as @form(vec).push +
-                // @form(hashmap).set. Heap-pointer fields in the
-                // pushed value would alias the caller's method
-                // scratch and dangle on method exit; anchor them
-                // in the receiver locus's __arena instead.
-                let ptr_t_for_arena =
-                    self.context.ptr_type(AddressSpace::default());
-                let dest_arena_field_ptr = self
-                    .builder
-                    .build_struct_gep(
-                        info.struct_ty,
-                        locus_self_ptr,
-                        info.arena_field_idx,
-                        &format!("{}.__arena.for_push.ptr", locus_name),
-                    )
-                    .map_err(|e| {
-                        CodegenError::LlvmEmit(e.to_string())
-                    })?;
-                let dest_arena = self
-                    .builder
-                    .build_load(
-                        ptr_t_for_arena,
-                        dest_arena_field_ptr,
-                        &format!("{}.__arena.for_push", locus_name),
-                    )
-                    .map_err(|e| {
-                        CodegenError::LlvmEmit(e.to_string())
-                    })?
-                    .into_pointer_value();
-                let arg_val = self.emit_cross_arena_store_deep_copy_ptr(
-                    arg_val,
-                    &slot.elem_ty,
-                    dest_arena,
-                    &format!("{}.ring_buffer_push", locus_name),
-                )?;
+                // GH #2024: a heap-bearing cell (a record, a String,
+                // Bytes) is stored as a pointer to a copy in the ring
+                // locus's arena (heap fields in the pushed value would
+                // otherwise alias the caller's scratch and dangle on
+                // method exit). The copy is made only once the push is
+                // known to land: a full ring refuses before anything
+                // is allocated, and `pop` retires the block it hands
+                // out (as `@form(vec).pop` does, GH #1037), so the
+                // arena's free list serves the next push and a ring in
+                // steady state stays flat. It used to copy before the
+                // full check and never give a block back: ~20 B a push
+                // of a two-Int record, refused or not.
+                let ptr_t = self.context.ptr_type(AddressSpace::default());
+                // A scalar cell is its own bytes: nothing to copy.
+                let heap_cell = !matches!(
+                    slot.elem_ty,
+                    CodegenTy::Int
+                        | CodegenTy::Float
+                        | CodegenTy::Bool
+                        | CodegenTy::Decimal(_)
+                        | CodegenTy::U256
+                        | CodegenTy::I256
+                        | CodegenTy::Time
+                        | CodegenTy::Duration
+                        | CodegenTy::FnPtr { .. }
+                        | CodegenTy::BytesView
+                        | CodegenTy::StringView
+                        | CodegenTy::LocusRef(_)
+                );
                 let llvm_elem_ty = self.llvm_basic_type(&slot.elem_ty);
                 let arg_alloca = self.alloca_in_entry(
                     llvm_elem_ty,
                     &format!("{}.push.arg", locus_name),
                 )?;
-                self.builder
-                    .build_store(arg_alloca, arg_val)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 let push_fn = self
                     .module
                     .get_function("lotus_ring_buffer_push")
                     .expect("lotus_ring_buffer_push extern declared");
-                let result_i32 = self
-                    .builder
-                    .build_call(
-                        push_fn,
-                        &[rb_field_ptr.into(), arg_alloca.into()],
-                        &format!("{}.push.call", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("lotus_ring_buffer_push returns i32")
-                    .into_int_value();
+                let result_i32 = if !heap_cell {
+                    self.builder
+                        .build_store(arg_alloca, arg_val)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_call(
+                            push_fn,
+                            &[rb_field_ptr.into(), arg_alloca.into()],
+                            &format!("{}.push.call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("lotus_ring_buffer_push returns i32")
+                        .into_int_value()
+                } else {
+                    let is_full_fn = self
+                        .module
+                        .get_function("lotus_ring_buffer_is_full")
+                        .expect("lotus_ring_buffer_is_full extern declared");
+                    let full_i32 = self
+                        .builder
+                        .build_call(
+                            is_full_fn,
+                            &[rb_field_ptr.into()],
+                            &format!("{}.push.full", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("lotus_ring_buffer_is_full returns i32")
+                        .into_int_value();
+                    let is_full = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            full_i32,
+                            i32_t.const_int(0, false),
+                            &format!("{}.push.is_full", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let func = self
+                        .current_fn
+                        .expect("ring_buffer push inside fn body");
+                    let do_bb = self
+                        .context
+                        .append_basic_block(func, "rb.push.do");
+                    let cont_bb = self
+                        .context
+                        .append_basic_block(func, "rb.push.cont");
+                    let full_bb = self
+                        .builder
+                        .get_insert_block()
+                        .expect("builder positioned in rb.push");
+                    self.builder
+                        .build_conditional_branch(is_full, cont_bb, do_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(do_bb);
+                    let dest_arena_field_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            locus_self_ptr,
+                            info.arena_field_idx,
+                            &format!("{}.__arena.for_push.ptr", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let dest_arena = self
+                        .builder
+                        .build_load(
+                            ptr_t,
+                            dest_arena_field_ptr,
+                            &format!("{}.__arena.for_push", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    // The cell single-owner copy `@form(vec).push` makes:
+                    // `pop` retires what the slot holds, so the slot must
+                    // not share a block with the locus's own fields.
+                    // Other compound cells (a payload enum, a tuple) keep
+                    // the cross-arena deep copy they had.
+                    let copied = if matches!(
+                        slot.elem_ty,
+                        CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_)
+                    ) {
+                        self.emit_vec_cell_copy_ptr(arg_val, &slot.elem_ty, dest_arena)?
+                    } else {
+                        self.emit_cross_arena_store_deep_copy_ptr(
+                            arg_val,
+                            &slot.elem_ty,
+                            dest_arena,
+                            &format!("{}.ring_buffer_push", locus_name),
+                        )?
+                    };
+                    self.builder
+                        .build_store(arg_alloca, copied)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let pushed = self
+                        .builder
+                        .build_call(
+                            push_fn,
+                            &[rb_field_ptr.into(), arg_alloca.into()],
+                            &format!("{}.push.call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("lotus_ring_buffer_push returns i32")
+                        .into_int_value();
+                    let do_end = self
+                        .builder
+                        .get_insert_block()
+                        .expect("builder positioned in rb.push.do");
+                    self.builder
+                        .build_unconditional_branch(cont_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(cont_bb);
+                    let phi = self
+                        .builder
+                        .build_phi(i32_t, &format!("{}.push.ret", locus_name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let refused = i32_t.const_int(0, false);
+                    phi.add_incoming(&[(&refused, full_bb), (&pushed, do_end)]);
+                    phi.as_basic_value().into_int_value()
+                };
                 let zero = i32_t.const_int(0, false);
                 let result_i1 = self
                     .builder
