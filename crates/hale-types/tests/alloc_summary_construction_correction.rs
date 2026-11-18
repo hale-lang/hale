@@ -340,13 +340,14 @@ fn own_scope_let_block_scope_test() {
             // `std::time::parse_rfc3339` and its digit helper); 525 since
             // `str_helpers.hl` came (GH #1995: std::str's nine splits and
             // trims and their whitespace helper); 533 since the text `for`
-            // sources' eight cursor hooks came (GH #1995 S2); 534 since a
+            // sources' eight cursor hooks came (GH #1995 S2); 534 since
+            // `net.hl` came (GH #1908: `std::net::resolve`); 535 since a
             // chain over a text source compares a part with the best one in
             // place (`__str_view_cmp`, GH #1995 S2, chain sources)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 534 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 534 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 535 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 535 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -1251,8 +1252,9 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
         }
     }
     // 34 since `time_rfc3339.hl` came (GH #1948: `std::time::parse_rfc3339`);
-    // 35 since `str_helpers.hl` came (GH #1995: std::str's splits and trims).
-    assert_eq!(sharing, 35, "the stdlib source files that share a name with the copy");
+    // 35 since `str_helpers.hl` came (GH #1995: std::str's splits and trims);
+    // 36 since `net.hl` came (GH #1908: std::net::resolve).
+    assert_eq!(sharing, 36, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the

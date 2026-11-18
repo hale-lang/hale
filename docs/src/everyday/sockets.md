@@ -33,6 +33,7 @@ fn main() { }
 | `std::io::tls` | `connect`, `connect_within`, `send_bytes`, `recv_bytes`, `recv_into`, `set_recv_timeout`, `close` | Client-side TLS 1.2+ connections (OpenSSL with SNI and system trust store) |
 | `std::io::tcp` | `connect`, `connect_within`, `connect_wait`, `set_nodelay`, `set_recv_timeout`, `set_send_timeout`, `set_rx_timestamps`, `stop`, `Listener`, `Acceptor`, `Connections`, `Stream` | Outbound TCP dialing with deadlines/retries, socket tuning, and TCP/Unix listeners |
 | `std::io::sockopt` | `SOL_SOCKET()`, `SO_REUSEADDR()`, etc. | Platform-independent socket option constants for `set_option_int` / `set_option_bool` / `get_option_int` |
+| `std::net` | `resolve` | Every address a host name resolves to (experimental) |
 
 ---
 
@@ -133,6 +134,25 @@ let h  = std::io::tls::connect_within("api.example.com", 443, 3s) or raise;
 - **IPv4 and IPv6**: All TCP, TLS, and UDP functions accept both IPv4 and IPv6 addresses. IPv6 literals may be written bare (`"::1"`) or bracketed (`"[::1]"`). Connecting to a hostname attempts every resolved address in order, so `"localhost"` connects to either IPv4 or IPv6 loopback. When stopping an IPv6 listener via `std::io::tcp::stop`, its default name uses brackets (`"[::1]:8080"`).
 - **Non-blocking `async_io` coroutines**: When executed on a `where async_io` pool, TCP dials (`connect_within`, `connect_wait`), TLS handshakes, `send_bytes`, and reads park only the calling coroutine while other coroutines on the pool continue running.
 - **TLS receive timeouts**: `std::io::tls::set_recv_timeout(h, 5s) or raise` bounds read operations. When a timeout is configured, `recv_into` returns the `-2` ("timed out, retryable") sentinel on timeout so long-lived clients can perform periodic keep-alive work.
+
+### Resolving a Name (`std::net::resolve`)
+
+`std::net::resolve(host)` answers every address the system resolver gives for a name, IPv4 and IPv6, as text in the resolver's order. A program that must decide where a name points, such as a fetch that refuses loopback and private ranges, checks each address and then dials one of those same addresses, so the name cannot resolve somewhere else between the check and the connection:
+
+```hale
+fn main() {
+    let addrs = std::net::resolve("localhost") or raise;
+    for a in addrs {
+        println(a);                    // 127.0.0.1 and/or ::1
+    }
+    let missing = std::net::resolve("no-such-host.invalid") or {
+        println(err.kind);             // not_found
+        return;
+    };
+}
+```
+
+It returns a `bounded[String; 32]` (at most 32 addresses). A failure is an `IoError` whose `kind` says why: `not_found` (no such name, or no address for it), `temporary_failure` (the resolver could not answer now), `invalid` (an empty or malformed host), and `detail` carries the resolver's message. A literal address resolves to itself. The lookup runs on the calling thread and is not bounded, as a dial's is. Under `target wasm` the namespace is refused at check: the browser has no resolver. `std::net` is experimental (`spec/stability.toml`).
 
 ---
 

@@ -1753,6 +1753,7 @@ crates/hale-stdlib/hl/log.hl 77452fc1171da3df
 crates/hale-stdlib/hl/metrics.hl 0ac5b8fc1ac2e8b0
 crates/hale-stdlib/hl/mirror_ring.hl 67d1b5dd2519f196
 crates/hale-stdlib/hl/name.hl a0cb9c4bfee2b3ec
+crates/hale-stdlib/hl/net.hl adf2740c1c737f81
 crates/hale-stdlib/hl/observe.hl 2f2854e627e8ab9f
 crates/hale-stdlib/hl/process.hl 42d1930e7e552fa7
 crates/hale-stdlib/hl/rand.hl 0fcacf844a971187
