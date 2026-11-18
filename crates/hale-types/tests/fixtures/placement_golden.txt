@@ -2345,6 +2345,22 @@ row	App@literal1.a	Sub	main	default
 row	App@literal1.b	Sub	main	default
 row	Loopback@binding1	Loopback	pinned:Loopback@binding1	binding
 
+== crates/hale-codegen/tests/bus_routing_keys.rs#d133e99d
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a	Sub	main	default
+
+== crates/hale-codegen/tests/bus_routing_keys.rs#43dc379b
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a	Sub	main	default
+row	App@literal1.p	Pub	main	default
+
+== crates/hale-codegen/tests/bus_routing_keys.rs#560d23f4
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a	Sub	main	default
+
 == crates/hale-codegen/tests/bus_scope_local_subscriber.rs#0292841a
 root	App	the entry
 domain	pinned:App@literal1.h

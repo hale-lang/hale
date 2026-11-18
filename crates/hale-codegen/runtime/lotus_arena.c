@@ -19018,6 +19018,23 @@ void lotus_bus_dispatch_keyed(lotus_bus_queue_t *queue,
                               uint64_t key_lo,
                               uint64_t key_hi);
 
+/* GH #2025: does `e` take a keyed publish of (key_lo, key_hi), for the
+ * fail policy's match signal? A specific-key subscriber whose key
+ * matches, compared as the dispatch compares it (`lotus_bus_key_matches`:
+ * a String key by its hash and then its text, the publish-side pointer
+ * in key_hi; comparing the pair verbatim read every String-keyed match
+ * as none, and `or raise` panicked on a delivered message). And an open
+ * reservation's placeholder: a subscriber still being built, reserved
+ * because an earlier node of its tree may publish to it before it
+ * registers (#1534), takes its key at the claim, so the cell it parks
+ * is owed to it and counts; a cell no claimant takes is reported when
+ * the reservation closes, never dropped in silence. */
+static int lotus_bus_fallible_counts(const lotus_bus_target_t *e,
+                                     uint64_t key_lo, uint64_t key_hi) {
+    if (e->key_filter_kind == 1) return lotus_bus_key_matches(e, key_lo, key_hi);
+    return e->key_filter_kind == 0 && e->handler == (void *)lotus_bus_resv_stub;
+}
+
 int lotus_bus_dispatch_keyed_fallible(lotus_bus_queue_t *queue,
                                        const char *subject,
                                        const void *struct_payload,
@@ -19036,9 +19053,7 @@ int lotus_bus_dispatch_keyed_fallible(lotus_bus_queue_t *queue,
         lotus_bus_target_t e_snap_;
         const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], subject, &e_snap_);
         if (!e) continue;
-        if (e->key_filter_kind == 1
-            && e->key_lo == key_lo
-            && e->key_hi == key_hi) {
+        if (lotus_bus_fallible_counts(e, key_lo, key_hi)) {
             matched = 1;
             break;
         }
@@ -19213,9 +19228,7 @@ int lotus_bus_dispatch_keyed_fallible_flat(lotus_bus_queue_t *queue,
         lotus_bus_target_t e_snap_;
         const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], subject, &e_snap_);
         if (!e) continue;
-        if (e->key_filter_kind == 1
-            && e->key_lo == key_lo
-            && e->key_hi == key_hi) {
+        if (lotus_bus_fallible_counts(e, key_lo, key_hi)) {
             matched = 1;
             break;
         }
