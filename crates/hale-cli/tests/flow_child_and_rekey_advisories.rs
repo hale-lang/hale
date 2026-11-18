@@ -148,6 +148,11 @@ fn the_rekey_notice_sees_nested_assignments_in_birth() {
         "{ self.my_id = 7; }",
         "self.set_key();",
         "if self.enabled { self.set_key(); }",
+        // expression-valued forms run their statements too
+        "let x = if self.enabled { self.my_id = 7; 1 } else { 0 }; println(x);",
+        "let x = match self.my_id { 0 -> { self.my_id = 7; 1 }, _ -> 0, }; println(x);",
+        "let x = { self.my_id = 7; 1 }; println(x);",
+        "let x = if self.enabled { self.set_key(); 1 } else { 0 }; println(x);",
     ] {
         let ws = warnings(&KEYED.replace("BODY", body));
         assert!(

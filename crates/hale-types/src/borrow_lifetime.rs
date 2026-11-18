@@ -1826,7 +1826,7 @@ fn keyed_in_birth(programs: &[&Program]) -> Vec<Diag> {
 /// nested block), as `(f, span)`, and the names of the locus's own
 /// methods it calls as `self.<m>(…)` anywhere in its expressions.
 fn self_assigns_in_block(b: &Block, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
-    fn calls(e: &Expr, called: &mut Vec<String>) {
+    fn calls(e: &Expr, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
         match e {
             Expr::Call { callee, args, .. } => {
                 if let Expr::Field { receiver, name, .. } = callee.as_ref() {
@@ -1834,43 +1834,70 @@ fn self_assigns_in_block(b: &Block, out: &mut Vec<(String, Span)>, called: &mut 
                         called.push(name.name.clone());
                     }
                 }
-                calls(callee, called);
+                calls(callee, out, called);
                 for a in args {
-                    calls(a, called);
+                    calls(a, out, called);
                 }
             }
             Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } | Expr::Unary { operand: receiver, .. } => {
-                calls(receiver, called)
+                calls(receiver, out, called)
             }
             Expr::Binary { left, right, .. } => {
-                calls(left, called);
-                calls(right, called);
+                calls(left, out, called);
+                calls(right, out, called);
             }
             Expr::Index { receiver, index, .. } => {
-                calls(receiver, called);
-                calls(index, called);
+                calls(receiver, out, called);
+                calls(index, out, called);
             }
             Expr::Tuple(es, _) | Expr::Array(es, _) => {
                 for x in es {
-                    calls(x, called);
+                    calls(x, out, called);
                 }
             }
             Expr::Struct { inits, .. } => {
                 for i in inits {
-                    calls(&i.value, called);
+                    calls(&i.value, out, called);
                 }
             }
             Expr::Or { inner, disposition, .. } => {
-                calls(inner, called);
+                calls(inner, out, called);
                 if let hale_syntax::ast::OrDisposition::Substitute(sub) = disposition {
-                    calls(sub, called);
+                    calls(sub, out, called);
                 }
+            }
+            // GH #2027 review: an expression-valued `if`, `match` or
+            // block (`let x = if c { self.k = 7; 1 } else { 0 };`) runs
+            // its statements too.
+            Expr::Block(b) => self_assigns_in_block(b, out, called),
+            Expr::If(i) => if_stmt(i, out, called),
+            Expr::Match(m) => {
+                calls(&m.scrutinee, out, called);
+                for arm in &m.arms {
+                    if let Some(g) = &arm.guard {
+                        calls(g, out, called);
+                    }
+                    match &arm.body {
+                        MatchArmBody::Expr(e) => calls(e, out, called),
+                        MatchArmBody::Block(b) => self_assigns_in_block(b, out, called),
+                    }
+                }
+            }
+            Expr::Sum(x, _) | Expr::Prod(x, _) | Expr::ArrayRepeat { val: x, .. } => calls(x, out, called),
+            Expr::Approx { left, right, tolerance, .. } => {
+                calls(left, out, called);
+                calls(right, out, called);
+                calls(tolerance, out, called);
+            }
+            Expr::Range { lo, hi, .. } => {
+                calls(lo, out, called);
+                calls(hi, out, called);
             }
             _ => {}
         }
     }
     fn if_stmt(i: &hale_syntax::ast::IfStmt, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
-        calls(&i.cond, called);
+        calls(&i.cond, out, called);
         self_assigns_in_block(&i.then_block, out, called);
         match i.else_block.as_deref() {
             Some(ElseBranch::Else(b)) => self_assigns_in_block(b, out, called),
@@ -1886,34 +1913,37 @@ fn self_assigns_in_block(b: &Block, out: &mut Vec<(String, Span)>, called: &mut 
                         out.push((f.name.clone(), *span));
                     }
                 }
-                calls(value, called);
+                calls(value, out, called);
             }
-            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Expr(value) => calls(value, called),
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Expr(value) => calls(value, out, called),
             Stmt::If(i) => if_stmt(i, out, called),
             Stmt::Match(m) => {
-                calls(&m.scrutinee, called);
+                calls(&m.scrutinee, out, called);
                 for arm in &m.arms {
+                    if let Some(g) = &arm.guard {
+                        calls(g, out, called);
+                    }
                     match &arm.body {
-                        MatchArmBody::Expr(e) => calls(e, called),
+                        MatchArmBody::Expr(e) => calls(e, out, called),
                         MatchArmBody::Block(b) => self_assigns_in_block(b, out, called),
                     }
                 }
             }
             Stmt::For { iter, body, .. } => {
-                calls(iter, called);
+                calls(iter, out, called);
                 self_assigns_in_block(body, out, called);
             }
             Stmt::While { cond, body, .. } => {
-                calls(cond, called);
+                calls(cond, out, called);
                 self_assigns_in_block(body, out, called);
             }
             Stmt::Block(b) => self_assigns_in_block(b, out, called),
-            Stmt::Return(Some(e), _) => calls(e, called),
+            Stmt::Return(Some(e), _) => calls(e, out, called),
             _ => {}
         }
     }
     if let Some(t) = &b.tail {
-        calls(t, called);
+        calls(t, out, called);
     }
 }
 
