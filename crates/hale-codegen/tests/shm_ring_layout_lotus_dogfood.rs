@@ -60,7 +60,7 @@ fn build_native_producer() -> PathBuf {
 
 #[test]
 fn hale_layout_lotus_ring_reads_native_producer() {
-    let shm_name = format!("/hale-{}", unique_tag("e2e"));
+    let shm_name = harness::shm_name("layout");
 
     // A `ring_layout LotusRing` describing the native LRSRNG1 header:
     // magic@0, slot_size@8, slot_count@16, seqno@24, slots@128. The

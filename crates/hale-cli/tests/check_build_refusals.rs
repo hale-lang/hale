@@ -591,6 +591,51 @@ fn a_bare_variant_pattern_on_an_enum_is_refused_at_the_pattern() {
     assert!(built, "build: {bout}");
 }
 
+/// GH #2030: a native `shm_ring` copies the payload's bytes into the slot,
+/// so a payload that is not flat is refused at the binding whether or not
+/// it says `where zero_copy` (a `String` crossed as a pointer into the
+/// publisher's arena: a use-after-free in process). A ring name over 31
+/// bytes is refused too: macOS's shm_open fails it at startup.
+#[test]
+fn a_native_shm_ring_is_refused_a_payload_that_is_not_flat_and_a_long_name() {
+    let prog = |fields: &str, name: &str| {
+        format!(
+            "type Note {{ {fields} }}\n\ntopic Notes {{\n    payload: Note;\n}}\n\nlocus Sub {{\n    params {{ seen: Int = 0; }}\n    bus {{ subscribe Notes as on_note; }}\n    fn on_note(n: Note) {{ self.seen = self.seen + 1; }}\n}}\n\nlocus Pub {{\n    bus {{ publish Notes; }}\n    run() {{ Notes <- Note {{ id: 1 }}; }}\n}}\n\nmain locus App {{\n    params {{\n        sub: Sub = Sub {{ }};\n        p: Pub = Pub {{ }};\n    }}\n    bindings {{ Notes: shm_ring(\"{name}\", slot_count: 64, on_overflow: drop); }}\n    run() {{ println(self.sub.seen); }}\n}}\n\nfn main() {{ App {{ }}; }}\n"
+        )
+    };
+    refused(
+        &prog("id: Int; text: String = \"\";", "/hale-2030-s"),
+        "shm_string",
+        "23:16",
+        "`Notes: shm_ring(...)`: topic `Notes`'s payload `Note` is not flat-shapeable",
+    );
+    refused(
+        &prog("id: Int; v: Int = 0;", "/hale-triage-shm-ring-with-a-long-name-09e"),
+        "shm_long_name",
+        "23:23",
+        "`Notes: shm_ring(\"/hale-triage-shm-ring-with-a-long-name-09e\", ...)`: the ring's name is 42 bytes, and a POSIX shm name is at most 31 bytes on macOS",
+    );
+    // A `codec(...)` clause does not serialize a native ring's slot (the
+    // native publish never calls its encoder), so it changes nothing.
+    let codec = prog("id: Int; text: String = \"\";", "/hale-2030-c")
+        .replace(
+            "on_overflow: drop); }",
+            "on_overflow: drop) codec(C { }); }",
+        )
+        .replace(
+            "\n\nmain locus App",
+            "\n\ntype EncErr { kind: String = \"\"; }\ntype DecErr { kind: String = \"\"; }\nlocus C {\n    fn encode(v: Note) -> Bytes fallible(EncErr) { return std::bytes::from_string(v.text); }\n    fn decode(b: Bytes) -> Note fallible(DecErr) { return Note { id: 0 }; }\n}\n\nmain locus App",
+        );
+    let ((ok, out), (built, bout)) = check_and_build(&codec, "shm_codec");
+    let head = "`Notes: shm_ring(...)`: topic `Notes`'s payload `Note` is not flat-shapeable";
+    assert!(!ok && out.contains(head), "check: {out}");
+    assert!(!built && bout.contains(head) && !bout.contains("codegen error"), "build: {bout}");
+    // A flat payload and a 31-byte name still check and build.
+    let ((ok, out), (built, bout)) = check_and_build(&prog("id: Int; v: Int = 0;", "/hale-2030-abcdefghijklmnopqrst"), "shm_flat");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
 /// GH #1970: a body's tail is its return, checked as one: a member of
 /// the return type's set builds as that set (in a fn, a fallible fn and
 /// a method), and a tail of another type is refused at the tail.
