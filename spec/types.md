@@ -1476,9 +1476,11 @@ The rule reads the `let`. A parameter, a `for` element and a `match`
 payload have no `mut` spelling and stay writable as § "A local bound
 from a place is yours" describes; a write through a parameter of
 caller storage is spec/memory.md's. A binding that holds a locus (a
-handle: `let c = Counter { }; c.n = 4;`) writes the locus's state, as
-`self.n = 4` does, and a cell from a capacity slot names the slot: the
-rule reaches neither.
+handle: `let c = Counter { }; c.n = 4;`, a generic locus's
+`let c: Cell<Int> = …`, through an alias too, or a binding typed as an
+interface or perspective a locus is held through) writes the locus's
+state, as `self.n = 4` does, and a cell from a capacity slot names the
+slot: the rule reaches neither.
 
 For `params` / locus state, the implicit rule is that fields
 are mutable through `self.x = ...` (per F.3). The locus's

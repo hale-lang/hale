@@ -19,6 +19,8 @@ type Point {{ x: Int; y: Int; }}
 type Line {{ a: Point; b: Point; }}
 type Shape = enum {{ Dot(Point), Empty }};
 locus Counter {{ params {{ n: Int = 0; }} }}
+locus Cell<T> {{ params {{ value: T; }} }}
+type IntCell = Cell<Int>;
 
 fn bump(p: Point) -> Int {{
     p.x = p.x + 1;
@@ -80,6 +82,9 @@ fn what_the_rule_does_not_reach_stays_silent() {
         "    let s = Shape::Dot(Point { x: 1, y: 2 });\n    match s {\n        Shape::Dot(q) -> { q.x = 3; println(q.x); },\n        Shape::Empty -> { },\n    }",
         // a locus handle: the write is the locus's state
         "    let c = Counter { };\n    c.n = 4;\n    println(c.n);",
+        // a generic locus's handle, and one through an alias (GH #2055 review)
+        "    let c: Cell<Int> = Cell { value: 1 };\n    c.value = 2;\n    println(c.value);",
+        "    let c: IntCell = Cell { value: 1 };\n    c.value = 2;\n    println(c.value);",
         // a parameter (in `bump`, above) and a reassignment's own rule
         "    println(bump(Point { x: 1, y: 2 }));",
     ] {

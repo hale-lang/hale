@@ -17450,8 +17450,18 @@ impl<'a> Checker<'a> {
                 // `self.f = …` is).
                 if !target.tail.is_empty() && target.head.name != "self" {
                     if let Some(sym) = self.locals.lookup(&target.head.name) {
+                        // A handle: a locus, a generic locus's monomorph
+                        // (`Counter<Int>` is `Counter_Int`, which the scope
+                        // declares as no locus), the template itself, or an
+                        // interface or perspective a locus is held through.
                         let locus_handle = match self.through_aliases(sym.ty.clone()) {
-                            Ty::Named(n) => matches!(self.top.lookup(&n), Some(TopSymbol::Locus(_))),
+                            Ty::Named(n) => {
+                                matches!(
+                                    self.top.lookup(&n),
+                                    Some(TopSymbol::Locus(_) | TopSymbol::Interface(_) | TopSymbol::Perspective(_))
+                                ) || self.generic_loci.contains_key(n.as_str())
+                                    || self.locus_monomorph_shown(&n).is_some()
+                            }
                             _ => false,
                         };
                         if sym.from_let && !sym.is_mut && sym.cell.is_none() && !locus_handle {
