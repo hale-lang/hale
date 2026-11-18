@@ -1,0 +1,159 @@
+// `@display` templates (RFC #2035, decisions F.54, spec/semantics.md §
+// Rendering values as text). A record or an enum variant declares the text
+// its values render as for people; every rendering path reads it:
+// `println`, `print`, `to_string`, `String + x` and an f-string's
+// interpolation. `{x:?}` renders the structural form, past every template
+// at every depth.
+//
+// Pinned here:
+//   - a record's template with literal text, holes and format specs;
+//   - enum variants with and without payload holes, beside a variant
+//     with no template, which renders structurally;
+//   - nesting: a field whose type has a template renders by it, inside a
+//     structural record and inside another template;
+//   - `{x:?}`, recursively structural, quoting a String inside a
+//     composite; and padding a templated value (`{m:>12}`);
+//   - an alias and an imported type keep their declaration's template;
+//   - `T::display(v)`, called and passed as a function value.
+//
+// Every String a template holds is built at run time
+// (`std::str::upper`), so a read after its block was freed is one ASan
+// sees.
+
+import "./display_import_lib" as lib;
+
+@display("${dollars}.{cents:0>2} {currency}")
+type Money {
+    dollars: Int;
+    cents: Int;
+    currency: String;
+}
+
+@display("{v}")
+type UserId {
+    v: String;
+}
+
+type Side = enum {
+    @display("buy") Buy,
+    @display("sell") Sell,
+    @display("other: {0}") Other(String),
+    Unlisted(Int),
+};
+
+type Light = enum {
+    @display("green") Go,
+    Stop,
+};
+
+type Order {
+    id: UserId;
+    price: Money;
+    side: Side;
+}
+
+@display("{id} {side}s at {price}")
+type Line {
+    id: UserId;
+    price: Money;
+    side: Side;
+}
+
+@display("{{{label:<6}}} {ratio:.2}")
+type Gauge {
+    label: String;
+    ratio: Float;
+}
+
+type Cash = Money;
+
+fn usd(d: Int, c: Int) -> Money {
+    return Money { dollars: d, cents: c, currency: std::str::upper("usd") };
+}
+
+fn apply(f: fn (Money) -> String, m: Money) -> String {
+    return f(m);
+}
+
+fn main() {
+    let m = usd(12, 5);
+    let id = UserId { v: std::str::upper("u_") + "19" };
+
+    // A record's template, by every rendering path.
+    std::test::assert_eq_str(to_string(m), "$12.05 USD", "to_string renders through the template");
+    std::test::assert_eq_str(f"{m}", "$12.05 USD", "an f-string's hole too");
+    std::test::assert_eq_str("paid " + m, "paid $12.05 USD", "String + x too");
+    std::test::assert_eq_str(f"user {id}", "user U_19", "a one-hole template is its field's text");
+    std::test::assert_eq_str(f"[{m:>12}]", "[  $12.05 USD]", "a templated value pads as its text");
+
+    // Variants: a template with a payload hole, without one, and none.
+    std::test::assert_eq_str(to_string(Side::Buy), "buy", "a variant's template");
+    std::test::assert_eq_str(
+        to_string(Side::Other(std::str::upper("x"))),
+        "other: X",
+        "a payload hole",
+    );
+    std::test::assert_eq_str(
+        to_string(Side::Unlisted(3)),
+        "Side::Unlisted(3)",
+        "no template: the structural form",
+    );
+    std::test::assert_eq_str(
+        f"{Light::Go}/{Light::Stop}",
+        "green/Light::Stop",
+        "a payload-free enum, mixed",
+    );
+
+    // Nesting: a field renders by its own type's template.
+    let o = Order { id: id, price: m, side: Side::Sell };
+    std::test::assert_eq_str(
+        to_string(o),
+        "Order { id: U_19, price: $12.05 USD, side: sell }",
+        "inside a structural record",
+    );
+    let l = Line { id: id, price: m, side: Side::Other(std::str::upper("swap")) };
+    std::test::assert_eq_str(
+        to_string(l),
+        "U_19 other: SWAPs at $12.05 USD",
+        "inside another template",
+    );
+
+    // Specs and literal braces.
+    let g = Gauge { label: std::str::upper("cpu"), ratio: 0.5 };
+    std::test::assert_eq_str(to_string(g), "{CPU   } 0.50", "a spec per hole, and `{{` `}}`");
+
+    // `?`: the structural form at every depth, a String quoted inside.
+    std::test::assert_eq_str(
+        f"{m:?}",
+        "Money { dollars: 12, cents: 5, currency: \"USD\" }",
+        "`?` bypasses the template",
+    );
+    std::test::assert_eq_str(
+        f"{o:?}",
+        "Order { id: UserId { v: \"U_19\" }, price: Money { dollars: 12, cents: 5, currency: \"USD\" }, side: Side::Sell }",
+        "and every nested one",
+    );
+    std::test::assert_eq_str(f"{Side::Buy:?}", "Side::Buy", "a variant's structural form");
+
+    // An alias and an imported type keep the declaration's template.
+    let c: Cash = usd(1, 0);
+    std::test::assert_eq_str(to_string(c), "$1.00 USD", "an alias renders as its declaration does");
+    std::test::assert_eq_str(Cash::display(c), "$1.00 USD", "and names its `display`");
+    let t = lib::ticket(7);
+    std::test::assert_eq_str(to_string(t), "#7", "an imported record's template");
+    std::test::assert_eq_str(
+        f"{lib::Lane::Fast}, {lib::Lane::Numbered(2)}",
+        "fast lane, lane 2",
+        "an imported enum's",
+    );
+    std::test::assert_eq_str(lib::Ticket::display(t), "#7", "an imported type's `display`");
+
+    // `T::display`, called and passed as a value.
+    std::test::assert_eq_str(Money::display(m), "$12.05 USD", "T::display(v)");
+    std::test::assert_eq_str(
+        apply(Money::display, usd(3, 40)),
+        "$3.40 USD",
+        "T::display as a function value",
+    );
+    std::test::assert_eq_str(Side::display(Side::Sell), "sell", "an enum's display");
+}

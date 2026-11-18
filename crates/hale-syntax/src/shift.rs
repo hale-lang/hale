@@ -46,10 +46,17 @@ pub fn erase_positions(item: &mut TopDecl) {
 }
 
 /// What the walk does to each position.
+/// RFC #2035: every position in `e` set to `s`, so a generated
+/// expression reports at the source it stands for (a `@display` hole).
+pub fn set_expr_spans(e: &mut Expr, s: Span) {
+    e.shift(Move::To(s));
+}
+
 #[derive(Clone, Copy)]
 enum Move {
     By(u32),
     Erase,
+    To(Span),
 }
 
 trait Shift {
@@ -61,6 +68,7 @@ impl Shift for Span {
         *self = match d {
             Move::By(d) => self.shifted(d),
             Move::Erase => Span::new(0, 0),
+            Move::To(s) => s,
         };
     }
 }
@@ -70,6 +78,7 @@ impl Shift for Pos {
         *self = match d {
             Move::By(d) => self.shifted(d),
             Move::Erase => Pos(0),
+            Move::To(s) => s.start,
         };
     }
 }
@@ -597,7 +606,17 @@ impl Shift for PerspectiveMember {
     }
 }
 
-shift_struct!(TypeDecl { name, display, generics, body, span, id, synthetic, positional });
+shift_struct!(TypeDecl { name, display, generics, body, span, id, synthetic, positional, template });
+shift_struct!(DisplayTemplate { text, span, parts });
+
+impl Shift for TemplatePart {
+    fn shift(&mut self, d: Move) {
+        match self {
+            TemplatePart::Lit(_) => {}
+            TemplatePart::Hole { key, spec, span } => sh!(d; key, spec, span),
+        }
+    }
+}
 
 impl Shift for TypeDeclBody {
     fn shift(&mut self, d: Move) {
@@ -633,7 +652,7 @@ impl Shift for FieldOptional {
         }
     }
 }
-shift_struct!(EnumVariant { name, fields, class, span, member, tag });
+shift_struct!(EnumVariant { name, fields, class, span, member, tag, template });
 shift_struct!(ConstDecl { name, ty, value, span, id });
 
 // Effects and fn contracts.

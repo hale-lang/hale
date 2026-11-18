@@ -770,7 +770,7 @@ Anywhere else, after a type (`T?`) included, it is a parse error.
   ```text
   spec := [[fill]align] [width] ["." precision] [kind]
   align := "<" | "^" | ">"
-  kind  := "x" | "X"
+  kind  := "x" | "X" | "?"
   ```
 
   The `:` that opens a spec is the **last top-level one** that is
@@ -785,8 +785,15 @@ Anywhere else, after a type (`T?`) included, it is a parse error.
   - `precision` applies to `Float` and `Decimal` only; `Decimal`
     is rendered through the exact fixed-point path, not via
     `f64`. Maximum 17.
-  - `kind` renders an `Int` in hexadecimal, from the unsigned bit
-    pattern (so `-1` is `ffffffffffffffff`).
+  - `kind` `x` / `X` renders an `Int` in hexadecimal, from the
+    unsigned bit pattern (so `-1` is `ffffffffffffffff`).
+  - `kind` `?` (RFC #2035, decisions F.54) renders any printable
+    value in its **structural** form, `Name { field: v }` /
+    `Enum::Variant(p)`, past every `@display` template at every
+    depth; a `String` inside a composite is quoted and a composite
+    over 32 elements truncated, as always (spec/semantics.md §
+    Rendering values as text). It takes a width, a fill and an
+    alignment (`{m:>40?}`), and no precision.
 
   A spec that is ungrammatical is a **parse** error; a spec that is
   grammatical but does not apply to the value's type (hex of a

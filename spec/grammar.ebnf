@@ -59,6 +59,7 @@ top_decl          = locus_decl
                   | type_decl
                   | positional_type       (* spec/api.md § Codecs *)
                   | wire_case_type        (* spec/types.md § An enum's names *)
+                  | display_type          (* spec/semantics.md § Rendering values as text *)
                   | const_decl
                   | function_decl
                   | module_decl
@@ -1053,6 +1054,17 @@ wire_case_type    = "@" , "wire_case" , "(" , wire_case , ")" , "type" ,
                     enum_variant , { "," , enum_variant } , "}" , ";" ;
 wire_case         = "snake" | "screaming_snake" | "kebab" | "lower" ;
 
+(* RFC #2035 (decisions F.54): `@display("...")` declares how a record's
+   values render as text (spec/semantics.md § Rendering values as text).
+   It precedes a record only, not generic, and stacks over `@positional`;
+   an enum's templates are its variants' (`display_annotation` in
+   `enum_variant`). The template is a STRING_LIT whose text is literal
+   characters and holes, `{field}` or `{field:spec}` (`{0}` on a variant,
+   a payload position), with `{{` / `}}` a literal brace; `spec` is an
+   f-string format spec (spec/tokens.md). `display` is not a keyword. *)
+display_type      = display_annotation , ( type_decl | positional_type ) ;
+display_annotation = "@" , "display" , "(" , STRING_LIT , ")" ;
+
 type_decl         = "type" , IDENTIFIER , "=" , type_expr , ";"
                   | "type" , IDENTIFIER , [ generic_params ] , "{" ,
                     { struct_field } , "}"
@@ -1138,7 +1150,7 @@ struct_field      = IDENTIFIER , [ "?" ] , ":" , type_expr , [ "clearable" ] ,
    to write the default first (GH #1948). *)
 field_tag         = "`" , { ? any char except backtick ? } , "`" ;
 
-enum_variant      = [ "@" , IDENTIFIER ] , IDENTIFIER ,
+enum_variant      = [ display_annotation ] , [ "@" , IDENTIFIER ] , IDENTIFIER ,
                     [ "(" , type_expr , { "," , type_expr } , ")" ] , [ field_tag ] ;
 (* `@not_found Missing`: the variant's error class (spec/api.md § Error
    classes). GH #1951 item 5: a variant takes one metadata tag after its

@@ -131,6 +131,9 @@ fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]
     // `E::index(v)` call the functions the pass writes for `E`, after the
     // aliases, so `type C2 = Color; C2::name(c)` names `Color`'s.
     hale_syntax::enum_names::generate_enum_names_in(programs, seq.import_renames);
+    // RFC #2035 (F.54): each `@display` template's rendering function, and
+    // `T::display` where a program names it, after the aliases as well.
+    hale_syntax::display::generate_displays_in(programs, seq.import_renames);
     for p in programs.iter_mut() {
         crate::qualified_subjects::resolve_qualified_bus_subjects(p, seq.import_renames);
     }

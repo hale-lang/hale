@@ -2111,6 +2111,7 @@ fn build_resolved_lowered(
         loops: Vec::new(),
         bce_loops: Vec::new(),
         user_fns: BTreeMap::new(),
+        render_structural: false,
         user_loci: BTreeMap::new(),
         returned_struct_loci: BTreeSet::new(),
         specialized_locus_decls: BTreeMap::new(),
@@ -4379,6 +4380,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `lower_program` so call sites can refer to fns declared
     /// later in the same file.
     pub(crate) user_fns: BTreeMap<String, FnSig<'ctx>>,
+    /// RFC #2035 (F.54): rendering under `{x:?}`, the structural form at
+    /// every depth, so no `@display` template is called.
+    pub(crate) render_structural: bool,
     /// User-defined loci indexed by name. Filled in pass A of
     /// `lower_program`; carries the LLVM struct type for the
     /// locus's params + the lifecycle methods compiled against it.
@@ -13585,6 +13589,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     span,
                     member: false,
                     tag: None,
+                    template: None,
                 },
                 EnumVariant {
                     name: mk_ident("Err"),
@@ -13593,12 +13598,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     span,
                     member: false,
                     tag: None,
+                    template: None,
                 },
             ]),
             span,
             id: NodeId::NONE,
             synthetic: true,
             positional: false,
+            template: None,
         };
         let option_decl = TypeDecl {
             display: None,
@@ -13612,6 +13619,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     span,
                     member: false,
                     tag: None,
+                    template: None,
                 },
                 EnumVariant {
                     name: mk_ident("None"),
@@ -13620,12 +13628,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     span,
                     member: false,
                     tag: None,
+                    template: None,
                 },
             ]),
             span,
             id: NodeId::NONE,
             synthetic: true,
             positional: false,
+            template: None,
         };
         vec![result_decl, option_decl]
     }
@@ -14840,6 +14850,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         span: v.span.clone(),
                         member: v.member,
                         tag: v.tag.clone(),
+                        template: v.template.clone(),
                     })
                     .collect();
                 TypeDeclBody::Enum(new_variants)
@@ -14855,6 +14866,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             id: template.id,
             synthetic: template.synthetic,
             positional: template.positional,
+            template: template.template.clone(),
         })
     }
 
@@ -21904,6 +21916,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             enum_name
                         ))
                     })?;
+                if !info.has_payload
+                    && !self.render_structural
+                    && info.variants.iter().any(|vi| {
+                        self.user_fns.contains_key(&hale_syntax::display::variant_fn(&enum_name, &vi.name))
+                    })
+                {
+                    return self.lower_plain_enum_with_templates(&info, &enum_name, v);
+                }
                 if !info.has_payload {
                     // No-payload enum: simple names-array lookup
                     // — same as a Bool select but indexed by tag.
@@ -21957,6 +21977,59 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 other
             ))),
         }
+    }
+
+    /// RFC #2035: render a payload-free enum some of whose variants
+    /// declare a `@display` template: a switch on the tag, each templated
+    /// variant calling its function, the rest their structural label.
+    fn lower_plain_enum_with_templates(
+        &mut self,
+        info: &EnumInfo,
+        enum_name: &str,
+        v: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let func = self.current_fn.expect("value_to_string inside a function body");
+        let display = self.enum_display_name(enum_name);
+        let tag = v.into_int_value();
+        let cont_bb = self.context.append_basic_block(func, "enum.tpl.cont");
+        let default_bb = self.context.append_basic_block(func, "enum.tpl.default");
+        let mut cases = Vec::new();
+        let mut incoming: Vec<(BasicValueEnum<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> = Vec::new();
+        let dispatch_bb = self.builder.get_insert_block().expect("builder positioned");
+        for (idx, vinfo) in info.variants.iter().enumerate() {
+            let case_bb = self.context.append_basic_block(func, &format!("enum.tpl.v{idx}"));
+            self.builder.position_at_end(case_bb);
+            let out = match self.call_display_template(&hale_syntax::display::variant_fn(enum_name, &vinfo.name), v)? {
+                Some(out) => out,
+                None => self.global_string(&format!("{}::{}", display, vinfo.name)).into(),
+            };
+            let end_bb = self.builder.get_insert_block().expect("builder positioned");
+            self.builder
+                .build_unconditional_branch(cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            cases.push((tag.get_type().const_int(idx as u64, false), case_bb));
+            incoming.push((out, end_bb));
+        }
+        self.builder.position_at_end(default_bb);
+        let empty: BasicValueEnum<'ctx> = self.global_string("").into();
+        self.builder
+            .build_unconditional_branch(cont_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        incoming.push((empty, default_bb));
+        self.builder.position_at_end(dispatch_bb);
+        self.builder
+            .build_switch(tag, default_bb, &cases)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(cont_bb);
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let phi = self
+            .builder
+            .build_phi(ptr_t, "enum.tpl.text")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let refs: Vec<(&dyn inkwell::values::BasicValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> =
+            incoming.iter().map(|(v, b)| (v as &dyn inkwell::values::BasicValue<'ctx>, *b)).collect();
+        phi.add_incoming(&refs);
+        Ok(phi.as_basic_value())
     }
 
     /// m47-payloads-followup: render a has-payload enum value to
@@ -22019,7 +22092,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder.position_at_end(case_bb);
             let mut acc = self
                 .global_string(&format!("{}::{}", display, vinfo.name));
-            if !vinfo.field_tys.is_empty() {
+            // RFC #2035: a variant with a `@display` template renders
+            // through its function (which takes the whole value).
+            let templated = if self.render_structural {
+                None
+            } else {
+                self.call_display_template(&hale_syntax::display::variant_fn(enum_name, &vinfo.name), v)?
+            };
+            if let Some(out) = templated {
+                acc = out.into_pointer_value();
+            } else if !vinfo.field_tys.is_empty() {
                 let open_paren = self.global_string("(");
                 acc = self
                     .str_concat(acc.into(), open_paren.into())?
@@ -22135,6 +22217,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // --- render ---
         let mut rendered: BasicValueEnum<'ctx> = match spec.kind {
+            // RFC #2035: `?` renders structurally at every depth, past
+            // every `@display` template.
+            SpecKind::Debug => {
+                let prev = std::mem::replace(&mut self.render_structural, true);
+                let r = self.value_to_string(v, &ty);
+                self.render_structural = prev;
+                r?
+            }
             SpecKind::HexLower | SpecKind::HexUpper => {
                 let upper =
                     i32_t.const_int((spec.kind == SpecKind::HexUpper) as u64, false);
@@ -22243,7 +22333,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     | CodegenTy::U256
                     | CodegenTy::I256
                     | CodegenTy::Duration
-            ) || spec.kind != SpecKind::Display;
+            ) || matches!(spec.kind, SpecKind::HexLower | SpecKind::HexUpper);
             let align = spec.align.unwrap_or(if numeric {
                 Align::Right
             } else {
@@ -22319,6 +22409,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
         v: BasicValueEnum<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        // RFC #2035 (F.54): a record with a `@display` template renders
+        // through the function the desugar wrote for it, unless `{x:?}`
+        // asked for the structural form.
+        if !self.render_structural {
+            if let Some(out) = self.call_display_template(&hale_syntax::display::record_fn(name), v)? {
+                return Ok(out);
+            }
+        }
         let info = self.user_types.get(name).cloned().ok_or_else(|| {
             CodegenError::Unsupported(format!(
                 "to_string: unknown type `{}`",
@@ -22356,6 +22454,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             " }"
         });
         self.str_concat(acc, close.into())
+    }
+
+    /// RFC #2035: call the template function `f` (`__display_tpl_…`) on
+    /// `v`, the value it renders, as the call `f(v)` is lowered: the
+    /// call site's arena is the callee's caller arena, so the text lands
+    /// where the equivalent f-string's would. `None` when the program has
+    /// no such function (the type declares no template).
+    fn call_display_template(
+        &mut self,
+        f: &str,
+        v: BasicValueEnum<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let Some(sig) = self.user_fns.get(f).cloned() else {
+            return Ok(None);
+        };
+        let arena = self.current_arena_ptr()?;
+        let out = self
+            .builder
+            .build_call(sig.func, &[arena.into(), v.into()], &format!("{f}.call"))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("a template function returns its String");
+        Ok(Some(out))
     }
 
     /// Load one field/element for rendering.

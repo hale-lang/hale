@@ -4501,3 +4501,49 @@ fn a_statement_blocks_tail_call_is_built_as_a_statement() {
         "hale_cb_nested_statement_tails",
     );
 }
+
+/// RFC #2035 (F.54): the `@display` refusals the check makes. A template
+/// on a record that is not printable, a hole whose field cannot render,
+/// and a spec that does not fit its field are each refused by the check at
+/// the template, so the build is never reached. (A hole that names no
+/// field, a template on a locus, a set, an enum as a whole or a generic
+/// type are refused by the parser, which both share.)
+#[test]
+fn display_template_refusals_are_the_checks() {
+    let cases = [
+        (
+            "@display(\"{x}\") type A { x: Int; b: Bytes; }\n\
+             fn main() { let a = A { x: 1, b: b\"\" }; println(a.x); }\n",
+            "@display(\"{x}\")",
+            "takes no `@display`",
+        ),
+        (
+            "@display(\"{b}\") type A { b: Bytes; }\n\
+             fn main() { let a = A { b: b\"\" }; println(len(a.b)); }\n",
+            "{b}",
+            "a `@display` hole cannot render",
+        ),
+        (
+            "@display(\"{s:x}\") type A { s: String; }\n\
+             fn main() { let a = A { s: \"q\" }; println(a.s); }\n",
+            "{s:x}",
+            "hexadecimal formatting applies to `Int`",
+        ),
+    ];
+    for (i, (src, at, says)) in cases.iter().enumerate() {
+        let program = hale_syntax::parse_source(src).expect("parses");
+        let errors: Vec<hale_syntax::Diag> =
+            entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+        let hit = errors
+            .iter()
+            .find(|d| d.message.contains(says))
+            .unwrap_or_else(|| panic!("the check refuses it with `{says}`: {:?}\n{}", errors, src));
+        assert_eq!(hit.span.slice(src), *at, "located at the template:\n{}", src);
+        assert_eq!(
+            sweep_verdict(src, &format!("hale_cb_display_{i}")),
+            Verdict::Skipped("the checker rejects it"),
+            "the check refuses it, so the build is never reached:\n{}",
+            src
+        );
+    }
+}

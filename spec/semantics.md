@@ -767,6 +767,73 @@ The checker and lowering read one definition of this rule
 set at its span, and lowering renders a record only when every
 field is printable, as the checker does.
 
+### Declared templates: `@display` (RFC #2035, decisions F.54)
+
+A record, or an enum's variant, may declare the text its values
+render as for people:
+
+```hale
+@display("${dollars}.{cents:0>2} {currency}")
+type Money { dollars: Int; cents: Int; currency: String; }
+
+type Side = enum {
+    @display("buy") Buy,
+    @display("other: {0}") Other(String),
+    Unlisted(Int),
+};
+```
+
+- **A template** is literal text and holes. A hole names a field of
+  the record, or a payload position of the variant (`{0}`, `{1}`),
+  with an optional f-string format spec (`{cents:0>2}`, `{px:.2}`,
+  `{n:>8}`, spec/tokens.md). `{{` and `}}` are a literal brace. No
+  expression, call or conditional can be written in one, so
+  rendering through it cannot fail or run anything.
+- **Checked as the f-string it stands for.** The parser refuses a
+  hole that names no field or no payload position, a hole holding an
+  expression, and a spec outside the grammar; the checker refuses a
+  hole whose field is not printable and a spec that does not fit its
+  field, at the hole. Both are located in the template.
+- **It never widens the printable set.** `@display` is allowed only
+  on a record that is already printable, every field of it, whatever
+  fields the template names; a record holding a `Bytes` takes no
+  template, so `{x:?}` always has a form to show.
+- **Where:** a record `type`, not generic; an enum's variants, each
+  its own (a variant without one renders structurally), not of a
+  generic enum. Not on an enum as a whole, a set (a set renders as
+  its member does), an alias or a scalar (each renders as what it
+  names) or a locus (never printable). Each is refused at the
+  annotation.
+- **One rule, everywhere.** `println`, `print`, `to_string`,
+  `String + x` and f-string interpolation all render a value of the
+  type through its template, as they all render the structural form
+  otherwise. A nested value renders by its own type's template when
+  it has one, else structurally; the text a template produces is not
+  quoted inside a composite (it is no `String` value).
+- **It attaches to the declaration.** An alias renders as the type it
+  names, and an imported type as its declaration does.
+- **`T::display(v) -> String`** names the rendering: written by the
+  compiler for a record with a template and for an enum with a
+  templated variant, as `E::name` is (F.53), a type-path function and
+  no method. It is a value too: `apply(Money::display, m)`.
+- **Cost.** The template is a function the compiler writes, and a
+  rendering of a value of the type is a call of it: its output is
+  allocated in the caller's frame, exactly as the equivalent
+  hand-written f-string's would be, and the allocation summary and
+  the hot-path budget (`@budget(alloc_per_call = …)`) count it so,
+  `T::display` passed as a value included. A template is not cheap
+  for containing no call.
+
+**`{x:?}`, the structural form.** The format-spec kind `?` renders a
+value by the structural rule above whatever its template, at every
+depth: a nested value with a template of its own renders structurally
+too. A `String` inside a composite is quoted and a composite over 32
+elements truncated, as always. It is what a test failure, a log of
+internals or a debugger wants, and it exists for every printable
+value. An assertion of `std::test` that renders a value shows both
+forms when they differ; today's assertions take `Bool`, `Int`,
+`String` and `Float`, which have no template.
+
 ### Format specs
 
 `f"{expr:spec}"` renders `expr` under `spec` instead of under the

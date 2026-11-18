@@ -1351,6 +1351,7 @@ fn walk_bundle(
         unresolved_import_aliases: &unresolved_import_aliases,
         typed: &mut typed,
         body: NodeId::NONE,
+        in_display_template: false,
         expr_types: None,
         views: Default::default(),
         view_callee_node: 0,
@@ -11472,7 +11473,9 @@ fn callee_display(callee: &Expr) -> String {
     match callee {
         Expr::Ident(id) => match id.name.strip_prefix("__json_parse_") {
             Some(t) => format!("{t}::from_json"),
-            None => hale_syntax::enum_names::generated_display(&id.name).unwrap_or_else(|| id.name.clone()),
+            None => hale_syntax::enum_names::generated_display(&id.name)
+                .or_else(|| hale_syntax::display::generated_display(&id.name))
+                .unwrap_or_else(|| id.name.clone()),
         },
         Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
         Expr::KwSelf(_) => "self".to_string(),
@@ -11658,6 +11661,9 @@ struct Checker<'a> {
     /// hook, a mode, an `on_failure`, a closure; else the enclosing
     /// locus or top-level declaration. The table's rows are its.
     body: NodeId,
+    /// RFC #2035: walking the function a `@display` template desugared
+    /// to, whose `to_string` calls are the template's holes.
+    in_display_template: bool,
     /// While a closure assertion is walked: the type the checker gave
     /// each expression, by node, so its accumulators read the types of
     /// the very expressions they accumulate.
@@ -11977,6 +11983,25 @@ impl<'a> Checker<'a> {
                         .collect(),
                 );
                 self.check_generic_bound_names("type", &t.name.name, &t.generics);
+                // RFC #2035 (F.54): a template never widens the printable
+                // set. The record must render structurally already, so its
+                // `{x:?}` and an assertion's message always exist, whatever
+                // fields the template names.
+                if let Some(tpl) = &t.template {
+                    let ty = Ty::Named(t.name.name.clone());
+                    if !self.ty_is_printable(&ty) {
+                        self.diags.push(Diag::ty(
+                            tpl.span,
+                            format!(
+                                "`{}` takes no `@display`: a template is declared only on a type that is already \
+                                 printable, and this one is not ({}). A template never widens the printable set, \
+                                 so `{{x:?}}` always has a form to show (spec/semantics.md § Rendering values as text)",
+                                t.name.name,
+                                self.why_unprintable(&ty, 0).unwrap_or_else(|| "this one is not".to_string())
+                            ),
+                        ));
+                    }
+                }
                 match &t.body {
                     TypeDeclBody::Struct(fields) => {
                         for f in fields {
@@ -16251,7 +16276,12 @@ impl<'a> Checker<'a> {
 
     fn check_fn(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
         let prev_body = std::mem::replace(&mut self.body, decl.id);
+        let prev_tpl = std::mem::replace(
+            &mut self.in_display_template,
+            decl.name.name.starts_with("__display_tpl_"),
+        );
         self.check_fn_at(decl, locus);
+        self.in_display_template = prev_tpl;
         self.body = prev_body;
     }
 
@@ -24515,12 +24545,19 @@ impl<'a> Checker<'a> {
                                     if let Some(cell) = self.cell_of(a) {
                                         self.refuse_printed_cell(&id.name, a, &cell);
                                     } else if !self.ty_is_printable(&at) {
+                                        // RFC #2035: a template's hole is a
+                                        // `to_string` the author never wrote.
+                                        let who = if self.in_display_template {
+                                            "a `@display` hole".to_string()
+                                        } else {
+                                            format!("`{}`", id.name)
+                                        };
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
-                                                "`{}` cannot render a value \
+                                                "{} cannot render a value \
                                                  of type `{}` — {}",
-                                                id.name,
+                                                who,
                                                 at.display(),
                                                 self.why_unprintable(&at, 0)
                                                     .unwrap_or_else(|| {
@@ -27364,7 +27401,8 @@ impl<'a> Checker<'a> {
             vt,
             Ty::Prim(PrimType::Float | PrimType::Decimal(_)) | Ty::Unknown
         );
-        if spec.kind != SpecKind::Display
+        // `?` (RFC #2035) takes any printable value, checked above.
+        if matches!(spec.kind, SpecKind::HexLower | SpecKind::HexUpper)
             && !matches!(vt, Ty::Prim(PrimType::Int) | Ty::Unknown)
         {
             self.diags.push(Diag::ty(

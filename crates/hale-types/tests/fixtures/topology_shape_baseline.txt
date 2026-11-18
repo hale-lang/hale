@@ -1943,6 +1943,7 @@ crates/hale-types/tests/dispatch_plan.rs#2 b07485455b91d1d9
 crates/hale-types/tests/dispatch_plan.rs#3 36f595f006da22f2
 crates/hale-types/tests/dispatch_plan.rs#4 4ce7ffbc8b2546a6
 crates/hale-types/tests/dispatch_plan.rs#9 69798193a5c58cef
+crates/hale-types/tests/display_templates.rs#0 fb0e58b64ca8ba19
 crates/hale-types/tests/effect_assertions.rs#1 eb57ad93ec1cb439
 crates/hale-types/tests/effect_assertions.rs#10 685e7afce3c3ea05
 crates/hale-types/tests/effect_assertions.rs#11 cdc6000730468148

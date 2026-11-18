@@ -579,6 +579,29 @@ the enum when the wire wants `in_progress`. With a catch-all
 payloads; `name` and `index` ignore payloads. `println` still renders
 `Lifecycle::Archived`.
 
+## How a value reads: `@display`
+
+Never write a `fn describe(x: T) -> String` that callers must remember
+to use, and never hand-format a record at every print site. Declare the
+text on the type, and every `println`, `to_string`, `String + x` and
+f-string uses it:
+
+```hale
+@display("${dollars}.{cents:0>2} {currency}")
+type Money { dollars: Int; cents: Int; currency: String; }
+
+type Side = enum { @display("buy") Buy, @display("other: {0}") Other(String) };
+```
+
+- A template has holes for fields (`{cents:0>2}`, with f-string specs) or,
+  on a variant, its payload positions (`{0}`). It holds no expressions.
+- `@display` goes only on a record that is already printable (no `Bytes`
+  field), or before an enum's variant. It is refused on an enum as a whole,
+  a set, a generic type and a locus.
+- `{x:?}` prints the structural form `Money { dollars: 12, … }`, past every
+  template; use it in logs of internals.
+- `T::display(v)` is the rendering as a function you can pass.
+
 ## Matching
 
 `match` is an expression as well as a statement, so it can produce a
