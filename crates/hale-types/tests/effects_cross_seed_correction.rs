@@ -22,6 +22,13 @@
 //! the correction moves no replay refusal: the classes the live-effects
 //! gate refuses on (`syscall`, `ffi`, `unclassified`) are the same,
 //! seed by seed, with the renames as without them.
+//!
+//! GH #2032 made every `std::io::fs` call that reaches the file system
+//! `block`. A seed's own file calls now give the renames-blind rows
+//! `block` too, so rows whose only imported difference was `block`
+//! left the `api`, `host`, `operations` and `organization_runtime`
+//! pins, and rows whose own file call is `block` now read `block` in
+//! the lists that stay.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -282,17 +289,14 @@ fn api() {
         Observer::observe  does={syscall,block,time,env,alloc,stdio}
         OidcBearer::principal  does={syscall,block,time,env,alloc}
         allocation_links  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        applied_at  does={syscall,env,alloc}
+        applied_at  does={syscall,block,env,alloc}
         applies_dir  does={env,alloc}
-        apply_running  does={syscall,block,alloc}
         fetch_organizations  does={syscall,block,time,env,alloc}
         habitat_alerts  does={syscall,block,env,alloc}
         habitat_allocate_forge  does={syscall,block,env,alloc}
-        habitat_apply  does={syscall,block,time,env,alloc}
         habitat_apply_log  does={syscall,block,env,alloc}
         habitat_brief  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        habitat_graft  does={syscall,block,env,alloc}
-        habitat_graft_log  does={syscall,env,alloc}
+        habitat_graft_log  does={syscall,block,env,alloc}
         habitat_host_plan_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_nursery_add  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_organism_plan_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
@@ -303,16 +307,15 @@ fn api() {
         host_removal_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         index_answers  does={syscall,block,env}
         index_organisms  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        launch_token  does={syscall,block,alloc,stdio}
         observe_row  does={syscall,block,env,alloc}
         oidc_ui  does={syscall,block,env,alloc,stdio}
         org_chart  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        organism_root_of  does={syscall,env,alloc}
+        organism_root_of  does={syscall,block,env,alloc}
         organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placed_body  does={env,alloc}
         placement_host  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        placement_targets_dir  does={syscall,env,alloc}
+        placement_targets_dir  does={syscall,block,env,alloc}
         record_index  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ",
     );
@@ -350,10 +353,8 @@ fn host() {
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
         Host::bring_up  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
-        Host::build_genome  does={syscall,block,env,alloc,stdio}
-        Host::build_seed  does={syscall,block,env,alloc,stdio}
         Host::cut_artifact  does={syscall,block,alloc}
-        Host::hand_compose_habitat  does={syscall,env,alloc}
+        Host::hand_compose_habitat  does={syscall,block,env,alloc}
         Host::hand_compose_secrets  does={syscall,block,env,alloc}
         Host::nerves_read_now  does={syscall,block,time,entropy,env,alloc}
         Host::no_application  does={syscall,block,alloc}
@@ -361,42 +362,28 @@ fn host() {
         Host::sha12  does={syscall,block,alloc}
         Host::start_memory  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::start_organization_launch  does={syscall,block,time,env,alloc,stdio}
-        Host::stop_started  does={syscall,block,alloc,stdio}
         Host::wait_nerves  does={syscall,block,time,entropy,env,alloc,stdio}
-        LocalTransport::execute  does={syscall,block,alloc}
         LocalTransport::probe  does={syscall,block,alloc}
         NatsExchange::birth  does={env,alloc}
         NatsExchange::deliver  does={syscall,block,time,entropy,env,alloc,secret_use}
-        Node::build  does={syscall,block,env,alloc,stdio}
-        Projection::build_digest  does={syscall,block,alloc}
         Projection::review_of  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        ReferenceInfrastructure::allocated  does={syscall,env,alloc}
+        ReferenceInfrastructure::allocated  does={syscall,block,env,alloc}
         ReferenceInfrastructure::allocation  does={syscall,block,alloc}
-        ReferenceInfrastructure::credential  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::install_unit  does={syscall,block,env,alloc}
         ReferenceInfrastructure::knowledge_database  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ReferenceInfrastructure::knowledge_database_if_up  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::logs  does={syscall,block,env,alloc}
         ReferenceInfrastructure::nerves_if_up  does={syscall,block,env,alloc}
         ReferenceInfrastructure::nerves_server  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ReferenceInfrastructure::probe  does={syscall,block,env,alloc}
         ReferenceInfrastructure::published  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::put_credential  does={syscall,block,env,alloc}
         ReferenceInfrastructure::restart_if_up  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::run_at  does={syscall,block,env,alloc}
         ReferenceInfrastructure::senses_if_up  does={syscall,block,env,alloc}
         ReferenceInfrastructure::senses_store  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        ReferenceInfrastructure::start  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::status  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::stop  does={syscall,block,env,alloc}
         RepositoryCompose::check  does={syscall,block,alloc}
-        RepositoryCompose::down  does={syscall,block,alloc}
         RepositoryCompose::own  does={syscall,block,alloc}
         RepositoryCompose::services  does={syscall,block,alloc}
         RepositoryCompose::up  does={syscall,block,time,alloc}
-        SshTransport::execute  does={syscall,block,alloc}
         SshTransport::probe  does={syscall,block,alloc}
-        admits_here  does={syscall,env,alloc}
+        admits_here  does={syscall,block,env,alloc}
         alive  does={syscall,block,alloc}
         allocation_files  does={syscall,block,env,alloc}
         apply_drops  does={syscall,block,alloc}
@@ -406,37 +393,29 @@ fn host() {
         body_key  does={syscall,block,alloc}
         build_cache_dir  does={syscall,block,env,alloc}
         build_cache_keep  does={syscall,block,alloc}
-        build_cache_touch  does={syscall,block,alloc}
-        build_fingerprint  does={syscall,block,env,alloc}
-        build_seed_at  does={syscall,block,env,alloc}
         chart_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         codebase_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         compose_key  does={alloc}
         compose_sweep  does={syscall,block,alloc}
         database_provision_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         declared_secret_line  does={syscall,block,env,alloc}
-        definitions_verb  does={syscall,block,alloc}
         descendants  does={syscall,block,alloc}
-        draft_units  does={syscall,block,alloc}
         draw_secret  does={syscall,block,alloc}
         drop_here  does={syscall,block,alloc}
         drop_include_line  does={syscall,block,alloc}
-        edge_admits_here  does={syscall,env,alloc}
-        exchange_key  does={syscall,alloc}
+        edge_admits_here  does={syscall,block,env,alloc}
+        exchange_key  does={syscall,block,alloc}
         exchange_migrate  does={syscall,block,time,entropy,env,alloc}
         exchange_stream_place  does={syscall,block,time,entropy,alloc}
-        exit_code  does={syscall,block,alloc}
         family_labels_of  does={syscall,block,env,alloc}
         fence_compose_down  does={syscall,block,alloc}
-        fence_stop  does={syscall,block,alloc}
         fill_check  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         fill_equipment  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         fleet_export  does={syscall,block,env,alloc}
-        fleet_export_at  does={syscall,block,env,alloc}
         fleet_rel_of  does={syscall,block,env,alloc}
-        forge_kind  does={syscall,env,alloc}
-        forge_name  does={syscall,env,alloc}
-        forge_token_slot  does={syscall,env,alloc}
+        forge_kind  does={syscall,block,env,alloc}
+        forge_name  does={syscall,block,env,alloc}
+        forge_token_slot  does={syscall,block,env,alloc}
         forgejo_exec  does={syscall,block,env,alloc}
         forgejo_healthy  does={syscall,block,time,env,alloc}
         forget_allocation_items  does={syscall,block,env,alloc}
@@ -465,12 +444,10 @@ fn host() {
         habitat_forget_unrecorded_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_teardown_run_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_handover_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        heart_key  does={syscall,env,alloc}
+        heart_key  does={syscall,block,env,alloc}
         held_state  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         host_main  does={syscall,env,alloc,stdio}
         include_names  does={syscall,block,env,alloc}
-        input_digests  does={syscall,block,alloc}
-        kill_faces  does={syscall,block,alloc}
         kill_tree  does={syscall,block,alloc}
         mapped_key_names  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         mapped_key_slots  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
@@ -479,7 +456,6 @@ fn host() {
         memory_refusal  does={syscall,block,env,alloc}
         missing_drawn  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         model_key_vault  does={alloc}
-        models_verb  does={syscall,block,alloc}
         nats_account_path  does={syscall,block,env,alloc}
         nats_accounts_dir  does={syscall,block,env,alloc}
         nats_conf_path  does={syscall,block,env,alloc}
@@ -488,28 +464,26 @@ fn host() {
         nerves_listening  does={syscall,block,time,entropy,alloc}
         nerves_migrate  does={syscall,block,time,entropy,alloc}
         nerves_migrate_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        nerves_restart_hint  does={syscall,env,alloc}
+        nerves_restart_hint  does={syscall,block,env,alloc}
         nerves_urls  does={syscall,block,alloc}
         node_main  does={syscall,env,alloc,stdio}
         nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         oidc_issuer  does={syscall,block,alloc}
         organism_here  does={syscall,block,time,env,alloc}
         organism_secrets  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        own_nerves  does={syscall,block,env,alloc}
-        owner_of_person_here  does={syscall,env,alloc}
-        owners_here  does={syscall,env,alloc}
-        ownership_graph_here  does={syscall,env,alloc}
-        ownership_note  does={syscall,env,alloc}
-        persona_grant  does={syscall,env,alloc}
+        owner_of_person_here  does={syscall,block,env,alloc}
+        owners_here  does={syscall,block,env,alloc}
+        ownership_graph_here  does={syscall,block,env,alloc}
+        ownership_note  does={syscall,block,env,alloc}
+        persona_grant  does={syscall,block,env,alloc}
         persona_remove  does={syscall,block,env,alloc}
         postgres_secrets_path  does={syscall,block,env,alloc}
-        profile_name  does={syscall,block,time,env,alloc}
         project_dir_name  does={syscall,block,alloc}
         project_name  does={syscall,block,alloc}
         provision_secrets  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         record_genesis_verb  does={syscall,block,env,alloc,secret_use}
-        record_identity  does={syscall,alloc}
-        record_identity_verb  does={syscall,alloc}
+        record_identity  does={syscall,block,alloc}
+        record_identity_verb  does={syscall,block,alloc}
         route_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         secrets_board  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         secrets_provision_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
@@ -522,7 +496,6 @@ fn host() {
         sync_record  does={syscall,block,alloc}
         this_host  does={syscall,block,alloc}
         under_node  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        work_verb  does={syscall,block,alloc}
         write_nerves_conf  does={syscall,block,env,alloc}
         ",
     );
@@ -546,7 +519,6 @@ fn operations() {
         DefinitionDrafts::semantic  does={syscall,block,env,alloc}
         DefinitionDrafts::validate  does={syscall,block,env,alloc}
         Definitions::load  does={syscall,block,env,alloc}
-        GraphIngest::ingest  does={syscall,block,alloc}
         GraphIngest::list_files  does={syscall,block,alloc}
         MemoryProjection::birth  does={syscall,block,env,alloc}
         MemoryProjection::ready  does={env}
@@ -556,8 +528,6 @@ fn operations() {
         ProjectWorkflowCatalog::snapshot  does={syscall,block,env,alloc}
         TaskProjection::relevant  does={alloc}
         TaskProjection::terminal  does={alloc}
-        application_asset  does={syscall,block,alloc}
-        application_assets  does={syscall,block,alloc}
         attempt_words_within  does={alloc}
         graph_holder_ok  does={alloc}
         graph_ref_ok  does={alloc}
@@ -584,7 +554,6 @@ fn organization_runtime() {
         23,
         "
         OrganizationLaunchSource::file_digest  does={syscall,block,alloc}
-        organization_exit_code  does={syscall,block,alloc}
         ",
     );
 }

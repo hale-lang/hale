@@ -591,6 +591,51 @@ fn a_bare_variant_pattern_on_an_enum_is_refused_at_the_pattern() {
     assert!(built, "build: {bout}");
 }
 
+/// GH #2030: a native `shm_ring` copies the payload's bytes into the slot,
+/// so a payload that is not flat is refused at the binding whether or not
+/// it says `where zero_copy` (a `String` crossed as a pointer into the
+/// publisher's arena: a use-after-free in process). A ring name over 31
+/// bytes is refused too: macOS's shm_open fails it at startup.
+#[test]
+fn a_native_shm_ring_is_refused_a_payload_that_is_not_flat_and_a_long_name() {
+    let prog = |fields: &str, name: &str| {
+        format!(
+            "type Note {{ {fields} }}\n\ntopic Notes {{\n    payload: Note;\n}}\n\nlocus Sub {{\n    params {{ seen: Int = 0; }}\n    bus {{ subscribe Notes as on_note; }}\n    fn on_note(n: Note) {{ self.seen = self.seen + 1; }}\n}}\n\nlocus Pub {{\n    bus {{ publish Notes; }}\n    run() {{ Notes <- Note {{ id: 1 }}; }}\n}}\n\nmain locus App {{\n    params {{\n        sub: Sub = Sub {{ }};\n        p: Pub = Pub {{ }};\n    }}\n    bindings {{ Notes: shm_ring(\"{name}\", slot_count: 64, on_overflow: drop); }}\n    run() {{ println(self.sub.seen); }}\n}}\n\nfn main() {{ App {{ }}; }}\n"
+        )
+    };
+    refused(
+        &prog("id: Int; text: String = \"\";", "/hale-2030-s"),
+        "shm_string",
+        "23:16",
+        "`Notes: shm_ring(...)`: topic `Notes`'s payload `Note` is not flat-shapeable",
+    );
+    refused(
+        &prog("id: Int; v: Int = 0;", "/hale-triage-shm-ring-with-a-long-name-09e"),
+        "shm_long_name",
+        "23:23",
+        "`Notes: shm_ring(\"/hale-triage-shm-ring-with-a-long-name-09e\", ...)`: the ring's name is 42 bytes, and a POSIX shm name is at most 31 bytes on macOS",
+    );
+    // A `codec(...)` clause does not serialize a native ring's slot (the
+    // native publish never calls its encoder), so it changes nothing.
+    let codec = prog("id: Int; text: String = \"\";", "/hale-2030-c")
+        .replace(
+            "on_overflow: drop); }",
+            "on_overflow: drop) codec(C { }); }",
+        )
+        .replace(
+            "\n\nmain locus App",
+            "\n\ntype EncErr { kind: String = \"\"; }\ntype DecErr { kind: String = \"\"; }\nlocus C {\n    fn encode(v: Note) -> Bytes fallible(EncErr) { return std::bytes::from_string(v.text); }\n    fn decode(b: Bytes) -> Note fallible(DecErr) { return Note { id: 0 }; }\n}\n\nmain locus App",
+        );
+    let ((ok, out), (built, bout)) = check_and_build(&codec, "shm_codec");
+    let head = "`Notes: shm_ring(...)`: topic `Notes`'s payload `Note` is not flat-shapeable";
+    assert!(!ok && out.contains(head), "check: {out}");
+    assert!(!built && bout.contains(head) && !bout.contains("codegen error"), "build: {bout}");
+    // A flat payload and a 31-byte name still check and build.
+    let ((ok, out), (built, bout)) = check_and_build(&prog("id: Int; v: Int = 0;", "/hale-2030-abcdefghijklmnopqrst"), "shm_flat");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
 /// GH #1970: a body's tail is its return, checked as one: a member of
 /// the return type's set builds as that set (in a fn, a fallible fn and
 /// a method), and a tail of another type is refused at the tail.
@@ -623,4 +668,94 @@ fn a_mixed_edge_literal_used_as_a_value_is_refused_at_the_literal() {
         "13:12",
         "`I { }` is born to `App`, but `Worker` runs both on `App`'s thread and off it (App.a on main; App.o.w on the pinned thread of App.o; the owner App on main), so its birth is a same-tower allocation in some instances and a cross-pool post in others; a cross-pool birth is fire-and-forget, so the literal cannot be used as a value.",
     );
+}
+
+/// GH #2023: a path to a variant the enum does not declare is refused by
+/// the check at the path, with the nearest variant, in every position: a
+/// value, a comparison operand, a match pattern (nested ones too) and a
+/// payload constructor's callee. Each checked clean and the build
+/// refused it (`enum `Place` has no variant `Wrok``).
+#[test]
+fn a_variant_the_enum_does_not_declare_is_refused_at_the_path() {
+    let head = "enum `Place` has no variant `Wrok` — did you mean `Work`?";
+    refused(
+        "type Place = enum { Work, Home };\n\nfn label(s: Place) -> String {\n    return match s {\n        Place::Work -> \"work\",\n        Place::Home -> \"home\",\n    };\n}\n\nfn main() {\n    let s = Place::Wrok;\n    println(label(s));\n}\n",
+        "variant_value",
+        "11:13",
+        head,
+    );
+    refused(
+        "type Place = enum { Work, Home };\nfn at_work(s: Place) -> Bool {\n    return s == Place::Wrok;\n}\nfn main() { println(at_work(Place::Home)); }\n",
+        "variant_operand",
+        "3:17",
+        head,
+    );
+    refused(
+        "type Place = enum { Work, Home };\nfn label(s: Place) -> String {\n    return match s {\n        Place::Wrok -> \"w\",\n        _ -> \"o\",\n    };\n}\nfn main() { println(label(Place::Home)); }\n",
+        "variant_pattern",
+        "4:9",
+        head,
+    );
+    refused(
+        "type Place = enum { Work(Int), Home };\nfn main() {\n    let s = Place::Wrok(1);\n    match s {\n        Place::Work(n) -> println(n),\n        Place::Home -> println(\"home\"),\n    }\n}\n",
+        "variant_ctor",
+        "3:13",
+        head,
+    );
+    // Nested in a variant's values.
+    refused(
+        "type Place = enum { Work, Home };\ntype Trip = enum { To(Place), Stay };\nfn f(t: Trip) -> Int {\n    return match t {\n        Trip::To(Place::Wrok) -> 1,\n        _ -> 0,\n    };\n}\nfn main() { println(f(Trip::Stay)); }\n",
+        "variant_nested_pattern",
+        "5:18",
+        head,
+    );
+    // No near spelling: the variants are listed.
+    refused(
+        "type Place = enum { Work, Home };\nfn main() {\n    let s = Place::Elsewhere;\n    println(s == Place::Home);\n}\n",
+        "variant_far",
+        "3:13",
+        "enum `Place` has no variant `Elsewhere`; its variants are Work, Home",
+    );
+    // The enum's own names (RFC #1995 E1) are not variants and still work.
+    let ok_src = "type Place = enum { Work, Home };\nfn main() {\n    println(Place::name(Place::Work));\n    println(Place::index(Place::Home));\n    for p in Place::variants { println(Place::name(p)); }\n}\n";
+    let ((ok, out), (built, bout)) = check_and_build(ok_src, "variant_enum_names");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}
+
+/// GH #2023, on review: a concrete alias of a generic enum (`type I =
+/// E<Int>;`) is neither the template nor a declared enum, so the lookup
+/// passed a typo through it in a constructor call, a unit variant and a
+/// match pattern, and the build refused each (`enum `E_Int` has no
+/// variant `Wrok``). The alias resolves to the monomorph, whose template
+/// declares the variants; the right spellings still build.
+#[test]
+fn a_variant_a_generic_enums_alias_does_not_declare_is_refused_at_the_path() {
+    let decl = "type E<T> = enum { Work(T), Home };\ntype I = E<Int>;\n";
+    refused(
+        &format!("{decl}fn main() {{ let x: I = I::Wrok(1); }}\n"),
+        "variant_alias_ctor",
+        "3:24",
+        "enum `E<Int>` has no variant `Wrok` — did you mean `Work`?",
+    );
+    refused(
+        &format!("{decl}fn main() {{ let x: I = I::Hme; }}\n"),
+        "variant_alias_unit",
+        "3:24",
+        "enum `E<Int>` has no variant `Hme` — did you mean `Home`?",
+    );
+    refused(
+        &format!(
+            "{decl}fn f(x: I) -> Int {{\n    return match x {{\n        I::Wrok(n) -> n,\n        _ -> 0,\n    }};\n}}\nfn main() {{ println(f(I::Home)); }}\n"
+        ),
+        "variant_alias_pattern",
+        "5:9",
+        "enum `E<Int>` has no variant `Wrok` — did you mean `Work`?",
+    );
+    let ok_src = format!(
+        "{decl}fn f(x: I) -> Int {{\n    return match x {{\n        I::Work(n) -> n,\n        I::Home -> 0,\n    }};\n}}\nfn main() {{ let a: I = I::Work(3); let b: I = I::Home; println(f(a) + f(b)); }}\n"
+    );
+    let ((ok, out), (built, bout)) = check_and_build(&ok_src, "variant_alias_ok");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
 }

@@ -217,6 +217,28 @@ pub fn unique_bin(name: &str) -> PathBuf {
     p
 }
 
+/// A POSIX shm object name for a ring a test binds, unique per call in
+/// this process and across processes: `/h<label>_<pid>_<seq>_<ns>` in hex,
+/// `label` cut to six bytes. GH #2030: the check refuses a ring name over
+/// 31 bytes (macOS's `PSHMNAMLEN`, the leading `/` counted), so a test's
+/// ring name fits it, and opens on macOS as on Linux.
+#[allow(dead_code)]
+pub fn shm_name(label: &str) -> String {
+    let label: String = label.chars().filter(|c| c.is_ascii_alphanumeric()).take(6).collect();
+    // The clock's low bits keep a name a reused pid left behind (a run
+    // killed before its unlink) from being opened again.
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    let name = format!(
+        "/h{}_{:x}_{:x}_{:x}",
+        label,
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed),
+        nanos & 0xf_ffff
+    );
+    assert!(name.len() <= 31, "shm name `{name}` is over 31 bytes");
+    name
+}
+
 /// The paths [`unique_bin`] handed out in this process.
 static MADE: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 static AT_EXIT: std::sync::Once = std::sync::Once::new();

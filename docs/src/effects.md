@@ -21,7 +21,7 @@ Every built-in effect class name is reserved by the compiler (redeclaring `effec
 |---|---|---|
 | `syscall` | Kernel boundary crossings: filesystem, sockets, child processes, terminal, and stdio (including `println`). | `std::io::fs::read_file`, `println` |
 | `stdio` | Writing to standard output or standard error. `stdio` is a sub-class of `syscall` (every `stdio` operation also carries `syscall`). | `println`, `std::io::stdout::write_bytes` |
-| `block` | Operations that wait or block execution (see [`async_io` pool parking rules](#implicit-async_io-placement-checks) for coroutine exceptions). | `std::http::get`, `std::time::sleep` |
+| `block` | Operations that wait or block execution, file system calls included (see [`async_io` pool parking rules](#implicit-async_io-placement-checks) for coroutine exceptions). | `std::http::get`, `std::time::sleep`, `std::io::fs::read_file` |
 | `time` | Reading a wall or monotonic clock. Pure transformations on passed-in `Time` values do not carry `time`. | `std::time::monotonic_ns`, `std::time::current` |
 | `entropy` | Reading random numbers or entropy sources. | `std::rand::next_int` |
 | `env` | Reading environment variables or command-line arguments (`argv`). | `std::env::var` |
@@ -238,6 +238,8 @@ On an `async_io` pool, operations that suspend the current coroutine and yield t
 | `std::io::tcp::{accept_one, recv_into, recv_stamped_into}`, `__recv`, `__recv_bytes` | `std::http::*` client calls |
 | `std::io::udp::{recv, recv_with_source, recv_into}` | `std::io::fs::*` file I/O, `std::io::stdin::*` |
 | `std::io::tls::{recv_into, recv_stamped_into}` | `std::process::{run, wait, read_stdout, read_stderr}` |
+
+Every `std::io::fs` call that reaches the file system (all but `extension`, which reads only its argument's text) is `block`: a regular file is no readiness target, so a read, a write, a stat or a directory listing holds the worker until the disk answers, and `@no_block` refuses it.
 
 Note that `std::time::sleep` still carries the `block` effect class in the call graph because it blocks an OS thread when called on a classic thread pool. Consequently, an explicit `@no_block` annotation on a function will still reject `std::time::sleep`.
 

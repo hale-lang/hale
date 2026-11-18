@@ -30,8 +30,10 @@ locus Api {
 fn main() { Sink { }; Api { }; }
 "#;
 
-/// The regressed variant: `Api::emit` silently gains a filesystem
-/// write. No annotation changes — only the inferred set does.
+/// The regressed variant: `Api::emit` silently gains a write to
+/// stdout, a syscall its `@no_block` does not forbid. No annotation
+/// changes — only the inferred set does. (It gained a file write until
+/// GH #2032 made a file write `block`, which `@no_block` refuses.)
 const REGRESSED: &str = r#"
 type Ev { n: Int; }
 topic T { payload: Ev; subject: "t"; }
@@ -45,7 +47,7 @@ locus Api {
     bus { publish T; }
     @no_block fn emit(n: Int) {
         T <- Ev { n: n };
-        std::io::fs::write_file("/tmp/hale-sneaky", "x") or discard;
+        println("sneaky");
     }
 }
 fn main() { Sink { }; Api { }; }
@@ -81,7 +83,7 @@ fn manifest_reports_inferred_effects_without_annotations() {
     // all. That is what makes this a fingerprint rather than an
     // annotation dump.
     assert!(
-        text.contains("Sink::on_t") && text.contains("does={syscall}"),
+        text.contains("Sink::on_t") && text.contains("does={syscall,block}"),
         "inferred effect of an unannotated handler missing: {}",
         text
     );

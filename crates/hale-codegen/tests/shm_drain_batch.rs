@@ -62,7 +62,7 @@ fn build_binary(src: &str, label: &str) -> PathBuf {
 
 #[test]
 fn drain_batch_handler_sums_records_inline() {
-    let shm_name = format!("/hale-{}", unique_tag("e2e"));
+    let shm_name = harness::shm_name("shmdra");
 
     let src = format!(
         r#"

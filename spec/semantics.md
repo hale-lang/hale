@@ -168,10 +168,13 @@ Phase 2b entry in `spec/stdlib.md`.
   disagrees with a valued arm: `match c { 1 -> 5, _ -> {} }` is
   refused at the match ("match expression arms have mismatched
   types: \`Int\` vs \`()\`"), as an `if` expression's mismatched
-  arms are. A block arm that leaves (its last statement a `return`,
-  `fail`, `break`, `continue`, an endless loop, or an `if`/`match`
-  each of whose branches leaves) is a diverging arm and supplies no
-  type. Until GH #2016 the check judged only expression arms (and a
+  arms are. A block arm that leaves on every path, as § "Definite
+  return" judges a path (a `return`, `fail`, `break`, `continue`, an
+  endless loop, or an `if`/`match` each of whose branches leaves,
+  wherever it stands in the block: `0 -> { return 2; println("x"); }`
+  leaves before its unreachable last statement), is a diverging arm
+  and supplies no type (GH #2046; v0.34.0 judged only the arm's last
+  statement and refused that arm as `()`). Until GH #2016 the check judged only expression arms (and a
   binding as an arm's value carried no type), so `S::B(v) -> v, _ ->
   "s"` and the block arm above checked and the build refused them. F.18
   exhaustiveness applies in both positions. The only reachable
@@ -2896,12 +2899,27 @@ Transport surface:
 
 - `shm_ring("/name", slot_count: N, on_overflow: <policy>)` —
   POSIX SHM ring substrate backing the zero-copy route. Name
-  is the shm_open object name; slot_count defaults to 128 when
+  is the shm_open object name, at most 31 bytes with its leading
+  `/` (macOS's `PSHMNAMLEN`; Linux allows 255, and the check holds
+  every program to the smaller limit, so a seed builds on both): a
+  longer name is a type error at the binding, where it failed the
+  open at startup until GH #2030. slot_count defaults to 128 when
   not specified. `on_overflow` is REQUIRED — see "Back-pressure"
   below. Satisfies `intra_machine` and `zero_copy` constraints
   intrinsically. Slot size is derived at codegen from the
-  topic's payload type (which must satisfy `is_flat_shapeable`
-  — variadic fields rejected). Substrate-provided: the
+  topic's payload type, which must satisfy `is_flat_shapeable`
+  (§ "Payload-shape compatibility" below) on every native ring,
+  whether or not the binding says `where zero_copy` or carries a
+  `codec(...)` clause (the native publish never calls its
+  encoder): the publish
+  copies the payload's bytes into the slot, so a `String` field
+  would cross as a pointer into the publisher's arena. A binding
+  whose payload is not flat is a type error at the binding
+  ("\`Notes: shm_ring(...)\`: topic \`Notes\`'s payload \`Note\`
+  is not flat-shapeable: …"); until GH #2030 only a `zero_copy`
+  binding was held to it. Variable data travels on a `unix(...)`
+  binding, or as a `BytesView` raw frame on a `layout:` ring.
+  Substrate-provided: the
   runtime's `lotus_shm_ring_*` primitives in
   `runtime/lotus_shm_ring.c` own the lifecycle.
 
@@ -3443,9 +3461,10 @@ The typechecker validates three classes of constraint issue
    cross-process use-after-free: "binding for topic `TA` requires
    `zero_copy` but payload type `PayA` is not flat-shapeable — it
    contains a String, Bytes, fixed-size array, tuple, enum or
-   list-of-pointers field, …". Send
-   variable data as `Bytes` on a binding without `zero_copy`, or as
-   a `layout:`-bound `BytesView` raw frame.
+   list-of-pointers field, …". A native `shm_ring` binding is held
+   to the same rule without `zero_copy` (GH #2030). Send variable
+   data on a `unix(...)` binding, or as a `layout:`-bound
+   `BytesView` raw frame.
 
 The `shm_ring(...)` transport variant above satisfies `zero_copy`
 (and `intra_machine`) intrinsically; its slot size is derived from

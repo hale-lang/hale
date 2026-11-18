@@ -837,6 +837,51 @@ fn a_nested_pattern_in_a_variants_pattern_is_refused_by_the_check() {
     );
 }
 
+/// GH #2023: a path through a concrete alias of a generic enum (`type I
+/// = E<Int>;`) to a variant the enum does not declare, as a constructor
+/// call, a unit variant and a match pattern, checked clean and the build
+/// refused it ("enum `E_Int` has no variant `Wrok`"). The check refuses it
+/// at the path; the right spellings through the alias build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_variant_a_generic_enums_alias_does_not_declare_is_refused_by_the_check() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type E<T> = enum { Work(T), Home };\n\
+                 type I = E<Int>;\n\
+                 fn main() { let x: I = I::Wrok(1); }\n",
+                "I::Wrok",
+                "enum `E<Int>` has no variant `Wrok` — did you mean `Work`?",
+            ),
+            (
+                "type E<T> = enum { Work(T), Home };\n\
+                 type I = E<Int>;\n\
+                 fn main() { let x: I = I::Hme; }\n",
+                "I::Hme",
+                "enum `E<Int>` has no variant `Hme` — did you mean `Home`?",
+            ),
+            (
+                "type E<T> = enum { Work(T), Home };\n\
+                 type I = E<Int>;\n\
+                 fn f(x: I) -> Int { return match x { I::Wrok(n) -> n, _ -> 0, }; }\n\
+                 fn main() { println(f(I::Home)); }\n",
+                "I::Wrok(n)",
+                "enum `E<Int>` has no variant `Wrok` — did you mean `Work`?",
+            ),
+        ],
+        "generic_alias_variant",
+    );
+    assert_built(
+        "type E<T> = enum { Work(T), Home };\n\
+         type I = E<Int>;\n\
+         fn f(x: I) -> Int { return match x { I::Work(n) -> n, I::Home -> 0, }; }\n\
+         fn main() { let a: I = I::Work(3); let b: I = I::Home; println(f(a) + f(b)); }\n",
+        "hale_cb_generic_alias_variant_neighbour",
+    );
+}
+
 /// GH #1995 E3: `if let` and `let … else` are matches the parser writes,
 /// so the check judges them before any build: an `else` that can complete
 /// (F.48's judgment), a pattern a plain `let` cannot always bind, an
@@ -4419,6 +4464,78 @@ fn a_match_bindings_type_and_its_arms_types_are_held_by_the_check() {
         "fn pick(c: Int) -> Int { let x = match c { 1 -> 5, 2 -> { let k = c * 2; k }, _ -> { return 0; } }; return x; }\n\
          fn main() { println(pick(2)); }\n",
         "hale_cb_match_block_arms_valued_and_leaving",
+    );
+}
+
+/// GH #2046: a match expression's block arm that leaves on every path
+/// before its end is a diverging arm, by F.48's judgment, whatever
+/// unreachable statements follow: `0 -> { return 2; println("x"); }` was
+/// judged by its last statement, called a unit arm, and the match refused
+/// in both the check and the build as mixing `()` and `Int` (v0.34.0; v0.33.0
+/// built it). They check, build and run; a block arm whose leaving is
+/// conditional is still a unit arm, refused as one.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_match_arm_that_leaves_before_its_end_diverges() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "fn f(n: Int) -> Int {\n\
+                 return match n {\n\
+                     0 -> { return 2; println(\"unreachable\"); },\n\
+                     _ -> 1,\n\
+                 };\n\
+             }\n\
+             fn main() { println(f(0)); println(f(3)); }\n",
+            "arm_returns_then_dead_code",
+            "2\n1\n",
+        ),
+        (
+            "fn g(n: Int) -> Int {\n\
+                 let x = match n { 0 -> { if n == 0 { return 20; } else { return 30; } println(\"x\"); }, _ -> n + 1 };\n\
+                 return x;\n\
+             }\n\
+             fn main() { println(g(0)); println(g(4)); }\n",
+            "arm_if_else_returns_then_dead_code",
+            "20\n5\n",
+        ),
+        (
+            "fn h(xs: [Int; 3]) -> Int {\n\
+                 let mut t = 0;\n\
+                 for x in xs { let v = match x { 2 -> { continue; t = 100; }, _ -> x * 10 }; t = t + v; }\n\
+                 return t;\n\
+             }\n\
+             fn main() { println(h([1, 2, 3])); }\n",
+            "arm_continues_then_dead_code",
+            "40\n",
+        ),
+        (
+            // a `while true` whose only `break` leaves a nested loop never
+            // completes (F.48), so the arm diverges
+            "fn f(n: Int) -> Int {\n\
+                 let x = match n { 0 -> { while true { for i in 0..3 { break; } } }, _ -> n + 1 };\n\
+                 return x;\n\
+             }\n\
+             fn main() { println(f(1)); }\n",
+            "arm_endless_loop_with_a_nested_break",
+            "2\n",
+        ),
+    ];
+    for (src, tag, want) in cases {
+        let out = build_and_run_probe(src, &format!("arm_leaves_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
+        assert_eq!(out, *want, "{tag}:\n{src}");
+    }
+    assert_refused_by_the_check(
+        &[(
+            "fn f(n: Int) -> Int {\n\
+                 let x = match n { 0 -> { if n > 0 { return 2; } println(\"x\"); }, _ -> 1 };\n\
+                 return x;\n\
+             }\n\
+             fn main() { println(f(0)); }\n",
+            "match n { 0 -> { if n > 0 { return 2; } println(\"x\"); }, _ -> 1 }",
+            "match expression arms have mismatched types: `()` vs `Int`",
+        )],
+        "arm_leaves_conditionally",
     );
 }
 

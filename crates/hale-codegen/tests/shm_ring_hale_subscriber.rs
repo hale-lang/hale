@@ -43,7 +43,7 @@ fn build_binary(src: &str, label: &str) -> PathBuf {
 
 #[test]
 fn hale_subscriber_reads_shm_ring_publishes() {
-    let shm_name = format!("/hale-{}", unique_tag("e2e"));
+    let shm_name = harness::shm_name("halesu");
     let n_msgs: i64 = 5;
     let slot_count: u64 = 8;
 
