@@ -214,11 +214,45 @@ fn test_files_are_programs_of_their_own() {
 
     let (out, code) = hale(&["check".as_ref(), r.join("app").as_os_str()]);
     assert_eq!(code, 0, "the seed's check leaves its test out:\n{}", out);
-    assert!(out.contains("note: 1 `_test.hl` file(s)") && out.contains("hale test"), "got:\n{}", out);
+    assert!(out.contains("note: 1 `_test.hl` / `_bench.hl` file(s)") && out.contains("hale test"), "got:\n{}", out);
 
     std::fs::write(r.join("app/tests/b_test.hl"), "fn main() { let x: Int = \"no\"; }\n").expect("write test");
     let (out, code) = hale(&["check".as_ref(), "--workspace".as_ref(), r.as_os_str()]);
     let _ = std::fs::remove_dir_all(&r);
     assert_ne!(code, 0, "{}", out);
     assert!(out.contains("1 of 4 program(s) failed (1 seed(s) and 3 test program(s))") && out.contains("b_test.hl (exit"), "got:\n{}", out);
+}
+
+/// GH #2031: a `*_bench.hl` file follows the test file's rule. A bench
+/// beside the code it measures imports that directory, and both verbs
+/// take the layout: `hale check <dir>` leaves the bench out and says so,
+/// `--workspace` checks it as its own program, and `hale bench` runs it.
+/// Before, the seed's check loaded the bench as a member and refused its
+/// `import "." as app;`, while a bench without the import failed in
+/// `hale bench`: no spelling passed both.
+#[test]
+fn bench_files_are_programs_of_their_own() {
+    let r = root("bench");
+    let app = r.join("app");
+    std::fs::create_dir_all(&app).expect("mkdir app");
+    std::fs::write(
+        app.join("main.hl"),
+        "fn fib(n: Int) -> Int {\n    if n < 2 { return n; }\n    return fib(n - 1) + fib(n - 2);\n}\n\nfn main() { println(fib(20)); }\n",
+    )
+    .expect("write main");
+    std::fs::write(app.join("fib_bench.hl"), "import \".\" as app;\n\nfn bench_fib() {\n    let _ = app::fib(15);\n}\n")
+        .expect("write bench");
+
+    let (out, code) = hale(&["check".as_ref(), app.as_os_str()]);
+    assert_eq!(code, 0, "the seed's check leaves its bench out:\n{}", out);
+    assert!(out.contains("note: 1 `_test.hl` / `_bench.hl` file(s)") && out.contains("hale bench"), "got:\n{}", out);
+
+    let (out, code) = hale(&["check".as_ref(), "--workspace".as_ref(), r.as_os_str()]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("fib_bench.hl (bench program)"), "got:\n{}", out);
+
+    let (out, code) = hale(&["bench".as_ref(), app.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("bench_fib") && out.contains("ns/op"), "got:\n{}", out);
 }

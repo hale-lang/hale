@@ -45,15 +45,32 @@ pub fn is_test_file(p: &Path) -> bool {
     p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("_test.hl"))
 }
 
-/// A directory's `.hl` files as its seed's members: every one but the
-/// `*_test.hl` files ([`is_test_file`]).
-pub fn seed_members(files: Vec<PathBuf>) -> Vec<PathBuf> {
-    files.into_iter().filter(|f| !is_test_file(f)).collect()
+/// A `*_bench.hl` file: a program of its own, as `hale bench` compiles
+/// it (the file, a driver the runner appends, and what its imports
+/// reach), never a member of the directory's seed, as a `*_test.hl`
+/// file is not (GH #2031). A bench beside the code it measures imports
+/// that directory (`import "." as app;`), which a member could not.
+pub fn is_bench_file(p: &Path) -> bool {
+    p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("_bench.hl"))
 }
 
-/// The `*_test.hl` files directly in `dir`, sorted: each a program of its own.
+/// A file that is a program of its own beside a seed, not one of its
+/// members: a `*_test.hl` ([`is_test_file`]) or a `*_bench.hl`
+/// ([`is_bench_file`]).
+pub fn is_own_program_file(p: &Path) -> bool {
+    is_test_file(p) || is_bench_file(p)
+}
+
+/// A directory's `.hl` files as its seed's members: every one but the
+/// `*_test.hl` and `*_bench.hl` files ([`is_own_program_file`]).
+pub fn seed_members(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    files.into_iter().filter(|f| !is_own_program_file(f)).collect()
+}
+
+/// The `*_test.hl` and `*_bench.hl` files directly in `dir`, sorted: each
+/// a program of its own.
 pub fn test_files_in(dir: &Path, src: &dyn SourceProvider) -> Vec<PathBuf> {
-    src.hl_files(dir).unwrap_or_default().into_iter().filter(|f| is_test_file(f)).collect()
+    src.hl_files(dir).unwrap_or_default().into_iter().filter(|f| is_own_program_file(f)).collect()
 }
 
 /// What to say of a directory with no seed members: that its `.hl` files
@@ -63,7 +80,8 @@ fn only_tests_note(src: &dyn SourceProvider, dir: &Path) -> String {
         String::new()
     } else {
         format!(
-            " other than `_test.hl` files, which are programs of their own (`hale test {}` runs them)",
+            " other than `_test.hl` / `_bench.hl` files, which are programs of their own (`hale test {}` / `hale bench {}` run them)",
+            dir.display(),
             dir.display()
         )
     }
@@ -118,7 +136,7 @@ pub fn collect_ap_files(
         }
         // A test file is a seed of one, as `hale test` loads it: its
         // siblings are not its members, nor it theirs.
-        LoadMode::Editor if is_test_file(target) => Ok(vec![target.to_path_buf()]),
+        LoadMode::Editor if is_own_program_file(target) => Ok(vec![target.to_path_buf()]),
         LoadMode::Editor => {
             let dir = seed_dir_of(target);
             // A directory that will not list leaves the target alone:
@@ -913,10 +931,29 @@ mod tests {
         let test = collect_ap_files(&d.join("main_test.hl"), LoadMode::Editor, &Disk).unwrap();
         assert_eq!(test, vec![d.join("main_test.hl")]);
         let err = collect_ap_files(&d.join("tests"), LoadMode::WholeSeed, &Disk).unwrap_err();
-        assert!(err.contains("other than `_test.hl` files") && err.contains("hale test"), "{err}");
+        assert!(err.contains("other than `_test.hl` / `_bench.hl` files") && err.contains("hale test"), "{err}");
         let imported = collect_target_files(&ImportTarget::Directory(d.clone()), &Disk).unwrap();
         assert_eq!(imported, whole, "an imported directory is its seed too");
         assert_eq!(test_files_in(&d, &Disk), vec![d.join("main_test.hl")]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// GH #2031: a `*_bench.hl` file follows the test file's rule. It is a
+    /// program of its own, as `hale bench` builds it, so a bench beside
+    /// the code it measures imports that directory (`import "." as app;`)
+    /// and the seed's check leaves it out, and the editor reads it alone.
+    #[test]
+    fn a_bench_file_is_no_member_of_its_directory_s_seed() {
+        let d = layout("bench");
+        std::fs::write(d.join("fib_bench.hl"), "import \".\" as app;\nfn bench_fib() { }\n").unwrap();
+        std::fs::write(d.join("tests/c_bench.hl"), "fn bench_c() { }\n").unwrap();
+        let whole = collect_ap_files(&d, LoadMode::WholeSeed, &Disk).unwrap();
+        assert_eq!(whole, vec![d.join("main.hl"), d.join("util.hl")]);
+        let bench = collect_ap_files(&d.join("fib_bench.hl"), LoadMode::Editor, &Disk).unwrap();
+        assert_eq!(bench, vec![d.join("fib_bench.hl")]);
+        assert_eq!(test_files_in(&d, &Disk), vec![d.join("fib_bench.hl"), d.join("main_test.hl")]);
+        let err = collect_ap_files(&d.join("tests"), LoadMode::WholeSeed, &Disk).unwrap_err();
+        assert!(err.contains("hale bench"), "{err}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
