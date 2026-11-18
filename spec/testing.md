@@ -454,7 +454,13 @@ file's failure, and a warning is not printed. The driver self-calibrates Go-styl
 batch sizes grow ×10 until one batch takes ≥100 ms, then the
 final batch reports **ns/op** and **allocs/op**
 (`std::diag::heap_alloc_count` deltas; shown as `-` in sanitizer
-builds where the counting shim is absent). `-run <substr>`
+builds where the counting shim is absent). On macOS the shim is never
+compiled, since it wraps the allocator through `-Wl,--wrap`, which
+ld64 lacks, so allocs/op is never counted there and the report says
+`allocs/op unavailable on macOS` in its place; `--json` gives
+`allocs_per_op: null` (GH #2031). A `*_bench.hl` file is no member of
+its directory's seed (spec/projects.md): a bench beside the code it
+measures imports it with `import "." as app;`. `-run <substr>`
 filters by bench name; `--json` emits one record per bench
 (`file`/`name`/`iters`/`ns_per_op`/`allocs_per_op`) for CI.
 Benchmarks may print their own output — non-report lines pass

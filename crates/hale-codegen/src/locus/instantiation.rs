@@ -4966,6 +4966,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let main_has_no_run =
                     !info.methods.contains_key("run") || info.empty_lifecycle.contains("run");
                 if main_has_no_run {
+                    // GH #2029: a run() body ends by draining the main
+                    // thread's queue (`flush_dissolve_frame`), which is
+                    // where what readiness posted reaches a cooperative
+                    // subscriber: a cell an earlier sibling's birth()
+                    // published, parked by a reservation and claimed by
+                    // the subscriber, is posted when that subscriber's
+                    // birth() completes. With no run() nothing drained
+                    // it, the teardown reclaimed the tree first, and the
+                    // delivery was lost, silently. The drain stands where
+                    // the run() would have ended.
+                    self.emit_bus_drain()?;
                     let own_pinned_runs = self.own_pinned_entries(deferred_frame_mark);
                     self.emit_pinned_run_awaits(&own_pinned_runs, true)?;
                 }

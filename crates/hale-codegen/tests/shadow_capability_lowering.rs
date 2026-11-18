@@ -629,8 +629,9 @@ const SITES: &[(&str, &str, Reads)] = &[
     (CG, "if !is_wasm { ⏎ if let Some(dbg) = &options.debug {", Reads::Backend),
     (CG, "let lto_kind = if is_wasm || is_foreign || sanitized { ⏎ LtoMode::Off", Reads::Backend),
     (CG, "if !is_wasm { ⏎ let cpu_attr = cx.context.create_string_attribute(\"target-cpu\", &cpu);", Reads::Backend),
-    (CG, "if !is_wasm { ⏎ let mut f = cx.module.get_first_function();", Reads::Backend),
-    (CG, "let pass_pipeline = if is_wasm { ⏎ \"default<O2>\"", Reads::Backend),
+    // the exports internalization keeps: the module's on wasm32 (GH #1993)
+    (CG, "let exported = if is_wasm { ⏎ cx.wasm_exports.contains(&name)", Reads::Backend),
+    (CG, "let pass_pipeline = if is_wasm { ⏎ \"globaldce,default<O2>\"", Reads::Backend),
     (CG, "if is_wasm { ⏎ let Some(hale_types::capability::Lowering::Exports(fixed)) =", Reads::Link),
     (CG, "if !target_spec.is_wasm() { ⏎ let x86 = target_spec.arch == crate::target::TargetArch::X86_64;", Reads::Backend),
 ];

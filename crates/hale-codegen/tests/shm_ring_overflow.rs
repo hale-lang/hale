@@ -43,8 +43,7 @@ fn fail_policy_panics_when_ring_fills() {
     // publish (overflowing a 2-slot ring) should hit the FAIL
     // branch in lotus_shm_ring_claim and the publish_shm_ring
     // wrapper panics with a clear diagnostic.
-    let tag = unique_tag("fail");
-    let shm_name = format!("/hale-{}", tag);
+    let shm_name = harness::shm_name("ovfail");
     let src = format!(
         r#"
         type T {{ x: Int; y: Int; }}
@@ -103,8 +102,7 @@ fn block_policy_does_not_deadlock_with_live_consumer() {
     // consumer drains at ~10us/msg (handler is a no-op println);
     // 12 ms of effective backlog spread over the publish loop is
     // fine.
-    let tag = unique_tag("block");
-    let shm_name = format!("/hale-{}", tag);
+    let shm_name = harness::shm_name("ovblk");
     let n_msgs: i64 = 16;
     let slot_count: u64 = 4;
 
@@ -207,8 +205,7 @@ fn drop_policy_overwrites_without_panic() {
     // publishes than slot_count with no consumer. Under
     // `on_overflow: drop`, the publisher completes silently
     // (overwrites wrapped slots).
-    let tag = unique_tag("drop");
-    let shm_name = format!("/hale-{}", tag);
+    let shm_name = harness::shm_name("ovdrop");
     let src = format!(
         r#"
         type T {{ x: Int; y: Int; }}

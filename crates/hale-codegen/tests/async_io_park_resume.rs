@@ -99,11 +99,12 @@ fn async_io_pool_multiplexes_two_listeners() {
     let bin = harness::unique_bin("hale_test_async_io_park_resume");
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     // Spawn the binary in the background.
-    let mut child = Command::new(&bin)
+    let child = Command::new(&bin)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn");
+    let mut child = child::Reaped::new(child);
     // Both listen once the kernel has given each its port.
     let port_a = child::tcp_port_on(&mut child, std::net::Ipv4Addr::new(127, 0, 0, 1));
     let port_b = child::tcp_port_on(&mut child, std::net::Ipv4Addr::new(127, 0, 0, 2));

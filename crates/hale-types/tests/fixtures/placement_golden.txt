@@ -921,7 +921,7 @@ row	Room@main1	Room	main	default
 row	Api@main2	Api	main	default
 row	Sink@main1	Sink	main	default
 
-== crates/hale-cli/tests/effects_manifest.rs#1cc37f78
+== crates/hale-cli/tests/effects_manifest.rs#94ec95ac
 row	Api@main2	Api	main	default
 row	Sink@main1	Sink	main	default
 
@@ -6809,6 +6809,13 @@ row	App@literal1.n	Napper	pool:web	entry	off owner
 row	~	Worker	pool:web	entry	off owner
 row	~.buf	__StdBytesBytesBuilder	pool:web	inherited
 
+== crates/hale-types/tests/effect_assertions.rs#ce12fc69
+root	App	the entry
+domain	pool:work
+row	App@literal1	App	main	default
+row	App@literal1.o	Other	pool:work	entry	off owner
+row	App@literal1.w	Worker	pool:work	entry	off owner
+
 == crates/hale-types/tests/effects_through_handles.rs#d65d445d
 dynamic	Pure	on main	in the seed
 
@@ -9088,6 +9095,15 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.early	Once	main	default
 dynamic	Once	on main	in the seed
+
+== tests/hale/ring_buffer_push_flat_test.hl
+row	Recent@main1	Recent	main	default
+-- Churn@main2	Churn
+row	~	Churn	main	default
+row	~.rb	Recent	main	inherited
+-- Names@main3	Names
+row	~	Names	main	default
+row	~.rb	RecentNamed	main	inherited
 
 == tests/hale/router_middleware_test.hl
 row	Hello@main3	Hello	main	default

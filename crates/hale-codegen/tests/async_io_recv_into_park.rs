@@ -82,13 +82,14 @@ fn recv_into_parks_until_readable_on_async_io() {
     // the client's late bytes arrive — pre-fix it returned -2
     // instantly and the handler reported got=-2.
     let bin = build("parks", &server_src());
-    let mut child = Command::new(&bin)
+    let child = Command::new(&bin)
         .arg("0")
         .arg("0")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn");
+    let mut child = child::Reaped::new(child);
     let mut s = connect(child::tcp_port(&mut child));
     // Idle for 300ms — the parked window — then send 5 bytes.
     thread::sleep(Duration::from_millis(300));
@@ -99,7 +100,7 @@ fn recv_into_parks_until_readable_on_async_io() {
     let _ = s.read_to_end(&mut resp);
     drop(s);
     let _ = child.kill();
-    let out = child.wait_with_output().expect("wait");
+    let out = child.into_inner().wait_with_output().expect("wait");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -116,13 +117,14 @@ fn recv_into_honors_recv_deadline_on_async_io() {
     // return -2 AFTER ~300ms (genuine deadline expiry) — neither
     // instantly (the pre-fix bug) nor never (an unbounded park).
     let bin = build("deadline", &server_src());
-    let mut child = Command::new(&bin)
+    let child = Command::new(&bin)
         .arg("0")
         .arg("300")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn");
+    let mut child = child::Reaped::new(child);
     let port = child::tcp_port(&mut child);
     let started = Instant::now();
     let mut s = connect(port);
@@ -135,7 +137,7 @@ fn recv_into_honors_recv_deadline_on_async_io() {
     let elapsed = started.elapsed();
     drop(s);
     let _ = child.kill();
-    let out = child.wait_with_output().expect("wait");
+    let out = child.into_inner().wait_with_output().expect("wait");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -228,11 +230,12 @@ fn recv_bytes_honors_recv_deadline_on_async_io() {
     "#
     );
     let bin = build("recv_bytes_deadline", &src);
-    let mut child = Command::new(&bin)
+    let child = Command::new(&bin)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn");
+    let mut child = child::Reaped::new(child);
     let port = child::tcp_port(&mut child);
     let started = Instant::now();
     let mut s = connect(port);
@@ -243,7 +246,7 @@ fn recv_bytes_honors_recv_deadline_on_async_io() {
     let elapsed = started.elapsed();
     drop(s);
     let _ = child.kill();
-    let out = child.wait_with_output().expect("wait");
+    let out = child.into_inner().wait_with_output().expect("wait");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(

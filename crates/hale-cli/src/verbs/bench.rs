@@ -13,6 +13,21 @@ use crate::shared::workspace::find_workspace_root;
 use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
 use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
+
+/// What the report says in place of allocs/op when the build has no
+/// counting shim. The shim wraps the allocator through `-Wl,--wrap`,
+/// which macOS's ld64 does not have, so a bench built there never
+/// counts: say so, rather than a `-` that reads like a sanitizer build
+/// (GH #2031). Elsewhere the shim is missing only from a sanitizer
+/// build.
+fn no_alloc_count() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "allocs/op unavailable on macOS"
+    } else {
+        "- allocs/op"
+    }
+}
+
 /// `hale bench [file | dir] [-run <substr>] [--json]` — the Layer-3
 /// runner (spec/testing.md). Discovers `*_bench.hl` files; each
 /// free fn named `bench_<name>` with no parameter is a benchmark, and
@@ -26,7 +41,8 @@ use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
 /// profile with the same `[ffi]` pickup as build/test, and runs it. The driver self-calibrates: batch sizes grow ×10
 /// until a batch takes ≥100ms, then reports ns/op and allocs/op
 /// (`std::diag::heap_alloc_count` — shown as `-` when the counting
-/// shim is absent). Baselines and `-compare` remain planned.
+/// shim is absent, and said to be unavailable on macOS, where it always
+/// is). Baselines and `-compare` remain planned.
 pub(crate) fn run_bench(args: &[String]) -> ExitCode {
     let mut target: Option<PathBuf> = None;
     let mut run_filter: Option<String> = None;
@@ -94,7 +110,7 @@ pub(crate) fn run_bench(args: &[String]) -> ExitCode {
                     } else {
                         let allocs = match r.allocs_per_op {
                             Some(a) => format!("{} allocs/op", a),
-                            None => "- allocs/op".to_string(),
+                            None => no_alloc_count().to_string(),
                         };
                         println!(
                             "{:<40} {:>12} iters {:>12} ns/op   {}",

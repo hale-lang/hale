@@ -60,6 +60,20 @@ impl Ws {
         ws
     }
 
+    /// [`Ws::connect`] over a socket whose receive buffer is a few KB,
+    /// set before the connect so the window it advertises is that small:
+    /// a client that does not read stops the server's socket within one
+    /// large frame, instead of after however much the kernel's buffers
+    /// take in (hundreds of KB on loopback, absorbed at the pace of a
+    /// loaded runner's softirqs, so a write the server had parked could
+    /// complete late and free a queue slot near the end of a burst).
+    pub fn connect_tight(port: impl HubAt, token: Option<&str>) -> Ws {
+        let s = connect_tcp_tight(port);
+        let (ws, status) = Ws::handshake(s, &headers(token), "/");
+        assert!(status.starts_with("HTTP/1.1 101"), "the upgrade was refused: {}", ws.head);
+        ws
+    }
+
     /// Connect presenting the credential as `?access_token=`.
     pub fn connect_with_query(port: impl HubAt, token: &str) -> Ws {
         let (ws, status) = Ws::try_connect(port, &headers(None), &format!("/?access_token={token}"));
@@ -69,7 +83,10 @@ impl Ws {
 
     /// Send a handshake with `extra` header lines and read the response head.
     pub fn try_connect(port: impl HubAt, extra: &str, path: &str) -> (Ws, String) {
-        let mut s = connect_tcp(port);
+        Ws::handshake(connect_tcp(port), extra, path)
+    }
+
+    fn handshake(mut s: TcpStream, extra: &str, path: &str) -> (Ws, String) {
         let req = format!(
             "GET {path} HTTP/1.1\r\nHost: hub\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {RFC_KEY}\r\nSec-WebSocket-Version: 13\r\n{extra}\r\n"
         );
@@ -228,6 +245,51 @@ fn connect_tcp(port: impl HubAt) -> TcpStream {
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
+    }
+}
+
+/// A TCP connection whose receive buffer (and so its advertised window)
+/// is about 4 KB: `SO_RCVBUF` set on the socket before `connect`.
+fn connect_tcp_tight(port: impl HubAt) -> TcpStream {
+    use std::os::fd::FromRawFd;
+    let at = port.at();
+    let start = Instant::now();
+    loop {
+        // SAFETY: plain socket calls on a descriptor this function owns
+        // until it hands it to the TcpStream (or closes it).
+        unsafe {
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+            assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+            let size: libc::c_int = 4096;
+            let r = libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
+                &size as *const libc::c_int as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+            assert_eq!(r, 0, "SO_RCVBUF: {}", std::io::Error::last_os_error());
+            let mut sa: libc::sockaddr_in = std::mem::zeroed();
+            sa.sin_family = libc::AF_INET as libc::sa_family_t;
+            sa.sin_port = at.port().to_be();
+            sa.sin_addr = libc::in_addr { s_addr: u32::from(*at.ip()).to_be() };
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+            {
+                sa.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+            }
+            let r = libc::connect(
+                fd,
+                &sa as *const libc::sockaddr_in as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            );
+            if r == 0 {
+                return TcpStream::from_raw_fd(fd);
+            }
+            let e = std::io::Error::last_os_error();
+            libc::close(fd);
+            assert!(start.elapsed() < Duration::from_secs(20), "could not connect to {at}: {e}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 

@@ -201,17 +201,19 @@ pub(crate) fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         },
     };
     let target = PathBuf::from(positionals[0]);
-    // A `*_test.hl` file beside the seed is a program of its own, as
-    // `hale test` builds it, so the seed's check leaves it out; say so,
-    // and where it is checked (on stderr, and not under `--json`, whose
-    // stderr stays empty for a gate).
+    // A `*_test.hl` or `*_bench.hl` file beside the seed is a program of
+    // its own, as `hale test` / `hale bench` builds it (GH #2031), so the
+    // seed's check leaves it out; say so, and where it is checked (on
+    // stderr, and not under `--json`, whose stderr stays empty for a
+    // gate).
     if target.is_dir() && !rest.iter().any(|a| a == "--json") {
         let tests = hale_frontend::frontend::test_files_in(&target, &hale_frontend::source::Disk);
         if !tests.is_empty() && tests.len() < count_hl(&target) {
             eprintln!(
-                "note: {} `_test.hl` file(s) in {} are programs of their own, not members of this seed: \
-                 `hale test {}` checks and runs them, `hale {cmd} --workspace {}` checks each",
+                "note: {} `_test.hl` / `_bench.hl` file(s) in {} are programs of their own, not members of this seed: \
+                 `hale test {}` / `hale bench {}` check and run them, `hale {cmd} --workspace {}` checks each",
                 tests.len(),
+                target.display(),
                 target.display(),
                 target.display(),
                 target.display()

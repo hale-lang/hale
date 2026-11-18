@@ -7,7 +7,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[path = "support/harness.rs"]
@@ -23,13 +23,13 @@ fn build(name: &str, source: &str) -> std::path::PathBuf {
     bin
 }
 
-fn spawn(bin: &std::path::Path, stall_ms: Option<&str>) -> (Child, u16) {
+fn spawn(bin: &std::path::Path, stall_ms: Option<&str>) -> (child::Reaped, u16) {
     let mut cmd = Command::new(bin);
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
     if let Some(ms) = stall_ms {
         cmd.env("LOTUS_PROBES_STALL_MS", ms);
     }
-    let mut child = cmd.spawn().expect("run the program");
+    let mut child = child::Reaped::new(cmd.spawn().expect("run the program"));
     let port = child::tcp_port(&mut child);
     (child, port)
 }
@@ -51,7 +51,7 @@ fn get(port: u16, path: &str) -> (u16, String) {
     ask(port, &format!("GET {path} HTTP/1.1\r\nHost: probes\r\n\r\n"))
 }
 
-fn stop(mut child: Child) {
+fn stop(mut child: child::Reaped) {
     let _ = child.kill();
     let _ = child.wait();
 }

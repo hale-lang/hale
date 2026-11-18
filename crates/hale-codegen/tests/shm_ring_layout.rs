@@ -83,7 +83,8 @@ fn unique_shm_name(tag: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("/hale-shmlayout-{}-{}-{}", tag, std::process::id(), nanos)
+    // GH #2030: a POSIX shm name fits 31 bytes on macOS.
+    format!("/hsl{}_{:x}_{:x}", &tag[..tag.len().min(6)], std::process::id(), nanos & 0xff_ffff)
 }
 
 fn run_mode(mode: &str) {

@@ -92,11 +92,12 @@ fn a_good_read_does_not_see_a_neighbours_reset() {
     );
     let bin = harness::unique_bin("hale_test_io_status_per_coro");
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
-    let mut child = Command::new(&bin)
+    let child = Command::new(&bin)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
+    let mut child = child::Reaped::new(child);
     let port_a = child::tcp_port_on(&mut child, HOST_A);
     let port_b = child::tcp_port_on(&mut child, HOST_B);
 

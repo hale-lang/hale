@@ -181,7 +181,7 @@ fn main() {
 }
 ```
 
-- **Construction and formatting:** Construct variants with `EnumName::Variant` (`Event::Halt`, `Event::Tick(3)`). Printing an enum outputs its declared name and payload (`Event::Tick(3)`), even when imported via a library alias.
+- **Construction and formatting:** Construct variants with `EnumName::Variant` (`Event::Halt`, `Event::Tick(3)`). Printing an enum outputs its declared name and payload (`Event::Tick(3)`), even when imported via a library alias. A variant the enum does not declare (`Event::Tik`) is a type error from `hale check` wherever it is written, a value, a constructor call or a `match` pattern, with the nearest variant suggested.
 - **Exhaustive matching:** `match` arms can match literal sub-patterns (`Event::Tick(0)`) before variable bindings (`Event::Tick(n)`), and must cover every variant in the `enum`.
 - **`enum` vs. `fallible(E)`:** Use `enum` for domain states and sum-type messages; use `fallible(E)` ([When a Call Can Fail](../basics/fallible.md)) for functions that can fail.
 
@@ -238,7 +238,7 @@ fn describe(m: Inbound) -> String {
 
 - **Type-as-tag coercion:** A `Book`, `Trade`, or `Unknown` value automatically coerces to `Inbound` wherever `Inbound` is expected (return values, a function body's final expression included, function arguments, typed `let` bindings, or struct fields), and on the error channel of a `fallible(Inbound)` function: `fail`, `or fail err` and `or raise` of a member are the set's ([Converting Errors for `or raise`](../basics/fallible.md#converting-errors-for-or-raise)).
 - **Bare names are for sets only:** A set's `match` names a member by its type alone (`Book(b)`). An `enum`'s `match` always names the enum (`Shape::Line(l)`); `Line(l)` against an enum, or against a generic fn's type parameter, is a type error.
-- **Target type required for mixed branches:** An unannotated `if` or `match` whose arms produce `Book` and `Trade` (`let m = if n == 0 { Book { ... } } else { Trade { ... } };`) fails typechecking because the compiler does not guess which set type joins them; annotate the binding (`let m: Inbound = ...`) or return from a function declared `-> Inbound`.
+- **Mixed branches are not joined into a set:** The arms of an `if` or `match` whose values are different members (`Book { ... }` in one arm, `Trade { ... }` in the other) are not joined into `Inbound`, even under an annotated binding (`let m: Inbound = if ...`) or as the value of a `return` from a function declared `-> Inbound`: `hale check` refuses the expression ("if-expression arms have mismatched types"). Return from each branch instead (`if n == 0 { return Book { ... }; } return Trade { ... };`), or give each arm the set's type, a call to a function returning `Inbound` (`let m = if n == 0 { book() } else { trade() };`).
 - **Members must be declared structs or enums:** Primitive types like `Int` cannot appear directly in a set; wrap them in a struct (`type Count { n: Int; }`).
 - **Wire representation and seams:** Across JSON APIs, a set serializes as a tagged object keyed by the member's type name (`{"Trade": {"qty": 2, "px": 1.5}}`). At the service layer, a [seam](../services/seams.md) can dispatch each member of a set to a dedicated handler method and verify exhaustiveness at compile time.
 

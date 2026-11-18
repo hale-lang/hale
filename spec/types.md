@@ -345,7 +345,7 @@ stdlib, which keep their own representation class (the table above).
 | Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
 | Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time, the default evaluated where the literal that leaves it is written. A default reads only its constants and the module's items, never the literal's scope (§ Locus params). |
-| Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type). A constructor call carries the variant's declared values: `Foo::B(x)` is checked for the count and each value's type, a Decimal literal taking the field's scale ("\`Foo::B\` value 0: expected \`Int\`, got \`String\`"). A payload-free enum is stored as its tag. |
+| Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type). A constructor call carries the variant's declared values: `Foo::B(x)` is checked for the count and each value's type, a Decimal literal taking the field's scale ("\`Foo::B\` value 0: expected \`Int\`, got \`String\`"). A path to a variant the enum does not declare is a type error at the path, wherever it is written (a value, an operand, a constructor call, a match pattern), naming the nearest variant ("enum \`Place\` has no variant \`Wrok\` — did you mean \`Work\`?") or listing them, and through an alias too (a concrete alias of a generic enum, \`type I = E<Int>;\`, is named as its instantiation, \`E<Int>\`); until 2026-11-17 the check passed it and the build refused it. A payload-free enum is stored as its tag. |
 | Set | `type Inbound = Book \| Trade;` | Untagged union: each member is a declared struct or enum and is its own discriminant. A member's value is the set's where a set is expected; `match` names a member by its type. See § "Set types". |
 | Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
 | Function | `fn(A, B) -> C` | First-class function values |
@@ -989,9 +989,10 @@ codegen` — a program the gate accepted that could not be built
 A `type` is plain data: it is copied by value and has no
 lifecycle, so it can neither own a locus nor keep one alive. A
 struct field, or an enum variant's payload, whose type names a
-locus — the locus itself, an array, `bounded[T; N]` or tuple of
-it, or a stdlib locus (`std::io::tcp::Stream`) — is a type error
-**at the field's type**:
+locus — the locus itself, a generic locus's instantiation
+(`Cache<Int, String>`), an array, `bounded[T; N]` or tuple of it, or a
+stdlib locus (`std::io::tcp::Stream`) — is a type error **at the
+field's type**:
 
 ```text
 main.hl:2:17: type error: `type Layer`: field `w` holds the locus `M`.
@@ -1595,7 +1596,10 @@ Semantics:
   assignment to a place or local of one, a record literal's field —
   `[e1, …, ek]` with `k <= N` is that list, its count `k`, and `[]` is
   the empty one. Each element flows into `T` from its own type (an `Int`
-  widening into a `Float` as a `push` widens it). A literal longer than
+  widening into a `Float` as a `push` widens it), and an element spelled
+  with a generic template's name takes `T`'s arguments, as an array
+  literal's element does (`[Row { v: 7 }]` at `bounded[Row<Int>; 4]`;
+  until 2026-11-17 the check refused it, naming `Row` and `Row_Int`). A literal longer than
   the capacity is refused where it stands ("a \`bounded[Int; 2]\` holds
   at most 2 elements, and this literal has 3"), and so is an element of
   another type, at the element. The list owns its elements, as `push`
@@ -1825,7 +1829,14 @@ its type or create an apparent concrete monomorph.
 **Generic loci monomorphize the same way.** `locus Cache<K, V>` is
 a template; `Cache<Int, String>` names the monomorph
 `Cache_Int_String`, whose `params` are the template's with the
-arguments substituted. A field read on a monomorph locus value
+arguments substituted. A parameter is substituted wherever a field's or
+a param's type writes it: bare (`T`), as an argument (`Row<T>`), or as
+the element of an array, a `bounded[T; N]` or a tuple, so `type Page<T>
+{ items: bounded[T; 50]; }` at `Page<Int>` holds a `bounded[Int; 50]`.
+Until 2026-11-17 a `bounded`'s element kept the parameter, and the
+build refused such a record ("generic-type dependency cycle …
+`Page_Int`") or locus ("unknown type name `T` in signature") after a
+clean check. A field read on a monomorph locus value
 (`c.cap`) types as the substituted param, exactly as a monomorph
 struct's field read does.
 
@@ -2046,7 +2057,9 @@ A generic `type`'s argument is never a locus: `Box<L>` would make a
 `type` hold the locus `L`, and a `type` is plain data that can neither
 own a locus nor keep one alive (the rule a `type`'s field of a locus
 type follows). `hale check` refuses it at the argument of the
-annotation, and refuses a generic fn call that binds a parameter to a
+annotation, a generic locus's instantiation as a plain locus
+(`Box<Cache<Int, String>>`, at `Cache<Int, String>`), and refuses a
+generic fn call that binds a parameter to a
 locus where the fn's signature instantiates a generic `type` at that
 parameter (`fn bx<T>(x: T) -> Box<T>` called with an `L`), at the
 callee; the build refused the monomorph with no location. A generic
@@ -2090,7 +2103,7 @@ yet" and a way forward, never by the build after a passing check:
 | a generic fn named as a value (`let g = get;`) | the name | call it, or pass a fn over the concrete types that calls it |
 | a generic fn call whose parameter only an argument with no nameable type could pin (a capacity slot, a call with no value, a `match` arm's binding in a generic body) | the argument | bind the value to a `let` that writes its type |
 | a literal spelled with a generic template's name where no declared type supplies its arguments | the literal | bind it to a `let` that writes them |
-| a generic `type` instantiated at a locus (`Box<L>`, or a generic fn's `-> Box<T>` called with an `L` or a generic locus's monomorph) | the argument, or the callee | a generic locus, or pass the locus as a parameter |
+| a generic `type` instantiated at a locus (`Box<L>`, `Box<Cache<Int, String>>`, or a generic fn's `-> Box<T>` called with an `L` or a generic locus's monomorph) | the argument, or the callee | a generic locus, or pass the locus as a parameter |
 | a generic fn's `-> Box<T>` called with a perspective slot's value | the callee | a `type` with a `perspective(P)` field, or pass the value as a `perspective(P)` parameter |
 | a call that leaves out a generic fn's defaulted parameter | the callee | pass the parameter |
 | an empty array literal `[]` with no list type declared where it stands: anywhere but the value of a `let` that declares its type, or a site that declares a `bounded[T; N]` (a `let`, a `return`, an argument, an assignment, a record field; § bounded[T; N]) | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |

@@ -33,10 +33,11 @@ The `where` clause on a binding is statically verified by `hale check`:
 
 ### Flat-Shapeable Payload Rules
 
-Because pointers cannot be dereferenced across separate processes sharing an `mmap` segment, a `zero_copy` topic requires a **flat-shapeable** payload:
+Because pointers cannot be dereferenced across separate processes sharing an `mmap` segment, every topic bound to a native `shm_ring(...)` requires a **flat-shapeable** payload, whether or not the binding says `where zero_copy` (the publish copies the payload's bytes into the slot, so a `String` field would cross as a pointer into the publisher's memory), and so does any other `zero_copy` topic:
 
 - **Allowed types**: Fixed-layout primitives (`Int`, `Float`, `Bool`, `Decimal`, `Time`, `Duration`), inline fixed-size scalar arrays (`[Int; 8]`, `[Float; 4]`, `[Bool; N]`, `[Decimal; N]`, `[Duration; N]`), and nested `type` structs composed exclusively of flat-shapeable fields.
-- **Rejected types**: `String`, `Bytes`, `StringView`, `BytesView`, unbounded arrays, and arrays of structs or `Time`. For variable-length or heterogeneous messages on a shared-memory ring, use a [raw `BytesView` payload](#mixed-record-types-bytesview-payloads) over a declared `ring_layout`.
+- **Rejected types**: `String`, `Bytes`, `StringView`, `BytesView`, unbounded arrays, and arrays of structs or `Time`. For variable-length or heterogeneous messages on a shared-memory ring, use a [raw `BytesView` payload](#mixed-record-types-bytesview-payloads) over a declared `ring_layout`. For variable data between processes without a ring, bind the topic to `unix(...)`, which serializes it.
+- **Ring names**: the name is the POSIX shm object's, at most 31 bytes with its leading `/` (macOS's limit; Linux allows 255). `hale check` refuses a longer one at the binding, so a program that builds on Linux also opens its rings on macOS.
 
 ### Overflow Policies (`on_overflow`)
 

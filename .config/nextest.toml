@@ -67,16 +67,6 @@ filter = 'binary_id(hale-cli::dna_projects) and test(=dna_head::a_container_outs
 slow-timeout = { period = "60s", terminate-after = 15 }
 
 [[profile.default.overrides]]
-# The wasm agreement test builds each wasm program through check, build and
-# the editor, the whole stdlib each time: on CI it took 405s on main
-# (2026-11-16) against the 8-minute limit, and loaded runners ran #1989 and
-# #1990 past it (a timeout, not a failure). It gets 15 minutes while the
-# build time is looked at (see the linked issue). `binary_id`, not
-# `binary(...)`, for the parity job's reason above.
-filter = 'binary_id(hale-cli::tooling_build) and test(=target_precedence::the_wasm_programs_agree_across_check_build_and_the_editor)'
-slow-timeout = { period = "60s", terminate-after = 15 }
-
-[[profile.default.overrides]]
 # UDP tests hardcode multicast groups (239.255.x) + ports; two running
 # concurrently cross-talk / collide on the group:port pair (the #178
 # loopback flake class). Serialize them against each other.
