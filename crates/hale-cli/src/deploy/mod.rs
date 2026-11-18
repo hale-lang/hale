@@ -675,7 +675,7 @@ fn probes_of(seed: &Path, name: &str, notes: &mut Vec<String>) -> Option<i64> {
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("hl"))
-            .filter(|p| !hale_frontend::frontend::is_test_file(p))
+            .filter(|p| !hale_frontend::frontend::is_own_program_file(p))
             .collect();
         f.sort();
         f

@@ -2098,7 +2098,10 @@ unbuilt, and `ws::Hub` then failed to resolve). Written anywhere else
 (a param of a locus that is not the main one), `ws::Hub` is refused as
 what it is: "`ws::Hub` is the standard library's hub
 (`std::api::ws::Hub`): a param of the main locus, built by a `ws::Hub {
-… }` literal in its `params`, where the compiler builds it". It is two kinds of locus sharing one listener, so that no
+… }` literal in its `params`, where the compiler builds it". The one
+exception is a param `hub: ws::Hub;` with no default that the main locus
+passes its hub down to, so that an `http::Rest` held there mounts it
+(below, GH #1818): it names the main locus's hub and builds none. It is two kinds of locus sharing one listener, so that no
 locus has to serve two interfaces: the hub itself holds the sources,
 admits subscriptions and is the `Rpc` a surface may be served over
 (`api::serve(S, self.hub, …)`: one listener carries rpcs and streams over
@@ -2150,9 +2153,9 @@ through (an adapter binding's), so a hub with many streams costs that many
 threads.
 
 **A hub mounted on an `http::Rest`** (GH #1780). A `ws::Hub` may instead
-take its connections on the listener of an `http::Rest` exposure of the same
-main locus, at a path: the transport's `hubs:` lists the mounts, and the
-hub writes no `bind:`.
+take its connections on the listener of an `http::Rest` exposure, held by
+the same main locus or by a locus below it (GH #1818, below), at a path: the
+transport's `hubs:` lists the mounts, and the hub writes no `bind:`.
 
 ```hale,fragment
 params {
@@ -2200,16 +2203,53 @@ bindings {
   that path is the exposure's. Its exposure (`hub@<digest>/<name>`) is
   described statically as before, its listener's address the Rest's
   `bind:` when that is written as a string.
-- **The laws.** `hubs:` is a list of `("/path", self.<hub>)` pairs, written
-  in the main locus (an `http::Rest` held below it is refused: a hub is the
-  main locus's). A path starts with `/` and holds only letters, digits,
+- **Held below the main locus** (GH #1818). The hub is always the main
+  locus's: its literal, its sources, its stream bindings and the rows'
+  `requires`. A locus below it that holds the `http::Rest` declares a
+  `ws::Hub` param with no default, and every construction down from the
+  main locus hands that param the main locus's hub, each from a
+  `self.<param>` of its own:
+
+  ```hale,fragment
+  // the main locus
+  params {
+      hub: ws::Hub = ws::Hub { principals: self.bearer, roles: self.hub_roles, as: "fills" };
+      front: Front = Front { hub: self.hub };
+  }
+  bindings { Fills: self.hub requires: [operator], bound: 64, on_full: drop_old; }
+  placement { front: cooperative(pool = edge) where async_io; }
+  // Front
+  params {
+      hub: ws::Hub;
+      web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.grants, hubs: [("/admin/v1/hub", self.hub)] }, as: "web", bound: 64, on_full: refuse);
+  }
+  ```
+
+  The listener of a held exposure is the main locus's param placed by the
+  row of the param that holds the holder (§ Serving), here `edge`, so the
+  connections it hands to the hub run there, beside the exposure's
+  receivers, each a coroutine of the listener's as above. Nothing crosses a
+  pool at the upgrade: the connection is read and written where it was
+  accepted, and it talks to the hub over the bus as every hub connection
+  does (what it says to the hub's core, the core's answers keyed by the
+  connection, and each stream's events from the topic's adapter binding).
+  The hub's core, its adapter bindings and its `stop()` stay the main
+  locus's; a drain or a teardown ends a held listener's hub connections
+  as it ends a main one's (`closed`, then the close frame).
+- **The laws.** `hubs:` is a list of `("/path", self.<hub>)` pairs. A path
+  starts with `/` and holds only letters, digits,
   `-`, `.`, `_`, `~` and `/`, with no empty segment and no trailing `/`.
   It is not `/.description`, and it is not a path a row of the surface
   serves by any method (a row's path stays the surface's). Two hubs never
-  share a path. Each mount names a `ws::Hub` param of the main locus that
-  at least one stream is bound to, mounted once in the program and writing
-  no `bind:`. A `udp::Hub` has no connection to take over and is refused.
-  A hub neither bound nor mounted is refused, as before, for stating no
+  share a path. In the main locus, each mount names a `ws::Hub` param of
+  the main locus; below it, a `ws::Hub` param of the holder with no default
+  (a hub the holder builds is refused: a hub is the main locus's), which
+  each construction down every chain from the main locus passes that main
+  locus's `ws::Hub` param (one that does not is refused, naming the
+  chain). The hub reached has at least one stream bound to it, is mounted
+  once in the program (by one exposure, whoever holds it) and writes no
+  `bind:`. A `udp::Hub` has no connection to take over and is refused. A
+  hub neither bound nor mounted is refused, as before, for stating no
   address.
 
 - **Admission.** A subscription is authorized against the row's

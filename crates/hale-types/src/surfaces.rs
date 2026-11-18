@@ -1188,7 +1188,7 @@ pub fn surface_rows(
                             // a hub an `http::Rest` mounts (`hubs:`, GH #1780) is
                             // reached at that listener's address
                             let mut transport = transport;
-                            let mount = crate::rpc_expand::locus_mounts(l).into_iter().find(|(m, _, _)| m.field == hb.instance.name);
+                            let mount = crate::rpc_expand::main_mounts(&loci, l).into_iter().find(|(m, _, _)| m.field == hb.instance.name);
                             if transport.address.is_none() {
                                 transport.address = mount.as_ref().and_then(|(_, a, _)| match a {
                                     Some(Expr::Literal(hale_syntax::ast::Literal::String(a), _)) => Some(a.clone()),
@@ -2018,7 +2018,7 @@ pub fn serve_laws(
                 }
                 TopDecl::Locus(l) => {
                     serve_laws_of(bundle, entry, l, rows, &surface_names, &loci, effects, typed_bodies, placement, &mut first_named, &mut diags);
-                    hub_laws_of(bundle, entry, l, &published, &mut first_named, &mut diags);
+                    hub_laws_of(bundle, entry, l, &loci, &published, &mut first_named, &mut diags);
                 }
                 _ => {}
             }
@@ -2039,6 +2039,7 @@ fn hub_laws_of(
     bundle: &Bundle<'_>,
     entry: &crate::entry::EntryRow,
     l: &LocusDecl,
+    loci: &BTreeMap<&str, &LocusDecl>,
     published: &BTreeSet<String>,
     first_named: &mut BTreeMap<String, Span>,
     diags: &mut Vec<Diag>,
@@ -2090,7 +2091,31 @@ fn hub_laws_of(
                 };
                 // a hub an `http::Rest` mounts (`hubs:`) listens on that
                 // listener, and binds none of its own
-                let mounted = crate::rpc_expand::locus_mounts(l).iter().any(|(m, _, _)| m.field == instance);
+                // (one of this locus's, or one held below it, GH #1818)
+                let mounts = crate::rpc_expand::main_mounts(loci, l);
+                let mounted = mounts.iter().any(|(m, _, _)| m.field == instance);
+                // a hub's connections are taken on one listener: mounted by
+                // two exposures, one of them held below main (two mounts in
+                // one exposure's list are the laws of `hubs:`; two exposures
+                // of this locus, the mount laws' too)
+                let mine: Vec<&(crate::rpc_expand::Mount, Option<Expr>, Option<String>)> =
+                    mounts.iter().filter(|(m, _, _)| m.field == instance).collect();
+                let held = crate::rpc_expand::held_mounts(loci, l);
+                if let Some(second) = mine.iter().skip(1).find(|(m, _, n)| {
+                    n != &mine[0].2 && held.iter().any(|h| h.hub == instance && h.mount.span == m.span)
+                }) {
+                    diags.push(
+                        Diag::ty(
+                            second.0.span,
+                            format!(
+                                "hub `self.{instance}` of `{}` is mounted twice: a hub's connections are taken on one \
+                                 listener",
+                                l.name.name
+                            ),
+                        )
+                        .with_related(mine[0].0.span, "its first mount"),
+                    );
+                }
                 let binds = inits.iter().find(|i| i.name.name == "bind");
                 match (mounted, binds) {
                     (false, None) => diags.push(Diag::ty(
@@ -2166,11 +2191,16 @@ fn hub_laws_of(
 
 /// The laws of an `http::Rest`'s `hubs:` (spec/api.md § Streams, a hub
 /// mounted on an `http::Rest`, GH #1780): a list of `("/path", self.hub)`
-/// pairs, in the main locus (a hub is the main locus's), each path a plain
-/// one no row of the surface serves, each hub a `ws::Hub` of the main
-/// locus that streams are bound to, mounted once.
+/// pairs, each path a plain one no row of the surface serves, each hub a
+/// `ws::Hub` of the main locus that streams are bound to, mounted once. In
+/// the main locus, the hub is its param built by the literal; in a locus
+/// below it (GH #1818), a `ws::Hub` param of the holder with no default,
+/// which every construction down from the main locus hands that main
+/// locus's hub (`Front { hub: self.hub }`): the hub stays the main
+/// locus's, and only its connections are taken where the listener runs.
 fn mount_laws(
     l: &LocusDecl,
+    loci: &BTreeMap<&str, &LocusDecl>,
     hubs: &Expr,
     rows: &SurfaceRows,
     surface: &str,
@@ -2178,18 +2208,6 @@ fn mount_laws(
     mounted: &mut BTreeMap<String, Span>,
     diags: &mut Vec<Diag>,
 ) {
-    if !l.is_main {
-        diags.push(Diag::ty(
-            hubs.span(),
-            format!(
-                "exposure `{name}` held by `{}` mounts hubs: a hub is the main locus's, its stream bindings and its \
-                 connections placed there, so an `http::Rest` that mounts one is served from the main locus \
-                 (spec/api.md § Streams)",
-                l.name.name
-            ),
-        ));
-        return;
-    }
     let mounts = match crate::rpc_expand::mounts_of(hubs) {
         Ok(m) => m,
         Err(at) => {
@@ -2271,7 +2289,7 @@ fn mount_laws(
                 ));
                 continue;
             }
-            _ => {
+            _ if l.is_main => {
                 diags.push(Diag::ty(
                     m.span,
                     format!(
@@ -2282,21 +2300,88 @@ fn mount_laws(
                 ));
                 continue;
             }
+            _ => {
+                diags.push(Diag::ty(
+                    m.span,
+                    format!(
+                        "exposure `{name}` held by `{}` mounts `self.{}`, which is not a hub: a mount below the main \
+                         locus names a param `{}: ws::Hub;` that the main locus passes its hub to",
+                        l.name.name, m.field, m.field
+                    ),
+                ));
+                continue;
+            }
         }
-        let bound = l
-            .members
-            .iter()
-            .any(|mb| matches!(mb, LocusMember::Bindings(bb) if bb.hubs.iter().any(|hb| hb.instance.name == m.field)));
-        if !bound {
-            diags.push(Diag::ty(
-                m.span,
-                format!(
-                    "exposure `{name}` mounts `self.{}`, to which no stream is bound: a hub carries the topics bound \
-                     to it (`Topic: self.{} requires: […], bound: N, on_full: drop_old;`), so a hub with none \
-                     serves nothing",
-                    m.field, m.field
-                ),
-            ));
+        // the main locus's hub the mount reaches, and that main locus: this
+        // one, or each main locus the holder is held by, through the
+        // constructions down the chain (GH #1818)
+        let mut reached: Vec<(&LocusDecl, String)> = Vec::new();
+        if l.is_main {
+            reached.push((l, m.field.clone()));
+        } else {
+            if matches!(literal.map(|p| &p.init), Some(ParamInit::Value(_))) {
+                diags.push(Diag::ty(
+                    m.span,
+                    format!(
+                        "exposure `{name}` held by `{}` mounts `self.{}`, a hub `{}` gives a value of its own: a hub \
+                         is the main locus's, its stream bindings and its sources there; declare `{}: ws::Hub;` and \
+                         pass the main locus's hub down (`{} {{ {}: self.hub }}`) (spec/api.md § Streams)",
+                        l.name.name, m.field, l.name.name, m.field, l.name.name, m.field
+                    ),
+                ));
+                continue;
+            }
+            let mut ok = true;
+            for chain in crate::rpc_expand::holder_chains(loci, &l.name.name) {
+                let Some(main) = loci.get(chain.main.as_str()).copied() else { continue };
+                let hub = crate::rpc_expand::passed_from_main(loci, &chain, &m.field).filter(|f| {
+                    main.members.iter().any(|mb| {
+                        matches!(mb, LocusMember::Params(pb) if pb.params.iter().any(|p| p.name.name == *f
+                            && matches!(&p.init, ParamInit::Value(Expr::Struct { path, .. }) if crate::hub_expand::is_ws_hub(path))))
+                    })
+                });
+                match hub {
+                    Some(f) => reached.push((main, f)),
+                    None => {
+                        ok = false;
+                        diags.push(Diag::ty(
+                            m.span,
+                            format!(
+                                "exposure `{name}` held by `{}` mounts `self.{}`, which `{}` does not pass a hub of its \
+                                 own: down `{}.{}`, each construction hands `{}` a `self.<param>`, and the main locus's \
+                                 is its `ws::Hub {{ … }}` param (spec/api.md § Streams)",
+                                l.name.name,
+                                m.field,
+                                chain.main,
+                                chain.main,
+                                chain.path(),
+                                m.field
+                            ),
+                        ));
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+        }
+        for (main, hub) in &reached {
+            let bound = main
+                .members
+                .iter()
+                .any(|mb| matches!(mb, LocusMember::Bindings(bb) if bb.hubs.iter().any(|hb| hb.instance.name == *hub)));
+            if !bound {
+                diags.push(Diag::ty(
+                    m.span,
+                    format!(
+                        "exposure `{name}` mounts `self.{}`, to which no stream is bound: a hub carries the topics bound \
+                         to it (`Topic: self.{hub} requires: […], bound: N, on_full: drop_old;`{}), so a hub with none \
+                         serves nothing",
+                        m.field,
+                        if l.is_main { String::new() } else { format!(" in `{}`", main.name.name) }
+                    ),
+                ));
+            }
         }
         if let Some(first) = mounted.get(&m.field) {
             diags.push(
@@ -2574,7 +2659,7 @@ fn serve_laws_of(
         }
         // GH #1780: the hubs an `http::Rest` mounts on its listener
         if let Some(hubs) = crate::rpc_expand::rest_hubs_of(l, site.transport) {
-            mount_laws(l, &hubs, rows, &surface, &name, &mut mounted, diags);
+            mount_laws(l, loci, &hubs, rows, &surface, &name, &mut mounted, diags);
         }
         // The listener (GH #1565). A socket transport's listener is a param
         // of the main locus: for an exposure the main locus holds, its row

@@ -9,7 +9,7 @@ This tutorial walks through building a job queue in four stages—starting from 
 | **3. Reactive Bus** | `topic`, `bus { subscribe; publish; }`, `<-` | Decoupled pub/sub components |
 | **4. Multi-Process** | `main locus`, `placement`, `bindings` | Separate OS processes over a Unix socket |
 
-Stages 1–3 run directly in the browser on the [Hale Playground](https://play.hale-lang.org/) or locally via `hale run`.
+Stages 1–3 run directly in the browser in the [example gallery](https://hale-lang.org/play/?example=jobqueue) or locally via `hale run`.
 
 ---
 

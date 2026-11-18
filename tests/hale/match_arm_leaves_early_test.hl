@@ -1,0 +1,49 @@
+// GH #2046: a match expression's block arm that leaves on every path
+// before its end is a diverging arm, whatever unreachable statements
+// follow the leaving one. v0.34.0 judged the arm by its last statement,
+// called `{ return 2; println("unreachable"); }` a unit arm, and refused
+// the match as mixing `()` and `Int`; v0.33.0 checked and built it.
+
+fn f(n: Int) -> Int {
+    return match n {
+        0 -> { return 2; println("unreachable"); },
+        _ -> 1,
+    };
+}
+
+fn g(n: Int) -> Int {
+    let x = match n {
+        0 -> {
+            if n == 0 { return 20; } else { return 30; }
+            println("unreachable");
+        },
+        1 -> { let k = n * 5; k },
+        _ -> n + 1,
+    };
+    return x;
+}
+
+fn first_over(xs: [Int; 4], limit: Int) -> Int {
+    for x in xs {
+        let hit = match x > limit {
+            true -> { return x; let never = 0; println(never); },
+            false -> false,
+        };
+        if hit { return -1; }
+    }
+    return 0;
+}
+
+fn main() {
+    std::test::assert_eq_int(f(0), 2, "the arm that returns early returns");
+    std::test::assert_eq_int(f(5), 1, "the value arm supplies the match's value");
+    std::test::assert_eq_int(g(0), 20, "an if-else that returns in both branches, then dead code");
+    std::test::assert_eq_int(g(1), 5, "a block arm with a tail");
+    std::test::assert_eq_int(g(7), 8, "an expression arm");
+    std::test::assert_eq_int(
+        first_over([1, 4, 9, 2], 3),
+        4,
+        "a Bool-valued match with an early-return arm",
+    );
+    std::test::assert_eq_int(first_over([1, 2, 3, 0], 3), 0, "no arm returns");
+}

@@ -302,7 +302,7 @@ pub(crate) fn seed_entry_kind(dir: &Path) -> EntryKind {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("hl"))
-        .filter(|p| !hale_frontend::frontend::is_test_file(p))
+        .filter(|p| !hale_frontend::frontend::is_own_program_file(p))
         .collect();
     files.sort();
     // The files in order, up to the first that does not read or parse:
@@ -364,7 +364,10 @@ pub(crate) fn run_workspace(root: &Path, verify: bool) -> ExitCode {
         }
     }
     for test in &tests {
-        println!("=== {} (test program) ===", test.display());
+        // A `*_bench.hl` is checked here too, as a program of its own
+        // (GH #2031); its label says which runner builds it.
+        let kind = if hale_frontend::frontend::is_bench_file(test) { "bench" } else { "test" };
+        println!("=== {} ({kind} program) ===", test.display());
         let code = run_check_impl(test, verify);
         if code != 0 {
             failed.push((test.clone(), code));

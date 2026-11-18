@@ -296,6 +296,10 @@ pub const AP_SOURCE: &str = concat!(
     // std::str's splits and trims (GH #1995 S3): free fns over the
     // ByteView primitives. Last, so no other file's spans move.
     include_str!("../hl/str_helpers.hl"),
+    "\n",
+    // std::net::resolve (GH #1908): a fn over one native primitive and
+    // io_tcp.hl's IoError. Last, so no other file's spans move.
+    include_str!("../hl/net.hl"),
 );
 
 /// `std::law`: the standard constitutions, loaded only when a program
@@ -352,6 +356,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("wide.hl", include_str!("../hl/wide.hl")),
     ("time_rfc3339.hl", include_str!("../hl/time_rfc3339.hl")),
     ("str_helpers.hl", include_str!("../hl/str_helpers.hl")),
+    ("net.hl", include_str!("../hl/net.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -489,6 +494,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "hex", "decode"], "__std_hex_decode"),
     (&["std", "hex", "digit"], "__std_hex_digit"),
     (&["std", "hex", "encode"], "__std_hex_encode"),
+    (&["std", "net", "resolve"], "__std_net_resolve"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
     // std::u256 / std::i256 (wide.hl, GH #1934): the calls that fail.
     (&["std", "u256", "checked_add"], "__std_u256_checked_add"),

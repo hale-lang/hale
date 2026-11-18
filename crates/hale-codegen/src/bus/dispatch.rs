@@ -4,12 +4,12 @@
 //! emits the runtime guard a keyed subscriber's body runs against the
 //! incoming wire subject. Round 3b of the codegen model-org refactor.
 
-use hale_syntax::ast::{Expr, KeyFilter, Literal, OrDisposition, Stmt};
+use hale_syntax::ast::{Expr, KeyFilter, Literal, OrDisposition};
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
 use inkwell::AddressSpace;
 
 use crate::codegen::{
-    CodegenError, CodegenTy, Cx, RoutingKeySubjectInfo, Scope,
+    BlockEnd, CodegenError, CodegenTy, Cx, RoutingKeySubjectInfo, Scope,
 };
 
 /// Gap B (2026-07-17): a lowered `where key ==` filter. Scalar keys
@@ -1217,13 +1217,20 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                                 ),
                             ),
                         );
-                        let rhs_stmt = Stmt::Expr((**rhs).clone());
-                        self.lower_stmt(&rhs_stmt, &mut sub_scope)?;
-                        self.builder
-                            .build_unconditional_branch(cont_bb)
-                            .map_err(|e| {
-                                CodegenError::LlvmEmit(e.to_string())
-                            })?;
+                        // GH #2025: the right-hand side is lowered as the
+                        // statement it is, a block (`or { … }`) and an
+                        // `if` or a `match` included; as an expression
+                        // statement only a call lowered, so the block form
+                        // checked and the build refused it. A block that
+                        // leaves (`return`) ends the branch itself.
+                        let end = self.lower_discarded(rhs, &mut sub_scope)?;
+                        if matches!(end, BlockEnd::Open) {
+                            self.builder
+                                .build_unconditional_branch(cont_bb)
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                        }
                         self.builder.position_at_end(cont_bb);
                     }
                     Some(OrDisposition::Fail(payload_expr, _)) => {

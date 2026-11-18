@@ -4460,6 +4460,78 @@ fn a_match_bindings_type_and_its_arms_types_are_held_by_the_check() {
     );
 }
 
+/// GH #2046: a match expression's block arm that leaves on every path
+/// before its end is a diverging arm, by F.48's judgment, whatever
+/// unreachable statements follow: `0 -> { return 2; println("x"); }` was
+/// judged by its last statement, called a unit arm, and the match refused
+/// in both the check and the build as mixing `()` and `Int` (v0.34.0; v0.33.0
+/// built it). They check, build and run; a block arm whose leaving is
+/// conditional is still a unit arm, refused as one.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_match_arm_that_leaves_before_its_end_diverges() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "fn f(n: Int) -> Int {\n\
+                 return match n {\n\
+                     0 -> { return 2; println(\"unreachable\"); },\n\
+                     _ -> 1,\n\
+                 };\n\
+             }\n\
+             fn main() { println(f(0)); println(f(3)); }\n",
+            "arm_returns_then_dead_code",
+            "2\n1\n",
+        ),
+        (
+            "fn g(n: Int) -> Int {\n\
+                 let x = match n { 0 -> { if n == 0 { return 20; } else { return 30; } println(\"x\"); }, _ -> n + 1 };\n\
+                 return x;\n\
+             }\n\
+             fn main() { println(g(0)); println(g(4)); }\n",
+            "arm_if_else_returns_then_dead_code",
+            "20\n5\n",
+        ),
+        (
+            "fn h(xs: [Int; 3]) -> Int {\n\
+                 let mut t = 0;\n\
+                 for x in xs { let v = match x { 2 -> { continue; t = 100; }, _ -> x * 10 }; t = t + v; }\n\
+                 return t;\n\
+             }\n\
+             fn main() { println(h([1, 2, 3])); }\n",
+            "arm_continues_then_dead_code",
+            "40\n",
+        ),
+        (
+            // a `while true` whose only `break` leaves a nested loop never
+            // completes (F.48), so the arm diverges
+            "fn f(n: Int) -> Int {\n\
+                 let x = match n { 0 -> { while true { for i in 0..3 { break; } } }, _ -> n + 1 };\n\
+                 return x;\n\
+             }\n\
+             fn main() { println(f(1)); }\n",
+            "arm_endless_loop_with_a_nested_break",
+            "2\n",
+        ),
+    ];
+    for (src, tag, want) in cases {
+        let out = build_and_run_probe(src, &format!("arm_leaves_{tag}")).unwrap_or_else(|e| panic!("{tag}: {e}\n{src}"));
+        assert_eq!(out, *want, "{tag}:\n{src}");
+    }
+    assert_refused_by_the_check(
+        &[(
+            "fn f(n: Int) -> Int {\n\
+                 let x = match n { 0 -> { if n > 0 { return 2; } println(\"x\"); }, _ -> 1 };\n\
+                 return x;\n\
+             }\n\
+             fn main() { println(f(0)); }\n",
+            "match n { 0 -> { if n > 0 { return 2; } println(\"x\"); }, _ -> 1 }",
+            "match expression arms have mismatched types: `()` vs `Int`",
+        )],
+        "arm_leaves_conditionally",
+    );
+}
+
 /// GH #2016: a block used as a statement ending in a call with no `;`
 /// is the call statement (spec/semantics.md § "Expressions — `if` and
 /// block tails"): `if c { println("x") }` and a statement match's arm
@@ -4500,4 +4572,83 @@ fn a_statement_blocks_tail_call_is_built_as_a_statement() {
          fn main() { show(S::B(1)); }\n",
         "hale_cb_nested_statement_tails",
     );
+}
+
+/// GH #1818: an `http::Rest` held below the main locus mounts the main
+/// locus's hub, passed down to a `ws::Hub` param with no default. Before
+/// it, the check refused every held mount; now it refuses the ones the
+/// build could not wire (a param the main locus passes no hub of its own,
+/// and a hub the holder builds itself), and the neighbour, the main
+/// locus's hub passed down, builds.
+#[test]
+fn a_held_rest_mounts_the_hub_main_passes_down_and_nothing_else() {
+    let program = |hub_param: &str, pass: &str| {
+        format!(
+            "role operator;
+type Fill {{ qty: Int; }}
+topic Fills {{ payload: Fill; subject: \"desk.fills\"; }}
+type Health {{ status: String; }}
+api Desk {{ rpc Probe::live at \"GET /healthz\"; }}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: \"bearer\", name: \"\" }}; }}
+    fn refused() -> String {{ return \"no\"; }}
+}}
+locus Probe {{ fn live() -> Health {{ return Health {{ status: \"live\" }}; }} }}
+locus Maker {{ bus {{ publish Fills; }} fn make() {{ Fills <- Fill {{ qty: 1 }}; }} }}
+locus Front {{
+    params {{
+        {hub_param}
+        tokens: Tokens = Tokens {{ }};
+        probe: Probe = Probe {{ }};
+        web: api::Exposure = api::serve(Desk, http::Rest {{ bind: \"127.0.0.1:0\", codec: json, principals: self.tokens, hubs: [(\"/hub\", self.hub)] }}, as: \"web\", bound: 8, on_full: refuse);
+    }}
+}}
+main locus App {{
+    params {{
+        tokens: Tokens = Tokens {{ }};
+        hub: ws::Hub = ws::Hub {{ principals: self.tokens, as: \"fills\" }};
+        maker: Maker = Maker {{ }};
+        front: Front = {pass};
+    }}
+    bindings {{ Fills: self.hub requires: [operator], bound: 8, on_full: drop_old; }}
+    placement {{ front: cooperative(pool = edge) where async_io; }}
+    run() {{ }}
+}}
+fn main() {{ App {{ }}; }}
+"
+        )
+    };
+    for (i, (hub_param, pass, head)) in [
+        ("hub: ws::Hub;", "Front { }", "exposure `web` held by `Front` mounts `self.hub`, which `App` does not pass a hub of its own"),
+        (
+            "hub: ws::Hub = ws::Hub { principals: self.tokens, as: \"own\" };",
+            "Front { }",
+            "exposure `web` held by `Front` mounts `self.hub`, a hub `Front` gives a value of its own",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let src = program(hub_param, pass);
+        let parsed = hale_syntax::parse_source(&src).expect("parses");
+        let errors: Vec<hale_syntax::Diag> =
+            entries::check_program(&parsed).into_iter().filter(|d| d.is_error()).collect();
+        assert!(errors.iter().any(|e| e.message.starts_with(head)), "{head}: {errors:#?}");
+        assert_eq!(
+            sweep_verdict(&src, &format!("hale_cb_held_mount_{i}")),
+            Verdict::Skipped("the checker rejects it"),
+            "the check refuses it, so the build is never reached:\n{src}"
+        );
+    }
+    assert_built(&program("hub: ws::Hub;", "Front { hub: self.hub }"), "hale_cb_held_mount_neighbour");
+    // passed down through a locus between: each forwarding param is the
+    // main locus's hub too (review of #2056: `Mid.h` was left unexpanded)
+    let two_step = program("hub: ws::Hub;", "Mid { h: self.hub }")
+        .replace("front: Front = Mid", "front: Mid = Mid")
+        .replace("main locus App {", "locus Mid {\n    params {\n        h: ws::Hub;\n        front: Front = Front { hub: self.h };\n    }\n}\nmain locus App {");
+    assert_built(&two_step, "hale_cb_held_mount_two_step");
+    let three_step = two_step
+        .replace("front: Mid = Mid { h: self.hub };", "front: Top = Top { t: self.hub };")
+        .replace("locus Mid {", "locus Top {\n    params {\n        t: ws::Hub;\n        mid: Mid = Mid { h: self.t };\n    }\n}\nlocus Mid {");
+    assert_built(&three_step, "hale_cb_held_mount_three_step");
 }

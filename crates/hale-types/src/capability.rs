@@ -1075,6 +1075,10 @@ const WASM_SOCKOPT: Behaviour = std_wasm_reject(
     "socket options are syscalls the browser sandbox does not have",
     "(no sockets in the browser)",
 );
+const WASM_NET: Behaviour = std_wasm_reject(
+    "name resolution (`std::net::resolve`) is getaddrinfo, which the browser sandbox does not have",
+    "a lookup on the host, through an `@ffi(\"js\")` host import",
+);
 const WASM_SHM: Behaviour = std_wasm_reject(
     "a shared-memory ring is mapped with `shm_open` and `mmap`, which the browser sandbox does not have",
     "(no shared memory in the browser)",
@@ -1096,6 +1100,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     std_ns("term", STD_NATIVE, STD_NATIVE, WASM_TERM),
     std_ns("process", STD_NATIVE, STD_NATIVE, WASM_PROCESS),
     std_ns("http", STD_NATIVE, STD_NATIVE, WASM_HTTP),
+    std_ns("net", STD_NATIVE, STD_NATIVE, WASM_NET),
     std_ns("api", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("bus", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("bytes", STD_NATIVE, STD_NATIVE, STD_WASM),

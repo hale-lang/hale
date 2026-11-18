@@ -2,10 +2,10 @@
 // bytes it writes; written with `string_field` / `string_value`, which
 // quote and escape a string, it writes exactly those bytes. `raw_field` /
 // `raw_value` write JSON the caller encoded already, as given. `field` and
-// `value` still write raw, as they always have, and are deprecated (a call
-// warns `deprecated:`): v0.35 makes them quote. The separators are `": "`
-// and `", "`, pinned: documents the Builder wrote are stored and matched as
-// text.
+// `value` quote and escape their string too, since v0.35 (they wrote it raw
+// before, and v0.33 and v0.34 warned `deprecated:` at each call). The
+// separators are `": "` and `", "`, pinned: documents the Builder wrote are
+// stored and matched as text.
 
 fn main() {
     // the spec's example, verbatim
@@ -39,6 +39,23 @@ fn main() {
         "string_field and string_value escape their string",
     );
     std::test::assert(std::json::valid(e.result()), "escaped output is JSON");
+
+    // `field` and `value` take a string, quoted and escaped (v0.35)
+    let f = std::json::Builder { };
+    f.begin_object();
+    f.field("n", "42");
+    f.field("q", "say \"hi\"");
+    f.begin_array_field("xs");
+    f.value("1");
+    f.value("a\\b");
+    f.end_array();
+    f.end_object();
+    std::test::assert_eq_str(
+        f.result(),
+        "{\"n\": \"42\", \"q\": \"say \\\"hi\\\"\", \"xs\": [\"1\", \"a\\\\b\"]}",
+        "field and value quote and escape their string",
+    );
+    std::test::assert(std::json::valid(f.result()), "field and value write JSON");
 
     // JSON already encoded goes through the raw variants, byte for byte
     let r = std::json::Builder { };

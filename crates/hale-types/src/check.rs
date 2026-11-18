@@ -3385,9 +3385,10 @@ fn check_lru_hook_puts(bundle: &Bundle<'_>, summary: &crate::alloc_summary::Allo
 /// run-to-exit program that's fine (and the corpus's accept examples
 /// are exactly that shape), but on a locus whose `run()` never
 /// returns (`while true { accept-and-spawn }` — the daemon idiom)
-/// resident children are O(accepted) growth until OOM. Daemon signal
-/// (deliberately narrow, corpus-clean): the accepting locus's own
-/// `run()` contains a literal `while true` loop.
+/// resident children are O(accepted) growth until OOM. Daemon signal:
+/// the accepting locus's own `run()` contains a literal `while true`
+/// loop, or its run row says it never returns (`never_returns`, the
+/// classifier the starvation law reads; GH #2027).
 fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, diags: &mut Vec<Diag>) {
     fn block_has_while_true(b: &Block) -> bool {
         b.stmts.iter().any(|s| match s {
@@ -3450,7 +3451,12 @@ fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, dia
                     _ => {}
                 }
             }
-            if !run_daemon {
+            // GH #2027 (a): the starvation law's never-returns column
+            // too — a terminal `while !self.draining`, or a `while` on a
+            // Bool flag nothing assigns — not a literal `while true`
+            // alone: the drain-aware loop § Drain cascade recommends is
+            // as much a daemon.
+            if !run_daemon && never_returns(flows, l).is_none() {
                 return;
             }
             for (ld, child_ty) in accepts {
@@ -10563,58 +10569,19 @@ fn match_arm_leaves(arm: &MatchArm) -> bool {
     }
 }
 
-/// Does this block always leave without producing a value — its last
-/// statement transfers control (`return`, `fail`, `break`, `continue`,
-/// `terminate`, `violate`), or is an `if … else …` / `match` / block
-/// each of whose branches does (transitively), or a `while true` with
-/// no `break` in it? A tail is a value, so a block with one never
-/// leaves. The judgment a block used as a value is held to when it ends
-/// in a `match` (`check_block_as_expr`).
+/// Does this block always leave without producing a value? F.48's
+/// judgment (`definite_return::completes`): every path through it meets
+/// a `return`, `fail`, `break`, `continue`, `terminate` or `violate`, or
+/// a statement every branch of which leaves (an `if … else`, a `match`,
+/// a block, a `while true` with no `break` of its own) — wherever that
+/// is in the block, so `{ return 2; println("x"); }` leaves too, whatever
+/// unreachable statements follow (GH #2046). A tail is a value, so a
+/// block with one that does not itself diverge never leaves. The
+/// judgment a match expression's block arm is classified by, and a block
+/// used as a value is held to when it ends in a `match`
+/// (`check_block_as_expr`).
 fn block_leaves(b: &Block) -> bool {
-    if b.tail.is_some() {
-        return false;
-    }
-    match b.stmts.last() {
-        Some(Stmt::Return(..) | Stmt::Fail { .. } | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_) | Stmt::Violate { .. }) => true,
-        Some(Stmt::If(i)) => if_leaves(i),
-        Some(Stmt::Match(m)) => !m.arms.is_empty() && m.arms.iter().all(match_arm_leaves),
-        Some(Stmt::Block(inner)) => block_leaves(inner),
-        Some(Stmt::While { cond: Expr::Literal(Literal::Bool(true), _), body, .. }) => !block_has_break(body),
-        _ => false,
-    }
-}
-
-fn if_leaves(i: &IfStmt) -> bool {
-    block_leaves(&i.then_block)
-        && match i.else_block.as_deref() {
-            Some(ElseBranch::Else(b)) => block_leaves(b),
-            Some(ElseBranch::ElseIf(n)) => if_leaves(n),
-            None => false,
-        }
-}
-
-/// A `break` anywhere in `b` (a nested loop's included: conservative,
-/// so a loop with one is never judged endless).
-fn block_has_break(b: &Block) -> bool {
-    b.stmts.iter().any(|s| match s {
-        Stmt::Break(_) => true,
-        Stmt::If(i) => if_has_break(i),
-        Stmt::Match(m) => m.arms.iter().any(|a| match &a.body {
-            MatchArmBody::Block(b) => block_has_break(b),
-            MatchArmBody::Expr(_) => false,
-        }),
-        Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::Block(body) => block_has_break(body),
-        _ => false,
-    })
-}
-
-fn if_has_break(i: &IfStmt) -> bool {
-    block_has_break(&i.then_block)
-        || match i.else_block.as_deref() {
-            Some(ElseBranch::Else(b)) => block_has_break(b),
-            Some(ElseBranch::ElseIf(n)) => if_has_break(n),
-            None => false,
-        }
+    crate::definite_return::completes(b).is_none()
 }
 
 /// itself or can leave.
@@ -18181,11 +18148,12 @@ impl<'a> Checker<'a> {
                 // expression, or `()` when it ends in anything else, as
                 // the build lowers it (`lower_block_as_expr`), so `1 -> 5,
                 // _ -> {}` is the mismatch below and not a build refusal
-                // (GH #2016). One that leaves (its last statement returns,
-                // fails, breaks …, or is a `match` whose every arm does) is
-                // a diverging arm, beside the arms that supply the value
-                // (or none, when the whole match expression diverges, as
-                // one whose every arm returns does), and is checked as a
+                // (GH #2016). One that leaves (every path through it
+                // returns, fails, breaks …, wherever in the block, by
+                // F.48's judgment, `block_leaves`; GH #2046) is a
+                // diverging arm, beside the arms that supply the value (or
+                // none, when the whole match expression diverges, as one
+                // whose every arm returns does), and is checked as a
                 // statement; so is every arm of a statement `match`, and a
                 // `let … else`'s `else` (`check_pattern_let` holds it to
                 // leaving, by F.48's judgment).
@@ -22707,7 +22675,8 @@ impl<'a> Checker<'a> {
             return Some(format!(
                 "`{head}::Hub` is the standard library's hub (`std::api::{head}::Hub`): a param of the main \
                  locus, built by a `{head}::Hub {{ bind: \"…\", principals: …, roles: …, as: \"…\" }}` literal in \
-                 its `params`, where the compiler builds it (spec/api.md § Streams)"
+                 its `params`, where the compiler builds it; below it, only a `ws::Hub` param with no default that \
+                 the main locus passes its hub to, for an `http::Rest` there to mount (spec/api.md § Streams)"
             ));
         }
         // The names this build's imports registered under this head.

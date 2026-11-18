@@ -168,10 +168,13 @@ Phase 2b entry in `spec/stdlib.md`.
   disagrees with a valued arm: `match c { 1 -> 5, _ -> {} }` is
   refused at the match ("match expression arms have mismatched
   types: \`Int\` vs \`()\`"), as an `if` expression's mismatched
-  arms are. A block arm that leaves (its last statement a `return`,
-  `fail`, `break`, `continue`, an endless loop, or an `if`/`match`
-  each of whose branches leaves) is a diverging arm and supplies no
-  type. Until GH #2016 the check judged only expression arms (and a
+  arms are. A block arm that leaves on every path, as § "Definite
+  return" judges a path (a `return`, `fail`, `break`, `continue`, an
+  endless loop, or an `if`/`match` each of whose branches leaves,
+  wherever it stands in the block: `0 -> { return 2; println("x"); }`
+  leaves before its unreachable last statement), is a diverging arm
+  and supplies no type (GH #2046; v0.34.0 judged only the arm's last
+  statement and refused that arm as `()`). Until GH #2016 the check judged only expression arms (and a
   binding as an arm's value carried no type), so `S::B(v) -> v, _ ->
   "s"` and the block arm above checked and the build refused them. F.18
   exhaustiveness applies in both positions. The only reachable
@@ -1404,6 +1407,17 @@ failure reads what the child last stored. Only a child nothing else
 reclaims tears itself down when it fails: an `accept`'d child (its
 owner's tracker expects it gone) and a bare statement literal (its
 statement's own teardown then steps over it, on the same latch).
+
+A child that fails from a bus handler is recovered as one that fails
+from `run()` is (GH #2028). When the handler returns and no `run()`
+of the child is running, the supervisor's decision is carried out
+there: a `restart(c)` lowers the drain latch, re-runs `birth()` (the
+birth-epoch closures and `birth_check` with it) and then `run()`,
+and puts back the subscriptions; an absorb stops the child, as
+above. When the handler ran inside the child's `run()` (at a `yield`
+or the drain its body ends with), a held child stops at once and the
+rest is decided once `run()` returns, as for a failure `run()`
+raised. Until GH #2028 neither happened after a handler's failure.
 
 A handler of the failed child can return before the supervisor has
 decided — the failure is delivered on the owner's thread, and the
@@ -3606,6 +3620,19 @@ Out of scope for v1 (fall through to bus dispatch unchanged):
   mechanism that doesn't exist in v1.
 - A parent with multiple direct fields of the subscriber type
   (ambiguous receiver).
+- **A child a failure can come from (GH #2028).** When the
+  subscriber of the intra-tower shape declares a `closure` or a
+  `birth_check`, its publishes take the bus. A failure its handler
+  raises is carried out by its handler wrapper, which the direct
+  call bypassed: after the supervisor's `restart(c)` neither
+  `birth()` nor `run()` ran again, and after an absorb the child
+  kept handling the next message. The intra-locus shape stays a
+  direct call, since it reaches that instance alone; a failure its
+  handler raises is carried out right after the call as the handler
+  wrapper would (a held child stops; outside a `run()` of it, a
+  restart re-runs `birth()` and `run()`), and a child that failed
+  and was not restarted does not handle what it publishes to itself
+  afterwards.
 - **Bus adapters (GH #1032).** A locus named as an adapter in a
   `bindings { }` entry is never the publisher of a rewrite: the
   runtime calls its `send` on the publisher's thread, so a publish
@@ -3772,7 +3799,10 @@ construction, before `birth()` runs (GH #737). A key a locus
 computes in `birth()` is therefore not the registered one — the
 field's default is — so a key comes in as a param at the literal
 (`Feed { symbol_id: 7 }`); registering the default on purpose stays
-valid. The same holds for a subscription a locus imported from
+valid. `hale check` warns at an assignment to a keyed field that runs
+during `birth()`: one anywhere in its body (inside an `if`, a `match`
+arm, a loop or a block) or in a method of the locus's own that
+`birth()` calls as `self.<m>(…)`, at any depth (GH #2027). The same holds for a subscription a locus imported from
 another module declares. Subsequent mutations to fields the
 filter expression references do **not** change which messages the
 handler receives. If dynamic re-keying is needed, dissolve and
@@ -3922,7 +3952,21 @@ are now supported:
   with `err: BusUnmatchedKey` in scope. The expression's value
   is discarded (Send is statement-level). Canonical use:
   `or log_unmatched(err)` — a free fn that takes the err
-  payload and logs / metrics / etc.
+  payload and logs / metrics / etc. A block is such an
+  expression, `or { println("unmatched: ", err.subject); }`, and
+  one that leaves (`return`) ends the statement there (until
+  GH #2025 the block form checked and the build refused it).
+
+What counts as a match is what the dispatch delivers to: a
+specific-key subscriber whose key equals the publish's, a
+`String` key compared by its text (until GH #2025 the signal
+compared a `String` key's hash and the publisher's pointer, so a
+delivered publish read as unmatched and `or raise` panicked); and
+an open reservation (`runtime.md` § "Lifecycle obligations", line
+6), a subscriber of the same static tree still being built, which
+takes its key when it claims and is owed what it parked. A cell a
+reservation holds for a key no claimant takes is reported on
+stderr when the reservation closes.
 - `or fail <payload>` — only legal inside an enclosing
   `fallible(E)` fn. On no-match, evaluates `<payload>` (with
   `err: BusUnmatchedKey` in scope), stores it into the

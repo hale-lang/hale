@@ -919,14 +919,22 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["io", "fs"],
         fns: &[
+            // GH #2032: every row here that reaches the file system is
+            // `block` — a read, a write, a stat or a directory walk waits
+            // on the disk and holds its thread for the wait (a regular
+            // file is no epoll park target), so it is a blocking leaf of
+            // the async_io and classic-pool advisories and of `@no_block`
+            // (spec/verification.md, docs/src/effects.md). They carried
+            // `syscall` only, so none of the three saw a file call.
+            // `extension` reads its argument's text, not the disk.
             row!("extension", SYSCALL, [Str] -> Str, Intrinsic(IoFsExtension)),
-            row!("file_exists", SYSCALL, [Str] -> Bool, Intrinsic(IoFsFileExists)),
-            row!("file_size", SYSCALL, [Str] -> Int ! "IoError", Intrinsic(IoFsFileSize)),
-            row!("list_dir_at", SYSCALL, [Str, Int] -> Str ! "IoError", Intrinsic(IoFsListDirAt)),
-            row!("list_dir_count", SYSCALL, [Str] -> Int ! "IoError", Intrinsic(IoFsListDirCount)),
-            row!("mkdir", SYSCALL, [Str] -> Unit ! "IoError", Intrinsic(IoFsMkdir)),
-            row!("mktemp", SYSCALL, [Str, Str] -> Str ! "IoError", Intrinsic(IoFsMktemp)),
-            row!("read_bytes", SYSCALL, [Str] -> Bytes ! "IoError", Intrinsic(IoFsReadBytes)),
+            row!("file_exists", SYSCALL | BLOCK, [Str] -> Bool, Intrinsic(IoFsFileExists)),
+            row!("file_size", SYSCALL | BLOCK, [Str] -> Int ! "IoError", Intrinsic(IoFsFileSize)),
+            row!("list_dir_at", SYSCALL | BLOCK, [Str, Int] -> Str ! "IoError", Intrinsic(IoFsListDirAt)),
+            row!("list_dir_count", SYSCALL | BLOCK, [Str] -> Int ! "IoError", Intrinsic(IoFsListDirCount)),
+            row!("mkdir", SYSCALL | BLOCK, [Str] -> Unit ! "IoError", Intrinsic(IoFsMkdir)),
+            row!("mktemp", SYSCALL | BLOCK, [Str, Str] -> Str ! "IoError", Intrinsic(IoFsMktemp)),
+            row!("read_bytes", SYSCALL | BLOCK, [Str] -> Bytes ! "IoError", Intrinsic(IoFsReadBytes)),
             // ── Tranche 2 (2026-07-02): the I/O namespaces. Verified the
             // same way (per-fn lowering read). EXCLUDED-not-guessed: all
             // std::json/std::http rows and process write_stdin/read_std*
@@ -940,19 +948,19 @@ pub const SURFACES: &[NsSurface] = &[
             // two at F.40 phase 4, S6).
             // Handle args are plain Int FDs at the path-call level (the
             // File/Stream locus wrappers live in stdlib .hl seeds).
-            row!("read_file", SYSCALL, [Str] -> Str ! "IoError", Intrinsic(IoFsReadFile)),
-            row!("rename", SYSCALL, [Str, Str] -> Unit ! "IoError", Intrinsic(IoFsRename)),
-            row!("unlink", SYSCALL, [Str] -> Unit ! "IoError", Intrinsic(IoFsUnlink)),
-            row!("write_bytes", SYSCALL, [Str, Bytes] -> Unit ! "IoError", Intrinsic(IoFsWriteBytes)),
-            row!("write_file", SYSCALL, [Str, Str] -> Unit ! "IoError", Intrinsic(IoFsWriteFile)),
-            row!("__write_private", SYSCALL, [Str, Bytes] -> Unit ! "IoError", Intrinsic(IoFsWritePrivateRaw)),
+            row!("read_file", SYSCALL | BLOCK, [Str] -> Str ! "IoError", Intrinsic(IoFsReadFile)),
+            row!("rename", SYSCALL | BLOCK, [Str, Str] -> Unit ! "IoError", Intrinsic(IoFsRename)),
+            row!("unlink", SYSCALL | BLOCK, [Str] -> Unit ! "IoError", Intrinsic(IoFsUnlink)),
+            row!("write_bytes", SYSCALL | BLOCK, [Str, Bytes] -> Unit ! "IoError", Intrinsic(IoFsWriteBytes)),
+            row!("write_file", SYSCALL | BLOCK, [Str, Str] -> Unit ! "IoError", Intrinsic(IoFsWriteFile)),
+            row!("__write_private", SYSCALL | BLOCK, [Str, Bytes] -> Unit ! "IoError", Intrinsic(IoFsWritePrivateRaw)),
             // GH #535 (DNA F.9): the `or` form lowers through the same
             // fallible channel as write_file (Unit success); a bare call
             // types Unknown like every bare fallible row (its Int-status
             // bare form left lowering at F.40 phase 4, S5). The row used to say Int and the checker
             // admitted `let n = ... or 0`, which codegen then refused with a
             // message about something else.
-            row!("write_file_append", SYSCALL, [Str, Str] -> Unit ! "IoError", Intrinsic(IoFsWriteFileAppend)),
+            row!("write_file_append", SYSCALL | BLOCK, [Str, Str] -> Unit ! "IoError", Intrinsic(IoFsWriteFileAppend)),
         ],
         open_prefixes: &[],
     },
@@ -1334,6 +1342,16 @@ pub const SURFACES: &[NsSurface] = &[
     // scrape; `std::observe::Scrape` reads it through
     // the snapshot. A series update is a write to the program's own
     // memory, as the registry's own map write is.
+    NsSurface {
+        // GH #1908: name resolution. `resolve` is `net.hl`'s body over
+        // the `__resolve` primitive (getaddrinfo on the calling thread).
+        ns: &["net"],
+        fns: &[
+            row!("__resolve", SYSCALL | BLOCK, [Str] -> Str, Intrinsic(NetResolveRaw)),
+            row!("resolve", SYSCALL | BLOCK, _, Renamed),
+        ],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["observe"],
         fns: &[
@@ -1906,6 +1924,8 @@ pub enum IntrinsicId {
     IoTcpConnectRaw,
     IoTcpIoErrorKindRaw,
     IoTcpIoErrorDetailRaw,
+    /// `std::net::__resolve` (GH #1908).
+    NetResolveRaw,
     IoTcpLastIoStatusRaw,
     IoTcpListenSocketRaw,
     IoTcpParksRaw,
@@ -2516,7 +2536,7 @@ pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
 /// walked into.
 ///
 /// Deliberately ABSENT, and each for a reason read off the runtime:
-/// `io::file` / `io::stdin` reads (regular files and the tty are not
+/// `io::fs` calls, `io::file` / `io::stdin` reads (regular files and the tty are not
 /// epoll-park targets here) and `std::process::{run, wait, read_stdout,
 /// read_stderr}`. These still stall the worker, so they still warn.
 pub const ASYNC_IO_PARKING: &[&[&str]] = &[
