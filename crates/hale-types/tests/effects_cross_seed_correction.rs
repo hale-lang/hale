@@ -229,6 +229,10 @@ fn api() {
     // admissions and the eaters `__rpc_row_<n>_19` and `_25`). The rows as
     // the manifest reports them do not move; the correction is what
     // classifies them.
+    // GH #1758: the core's `local_habitat_dir` reads the current habitat's
+    // file and probes the habitats' directories, so the rows that reach it
+    // only through the core (here `applies_dir` and `placed_body`) gain `syscall` and `block`, which only
+    // the renames-aware walk sees.
     pinned(
         "api",
         778,
@@ -290,7 +294,7 @@ fn api() {
         OidcBearer::principal  does={syscall,block,time,env,alloc}
         allocation_links  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         applied_at  does={syscall,block,env,alloc}
-        applies_dir  does={env,alloc}
+        applies_dir  does={syscall,block,env,alloc}
         fetch_organizations  does={syscall,block,time,env,alloc}
         habitat_alerts  does={syscall,block,env,alloc}
         habitat_allocate_forge  does={syscall,block,env,alloc}
@@ -312,7 +316,7 @@ fn api() {
         org_chart  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         organism_root_of  does={syscall,block,env,alloc}
         organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        placed_body  does={env,alloc}
+        placed_body  does={syscall,block,env,alloc}
         placement_host  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_targets_dir  does={syscall,block,env,alloc}
@@ -345,6 +349,10 @@ fn host() {
     // at the habitat's Forgejo, add five rows on each side; two of them,
     // `persona_grant` and `persona_remove`, reach imported code (the core's
     // `ForgejoApi` and `run_tool`), so the correction changes them.
+    // GH #1758: the core's `local_habitat_dir` reads the current habitat's
+    // file and probes the habitats' directories, so the rows that reach it
+    // only through the core (here `forget_volume`) gain `syscall` and `block`, which only
+    // the renames-aware walk sees.
     pinned(
         "host",
         600,
@@ -421,7 +429,7 @@ fn host() {
         forget_allocation_items  does={syscall,block,env,alloc}
         forget_newest_row  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         forget_organism_slots  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        forget_volume  does={env,alloc}
+        forget_volume  does={syscall,block,env,alloc}
         genome  does={syscall,block,alloc}
         genome_branch  does={syscall,block,alloc}
         genome_candidate  does={syscall,block,alloc}

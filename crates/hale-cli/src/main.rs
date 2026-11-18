@@ -95,6 +95,13 @@ fn main() -> ExitCode {
     }
     // GH #528: `hale dna …` — the DNA attached to an application as
     // ordinary Hale source (an organism is born by `hale habitat graft`).
+    // GH #1758: `--habitat <name>` on any `hale dna` or `hale habitat` verb
+    // names the habitat it acts on
+    if cmd == "dna" || cmd == "habitat" {
+        if let Some(code) = dna::with_habitat_flag(&args) {
+            return code;
+        }
+    }
     if cmd == "dna" {
         return dna::run(&args[2..]);
     }

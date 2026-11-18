@@ -1262,14 +1262,59 @@ locus MemoryVault {
 // never in a checkout. Until needs are declared by role, every organism's
 // allocations are the memory, nerves and senses every organism has.
 
-// Where the local habitat lives.
-fn local_habitat_dir() -> String {
-    // GH #1653: a habitat named outright (a test's, a slice's)
-    let named = std::env::var("HALE_DNA_HABITAT");
-    if len(named) > 0 { return named; }
+// GH #1758: where this machine's habitats live, each in a directory of its
+// own (as the CLI's `habitats_root`).
+fn habitats_root() -> String {
     let data = std::env::var("XDG_DATA_HOME");
     let base = if len(data) > 0 { data } else { std::env::var("HOME") + "/.local/share" };
-    return base + "/hale/habitat/local";
+    return base + "/hale/habitat";
+}
+
+// GH #1758: whether `dir` holds a habitat: one born there (its name, its
+// backends or its genome), or a pointer to one on another machine.
+fn habitat_present_at(dir: String) -> Bool {
+    return std::io::fs::file_exists(dir + "/name")
+        || std::io::fs::file_exists(dir + "/backends")
+        || std::io::fs::file_exists(dir + "/remote.json")
+        || std::io::fs::file_exists(dir + "/genome/hale.toml");
+}
+
+// GH #1758: the name of the habitat `dir` holds: the one it was born with,
+// else the one its pointer names, else `local`; "" when it holds none.
+fn habitat_name_at(dir: String) -> String {
+    if !habitat_present_at(dir) { return ""; }
+    let kept = trim_nl(std::io::fs::read_file(dir + "/name") or "");
+    if len(kept) > 0 { return kept; }
+    let pointed = std::json::find_string_field(
+        std::io::fs::read_file(dir + "/remote.json") or "",
+        "name",
+    );
+    return if len(pointed) > 0 { pointed } else { "local" };
+}
+
+// GH #1758: the directory of the habitat named `name`: its own, unless the
+// default directory holds it (a habitat born with `--name` before habitats
+// had directories of their own lives in `local`, reached by its name).
+fn habitat_dir_of(name: String) -> String {
+    let own = habitats_root() + "/" + name;
+    if habitat_present_at(own) { return own; }
+    let default = habitats_root() + "/local";
+    return if habitat_name_at(default) == name { default } else { own };
+}
+
+// Where the local habitat lives: the directory HALE_DNA_HABITAT names
+// outright (GH #1653: a test's, a slice's), else the one of the habitat
+// HALE_HABITAT (`--habitat`) or the current habitat (`hale habitat use`)
+// names, else the default habitat's (GH #1758, as the CLI resolves it).
+fn local_habitat_dir() -> String {
+    let named = std::env::var("HALE_DNA_HABITAT");
+    if len(named) > 0 { return named; }
+    let mut pick = std::str::trim(std::env::var("HALE_HABITAT"));
+    if len(pick) == 0 {
+        pick = std::str::trim(std::io::fs::read_file(habitats_root() + "/current") or "");
+    }
+    if len(pick) == 0 { return habitats_root() + "/local"; }
+    return habitat_dir_of(pick);
 }
 
 // The local habitat's compose project.
@@ -1289,6 +1334,23 @@ fn habitat_project_at(dir: String) -> String {
 // scratch root, comes down with it).
 fn developer_habitat_project() -> String {
     return habitat_project_at(std::env::var("HOME") + "/.local/share/hale/habitat/local");
+}
+
+// GH #1758: the compose projects of every habitat of the developer's, each
+// directory under `$HOME`'s habitats that holds one (and `local` always), a
+// line each: none is a fixture's to take down.
+fn developer_habitat_projects() -> String {
+    let root = std::env::var("HOME") + "/.local/share/hale/habitat";
+    let mut out = developer_habitat_project() + "\n";
+    let n = std::io::fs::list_dir_count(root) or 0;
+    let mut i = 0;
+    while i < n {
+        let name = std::io::fs::list_dir_at(root, i) or "";
+        i = i + 1;
+        if len(name) == 0 || name == "local" || !habitat_present_at(root + "/" + name) { continue; }
+        out = out + habitat_project_at(root + "/" + name) + "\n";
+    }
+    return out;
 }
 
 // The key the habitat's allocations for the organism at `root` carry:

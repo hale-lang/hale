@@ -635,6 +635,15 @@ fn per_target_moves() {
 /// `organizations_origin`, `with_organizations`): three more tags and six
 /// more sites reclaimed at return; no leak site goes or appears.
 ///
+/// GH #1758: the core's named-habitat resolver (`local_habitat_dir` now
+/// picks the habitat's directory through `habitat_dir_of`, which hands its
+/// joined path back to the caller, and the teardown guard's
+/// `developer_habitat_projects`, which joins one line per habitat in a loop)
+/// leaves five fns of the core that freed at return no longer doing so and
+/// nine sites fewer reclaimed at return, in every target over the core; the
+/// host's one-shot verb program judges 17 more sites, the new fns' among
+/// them. No leak site goes or appears.
+///
 /// `string_len_test` (GH #1947) is a new target: two of its loops'
 /// temporaries go, each in a fn that frees at return (the check above
 /// holds every site that goes to that), and three tags of values its fns
@@ -653,17 +662,17 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/91-module-decls: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
-    "dna/api: 1 go, 0 appear, 1 move their reason; dump 552 tags, 1354 reclaim, 1 verdicts",
-    "dna/core: 0 go, 0 appear; dump 413 tags, 1052 reclaim, 0 verdicts",
-    "dna/host: 2 go, 0 appear; dump 604 tags, 1406 reclaim, 2 verdicts",
-    "dna/host/verb: 0 go, 0 appear; dump 604 tags, 1165 reclaim, 1461 verdicts",
+    "dna/api: 1 go, 0 appear, 1 move their reason; dump 546 tags, 1345 reclaim, 1 verdicts",
+    "dna/core: 0 go, 0 appear; dump 408 tags, 1043 reclaim, 0 verdicts",
+    "dna/host: 2 go, 0 appear; dump 599 tags, 1397 reclaim, 2 verdicts",
+    "dna/host/verb: 0 go, 0 appear; dump 599 tags, 1156 reclaim, 1478 verdicts",
     "dna/oidc: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
-    "dna/operations: 0 go, 0 appear; dump 503 tags, 1277 reclaim, 0 verdicts",
-    "dna/organism: 0 go, 0 appear; dump 425 tags, 1073 reclaim, 0 verdicts",
-    "dna/organization_runtime: 0 go, 0 appear; dump 503 tags, 1277 reclaim, 0 verdicts",
-    "dna/organization_source: 0 go, 0 appear; dump 413 tags, 1052 reclaim, 0 verdicts",
+    "dna/operations: 0 go, 0 appear; dump 498 tags, 1268 reclaim, 0 verdicts",
+    "dna/organism: 0 go, 0 appear; dump 420 tags, 1064 reclaim, 0 verdicts",
+    "dna/organization_runtime: 0 go, 0 appear; dump 498 tags, 1268 reclaim, 0 verdicts",
+    "dna/organization_source: 0 go, 0 appear; dump 408 tags, 1043 reclaim, 0 verdicts",
     "dna/reflexes: 0 go, 0 appear; dump 17 tags, 26 reclaim, 0 verdicts",
-    "dna/ui: 0 go, 0 appear; dump 415 tags, 1052 reclaim, 0 verdicts",
+    "dna/ui: 0 go, 0 appear; dump 410 tags, 1043 reclaim, 0 verdicts",
     "tests/hale/api_bearer_roles_test.hl: 0 go, 0 appear; dump 3 tags, 41 reclaim, 0 verdicts",
     "tests/hale/api_big_reply_test.hl: 0 go, 0 appear; dump 1 tags, 20 reclaim, 0 verdicts",
     "tests/hale/api_binding_test.hl: 0 go, 0 appear; dump 2 tags, 28 reclaim, 0 verdicts",
