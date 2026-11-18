@@ -2425,9 +2425,16 @@ its `KNOWN_OPEN` table, which is empty today.
   becomes eligible once its `birth()` (and its `birth_check`) has
   completed: what is published to it before then, its own
   `birth()`'s sends included, waits in the order it was published,
-  is never dropped, and is delivered afterwards. Shipped
-  (`l06_readiness_main.hl`, `l06_readiness_pool.hl`, and the pinned
-  capacity regression in `topic_phase2.rs`). For each subscriber,
+  is never dropped, and is delivered afterwards, whether or not
+  the main locus declares a `run()`: a main with no `run()` (or an
+  empty one) drains main's queue where its `run()` would have ended,
+  before its teardown begins, as a `run()` body's end does (until
+  GH #2029 a cell an earlier sibling's `birth()` published to a
+  cooperative subscriber was still queued when the teardown
+  reclaimed the tree, and was lost). Shipped
+  (`l06_readiness_main.hl`, `l06_readiness_pool.hl`, the pinned
+  capacity regression in `topic_phase2.rs`, and
+  `bus_static_reservation.rs` for a main with no `run()`). For each subscriber,
   the runtime opens a window
   before the first registration (`lotus_bus_hold_delivery`) and
   parks each cell posted to it there; its readiness step

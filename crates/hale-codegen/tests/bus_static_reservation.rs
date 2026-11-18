@@ -114,6 +114,71 @@ fn an_earlier_siblings_publish_reaches_a_later_sibling_under_asan() {
     assert_eq!(out, SIBLINGS_HEARD);
 }
 
+/// GH #2029: a main locus with no `run()`, or an empty one. What an
+/// earlier sibling's `birth()` publishes is parked, claimed by the later
+/// subscriber and posted at its readiness; a `run()` body drains it at its
+/// end, and with no `run()` nothing did, so the teardown reclaimed the
+/// tree with the cell still queued and the delivery was lost (the
+/// reservation logged `parked 1 copied 1 forwarded 0`). Keyed subscribers
+/// (an `Int` and a `String` key) were lost the same way.
+const NO_RUN: &str = r#"
+    type Hello { n: Int; }
+    topic Greet { payload: Hello; subject: "greet"; }
+    type Tagged { id: Int; name: String; }
+    topic ById { payload: Tagged; subject: "by_id"; keyed_by id; }
+    topic ByName { payload: Tagged; subject: "by_name"; keyed_by name; }
+    locus Sender {
+        bus { publish Greet; publish ById; publish ByName; }
+        birth() {
+            Greet <- Hello { n: 42 };
+            ById <- Tagged { id: 1, name: "x" };
+            ByName <- Tagged { id: 2, name: "alpha" };
+        }
+    }
+    locus Receiver {
+        params { born: Bool = false; }
+        bus { subscribe Greet as on_greet; }
+        birth() { self.born = true; }
+        fn on_greet(h: Hello) { println("greet " + to_string(h.n) + " born " + to_string(self.born)); }
+    }
+    locus IdEar {
+        params { my_id: Int = 0; }
+        bus { subscribe ById as on_id where key == self.my_id; }
+        fn on_id(t: Tagged) { println("by_id " + to_string(t.id)); }
+    }
+    locus NameEar {
+        params { my_name: String = ""; }
+        bus { subscribe ByName as on_name where key == self.my_name; }
+        fn on_name(t: Tagged) { println("by_name " + t.name); }
+    }
+    main locus App {
+        params {
+            s: Sender = Sender { };
+            r: Receiver = Receiver { };
+            i: IdEar = IdEar { my_id: 1 };
+            n: NameEar = NameEar { my_name: "alpha" };
+        }
+        __RUN__
+    }
+    fn main() { App { }; }
+"#;
+
+const NO_RUN_HEARD: [&str; 3] = ["by_id 1", "by_name alpha", "greet 42 born true"];
+
+#[test]
+fn a_main_with_no_run_delivers_an_earlier_siblings_birth_publish() {
+    assert_eq!(run("no_run", &NO_RUN.replace("__RUN__", "")), NO_RUN_HEARD);
+    assert_eq!(run("empty_run", &NO_RUN.replace("__RUN__", "run() { }")), NO_RUN_HEARD);
+    // The control: a run() that does something drained it all along.
+    assert_eq!(run("with_run", &NO_RUN.replace("__RUN__", "run() { yield; }")), NO_RUN_HEARD);
+}
+
+#[test]
+fn a_main_with_no_run_delivers_an_earlier_siblings_birth_publish_under_asan() {
+    let (out, _) = run_env("no_run_asan", &NO_RUN.replace("__RUN__", ""), true, &[]);
+    assert_eq!(out, NO_RUN_HEARD);
+}
+
 #[test]
 fn a_quiet_later_subscriber_hears_an_earlier_sibling() {
     // A handler that only folds into its own state is a direct call when

@@ -43,7 +43,7 @@ program's placement coherent with how the runtime dispatches.
 |---|---|---|---|
 | **Single-threaded-method invariant** | a *direct* cross-pool method call (`self.field.method()` where `field` is placed on a different pool) — it would run the callee's method on the wrong thread | error | `check_placement_single_thread` |
 | **Dead bus receiver** | a non-`main` cooperative locus that subscribes to the bus *and* makes a blocking call in `run()` — the blocking call monopolizes the pool thread so the dispatch never delivers and its handlers never fire | error | `check_cooperative_pool_blocking` |
-| **Blocking call on a cooperative pool** | a blocking `run()` (`recv`/`accept`, a stdin or file read, an `http` request, `process::run`) on a pool that isn't `where async_io` — it holds the pool's OS thread and stalls co-scheduled loci. Follows the call graph: blocking reached through a helper fn or `self.method` is flagged too | warning | `check_cooperative_pool_blocking` |
+| **Blocking call on a cooperative pool** | a blocking `run()` (`recv`/`accept`, a stdin read, a file read or write, an `http` request, `process::run`) on a pool that isn't `where async_io` — it holds the pool's OS thread and stalls co-scheduled loci. Follows the call graph: blocking reached through a helper fn or `self.method` is flagged too | warning | `check_cooperative_pool_blocking` |
 | **Cooperative pool starvation** | two or more loci on one cooperative pool (not `where async_io`) whose `run()` bodies statically never return (terminal `while` with no exit — `while true`, `while !self.draining`, or a never-assigned Bool flag) — the pool runs each `run()` to completion in birth order, so the later `run()` bodies never start. Covers fields with no placement entry (they default to pool `main`) and the main locus's own `run()`, which begins only after params-init | warning | `check_pool_starvation` |
 | **Nested long-running child** | a non-`main` locus with a `run()` body of its own holding a params field of a locus type whose `run()` is long-running (a body of its own, whether or not it returns: `spec/runtime.md` § Typecheck enforcement) — the canonical fix is hoisting it to a `main` sibling with its own placement | error | `check_nested_long_running_child` |
 | **Unowned subscriber locus** | a bus-subscribing locus instantiated inside another locus's bus handler with no accepting ancestor in the ownership graph on every construction path of the handler's locus (the paths the placement table records, `fn main`'s included; a hole proves no owner) — it dissolves when the handler returns, so its subscription can never fire; judged by declaration identity, and silent where the graph cannot decide (`spec/semantics.md` type-check rule 20; overridable with `--allow-unowned-subscriber`) | error | `check_unowned_subscriber_locus` |
@@ -71,7 +71,8 @@ block.
 **What counts as "blocking" for both** is the effects registry's
 `block` classification — the same rows the effect assertions and the
 `.hale.effects` manifest read (`stdlib_surface::SURFACES`) — and not a
-list kept beside it. So `io::stdin::*`, `io::file::read_line`,
+list kept beside it. So `io::stdin::*`, `io::file::read_line`, every
+`io::fs` call that reaches the file system (all but `extension`, GH #2032),
 `io::udp::recv*`, `std::http::*`, `tcp::connect` / `accept_one`,
 `tls::connect` / `upgrade` and `process::read_stdout` /
 `read_stderr` are blocking leaves here because they are `block` rows
@@ -3048,7 +3049,7 @@ assume the others in a build:
   park lowering, each entry naming its runtime primitive). Everything
   else still warns, including the calls that open a connection
   (`tcp::connect`, `tls::connect`, `tls::upgrade`, and so
-  `std::http::*`), file and stdin reads, `tls::recv_bytes` (a plain
+  `std::http::*`), file I/O (`io::fs::*`, GH #2032) and stdin reads, `tls::recv_bytes` (a plain
   `SSL_read`; only the `recv_into` family got the park) and
   `std::process::{run, wait, read_stdout, read_stderr}`. The
   exemption is per-LEAF: a handler that both sleeps and blocks is
