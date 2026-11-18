@@ -2640,7 +2640,14 @@ fn build_resolved_lowered(
     // PassBuilderOptions): every DEFINED fn except `main` goes
     // Internal, then a leading globaldce strips the unreferenced
     // stdlib before the main pipeline spends O3 on it.
-    if !is_wasm {
+    //
+    // wasm32 too (GH #1993): what the module exports by name is `main`,
+    // the `@export` wrappers and `_hale_start` (`wasm_exports`) and the
+    // fixed exports, and every other symbol is reached through a use.
+    // Without it each wasm build ran O2 and the backend over the whole
+    // merged stdlib (about a second of a trivial build) for wasm-ld's
+    // --gc-sections to throw away.
+    {
         let mut f = cx.module.get_first_function();
         while let Some(func) = f {
             let name = func
@@ -2653,10 +2660,13 @@ fn build_resolved_lowered(
             // survive internalize+globaldce like `main` does
             // (their `__hale_impl_*` bodies survive through the
             // wrapper's call edge).
-            if func.count_basic_blocks() > 0
-                && name != "main"
-                && !cx.native_exports.contains(&name)
-            {
+            let exported = if is_wasm {
+                cx.wasm_exports.contains(&name)
+                    || hale_types::capability::WASM_FIXED_EXPORTS.iter().any(|e| e.name == name)
+            } else {
+                cx.native_exports.contains(&name)
+            };
+            if func.count_basic_blocks() > 0 && name != "main" && !exported {
                 func.set_linkage(inkwell::module::Linkage::Internal);
             }
             f = func.get_next_function();
@@ -2674,9 +2684,9 @@ fn build_resolved_lowered(
         // the only symbol the native link needs by name — bus
         // handlers / pinned entries / fn-pointer callees are
         // address-taken and survive DCE through their uses. wasm
-        // keeps its exports and skips internalization.
+        // keeps its exports (internalized around them, above).
         let pass_pipeline = if is_wasm {
-            "default<O2>"
+            "globaldce,default<O2>"
         } else if options.dev_profile {
             "globaldce,default<O1>"
         } else {
@@ -2763,6 +2773,7 @@ fn build_resolved_lowered(
             )));
         };
         link_wasm(
+            &runtime_cache_dir(options),
             &obj_path,
             output_path,
             fixed,
@@ -3666,7 +3677,66 @@ fn resolve_tool(base: &str) -> String {
     base.to_string()
 }
 
+/// A wasm32 runtime object from the runtime-object cache (GH #1993), or
+/// compiled into it by `compile` (which writes the object to the path it
+/// is handed) when it is not there. Content-addressed as the native
+/// runtime's objects are (`compile_cached_runtime_object_with`): the
+/// unit's source, the headers it includes, the compile flags and the
+/// clang that compiles it (`clang --version`) are the key, so any change
+/// to one is a fresh object and a stale one is never looked up again.
+/// Every wasm build compiled the ~35k-line runtime at -O2 (about three
+/// seconds) before this, which the wasm agreement test paid on each of
+/// its builds.
+fn cached_wasm_runtime_object(
+    cache_dir: &Path,
+    clang_identity: &str,
+    stem: &str,
+    source: &str,
+    headers: &[&str],
+    flags: &[&str],
+    compile: impl FnOnce(&Path) -> Result<(), CodegenError>,
+) -> Result<PathBuf, CodegenError> {
+    use std::hash::{Hash, Hasher};
+    // Bump to invalidate every cached wasm object (a compile invocation
+    // change the flags do not capture).
+    const WASM_RT_CACHE_VERSION: u64 = 1;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    WASM_RT_CACHE_VERSION.hash(&mut h);
+    clang_identity.hash(&mut h);
+    stem.hash(&mut h);
+    source.hash(&mut h);
+    headers.hash(&mut h);
+    flags.hash(&mut h);
+    let key = h.finish();
+    let _ = std::fs::create_dir_all(cache_dir);
+    let obj = cache_dir.join(format!("lotus-rt-wasm32-{stem}-{key:016x}.o"));
+    if obj.exists() {
+        return Ok(obj);
+    }
+    // A unique temp object, renamed into place: concurrent builds (the
+    // agreement test runs eight) never see a half-written one.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static WASM_RT_TMP_NONCE: AtomicU64 = AtomicU64::new(0);
+    let nonce = WASM_RT_TMP_NONCE.fetch_add(1, Ordering::Relaxed);
+    let tmp = cache_dir.join(format!("lotus-rt-wasm32-{stem}-{key:016x}.{}.{nonce}.o", std::process::id()));
+    if let Err(e) = compile(&tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if std::fs::rename(&tmp, &obj).is_ok() {
+        Ok(obj)
+    } else if obj.exists() {
+        let _ = std::fs::remove_file(&tmp);
+        Ok(obj)
+    } else {
+        Ok(tmp)
+    }
+}
+
 fn link_wasm(
+    // The runtime-object cache (`BuildOptions::cache_dir`): the wasm32
+    // runtime's objects are kept there as the native runtime's are.
+    cache_dir: &Path,
     user_obj: &Path,
     output: &Path,
     // The module's fixed exports, in order: the `ExportSurface` cell's
@@ -3721,8 +3791,6 @@ fn link_wasm(
     // stays the shim's (an inline no-op) instead of being rewritten to
     // an `fwrite` nothing defines, which the link would keep as a host
     // import (P3 T7).
-    let arena_o = dir.join("arena.o");
-    let libc_o = dir.join("libc.o");
     // Resolve the toolchain binaries (bare or `-18`).
     let clang = resolve_tool("clang");
     let wasm_ld = resolve_tool("wasm-ld");
@@ -3747,8 +3815,34 @@ fn link_wasm(
         }
         Ok(())
     };
-    cc(&arena_c, &arena_o, &["-fno-builtin-fprintf"])?;
-    cc(&libc_c, &libc_o, &["-fno-builtin"])?;
+    // What this clang is, for the cache key: a different clang (or none)
+    // is a different object.
+    let clang_identity = Command::new(&clang)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let headers = [RUNTIME_WASM_SHIM_H, RUNTIME_WASM_POSIX_H];
+    let arena_o = cached_wasm_runtime_object(
+        cache_dir,
+        &clang_identity,
+        "arena",
+        RUNTIME_C_SOURCE,
+        &headers,
+        &["-fno-builtin-fprintf"],
+        |out| cc(&arena_c, out, &["-fno-builtin-fprintf"]),
+    )?;
+    let libc_o = cached_wasm_runtime_object(
+        cache_dir,
+        &clang_identity,
+        "libc",
+        RUNTIME_WASM_LIBC_SOURCE,
+        &headers,
+        &["-fno-builtin"],
+        |out| cc(&libc_c, out, &["-fno-builtin"]),
+    )?;
 
     // Link with wasm-ld, exporting `main` as the program entry (+ memory
     // and the heap base for the loader). --gc-sections then strips the
@@ -3787,10 +3881,11 @@ fn link_wasm(
     if ed25519 {
         for (stem, source) in crate::ed25519_runtime::units() {
             let src = dir.join(format!("{stem}.c"));
-            let o = dir.join(format!("{stem}.o"));
-            std::fs::write(&src, source)
+            std::fs::write(&src, &source)
                 .map_err(|e| mkerr(format!("stage {stem} for wasm32: {e}")))?;
-            cc(&src, &o, &[])?;
+            let o = cached_wasm_runtime_object(cache_dir, &clang_identity, stem, &source, &headers, &[], |out| {
+                cc(&src, out, &[])
+            })?;
             csrc_objs.push(o);
         }
     }
@@ -40469,6 +40564,41 @@ mod tests {
     /// move it; the host `clang`'s version moves it for a sanitizer object
     /// (GH #1952) and keeps it otherwise, as the stem and the cache's
     /// place do.
+    /// GH #1993: a wasm32 runtime object is compiled once per (clang,
+    /// unit, source, headers, flags) and taken from the cache after that;
+    /// a change to any of them is a fresh object.
+    #[test]
+    fn a_wasm_runtime_object_is_compiled_once_and_keyed_by_what_makes_it() {
+        let dir = std::env::temp_dir().join(format!("hale-codegen-wasm-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let compiles = std::cell::Cell::new(0);
+        let obj = |clang: &str, source: &str, headers: &[&str], flags: &[&str]| {
+            cached_wasm_runtime_object(&dir, clang, "arena", source, headers, flags, |out| {
+                compiles.set(compiles.get() + 1);
+                std::fs::write(out, source).map_err(|e| CodegenError::Link(e.to_string()))
+            })
+            .expect("the object")
+        };
+        let base = obj("clang 18", "int x;", &["h"], &["-O2"]);
+        assert_eq!(compiles.get(), 1);
+        assert_eq!(obj("clang 18", "int x;", &["h"], &["-O2"]), base, "the same object");
+        assert_eq!(compiles.get(), 1, "taken from the cache, not compiled again");
+        assert_ne!(obj("clang 18", "int y;", &["h"], &["-O2"]), base, "the source");
+        assert_ne!(obj("clang 18", "int x;", &["g"], &["-O2"]), base, "a header");
+        assert_ne!(obj("clang 18", "int x;", &["h"], &["-O1"]), base, "a flag");
+        assert_ne!(obj("clang 19", "int x;", &["h"], &["-O2"]), base, "the clang");
+        assert_eq!(compiles.get(), 5);
+        // a failed compile leaves nothing behind for the next build to take
+        let failed = cached_wasm_runtime_object(&dir, "clang 18", "arena", "int z;", &[], &[], |out| {
+            std::fs::write(out, "partial").unwrap();
+            Err(CodegenError::Link("refused".into()))
+        });
+        assert!(failed.is_err());
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "o")).collect();
+        assert_eq!(left.len(), 5, "only the five objects");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn runtime_object_key_moves_with_source_flags_and_compiler_and_keeps_the_host_clang() {
         let dir = std::env::temp_dir().join(format!("hale-codegen-rt-key-{}", std::process::id()));

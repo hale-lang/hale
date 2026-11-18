@@ -183,7 +183,15 @@ fn seq_and_n(frame: &str) -> (i64, i64) {
 /// `(seq, n)` of every event that arrived.
 fn burst(asan: bool, topic: &str, command: &str) -> Vec<(i64, i64)> {
     let server = Server::start(&build(asan), &[]);
-    let mut dave = Ws::connect(server.port, Some("t-dave"));
+    // A client that does not read has to stop the connection's socket at
+    // once: with the kernel's ordinary buffers the socket took in a few
+    // hundred KB at the pace the kernel moved it, so on a loaded runner a
+    // write the connection had parked on could complete late in the
+    // burst, free a queue slot, and let the burst's last frame in under
+    // drop_new ("the newest frame survived a client who did not read").
+    // A 4 KB receive window stops it inside the burst's first frame, so
+    // what the queue holds and sheds no longer depends on that pace.
+    let mut dave = Ws::connect_tight(server.port, Some("t-dave"));
     dave.subscribe(topic);
     assert_eq!(dave.text(), format!("{{\"type\":\"subscribed\",\"topic\":\"{topic}\"}}"));
     server.await_stat("subs", 1);

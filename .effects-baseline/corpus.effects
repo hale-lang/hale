@@ -441,8 +441,8 @@ Desk::birth  does={publish,alloc}
 main  does={syscall,alloc,stdio}
 ### docs-server
 __docs_dir  does={env}
-__render_doc  does={syscall,env,alloc}
-__render_index  does={syscall,env,alloc}
+__render_doc  does={syscall,block,env,alloc}
+__render_index  does={syscall,block,env,alloc}
 __wrap_html_page  does={alloc}
 handle_request  does={syscall,block,env,alloc,stdio}
 main  does={syscall,env,alloc,stdio}
@@ -460,8 +460,8 @@ main  does={alloc}
 handle_request  does={syscall,block,alloc,stdio}
 main  does={syscall,env,alloc,stdio}
 ### io-demo
-main  does={syscall,env,alloc,stdio}
-write_log  does={syscall}
+main  does={syscall,block,env,alloc,stdio}
+write_log  does={syscall,block}
 ### multi-file-seed
 AppL::run  does={syscall,alloc,stdio}
 greeting  does={alloc}

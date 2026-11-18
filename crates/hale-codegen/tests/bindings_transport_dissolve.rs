@@ -39,6 +39,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/child.rs"]
+mod child;
 #[path = "support/build.rs"]
 mod build_opts;
 
@@ -233,12 +235,16 @@ fn a_connect_binding_transport_is_dissolved_at_main_exit() {
     let listen_bin = build("connect_peer", &listen_src);
     let connect_bin = build("connect", &connect_src);
 
-    let mut listener = Command::new(&listen_bin)
-        .env("LOTUS_ARENA_RESIDENCY", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn peer listener");
+    // stopped however the test ends: a publisher that failed its deadline
+    // used to leave the listener running
+    let mut listener = child::Reaped::new(
+        Command::new(&listen_bin)
+            .env("LOTUS_ARENA_RESIDENCY", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn peer listener"),
+    );
     // The connect transport realizes synchronously in birth() with
     // its own retry window, so a slow peer boot is absorbed there.
     std::thread::sleep(Duration::from_millis(300));
@@ -252,7 +258,7 @@ fn a_connect_binding_transport_is_dissolved_at_main_exit() {
     let pub_status = wait_within(&mut publisher, "connect binding");
     let pub_out = publisher.wait_with_output().expect("collect publisher");
     let lis_status = wait_within(&mut listener, "connect binding peer");
-    let lis_out = listener.wait_with_output().expect("collect listener");
+    let lis_out = listener.into_inner().wait_with_output().expect("collect listener");
     let _ = std::fs::remove_file(&listen_bin);
     let _ = std::fs::remove_file(&connect_bin);
     let _ = std::fs::remove_file(&sock);

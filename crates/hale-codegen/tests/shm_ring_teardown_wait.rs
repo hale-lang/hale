@@ -72,8 +72,7 @@ fn main() { App { }; }
 "#;
 
 fn shm_name(tag: &str) -> String {
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    format!("/hale-teardown-wait-{tag}-{}-{nanos}", std::process::id())
+    harness::shm_name(tag)
 }
 
 struct Ended {

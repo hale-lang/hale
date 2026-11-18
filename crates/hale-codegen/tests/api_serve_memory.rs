@@ -6,10 +6,14 @@
 //! connection carried stayed in that method's scratch until it closed
 //! (about 9 KB a call); the read is a method of its own now. The bench that
 //! found it is `scripts/api-bench/`.
+//!
+//! The resident set is read from `/proc`, so the tests are Linux's; each
+//! server is a [`child::Reaped`], stopped however the test ends (a `/proc`
+//! read that panicked on macOS left the servers running for days).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[path = "support/harness.rs"]
@@ -33,13 +37,15 @@ locus Tokens {
 }
 ";
 
-fn serve(transport: &str, tag: &str) -> Child {
+fn serve(transport: &str, tag: &str) -> child::Reaped {
     let src = format!(
         "{TYPES}main locus App {{\n    params {{\n        echo: Echo = Echo {{ }};\n        h: api::Exposure = api::serve(Bench, {transport}, as: \"b\", receivers: {{ Echo: self.echo }}, bound: 64, on_full: refuse);\n    }}\n}}\nfn main() {{ App {{ }}; }}\n"
     );
     let bin = harness::unique_bin(tag);
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build the echo server");
-    Command::new(&bin).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("run the echo server")
+    let srv = Command::new(&bin).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("run the echo server");
+    let _ = std::fs::remove_file(&bin);
+    child::Reaped::new(srv)
 }
 
 fn rss_kb(pid: u32) -> u64 {
@@ -49,10 +55,11 @@ fn rss_kb(pid: u32) -> u64 {
 
 /// Calls on one connection over the unix transport.
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "reads the resident set from /proc")]
 fn a_unix_connection_stays_flat_under_sustained_calls() {
     let sock = std::env::temp_dir().join(format!("hale-api-memory-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock);
-    let mut srv = serve(&format!("unix::Rpc {{ path: {:?}, roles: Open {{ }} }}", sock.display().to_string()), "api_memory_unix");
+    let srv = serve(&format!("unix::Rpc {{ path: {:?}, roles: Open {{ }} }}", sock.display().to_string()), "api_memory_unix");
     let start = Instant::now();
     let conn = loop {
         if let Ok(c) = UnixStream::connect(&sock) {
@@ -77,8 +84,7 @@ fn a_unix_connection_stays_flat_under_sustained_calls() {
         call(i);
     }
     let after = rss_kb(srv.id());
-    let _ = srv.kill();
-    let _ = srv.wait();
+    drop(srv);
     let _ = std::fs::remove_file(&sock);
     // 20k calls held about 180 MB before the fix
     assert!(after < before + 8 * 1024, "the unix server grew from {before} kB to {after} kB over 20000 calls");
@@ -89,6 +95,7 @@ fn a_unix_connection_stays_flat_under_sustained_calls() {
 /// the dissolved subscriber's entries to the next connection's, so the server
 /// stays flat (it grew about 0.3 KB a connection before entries were reused).
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "reads the resident set from /proc")]
 fn http_connections_stay_flat() {
     let mut srv = serve("http::Rpc { bind: \"127.0.0.1:0\", codec: json, principals: Tokens { }, roles: Open { } }", "api_memory_http");
     let port = child::tcp_port(&mut srv);
@@ -113,7 +120,6 @@ fn http_connections_stay_flat() {
         call(i);
     }
     let after = rss_kb(srv.id());
-    let _ = srv.kill();
-    let _ = srv.wait();
+    drop(srv);
     assert!(after < before + 2 * 1024, "the http server grew from {before} kB to {after} kB over 20000 connections");
 }

@@ -24,7 +24,7 @@ fn unique_tag(label: &str) -> String {
 
 #[test]
 fn hale_zero_copy_write_in_place_round_trips() {
-    let shm_name = format!("/hale-{}", unique_tag("e2e"));
+    let shm_name = harness::shm_name("layout");
     let src = format!(
         r#"
         ring_layout ForeignRing {{

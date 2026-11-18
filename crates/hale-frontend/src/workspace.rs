@@ -228,7 +228,7 @@ fn walk_seeds(root: &Path, seeds: &mut Vec<PathBuf>, tests: &mut Vec<PathBuf>) {
                 continue;
             }
             subdirs.push(p);
-        } else if crate::frontend::is_test_file(&p) {
+        } else if crate::frontend::is_own_program_file(&p) {
             here.push(p);
         } else if name.ends_with(".hl") {
             has_hl = true;

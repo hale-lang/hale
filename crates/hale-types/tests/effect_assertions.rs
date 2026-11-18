@@ -1141,3 +1141,130 @@ fn bounded_by_with_unbounded_or_twice_is_refused() {
     let ds = diags_for("@bounded_by(record)\nfn grow(n: Int) -> Int { return n; }\nfn main() { println(grow(1)); }");
     assert!(!ds.iter().any(|m| m.contains("bounded_by")), "{ds:?}");
 }
+
+// ---- GH #2032: a file system call is `block` ----
+
+/// GH #2032: every `std::io::fs` call that reaches the file system is
+/// `block` (spec/stdlib.md § std::io::fs, docs/src/effects.md). They
+/// carried `syscall` only, so `@no_block` accepted a file read — directly
+/// or through a helper — while the docs listed `std::io::fs::*` among the
+/// calls that hold the worker.
+#[test]
+fn no_block_refuses_a_file_system_call() {
+    for call in [
+        "let s = std::io::fs::read_file(p) or \"\"; println(s);",
+        "std::io::fs::write_file(p, \"x\") or discard;",
+        "let n = std::io::fs::file_size(p) or 0; println(n);",
+        "println(std::io::fs::file_exists(p));",
+        "std::io::fs::rename(p, p) or discard;",
+    ] {
+        let src = format!(
+            r#"
+            fn touch(p: String) {{
+                {call}
+            }}
+            @no_block fn on_tick(p: String) {{
+                touch(p);
+            }}
+            fn main() {{ on_tick("/tmp/x"); }}
+        "#
+        );
+        let ds = diags_for(&src);
+        let hit = ds
+            .iter()
+            .find(|m| m.contains("must not reach `block`"))
+            .unwrap_or_else(|| panic!("`{call}` must trip @no_block: {:?}", ds));
+        assert!(hit.contains("on_tick -> touch"), "the chain: {}", hit);
+        assert!(hit.contains("std::io::fs::"), "and the file call: {}", hit);
+    }
+}
+
+/// `extension` reads its argument's text, not the disk: not `block`.
+#[test]
+fn no_block_accepts_a_path_extension() {
+    let src = r#"
+        @no_block fn ext(p: String) -> String {
+            return std::io::fs::extension(p);
+        }
+        fn main() { println(ext("a.txt")); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("must not reach `block`")),
+        "`extension` is no file system call: {:?}",
+        ds
+    );
+}
+
+/// GH #2032: a handler on an async_io pool that reads or writes a file
+/// holds the pool's one worker (a regular file is no epoll park target),
+/// so the placement advisory names it, as it names a stdin read.
+#[test]
+fn async_io_placement_warns_about_a_file_call() {
+    for call in [
+        "let s = std::io::fs::read_file(\"/etc/hosts\") or \"\"; println(len(s));",
+        "std::io::fs::write_file(\"/tmp/x\", \"y\") or discard;",
+    ] {
+        let src = format!(
+            r#"
+            type Ev {{ n: Int; }}
+            locus Worker {{
+                bus {{ subscribe "e" as on_e of type Ev; }}
+                fn on_e(e: Ev) {{
+                    {call}
+                }}
+            }}
+            main locus App {{
+                params {{ w: Worker = Worker {{ }}; }}
+                placement {{ w: cooperative(pool = web) where async_io; }}
+                run() {{ std::time::sleep(10ms); }}
+            }}
+            fn main() {{ App {{ }}; }}
+        "#
+        );
+        let ds = diags_for(&src);
+        assert!(
+            ds.iter().any(|m| m.contains("async_io pool `web`")
+                && m.contains("stalls every other locus")
+                && m.contains("std::io::fs::")),
+            "a handler's `{call}` on an async_io pool must be flagged: {:?}",
+            ds
+        );
+    }
+}
+
+/// GH #2032: a `run()` on a classic cooperative pool that reads a file
+/// holds the pool's OS thread for the read, so the classic-pool advisory
+/// names it (`check_cooperative_pool_blocking`).
+#[test]
+fn classic_pool_warns_about_a_file_read_in_run() {
+    let src = r#"
+        locus Worker {
+            params { n: Int = 0; }
+            run() {
+                let s = std::io::fs::read_file("/etc/hosts") or "";
+                println(len(s));
+            }
+        }
+        locus Other {
+            params { n: Int = 0; }
+            run() { std::time::sleep(10ms); }
+        }
+        main locus App {
+            params { w: Worker = Worker { }; o: Other = Other { }; }
+            placement {
+                w: cooperative(pool = work);
+                o: cooperative(pool = work);
+            }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        ds.iter().any(|m| m.contains("reaches the blocking call")
+            && m.contains("std::io::fs::read_file")
+            && m.contains("pool = work")),
+        "a file read in a classic-pool run() must be flagged: {:?}",
+        ds
+    );
+}
