@@ -533,8 +533,10 @@ address), which `Commands::allocations` observes by whether it answers.
 **The `local` profile's forge is Forgejo**, the habitat's own: on its own
 backends the compose provider brings one Forgejo up at every `hale habitat
 up`, as it brings up memory and the nerves. It is a service (`forge`) of the
-habitat's compose project, its image pinned by digest, published on a
-loopback port chosen once (`<habitat>/forge/port`), its data in the
+habitat's compose project, its image pinned by digest and pulled from the
+project's mirror, `ghcr.io/hale-lang/forgejo` (upstream
+`codeberg.org/forgejo/forgejo`, copied by the same digest, so the image is
+upstream's byte for byte), published on a loopback port chosen once (`<habitat>/forge/port`), its data in the
 project's volume. Its administrator (`hale-admin`) has a password drawn
 into the vault the first time (`forgejo-admin`); the server reads it from
 the file compose mounts, inside the container, never from a command line,

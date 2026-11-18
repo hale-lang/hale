@@ -16,8 +16,12 @@
 // `ForgejoForge` speaks Forgejo's API, which maps onto GitHub's nearly one
 // to one; where it differs, this file absorbs it and the interface stays.
 
-// The image, pinned by digest.
-const FORGEJO_IMAGE: String = "codeberg.org/forgejo/forgejo:14@sha256:a39d4e644a7b0169a03a9d990a973f76f99425f98b3722174f4ae02a74c74105";
+// The image, pinned by digest. Upstream is codeberg.org/forgejo/forgejo;
+// the habitat pulls it from the project's mirror on ghcr.io, which the
+// mirror-images workflow copies by this same digest (GH #2064), so a
+// codeberg.org outage or DNS fault cannot stop the forge from starting.
+// The digest names the content, so the mirror's image is upstream's.
+const FORGEJO_IMAGE: String = "ghcr.io/hale-lang/forgejo:14@sha256:a39d4e644a7b0169a03a9d990a973f76f99425f98b3722174f4ae02a74c74105";
 // The habitat's Forgejo administrator, and the vault slot of its password.
 const FORGEJO_ADMIN: String = "hale-admin";
 const FORGEJO_ADMIN_VAULT: String = "forgejo-admin";
