@@ -353,10 +353,22 @@ pub mod reasons {
     /// list a locus holds does (spec/types.md § `bounded[T; N]`).
     pub const BOUNDED_STORED: &str = "copy: a value another name reaches stored into a bounded list";
 
+    /// A call's result stored into a bounded list the frame holds that is
+    /// fresh at its top level but holds, in a part, a block another name
+    /// reaches (GH #2067): `fn summary_of(r: Row) -> Sum { let mut v = Sum
+    /// { }; v.tags = r.tags; return v; }` hands back `r`'s own elements in
+    /// `v.tags` (a whole assignment copies the count and the slots, and
+    /// keeps an element already in the arena it runs in), so the slot
+    /// takes its own copy of the value, as for [`BOUNDED_STORED`].
+    pub const BOUNDED_STORED_PART: &str = "copy: a call's result holding another name's block stored into a bounded list";
+
     /// Is the reason a store's own copy of its value (into a part of a
     /// parameter, into a locus's field, or into a bounded list)?
     pub fn is_store(reason: &str) -> bool {
-        reason == PLACE_PARAM_STORED || reason == LOCUS_STORED || reason == BOUNDED_STORED
+        reason == PLACE_PARAM_STORED
+            || reason == LOCUS_STORED
+            || reason == BOUNDED_STORED
+            || reason == BOUNDED_STORED_PART
     }
 
     /// Is the reason the local-place rule's (`PLACE_*`), not the
@@ -1929,6 +1941,11 @@ struct BoundedStoreAt {
     var: Option<usize>,
     keys: BTreeSet<String>,
     frame_list: bool,
+    /// The value is a call's result fresh at its top level that holds
+    /// another name's block only in a part (its keys part markers, no
+    /// place or cell marker): its copy is reported as
+    /// `reasons::BOUNDED_STORED_PART`.
+    result_part: bool,
 }
 
 /// A write event: the writes, and the positions it spans (a call's
@@ -3690,7 +3707,23 @@ impl<'p, 'a> Walk<'p, 'a> {
                     let at = self.pos;
                     let keys = keys.get(j).cloned().flatten().unwrap_or_default();
                     let call_span = (span.start.0, span.end.0);
-                    self.bounded_stores.push(BoundedStoreAt { call: id.0, call_span, span: value.span(), at, var, keys, frame_list });
+                    let is_call = match value {
+                        Expr::Or { inner, .. } => matches!(inner.as_ref(), Expr::Call { .. }),
+                        other => matches!(other, Expr::Call { .. }),
+                    };
+                    let result_part = is_call
+                        && keys.iter().any(|k| k.starts_with(PART))
+                        && !keys.iter().any(|k| k.starts_with(AT) || k.starts_with(CELL) || k.starts_with(IN_CELL));
+                    self.bounded_stores.push(BoundedStoreAt {
+                        call: id.0,
+                        call_span,
+                        span: value.span(),
+                        at,
+                        var,
+                        keys,
+                        frame_list,
+                        result_part,
+                    });
                 }
             }
         }
@@ -4868,7 +4901,8 @@ impl<'p, 'a> Walk<'p, 'a> {
         for st in &self.bounded_stores {
             let kind = self.bounded_store_kind(st, o.owned, &record, &cow_binds);
             if kind == BoundedStore::Copy && st.frame_list {
-                found.cell_copies.push(CellCopy { span: st.span, operand: true, reason: reasons::BOUNDED_STORED });
+                let reason = if st.result_part { reasons::BOUNDED_STORED_PART } else { reasons::BOUNDED_STORED };
+                found.cell_copies.push(CellCopy { span: st.span, operand: true, reason });
             }
             let held = found.bounded_stores.entry((st.call, st.span.start.0)).or_insert(kind);
             *held = (*held).max(kind);

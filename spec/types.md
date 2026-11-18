@@ -1721,6 +1721,11 @@ Semantics:
   anchored in the place's owner's arena, as `push` anchors the one it
   adds (the holding locus's arena, else the current one). It is a
   copy: a later intrinsic on either side does not reach the other.
+  A place no locus holds (a record local's field) keeps an element
+  already in that arena rather than copying it, so until a write the
+  two lists share their elements' blocks; a write into either copies
+  first (§ A local bound from a place is yours), and a value holding
+  such a field is not fresh for a `push` (below).
   An array literal builds the value it copies (above); any other value
   (another element type or capacity) is refused at the assignment ("a
   \`bounded[String; 4]\` is assigned whole only from another
@@ -1785,7 +1790,15 @@ Semantics:
   used — is stored as the list's own copy (a record element a fresh
   block, deeply; a String or Bytes copied), which the allocation
   survey reports as a store's copy (`copy: a value another name
-  reaches stored into a bounded list`). A local's list does not
+  reaches stored into a bounded list`). A call's result fresh at its
+  top level that holds another name's block in a part is copied too:
+  `fn summary_of(r: Row) -> Sum { let mut v = Sum { }; v.tags =
+  r.tags; return v; }` hands back `r`'s own elements in `v.tags`
+  (above: the whole assignment keeps them), and the list takes its
+  own copy of them. The survey reports it as `copy: a call's result
+  holding another name's block stored into a bounded list`; until GH
+  #2067 it carried the first reason, whose advice named a call's
+  result as a value nothing else names. A local's list does not
   retire what a `set` replaces: the frame's arena frees it with the
   frame. Until 2026-11-12 only a place a locus holds copied: a local's
   list kept the very block it was handed, and a write through either

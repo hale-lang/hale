@@ -768,8 +768,10 @@ fn own_entries_run_to_exit_programs() {
     // records it pushes in its loops (GH #2024); 29:
     // `tests/hale/str_chain_sources_test.hl`, whose chains over text
     // sources push the parts into a vec the same way (GH #1995 S2, chain
-    // sources).
-    assert_eq!(moved, 29, "the run-to-exit programs among the targets that lose a site");
+    // sources); 30: `tests/hale/bounded_part_result_push_test.hl`, whose
+    // `summaries` stores its own copy of each row's summary and whose
+    // `summary_of` builds the record it returns (GH #2067).
+    assert_eq!(moved, 30, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1040,6 +1042,8 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2197 InUnboundedLoop",
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2186 InUnboundedLoop",
             "tests/hale/api_value_map_test.hl: main StringConcat @2167..2180 InUnboundedLoop",
+            "tests/hale/bounded_part_result_push_test.hl: summaries CellCopy(\"copy: a call's result holding another name's block stored into a bounded list\") @889..902 InUnboundedLoop",
+            "tests/hale/bounded_part_result_push_test.hl: summary_of StructLit(\"Sum\") @726..742 InvokedUnboundedly",
             // `tests/hale/bounded_payload_enum_test.hl`: the text its `show` and
             // `tags` build for every element they are handed (GH #1951)
             "tests/hale/bounded_payload_enum_test.hl: show StringConcat @1716..1728 InvokedUnboundedly",
