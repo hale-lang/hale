@@ -12363,6 +12363,8 @@ shared	dynamic	sites in core #de4d766f
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/habitat_named_test.hl
+
 == dna/tests/habitat_operator_face_test.hl
 
 == dna/tests/habitat_operator_test.hl
