@@ -9285,6 +9285,10 @@ row	Source@main4	Source	main	default
 == tests/hale/unit_return_annotation_test.hl
 row	Counter@main1	Counter	main	default
 
+== tests/hale/units_form_iteration_test.hl
+row	PriceList@main2	PriceList	main	default
+row	Prices@main1	Prices	main	default
+
 == tests/hale/units_loop_test.hl
 root	Till	the entry
 row	Till@literal1	Till	main	default

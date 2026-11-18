@@ -17489,19 +17489,40 @@ impl<'a> Checker<'a> {
                 // m.entries` (hashmap) / `for x in v.items` (vec).
                 // `entries`/`items` are pseudo-fields the generic
                 // field check would reject — when the receiver is a
-                // locus, check only the receiver and bind the loop
-                // var Unknown (codegen resolves the cell type and
-                // rejects non-form receivers with a focused error).
+                // locus, check only the receiver. The loop var is the
+                // form's cell, as lowering binds it
+                // (`lower_for_hashmap_entries`, `lower_for_vec_items`):
+                // GH #2026, it was bound Unknown, so a quantity field
+                // read through it (`e.amount`) lost its unit and
+                // printed a bare count. A receiver that is no such
+                // form keeps the Unknown binding (codegen rejects it
+                // with a focused error).
                 let mut handled = false;
+                let mut form_cell = Ty::Unknown;
                 if let Expr::Field { receiver, name: fname, .. } = iter {
                     if fname.name == "entries" || fname.name == "items" {
                         let recv_ty = self.check_expr(receiver);
                         if let Ty::Named(ln) = &recv_ty {
-                            if matches!(
-                                self.top.lookup(ln),
-                                Some(TopSymbol::Locus(_))
-                            ) {
+                            if let Some(TopSymbol::Locus(info)) = self.top.lookup(ln) {
                                 handled = true;
+                                let form = self
+                                    .locus_decls
+                                    .get(ln.as_str())
+                                    .and_then(|d| d.form.as_ref())
+                                    .map(|f| f.name.name.clone());
+                                // The cell is what the form's store
+                                // takes: `set(cell)` on a hashmap,
+                                // `push(cell)` on a vec.
+                                let store = match (form.as_deref(), fname.name.as_str()) {
+                                    (Some("hashmap"), "entries") => Some("set"),
+                                    (Some("vec"), "items") => Some("push"),
+                                    _ => None,
+                                };
+                                if let Some(store) = store {
+                                    if let Some(m) = info.methods.iter().find(|m| m.name == store && m.params.len() == 1) {
+                                        form_cell = m.params[0].clone();
+                                    }
+                                }
                             }
                         }
                     }
@@ -17515,7 +17536,7 @@ impl<'a> Checker<'a> {
                 // (spec/units.md). Every other iterand keeps the
                 // permissive binding.
                 let elem = if handled {
-                    Ty::Unknown
+                    form_cell
                 } else {
                     match self.check_expr(iter) {
                         Ty::Bounded(e, _) | Ty::Array(e, _) => *e,

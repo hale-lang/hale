@@ -1,0 +1,66 @@
+// A quantity read through a form's iteration surface keeps its unit
+// (spec/units.md § A loop variable, GH #2026). The loop variable of
+// `for e in m.entries` (a `@form(hashmap)`) and `for x in v.items` (a
+// `@form(vec)`) is the form's cell, as the build binds it; the check
+// bound it Unknown, so a quantity field read through it (`e.amount`)
+// lost its quantity type and printed a bare count (`1400`) where every
+// other read printed `1400cent`.
+//
+// Pinned here: a field of the loop variable, the same field bound to a
+// `let`, in an f-string, and arithmetic that stays a quantity, over a
+// hashmap's entries and a vec's items; and the direct read as a control.
+
+unit cent;
+type Money = quantity Int in cent;
+
+type Price {
+    id: Int;
+    amount: Money;
+}
+
+@form(hashmap)
+locus Prices {
+    capacity { pool cells of Price indexed_by id; }
+}
+
+@form(vec)
+locus PriceList {
+    capacity { heap cells of Price; }
+}
+
+fn main() {
+    let p = Price { id: 1, amount: 1400cent };
+    std::test::assert_eq_str(to_string(p.amount), "1400cent", "the direct read prints its unit");
+
+    let m = Prices { };
+    m.set(p);
+    let mut seen = 0;
+    for e in m.entries {
+        std::test::assert_eq_str(
+            to_string(e.amount),
+            "1400cent",
+            "an entry's field prints its unit",
+        );
+        let a = e.amount;
+        std::test::assert_eq_str(to_string(a), "1400cent", "bound to a let, it still does");
+        std::test::assert_eq_str(f"{e.amount}", "1400cent", "and in an f-string");
+        let twice = e.amount + a;
+        std::test::assert_eq_str(to_string(twice), "2800cent", "a sum of two is a quantity");
+        seen = seen + 1;
+    }
+    std::test::assert_eq_int(seen, 1, "the map has one entry");
+
+    let v = PriceList { };
+    v.push(p);
+    v.push(Price { id: 2, amount: 25cent });
+    let mut total: Money = 0cent;
+    for x in v.items {
+        total = total + x.amount;
+    }
+    std::test::assert_eq_str(to_string(total), "1425cent", "a vec item's field sums as money");
+    for x in v.items {
+        if x.id == 2 {
+            std::test::assert_eq_str(f"{x.amount}", "25cent", "a vec item's field prints its unit");
+        }
+    }
+}
