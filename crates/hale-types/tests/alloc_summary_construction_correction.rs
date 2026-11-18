@@ -758,8 +758,10 @@ fn own_entries_run_to_exit_programs() {
     // decodes the same way (GH #1951 item 3); 25:
     // `tests/hale/string_append_test.hl`, whose `main` appends to Strings in
     // its loops (GH #1947); 26: `tests/hale/str_split_sources_test.hl`,
-    // whose loops push the parts they visit into a vec (GH #1995 S2).
-    assert_eq!(moved, 26, "the run-to-exit programs among the targets that lose a site");
+    // whose loops push the parts they visit into a vec (GH #1995 S2); 27:
+    // `tests/hale/units_form_iteration_test.hl`, whose loops over a form's
+    // cells build their assertion messages (GH #2026).
+    assert_eq!(moved, 27, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1157,6 +1159,10 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625361..1610625403 InUnboundedLoop",
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625452..1610625489 InUnboundedLoop",
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625452..1610625482 InUnboundedLoop",
+            // `tests/hale/units_form_iteration_test.hl`: the f-strings its
+            // loops over a form's cells build (GH #2026)
+            "tests/hale/units_form_iteration_test.hl: main StringConcat @1472..1485 InUnboundedLoop",
+            "tests/hale/units_form_iteration_test.hl: main StringConcat @2109..2122 InUnboundedLoop",
         ]
     );
 }
