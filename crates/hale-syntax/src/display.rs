@@ -474,4 +474,23 @@ mod tests {
         assert!(!variant_fn("E2", "V").starts_with(&variant_fn_prefix("E")));
         assert_eq!(generated_display("__enum_name_Side"), None);
     }
+
+    /// A `///` doc comment (GH #1674) and a template stand on one
+    /// declaration together, above or below the annotation, on a record and
+    /// on a variant; neither takes the other's place.
+    #[test]
+    fn a_doc_comment_and_a_template_stand_together() {
+        use crate::ast::{TopDecl, TypeDeclBody};
+        let src = "/// Money.\n@display(\"${dollars}\")\ntype Money { dollars: Int; }\n\
+                   type Side = enum {\n    @display(\"buy\")\n    /// Buying.\n    Buy,\n    Sell,\n};\n";
+        let prog = crate::parse_source(src).expect("parses");
+        let types: Vec<_> = prog.items.iter().filter_map(|i| if let TopDecl::Type(t) = i { Some(t) } else { None }).collect();
+        assert_eq!(types[0].doc.text(), Some("Money."));
+        assert_eq!(types[0].template.as_ref().map(|t| t.text.as_str()), Some("${dollars}"));
+        let TypeDeclBody::Enum(vs) = &types[1].body else { panic!("an enum") };
+        assert_eq!(vs[0].doc.text(), Some("Buying."));
+        assert_eq!(vs[0].template.as_ref().map(|t| t.text.as_str()), Some("buy"));
+        assert_eq!(vs[1].doc.text(), None);
+        assert!(vs[1].template.is_none());
+    }
 }
