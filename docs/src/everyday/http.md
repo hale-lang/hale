@@ -63,7 +63,7 @@ Hale interfaces use structural satisfaction: any locus that defines `fn handle(r
 
 ### Building a Response Body
 
-A body assembled from many pieces is built by appending to one local and handing it to the `Response` once. Appending to a local is linear in the body's size (see [Strings & Text](../basics/strings.md#building-strings-in-a-loop)), as long as the loop reads the growing text only as an operand of `+` or a comparison, in a slice, or with a `std::` reader such as `len` or `std::str::contains`:
+A body assembled from many pieces is built by appending to one local and handing it to the `Response` once. Appending to a local is linear in the body's size (see [Strings & Bytes](../basics/strings.md#building-strings-in-a-loop)), as long as the loop reads the growing text only as an operand of `+` or a comparison, in a slice, or with a `std::` reader such as `len` or `std::str::contains`:
 
 ```hale
 locus Rows {
