@@ -40,6 +40,10 @@ fn main() {
     std::test::assert_eq_int(g(0), 20, "an if-else that returns in both branches, then dead code");
     std::test::assert_eq_int(g(1), 5, "a block arm with a tail");
     std::test::assert_eq_int(g(7), 8, "an expression arm");
-    std::test::assert_eq_int(first_over([1, 4, 9, 2], 3), 4, "a Bool-valued match with an early-return arm");
+    std::test::assert_eq_int(
+        first_over([1, 4, 9, 2], 3),
+        4,
+        "a Bool-valued match with an early-return arm",
+    );
     std::test::assert_eq_int(first_over([1, 2, 3, 0], 3), 0, "no arm returns");
 }
