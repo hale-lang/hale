@@ -1175,6 +1175,16 @@ pub fn desugar_intra_locus_topics(
     // PUBLISHER, and is placed by its binding, not by `placement`.)
     let adapter_loci = collect_adapter_loci(&program.items);
 
+    // GH #2028: a field child a failure can come from (it declares a
+    // `closure` or a `birth_check`) is recovered through its bus
+    // registration: a handler that fails is followed, in its handler
+    // wrapper, by the supervisor's decision — a restart re-runs its
+    // birth() and run(), an absorb stops it and drops its
+    // subscriptions. A direct call bypasses both, so the handler kept
+    // receiving after an absorb and a restart never re-ran anything.
+    // Its publishes stay on the bus.
+    let failable_loci = collect_failable_loci(&program.items);
+
     // Identify topic → rewrite recipe for each eligible topic.
     let mut eligible: BTreeMap<String, EligibleRewrite> = BTreeMap::new();
     for (topic, pub_loci) in &pubs {
@@ -1233,6 +1243,15 @@ pub fn desugar_intra_locus_topics(
             continue;
         }
         let field = fields_of_s[0].clone();
+        // GH #2028: see `failable_loci`. (A locus's publish to its own
+        // subscription, case (a), stays a direct call: its handler runs
+        // inside the publisher's own body, whose run() wrapper or
+        // handler wrapper decides after it, and the call reaches this
+        // instance alone, as the topic's one subscriber locus may have
+        // several instances.)
+        if failable_loci.contains(sub_locus) {
+            continue;
+        }
         // F.31 pool-safety: if this field-child is placed on a
         // thread other than its owner's, the publish must route
         // through the bus (which posts to the child's pool), not a
@@ -1265,6 +1284,29 @@ pub fn desugar_intra_locus_topics(
         }
     }
     rewrites
+}
+
+/// GH #2028: every locus a failure can originate in, by declared name:
+/// one declaring a `closure` or a `birth_check` (the restart rows'
+/// failure column, `hale_types::handler_routing::HandlerRouting::can_fail`,
+/// reads the same two members). Across all module nesting.
+fn collect_failable_loci(items: &[TopDecl]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    fn walk(items: &[TopDecl], out: &mut std::collections::BTreeSet<String>) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    if l.members.iter().any(|m| matches!(m, LocusMember::Closure(_) | LocusMember::BirthCheck(_))) {
+                        out.insert(l.name.name.clone());
+                    }
+                }
+                TopDecl::Module(m) => walk(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    walk(items, &mut out);
+    out
 }
 
 /// Set of every declared locus type name in the program (across
