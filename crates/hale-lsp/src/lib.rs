@@ -2005,13 +2005,18 @@ fn hover_text(
         let merged = base as usize + tokens[idx].span.start.as_usize();
         let l = enclosing_locus(scope.top, merged)?;
         let p = l.params.iter().find(|p| p.name == word)?;
-        return Some(format!(
+        let mut out = format!(
             "```hale\nself.{}: {}\n```\n\nparam of \
              `locus {}`",
             p.name,
             p.ty.display(),
             l.name
-        ));
+        );
+        // GH #1674: the param's doc comment
+        if let Some(doc) = locus_param_doc(snap, &l.name, word) {
+            out.push_str(&format!("\n\n{doc}"));
+        }
+        return Some(out);
     }
 
     // Top-level symbol lookup.
@@ -2179,7 +2184,57 @@ fn hover_text(
         }
         _ => return None,
     };
-    Some(text)
+    // GH #1674: the declaration's doc comment, below its signature
+    Some(match top_decl_doc(snap, word) {
+        Some(doc) => format!("{text}\n\n{doc}"),
+        None => text,
+    })
+}
+
+/// GH #1674: the doc comment of the param `param` of the locus `locus`.
+fn locus_param_doc(snap: &Snapshot, locus: &str, param: &str) -> Option<String> {
+    use hale_syntax::ast::{flat_decls, LocusMember, TopDecl};
+    for prog in snap.programs().values() {
+        for d in flat_decls(&prog.items) {
+            let TopDecl::Locus(l) = d else { continue };
+            if l.name.name != locus {
+                continue;
+            }
+            for m in &l.members {
+                if let LocusMember::Params(pb) = m {
+                    if let Some(p) = pb.params.iter().find(|p| p.name.name == param) {
+                        return p.doc.text().map(str::to_string);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// GH #1674: the doc comment of the top-level declaration named `name` in
+/// the editor's seed.
+fn top_decl_doc(snap: &Snapshot, name: &str) -> Option<String> {
+    use hale_syntax::ast::{flat_decls, TopDecl};
+    for prog in snap.programs().values() {
+        for d in flat_decls(&prog.items) {
+            let (n, doc) = match d {
+                TopDecl::Fn(f) => (&f.name, &f.doc),
+                TopDecl::Locus(l) => (&l.name, &l.doc),
+                TopDecl::Type(t) => (&t.name, &t.doc),
+                TopDecl::Topic(t) => (&t.name, &t.doc),
+                TopDecl::Interface(i) => (&i.name, &i.doc),
+                TopDecl::Const(c) => (&c.name, &c.doc),
+                TopDecl::Role(r) => (&r.name, &r.doc),
+                TopDecl::Api(a) => (&a.name, &a.doc),
+                _ => continue,
+            };
+            if n.name == name {
+                return doc.text().map(str::to_string);
+            }
+        }
+    }
+    None
 }
 
 pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> String {

@@ -654,6 +654,9 @@ pub fn link_checkable(
     }
 
     let mut program = Program {
+        // GH #1674: the entry seed's own; an imported seed's stray doc
+        // comments are its own check's to warn at
+        stray_docs: merged.stray_docs,
         // The load's table as the last imported seed's parse left it,
         // not `merged`'s own, which predates the imports.
         declared_effects: {
@@ -887,6 +890,7 @@ where
     declared.sort_unstable();
     declared.dedup();
     let merged = Program {
+        stray_docs: programs.iter().flat_map(|p| p.stray_docs.iter().cloned()).collect(),
         declared_effects: declared,
         effect_defs: table.effect_defs.clone(),
         effect_names: table.effect_names.clone(),

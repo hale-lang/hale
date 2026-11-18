@@ -132,6 +132,55 @@ The compiler hashes every surface into a 64-bit FNV-1a **contract digest** (`fnv
 
 Because admission checks member digests, adding a new `rpc` row to a surface changes the surface digest without invalidating clients compiled against existing members. Modifying an existing member's request/response types, error classes, route, or roles changes its member digest, causing outdated clients to be rejected with `digest_mismatch`.
 
+### Documenting a Surface (`///` Doc Comments)
+
+A `///` comment directly above a declaration is its **doc comment**, and every document generated from a surface carries it: the description, the OpenAPI, JSON Schema, MCP and `.proto` forms, and the TypeScript, JavaScript and Hale clients. Document the surface, its rows, the handlers and the types they name:
+
+```hale
+role clerk;
+
+/// A request to place an order.
+type PlaceOrder {
+    /// The instrument's ticker symbol.
+    symbol: String;
+    /// How many units to buy.
+    qty: Int;
+}
+
+/// Why an order was not placed.
+type OrderError = enum {
+    /// No instrument has the symbol.
+    @not_found UnknownSymbol,
+    Rejected(String),
+};
+
+type Receipt { order: Int; }
+
+locus Desk {
+    /// Place an order (the handler's doc; a row's own doc replaces it).
+    fn place(
+        /// The order to place.
+        o: PlaceOrder
+    ) -> Receipt fallible(OrderError) {
+        return Receipt { order: o.qty };
+    }
+}
+
+/// The order desk's public surface.
+api Orders {
+    /// Place an order.
+    /// It is filled at the limit or better.
+    rpc Desk::place requires: [clerk];
+}
+```
+
+- **Rows.** A row's doc is the one above its `rpc` line, or its handler's when it has none. In OpenAPI the first line is the operation's `summary` and the rest its `description`; an MCP tool's description starts with it, which is what an agent reads when it picks a tool.
+- **Types.** A record's, a field's, an enum's and a variant's docs travel with the type into every row that uses it, as JSON Schema `description` keys (a variant's under `x-hale-variant-descriptions`), `.proto` comments, JSDoc and Hale doc comments. A field with no doc of its own takes the doc of the scalar or enum it is declared with.
+- **The request.** A doc on the handler's request parameter describes the request in that row, in place of its type's.
+- **Prose is not shape.** Docs move no digest, so rewording one refuses no client. `hale api export --check` still reports a committed bundle whose docs changed, since its files differ.
+
+A `///` comment that documents nothing (above a statement, a lifecycle hook or an `import`, at the end of a file, or after code on its own line) is a warning, not an error. Write `//` for a comment that is not a doc. `hale fmt` keeps every doc comment where it is.
+
 ### Inspecting the Static API Inventory (`hale check --api`)
 
 Pass `--api` to `hale check` to emit the program's complete API inventory as JSON (all surfaces, digests, exposures, and JSON Schemas) without running the program:

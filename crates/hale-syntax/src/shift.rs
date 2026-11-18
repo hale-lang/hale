@@ -87,6 +87,9 @@ macro_rules! no_position {
 
 no_position!(String, bool, u8, u16, u32, u64, i64, f64);
 
+// GH #1674: a doc comment's text carries no position.
+no_position!(Doc);
+
 impl<T: Shift> Shift for Vec<T> {
     fn shift(&mut self, d: Move) {
         for x in self {
@@ -166,7 +169,9 @@ shift_struct!(Program {
     imports,
     items,
     span,
+    stray_docs,
 });
+shift_struct!(StrayDoc { span, trailing });
 shift_struct!(EffectClasses { names, declared, defs });
 shift_struct!(Import { path, alias, span, path_span, items });
 shift_struct!(ImportItem { name, rename, span });
@@ -197,7 +202,7 @@ impl Shift for TopDecl {
 
 // Claims vocabulary.
 
-shift_struct!(RoleDecl { name, includes, span });
+shift_struct!(RoleDecl { name, includes, span, doc });
 shift_struct!(FleetDecl { name, params, placement, bindings, claims, span, written });
 shift_struct!(FleetPlacement { instance, spec, span });
 
@@ -208,9 +213,9 @@ impl Shift for FleetPlacementSpec {
         }
     }
 }
-shift_struct!(ApiDecl { name, rows, span, origin, source });
+shift_struct!(ApiDecl { name, rows, span, origin, source, doc });
 shift_struct!(ApiSource { kind, location, span });
-shift_struct!(RpcRow { locus, written, method, requires, span, signature, route });
+shift_struct!(RpcRow { locus, written, method, requires, span, signature, route, doc });
 shift_struct!(RpcRoute { text, status, span });
 shift_struct!(RpcSignature { request, response, wire });
 shift_struct!(UnitDecl { name, equation, span, id });
@@ -271,6 +276,7 @@ shift_struct!(TopicDecl {
     on_unmatched,
     span,
     id,
+    doc,
 });
 shift_struct!(RingLayoutDecl {
     name,
@@ -299,8 +305,8 @@ impl Shift for RingAttrValue {
 shift_unit_enum!(UnmatchedPolicy { Swallow, Fail, Fallback });
 shift_struct!(TargetDecl { name, capabilities, span, synthesized });
 shift_struct!(Capability { segments, span });
-shift_struct!(InterfaceDecl { name, methods, span, id });
-shift_struct!(InterfaceMethodSig { name, params, ret, fallible, span });
+shift_struct!(InterfaceDecl { name, methods, span, id, doc });
+shift_struct!(InterfaceMethodSig { name, params, ret, fallible, span, doc });
 
 // Loci and their annotations.
 
@@ -324,6 +330,7 @@ shift_struct!(LocusDecl {
     members,
     span,
     id,
+    doc,
 });
 shift_struct!(RepoAnnotation { ty, span });
 shift_struct!(FormAnnotation { name, args, span });
@@ -471,7 +478,7 @@ shift_unit_enum!(CapacitySlotKind { Pool, Heap });
 // Params, contracts, bus.
 
 shift_struct!(ParamsBlock { params, span });
-shift_struct!(ParamDecl { name, ty, init, span, id, serve });
+shift_struct!(ParamDecl { name, ty, init, span, id, serve, doc });
 
 impl Shift for ParamInit {
     fn shift(&mut self, d: Move) {
@@ -597,7 +604,7 @@ impl Shift for PerspectiveMember {
     }
 }
 
-shift_struct!(TypeDecl { name, display, generics, body, span, id, synthetic, positional });
+shift_struct!(TypeDecl { name, display, generics, body, span, id, synthetic, positional, doc });
 
 impl Shift for TypeDeclBody {
     fn shift(&mut self, d: Move) {
@@ -624,7 +631,7 @@ impl Shift for ScalarClause {
     }
 }
 
-shift_struct!(StructField { name, ty, default, tag, indexed_by, map_value, optional, span });
+shift_struct!(StructField { name, ty, default, tag, indexed_by, map_value, optional, span, doc });
 
 impl Shift for FieldOptional {
     fn shift(&mut self, _: Move) {
@@ -633,8 +640,8 @@ impl Shift for FieldOptional {
         }
     }
 }
-shift_struct!(EnumVariant { name, fields, class, span, member, tag });
-shift_struct!(ConstDecl { name, ty, value, span, id });
+shift_struct!(EnumVariant { name, fields, class, span, member, tag, doc });
+shift_struct!(ConstDecl { name, ty, value, span, id, doc });
 
 // Effects and fn contracts.
 
@@ -704,11 +711,12 @@ shift_struct!(FnDecl {
     body,
     span,
     id,
+    doc,
 });
 shift_struct!(RpcAttr { requires, span });
 shift_struct!(ModuleDecl { name, items, span, id });
 shift_struct!(GenericParam { name, bound, span });
-shift_struct!(Param { name, ty, default, secret, span });
+shift_struct!(Param { name, ty, default, secret, span, doc });
 
 // Type expressions.
 

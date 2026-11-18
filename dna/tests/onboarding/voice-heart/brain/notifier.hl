@@ -1,19 +1,19 @@
-/// The notice of the route table's new version on `<root>.route`
-/// (`voice.route` standalone; grafted, under the broker's prefix)
-/// (internal.yaml `RouteNotice`), on a thread of its own.
-///
-/// The tick hands it each version over the bus and goes on: nothing the
-/// tick does waits on NATS, so an address that never answers cannot hold
-/// the tick, its Postgres session or the lock. The notifier keeps one NATS
-/// connection, dials again with a backoff when it has none (reset only by a
-/// publish the server acknowledged), and publishes
-/// the newest version it was handed: only the newest matters, so versions
-/// that arrive while it cannot publish are folded into the last.
-///
-/// The vendored client dials with `std::io::tcp::connect`, which waits on
-/// an address that never answers until the kernel gives up (about two
-/// minutes). Each dial is first tried with `std::io::tcp::connect_within`,
-/// so a dead address costs two seconds of this thread, not two minutes.
+// The notice of the route table's new version on `<root>.route`
+// (`voice.route` standalone; grafted, under the broker's prefix)
+// (internal.yaml `RouteNotice`), on a thread of its own.
+//
+// The tick hands it each version over the bus and goes on: nothing the
+// tick does waits on NATS, so an address that never answers cannot hold
+// the tick, its Postgres session or the lock. The notifier keeps one NATS
+// connection, dials again with a backoff when it has none (reset only by a
+// publish the server acknowledged), and publishes
+// the newest version it was handed: only the newest matters, so versions
+// that arrive while it cannot publish are folded into the last.
+//
+// The vendored client dials with `std::io::tcp::connect`, which waits on
+// an address that never answers until the kernel gives up (about two
+// minutes). Each dial is first tried with `std::io::tcp::connect_within`,
+// so a dead address costs two seconds of this thread, not two minutes.
 
 import "../lib/pond/realtime/nats" as nats;
 

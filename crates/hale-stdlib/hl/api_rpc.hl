@@ -3805,9 +3805,15 @@ fn __api_mcp_tools(doc: String) -> String {
             if len(roles) >= 2 { roles = roles[1..(len(roles) - 1)]; } else { roles = ""; }
             let mut needs = "Requires no role";
             if len(roles) > 0 { needs = "Requires " + roles + " under the exposure's role source"; }
-            let text = "rpc " + name + " of " + surface + ": returns "
+            let mut text = "rpc " + name + " of " + surface + ": returns "
                 + __api_mcp_type_name(std::json::find_field_raw(el, "response")) + fails + ". "
                 + needs + "; the server still authorizes every request.";
+            // GH #1674: the member's doc comment first, as `hale check --api --mcp`
+            // writes it
+            let doc = std::json::find_field_raw(el, "description");
+            if len(doc) >= 2 {
+                text = std::json::unescape_string(doc[1..(len(doc) - 1)]) + "\n\n" + text;
+            }
             if len(tools) > 0 { tools = tools + ","; }
             tools = tools + "{\"name\":\"" + __api_mcp_tool(name) + "\",\"description\":\""
                 + std::json::escape_string(text) + "\",\"inputSchema\":" + input
