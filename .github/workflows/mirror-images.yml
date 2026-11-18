@@ -3,6 +3,14 @@
 # limit is shared by every GitHub-hosted runner's address and failed whole
 # runs). tests.yml pulls these as ghcr.io/hale-lang/ci-<name>:<tag>.
 # Refreshed weekly; run by hand after changing an image or its tag.
+#
+# It also mirrors the habitat's Forgejo (GH #2064): the image
+# dna/core/forgejo.hl pins as FORGEJO_IMAGE, upstream at
+# codeberg.org/forgejo/forgejo, copied to ghcr.io/hale-lang/forgejo by the
+# same digest (`--all --preserve-digests`: the index and every
+# architecture's manifest byte for byte), so a codeberg.org outage or DNS
+# fault cannot stop a habitat's forge from starting. The digest is read from
+# FORGEJO_IMAGE, so repinning it there re-mirrors on the push to main.
 name: mirror-images
 
 on:
@@ -11,7 +19,7 @@ on:
     - cron: "17 4 * * 1"
   push:
     branches: [main]
-    paths: [.github/workflows/mirror-images.yml]
+    paths: [.github/workflows/mirror-images.yml, dna/core/forgejo.hl]
 
 permissions:
   contents: read
@@ -21,19 +29,45 @@ jobs:
   mirror:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: dna/core/forgejo.hl
+          sparse-checkout-cone-mode: false
       - name: Copy each image, every architecture
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
+          # copy <source reference> <ghcr.io/hale-lang/ name[:tag]> [skopeo flags]
           copy() {
+            local src=$1 dest=$2; shift 2
             for attempt in 1 2 3 4 5; do
-              if skopeo copy --all --retry-times 3 --dest-creds "$ACTOR:$TOKEN" "docker://docker.io/$1" "docker://ghcr.io/hale-lang/$2"; then return 0; fi
-              echo "copy of $1 failed (attempt $attempt); waiting" >&2; sleep $((attempt * 60))
+              if skopeo copy --all "$@" --retry-times 3 --dest-creds "$ACTOR:$TOKEN" "docker://$src" "docker://ghcr.io/hale-lang/$dest"; then return 0; fi
+              echo "copy of $src failed (attempt $attempt); waiting" >&2; sleep $((attempt * 60))
             done
             return 1
           }
-          copy pgvector/pgvector:pg16 ci-pgvector:pg16
-          copy library/nats:2 ci-nats:2
-          copy prom/prometheus:v3.5.0 ci-prometheus:v3.5.0
+          copy docker.io/pgvector/pgvector:pg16 ci-pgvector:pg16
+          copy docker.io/library/nats:2 ci-nats:2
+          copy docker.io/prom/prometheus:v3.5.0 ci-prometheus:v3.5.0
+
+          # The habitat's Forgejo, by the digest FORGEJO_IMAGE pins. skopeo
+          # takes a tag or a digest in a source, not both, so the source is
+          # the digest alone; the tag only names it at the mirror.
+          pinned=$(grep -oE '^const FORGEJO_IMAGE: String = "[^"]+"' dna/core/forgejo.hl | sed -E 's/^[^"]*"//; s/"$//')
+          tag=$(sed -nE 's|^.*/forgejo:([^@]+)@sha256:[0-9a-f]{64}$|\1|p' <<<"$pinned")
+          digest=$(grep -oE 'sha256:[0-9a-f]{64}$' <<<"$pinned")
+          if [ -z "$tag" ] || [ -z "$digest" ]; then
+            echo "dna/core/forgejo.hl: FORGEJO_IMAGE is not <registry>/forgejo:<tag>@sha256:<digest>: '$pinned'" >&2
+            exit 1
+          fi
+          copy "codeberg.org/forgejo/forgejo@$digest" "forgejo:$tag" --preserve-digests
+          # The mirror answers by the same digest: its index, fetched raw,
+          # hashes to it.
+          got="sha256:$(skopeo inspect --raw --creds "$ACTOR:$TOKEN" "docker://ghcr.io/hale-lang/forgejo@$digest" | sha256sum | cut -d' ' -f1)"
+          if [ "$got" != "$digest" ]; then
+            echo "ghcr.io/hale-lang/forgejo@$digest answers with a manifest of $got" >&2
+            exit 1
+          fi
+          echo "mirrored codeberg.org/forgejo/forgejo@$digest as ghcr.io/hale-lang/forgejo:$tag"
