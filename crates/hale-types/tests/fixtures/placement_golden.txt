@@ -8781,6 +8781,7 @@ shared	__StdJsonBuilder@main2	__StdJsonBuilder #6efd4260
 shared	__StdJsonBuilder@main3	__StdJsonBuilder #6efd4260
 shared	__StdJsonBuilder@main4	__StdJsonBuilder #6efd4260
 shared	__StdJsonBuilder@main5	__StdJsonBuilder #6efd4260
+shared	__StdJsonBuilder@main6	__StdJsonBuilder #6efd4260
 shared	dynamic	sites in the stdlib #c3a51769
 
 == tests/hale/json_escape_runs_test.hl
