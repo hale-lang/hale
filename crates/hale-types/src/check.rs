@@ -1376,6 +1376,7 @@ fn walk_bundle(
         unresolved_import_aliases: &unresolved_import_aliases,
         typed: &mut typed,
         body: NodeId::NONE,
+        in_display_template: false,
         expr_types: None,
         views: Default::default(),
         view_callee_node: 0,
@@ -11465,7 +11466,9 @@ fn callee_display(callee: &Expr) -> String {
     match callee {
         Expr::Ident(id) => match id.name.strip_prefix("__json_parse_") {
             Some(t) => format!("{t}::from_json"),
-            None => hale_syntax::enum_names::generated_display(&id.name).unwrap_or_else(|| id.name.clone()),
+            None => hale_syntax::enum_names::generated_display(&id.name)
+                .or_else(|| hale_syntax::display::generated_display(&id.name))
+                .unwrap_or_else(|| id.name.clone()),
         },
         Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
         Expr::KwSelf(_) => "self".to_string(),
@@ -11651,6 +11654,9 @@ struct Checker<'a> {
     /// hook, a mode, an `on_failure`, a closure; else the enclosing
     /// locus or top-level declaration. The table's rows are its.
     body: NodeId,
+    /// RFC #2035: walking the function a `@display` template desugared
+    /// to, whose `to_string` calls are the template's holes.
+    in_display_template: bool,
     /// While a closure assertion is walked: the type the checker gave
     /// each expression, by node, so its accumulators read the types of
     /// the very expressions they accumulate.
@@ -11970,6 +11976,25 @@ impl<'a> Checker<'a> {
                         .collect(),
                 );
                 self.check_generic_bound_names("type", &t.name.name, &t.generics);
+                // RFC #2035 (F.54): a template never widens the printable
+                // set. The record must render structurally already, so its
+                // `{x:?}` and an assertion's message always exist, whatever
+                // fields the template names.
+                if let Some(tpl) = &t.template {
+                    let ty = Ty::Named(t.name.name.clone());
+                    if !self.ty_is_printable(&ty) {
+                        self.diags.push(Diag::ty(
+                            tpl.span,
+                            format!(
+                                "`{}` takes no `@display`: a template is declared only on a type that is already \
+                                 printable, and this one is not ({}). A template never widens the printable set, \
+                                 so `{{x:?}}` always has a form to show (spec/semantics.md § Rendering values as text)",
+                                t.name.name,
+                                self.why_unprintable(&ty, 0).unwrap_or_else(|| "this one is not".to_string())
+                            ),
+                        ));
+                    }
+                }
                 match &t.body {
                     TypeDeclBody::Struct(fields) => {
                         for f in fields {
@@ -16244,7 +16269,12 @@ impl<'a> Checker<'a> {
 
     fn check_fn(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
         let prev_body = std::mem::replace(&mut self.body, decl.id);
+        let prev_tpl = std::mem::replace(
+            &mut self.in_display_template,
+            decl.name.name.starts_with(hale_syntax::display::TEMPLATE_PREFIX),
+        );
         self.check_fn_at(decl, locus);
+        self.in_display_template = prev_tpl;
         self.body = prev_body;
     }
 
@@ -21376,10 +21406,74 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// RFC #2035 (F.54): a value of `t`, the expression `e`, rendered as
+    /// text: the `@display` template functions the rendering calls, for the
+    /// allocation summary, which cannot type the value itself.
+    fn note_render(&mut self, e: &Expr, t: &Ty) {
+        // A generic body records each specialization's rendering too: its
+        // type parameter is known only there (`fn show<T>(i: T)` called
+        // with a templated `T`). The rows merge (`TypingRecord::render`).
+        let mut fns = Vec::new();
+        self.display_reach(t, &mut BTreeSet::new(), &mut fns);
+        self.typed.render(self.body, e.span(), fns);
+    }
+
+    /// The template functions rendering a value of `t` calls: its record's,
+    /// or each templated variant's of its enum; and where a value renders
+    /// structurally, what its fields, payloads and elements reach, at any
+    /// depth, each occurrence once. `path` holds the types being walked,
+    /// only to stop at one that contains itself.
+    fn display_reach(&self, t: &Ty, path: &mut BTreeSet<String>, out: &mut Vec<String>) {
+        let has_fn = |n: &str| matches!(self.top.lookup(n), Some(TopSymbol::Fn(_)));
+        match self.through_aliases(t.clone()) {
+            Ty::Named(n) => {
+                let record = hale_syntax::display::record_fn(&n);
+                if has_fn(&record) {
+                    out.push(record);
+                    return;
+                }
+                if !path.insert(n.clone()) {
+                    return;
+                }
+                if let Some(TopSymbol::Type(info)) = self.top.lookup(&n) {
+                    match &info.kind {
+                        TypeKind::Struct(fields) => {
+                            for f in fields {
+                                self.display_reach(&f.ty, path, out);
+                            }
+                        }
+                        TypeKind::Enum(vs) => {
+                            for v in vs {
+                                let f = hale_syntax::display::variant_fn(&n, &v.name);
+                                if has_fn(&f) {
+                                    out.push(f);
+                                } else {
+                                    for p in &v.fields {
+                                        self.display_reach(p, path, out);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                path.remove(&n);
+            }
+            Ty::Tuple(es) => {
+                for e in &es {
+                    self.display_reach(e, path, out);
+                }
+            }
+            Ty::Array(e, _) | Ty::Bounded(e, _) => self.display_reach(&e, path, out),
+            _ => {}
+        }
+    }
+
     /// GH #1076 (U3): a value of `t`, the expression `e`, printed: a
     /// quantity's row says the unit lowering writes after its count.
     fn record_printed(&mut self, e: &Expr, t: &Ty) {
         use crate::typed_bodies::{ConversionKind, ConversionRow};
+        self.note_render(e, t);
         if self.specializing.is_some() || !self.scalars.has_quantities() {
             return;
         }
@@ -24523,7 +24617,10 @@ impl<'a> Checker<'a> {
                     let shadowed = self.top.lookup(&id.name).is_some();
                     if !shadowed {
                         match id.name.as_str() {
-                            "println" | "print" | "to_string" => {
+                            // RFC #2035 review: `eprintln` / `eprint` render as
+                            // `println` does, so they are held to the one rule
+                            // and record the template calls they make.
+                            "println" | "print" | "eprintln" | "eprint" | "to_string" => {
                                 for a in args {
                                     self.warn_if_meant_an_fstring(a);
                                     let at = self.check_expr(a);
@@ -24531,12 +24628,19 @@ impl<'a> Checker<'a> {
                                     if let Some(cell) = self.cell_of(a) {
                                         self.refuse_printed_cell(&id.name, a, &cell);
                                     } else if !self.ty_is_printable(&at) {
+                                        // RFC #2035: a template's hole is a
+                                        // `to_string` the author never wrote.
+                                        let who = if self.in_display_template {
+                                            "a `@display` hole".to_string()
+                                        } else {
+                                            format!("`{}`", id.name)
+                                        };
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
-                                                "`{}` cannot render a value \
+                                                "{} cannot render a value \
                                                  of type `{}` — {}",
-                                                id.name,
+                                                who,
                                                 at.display(),
                                                 self.why_unprintable(&at, 0)
                                                     .unwrap_or_else(|| {
@@ -27370,6 +27474,11 @@ impl<'a> Checker<'a> {
         let Ok(spec) = FormatSpec::parse(spec_text) else {
             return;
         };
+        // RFC #2035: a hole renders through the value's templates, but `?`
+        // past every one.
+        if spec.kind != SpecKind::Debug {
+            self.note_render(&args[0], &vt);
+        }
         // Precision applies to the FRACTIONAL types only. Int and
         // Duration are excluded even though they are numbers:
         // `{n:.2}` on an integer has no meaning, and accepting it
@@ -27380,7 +27489,8 @@ impl<'a> Checker<'a> {
             vt,
             Ty::Prim(PrimType::Float | PrimType::Decimal(_)) | Ty::Unknown
         );
-        if spec.kind != SpecKind::Display
+        // `?` (RFC #2035) takes any printable value, checked above.
+        if matches!(spec.kind, SpecKind::HexLower | SpecKind::HexUpper)
             && !matches!(vt, Ty::Prim(PrimType::Int) | Ty::Unknown)
         {
             self.diags.push(Diag::ty(

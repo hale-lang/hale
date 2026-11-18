@@ -144,6 +144,36 @@ Two types cannot be formatted directly:
 1. **Loci:** A locus is a stateful component (which may be `@sealed` to confine secrets), not a value record. Format specific fields instead.
 2. **`Bytes`:** Raw binary buffers have no single canonical text form; explicitly decode them with `std::str::from_bytes(b)`, format their `len(b)`, or encode them as hex.
 
+### Declaring How a Type Reads: `@display`
+
+The structural form is good for debugging but rarely how a domain value should read. A record, or an enum's variant, can declare its own text with a template. Every rendering path uses it: `println`, `print`, `to_string`, `String + x` and f-strings.
+
+```hale
+@display("${dollars}.{cents:0>2} {currency}")
+type Money { dollars: Int; cents: Int; currency: String; }
+
+type Side = enum {
+    @display("buy") Buy,
+    @display("other: {0}") Other(String),
+};
+
+fn main() {
+    let m = Money { dollars: 12, cents: 5, currency: "USD" };
+    println(m);                    // $12.05 USD
+    println(Side::Other("x"));     // other: x
+    println(f"{m:?}");             // Money { dollars: 12, cents: 5, currency: "USD" }
+    println(Money::display(m));    // $12.05 USD
+}
+```
+
+- A template is literal text and holes. Each hole names a field (`{dollars}`) or a variant's payload position (`{0}`), with an optional format spec (`{cents:0>2}`). `{{` and `}}` are literal braces.
+- A template holds no expressions or calls, so rendering can't fail. The compiler checks each hole like an f-string's, at the template: the field must exist and be printable, and the spec must fit it.
+- `@display` is allowed only on a type that is already printable, so a record holding `Bytes` takes none.
+- A nested value renders by its own template, or structurally if it has none. An alias or an imported type renders as its declaration does.
+- `{x:?}` shows the structural form, bypassing every template at every depth. Use it in logs of internals and test messages.
+- `T::display(v)` names the rendering and can be passed as a function value.
+- Rendering through a template allocates in the caller's frame, just like the equivalent hand-written f-string, and the allocation checks count it the same way.
+
 ### Format Specs
 
 Add `:[[fill]align][width][.precision][kind]` after an interpolated expression to control alignment, padding, precision, or base:
@@ -155,6 +185,7 @@ Add `:[[fill]align][width][.precision][kind]` after an interpolated expression t
 | `:fill>width` | `f"[{n:0>6}]"` | `[000042]` | Custom single-byte fill character (`0`) with alignment |
 | `:.precision` | `f"{r:.2}"` | `3.14` | Fractional digits for `Float` and `Decimal` |
 | `:x` | `f"{n:x}"` | `2a` | Lowercase hexadecimal formatting for `Int` |
+| `:?` | `f"{m:?}"` | `Money { dollars: 12, … }` | The structural form, past every `@display` template |
 
 Width specifications count bytes and **never truncate**: a value wider than `width` prints all of its characters rather than silently dropping digits.
 

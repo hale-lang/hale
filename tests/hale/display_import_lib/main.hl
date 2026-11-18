@@ -1,0 +1,17 @@
+// A seed whose types declare `@display` templates, imported by
+// tests/hale/display_test.hl: a template attaches to its declaration, so
+// a value of these types renders by it in the importing program as well.
+
+@display("#{n}")
+type Ticket {
+    n: Int;
+}
+
+type Lane = enum {
+    @display("fast lane") Fast,
+    @display("lane {0}") Numbered(Int),
+};
+
+fn ticket(n: Int) -> Ticket {
+    return Ticket { n: n };
+}

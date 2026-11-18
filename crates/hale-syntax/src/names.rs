@@ -645,7 +645,7 @@ fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
 }
 
 fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
-    let TypeDecl { doc: _, name: n, display, generics: gs, body, span: _, id: _, synthetic: _, positional: _ } = t;
+    let TypeDecl { doc: _, name: n, display, generics: gs, body, span: _, id: _, synthetic: _, positional: _, template: _ } = t;
     name(n, f);
     opt_text(display, f);
     generics(gs, f);
@@ -664,7 +664,7 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
         }
         TypeDeclBody::Enum(variants) => {
             for v in variants {
-                let EnumVariant { doc: _, name: n, fields, class: _, span: _, member: _, tag: _ } = v;
+                let EnumVariant { doc: _, name: n, fields, class: _, span: _, member: _, tag: _, template: _ } = v;
                 name(n, f);
                 for t in fields {
                     ty(t, f);

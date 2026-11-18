@@ -862,6 +862,79 @@ impl Parser {
                 break;
             }
             let kind_tok = self.peek_at(1);
+            // RFC #2035 (F.54): `@display("...") type T { ... }` declares how
+            // a record renders as text. An enum's templates are per variant
+            // (`@display("buy") Buy`), parsed with the variant. It stacks
+            // over `@positional`.
+            if matches!(&kind_tok, TokenKind::Ident(s) if s == "display") {
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // `display`
+                if leading_span.is_some() || form.is_some() || locality.is_some() {
+                    return Err(Diag::parse(at.span, "`@display` marks a record `type`, and a locus takes none"));
+                }
+                let tpl = self.parse_display_args(at.span)?;
+                if matches!(self.peek(), TokenKind::Locus)
+                    || matches!(self.peek(), TokenKind::Ident(s) if s == "main")
+                {
+                    return Err(Diag::parse(
+                        tpl.span,
+                        "a locus takes no `@display`: a locus is never printable (spec/semantics.md § Rendering values \
+                         as text), so it has no text form to declare",
+                    ));
+                }
+                let decl = if matches!(self.peek(), TokenKind::At) {
+                    self.parse_top_decl()?
+                } else if matches!(self.peek(), TokenKind::Type) {
+                    TopDecl::Type(self.parse_type_decl()?)
+                } else {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "expected `type` after `@display(\"...\")`: it marks a record (`@display(\"{x}, {y}\") type \
+                         Point { ... }`), and an enum's variants take one each (`@display(\"buy\") Buy`)",
+                    ));
+                };
+                let TopDecl::Type(mut td) = decl else {
+                    return Err(Diag::parse(tpl.span, "`@display` marks a record `type`; a locus or a fn takes none"));
+                };
+                let refusal = match &td.body {
+                    TypeDeclBody::Struct(fields) => {
+                        if !td.generics.is_empty() {
+                            Some(format!(
+                                "`{}` is generic, and a generic record takes no `@display` yet: its holes' types \
+                                 differ per argument",
+                                td.name.name
+                            ))
+                        } else {
+                            let names: Vec<&str> = fields.iter().map(|f| f.name.name.as_str()).collect();
+                            if let Some(d) = crate::display::record_hole_refusal(&tpl, &td.name.name, &names) {
+                                return Err(d);
+                            }
+                            None
+                        }
+                    }
+                    TypeDeclBody::Enum(vs) if !vs.is_empty() && vs.iter().all(|v| v.member) => Some(format!(
+                        "`{}` is a set, and a set takes no `@display`: it renders as its member does, by the \
+                         member's own template or its structural form",
+                        td.name.name
+                    )),
+                    TypeDeclBody::Enum(_) => Some(format!(
+                        "an enum's templates are its variants': write `@display(\"...\")` before each variant of \
+                         `{}` (`@display(\"buy\") Buy`), whose holes name its payload (`{{0}}`)",
+                        td.name.name
+                    )),
+                    _ => Some(format!(
+                        "`{}` is no record: `@display` marks a record `type` or an enum's variant, and an alias or \
+                         a scalar renders as what it names",
+                        td.name.name
+                    )),
+                };
+                if let Some(msg) = refusal {
+                    return Err(Diag::parse(tpl.span, msg));
+                }
+                td.span = tpl.span.merge(td.span);
+                td.template = Some(tpl);
+                return Ok(TopDecl::Type(td));
+            }
             // `@positional type Row { ... }`: a record the JSON codecs carry
             // as an array of its fields in order (spec/api.md § Codecs). It
             // marks a struct and stacks with nothing.
@@ -6821,6 +6894,18 @@ impl Parser {
                 }
                 let close = self.expect(TokenKind::RBrace, "}")?;
                 self.expect(TokenKind::Semi, ";")?;
+                if !generics.is_empty() {
+                    if let Some(t) = variants.iter().find_map(|v| v.template.as_ref()) {
+                        return Err(Diag::parse(
+                            t.span,
+                            format!(
+                                "`{}` is generic, and a generic enum's variant takes no `@display` yet: its holes' \
+                                 types differ per argument",
+                                name.name
+                            ),
+                        ));
+                    }
+                }
                 return Ok(TypeDecl {
                     doc: crate::ast::Doc::NONE,
                     display: None,
@@ -6831,6 +6916,7 @@ impl Parser {
                     id: NodeId::NONE,
                     synthetic: false,
                     positional: false,
+                    template: None,
                 });
             }
             // alias. It is the one `type` form that takes no generic
@@ -6911,6 +6997,7 @@ impl Parser {
                         class: None,
                         span: *span,
                         member: true,
+                        template: None,
                         tag: None,
                     });
                 }
@@ -6924,6 +7011,7 @@ impl Parser {
                     id: NodeId::NONE,
                     synthetic: false,
                     positional: false,
+                    template: None,
                 });
             }
             // The denomination, `in UNIT` / `in 100ms` / `in 100 ms`.
@@ -6969,6 +7057,7 @@ impl Parser {
                     id: NodeId::NONE,
                     synthetic: false,
                     positional: false,
+                    template: None,
                 });
             }
             Ok(TypeDecl {
@@ -6981,6 +7070,7 @@ impl Parser {
                 id: NodeId::NONE,
                 synthetic: false,
                 positional: false,
+                template: None,
             })
         } else {
             // struct form: type X { fields }
@@ -7001,6 +7091,7 @@ impl Parser {
                 id: NodeId::NONE,
                 synthetic: false,
                 positional: false,
+                template: None,
             })
         }
     }
@@ -7220,7 +7311,30 @@ impl Parser {
         ))
     }
 
+    /// RFC #2035: `("...")` after `@display`, the template parsed.
+    fn parse_display_args(&mut self, at: Span) -> Result<DisplayTemplate, Diag> {
+        self.expect(TokenKind::LParen, "(")?;
+        let tok = self.bump();
+        let TokenKind::StringLit(text) = tok.kind else {
+            return Err(Diag::parse(
+                tok.span,
+                "`@display` takes one string literal, the template (`@display(\"{x}, {y}\")`)",
+            ));
+        };
+        let close = self.expect(TokenKind::RParen, ")")?;
+        crate::display::parse_template(&text, at.merge(close.span), tok.span)
+    }
+
     fn parse_enum_variant(&mut self) -> Result<EnumVariant, Diag> {
+        // RFC #2035: `@display("...")` before the variant, how a value of it
+        // renders (its holes name the payload by position: `{0}`).
+        let template = if self.at(&TokenKind::At) && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "display") {
+            let at = self.bump();
+            self.bump(); // `display`
+            Some(self.parse_display_args(at.span)?)
+        } else {
+            None
+        };
         // `@not_found Missing`: the variant's error class (spec/api.md §
         // Error classes), any word here; the checker names the classes.
         let class = if self.at(&TokenKind::At) {
@@ -7254,7 +7368,12 @@ impl Parser {
             None
         };
         let span = name.span;
-        Ok(EnumVariant { doc: crate::ast::Doc::NONE, name, fields, class, span, member: false, tag })
+        if let Some(t) = &template {
+            if let Some(d) = crate::display::variant_hole_refusal(t, &name.name, fields.len()) {
+                return Err(d);
+            }
+        }
+        Ok(EnumVariant { doc: crate::ast::Doc::NONE, name, fields, class, span, member: false, tag, template })
     }
 
     fn parse_generic_params_opt(&mut self) -> Result<Vec<GenericParam>, Diag> {

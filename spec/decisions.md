@@ -4303,6 +4303,50 @@ of a variant's wire name would have had to learn it, and one that did
 not (a generated client, the digest) would be a second spelling again;
 applied as tags, it has one.
 
+### F.54 — A type's human rendering is a declared template
+
+**Problem.** Every value rendered through one structural rule, `Name {
+field: v }` and `Enum::Variant(p)`, and a program had no way to say how
+its own domain types read: a `Money` printed `Money { dollars: 12, cents:
+0, currency: "USD" }` where its author meant `$12.00 USD` (RFC #2035).
+A `Display`-style method was the obvious fix and the wrong one: types
+have no methods (spec/types.md), and turning a value into text
+(`to_string`, `String + x`, an f-string) is pure and total today, which
+a user function called implicitly by every rendering would undo.
+
+**Decision.** A type's human rendering is a declared template on its
+declaration, never code; `:?` is recursively structural.
+`@display("${dollars}.{cents:0>2} {currency}")` on a record, or before
+an enum's variant (`@display("other: {0}") Other(String)`), is literal
+text and holes, each a field (a payload position on a variant) with an
+optional f-string format spec. No expression, call or conditional can be
+written in one, so rendering stays total. Every rendering path reads it:
+`println`, `print`, `to_string`, `String + x` and an f-string's
+interpolation; a nested value renders by its own type's template, or
+structurally. The template is checked as the f-string it stands for:
+each hole names a field that exists and renders, each spec fits. It is
+allowed only on a type that is already printable, so it never widens
+the printable set, and `{x:?}`, the structural form at every depth,
+always exists. It attaches to the declaration: an alias and an import
+render as the declaration does. Its output is allocated where the
+rendering is, as the hand-written f-string's would be, and the
+allocation summary and the hot-path budget count it so: the template is
+a function the compiler writes (`T::display(v)` names it, a value of
+type `fn(T) -> String`), and a rendering is a call of it.
+
+**Considered and rejected.** *A `Display` interface or a method found
+by name.* Types have no methods, and an implicit call by name is a kind
+of dispatch Hale has nowhere else. *Expressions in a template.* A
+conditional or a call is what would let rendering fail or run code.
+*A template that widens the printable set* (a record holding `Bytes`
+rendering through the fields it names): its `:?` and an assertion's
+message would have nothing to show; left for its own decision. *An
+enum-wide template with a `{variant}` hole.* Whether the hole means the
+declared name, the wire name (F.53) or another label is a decision of
+its own; per-variant templates express every case it was for. *A
+template on a set.* A set renders as its member does. *A template on a
+locus.* A locus is never printable.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

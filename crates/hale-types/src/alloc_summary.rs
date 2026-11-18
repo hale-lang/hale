@@ -100,7 +100,9 @@ impl FnKey {
     pub fn display(&self) -> String {
         match &self.locus {
             Some(l) => format!("{}::{}", l, self.fn_name),
-            None => self.fn_name.clone(),
+            // RFC #2035: a `@display` template's function, and `T::display`,
+            // named as the program spells them.
+            None => hale_syntax::display::generated_display(&self.fn_name).unwrap_or_else(|| self.fn_name.clone()),
         }
     }
 }
@@ -3512,6 +3514,7 @@ pub fn summarize_within(
     let no_cell_copies: BTreeMap<(u32, u32), &'static str> = BTreeMap::new();
     let no_raises: BTreeMap<(u32, u32), String> = BTreeMap::new();
     let no_cursors: BTreeSet<(u32, u32)> = BTreeSet::new();
+    let no_renders: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
     let cell_copies: BTreeMap<usize, BTreeMap<(u32, u32), &'static str>> = identified
         .iter()
         .map(|(_, ids)| {
@@ -3622,6 +3625,11 @@ pub fn summarize_within(
                 .filter(|d| d.universe == SiteUniverse::User && !is_stdlib_copy(ids))
                 .and_then(|d| calls.cursors.get(&d.index))
                 .unwrap_or(&no_cursors),
+            renders: key
+                .decl
+                .filter(|d| d.universe == SiteUniverse::User && !is_stdlib_copy(ids))
+                .and_then(|d| calls.renders.get(&d.index))
+                .unwrap_or(&no_renders),
         };
         w.walk_block(body, 0, Escape::Local);
         let starts = std::mem::take(&mut w.starts);
@@ -6076,6 +6084,9 @@ struct Walker<'a> {
     /// `bounded` or an array, by the callee's span), which the check typed:
     /// each is the collection's `at`, not a method of an untyped receiver.
     cursors: &'a BTreeSet<(u32, u32)>,
+    /// RFC #2035: the template functions each rendering calls, by the
+    /// rendered value's span ([`crate::typed_bodies::CheckedCalls::renders`]).
+    renders: &'a BTreeMap<(u32, u32), Vec<String>>,
 }
 
 impl<'a> Walker<'a> {
@@ -7065,6 +7076,26 @@ impl<'a> Walker<'a> {
         self.known.get(&(None, name.to_string())).filter(|_| self.scope_fns.contains(name)).cloned()
     }
 
+    /// RFC #2035 (F.54): the `@display` template functions a rendering of
+    /// `value` calls, as the check recorded them from the value's type
+    /// ([`crate::typed_bodies::CheckedCalls::renders`]): its own type's
+    /// template, or what its structural rendering reaches through fields,
+    /// payloads and elements, each occurrence once.
+    fn display_templates_of(&self, value: &Expr) -> Vec<String> {
+        let at = value.span();
+        self.renders.get(&(at.start.0, at.end.0)).cloned().unwrap_or_default()
+    }
+
+    /// A rendering of `value` at `span`: a call of each template function
+    /// it reaches, with the rendering's escape (RFC #2035: the output is
+    /// allocated where the call is, as a hand-written f-string's is).
+    fn record_template_renders(&mut self, value: &Expr, span: Span, id: NodeId, depth: u32, escape: Escape) {
+        for f in self.display_templates_of(value) {
+            let callee = Expr::Ident(Ident::new(f, span));
+            self.record_call(&callee, std::slice::from_ref(value), span, id, depth, escape);
+        }
+    }
+
     /// What a direct call of a `Path` callee resolves to.
     fn path_callee(&self, qp: &QualifiedName) -> Callee {
         let path = qp.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
@@ -7643,12 +7674,49 @@ impl<'a> Walker<'a> {
                         span,
                     });
                 }
+                // RFC #2035: `s + x` renders `x`, through its type's
+                // `@display` template when it has one.
+                // A side that is already a String renders nothing here: a
+                // `to_string(x)` (an f-string's hole) counted its own
+                // rendering at the call, and shares `x`'s span.
+                if matches!(op, BinOp::Add) {
+                    let at = left.span().merge(right.span());
+                    for side in [left.as_ref(), right.as_ref()] {
+                        if !self.is_string_expr(side) {
+                            self.record_template_renders(side, at, NodeId::NONE, depth, Escape::Local);
+                        }
+                    }
+                }
                 self.walk_expr(left, depth, Escape::Local);
                 self.walk_expr(right, depth, Escape::Local);
             }
             Expr::Unary { operand, .. } => self.walk_expr(operand, depth, Escape::Local),
             Expr::Call { callee, args, span, id } => {
                 self.record_call(callee, args, *span, *id, depth, escape);
+                // RFC #2035 (F.54): a rendering of a value whose type has a
+                // `@display` template calls the function the template
+                // desugared to, so what it allocates is this call's, as the
+                // hand-written f-string's concatenations would be.
+                if let Expr::Ident(f) = callee.as_ref() {
+                    let rendered: &[Expr] = match f.name.as_str() {
+                        "to_string" => args.get(..1).unwrap_or(&[]),
+                        n if n == hale_syntax::parser::FMT_BUILTIN => {
+                            // `{x:?}` renders structurally, past every template.
+                            let structural = matches!(args.get(1), Some(Expr::Literal(Literal::String(s), _)) if s.ends_with('?'));
+                            if structural { &[] } else { args.get(..1).unwrap_or(&[]) }
+                        }
+                        "println" | "print" | "eprintln" | "eprint" => args.as_slice(),
+                        _ => &[],
+                    };
+                    let esc = if matches!(f.name.as_str(), "println" | "print" | "eprintln" | "eprint") {
+                        Escape::Local
+                    } else {
+                        escape
+                    };
+                    for a in rendered {
+                        self.record_template_renders(a, *span, *id, depth, esc);
+                    }
+                }
                 // D2: a `recv.<insert>(x)` where `recv`'s declared type is a
                 // growing form is itself an accumulating allocation.
                 if let Expr::Field { receiver, name, .. }

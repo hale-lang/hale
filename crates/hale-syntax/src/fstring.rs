@@ -7,8 +7,11 @@
 //! ```text
 //! spec := [ [fill] align ] [ width ] [ "." precision ] [ kind ]
 //! align := "<" | "^" | ">"
-//! kind  := "x" | "X"
+//! kind  := "x" | "X" | "?"
 //! ```
+//!
+//! `?` (RFC #2035, F.54) renders a value structurally, bypassing every
+//! `@display` template inside it.
 //!
 //! Everything is optional, so `{x:8}` and `{x:.3}` and `{x:x}` all
 //! parse. What is deliberately absent: sign control, `#` alternate
@@ -52,6 +55,10 @@ pub enum SpecKind {
     HexLower,
     /// Upper-case hexadecimal. Integers only.
     HexUpper,
+    /// `?` (RFC #2035, F.54): the structural rendering, whatever the
+    /// value's `@display` template, at every depth (`Name { field: v }`,
+    /// `E::V(p)`). Any printable value.
+    Debug,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,12 +155,13 @@ impl FormatSpec {
             spec.kind = match cs[i] {
                 'x' => SpecKind::HexLower,
                 'X' => SpecKind::HexUpper,
+                '?' => SpecKind::Debug,
                 c => {
                     return Err(format!(
                         "unknown format kind `{}` — supported: `x` and \
-                         `X` (hexadecimal). A spec is \
-                         `[[fill]align][width][.precision][kind]`, e.g. \
-                         `{{n:>8}}`, `{{ratio:.2}}`, `{{addr:x}}`",
+                         `X` (hexadecimal) and `?` (the structural form). \
+                         A spec is `[[fill]align][width][.precision][kind]`, \
+                         e.g. `{{n:>8}}`, `{{ratio:.2}}`, `{{addr:x}}`, `{{m:?}}`",
                         c
                     ));
                 }
@@ -170,6 +178,13 @@ impl FormatSpec {
             ));
         }
 
+        if spec.precision.is_some() && spec.kind == SpecKind::Debug {
+            return Err(
+                "a precision and `?` cannot be combined — the structural \
+                 form renders each value as it is"
+                    .to_string(),
+            );
+        }
         if spec.precision.is_some() && spec.kind != SpecKind::Display {
             return Err(
                 "a precision and a hexadecimal kind cannot be combined \

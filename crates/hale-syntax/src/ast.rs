@@ -2689,8 +2689,35 @@ pub struct TypeDecl {
     /// them (spec/api.md § Codecs, Positional records). Only a struct takes
     /// it; the parser refuses it on any other form.
     pub positional: bool,
+    /// RFC #2035 (F.54): `@display("…")` on a record, the text its values
+    /// render as wherever a value renders (`println`, `to_string`,
+    /// `String + x`, an f-string). An enum's templates are its variants'
+    /// ([`EnumVariant::template`]); the parser refuses one on any other form.
+    pub template: Option<DisplayTemplate>,
     /// GH #1674: the `///` doc comment before it.
     pub doc: Doc,
+}
+
+/// RFC #2035 (F.54): a declared display template, `@display("${dollars}
+/// {cur}")`: literal text and holes, each naming a field of the record (or
+/// a payload position of the variant, `{0}`) with an optional f-string
+/// format spec. No expressions, calls or conditionals: rendering through one
+/// is total. `{{` and `}}` are a literal brace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayTemplate {
+    /// The template's text as written, between the quotes.
+    pub text: String,
+    /// The `@display("…")` annotation.
+    pub span: Span,
+    pub parts: Vec<TemplatePart>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TemplatePart {
+    Lit(String),
+    /// `{key}` or `{key:spec}`: `key` a field name, or a payload position's
+    /// digits. `spec` is the f-string spec text, already validated.
+    Hole { key: String, spec: Option<String>, span: Span },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2854,6 +2881,9 @@ pub struct EnumVariant {
     /// (``Other(String) `json:",other"` ``, spec/api.md § Codecs). A set's
     /// member has none.
     pub tag: Option<String>,
+    /// RFC #2035 (F.54): `@display("…")` before the variant, how a value of
+    /// it renders; `{0}`, `{1}` name its payload. A set's member has none.
+    pub template: Option<DisplayTemplate>,
     /// GH #1674: the `///` doc comment before it.
     pub doc: Doc,
 }

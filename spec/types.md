@@ -406,7 +406,10 @@ other three are still the enum's.
 
 `to_string`, `println` and an f-string keep rendering a variant as
 `Enum::Variant` (`Lifecycle::Archived`); the external name is what
-crosses a wire, a store or a log line that asks for it.
+crosses a wire, a store or a log line that asks for it. A variant's
+human text is a different thing, declared with `@display` (next
+section): the external name is the wire's, the template is the reader's,
+and neither reads the other.
 
 **`@wire_case(case)`** on an enum's declaration spells every variant in
 one case: `snake` (`InProgress` is `in_progress`, `HTTPError` is
@@ -424,6 +427,27 @@ under `snake`) are refused as two variants of one wire name are.
 ```hale
 @wire_case(snake) type Phase = enum { InProgress, HTTPError, Done `json:"finished"` };
 // Phase::name(Phase::InProgress) is "in_progress", Phase::name(Phase::Done) "finished"
+```
+
+### Display templates (RFC #2035, F.54)
+
+A record, and an enum's variant, may declare how its values render as
+text for people with `@display("…")`: literal text and holes naming its
+fields (`{dollars}`, `{cents:0>2}`), or a variant's payload positions
+(`{0}`). Every rendering path reads it, `{x:?}` bypasses it at every
+depth, and `T::display(v)` names it. A template never widens the
+printable set: it is allowed only on a record that is already
+printable. It is not allowed on a generic type, an enum as a whole, a
+set, an alias, a scalar or a locus. The rules are in spec/semantics.md
+§ Rendering values as text.
+
+```hale
+@display("${dollars}.{cents:0>2} {currency}")
+type Money { dollars: Int; cents: Int; currency: String; }
+
+type Side = enum { @display("buy") Buy, @display("sell") Sell, Other(String) };
+// to_string(Money { dollars: 12, cents: 5, currency: "USD" }) is "$12.05 USD";
+// f"{m:?}" is "Money { dollars: 12, cents: 5, currency: \"USD\" }"
 ```
 
 ### One name, one field (GH #1141)
