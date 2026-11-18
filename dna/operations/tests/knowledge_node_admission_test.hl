@@ -195,7 +195,7 @@ locus NodeAdmissionCases {
             repeated.ok && repeated.receipt.event_id == admitted.receipt.event_id,
             "restart and removed write grant recover exact request",
         );
-        let changed = self.command(
+        let mut changed = self.command(
             context,
             c.record_head,
             c.request_id,

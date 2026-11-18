@@ -9,6 +9,10 @@
 //!
 //! A row is removed in the release that makes the change, when the
 //! warning becomes the new meaning or a refusal.
+//!
+//! A deprecated language form, not a callable, keeps its warning here
+//! too, as a fn the checker calls where it meets the form
+//! ([`let_write_warning`]).
 
 /// One deprecated stdlib method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +47,21 @@ pub const DEPRECATED_METHODS: &[DeprecatedMethod] = &[
                   as a string",
     },
 ];
+
+/// GH #2022: a field or element write through a binding declared with
+/// `let` (not `let mut`): `let p = Point { … }; p.x = 1;`, `xs[0] = 7`.
+/// Bindings are immutable by default (spec/types.md § Mutability), and a
+/// write into the value a `let` holds, at any depth, is a write the
+/// binding was declared not to permit, as a `push` into a `let`
+/// `bounded` list already is. v0.35 warns; v0.36 refuses it. `name` is
+/// the binding, `written` the place as written (`p.x`, `xs[..]`).
+pub fn let_write_warning(name: &str, written: &str) -> String {
+    format!(
+        "deprecated: `{written}` writes into `{name}`, which is declared with `let`; declare it `let mut {name}`. \
+         A `let` binding is immutable, the value it holds included (spec/types.md § Mutability), and v0.36 \
+         refuses a write through one"
+    )
+}
 
 /// The deprecation of `locus.method`, if the table has one.
 pub fn deprecated_method(locus: &str, method: &str) -> Option<&'static DeprecatedMethod> {

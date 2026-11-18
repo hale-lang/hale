@@ -258,6 +258,9 @@ Filter these reflexes before they cost you time.
   comments. Statements end with `;`. Newlines are not
   terminators.
 - `let x = 1;` is immutable; `let mut x = 1;` is reassignable.
+  Immutable covers the value too: a field or element write through a
+  `let` (`p.x = 9;`, `xs[0] = 7;`) needs `let mut p` / `let mut xs`.
+  It is a `deprecated:` warning now and an error from v0.36.
 - Bare struct/locus literals at statement position run
   birth-through-dissolve immediately. `let`-bound literals defer
   dissolve to the binding's scope exit.

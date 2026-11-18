@@ -69,7 +69,7 @@ fn held_row(kind: String, entity: String, body: String) -> String {
 }
 
 fn held_state_of(j: AuthoredRows, receipts: dna::Receipts) -> HeldState {
-    let out = HeldState { };
+    let mut out = HeldState { };
     // each list grows in a local, stored once (GH #1947)
     let mut persons = out.persons;
     let mut retired = out.retired;

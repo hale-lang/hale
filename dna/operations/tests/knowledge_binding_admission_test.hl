@@ -365,7 +365,7 @@ locus BindingAdmissionCases {
         let context = self.who(record);
         let commands = ops::KnowledgeCommands { record: record, authority: BindingAuthority { } };
         let codec = ops::KnowledgeCommandCodec { };
-        let wrong = self.command(
+        let mut wrong = self.command(
             context,
             record.head("journal").id,
             "wrong-id",

@@ -1459,6 +1459,27 @@ permitted.
 Mutability is a per-binding property, not a per-type property.
 There's no `Mut<T>`; the binding either is or isn't `mut`.
 
+**`mut` gates every write into a `let` binding's value, at any depth**
+(GH #2022). `let p = Point { x: 1, y: 2 }; p.x = 99;` writes into the
+value `p` was declared not to change, as `xs[0] = 7` through `let xs`
+does and `push(d, 5)` into a `let` `bounded` list does: declare the
+binding `let mut`. The rule is Rust's, and it is what "immutable
+binding" says. A field or element write through a `let` (a plain
+assignment or a compound one, `p.x += 1`, `l.a.y = 3`, `xs[i] = v`) is
+a `deprecated:` warning in v0.35 ("\`p.x\` writes into \`p\`, which is
+declared with \`let\`; declare it \`let mut p\`") and an error from
+v0.36 (STABILITY.md § Deprecation). It is no aliasing rule: a write
+into a local never reaches the place it was read from (§ "A local bound
+from a place is yours"), with or without `mut`.
+
+The rule reads the `let`. A parameter, a `for` element and a `match`
+payload have no `mut` spelling and stay writable as § "A local bound
+from a place is yours" describes; a write through a parameter of
+caller storage is spec/memory.md's. A binding that holds a locus (a
+handle: `let c = Counter { }; c.n = 4;`) writes the locus's state, as
+`self.n = 4` does, and a cell from a capacity slot names the slot: the
+rule reaches neither.
+
 For `params` / locus state, the implicit rule is that fields
 are mutable through `self.x = ...` (per F.3). The locus's
 state is the locus's mutable bundle.

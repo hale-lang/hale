@@ -304,7 +304,7 @@ locus WorkflowProjection {
     fn work(work_id: String) -> WorkView {
         let mut i = 0;
         while i < self.works.len() {
-            let w = self.works.get(i) or WorkView { };
+            let mut w = self.works.get(i) or WorkView { };
             if w.work_id == work_id { return w; }
             i = i + 1;
         }
@@ -331,7 +331,7 @@ locus WorkflowProjection {
         let mut n = 0;
         let mut i = 0;
         while i < self.works.len() {
-            let w = self.works.get(i) or WorkView { };
+            let mut w = self.works.get(i) or WorkView { };
             if w.task_id == task_id && len(w.disposition) == 0 { n = n + 1; }
             i = i + 1;
         }
@@ -365,7 +365,7 @@ locus WorkflowProjection {
         let mut n = 0;
         let mut i = 0;
         while i < self.works.len() {
-            let w = self.works.get(i) or WorkView { };
+            let mut w = self.works.get(i) or WorkView { };
             if std::str::contains(tasks, " " + w.task_id + " ") && len(w.disposition) == 0 {
                 n = n + 1;
             }
@@ -433,13 +433,13 @@ locus WorkflowProjection {
     // settled on produced. "" until the Work has settled `done`; what an
     // outstanding or superseded attempt said is never the Work's result.
     fn result_of(work_id: String) -> String {
-        let w = self.work(work_id);
+        let mut w = self.work(work_id);
         if w.disposition != "done" { return ""; }
         return w.result;
     }
 
     fn result_ref_of(work_id: String) -> String {
-        let w = self.work(work_id);
+        let mut w = self.work(work_id);
         if w.disposition != "done" { return ""; }
         return w.result_ref;
     }
@@ -537,7 +537,7 @@ locus WorkflowProjection {
         }
         i = 0;
         while i < self.works.len() {
-            let w = self.works.get(i) or WorkView { };
+            let mut w = self.works.get(i) or WorkView { };
             out = out + "work " + w.work_id + " " + w.attempt_id + " " + w.attempt_disposition + " "
                 + w.attempt_result + " | " + w.disposition + " " + w.result + " " + w.result_ref
                 + "\n";
@@ -1023,7 +1023,7 @@ locus WorkflowProjection {
         if len(seen.why) > 0 { return seen; }
         let mut i = 0;
         while i < self.steps.len() {
-            let s = self.steps.get(i) or StepView { };
+            let mut s = self.steps.get(i) or StepView { };
             if s.step_id == a.step_id {
                 if s.activated {
                     return refused(
@@ -1074,7 +1074,7 @@ locus WorkflowProjection {
         if len(seen.why) > 0 { return seen; }
         let gap = self.member_gap(a.step_id, a.work_id);
         if len(gap) > 0 { return refused(gap); }
-        let s = self.step(a.step_id);
+        let mut s = self.step(a.step_id);
         if s.task_id != a.task_id {
             return refused(
                 "work " + a.work_id + " belongs to task " + s.task_id + ", not " + a.task_id,
@@ -1111,7 +1111,7 @@ locus WorkflowProjection {
         }
         let mut i = 0;
         while i < self.works.len() {
-            let w = self.works.get(i) or WorkView { };
+            let mut w = self.works.get(i) or WorkView { };
             if w.work_id == a.work_id {
                 if len(w.disposition) > 0 {
                     return refused(
@@ -1182,7 +1182,7 @@ locus WorkflowProjection {
         if len(seen.why) > 0 { return seen; }
         let mut i = 0;
         while i < self.works.len() {
-            let w = self.works.get(i) or WorkView { };
+            let mut w = self.works.get(i) or WorkView { };
             if w.work_id == o.work_id {
                 if w.attempt_id != o.attempt_id {
                     return refused(
@@ -1223,7 +1223,7 @@ locus WorkflowProjection {
         if len(gap) > 0 { return refused(gap); }
         let mut i = 0;
         while i < self.works.len() {
-            let w = self.works.get(i) or WorkView { };
+            let mut w = self.works.get(i) or WorkView { };
             if w.work_id == o.work_id {
                 if w.step_id != o.step_id {
                     return refused(
@@ -1320,7 +1320,7 @@ locus WorkflowProjection {
     fn join(step_id: String, key: String) -> Applied {
         let mut i = 0;
         while i < self.steps.len() {
-            let s = self.steps.get(i) or StepView { };
+            let mut s = self.steps.get(i) or StepView { };
             if s.step_id == step_id {
                 if set_has(s.settled, key) {
                     return replayed(
@@ -1354,7 +1354,7 @@ locus WorkflowProjection {
         if len(seen.why) > 0 { return seen; }
         let mut i = 0;
         while i < self.steps.len() {
-            let s = self.steps.get(i) or StepView { };
+            let mut s = self.steps.get(i) or StepView { };
             if s.step_id == o.step_id {
                 if len(s.disposition) > 0 {
                     return refused(
@@ -1408,7 +1408,7 @@ locus WorkflowProjection {
             return "step " + s.step_id + " cannot fail on `" + key + "`: work " + id + " settled "
                 + w.disposition;
         }
-        let t = self.task(id);
+        let mut t = self.task(id);
         if t.disposition == "failed" { return ""; }
         if len(t.disposition) == 0 {
             return "step " + s.step_id + " cannot fail on `" + key + "`: task " + id
@@ -1430,7 +1430,7 @@ locus WorkflowProjection {
         if len(seen.why) > 0 { return seen; }
         let mut i = 0;
         while i < self.tasks.len() {
-            let t = self.tasks.get(i) or TaskView { };
+            let mut t = self.tasks.get(i) or TaskView { };
             if t.task_id == o.task_id {
                 if len(t.disposition) > 0 {
                     return refused(

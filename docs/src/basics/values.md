@@ -56,6 +56,18 @@ let mut total = 0;
 total = total + 1;        // valid
 ```
 
+Immutable means the whole value, not only the name: writing a field or an element of a `let` binding needs `let mut` too.
+
+```hale,fragment
+let p = Point { x: 1, y: 2 };
+p.x = 99;                 // deprecated: `p` is declared with `let`
+
+let mut q = Point { x: 1, y: 2 };
+q.x = 99;                 // valid
+```
+
+The write through a `let` is a `deprecated:` warning in this release and an error from v0.36. A `for` element and a `match` payload have no `mut` spelling and stay writable. A binding holding a locus (`let c = Counter { };`) can still set the locus's fields (`c.n = 4;`), as `self.n = 4` does inside it.
+
 ### Scope and Shadowing
 
 A `let` binding is visible from its declaration to the end of the enclosing `{ ... }` block:
