@@ -186,6 +186,17 @@ jobs:
           # And the corpus example that places one.
           cargo run -q -p hale-cli --bin hale -- run crates/hale-codegen/tests/fixtures/examples/88-async-handler-payload/main.hl
 
+      - name: (c2) GH #1991 — a unix:// listener quiesces at exit
+        # The exit quiesce's stop for a unix listener: Darwin wakes no
+        # reader on a shutdown() of a listening socket, so this has to run
+        # here, not on Linux. One part runs it; it builds one test binary.
+        if: matrix.part == 1
+        env:
+          # the test binary links zstd from Homebrew (hale-cli's build.rs
+          # adds the dir for the `hale` binary only)
+          LIBRARY_PATH: /opt/homebrew/lib
+        run: "cargo test --release -p hale-codegen --test bus_topics binding_ingest_468::"
+
       - name: (d) GH 231 — emitted binaries link OpenSSL statically
         run: |
           set -eux
