@@ -128,6 +128,15 @@ seed of one. `hale check <dir>` notes the tests it left out;
 seeds; a directory holding only tests is no seed, and saying so names
 `hale test <dir>`.
 
+**A `*_bench.hl` file follows the same rule** (GH #2031). It is a
+program of its own, as `hale bench` builds it: the file, the driver the
+runner appends, and what its imports reach. No seed counts it among its
+members, so a bench beside the code it measures imports that directory
+(`import "." as app;`) as a test beside its program does, and
+`hale check <dir>` notes it with the tests, `hale check --workspace`
+checks it as its own program, and the editor checks it as a seed of
+one.
+
 **File order in the merged bundle is alphabetical by filename**
 (deterministic). Resolution within the seed is **order-free** —
 the typechecker flattens all top-level decls into one bundle
