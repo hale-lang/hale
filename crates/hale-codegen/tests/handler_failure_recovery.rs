@@ -152,7 +152,7 @@ locus Worker {{
         println("run ", self.runs);
     }}
     fn send(n: Int) {{
-        Jobs <- Job {{ n: n }};
+        Jobs <- make_job(n);
     }}
     fn on_job(j: Job) {{
         println("job ", j.n);
@@ -177,6 +177,11 @@ main locus App {{
     }}
 }}
 
+fn make_job(n: Int) -> Job {{
+    println("make ", n);
+    return Job {{ n: n }};
+}}
+
 fn main() {{ App {{ }}; }}
 "#
     )
@@ -187,13 +192,21 @@ fn a_restart_after_a_self_publishs_handler_failure_reruns_birth_and_run() {
     let out = run("self_restart", &self_publish("restart(c);"));
     assert_eq!(
         out,
-        ["birth 1", "run 1", "job 1", "job 2", "failed bad_job", "birth 2", "run 2", "job 3", "births 2 runs 2"],
+        [
+            "birth 1", "run 1", "make 1", "job 1", "make 2", "job 2", "failed bad_job", "birth 2", "run 2", "make 3", "job 3",
+            "births 2 runs 2"
+        ],
         "{out:?}"
     );
 }
 
 #[test]
 fn an_absorbed_self_publishs_handler_failure_stops_the_child() {
+    // The payload of the publish the stopped child makes is still built.
     let out = run("self_absorb", &self_publish(""));
-    assert_eq!(out, ["birth 1", "run 1", "job 1", "job 2", "failed bad_job", "births 1 runs 1"], "{out:?}");
+    assert_eq!(
+        out,
+        ["birth 1", "run 1", "make 1", "job 1", "make 2", "job 2", "failed bad_job", "make 3", "births 1 runs 1"],
+        "{out:?}"
+    );
 }

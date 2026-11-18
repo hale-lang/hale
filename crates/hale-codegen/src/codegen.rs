@@ -17947,8 +17947,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 match (self.restart_fns.get(&cs.locus_name).copied(), self.user_loci.get(&cs.locus_name).cloned()) {
                     (Some(rf), Some(info)) => {
                         // A child that failed and was not restarted stops
-                        // handling: what it publishes to itself then is not
-                        // delivered (its bus registration is stopped too).
+                        // handling: what it publishes to itself then takes
+                        // the bus to its own registration, which its stop
+                        // retired, so the payload is evaluated as any send's
+                        // is and the delivery is dropped.
                         let dr_ptr = self
                             .builder
                             .build_struct_gep(info.struct_ty, cs.self_ptr, info.drain_requested_field_idx, "direct.pre.dr.ptr")
@@ -17968,7 +17970,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             )
                             .map_err(e)?;
                         let call_bb = self.context.append_basic_block(func, "publish.direct.live");
-                        self.builder.build_conditional_branch(failed, join, call_bb).map_err(e)?;
+                        let stopped_bb = self.context.append_basic_block(func, "publish.direct.stopped");
+                        self.builder.build_conditional_branch(failed, stopped_bb, call_bb).map_err(e)?;
+                        self.builder.position_at_end(stopped_bb);
+                        self.lower_send(&subject, value, None, scope, Some(cs.self_ptr.into()))?;
+                        self.builder.build_unconditional_branch(join).map_err(e)?;
                         self.builder.position_at_end(call_bb);
                         let pre = self.emit_restart_count(&info, cs.self_ptr)?;
                         Some((info, cs.self_ptr, rf, pre))
