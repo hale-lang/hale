@@ -4651,6 +4651,7 @@ fn main() {{ App {{ }}; }}
         .replace("front: Mid = Mid { h: self.hub };", "front: Top = Top { t: self.hub };")
         .replace("locus Mid {", "locus Top {\n    params {\n        t: ws::Hub;\n        mid: Mid = Mid { h: self.t };\n    }\n}\nlocus Mid {");
     assert_built(&three_step, "hale_cb_held_mount_three_step");
+}
 
 /// RFC #2035 (F.54): the `@display` refusals the check makes. A template
 /// on a record that is not printable, a hole whose field cannot render,
