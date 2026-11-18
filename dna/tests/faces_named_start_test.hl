@@ -38,6 +38,10 @@ fn fetch(port: Int, path: String, tries: Int) -> String {
     return "";
 }
 
+fn both_listed(listed: String) -> Bool {
+    return std::str::contains(listed, "admin\n") && std::str::contains(listed, "product\n");
+}
+
 fn main() {
     let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
         std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
@@ -128,11 +132,18 @@ fn main() {
             && !std::str::contains(product_client, "OrdersSurface"),
         "product's client: " + product_client,
     );
-    let listed = std::io::fs::read_file(repo + "/.hale/dna/faces") or "";
-    std::test::assert(
-        std::str::contains(listed, "admin\n") && std::str::contains(listed, "product\n"),
-        "both are listed as started: " + listed,
-    );
+    // The body lists a face once its process has started (spec/dna.md, Named
+    // faces under § The surface), so a face can answer before its line is
+    // written: wait for the list to name both, with a deadline, rather than
+    // reading it once (GH #2059).
+    let mut listed = "";
+    let mut waited = 0;
+    while waited < 300 && !both_listed(listed) {
+        if waited > 0 { std::time::sleep(200ms); }
+        listed = std::io::fs::read_file(repo + "/.hale/dna/faces") or "";
+        waited = waited + 1;
+    }
+    std::test::assert(both_listed(listed), "both are listed as started: " + listed);
 
     // ---- stopping the body stops them
     dna::run_tool("kill\n" + body);

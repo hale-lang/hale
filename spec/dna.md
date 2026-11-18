@@ -6914,8 +6914,10 @@ reverse proxy.
 as `<binary> <port>` with `HALE_DNA_FACE=<name>` and
 `HALE_DNA_FACE_PORT=<port>`, beside the application and holding none of the
 organism's credentials (as the application holds none); the pids are
-`.hale/dna/face-<name>.pid`, listed in `.hale/dna/faces`, and the body's stop
-and fence stop them with it. A face that does not build is said, and the
+`.hale/dna/face-<name>.pid`, listed in `.hale/dna/faces` as each one's
+process starts (so a face can answer before its line is written; the list is
+what the body started, not what serves), and the body's stop and fence stop
+them with it. A face that does not build is said, and the
 organism does not wait on it. An organism that names none is served by the
 standard face alone, unchanged. In both kinds of face the contract is the
 surfaces: headers carry only identity and the digest. A face is not restarted
