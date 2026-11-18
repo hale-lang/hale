@@ -647,16 +647,43 @@ entry point runs). The checker, the analyses and lowering see that
 loop, so `hale check` and `hale build` accept the same programs, and a
 diagnostic in the body points where the body was written.
 
-A source used as anything other than a loop's iterand is refused at
-the check, with the way to keep the parts: "\`std::str::split\` is a
-\`for\` source, not a value: write \`for part in std::str::split(s, sep)
-{ … }\`. Hale has no sequence value to return; to keep the parts, write
-them into storage you own with \`std::str::split_into(s, sep, v)\`". So
-is a call with the wrong number of arguments ("\`std::str::lines(s)\`
-takes 1 argument, got 2"), and an argument that is not a string, at
-the argument ("\`std::str::split(s, sep)\`: \`sep\` takes a \`String\`,
-not a \`Int\`"). A chain over a source (`std::str::words(s).count()`)
-is not recognized yet.
+**A source starts a chain** (§ Element chains, GH #1995 S2). A call of
+a source of its own arity, followed by a stage or a terminal, is an
+element chain whose elements are the parts, each `it` for its turn:
+
+```hale
+fn main() {
+    let text = "id,name,,note";
+    println(std::str::split(text, ",").filter(len(it) > 0).count());  // 3
+    let longest = std::str::words("pear fig banana").max(len(it)) or "";
+    println(longest);                                                 // banana
+}
+```
+
+The parts are the loop's, by the same scan: the chain's stages and
+terminal are the loop's body, the arguments are evaluated once, and
+`break`, `continue` and `return` in an `each` block act as in the loop.
+Every stage and terminal applies, and on a source every terminal is
+recognized with no stage before it (`std::str::words(s).count()`), since
+the receiver is the standard library's call and no facade of a program's
+can be hiding behind it. `first`, `find`, `min` and `max` answer the part
+they picked, and an empty selection fails with the `IndexError` an empty
+vec's does, so `or` supplies the fallback. A chain over a source keeps
+no list of the parts: like the loop, it makes one `String` per part, for
+that iteration, and `min` and `max` keep the best part's offsets, not
+the part.
+
+A source used as anything other than a loop's iterand or a chain's
+source is refused at the check, with the ways to keep the parts:
+"\`std::str::split\` is a \`for\` source and a chain's source, not a
+value: write \`for part in std::str::split(s, sep) { … }\`, or a chain
+over it (\`std::str::split(s, sep).filter(…).count()\`). Hale has no
+sequence value to return; to keep the parts, write them into storage
+you own with \`std::str::split_into(s, sep, v)\` or a chain's
+\`into(v)\`". So is a call with the wrong number of arguments
+("\`std::str::lines(s)\` takes 1 argument, got 2"), and an argument that
+is not a string, at the argument ("\`std::str::split(s, sep)\`: \`sep\`
+takes a \`String\`, not a \`Int\`").
 
 A `for` over a `String` itself is refused at the check: "\`for\` over a
 \`String\`: a string is not a sequence. Iterate
@@ -4887,6 +4914,24 @@ so answering that name is exactly what makes a form chainable:
 | `@form(hashmap)` via `.entries` | `entry_at`, same shape |
 | `[T; N]` | `get`, over all `N` slots |
 | `bounded[T; N]` | `get`, over the **live** slots (not capacity) |
+| `std::str::split(s, sep)`, `lines(s)`, `words(s)` | a cursor: the source's own scan (below) |
+
+**A cursor source** (GH #1995 S2). A text source has no index to `get`
+a part by: finding the `i`th part again on every turn would make the
+chain quadratic. It is the one source that is a cursor instead. The
+rewrite recognizes it by its call (`std::str::` and the source's name,
+of the source's arity), and the chain's loop is the scan § Text sources
+describes, moved part by part (`hale_syntax::str_sources::scan`, which
+the `for` loop's rewrite uses too), with the part bound as the element
+before the stages run. An element-valued terminal (`first`, `find`,
+`min`, `max`) cannot re-fetch its pick through `get`, so it keeps the
+picked part's offsets in the scan's view, two `Int`s, and its value is
+that part read through a one-element array's own `get`: index 0 when a
+part was picked, -1 when none was, the ordinary `IndexError`. No other
+source is a cursor; a form keeps answering `get`. Unlike every other
+source, a text source's chain allocates, one `String` per part (the
+part itself), so property 1 above holds for it only in the sense that
+no intermediate list of the parts exists.
 
 The two type-level collections are a deliberate exception to the
 types-have-no-methods axiom, and the only one: their operations are
@@ -4947,7 +4992,9 @@ is unbound outside a chain, so no valid ordinary call can look like
 that — or when it is `each` with a block. Bare `xs.sum()` /
 `xs.first()` therefore stay ordinary method calls (stage-less first
 is just `xs.get(0) or …`; a stage-less sum can be written
-`xs.map(it).sum()`). On a fixed array or a `bounded[T; N]`, which
+`xs.map(it).sum()`). A text source is the exception: on
+`std::str::split` / `lines` / `words`, every terminal is recognized
+with no stage (§ Text sources). On a fixed array or a `bounded[T; N]`, which
 has no member of a terminal's name, the check's "no field `sum` on
 `[Decimal; 2]`" says so: an element chain needs a stage before its
 terminal, `….map(it).sum(…)` (friction sweep 2026-10-12). The

@@ -248,7 +248,7 @@ A local bound from a place is a copy, as a record or a string is: `let mut mine 
 
 ## Collection Query Chains
 
-You can query, transform, and aggregate `@form(vec)`, `@form(hashmap)` (`.entries`), `bounded[T; N]`, and `[T; N]` collections using single-pass fused chains:
+You can query, transform, and aggregate `@form(vec)`, `@form(hashmap)` (`.entries`), `bounded[T; N]`, and `[T; N]` collections, and the parts of a text, using single-pass fused chains:
 
 ```hale,fragment
 let active_count = users.filter(it.active).count();
@@ -259,6 +259,8 @@ users.filter(it.active).into(active_users_vec);
 A chain over a `bounded` or array field walks it by its type, whatever the field is called and however you reach it: `b.tags.filter(it > 1).count()`, `o.inner.tags.map(it * 2).sum()`, or a field named `items` or `entries`. Only on a `@form` locus are `.items` and `.entries` the form's own iteration surface.
 
 Every chain is lowered by the compiler into a single inline loop with **zero heap allocations**, making chains legal inside `@budget(alloc_per_call = 0)` and `@hot` functions. Within stage expressions, `it` refers to the current element (and `idx` refers to the 0-based position after `.enumerate()`).
+
+The text sources `std::str::split(s, sep)`, `std::str::lines(s)` and `std::str::words(s)` start a chain too, with each part of the text as `it`: `std::str::words(s).filter(len(it) > 2).count()`. Such a chain is one pass over the text with no list of the parts, but each part is a new `String`, so unlike a chain over a collection it allocates, one part at a time (see [Strings](../basics/strings.md)). Any terminal works on a text source without a stage (`std::str::lines(s).count()`).
 
 ### Chain Stages and Terminals
 
