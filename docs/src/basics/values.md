@@ -33,7 +33,7 @@ Hale provides eight built-in scalar types and two inline sequence types. `Decima
 | `[T; N]` | Fixed-length array | `[1, 2, 3]`, `[0; 8]`, `[0; 0]` | `N` is an integer literal, `0` included. There is no unsized `[T]`; an empty `[]` needs its type written: `let xs: [Int; 0] = [];` |
 | `bounded[T; N]` | Fixed-capacity dynamic list | `tags: bounded[String; 32];` | Inline in `type` structs; starts empty (`count = 0`) |
 
-Numeric literals accept underscores (`1_000_000`) as visual separators. A byte literal, `b'/'`, is the `Int` value of one ASCII byte (see [Strings & Text](./strings.md)). Integer literals default to `Int`, fractional literals default to `Float`, and the `d` suffix produces an exact `Decimal` (covered in [Math, Money & Time](./math.md)).
+Numeric literals accept underscores (`1_000_000`) as visual separators. A byte literal, `b'/'`, is the `Int` value of one ASCII byte (see [Strings & Bytes](./strings.md)). Integer literals default to `Int`, fractional literals default to `Float`, and the `d` suffix produces an exact `Decimal` (covered in [Math, Money & Time](./math.md)).
 
 ## Variables (`let` and `let mut`)
 
@@ -106,7 +106,7 @@ let spec = f"{42:>8} | {3.14159:.2}"; // "      42 | 3.14"
 
 Use `{{` and `}}` to write literal braces inside an f-string. Plain `"..."` strings do not interpolate—writing `"x={x}"` leaves the literal braces in the string and triggers a compiler warning if `x` is in scope.
 
-Multi-line raw text (such as embedded SQL queries, JSON payloads, or source code) uses triple-quoted **block strings** (`"""`), covered in [Strings & Text](./strings.md#block-strings).
+Multi-line raw text (such as embedded SQL queries, JSON payloads, or source code) uses triple-quoted **block strings** (`"""`), covered in [Strings & Bytes](./strings.md#block-strings).
 
 ## Printing and Builtin Functions
 
@@ -128,7 +128,7 @@ fn main() {
 ```
 
 - `println` and `print` accept any number of arguments and concatenate their output without format strings.
-- Structs, tuples, and arrays of printable elements format recursively. Two types deliberately do not print directly: **loci** (which represent stateful components rather than values) and **`Bytes`** (which must be explicitly formatted as hex, length, or decoded text; see [Strings & Text](./strings.md#printing-whole-values)).
+- Structs, tuples, and arrays of printable elements format recursively. A record or an enum variant can declare how it reads instead, with a `@display("…")` template, and `{x:?}` always shows the structural form (see [Strings & Bytes](./strings.md#declaring-how-a-type-reads-display)). Two types deliberately do not print directly: **loci** (which represent stateful components rather than values) and **`Bytes`** (which must be explicitly formatted as hex, length, or decoded text; see [Strings & Bytes](./strings.md#printing-whole-values)).
 - `len(x)` is the length of a `String`, `Bytes`, a view of either, or a fixed-size array; `Int(x)` and `Float(x)` convert between `Int` and `Float` only (parse a `String` with `std::str::parse_int(s)`, divide a `Duration` by a unit, `d / 1ms`). `hale check` refuses any other operand at the call.
 - Builtins use function call syntax (`len(s)`, `abs(x)`), not method call syntax (`s.len()`) or stdlib paths (`std::str::len(s)`, `std::math::abs(x)`, `std::io::println(x)`). If you write one of those forms, `hale check` points directly to the builtin.
 

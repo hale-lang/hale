@@ -1,4 +1,4 @@
-# Strings & Text
+# Strings & Bytes
 
 `String` in Hale is an immutable UTF-8 byte sequence, while `Bytes` holds arbitrary binary data (including null bytes). For text processing, Hale provides string interpolation (`f"..."`), multi-line raw block strings (`"""`), one-line raw strings (`r"..."`), `BytesBuilder` for linear-time buffer construction, and `ByteView` for zero-rescan parsing.
 

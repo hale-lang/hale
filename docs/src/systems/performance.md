@@ -105,7 +105,7 @@ A String read from a field, an element or a call's result is measured on every u
 
 ### Zero-Copy Views (`StringView` and `BytesView`)
 
-The same quadratic trap occurs when parsing text by repeatedly slicing the remainder (`rest = rest[(nl + 1)..]`), which copies the tail on every line (Styleguide rule S16). Instead, create a `BytesView` once with `std::str::bytes_view(s)` and advance an integer cursor across it (see [Strings & Text](../basics/strings.md#walking-large-strings-with-byteview)).
+The same quadratic trap occurs when parsing text by repeatedly slicing the remainder (`rest = rest[(nl + 1)..]`), which copies the tail on every line (Styleguide rule S16). Instead, create a `BytesView` once with `std::str::bytes_view(s)` and advance an integer cursor across it (see [Strings & Bytes](../basics/strings.md#walking-large-strings-with-byteview)).
 
 `StringView` and `BytesView` (and `BytesBuilder.view()` / `.text_view()`) borrow underlying storage without copying:
 - A view over a reused buffer or `BytesBuilder` is valid only until the buffer is next modified, reset, or overwritten. Accessing a stale view traps immediately at runtime.
