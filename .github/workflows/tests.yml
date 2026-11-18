@@ -363,6 +363,11 @@ jobs:
           # public resolver's answer can name one the runners cannot reach (2026-11-16)
           ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+          # codeberg.org (the habitat's pinned Forgejo image) at an IPv4 address a public
+          # resolver gives: its DNS has answered with only an address these runners cannot
+          # reach (IPv6), failing every job that starts a forge (GH #2064)
+          cb=$( { dig +short +time=3 +tries=2 @1.1.1.1 codeberg.org A; dig +short +time=3 +tries=2 @8.8.8.8 codeberg.org A; } 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${cb:-217.197.84.140} codeberg.org" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -456,6 +461,11 @@ jobs:
           # public resolver's answer can name one the runners cannot reach (2026-11-16)
           ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+          # codeberg.org (the habitat's pinned Forgejo image) at an IPv4 address a public
+          # resolver gives: its DNS has answered with only an address these runners cannot
+          # reach (IPv6), failing every job that starts a forge (GH #2064)
+          cb=$( { dig +short +time=3 +tries=2 @1.1.1.1 codeberg.org A; dig +short +time=3 +tries=2 @8.8.8.8 codeberg.org A; } 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${cb:-217.197.84.140} codeberg.org" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -647,6 +657,11 @@ jobs:
           # public resolver's answer can name one the runners cannot reach (2026-11-16)
           ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+          # codeberg.org (the habitat's pinned Forgejo image) at an IPv4 address a public
+          # resolver gives: its DNS has answered with only an address these runners cannot
+          # reach (IPv6), failing every job that starts a forge (GH #2064)
+          cb=$( { dig +short +time=3 +tries=2 @1.1.1.1 codeberg.org A; dig +short +time=3 +tries=2 @8.8.8.8 codeberg.org A; } 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${cb:-217.197.84.140} codeberg.org" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1083,6 +1098,11 @@ jobs:
           # public resolver's answer can name one the runners cannot reach (2026-11-16)
           ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+          # codeberg.org (the habitat's pinned Forgejo image) at an IPv4 address a public
+          # resolver gives: its DNS has answered with only an address these runners cannot
+          # reach (IPv6), failing every job that starts a forge (GH #2064)
+          cb=$( { dig +short +time=3 +tries=2 @1.1.1.1 codeberg.org A; dig +short +time=3 +tries=2 @8.8.8.8 codeberg.org A; } 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${cb:-217.197.84.140} codeberg.org" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1262,6 +1282,11 @@ jobs:
           # public resolver's answer can name one the runners cannot reach (2026-11-16)
           ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+          # codeberg.org (the habitat's pinned Forgejo image) at an IPv4 address a public
+          # resolver gives: its DNS has answered with only an address these runners cannot
+          # reach (IPv6), failing every job that starts a forge (GH #2064)
+          cb=$( { dig +short +time=3 +tries=2 @1.1.1.1 codeberg.org A; dig +short +time=3 +tries=2 @8.8.8.8 codeberg.org A; } 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${cb:-217.197.84.140} codeberg.org" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1539,6 +1564,11 @@ jobs:
           # public resolver's answer can name one the runners cannot reach (2026-11-16)
           ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+          # codeberg.org (the habitat's pinned Forgejo image) at an IPv4 address a public
+          # resolver gives: its DNS has answered with only an address these runners cannot
+          # reach (IPv6), failing every job that starts a forge (GH #2064)
+          cb=$( { dig +short +time=3 +tries=2 @1.1.1.1 codeberg.org A; dig +short +time=3 +tries=2 @8.8.8.8 codeberg.org A; } 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${cb:-217.197.84.140} codeberg.org" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1675,6 +1705,11 @@ jobs:
           # public resolver's answer can name one the runners cannot reach (2026-11-16)
           ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+          # codeberg.org (the habitat's pinned Forgejo image) at an IPv4 address a public
+          # resolver gives: its DNS has answered with only an address these runners cannot
+          # reach (IPv6), failing every job that starts a forge (GH #2064)
+          cb=$( { dig +short +time=3 +tries=2 @1.1.1.1 codeberg.org A; dig +short +time=3 +tries=2 @8.8.8.8 codeberg.org A; } 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${cb:-217.197.84.140} codeberg.org" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1787,6 +1822,11 @@ jobs:
           # public resolver's answer can name one the runners cannot reach (2026-11-16)
           ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+          # codeberg.org (the habitat's pinned Forgejo image) at an IPv4 address a public
+          # resolver gives: its DNS has answered with only an address these runners cannot
+          # reach (IPv6), failing every job that starts a forge (GH #2064)
+          cb=$( { dig +short +time=3 +tries=2 @1.1.1.1 codeberg.org A; dig +short +time=3 +tries=2 @8.8.8.8 codeberg.org A; } 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${cb:-217.197.84.140} codeberg.org" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -1873,6 +1913,11 @@ jobs:
           # public resolver's answer can name one the runners cannot reach (2026-11-16)
           ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+          # codeberg.org (the habitat's pinned Forgejo image) at an IPv4 address a public
+          # resolver gives: its DNS has answered with only an address these runners cannot
+          # reach (IPv6), failing every job that starts a forge (GH #2064)
+          cb=$( { dig +short +time=3 +tries=2 @1.1.1.1 codeberg.org A; dig +short +time=3 +tries=2 @8.8.8.8 codeberg.org A; } 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${cb:-217.197.84.140} codeberg.org" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
@@ -2004,6 +2049,11 @@ jobs:
           # public resolver's answer can name one the runners cannot reach (2026-11-16)
           ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
           echo "${ip:-185.125.190.81} archive.ubuntu.com security.ubuntu.com" | sudo tee -a /etc/hosts >/dev/null
+          # codeberg.org (the habitat's pinned Forgejo image) at an IPv4 address a public
+          # resolver gives: its DNS has answered with only an address these runners cannot
+          # reach (IPv6), failing every job that starts a forge (GH #2064)
+          cb=$( { dig +short +time=3 +tries=2 @1.1.1.1 codeberg.org A; dig +short +time=3 +tries=2 @8.8.8.8 codeberg.org A; } 2>/dev/null | grep -m1 -E '^[0-9.]+$' || true)
+          echo "${cb:-217.197.84.140} codeberg.org" | sudo tee -a /etc/hosts >/dev/null
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
