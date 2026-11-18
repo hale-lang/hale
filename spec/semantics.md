@@ -3775,7 +3775,10 @@ construction, before `birth()` runs (GH #737). A key a locus
 computes in `birth()` is therefore not the registered one — the
 field's default is — so a key comes in as a param at the literal
 (`Feed { symbol_id: 7 }`); registering the default on purpose stays
-valid. The same holds for a subscription a locus imported from
+valid. `hale check` warns at an assignment to a keyed field that runs
+during `birth()`: one anywhere in its body (inside an `if`, a `match`
+arm, a loop or a block) or in a method of the locus's own that
+`birth()` calls as `self.<m>(…)`, at any depth (GH #2027). The same holds for a subscription a locus imported from
 another module declares. Subsequent mutations to fields the
 filter expression references do **not** change which messages the
 handler receives. If dynamic re-keying is needed, dissolve and

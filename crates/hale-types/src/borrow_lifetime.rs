@@ -1758,28 +1758,53 @@ fn keyed_in_birth(programs: &[&Program]) -> Vec<Diag> {
                     if keyed.is_empty() {
                         continue;
                     }
+                    // GH #2027 (c): every assignment to a keyed field
+                    // that runs during `birth()`, at any depth of its
+                    // body (an `if`, a `match` arm, a loop, a block) and
+                    // in the locus's own methods `birth()` calls, as
+                    // `self.<m>(…)`, transitively. It walked the body's
+                    // top-level statements only, so a key assigned
+                    // inside an `if` was silent.
+                    let methods: BTreeMap<&str, &Block> = l
+                        .members
+                        .iter()
+                        .filter_map(|m| match m {
+                            LocusMember::Fn(f) => Some((f.name.name.as_str(), &f.body)),
+                            _ => None,
+                        })
+                        .collect();
                     for m in &l.members {
                         if let LocusMember::Lifecycle(lc) = m {
                             if lc.kind == LifecycleKind::Birth {
-                                for s in &lc.body.stmts {
-                                    if let Stmt::Assign { target, span, .. } = s {
-                                        if target.head.name == "self" && target.tail.len() == 1 {
-                                            if let hale_syntax::ast::LValueSeg::Field(f) = &target.tail[0] {
-                                                if let Some(topic) = keyed.get(&f.name) {
-                                                    diags.push(Diag::warn(
-                                                        *span,
-                                                        format!(
-                                                            "`{}` keys its subscription to `{}` by `self.{}`, and the key was read \
-                                                             when the subscription was registered — at construction, before \
-                                                             `birth()` ran. This assignment does not retarget it: the \
-                                                             subscription stays on the field's value at the literal. Pass \
-                                                             `{}` as a param at the literal (`{} {{ {}: … }}`) (GH #737).",
-                                                            l.name.name, topic, f.name, f.name, l.name.name, f.name
-                                                        ),
-                                                    ));
-                                                }
+                                let mut assigns: Vec<(String, Span)> = Vec::new();
+                                let mut seen: BTreeSet<String> = BTreeSet::new();
+                                let mut queue: Vec<&Block> = vec![&lc.body];
+                                while let Some(b) = queue.pop() {
+                                    let mut called = Vec::new();
+                                    self_assigns_in_block(b, &mut assigns, &mut called);
+                                    for c in called {
+                                        if let Some(body) = methods.get(c.as_str()) {
+                                            if seen.insert(c) {
+                                                queue.push(body);
                                             }
                                         }
+                                    }
+                                }
+                                assigns.sort_by_key(|(_, sp)| (sp.start, sp.end));
+                                assigns.dedup();
+                                for (field, span) in assigns {
+                                    if let Some(topic) = keyed.get(&field) {
+                                        diags.push(Diag::warn(
+                                            span,
+                                            format!(
+                                                "`{}` keys its subscription to `{}` by `self.{}`, and the key was read \
+                                                 when the subscription was registered — at construction, before \
+                                                 `birth()` ran. This assignment does not retarget it: the \
+                                                 subscription stays on the field's value at the literal. Pass \
+                                                 `{}` as a param at the literal (`{} {{ {}: … }}`) (GH #737).",
+                                                l.name.name, topic, field, field, l.name.name, field
+                                            ),
+                                        ));
                                     }
                                 }
                             }
@@ -1794,6 +1819,160 @@ fn keyed_in_birth(programs: &[&Program]) -> Vec<Diag> {
         go(&p.items, &mut diags);
     }
     diags
+}
+
+/// GH #2027 (c): every `self.<f> = …` in a block, at any depth of its
+/// statements (an `if`'s branches, a `match` arm, a loop's body, a
+/// nested block), as `(f, span)`, and the names of the locus's own
+/// methods it calls as `self.<m>(…)` anywhere in its expressions.
+fn self_assigns_in_block(b: &Block, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
+    fn calls(e: &Expr, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
+        match e {
+            Expr::Call { callee, args, .. } => {
+                if let Expr::Field { receiver, name, .. } = callee.as_ref() {
+                    if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                        called.push(name.name.clone());
+                    }
+                }
+                calls(callee, out, called);
+                for a in args {
+                    calls(a, out, called);
+                }
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } | Expr::Unary { operand: receiver, .. } => {
+                calls(receiver, out, called)
+            }
+            Expr::Binary { left, right, .. } => {
+                calls(left, out, called);
+                calls(right, out, called);
+            }
+            Expr::Index { receiver, index, .. } => {
+                calls(receiver, out, called);
+                calls(index, out, called);
+            }
+            Expr::Tuple(es, _) | Expr::Array(es, _) => {
+                for x in es {
+                    calls(x, out, called);
+                }
+            }
+            Expr::Struct { inits, .. } => {
+                for i in inits {
+                    calls(&i.value, out, called);
+                }
+            }
+            Expr::Or { inner, disposition, .. } => {
+                calls(inner, out, called);
+                disposition_expr(disposition, out, called);
+            }
+            // GH #2027 review: an expression-valued `if`, `match` or
+            // block (`let x = if c { self.k = 7; 1 } else { 0 };`) runs
+            // its statements too.
+            Expr::Block(b) => self_assigns_in_block(b, out, called),
+            Expr::If(i) => if_stmt(i, out, called),
+            Expr::Match(m) => {
+                calls(&m.scrutinee, out, called);
+                for arm in &m.arms {
+                    if let Some(g) = &arm.guard {
+                        calls(g, out, called);
+                    }
+                    match &arm.body {
+                        MatchArmBody::Expr(e) => calls(e, out, called),
+                        MatchArmBody::Block(b) => self_assigns_in_block(b, out, called),
+                    }
+                }
+            }
+            Expr::Sum(x, _) | Expr::Prod(x, _) | Expr::ArrayRepeat { val: x, .. } => calls(x, out, called),
+            Expr::Approx { left, right, tolerance, .. } => {
+                calls(left, out, called);
+                calls(right, out, called);
+                calls(tolerance, out, called);
+            }
+            Expr::Range { lo, hi, .. } => {
+                calls(lo, out, called);
+                calls(hi, out, called);
+            }
+            _ => {}
+        }
+    }
+    fn disposition_expr(d: &hale_syntax::ast::OrDisposition, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
+        disposition(Some(d), out, called)
+    }
+    fn disposition(d: Option<&hale_syntax::ast::OrDisposition>, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
+        match d {
+            Some(hale_syntax::ast::OrDisposition::Substitute(e)) => calls(e, out, called),
+            Some(hale_syntax::ast::OrDisposition::Fail(e, _)) => calls(e, out, called),
+            _ => {}
+        }
+    }
+    fn if_stmt(i: &hale_syntax::ast::IfStmt, out: &mut Vec<(String, Span)>, called: &mut Vec<String>) {
+        calls(&i.cond, out, called);
+        self_assigns_in_block(&i.then_block, out, called);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => self_assigns_in_block(b, out, called),
+            Some(ElseBranch::ElseIf(n)) => if_stmt(n, out, called),
+            None => {}
+        }
+    }
+    for s in &b.stmts {
+        match s {
+            Stmt::Assign { target, value, span, .. } => {
+                if target.head.name == "self" && target.tail.len() == 1 {
+                    if let hale_syntax::ast::LValueSeg::Field(f) = &target.tail[0] {
+                        out.push((f.name.clone(), *span));
+                    }
+                }
+                for seg in &target.tail {
+                    if let hale_syntax::ast::LValueSeg::Index(ix) = seg {
+                        calls(ix, out, called);
+                    }
+                }
+                calls(value, out, called);
+            }
+            // GH #2027 review: a publish's subject, payload and its
+            // disposition's expression run too (`K <- self.make();`).
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                calls(subject, out, called);
+                calls(value, out, called);
+                disposition(or_disposition.as_ref(), out, called);
+            }
+            Stmt::Fail { value, .. } => calls(value, out, called),
+            Stmt::Recovery { args, .. } => {
+                for a in args {
+                    calls(a, out, called);
+                }
+            }
+            Stmt::Violate { payload: Some(e), .. } => calls(e, out, called),
+            Stmt::ShmWrite { body, .. } => self_assigns_in_block(body, out, called),
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Expr(value) => calls(value, out, called),
+            Stmt::If(i) => if_stmt(i, out, called),
+            Stmt::Match(m) => {
+                calls(&m.scrutinee, out, called);
+                for arm in &m.arms {
+                    if let Some(g) = &arm.guard {
+                        calls(g, out, called);
+                    }
+                    match &arm.body {
+                        MatchArmBody::Expr(e) => calls(e, out, called),
+                        MatchArmBody::Block(b) => self_assigns_in_block(b, out, called),
+                    }
+                }
+            }
+            Stmt::For { iter, body, .. } => {
+                calls(iter, out, called);
+                self_assigns_in_block(body, out, called);
+            }
+            Stmt::While { cond, body, .. } => {
+                calls(cond, out, called);
+                self_assigns_in_block(body, out, called);
+            }
+            Stmt::Block(b) => self_assigns_in_block(b, out, called),
+            Stmt::Return(Some(e), _) => calls(e, out, called),
+            _ => {}
+        }
+    }
+    if let Some(t) = &b.tail {
+        calls(t, out, called);
+    }
 }
 
 /// Every `self.<f>` a block mentions, read or written.
