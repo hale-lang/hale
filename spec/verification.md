@@ -2341,7 +2341,13 @@ assume the others in a build:
   boundary; a recursive scratch-local fn keeps the locus boundary (its
   activations' subregions are alive at once, to an unbounded depth); a
   locus instantiation is not a value in its caller's arena (the
-  instance's arena is its own). `--dump-alloc-summary` tags a
+  instance's arena is its own). An instantiation of a flow child (a
+  type some `release(c: T)` names) in its parent's loop is that
+  iteration's when the flow's `run()` is one activation, nothing in it
+  repeating without a bound: the flow is reclaimed when its `run()`
+  completes (spec/semantics.md § "`release(c)` and flow children";
+  GH #2027). A flow whose `run()` loops keeps its arena while it runs,
+  and its literal in a parent loop still accumulates. `--dump-alloc-summary` tags a
   scratch-local fn `[scratch-local]`, or `[scratch-local, recursive]`.
 
   **A returned accumulator is one value per call** (GH #1490). A value
@@ -3109,9 +3115,13 @@ assume the others in a build:
   without `release` on a daemon-shaped locus** — declaring
   `release(c: C)` marks `C` a flow child (reclaimed when its `run()`
   completes); without it every accepted child is RESIDENT until the
-  parent dissolves, so a parent whose `run()` loops forever (literal
-  `while true` — the deliberately narrow daemon signal) grows
-  O(accepted children). Run-to-exit accept examples stay silent.
+  parent dissolves, so a parent whose `run()` loops forever grows
+  O(accepted children). The daemon signal is a literal `while true` in
+  its `run()`, or a `run()` the starvation law's classifier says never
+  returns: a terminal `while !self.draining` (the drain-aware loop
+  § Drain cascade recommends), or a `while` on a Bool param no member
+  assigns whose default keeps it looping (GH #2027). Run-to-exit
+  accept examples stay silent.
 
   GH #1947 (2026-11-15): (5) an **appending assignment that copies the
   whole String on every iteration** — `s = s + …`, `s += …` or
