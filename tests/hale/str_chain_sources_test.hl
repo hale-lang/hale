@@ -1,0 +1,286 @@
+// tests/hale/str_chain_sources_test.hl — the text sources as chain sources
+// (GH #1995 S2): `std::str::split(s, sep)`, `std::str::lines(s)` and
+// `std::str::words(s)` start an element chain as a vec does, each part a
+// `String` element. The chain is the source's one scan (spec/semantics.md
+// § Text sources, § Element chains): its stages and terminal run per part,
+// and no list of the parts is built. The parts are the `for` loop's, so
+// every case here agrees with a loop over the same source.
+
+@form(vec)
+locus Fields {
+    capacity { heap items of String; }
+}
+
+type Tally { tag: String; n: Int; }
+
+@form(hashmap)
+locus Tallies {
+    capacity { pool entries of Tally indexed_by tag; }
+}
+
+fn render(f: Fields) -> String {
+    return to_string(f.len()) + ":" + std::str::join(f, "|");
+}
+
+// What a `for` loop over the source sees, rendered as `render` does.
+fn words_by_loop(s: String) -> String {
+    let f = Fields { };
+    for w in std::str::words(s) {
+        f.push(w);
+    }
+    return render(f);
+}
+
+// A chain is pure where its stages are: legal in a deterministic,
+// syscall-free fn.
+@deterministic
+@no_syscall
+fn long_words(s: String) -> Int {
+    return std::str::words(s).filter(len(it) > 2).count();
+}
+
+// `return` from a chain's `each` block returns from the fn.
+fn first_with(s: String, c: String) -> String {
+    std::str::words(s).each {
+        if std::str::contains(it, c) {
+            return it;
+        }
+    };
+    return "<none>";
+}
+
+// Counts how often the chain reads its arguments.
+locus Reads {
+    params { n: Int = 0; }
+    fn text() -> String {
+        self.n = self.n + 1;
+        return "x,y,,z";
+    }
+    fn sep() -> String {
+        self.n = self.n + 1;
+        return ",";
+    }
+}
+
+locus Doc {
+    params { text: String = "alpha beta\n\ngamma delta epsilon\n"; }
+
+    fn non_blank_lines() -> Int {
+        return std::str::lines(self.text).filter(len(it) > 0).count();
+    }
+
+    // a chain over a source nested in another's predicate
+    fn lines_with_three_words() -> Int {
+        return std::str::lines(self.text).filter(std::str::words(it).count() == 3).count();
+    }
+}
+
+fn main() {
+    // the RFC's example, and each source with no stage
+    std::test::assert_eq_int(
+        std::str::words("a an the tree of life").filter(len(it) > 2).count(),
+        3,
+        "words, filtered and counted",
+    );
+    std::test::assert_eq_int(std::str::words("  one two  three ").count(), 3, "words.count()");
+    std::test::assert_eq_int(std::str::words("").count(), 0, "no text is no words");
+    std::test::assert_eq_int(std::str::split("a,,b,", ",").count(), 4, "split keeps empty parts");
+    std::test::assert_eq_int(
+        std::str::split("", ",").count(),
+        1,
+        "the empty string is one empty part",
+    );
+    std::test::assert_eq_int(
+        std::str::split("abc", "").count(),
+        0,
+        "an empty separator splits nothing",
+    );
+    std::test::assert_eq_int(
+        std::str::lines("one\r\ntwo\n").count(),
+        2,
+        "lines: CRLF, and no final empty line",
+    );
+    std::test::assert_eq_int(
+        long_words("to be or not to be, that is it"),
+        3,
+        "in a @deterministic @no_syscall fn",
+    );
+
+    // map, sum, any, all
+    std::test::assert_eq_int(
+        std::str::split("3,4,5", ",").map(std::str::parse_int(it) or 0).sum(),
+        12,
+        "map then sum",
+    );
+    std::test::assert_eq_int(
+        std::str::words("ab cde f").map(len(it)).sum(),
+        6,
+        "the parts' lengths",
+    );
+    std::test::assert(
+        std::str::lines("x\nERROR y\nz").any(std::str::starts_with(it, "ERROR")),
+        "any(p)",
+    );
+    std::test::assert(
+        !std::str::lines("x\ny").any(std::str::starts_with(it, "ERROR")),
+        "any(p), none",
+    );
+    std::test::assert(!std::str::words("").any(), "any() over no parts is false");
+    std::test::assert(std::str::words("aa bb").all(len(it) == 2), "all(p)");
+    std::test::assert(!std::str::words("aa b").all(len(it) == 2), "all(p), one fails");
+    std::test::assert(std::str::words(" ").all(len(it) == 2), "all over no parts is true");
+
+    // take, skip, enumerate, into: the parts the loop sees, in order
+    let f = Fields { };
+    std::str::words("  zero one two three four ").skip(1).take(3).into(f);
+    std::test::assert_eq_str(render(f), "3:one|two|three", "skip then take, into a vec");
+    let g = Fields { };
+    std::str::words("a  b\tc\nd").into(g);
+    std::test::assert_eq_str(
+        render(g),
+        words_by_loop("a  b\tc\nd"),
+        "into is what a for loop sees",
+    );
+    let h = Fields { };
+    std::str::split("x,y,z", ",").enumerate().filter(idx != 1).map(to_string(idx) + it).into(h);
+    std::test::assert_eq_str(render(h), "2:0x|2z", "enumerate binds idx");
+
+    // first, find, min, max: the part itself, and IndexError when none
+    std::test::assert_eq_str(std::str::words("  lead and trail").first() or "-", "lead", "first");
+    std::test::assert_eq_str(
+        std::str::words("   ").first() or "-",
+        "-",
+        "first of no parts is the or",
+    );
+    std::test::assert_eq_str(
+        std::str::words("ab abc abcd").find(len(it) > 2) or "-",
+        "abc",
+        "find(p)",
+    );
+    std::test::assert_eq_str(
+        std::str::words("ab cd").find(len(it) > 2) or "-",
+        "-",
+        "find(p), none",
+    );
+    std::test::assert_eq_str(
+        std::str::words("pear fig banana kiwi").max(len(it)) or "-",
+        "banana",
+        "max(key)",
+    );
+    std::test::assert_eq_str(
+        std::str::words("pear fig banana kiwi").min(len(it)) or "-",
+        "fig",
+        "min(key)",
+    );
+    std::test::assert_eq_str(
+        std::str::words("pear fig banana kiwi").min() or "-",
+        "banana",
+        "min() compares parts",
+    );
+    std::test::assert_eq_str(std::str::split("b,c,a", ",").max() or "-", "c", "max()");
+    std::test::assert_eq_str(
+        std::str::lines("").max() or "none",
+        "none",
+        "max of no parts is the or",
+    );
+    let mut missed = "";
+    let none = std::str::words("").first() or {
+        missed = "missed";
+        "x"
+    };
+    std::test::assert_eq_str(missed + none, "missedx", "an or block runs on the empty selection");
+    // a key is compared with the kept key of the best part; the stages
+    // before it hold across the whole scan, and a tie keeps the first
+    let ws = "a bbbb cc ddddd e";
+    std::test::assert_eq_str(
+        std::str::words(ws).skip(1).take(3).max(len(it)) or "-",
+        "ddddd",
+        "skip and take before max(key)",
+    );
+    std::test::assert_eq_str(
+        std::str::words(ws).filter(len(it) < 5).max(len(it)) or "-",
+        "bbbb",
+        "filter before max(key)",
+    );
+    std::test::assert_eq_str(
+        std::str::words(ws).take(1).max(len(it)) or "-",
+        "a",
+        "max(key) of one part",
+    );
+    std::test::assert_eq_str(
+        std::str::words(ws).take(0).max(len(it)) or "-",
+        "-",
+        "max(key) of no parts",
+    );
+    std::test::assert_eq_str(
+        std::str::words("bb aa cc").min(len(it)) or "-",
+        "bb",
+        "a tie keeps the first",
+    );
+    std::test::assert_eq_str(
+        std::str::words(ws).enumerate().filter(idx % 2 == 1).min(len(it)) or "-",
+        "bbbb",
+        "enumerate before min(key)",
+    );
+    // with no key, parts compare as `<` compares Strings, bytes included
+    let u = "zeta été alpha";
+    let mut best = "";
+    let mut least = "";
+    let mut seen = false;
+    for w in std::str::words(u) {
+        if !seen || w > best { best = w; }
+        if !seen || w < least { least = w; }
+        seen = true;
+    }
+    std::test::assert_eq_str(std::str::words(u).max() or "-", best, "max() is the loop's `>`");
+    std::test::assert_eq_str(std::str::words(u).min() or "-", least, "min() is the loop's `<`");
+    std::test::assert_eq_str(
+        std::str::split("ab,a,abc,ab", ",").min() or "-",
+        "a",
+        "a prefix is less",
+    );
+    std::test::assert_eq_str(
+        std::str::split("ab,a,abc,ab", ",").max() or "-",
+        "abc",
+        "a longer text past a prefix is greater",
+    );
+    // the part picked survives the scan: it is the chain's value
+    let kept = std::str::split("keep,me", ",").find(it == "me") or "-";
+    std::test::assert_eq_str(std::str::upper(kept), "ME", "the picked part outlives the scan");
+
+    // each, with continue and an early return
+    let mut n = 0;
+    std::str::words("a bb ccc dddd").each {
+        if len(it) % 2 == 1 {
+            continue;
+        }
+        n = n + len(it);
+    };
+    std::test::assert_eq_int(n, 6, "continue in each skips to the next part");
+    std::test::assert_eq_str(first_with("red green blue", "e"), "red", "return from each");
+    std::test::assert_eq_str(first_with("red green blue", "z"), "<none>", "each to the end");
+
+    // the whole-set terminals materialize into caller storage
+    let s = Fields { };
+    std::str::words("delta alpha charlie bravo").sort_into(s);
+    std::test::assert_eq_str(render(s), "4:alpha|bravo|charlie|delta", "sort_into");
+    let r = Fields { };
+    std::str::split("1,2,3", ",").reverse_into(r);
+    std::test::assert_eq_str(render(r), "3:3|2|1", "reverse_into");
+    let t = Tallies { };
+    std::str::words("a b a c a b").group_count_into(t);
+    let a = t.get("a") or Tally { tag: "?", n: -1 };
+    let b = t.get("b") or Tally { tag: "?", n: -1 };
+    std::test::assert_eq_int(a.n * 10 + b.n, 32, "group_count_into tallies each part");
+
+    // a chain over a field, and one nested in another's predicate
+    let d = Doc { };
+    std::test::assert_eq_int(d.non_blank_lines(), 2, "a chain over a locus field");
+    std::test::assert_eq_int(d.lines_with_three_words(), 1, "a chain inside a chain's predicate");
+
+    // the arguments are evaluated once
+    let k = Reads { };
+    let c = std::str::split(k.text(), k.sep()).filter(len(it) > 0).count();
+    std::test::assert_eq_int(c, 3, "split over arguments read once");
+    std::test::assert_eq_int(k.n, 2, "each argument read once");
+}

@@ -236,7 +236,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 54 targets below are the only ones the correction changes.
+/// The 55 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -247,7 +247,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 35] = [
+const CALL_LINES_ONLY: [(&str, usize); 36] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -327,6 +327,11 @@ const CALL_LINES_ONLY: [(&str, usize); 35] = [
     ("tests/hale/rand_rng_test.hl", 12),
     ("tests/hale/secret_write_private_test.hl", 10),
     ("tests/hale/std_secret_test.hl", 8),
+    // GH #1995 S2, chain sources: each of its 21 element-valued terminals
+    // over a text source (`first`, `find`, `min`, `max`) reads the part it
+    // picked through a one-element array's `get`, the array's `at`, which
+    // only the check's typing names (as GH #1984's cursors above)
+    ("tests/hale/str_chain_sources_test.hl", 21),
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.

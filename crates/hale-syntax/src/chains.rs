@@ -103,6 +103,26 @@
 //! need the mapped type while `get` yields the source type): project
 //! AFTER the find, on the returned element. A mapped find is left
 //! unrecognized and fails with the ordinary no-method diagnostic.
+//!
+//! ## Text sources: a cursor (GH #1995 S2)
+//!
+//! `std::str::split(s, sep)`, `lines(s)` and `words(s)` start a chain
+//! too (`std::str::words(s).filter(len(it) > 2).count()`). They have no
+//! `get`: the parts are found one after another, and finding the i-th
+//! again each turn would be quadratic. So the loop of such a chain is
+//! the source's own scan (`crate::str_sources::scan`, which the `for`
+//! loop's rewrite uses), the part bound as the element before the
+//! stages run, and an element-valued terminal keeps its pick's offsets
+//! in the scan's view; the chain's value is that part, through a
+//! one-element array's own `get` (index 0, or -1 for none: the ordinary
+//! IndexError). `min()` / `max()` compare each part with the best where
+//! it lies (`__str_view_cmp`), and `min(key)` / `max(key)` keep the
+//! best's key, whose type only the first pick gives: the scan that finds
+//! it goes on inside its body (`str_sources::scan_loop` again, from the
+//! same cursor) with the key bound. The source is recognized by its call
+//! at its own arity, so every terminal is recognized on it, a stage or
+//! none; a call of another arity keeps the indexed loop, whose `get` on
+//! it is the checker's arity refusal.
 
 use crate::ast::*;
 use crate::span::Span;
@@ -220,6 +240,13 @@ struct Chain {
     /// anchor's name (a record's or a locus's `items: bounded[T; N]`),
     /// the checker and lowering walk that field (GH #1984).
     anchor: Option<&'static str>,
+    /// A text source (`std::str::split(s, sep)`, `lines(s)`, `words(s)`;
+    /// GH #1995 S2): the source's name, `src` being its call. Such a
+    /// source has no index to `get` by, so the loop is the source's own
+    /// scan (`crate::str_sources::scan`), a cursor moved part by part,
+    /// and an element-valued terminal keeps the offsets of the part it
+    /// picked instead of an index.
+    text: Option<&'static str>,
 }
 
 /// The pseudo-field a chain's element cursor was anchored on, read from
@@ -440,8 +467,19 @@ fn peel(e: &Expr) -> Option<Chain> {
         return None;
     }
 
+    // A text source: a call of `std::str::split` / `lines` / `words` of
+    // the source's own arity. It is a call of the standard library's,
+    // never a user's facade, so every terminal is recognized on it, a
+    // stage or none (`std::str::words(s).count()`).
+    let text = match cur {
+        Expr::Call { callee, args, .. } => crate::str_sources::source_of(callee)
+            .filter(|(_, arity)| args.len() == *arity)
+            .map(|(name, _)| name),
+        _ => None,
+    };
+
     // Recognition gate.
-    let recognized = if !stages.is_empty() {
+    let recognized = if !stages.is_empty() || text.is_some() {
         true
     } else {
         match terminal.as_str() {
@@ -482,7 +520,7 @@ fn peel(e: &Expr) -> Option<Chain> {
         other => (other.clone(), "get", None),
     };
 
-    Some(Chain { src, stages, terminal, term_args, accessor, anchor })
+    Some(Chain { src, stages, terminal, term_args, accessor, anchor, text })
 }
 
 // ---- `it` substitution --------------------------------------------
@@ -649,6 +687,8 @@ fn expr(e: &mut Expr, n: &mut usize) {
             expr(left, n);
             expr(right, n);
         }
+        // `!xs.any(…)`: a chain under a unary operator is rewritten too
+        Expr::Unary { operand, .. } => expr(operand, n),
         Expr::Block(b) => block(b, n),
         Expr::Or { inner, .. } => expr(inner, n),
         _ => {}
@@ -922,8 +962,27 @@ fn build_loop(
     anchor: Option<&str>,
     sp: Span,
 ) -> Vec<Stmt> {
-    let i_name = cursor_var("__hale_chain_i", uid, anchor);
     let elem = format!("__hale_it{}", uid);
+    // A text source is walked by its own scan, not by index: the
+    // cursor moves to the next part before the body runs, so
+    // `continue` and `break` keep their meaning, and each part is the
+    // element, bound once per iteration (GH #1995 S2).
+    // (only at the source's own arity: any other call keeps the indexed
+    // loop, whose `get` on the call is the checker's refusal to report)
+    if let Expr::Call { callee, args, span: call_span, .. } = src {
+        if let Some((source, _)) = crate::str_sources::source_of(callee).filter(|(_, arity)| args.len() == *arity) {
+            return crate::str_sources::scan(
+                source,
+                args.clone(),
+                *call_span,
+                &text_tag(uid),
+                id(&elem, sp),
+                Block { stmts: body, tail: None, span: sp },
+                sp,
+            );
+        }
+    }
+    let i_name = cursor_var("__hale_chain_i", uid, anchor);
     let mut loop_body = vec![
         assign(
             &i_name,
@@ -1200,6 +1259,154 @@ fn lower(mut c: Chain, sp: Span, uid: usize) -> Expr {
     })
 }
 
+/// The tag of a chain's text scan (`crate::str_sources::scan`): `c` and
+/// the chain's number, apart from the numbers of `for` loops' scans.
+fn text_tag(uid: usize) -> String {
+    format!("c{uid}")
+}
+
+/// Element-valued fallible terminals over a text source (GH #1995 S2):
+/// first / find / min / max. There is no index to `get` the part by
+/// again, so the loop keeps the offsets of the part it picks (two
+/// Ints: no part outlives its iteration), and the chain's value is
+/// that part, through a one-element array's own fallible `get`: index
+/// 0 when a part was picked, -1 when none was, which is the ordinary
+/// `IndexError` an empty selection over a vec fails with, so `or`
+/// applies with no new machinery.
+fn lower_text_indexed(
+    mut c: Chain,
+    sp: Span,
+    uid: usize,
+    disposition: Option<OrDisposition>,
+) -> Expr {
+    let idx_name = format!("__hale_chain_idx{}", uid);
+    let idx = idx_name.as_str();
+    let best_lo = format!("__hale_chain_lo{}", uid);
+    let best_hi = format!("__hale_chain_hi{}", uid);
+    let pick = format!("__hale_chain_pick{}", uid);
+    let elem0 = format!("__hale_it{}", uid);
+    let (view, lo, hi) = crate::str_sources::scan_names(&text_tag(uid));
+    let slice = |a: &str, b: &str| -> Expr {
+        Expr::Call {
+            id: NodeId::NONE,
+            callee: Box::new(Expr::Path(QualifiedName {
+                segments: vec![id("std", sp), id("str", sp), id("slice", sp)],
+                span: sp,
+            })),
+            args: vec![var(&view, sp), var(a, sp), var(b, sp)],
+            span: sp,
+        }
+    };
+
+    // `find(p)` is `filter(p).first()`.
+    if c.terminal == "find" && !c.term_args.is_empty() {
+        c.stages.push(Stage::Filter(c.term_args.remove(0)));
+    }
+    let keep = vec![
+        assign(idx, int(0, sp), sp),
+        assign(&best_lo, var(&lo, sp), sp),
+        assign(&best_hi, var(&hi, sp), sp),
+    ];
+    let is_min = c.terminal == "min";
+    let order = if is_min { BinOp::Lt } else { BinOp::Gt };
+    let (head, inner_loop): (Vec<Stmt>, Option<Stmt>) = match (c.terminal.as_str(), c.term_args.first().cloned()) {
+        ("first" | "find", _) => {
+            let mut a = keep;
+            a.push(Stmt::Break(sp));
+            (a, None)
+        }
+        // min/max with no key compare the parts themselves: the best one
+        // is compared where it lies in the view (`__str_view_cmp`, best
+        // against the candidate), never copied out again
+        (_, None) => {
+            let cmp = Expr::Call {
+                id: NodeId::NONE,
+                callee: Box::new(var("__str_view_cmp", sp)),
+                args: vec![var(&view, sp), var(&best_lo, sp), var(&best_hi, sp), var(&elem0, sp)],
+                span: sp,
+            };
+            let better = bin(if is_min { BinOp::Gt } else { BinOp::Lt }, cmp, int(0, sp), sp);
+            (
+                vec![
+                    if_then(bin(BinOp::Lt, var(idx, sp), int(0, sp), sp), keep.clone(), sp),
+                    if_then(better, keep, sp),
+                ],
+                None,
+            )
+        }
+        // min/max by a key: the best part's key is kept once it is
+        // known. Its type is the key's, which only the first part picked
+        // can give it before any type is known, so the scan that finds
+        // that part goes on inside its body (a second `while` from the
+        // same cursor), comparing each later part's key with the kept
+        // one, and then leaves: no part is copied out to be compared
+        (_, Some(k)) => {
+            let best_key = format!("__hale_chain_key{}", uid);
+            let cand_key = format!("__hale_chain_kc{}", uid);
+            let key_of = |e: &str| {
+                let mut ke = k.clone();
+                subst_expr(&mut ke, "it", e);
+                ke
+            };
+            let later = vec![
+                let_val(&cand_key, key_of(&elem0), sp),
+                if_then(
+                    bin(order, var(&cand_key, sp), var(&best_key, sp), sp),
+                    vec![
+                        assign(&best_key, var(&cand_key, sp), sp),
+                        assign(&best_lo, var(&lo, sp), sp),
+                        assign(&best_hi, var(&hi, sp), sp),
+                    ],
+                    sp,
+                ),
+            ];
+            let (_, later_body) = apply_stages(&c.stages, &elem0, uid, later, sp);
+            let mut a = keep;
+            a.push(let_mut(&best_key, key_of(&elem0), sp));
+            (a, Some(Stmt::Block(Block { stmts: later_body, tail: None, span: sp })))
+        }
+    };
+    let source = c.text.unwrap_or("words");
+    let (call_args, call_span) = match &c.src {
+        Expr::Call { args, span, .. } => (args.clone(), *span),
+        other => (Vec::new(), other.span()),
+    };
+    let action: Vec<Stmt> = match inner_loop {
+        None => head,
+        Some(Stmt::Block(later)) => {
+            let mut a = head;
+            a.push(crate::str_sources::scan_loop(source, call_span, &text_tag(uid), id(&elem0, sp), later, sp));
+            a.push(Stmt::Break(sp));
+            a
+        }
+        Some(_) => unreachable!("the later scan's body is a block"),
+    };
+    let (stage_inits, body) =
+        apply_stages(&c.stages, &elem0, uid, action, sp);
+    let mut stmts = vec![
+        let_mut(idx, int(-1, sp), sp),
+        let_mut(&best_lo, int(0, sp), sp),
+        let_mut(&best_hi, int(0, sp), sp),
+    ];
+    stmts.extend(stage_inits);
+    stmts.extend(crate::str_sources::scan_head(source, call_args, call_span, &text_tag(uid)));
+    stmts.push(crate::str_sources::scan_loop(
+        source,
+        call_span,
+        &text_tag(uid),
+        id(&elem0, sp),
+        Block { stmts: body, tail: None, span: sp },
+        sp,
+    ));
+    stmts.push(let_val(&pick, Expr::Array(vec![slice(&best_lo, &best_hi)], sp), sp));
+    let get_tail = method(var(&pick, sp), "get", vec![var(idx, sp)], sp);
+    let tail = match disposition {
+        Some(d) => Expr::Or { inner: Box::new(get_tail), disposition: d, span: sp },
+        None => get_tail,
+    };
+    Expr::Block(Block { stmts, tail: Some(Box::new(tail)), span: sp })
+}
+
 /// Element-valued fallible terminals: first / find / min / max.
 ///
 /// The loop resolves an INDEX; the chain's value is `src.get(idx)`.
@@ -1213,6 +1420,9 @@ fn lower_indexed(
     uid: usize,
     disposition: Option<OrDisposition>,
 ) -> Expr {
+    if c.text.is_some() {
+        return lower_text_indexed(c, sp, uid, disposition);
+    }
     let idx_name = cursor_var("__hale_chain_idx", uid, c.anchor);
     let idx = idx_name.as_str();
     let elem0 = format!("__hale_it{}", uid);
