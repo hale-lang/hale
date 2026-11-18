@@ -629,6 +629,10 @@ locus PgConn {
     fn commit() -> db::Status { return self.__tx_cmd("COMMIT"); }
     fn rollback() -> db::Status { return self.__tx_cmd("ROLLBACK"); }
     fn tx_status() -> String { return self.txn_state; }
+    // transaction — run `body` in a transaction on this connection
+    // (pool.hl's `__run_transaction`): BEGIN, the body, then COMMIT on
+    // ok and ROLLBACK otherwise (GH #1792).
+    fn transaction(body: Transaction) -> db::Status { return __run_transaction(self, body); }
 
     fn __tx_cmd(cmd: String) -> db::Status {
         let r = self.__run(cmd);

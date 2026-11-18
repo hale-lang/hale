@@ -762,6 +762,8 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/string_append_test.hl`, whose `main` appends to Strings in
     // its loops (GH #1947); 26: `tests/hale/str_split_sources_test.hl`,
     // whose loops push the parts they visit into a vec (GH #1995 S2); 27:
+    // `tests/hale/units_form_iteration_test.hl`, whose loops over a form's
+    // cells build their assertion messages (GH #2026); 28:
     // `tests/hale/ring_buffer_push_flat_test.hl`, whose `main` builds the
     // records it pushes in its loops (GH #2024); 28:
     // `tests/hale/str_chain_sources_test.hl`, whose chains over text
@@ -1179,6 +1181,10 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625361..1610625403 InUnboundedLoop",
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625452..1610625489 InUnboundedLoop",
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat @1610625452..1610625482 InUnboundedLoop",
+            // `tests/hale/units_form_iteration_test.hl`: the f-strings its
+            // loops over a form's cells build (GH #2026)
+            "tests/hale/units_form_iteration_test.hl: main StringConcat @1472..1485 InUnboundedLoop",
+            "tests/hale/units_form_iteration_test.hl: main StringConcat @2109..2122 InUnboundedLoop",
         ]
     );
 }

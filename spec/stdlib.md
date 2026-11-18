@@ -1357,11 +1357,11 @@ Methods, grouped:
 - **Scopes:** `begin_object()`, `end_object()`,
   `begin_array()`, `end_array()`.
 - **Object entries (key + value in one call):** `string_field(name,
-  s)`, the string quoted and escaped; `int_field`, `bool_field`,
+  s)` and `field(name, s)`, the string quoted and escaped; `int_field`, `bool_field`,
   `null_field` for the other scalars; `raw_field(name, json)` for a
   value that is JSON already, written as given and not checked.
-- **Array entries / bare values:** `string_value(s)`, a string quoted
-  and escaped; `int_value`, `bool_value`, `null_value`;
+- **Array entries / bare values:** `string_value(s)` and `value(s)`, a
+  string quoted and escaped; `int_value`, `bool_value`, `null_value`;
   `raw_value(json)`, an element written as given.
 - **Nested scopes inside an object:** `begin_object_field(name)`
   / `begin_array_field(name)` — emit `"name": ` then open the
@@ -1380,17 +1380,15 @@ b.end_object();
 let out = b.result();   // {"name": "alice", "age": 30, "tags": ["admin", "ops"]}
 ```
 
-**Deprecated: `field(name, value)` and `value(v)`** (GH #1943).
-Both write their argument raw, as `raw_field` / `raw_value` do,
-although this section long described them as taking a string, so
-`b.field("name", "alice")` writes `"name": alice`, which is not
-JSON. Every call warns (`deprecated:`, at the call, STABILITY.md §
-Deprecation), naming `raw_field` / `raw_value` for JSON already
-encoded and `string_field` / `string_value` for a string. v0.35
-makes `field` and `value` quote and escape their argument as a
-string; a program that has moved to the explicit variants is
-unaffected. The warning comes from the table of deprecated stdlib
-callables (`hale_types::deprecations`).
+**`field(name, value)` and `value(v)` quote their argument**
+(GH #1943, v0.35). Each writes its string as a JSON string, quoted
+and escaped, as `string_field` / `string_value` do: `b.field("name",
+"alice")` writes `"name": "alice"`. Before v0.35 both wrote the
+argument raw, as `raw_field` / `raw_value` do, although this section
+always described them as taking a string; v0.33 and v0.34 warned
+`deprecated:` at each call (STABILITY.md § Deprecation). JSON already
+encoded (a number formatted by hand, a nested document) goes through
+`raw_field` / `raw_value`.
 
 The flat-object readers (`find_*_field`, `array_first/next`)
 are the input side of the same v1 commitment: JSON is a wire

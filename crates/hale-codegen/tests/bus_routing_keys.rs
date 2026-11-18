@@ -940,3 +940,145 @@ fn int_keyed_topic_keeps_its_key_across_an_adapter() {
         "a subscriber heard another key; stdout: {stdout:?}"
     );
 }
+
+/// Run `src` and return its stdout lines and whether it exited 0.
+fn run_lines(name: &str, src: &str) -> (Vec<String>, bool, String) {
+    let bin = build(name, src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    (
+        String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect(),
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+/// GH #2025 (1): the fail policy's match signal compares a String key as
+/// the dispatch does, by its hash and then its text. It compared the
+/// (hash, pointer) pair verbatim, so a delivered String-keyed publish read
+/// as unmatched and `or raise` panicked; the unmatched one still raises.
+#[test]
+fn fail_policy_counts_a_string_key_match() {
+    let src = r#"
+        type Ev { name: String; }
+        topic K {
+            payload: Ev;
+            subject: "k";
+            keyed_by name;
+            on_unmatched: fail;
+        }
+        locus Sub {
+            params { my_name: String = ""; }
+            bus { subscribe K as on_k where key == self.my_name; }
+            fn on_k(e: Ev) { println("got name=", e.name); }
+        }
+        main locus App {
+            params { a: Sub = Sub { my_name: "alpha" }; }
+            bus { publish K; }
+            run() {
+                K <- Ev { name: std::str::lower("ALPHA") } or raise;
+                println("after matched publish");
+                K <- Ev { name: "beta" } or { println("unmatched: ", err.subject); };
+                println("done");
+            }
+        }
+        fn main() { App { }; }
+    "#;
+    let (lines, ok, stderr) = run_lines("fail_string_key", src);
+    assert!(ok, "{lines:?}\n{stderr}");
+    assert_eq!(lines, ["after matched publish", "unmatched: k", "done", "got name=alpha"], "{stderr}");
+}
+
+/// GH #2025 (2): a publish from an earlier sibling's birth() reaches the
+/// later keyed subscriber's open reservation, which takes its key at the
+/// claim; the cell is owed to it, so it counts as a match, and the
+/// message is delivered after the subscriber's birth.
+#[test]
+fn fail_policy_counts_a_reservation_as_a_match() {
+    let src = r#"
+        type Ev { id: Int; }
+        topic K {
+            payload: Ev;
+            subject: "k";
+            keyed_by id;
+            on_unmatched: fail;
+        }
+        locus Sub {
+            params { my_id: Int = 0; }
+            bus { subscribe K as on_k where key == self.my_id; }
+            fn on_k(e: Ev) { println("got id=", e.id); }
+        }
+        locus Pub {
+            bus { publish K; }
+            birth() {
+                K <- Ev { id: 1 } or raise;
+                println("after matched publish (birth)");
+            }
+        }
+        main locus App {
+            params {
+                p: Pub = Pub { };
+                a: Sub = Sub { my_id: 1 };
+            }
+            run() { println("App.run"); }
+        }
+        fn main() { App { }; }
+    "#;
+    let (lines, ok, stderr) = run_lines("fail_reservation", src);
+    assert!(ok, "{lines:?}\n{stderr}");
+    assert_eq!(lines, ["after matched publish (birth)", "App.run", "got id=1"], "{stderr}");
+}
+
+/// GH #2025 (3): `or { … }` is the `or <expr>` it reads as, with `err`
+/// in scope; it checked and the build refused it ("expression statement
+/// other than locus literal or builtin call"). A block that leaves ends
+/// the branch.
+#[test]
+fn fail_policy_or_block_runs_on_no_match() {
+    let src = r#"
+        type Ev { id: Int; }
+        topic K {
+            payload: Ev;
+            subject: "k";
+            keyed_by id;
+            on_unmatched: fail;
+        }
+        locus Sub {
+            params { my_id: Int = 0; }
+            bus { subscribe K as on_k where key == self.my_id; }
+            fn on_k(e: Ev) { println("got id=", e.id); }
+        }
+        main locus App {
+            params { a: Sub = Sub { my_id: 1 }; }
+            bus { publish K; }
+            fn send(n: Int) {
+                K <- Ev { id: n } or {
+                    println("leaving on ", err.key_lo);
+                    return;
+                };
+                println("sent ", n);
+            }
+            run() {
+                K <- Ev { id: 1 } or {
+                    println("unmatched: ", err.subject);
+                };
+                K <- Ev { id: 2 } or {
+                    println("unmatched: ", err.subject);
+                };
+                self.send(1);
+                self.send(3);
+                println("done");
+            }
+        }
+        fn main() { App { }; }
+    "#;
+    let (lines, ok, stderr) = run_lines("fail_or_block", src);
+    assert!(ok, "{lines:?}\n{stderr}");
+    assert_eq!(
+        lines,
+        // a method's body ends with a drain, so `send`'s delivery and the
+        // one queued before it run before the next statement
+        ["unmatched: k", "sent 1", "got id=1", "got id=1", "leaving on 3", "done"],
+        "{stderr}"
+    );
+}

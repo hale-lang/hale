@@ -1435,6 +1435,17 @@ reclaims tears itself down when it fails: an `accept`'d child (its
 owner's tracker expects it gone) and a bare statement literal (its
 statement's own teardown then steps over it, on the same latch).
 
+A child that fails from a bus handler is recovered as one that fails
+from `run()` is (GH #2028). When the handler returns and no `run()`
+of the child is running, the supervisor's decision is carried out
+there: a `restart(c)` lowers the drain latch, re-runs `birth()` (the
+birth-epoch closures and `birth_check` with it) and then `run()`,
+and puts back the subscriptions; an absorb stops the child, as
+above. When the handler ran inside the child's `run()` (at a `yield`
+or the drain its body ends with), a held child stops at once and the
+rest is decided once `run()` returns, as for a failure `run()`
+raised. Until GH #2028 neither happened after a handler's failure.
+
 A handler of the failed child can return before the supervisor has
 decided — the failure is delivered on the owner's thread, and the
 child's thread runs its other work while it waits — and the child
@@ -3636,6 +3647,19 @@ Out of scope for v1 (fall through to bus dispatch unchanged):
   mechanism that doesn't exist in v1.
 - A parent with multiple direct fields of the subscriber type
   (ambiguous receiver).
+- **A child a failure can come from (GH #2028).** When the
+  subscriber of the intra-tower shape declares a `closure` or a
+  `birth_check`, its publishes take the bus. A failure its handler
+  raises is carried out by its handler wrapper, which the direct
+  call bypassed: after the supervisor's `restart(c)` neither
+  `birth()` nor `run()` ran again, and after an absorb the child
+  kept handling the next message. The intra-locus shape stays a
+  direct call, since it reaches that instance alone; a failure its
+  handler raises is carried out right after the call as the handler
+  wrapper would (a held child stops; outside a `run()` of it, a
+  restart re-runs `birth()` and `run()`), and a child that failed
+  and was not restarted does not handle what it publishes to itself
+  afterwards.
 - **Bus adapters (GH #1032).** A locus named as an adapter in a
   `bindings { }` entry is never the publisher of a rewrite: the
   runtime calls its `send` on the publisher's thread, so a publish
@@ -3955,7 +3979,21 @@ are now supported:
   with `err: BusUnmatchedKey` in scope. The expression's value
   is discarded (Send is statement-level). Canonical use:
   `or log_unmatched(err)` — a free fn that takes the err
-  payload and logs / metrics / etc.
+  payload and logs / metrics / etc. A block is such an
+  expression, `or { println("unmatched: ", err.subject); }`, and
+  one that leaves (`return`) ends the statement there (until
+  GH #2025 the block form checked and the build refused it).
+
+What counts as a match is what the dispatch delivers to: a
+specific-key subscriber whose key equals the publish's, a
+`String` key compared by its text (until GH #2025 the signal
+compared a `String` key's hash and the publisher's pointer, so a
+delivered publish read as unmatched and `or raise` panicked); and
+an open reservation (`runtime.md` § "Lifecycle obligations", line
+6), a subscriber of the same static tree still being built, which
+takes its key when it claims and is owed what it parked. A cell a
+reservation holds for a key no claimant takes is reported on
+stderr when the reservation closes.
 - `or fail <payload>` — only legal inside an enclosing
   `fallible(E)` fn. On no-match, evaluates `<payload>` (with
   `err: BusUnmatchedKey` in scope), stores it into the

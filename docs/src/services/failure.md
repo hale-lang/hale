@@ -119,6 +119,8 @@ Inside an `on_failure(child: T, err: ClosureViolation)` body, the supervisor sel
 | **Escalate** | `bubble(err);` | Forwards the `ClosureViolation` up to this supervisor's own parent locus. |
 | **Force teardown** | `dissolve(child);` | Immediately tears the child down (`dissolve()`). |
 
+These hold wherever the child failed: in `birth()`, in `run()`, or in one of its bus handlers. A handler's failure is decided when the handler returns (a restart re-runs `birth()` and `run()` there, an absorb stops the child and drops its subscriptions), or, when the handler ran inside the child's own `run()`, once that `run()` returns.
+
 ```hale,fragment
 on_failure(c: Book, err: ClosureViolation) {
     restart(c) for 3;
