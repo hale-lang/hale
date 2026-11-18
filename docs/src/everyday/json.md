@@ -210,23 +210,21 @@ let out = b.result();   // {"name": "Ada", "age": 36, "active": true}
 | `begin_array()` / `end_array()` | Opens and closes a JSON array (`[` ... `]`) |
 | `begin_object_field(name)` | Writes `"name": {` and opens a nested object scope |
 | `begin_array_field(name)` | Writes `"name": [` and opens a nested array scope |
-| `string_field(name, value)` | Writes `"name": "escaped_value"` |
+| `string_field(name, value)` / `field(name, value)` | Writes `"name": "escaped_value"` |
 | `int_field(name, value)` | Writes `"name": 123` |
 | `bool_field(name, value)` | Writes `"name": true` or `false` |
 | `null_field(name)` | Writes `"name": null` |
-| `string_value(v)` | Writes a quoted, escaped string element inside an array |
+| `string_value(v)` / `value(v)` | Writes a quoted, escaped string element inside an array |
 | `int_value(n)` / `bool_value(b)` / `null_value()` | Writes a number, `true`/`false` or `null` element inside an array |
 | `raw_field(name, json)` | Writes `"name": <json>`, the value as given, for JSON you encoded already |
 | `raw_value(json)` | Writes an array element as given, for JSON you encoded already |
 | `result() -> String` | Returns an independent copy of the accumulated JSON string |
 
-`field(name, value)` and `value(v)` are deprecated. They write their
-argument raw, exactly as `raw_field` / `raw_value` do, so
-`b.field("name", "alice")` writes `"name": alice`, which is not JSON.
-Each call warns `deprecated:`. Use `raw_field` / `raw_value` for JSON you
-encoded already (a number you formatted, a nested document, an array from
-`build_array`) and `string_field` / `string_value` for a string. v0.35
-makes `field` and `value` quote and escape their argument as a string.
+`field(name, value)` and `value(v)` take a string and write it quoted and
+escaped, as `string_field` / `string_value` do (since v0.35; before, they
+wrote the argument raw and warned `deprecated:`). Use `raw_field` /
+`raw_value` for JSON you encoded already (a number you formatted, a
+nested document, an array from `build_array`).
 
 The Builder separates with `": "` and `", "`. The spacing is part of
 what it writes, and programs that store its documents and match them as

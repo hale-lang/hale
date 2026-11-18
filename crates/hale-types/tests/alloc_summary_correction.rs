@@ -312,7 +312,8 @@ const CALL_LINES_ONLY: [(&str, usize); 35] = [
     // only the renames name)
     // the Builder's quoting test (GH #1943): the Builder's stdlib
     // methods only the renames name
-    ("tests/hale/json_builder_quoting_test.hl", 40),
+    // 10 more (v0.35): the `field` / `value` quoting block
+    ("tests/hale/json_builder_quoting_test.hl", 50),
     ("tests/hale/json_escape_runs_test.hl", 52),
     // the escaped-NUL and lone-surrogate readers' test (#1813): the
     // readers' stdlib bodies only the renames name
