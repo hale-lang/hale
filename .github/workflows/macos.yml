@@ -197,6 +197,23 @@ jobs:
           LIBRARY_PATH: /opt/homebrew/lib
         run: "cargo test --release -p hale-codegen --test bus_topics binding_ingest_468::"
 
+      - name: (c3) GH #1991 — a test-harness ASan build of a bus program runs
+        # Harness AddressSanitizer builds of bus programs were seen spinning
+        # at ~90% CPU without binding on a Mac (2026-11-16) while CLI-built
+        # ones ran; it has not reproduced since, on main or at the commit
+        # it was seen on. These two build through the harness with ASan and
+        # chunk pooling off, as the reproducers did: the registration table
+        # grown under a walk from two pinned anchors' threads, and a
+        # same-thread delivery; and a lifecycle case, a main whose `run`
+        # returns draining its placed children. The step's own time limit
+        # turns a spin into a failure rather than a hung job. Part 1 runs
+        # (c2).
+        if: matrix.part == 2
+        timeout-minutes: 20
+        env:
+          LIBRARY_PATH: /opt/homebrew/lib
+        run: "cargo test --release -p hale-codegen --test bus_core --test lifecycle_flow -- bus_registration_table:: a_same_thread_delivery_is_clean_under_asan main_run_returning_drains_its_children_under_asan"
+
       - name: (d) GH 231 — emitted binaries link OpenSSL statically
         run: |
           set -eux
