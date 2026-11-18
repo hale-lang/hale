@@ -8781,6 +8781,7 @@ shared	__StdJsonBuilder@main2	__StdJsonBuilder #6efd4260
 shared	__StdJsonBuilder@main3	__StdJsonBuilder #6efd4260
 shared	__StdJsonBuilder@main4	__StdJsonBuilder #6efd4260
 shared	__StdJsonBuilder@main5	__StdJsonBuilder #6efd4260
+shared	__StdJsonBuilder@main6	__StdJsonBuilder #6efd4260
 shared	dynamic	sites in the stdlib #c3a51769
 
 == tests/hale/json_escape_runs_test.hl
@@ -9283,6 +9284,10 @@ row	Source@main4	Source	main	default
 
 == tests/hale/unit_return_annotation_test.hl
 row	Counter@main1	Counter	main	default
+
+== tests/hale/units_form_iteration_test.hl
+row	PriceList@main2	PriceList	main	default
+row	Prices@main1	Prices	main	default
 
 == tests/hale/units_loop_test.hl
 root	Till	the entry
@@ -13863,6 +13868,22 @@ dynamic	__lib_dna__core___workspace__IsolatedWorktrees	on main
 dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
 shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/tests/pq_pool_transaction_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
+shared	App@literal1.one	__lib_dna__core__pond__pq___pool__PgPool #e0040251
+shared	App@literal1.pool	__lib_dna__core__pond__pq___pool__PgPool #e0040251
+-- dynamic	sites in core/pond/pq
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdIoTcpStream	on main
+dynamic	__StdSecretCredential	on main
+dynamic	__lib_dna__core__pond__pq___pq__PgConn	on main
+-- dynamic	sites in tests
+dynamic	Insert	on main
+dynamic	Refused	on main
+dynamic	__lib_dna__core__pond__pq___pool__PgPool	on main
 
 == dna/tests/practice_command_recovery_test.hl
 root	App	the entry
@@ -19845,6 +19866,11 @@ row	~.work.service	Counting	main	inherited
 row	~.work.service_reconciler	__lib_dna__core___performers__NoEvidence	main	inherited
 row	~.work.software	__lib_dna__core___performers__ScriptedPerformer	main	inherited
 row	~.work.software_reconciler	__lib_dna__core___performers__NoEvidence	main	inherited
+
+== shared __lib_dna__core__pond__pq___pool__PgPool #e0040251
+row	~	__lib_dna__core__pond__pq___pool__PgPool	main	default
+row	~.busy	__lib_dna__core__pond__pq___pool__x5f_FdVec	main	inherited
+row	~.fds	__lib_dna__core__pond__pq___pool__x5f_FdVec	main	inherited
 
 == shared __lib_dna__core__pond__realtime__nats___adapter__NatsConn #bc0bc370
 row	~	__lib_dna__core__pond__realtime__nats___adapter__NatsConn	pinned:~	entry	off owner

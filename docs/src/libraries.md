@@ -105,7 +105,7 @@ All libraries below are imported from `vendor/pond/<path>` after running `hale f
 | Import Path | Description |
 |---|---|
 | `vendor/pond/db` | Driver-agnostic database interface (`DbDriver`) and parameterized query builder (`Args` for `$1, $2, ...` placeholders). |
-| `vendor/pond/pq` | PostgreSQL driver (`PgConn`) and fixed-size connection pool (`PgPool`) implementing `db::DbDriver`. |
+| `vendor/pond/pq` | PostgreSQL driver (`PgConn`) and fixed-size connection pool (`PgPool`) implementing `db::DbDriver`. A transaction runs as a body (`pq::Transaction`, one method `apply(tx: PgConn) -> db::Status`): `pool.transaction(body)` holds one pooled connection from `BEGIN` to `COMMIT` (the body answered ok) or `ROLLBACK` (it did not, or a statement in it was refused) and releases it either way, while other operations use the rest of the pool. |
 | `vendor/pond/sqlite` | SQLite 3 connection and fallible query surface implementing `db::DbDriver`. |
 | `vendor/pond/migrations` | Schema migration runner (`Migrator`) over any `db::DbDriver` (`up`, `down`, `steps`, `goto`). |
 | `vendor/pond/jobs` | Persistent SQLite-backed job queue (`Queue`) and pinned worker pool (`Pool`, `Worker`). |

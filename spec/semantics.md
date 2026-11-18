@@ -2800,17 +2800,16 @@ acted on. Consequences, all normative:
      registered deserializer remains the documented
      relay-shaped skip.
   3. *Exit quiesces before teardown.* At every main-exit point,
-     before pools join and loci dissolve, listen fds half-close
-     (new connections are refused; queued data and
-     already-accepted backlog connections stay readable — the
-     kernel returns queued AF_UNIX data before EOF even after
-     `shutdown`), readers drain to true EOF through the
+     before pools join and loci dissolve, each listener's reader
+     is told to stop (new connections are no longer awaited;
+     queued data and already-accepted backlog connections stay
+     readable), readers drain what is queued through the
      still-intact registry, buffered boot-window residue is
      flushed, and one final local drain delivers to still-alive
      handlers. Bounded: `LOTUS_BUS_QUIESCE_MS` (default 500,
      `0` disables), loud if exceeded — a silent peer holding a
      connection open cannot stall exit. Wire data arriving
-     after the half-close arrived after exit and is outside the
+     after the stop arrived after exit and is outside the
      contract. A `udp://` listener's reader is stopped by an
      explicit wake, a pipe it polls beside its socket, the same
      on Linux and macOS: it reads the datagrams the kernel has
@@ -2824,6 +2823,14 @@ acted on. Consequences, all normative:
      silently; and Darwin does not honour `shutdown()` on an
      unconnected UDP socket, so an idle reader there never woke
      and the exit waited out the bound, then hung on the join).
+     A `unix://` listener's reader is stopped the same way
+     (GH #1991): on the pipe's wake it admits the connections
+     already in the listener's backlog, reads what every peer
+     has queued, and ends when no peer has anything left;
+     nothing is `shutdown()`. Darwin answers a `shutdown()` of a
+     listening socket with `ENOTCONN` and wakes nobody, so on
+     macOS every unix listener, served or not, waited out the
+     bound at each exit until 2026-11-17.
 - **Connect-side loss is structural, with reconnection as
   supervision policy (GH #233 steps 3–4).** A send failure on a
   source-declared connect binding marks the entry *lost*
