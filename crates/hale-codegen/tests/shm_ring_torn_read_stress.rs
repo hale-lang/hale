@@ -65,7 +65,7 @@ fn build_driver() -> PathBuf {
 #[test]
 fn post_copy_guard_resyncs_past_danger_band_records() {
     let bin = build_driver();
-    let shm_name = format!("/hale-{}", unique_tag());
+    let shm_name = harness::shm_name("torn");
 
     let out = Command::new(&bin)
         .arg("clobber")

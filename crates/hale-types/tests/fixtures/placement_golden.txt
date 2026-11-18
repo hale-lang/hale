@@ -9089,6 +9089,15 @@ row	App@literal1	App	main	default
 row	App@literal1.early	Once	main	default
 dynamic	Once	on main	in the seed
 
+== tests/hale/ring_buffer_push_flat_test.hl
+row	Recent@main1	Recent	main	default
+-- Churn@main2	Churn
+row	~	Churn	main	default
+row	~.rb	Recent	main	inherited
+-- Names@main3	Names
+row	~	Names	main	default
+row	~.rb	RecentNamed	main	inherited
+
 == tests/hale/router_middleware_test.hl
 row	Hello@main3	Hello	main	default
 row	Stamp@main2	Stamp	main	default

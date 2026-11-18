@@ -28,7 +28,7 @@ fn unique_tag(label: &str) -> String {
 
 #[test]
 fn hale_bytesview_producer_frames_variable_length_records() {
-    let shm_name = format!("/hale-{}", unique_tag("e2e"));
+    let shm_name = harness::shm_name("layout");
 
     // Producer sends two records of DIFFERENT sizes (a 16-byte kind-1 and
     // a 24-byte kind-2), tagged by an i64 discriminator at offset 0. The

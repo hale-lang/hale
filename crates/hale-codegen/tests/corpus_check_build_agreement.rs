@@ -837,6 +837,51 @@ fn a_nested_pattern_in_a_variants_pattern_is_refused_by_the_check() {
     );
 }
 
+/// GH #2023: a path through a concrete alias of a generic enum (`type I
+/// = E<Int>;`) to a variant the enum does not declare, as a constructor
+/// call, a unit variant and a match pattern, checked clean and the build
+/// refused it ("enum `E_Int` has no variant `Wrok`"). The check refuses it
+/// at the path; the right spellings through the alias build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_variant_a_generic_enums_alias_does_not_declare_is_refused_by_the_check() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type E<T> = enum { Work(T), Home };\n\
+                 type I = E<Int>;\n\
+                 fn main() { let x: I = I::Wrok(1); }\n",
+                "I::Wrok",
+                "enum `E<Int>` has no variant `Wrok` — did you mean `Work`?",
+            ),
+            (
+                "type E<T> = enum { Work(T), Home };\n\
+                 type I = E<Int>;\n\
+                 fn main() { let x: I = I::Hme; }\n",
+                "I::Hme",
+                "enum `E<Int>` has no variant `Hme` — did you mean `Home`?",
+            ),
+            (
+                "type E<T> = enum { Work(T), Home };\n\
+                 type I = E<Int>;\n\
+                 fn f(x: I) -> Int { return match x { I::Wrok(n) -> n, _ -> 0, }; }\n\
+                 fn main() { println(f(I::Home)); }\n",
+                "I::Wrok(n)",
+                "enum `E<Int>` has no variant `Wrok` — did you mean `Work`?",
+            ),
+        ],
+        "generic_alias_variant",
+    );
+    assert_built(
+        "type E<T> = enum { Work(T), Home };\n\
+         type I = E<Int>;\n\
+         fn f(x: I) -> Int { return match x { I::Work(n) -> n, I::Home -> 0, }; }\n\
+         fn main() { let a: I = I::Work(3); let b: I = I::Home; println(f(a) + f(b)); }\n",
+        "hale_cb_generic_alias_variant_neighbour",
+    );
+}
+
 /// GH #1995 E3: `if let` and `let … else` are matches the parser writes,
 /// so the check judges them before any build: an `else` that can complete
 /// (F.48's judgment), a pattern a plain `let` cannot always bind, an

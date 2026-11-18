@@ -11198,6 +11198,10 @@ fn raw_frame_topics(
         .collect()
 }
 
+/// GH #2030: the longest POSIX shm object name every platform opens
+/// (macOS's `PSHMNAMLEN`, the leading `/` counted).
+const SHM_RING_NAME_MAX: usize = 31;
+
 fn check_bus_payload_carriable(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -11209,6 +11213,27 @@ fn check_bus_payload_carriable(
     // A `BytesView` topic bound to a native `shm_ring` (no `layout:`):
     // the native ring carries fixed-size struct slots, and lowering
     // refused the entry with no span.
+    // GH #2030: a ring's name is its POSIX shm object's, and macOS caps
+    // one at 31 bytes (`PSHMNAMLEN`, the leading `/` counted; Linux allows
+    // 255). The open failed at startup ("File name too long"). The check
+    // holds every program to the smaller limit, so a seed that builds on
+    // one platform builds on the other.
+    for row in bindings.rows.iter().filter(|r| !r.imported) {
+        let Some(entry) = row.entry(bundle) else { continue };
+        let TransportSpec::ShmRing { name, span, .. } = &entry.transport else { continue };
+        if name.len() > SHM_RING_NAME_MAX {
+            diags.push(Diag::ty(
+                *span,
+                format!(
+                    "`{t}: shm_ring(\"{name}\", ...)`: the ring's name is {n} bytes, and a POSIX shm name is at \
+                     most {SHM_RING_NAME_MAX} bytes on macOS, its leading `/` counted (Linux allows 255): the \
+                     open would fail at startup. Shorten the name",
+                    t = row.topic,
+                    n = name.len()
+                ),
+            ));
+        }
+    }
     for row in bindings.rows.iter().filter(|r| !r.imported && r.codec.is_none()) {
         let Some(entry) = row.entry(bundle) else { continue };
         if !matches!(entry.transport, TransportSpec::ShmRing { layout: None, .. }) {
@@ -11243,6 +11268,45 @@ fn check_bus_payload_carriable(
                      `layout: <ring_layout>`, or give the topic a user `type` \
                      payload.",
                     t = row.topic
+                ),
+            ));
+        }
+    }
+    // GH #2030: the native ring's publish is a raw claim + memcpy +
+    // commit of the payload struct, a `codec(...)` clause on the entry
+    // notwithstanding (the native path never calls its encoder), so a
+    // payload that is not flat puts a pointer into the publisher's arena
+    // in the slot.
+    for row in bindings.rows.iter().filter(|r| !r.imported) {
+        let Some(entry) = row.entry(bundle) else { continue };
+        if !matches!(entry.transport, TransportSpec::ShmRing { layout: None, .. }) {
+            continue;
+        }
+        let Some(topic) = top.topics.named(&row.topic) else { continue };
+        if let Ty::Named(n) = resolve_type_expr(&topic.payload, known) {
+            if let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. })) = top.lookup(&n) {
+                // refused above (a codec-free entry) as an enum payload
+                if row.codec.is_none() {
+                    continue;
+                }
+            }
+        }
+        let zero_copy = entry.constraints.iter().any(|c| matches!(c.kind, BindingConstraint::ZeroCopy));
+        let payload = resolve_type_expr(&topic.payload, known);
+        // A bare primitive payload (`payload: String`) is refused at its
+        // publishes and subscriptions for the bus as a whole.
+        if !zero_copy && !matches!(payload, Ty::Unknown | Ty::Prim(_)) && !is_flat_shapeable(&payload, top) {
+            diags.push(Diag::ty(
+                row.span,
+                format!(
+                    "`{t}: shm_ring(...)`: topic `{t}`'s payload `{p}` is not flat-shapeable: it holds a String, \
+                     Bytes, fixed-size array of records, tuple, enum or list whose storage is out of line (a \
+                     pointer), and a native ring copies the payload's bytes into the slot, so the subscriber \
+                     would read a pointer into the publisher's memory. Carry only fixed-size scalar fields on \
+                     the ring, or send variable data on a `unix(...)` binding, or as a `BytesView` raw frame on \
+                     a `layout:` ring",
+                    t = row.topic,
+                    p = payload.display()
                 ),
             ));
         }
@@ -18087,6 +18151,7 @@ impl<'a> Checker<'a> {
             for alt in arm.pattern.alternatives() {
                 self.check_set_pattern(alt, &scrut_ty);
                 self.check_bare_variant_pattern(alt, &scrut_ty);
+                self.check_pattern_variants(alt);
                 self.check_pattern_literals(alt, &scrut_ty);
                 // `Decimal<S>`: a Decimal literal pattern is a value of the
                 // scrutinee's scale, judged at it.
@@ -22470,6 +22535,101 @@ impl<'a> Checker<'a> {
         ))
     }
 
+    /// GH #2023: why `E::V` (`alias::E::V` through an import) names no
+    /// variant of the enum `E`, or `None` when it does, when its head is
+    /// no enum, or when the last segment is one of the enum's own names
+    /// (`E::name`, `E::parse`, `E::variants`, `E::index`; RFC #1995 E1,
+    /// `enum_name_refusal` speaks about those). Every position reaches
+    /// this: a value, an operand, a constructor call's callee and a
+    /// constructor pattern. Lowering refuses every such path (`enum `E`
+    /// has no variant `V``), so until GH #2023 the check passed a typo'd
+    /// variant and the build refused it.
+    fn missing_variant(&self, qn: &QualifiedName) -> Option<String> {
+        let n = qn.segments.len();
+        if n < 2 {
+            return None;
+        }
+        let variant = qn.segments[n - 1].name.as_str();
+        if hale_syntax::enum_names::Op::of(variant).is_some() {
+            return None;
+        }
+        let head: Vec<&str> = qn.segments[..n - 1].iter().map(|s| s.name.as_str()).collect();
+        let shown = head.join("::");
+        let name = if n == 2 { shown.clone() } else { self.known.import_target(&shown)?.to_string() };
+        let names = self.enum_variant_names(&name)?;
+        if names.contains(&variant) {
+            return None;
+        }
+        let hint = match closest_bare_name(variant, &names) {
+            Some(h) => format!(" — did you mean `{h}`?"),
+            None if names.is_empty() => String::new(),
+            None => format!("; its variants are {}", names.join(", ")),
+        };
+        // A concrete alias of a generic enum reaches here as the
+        // monomorph's mangled name (`E_Int`); it is shown as written.
+        let shown = match self.typed.monomorphs.named(&shown) {
+            Some(m) => match self.templates.get(m.template) {
+                Some(t) => format!("{}<{}>", t.name(), m.args.iter().map(Ty::display).collect::<Vec<_>>().join(", ")),
+                None => shown,
+            },
+            None => shown,
+        };
+        Some(format!("enum `{shown}` has no variant `{variant}`{hint}"))
+    }
+
+    /// GH #2023: the variant names of the enum `name` spells, or `None`
+    /// when it spells no enum: a generic enum's template (`E`), a
+    /// concrete enum, or an alias of either, followed to its target —
+    /// a concrete alias of a generic enum (`type I = E<Int>;`) resolves
+    /// to the monomorph's mangled name (`E_Int`), whose template's
+    /// variants are the instantiation's.
+    fn enum_variant_names(&self, name: &str) -> Option<Vec<&str>> {
+        let mut cur = name.to_string();
+        for _ in 0..16 {
+            if let Some(td) = self.generic_types.get(cur.as_str()) {
+                let TypeDeclBody::Enum(vs) = &td.body else { return None };
+                return Some(vs.iter().map(|v| v.name.name.as_str()).collect());
+            }
+            match self.top.symbols.get(cur.as_str()) {
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                    return Some(vs.iter().map(|v| v.name.as_str()).collect());
+                }
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Alias(Ty::Named(n)), .. })) => {
+                    cur = n.clone();
+                    continue;
+                }
+                Some(_) => return None,
+                None => {}
+            }
+            let (GenericTemplate::Type(td), _) = self.resolve_generic_monomorph(&cur)? else { return None };
+            let TypeDeclBody::Enum(vs) = &td.body else { return None };
+            return Some(vs.iter().map(|v| v.name.name.as_str()).collect());
+        }
+        None
+    }
+
+    /// GH #2023: the constructor patterns of `pat` (its alternatives, a
+    /// variant's values and a tuple's parts too) that name no variant of
+    /// their enum.
+    fn check_pattern_variants(&mut self, pat: &Pattern) {
+        match pat {
+            Pattern::Constructor { path, args, span } => {
+                if let Some(why) = self.missing_variant(path) {
+                    self.diags.push(Diag::ty(*span, why));
+                }
+                for a in args {
+                    self.check_pattern_variants(a);
+                }
+            }
+            Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => {
+                for p in ps {
+                    self.check_pattern_variants(p);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) | Pattern::Binding(_) => {}
+        }
+    }
+
     fn check_qualified_path(&mut self, path: &QualifiedName) {
         if let Some(msg) = self.unresolved_qualified(path) {
             self.diags.push(Diag::ty(path.span, msg));
@@ -23946,6 +24106,12 @@ impl<'a> Checker<'a> {
                             return Ty::Named(enum_name.clone());
                         }
                     }
+                }
+                // GH #2023: `E::V` where the enum `E` declares no `V`, as a
+                // value, an operand or a constructor call's callee.
+                if let Some(why) = self.missing_variant(qn) {
+                    self.diags.push(Diag::ty(qn.span, why));
+                    return Ty::Unknown;
                 }
                 // RFC #1995 E1: `E::variants` of an enum it does not apply
                 // to, and `E::name` / `E::parse` / `E::index` not called

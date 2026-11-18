@@ -857,14 +857,7 @@ fn shm_ring_refuses_replay_and_touches_no_shared_memory() {
     let pub_bin = build("shmrecpub", &pub_src(&sock));
     let (rec, _) = record_session("shmrec", &sub_bin, &pub_bin);
 
-    let shm_name = format!(
-        "/hale-296-shmguard-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0)
-    );
+    let shm_name = harness::shm_name("guard");
     let prog = format!(
         r#"
         type W {{ n: Int = 0; }}

@@ -758,8 +758,10 @@ fn own_entries_run_to_exit_programs() {
     // decodes the same way (GH #1951 item 3); 25:
     // `tests/hale/string_append_test.hl`, whose `main` appends to Strings in
     // its loops (GH #1947); 26: `tests/hale/str_split_sources_test.hl`,
-    // whose loops push the parts they visit into a vec (GH #1995 S2).
-    assert_eq!(moved, 26, "the run-to-exit programs among the targets that lose a site");
+    // whose loops push the parts they visit into a vec (GH #1995 S2); 27:
+    // `tests/hale/ring_buffer_push_flat_test.hl`, whose `main` builds the
+    // records it pushes in its loops (GH #2024).
+    assert_eq!(moved, 27, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1093,6 +1095,10 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") @1610628672..1610628717 InUnboundedLoop",
             "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat @1610631493..1610631537 InUnboundedLoop",
             "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat @1610631493..1610631530 InUnboundedLoop",
+            // `tests/hale/ring_buffer_push_flat_test.hl`: the records its loops
+            // build to push, and the fallback a pop in a loop builds (GH #2024)
+            "tests/hale/ring_buffer_push_flat_test.hl: main StructLit(\"Sample\") @2309..2334 InUnboundedLoop",
+            "tests/hale/ring_buffer_push_flat_test.hl: Names::take StructLit(\"Named\") @2009..2034 InvokedUnboundedly",
             // `tests/hale/str_split_sources_test.hl`: the vec pushes that keep
             // each part a text source's loop visits (GH #1995 S2)
             "tests/hale/str_split_sources_test.hl: lines_of CollectionInsert(\"vec\") @902..914 InUnboundedLoop",

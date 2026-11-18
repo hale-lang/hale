@@ -60,7 +60,7 @@ fn build_producer() -> PathBuf {
 
 #[test]
 fn hale_subscriber_reads_record_header_ring_with_post_copy() {
-    let shm_name = format!("/hale-{}", unique_tag("e2e"));
+    let shm_name = harness::shm_name("layout");
 
     let src = format!(
         r#"

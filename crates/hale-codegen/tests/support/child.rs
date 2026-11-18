@@ -349,3 +349,45 @@ fn sockets_of(pid: u32, proto: &str) -> Vec<Socket> {
         })
         .collect()
 }
+
+/// A child the test stops however it ends: killed and reaped when the
+/// guard drops, on success, on an early `return` and while a failed
+/// assertion unwinds. A server a test killed only on its last line was
+/// left running by every failure before it (a `/proc` read that panics on
+/// macOS orphaned `api_serve_memory`'s servers there for days). Derefs to
+/// the `Child`; [`Reaped::into_inner`] hands it back for a
+/// `wait_with_output` once it has been stopped.
+pub struct Reaped(Option<Child>);
+
+impl Reaped {
+    pub fn new(child: Child) -> Reaped {
+        Reaped(Some(child))
+    }
+
+    /// The child, no longer guarded.
+    pub fn into_inner(mut self) -> Child {
+        self.0.take().expect("a guarded child")
+    }
+}
+
+impl std::ops::Deref for Reaped {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        self.0.as_ref().expect("a guarded child")
+    }
+}
+
+impl std::ops::DerefMut for Reaped {
+    fn deref_mut(&mut self) -> &mut Child {
+        self.0.as_mut().expect("a guarded child")
+    }
+}
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.0.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
