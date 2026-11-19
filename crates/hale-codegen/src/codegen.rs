@@ -21116,6 +21116,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// iteration would: between two iterations, never inside one.
     /// Otherwise it goes on to `continue_bb`. A `continue` goes through
     /// the latch too, so every way to the next iteration takes the check.
+    /// A stop that ends the loop is a park point first (GH #2080): when a
+    /// failed assertion on another thread raised it, main tears down
+    /// there (`lotus_unwind_poll`), before anything after the loop runs.
     pub(crate) fn push_loop_frame(
         &mut self,
         continue_bb: BasicBlock<'ctx>,
@@ -21135,7 +21138,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_int_compare(inkwell::IntPredicate::NE, stops, i64_t.const_zero(), "loop.drain_stop.up")
                     .map_err(e)?;
-                let br = self.builder.build_conditional_branch(up, break_bb, continue_bb).map_err(e)?;
+                let stop_bb = self.context.append_basic_block(cur, "loop.drain_stop.end");
+                let br = self.builder.build_conditional_branch(up, stop_bb, continue_bb).map_err(e)?;
+                self.builder.position_at_end(stop_bb);
+                self.emit_unwind_poll()?;
+                self.builder.build_unconditional_branch(break_bb).map_err(e)?;
                 let weights = self.context.metadata_node(&[
                     self.context.metadata_string("branch_weights").into(),
                     self.context.i32_type().const_int(1, false).into(),
