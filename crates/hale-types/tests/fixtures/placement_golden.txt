@@ -351,7 +351,7 @@ shared	Provider@main3	Provider #349f5211
 shared	Provider@main6	Provider #349f5211
 shared	Provider@main7	Provider #349f5211
 
-== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#8aa694b6
+== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#e43f19fb
 root	App
 domain	pool:work	async_io
 domain	pool:__api_ws	async_io
@@ -2141,6 +2141,13 @@ row	App@literal1.r	Ran	main	default
 row	Src@main2	Src	main	default
 row	Worker@main1	Worker	main	default
 
+== crates/hale-codegen/tests/bus_idle_wait.rs#4c1bf25c
+root	App
+domain	pool:feed	async_io
+row	App@literal1	App	main	default
+row	App@literal1.feeder	Feeder	pool:feed	entry	off owner
+row	App@literal1.slow	Slow	main	default
+
 == crates/hale-codegen/tests/bus_large_payload.rs#9f6565d9
 row	Publisher@main2	Publisher	main	default
 row	Subscriber@main1	Subscriber	main	default
@@ -3125,6 +3132,12 @@ dynamic	Buf	on main	in the seed
 == crates/hale-codegen/tests/factory_returned_binding.rs#f6549d7f
 row	Engine@main1	Engine	main	default
 dynamic	Buf	on main	in the seed
+
+== crates/hale-codegen/tests/failed_child_kept_by_owner.rs#1be695e8
+root	App
+domain	pool:work	async_io
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pool:work	entry	off owner
 
 == crates/hale-codegen/tests/fallible_method_scratch_order.rs#cc323ecd
 row	Model@main1	Model	main	default
@@ -8387,6 +8400,11 @@ shared	Proc@main3	Proc #b18b3dc0
 shared	dynamic	sites in the seed #8c882889
 
 == tests/hale/api_serve_test.hl
+shared	Api@main2	Api #a23e2495
+shared	Proc@main1	Proc #b18b3dc0
+shared	dynamic	sites in the seed #8c882889
+
+== tests/hale/api_sleep_loop_latency_test.hl
 shared	Api@main2	Api #a23e2495
 shared	Proc@main1	Proc #b18b3dc0
 shared	dynamic	sites in the seed #8c882889

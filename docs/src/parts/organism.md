@@ -1,6 +1,6 @@
-# Part V: DNA (Autonomous & Governed Applications)
+# Part VI: DNA (Autonomous & Governed Applications)
 
-Part V covers **DNA** (`vendor/dna` and `hale dna`), Hale's framework and runtime for building **self-governing, auditable software systems** where human operators and AI agents collaborate under compiler-enforced rules.
+Part VI covers **DNA** (`vendor/dna` and `hale dna`), Hale's framework and runtime for building **self-governing, auditable software systems** where human operators and AI agents collaborate under compiler-enforced rules.
 
 ## Infrastructure Architecture Behind the Metaphor
 
@@ -18,7 +18,7 @@ DNA uses anatomical names for its components. Each component maps directly to a 
 | **Legs, Hands & Voice** | Worker processes (`hale dna work`), sandboxed tools, LLM router | Executes tasks in isolated Git worktrees using scoped tools (`GitHand`, `GhForge`, `go_test`) and LLMs. |
 | **Head & Face** | Edge RPC API (`dna/api`) + Web UI (`:8792`) | Serves the operator CLI/web dashboard, Board decision queue, 3-view code reviews, and GitHub PR sync. |
 
-## Chapters in Part V
+## Chapters in Part VI
 
 | Section | Chapters |
 |---|---|

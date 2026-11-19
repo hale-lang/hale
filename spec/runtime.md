@@ -657,6 +657,29 @@ threads, pinned publishers via `lotus_bus_local_dispatch`, etc.
 The drain is idempotent, so existing code with `sleep; yield;`
 stays correct.
 
+**On the main thread a slice wakes for work** (GH #2091). There
+the slice is not a `clock_nanosleep` but a wait on main's bus
+queue for the slice's whole length (`lotus_bus_sleep_slice_main`,
+`lotus_bus_queue_sleep`): an enqueue from another thread writes the
+queue's wake descriptor, as it does for `std::api`'s
+`Handle.wait()` (spec/api.md § Parking), the wait ends, the queue
+is drained, and the wait resumes for what is left of the slice.
+So a cell another thread delivers for main — an exposure's call, a
+reader thread's message, a pinned publisher's cell — is handled
+when it arrives rather than when the slice ends, and a serving
+`main locus` whose `run()` polls `self.draining` with a `sleep`
+answers a call in the time the call takes. The slice still lasts
+its length, so a sleep's total is unchanged, and the drain's cut
+of a sleep stays at the slice's head (below). Off the main thread,
+or with no bus queue, the slice is the `clock_nanosleep` above; so
+is a slice inside a handler that main's drain is running (a handler
+on main that sleeps): handlers on main do not nest, so a cell that
+arrives during it waits for the handler to return, and the slice
+neither wakes for it nor polls the queue in a loop.
+Until GH #2091 a main-thread slice slept through, and each call to
+a program served that way waited for the slice's end: 100 to 250
+ms a call.
+
 **The process drain's check.** Each slice begins with a load of
 `lotus_process_draining_flag`; while a drain is up the sleep ends
 there (still taking that slice's bus drain, so a poll loop keeps
@@ -694,6 +717,32 @@ exit. No call: the IR's call count does not move, and a spinning loop
 pays one load and one predicted branch per iteration. A manual
 `run()`, a fn or method, a closure and a standard-library locus get no
 latch.
+
+**A counted leaf loop checks once a chunk** (GH #2089). An atomic load
+in a loop keeps LLVM's vectorizer away, so a tight reduction under the
+per-iteration latch ran scalar (`loop_overhead` 1.86 → 19.9 ms). A
+*counted* loop — `for i in a..b` (exclusive), or `while i < n { …;
+i = i + 1; }` with `n` a name or a literal, `i` stepped only by that
+last statement, neither bound again in the body, and no `continue` —
+whose body is a *leaf* is lowered as two loops (`drain_chunk`): an
+inner one over a chunk of at most `DRAIN_CHUNK` (4096) iterations, with
+no latch, and an outer one that takes the latch at each chunk's end
+(`end = (i < hi && hi - i > K) ? i + K : hi`; the inner loop runs `i <
+end`, then `i < hi` decides between the latch and the exit). The inner
+loop has one exit and a trip count known on entry, which LLVM 18
+vectorizes. A body is a leaf when, read from its own IR after it is
+lowered, it pushed no loop and no block of it that runs and can lead to
+the next iteration calls anything but an LLVM intrinsic or a `noreturn`
+fn (a failure path's call leaves the loop; a branch on a constant is
+followed only where it goes). A stop is then seen at most `DRAIN_CHUNK
+- 1` iterations of such a body later than at the next back-edge:
+straight-line work with no call and no loop, about 1 µs a chunk for an
+XOR reduction and a few hundred µs for a body of a few hundred
+instructions, against the 55–66 ms `fn main`'s loop takes to stop. Any
+other loop — a body that calls or loops, a `while` that is not
+counted, an inclusive range, a collection's `for` — keeps the latch on
+every back-edge, since a chunk of iterations with no bound could hold a
+stop for as long as they take.
 
 **Every park point delivers, on every pool.** A sleep slice and an
 explicit `yield;` are park points, and a park point inside a
@@ -799,8 +848,9 @@ direct calls, but two bus paths used to violate it under load
    reclaim).
 
 Consequences: a main-pool subscriber's handlers run **only on
-`main`** (at sleep-slice / yield / scope-exit drains — worst-case
-~100ms after a cross-thread publish, per the slicing above);
+`main`** (at sleep-slice / yield / scope-exit drains; a sleeping
+main wakes for the cell, GH #2091, so the wait is for the main
+thread's current step, not for the slice's end);
 pool subscribers run only on their pool's worker; pinned
 subscribers only on their own thread. Flat (pointer-free POD)
 payloads are exempt from rule 2 — a verbatim byte copy writes no

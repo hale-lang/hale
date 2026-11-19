@@ -143,4 +143,4 @@ the word `module` and says to move its declarations to the top level, or into
 their own file or directory. `module` itself is an ordinary name, free for a
 local, a field or a fn.
 
-Next: [Lists & Maps](./collections.md).
+Next: [Testing & Benchmarking](./testing.md).

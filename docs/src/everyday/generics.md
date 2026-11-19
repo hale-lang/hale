@@ -153,4 +153,4 @@ See [Functions](../basics/functions.md) for everything else about functions.
 
 The full rules, including every place that supplies type arguments and which types may be arguments, are in [`spec/types.md` § Generics](https://github.com/hale-lang/hale/blob/main/spec/types.md#generics).
 
-Next: [Collections](./collections.md).
+Next: [Introduction to Loci](./locus-gently.md).

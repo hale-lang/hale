@@ -1294,3 +1294,72 @@ fn main() {
     }
     assert_eq!(copies.len(), 3, "{copies:?}");
 }
+
+/// GH #2088: a payload-free enum is its inline `i32` tag (spec/types.md,
+/// the `Enum` row), so a callee that sets one from a part of its parameter (`S {
+/// st: r.st }`) hands back nothing of the argument's, and the push keeps
+/// its result as it is — as for an `Int` or `Time` field, and as for the
+/// same enum rebuilt by a `match`. Since #2072 it was reported as "a call's
+/// result holding another name's block", and lowering copied the record
+/// for it. A record field (`p: r.p`) and an enum with payloads are blocks,
+/// and stay reported; a `String` field never was (a String is immutable, a
+/// leaf no write reaches), and still is not.
+#[test]
+fn a_call_result_holding_a_parameters_inline_scalar_part_is_not_copied() {
+    let src = r#"
+type St = enum { a, b };
+type Pe = enum { a, b(String) };
+type P { x: Int = 0; }
+type R { n: Int = 0; st: St = St::a; t: Time; p: P = P { }; s: String = ""; pe: Pe = Pe::a; }
+type Rs { items: bounded[R; 16]; }
+type S { n: Int = 0; st: St = St::a; t: Time; p: P = P { }; s: String = ""; pe: Pe = Pe::a; }
+type Ss { items: bounded[S; 16]; }
+fn by_enum(r: R) -> S { return S { n: r.n, st: r.st, t: r.t }; }
+fn by_match(r: R) -> S {
+    return S { n: r.n, st: match r.st { St::a -> St::a, St::b -> St::b }, t: r.t };
+}
+fn by_int(r: R) -> S { return S { n: r.n, st: St::a, t: r.t }; }
+fn by_time(r: R) -> S { return S { st: St::b, t: r.t }; }
+fn by_record(r: R) -> S { return S { n: r.n, st: r.st, t: r.t, p: r.p }; }
+fn by_string(r: R) -> S { return S { n: r.n, st: r.st, t: r.t, s: r.s }; }
+fn by_payload(r: R) -> S { return S { n: r.n, st: r.st, t: r.t, pe: r.pe }; }
+fn build(rs: Rs) -> Ss {
+    let mut out = Ss { };
+    for r in rs.items {
+        push(out.items, by_enum(r)) or discard;
+        push(out.items, by_match(r)) or discard;
+        push(out.items, by_int(r)) or discard;
+        push(out.items, by_time(r)) or discard;
+        push(out.items, by_record(r)) or discard;
+        push(out.items, by_string(r)) or discard;
+        push(out.items, by_payload(r)) or discard;
+    }
+    return out;
+}
+fn main() {
+    let mut rs = Rs { };
+    push(rs.items, R { n: 1, st: St::a, t: `2026-05-08T12:00:00Z`, pe: Pe::a }) or discard;
+    println(to_string(count(build(rs).items)));
+}
+"#;
+    let config = Config { hot_path_advisory: true, ..Config::check(true, false) };
+    let snap = entries::load_files(&[("main.hl", src)], config);
+    let errors: Vec<String> = entries::checked(&snap).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert_eq!(errors, Vec::<String>::new());
+    let copies: Vec<(&str, String)> = entries::checked(&snap)
+        .into_iter()
+        .filter(|d| d.message.contains("hot-path copy"))
+        .map(|d| (&src[d.span.start.0 as usize..d.span.end.0 as usize], d.message))
+        .collect();
+    let part = "copy: a call's result holding another name's block stored into a bounded list";
+    let at = |text: &str| copies.iter().filter(|(t, _)| *t == text).map(|(_, m)| m.as_str()).collect::<Vec<_>>();
+    for inline in ["by_enum(r)", "by_match(r)", "by_int(r)", "by_time(r)", "by_string(r)"] {
+        assert!(at(inline).is_empty(), "`{inline}`: {copies:?}");
+    }
+    for block in ["by_record(r)", "by_payload(r)"] {
+        let m = at(block);
+        assert_eq!(m.len(), 1, "`{block}`: {copies:?}");
+        assert!(m[0].contains(part), "`{block}`: {copies:?}");
+    }
+    assert_eq!(copies.len(), 2, "{copies:?}");
+}

@@ -397,6 +397,12 @@ pub(crate) struct LoopFrame<'ctx> {
     exited: bool,
 }
 
+impl<'ctx> LoopFrame<'ctx> {
+    pub(crate) fn new(continue_bb: BasicBlock<'ctx>, break_bb: BasicBlock<'ctx>, exited: bool) -> Self {
+        LoopFrame { continue_bb, break_bb, exited }
+    }
+}
+
 /// Gap C (2026-07-17): expression-position match support. Passed
 /// into `lower_match_core` by `lower_match_expr`; each
 /// value-producing (non-terminated) arm records its value, type,
@@ -2094,6 +2100,7 @@ fn build_resolved_lowered(
         current_self: None,
         current_accept_interface: None,
         loops: Vec::new(),
+        loops_lowered: 0,
         bce_loops: Vec::new(),
         user_fns: BTreeMap::new(),
         render_structural: false,
@@ -4352,6 +4359,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// Stack of enclosing loops so `break` / `continue` can find
     /// their target blocks.
     pub(crate) loops: Vec<LoopFrame<'ctx>>,
+    /// How many loops have been lowered so far: a counted loop's body that
+    /// moved it holds a loop of its own (`drain_chunk`, GH #2089).
+    pub(crate) loops_lowered: u64,
     /// Stack of enclosing counted loops eligible for `@form(vec)`
     /// `.get` bounds-check elimination. Pushed by `lower_for_range`
     /// when `for VAR in 0..V.len()` is proven safe; consulted by the
@@ -20734,6 +20744,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(dr_ptr, one)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // 1b. A child its owner holds stops here, as it fails, not
+                // when its handler returns (GH #1069's stop, which the
+                // wrapper still makes, idempotently). Between the two the
+                // handler goes on (a `std::api` receiver's thunk publishes
+                // the call's server error) and the wrapper waits for the
+                // owner's `on_failure`: a publisher that acted on what the
+                // handler published in that window found the child still
+                // subscribed, and its cell was dropped at the stop with no
+                // word to anyone (the next call of an exposure, waiting
+                // forever for an answer; GH #2091 made main quick enough
+                // to land in it). A restart puts the subscriptions back.
+                let kept_now = self.emit_failed_child_is_kept(&info, cs.self_ptr)?;
+                self.emit_stop_kept_child(kept_now, cs.self_ptr)?;
 
                 // 2. Read parent_self + parent_on_failure.
                 let ps_ptr = self
@@ -21124,36 +21147,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         continue_bb: BasicBlock<'ctx>,
         break_bb: BasicBlock<'ctx>,
     ) -> Result<BasicBlock<'ctx>, CodegenError> {
-        let target = match (self.backedge_stop_fn, self.current_fn) {
-            (Some(stop_fn), Some(cur)) if stop_fn == cur => {
-                let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
-                let here = self.builder.get_insert_block().expect("a loop is lowered inside a block");
-                let latch = self.context.append_basic_block(cur, "loop.drain_stop");
-                self.builder.position_at_end(latch);
-                let flag = self.emit_process_draining_load("loop.drain_stop.flag")?;
-                let i64_t = self.context.i64_type();
-                // The runtime's LOTUS_DRAIN_STOPS: SIGNAL (1) | TEST (4).
-                let stops = self.builder.build_and(flag, i64_t.const_int(1 | 4, false), "loop.drain_stop.bits").map_err(e)?;
-                let up = self
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::NE, stops, i64_t.const_zero(), "loop.drain_stop.up")
-                    .map_err(e)?;
-                let stop_bb = self.context.append_basic_block(cur, "loop.drain_stop.end");
-                let br = self.builder.build_conditional_branch(up, stop_bb, continue_bb).map_err(e)?;
-                self.builder.position_at_end(stop_bb);
-                self.emit_unwind_poll()?;
-                self.builder.build_unconditional_branch(break_bb).map_err(e)?;
-                let weights = self.context.metadata_node(&[
-                    self.context.metadata_string("branch_weights").into(),
-                    self.context.i32_type().const_int(1, false).into(),
-                    self.context.i32_type().const_int(1 << 20, false).into(),
-                ]);
-                let kind = self.context.get_kind_id("prof");
-                br.set_metadata(weights, kind).map_err(|err| CodegenError::LlvmEmit(err.to_string()))?;
-                self.builder.position_at_end(here);
-                latch
-            }
-            _ => continue_bb,
+        self.loops_lowered += 1;
+        let target = if self.backedge_stops_here() {
+            self.build_drain_latch(continue_bb, break_bb)?
+        } else {
+            continue_bb
         };
         self.loops.push(LoopFrame { continue_bb: target, break_bb, exited: target != continue_bb });
         Ok(target)
@@ -21165,6 +21163,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         body: &Block,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        // GH #2089: a counted loop in a frame whose loops take the drain's
+        // stop checks it once a chunk, when its body is a leaf.
+        if self.backedge_stops_here() {
+            if let Some(counted) = crate::drain_chunk::CountedWhile::of(cond, body) {
+                if let Some(end) = self.lower_while_counted(&counted, body, scope)? {
+                    return Ok(end);
+                }
+            }
+        }
         let func = self
             .current_fn
             .expect("current_fn set while lowering a while");
@@ -24735,6 +24742,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "for-range bounds must be Int (got {}..{})",
                 lo_ty, hi_ty
             )));
+        }
+        // GH #2089: an exclusive range in a frame whose loops take the
+        // drain's stop checks it once a chunk, when its body is a leaf.
+        if !inclusive && self.backedge_stops_here() {
+            let bce_pushed = matches!(lo, Expr::Literal(Literal::Int(0), _))
+                && match bce_len_call_key(hi) {
+                    Some(vkey) if bce_body_is_safe(body, &vkey, &var_name.name) => {
+                        self.bce_loops.push(BceLoop { vec_key: vkey, index_var: var_name.name.clone() });
+                        true
+                    }
+                    _ => false,
+                };
+            return self.lower_for_range_chunked(
+                var_name,
+                lo_val.into_int_value(),
+                hi_val.into_int_value(),
+                body,
+                scope,
+                bce_pushed,
+            );
         }
 
         let i64_t = self.context.i64_type();

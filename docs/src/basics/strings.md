@@ -485,4 +485,4 @@ let is_ok  = std::regex::valid("a(");                 // false
 
 Supported syntax includes literals, `.`, `*`, `+`, `?`, alternation `|`, grouping `(...)`, and character classes (`[a-z]`, `[^a-z]`). Backreferences and lookahead are omitted so that every match executes in guaranteed `O(n)` time and zero heap allocations on hot paths. Call `std::regex::valid(pat)` first whenever `pat` comes from external configuration or user input.
 
-Next: [When a Call Can Fail](./fallible.md).
+Next: [Numbers, Money & Time](./math.md).

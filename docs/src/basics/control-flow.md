@@ -244,4 +244,4 @@ let label = match kind {
 
 Conversely, a standalone statement terminated by `;` must perform an action—such as a function or method call (whose return value, if any, is discarded), a locus instantiation, or an `or` clause on a fallible call. Writing a pure value expression as a statement (`total + 1;` or `p.name;`) fails compilation with `this expression's value is unused`.
 
-Next: [Strings & Bytes](./strings.md).
+Next: [Records, Enums & Set Types](../everyday/records.md).

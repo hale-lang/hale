@@ -786,8 +786,38 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         self.builder
             .build_store(req_nsec_ptr, nsec)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #2091: on the main thread the slice waits on main's bus
+        // queue for its whole length (`lotus_bus_sleep_slice_main`), so a
+        // delivery for main — an exposure's call, a pinned publisher's
+        // cell — is drained when it arrives, not when the slice ends: a
+        // serving `main locus` whose run() polls `self.draining` with a
+        // sleep answers a call in the time the call takes. Anywhere else
+        // (a pool worker, a pinned thread, no bus queue) it returns 0 and
+        // the slice is the `clock_nanosleep` below.
+        let slice_main = self
+            .module
+            .get_function("lotus_bus_sleep_slice_main")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "lotus_bus_sleep_slice_main",
+                    i64_t.fn_type(&[i64_t.into()], false),
+                    None,
+                )
+            });
+        let slept = self
+            .builder
+            .build_call(slice_main, &[chunk.into()], "sleep.slice.main")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64")
+            .into_int_value();
+        let slept_on_main = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::NE, slept, zero64, "sleep.slice.on_main")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
-            .build_unconditional_branch(loop_bb)
+            .build_conditional_branch(slept_on_main, drain_bb, loop_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         // loop_bb: call clock_nanosleep, branch on EINTR vs drain

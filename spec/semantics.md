@@ -1506,11 +1506,19 @@ or the drain its body ends with), a held child stops at once and the
 rest is decided once `run()` returns, as for a failure `run()`
 raised. Until GH #2028 neither happened after a handler's failure.
 
-A handler of the failed child can return before the supervisor has
-decided — the failure is delivered on the owner's thread, and the
-child's thread runs its other work while it waits — and the child
-stops there, its subscriptions dropped. A restart the supervisor then
-decides takes that stop back: the restarted child has every
+A held child stops as it fails: its subscriptions are dropped where
+the failure is raised, before the handler or `run()` it was raised in
+goes on, and well before the supervisor has decided (the failure is
+delivered on the owner's thread, and the child's thread runs its other
+work while it waits). So nothing published after the failure reaches
+the failed child — a publish whose topic fails on no subscriber takes
+its `or`, as for any stopped child — even while the handler that
+failed is still running; until GH #2091 the stop came when that
+handler returned, and a delivery published in answer to what the
+handler said after its failure (a `std::api` receiver's server error)
+could reach the failed child, or be dropped at the stop unannounced.
+A restart the supervisor then decides takes that stop back: the
+restarted child has every
 subscription it had before it failed, so a bound receiver restarted
 after the call it was executing returned is served again (spec/api.md
 § Receiver failure and generations).
@@ -5838,7 +5846,12 @@ compiler places a drain check at the back-edge of every loop the body
 holds lexically — `while` and every `for`, nested ones included; not a
 loop in a fn or method it calls, nor one in a closure. The check is one
 load of the runtime's flag and one branch, weighted cold, on every
-iteration, `@hot` and `@budget` code included. When a stop has begun
+iteration, `@hot` and `@budget` code included — except on a counted
+loop (`for i in a..b`, `while i < n { …; i = i + 1; }`) whose body calls
+nothing and holds no loop, which takes it once every 4096 iterations so
+the loop can be vectorized (`spec/runtime.md` § "Back-edge stops", GH
+#2089): such a loop ends at the end of a chunk, still between two
+iterations. When a stop has begun
 the loop exits there, as a `break` written at the end of the iteration
 would: between two iterations, never inside one, with the iteration's
 state as the iteration left it. A `continue` goes through the same

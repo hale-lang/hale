@@ -82,3 +82,5 @@ Repository effect classes participate in Hale's transitive effect system:
 
 - Complete in-memory repository example: `tests/hale/repo_memory_test.hl`
 - Full specification: [`spec/api.md`](https://github.com/hale-lang/hale/blob/main/spec/api.md) § Repositories
+
+Next: [Tutorial: Build a Typed API](./build-an-api.md).

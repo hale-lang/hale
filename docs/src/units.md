@@ -237,4 +237,4 @@ The report lists:
 > [!NOTE]
 > **Current Scope (`spec/units.md`):** Cross-dimension rate types (such as bytes per second, `ByteCount / Duration`), `Float` quantities, calendar arithmetic, and automatic bit-packing of narrow ranges into sub-64-bit struct fields are not yet implemented. Dividing two quantities of the *same* component (`d / 1ms`) always returns a plain `Int` count.
 
-Next: [Functions](./basics/functions.md).
+Next: [Error Handling (`fallible`)](./basics/fallible.md).

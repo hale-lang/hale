@@ -220,7 +220,7 @@ self.conn.url = next;                   // mutates existing instance in place; n
 
 You do not have to write anything for a clean stop. When the process receives `SIGINT` (Ctrl-C) or `SIGTERM`:
 
-1. Every `run()` loop that does not read `self.draining` ends **between two iterations**: the compiler puts a drain check at the back-edge of each loop in a `run()` (and in `fn main`), so the iteration that was running finishes and the loop exits there, as a `break` at the end of the iteration would.
+1. Every `run()` loop that does not read `self.draining` ends **between two iterations**: the compiler puts a drain check at the back-edge of each loop in a `run()` (and in `fn main`), so the iteration that was running finishes and the loop exits there, as a `break` at the end of the iteration would. A tight counted loop (`for i in 0..n`, or `while i < n { …; i = i + 1; }`, whose body calls nothing) checks once every 4096 iterations instead, so the compiler can still vectorize it; it stops within microseconds all the same.
 2. Every blocking wait in `run()` (or in what it calls) wakes with the answer it already gives when nothing comes: a `std::time::sleep` returns early, an `accept` returns its closed `-1`, a TCP `recv` the empty string a peer's close gives, a UDP `recv` its timeout. The `or` you already wrote covers it. (A server's own connections keep waiting until they have answered the calls in flight.)
 3. `run()` returns, `drain()` cascades depth-first (deepest children first), `dissolve()` runs and arenas are reclaimed leaves-first, and the process exits with code `0`.
 
@@ -328,4 +328,4 @@ The compiler and runtime enforce the following execution invariants across the o
 > - Subscribing loci constructed inside stdlib or imported modules may receive messages during `birth()` rather than queuing them until `birth()` returns.
 > - Unbounded self-publishing inside `birth()` buffers messages in memory without a static cap.
 
-Next: [The Bus](./bus.md).
+Next: [The Typed Message Bus](./bus.md).

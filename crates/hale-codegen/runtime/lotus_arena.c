@@ -10302,7 +10302,12 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
  * enqueues on `q`, or after `ns` nanoseconds, then drains the queue.
  * The only place main waits on its queue; it is never unbounded and
  * never a busy loop. A caller off the owner thread, or a queue with no
- * wake fd, gets the same bounded wait without the wake. */
+ * wake fd, gets the same bounded wait without the wake. So does the
+ * owner inside a handler of this queue's drain (GH #2091): that drain is
+ * not re-entered, so a cell that arrives could not be run here, and a
+ * wait that woke for it would find it still queued at every look after —
+ * no wait at all, a busy loop for the rest of `ns` (a handler on main
+ * that sleeps, while another thread posts to main). */
 void lotus_bus_queue_idle_wait(lotus_bus_queue_t *q, int64_t ns) {
     if (!q) return;
 #ifdef __wasm__
@@ -10311,7 +10316,8 @@ void lotus_bus_queue_idle_wait(lotus_bus_queue_t *q, int64_t ns) {
 #else
     if (ns < 0) ns = 0;
     int ready = 0;
-    int can_wake = q->wake_r >= 0 && pthread_equal(pthread_self(), q->owner);
+    int can_wake = q->wake_r >= 0 && pthread_equal(pthread_self(), q->owner)
+        && !g_bus_drain_active;
     if (can_wake) {
         atomic_store_explicit(&q->idle, 1, memory_order_seq_cst);
         pthread_mutex_lock(&q->lock);
@@ -28269,6 +28275,49 @@ int64_t lotus_bus_idle_wait_main(int64_t ns) {
     lotus_bus_queue_t *q = g_bus_queue_for_remote;
     if (!q || !pthread_equal(pthread_self(), q->owner)) return 0;
     lotus_bus_queue_idle_wait(q, ns);
+    return 1;
+#endif
+}
+
+/* GH #2091: one slice of `std::time::sleep` on the queue's owner. The
+ * slice lasts its whole length, as a `clock_nanosleep` of it would, but
+ * waits on the queue's wake fd (`lotus_bus_queue_idle_wait`): a foreign
+ * enqueue ends each wait, the queue is drained at once, and the wait
+ * resumes for what is left of the slice. So a serving `main locus` whose
+ * run() polls `self.draining` with a sleep answers a call a transport
+ * delivers for main's queue in the time the call takes, as `Handle.wait()`
+ * does, and not when the slice ends. The slice ends at its deadline
+ * whatever arrives: the drain's cut of a sleep stays the slice header's
+ * (codegen's `sleep.chunk`), and a sleep still runs its length. */
+void lotus_bus_queue_sleep(lotus_bus_queue_t *q, int64_t ns) {
+    if (!q || ns <= 0) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    int64_t deadline = (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec + ns;
+    for (;;) {
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        int64_t left = deadline - ((int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec);
+        if (left <= 0) return;
+        lotus_bus_queue_idle_wait(q, left);
+    }
+}
+
+/* `std::time::sleep`'s slice on the main thread: 1 when it slept on
+ * main's queue (`lotus_bus_queue_sleep`); 0 when this is not the queue's
+ * owner, or the queue has no wake fd (wasm32), and the caller sleeps the
+ * slice with `clock_nanosleep`. 0 as well inside a handler of main's
+ * drain: handlers on main do not nest, so nothing that arrives during the
+ * slice can be run before the handler returns, and the slice is the plain
+ * sleep it was before GH #2091 (its slice-end drain a no-op, as then). */
+int64_t lotus_bus_sleep_slice_main(int64_t ns) {
+#ifdef __wasm__
+    (void)ns;
+    return 0;
+#else
+    lotus_bus_queue_t *q = g_bus_queue_for_remote;
+    if (!q || q->wake_r < 0 || !pthread_equal(pthread_self(), q->owner)) return 0;
+    if (g_bus_drain_active) return 0;
+    lotus_bus_queue_sleep(q, ns);
     return 1;
 #endif
 }

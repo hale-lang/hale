@@ -1053,3 +1053,5 @@ $ echo $?
 - **Non-Object MCP Requests**: An `rpc` row whose request type is a top-level enum rather than a struct has no MCP tool projection.
 - **Hub Live Descriptions**: When a `ws::Hub` also serves an `api` surface via `api::serve`, its live `GET /.description` lists its stream bindings; the RPC surface members remain in the static `hale check --api` inventory.
 - **Bearer Group Claims**: `StaticRoles` matches bearer principals by individual name (`bearer:<name>`) or `*`. To authorize bearer tokens by OIDC group claims, implement a custom `std::api::RoleSource`.
+
+Next: [API Wire Schemas & Compatibility](./api-messages.md).

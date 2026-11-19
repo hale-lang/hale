@@ -228,4 +228,4 @@ An `Rng` initialized with a given `seed` produces the exact same sequence across
 > [!WARNING]
 > Never use `std::rand::next_int` or `std::rand::Rng` to generate secrets, keys, or nonces; SplitMix64 is not cryptographically secure. Use `std::os::getrandom` instead.
 
-Next: [CLI & config](./cli-config.md).
+Next: [Structured Logging](./logging.md).

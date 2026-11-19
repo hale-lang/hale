@@ -185,4 +185,4 @@ locus Server {
 - **Passing handler data to residents**: When a bus handler spawns or updates a resident child, scalar values, `String`s, and record fields are deep-copied into the resident's arena so they remain valid after the handler returns. Passing a handler-local locus collection (`@form(vec)`) by reference is rejected at compile time because the handler's frame dissolves on return; instead, copy the elements into the resident's own `@form(vec)` inside `birth()`.
 - **Self-termination (`terminate;`)**: Any child (resident or flow) can end its own lifecycle from inside a method or bus handler by executing `terminate;`. On a resident child, `terminate;` exits the current method and runs `drain() → dissolve()` upon handler return without invoking `release`.
 
-Next: [Failure & Supervision](./failure.md).
+Next: [Supervision & Structural Failure](./failure.md).

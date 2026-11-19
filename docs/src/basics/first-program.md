@@ -73,4 +73,4 @@ fn main() {
 - **`run() { ... }`** (declared without `fn`) is a lifecycle hook driven by the runtime after the locus is constructed.
 - **Statement-position instantiation (`TempApp { ... };`)** constructs the locus, runs its lifecycle (`birth` -> `run` -> `dissolve`), and reclaims its memory at the semicolon.
 
-Next: [The Locus, Gently](../everyday/locus-gently.md).
+Next: [Tutorial: Build a Job Queue](../tutorial/job-queue.md).
