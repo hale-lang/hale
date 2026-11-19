@@ -121,3 +121,85 @@ fn main() {{ App {{ }}; }}
         "stderr: {stderr}"
     );
 }
+
+/// A held child stops as it fails, not when the handler it failed in
+/// returns. The handler goes on after `violate` (here it tells its owner
+/// the call failed, then waits); a delivery published in answer to what
+/// it said used to find it still subscribed, and ran on the failed child
+/// while that handler waited, or was dropped at the stop with no word to
+/// anyone. That is the window a `std::api` exposure's next call fell into
+/// after a receiver's server error, and waited forever for its answer:
+/// GH #2091 made main quick enough to land in it on a loaded machine.
+/// Now the publish finds no subscriber, and its `or` says so.
+#[test]
+fn a_held_child_stops_when_it_fails_not_when_its_handler_returns() {
+    let src = r#"
+type Ask { key: Int; n: Int; }
+type Told { n: Int; failed: Bool; }
+topic Asks { payload: Ask; subject: "t.ask"; keyed_by key; on_unmatched: fail; }
+topic Tells { payload: Told; subject: "t.tell"; }
+
+locus Worker {
+    params { open: Int = 0; }
+    closure fuse { captures: open; epoch inline; }
+    bus {
+        subscribe Asks as on_ask where key == 1;
+        publish Tells;
+    }
+    fn work(n: Int) -> Int fallible(ClosureViolation) {
+        if n == 2 { violate fuse; }
+        return n;
+    }
+    fn on_ask(a: Ask) {
+        let v = self.work(a.n) or {
+            Tells <- Told { n: a.n, failed: true };
+            std::time::sleep(200ms);
+            return;
+        };
+        Tells <- Told { n: v, failed: false };
+    }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+        failed: Int = 0;
+        done: Bool = false;
+    }
+    placement { w: cooperative(pool = work) where async_io; }
+    bus {
+        publish Asks;
+        subscribe Tells as on_tell;
+    }
+    on_failure(w: Worker, err: ClosureViolation) { self.failed = self.failed + 1; }
+    fn ask(n: Int) {
+        Asks <- Ask { key: 1, n: n } or self.unmatched(n);
+    }
+    fn unmatched(n: Int) {
+        println("unmatched " + to_string(n));
+        self.done = true;
+    }
+    fn on_tell(t: Told) {
+        println("told " + to_string(t.n) + " failed=" + to_string(t.failed));
+        self.ask(t.n + 1);
+    }
+    run() {
+        self.ask(1);
+        let mut i = 0;
+        while !self.done && i < 300 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        println("failed=" + to_string(self.failed) + " done=" + to_string(self.done));
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let (stdout, stderr) = run_asan("hale_failed_child_stops_at_failure", src);
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        ["told 1 failed=false", "told 2 failed=true", "unmatched 3", "failed=1 done=true"],
+        "stderr: {stderr}"
+    );
+}

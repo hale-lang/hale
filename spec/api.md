@@ -2023,7 +2023,13 @@ incarnation that ended is never run by the next one, even at an address
 the next one reuses. A receiver that is draining has no subscription to
 hand a call to: the exposure learns it at the handover (the bus reports
 a delivery no subscriber took) and settles that call, and every call
-queued behind it, `unavailable`. A receiver whose stamp the exposure
+queued behind it, `unavailable`. So does one that failed: a held
+receiver stops as it fails (spec/semantics.md § `terminate`), before
+the call it failed in is answered with the server error, so the next
+call handed to it finds no subscriber however soon it comes (until
+GH #2091 the stop came as the failing handler returned, and a call
+handed over in between was dropped at the stop, never answered).
+A receiver whose stamp the exposure
 has not yet learned (it was born before the exposure, or has not
 answered) is asked, and its calls wait queued until it answers or the
 bus reports no subscriber to ask. A receiver found unavailable is asked

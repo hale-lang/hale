@@ -20734,6 +20734,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(dr_ptr, one)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // 1b. A child its owner holds stops here, as it fails, not
+                // when its handler returns (GH #1069's stop, which the
+                // wrapper still makes, idempotently). Between the two the
+                // handler goes on (a `std::api` receiver's thunk publishes
+                // the call's server error) and the wrapper waits for the
+                // owner's `on_failure`: a publisher that acted on what the
+                // handler published in that window found the child still
+                // subscribed, and its cell was dropped at the stop with no
+                // word to anyone (the next call of an exposure, waiting
+                // forever for an answer; GH #2091 made main quick enough
+                // to land in it). A restart puts the subscriptions back.
+                let kept_now = self.emit_failed_child_is_kept(&info, cs.self_ptr)?;
+                self.emit_stop_kept_child(kept_now, cs.self_ptr)?;
 
                 // 2. Read parent_self + parent_on_failure.
                 let ps_ptr = self
