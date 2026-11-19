@@ -653,6 +653,10 @@ fn per_target_moves() {
 /// `freed_keywords_test` (F.47) is a new target: six tags of the values
 /// its fns hand back move into the caller's arena; no leak site goes or
 /// appears.
+///
+/// `module_is_a_name_test` (F.57) is a new target: two tags of values its
+/// fns hand back move into the caller's arena; no leak site goes or
+/// appears.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -664,7 +668,6 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/65-hashmap-anchor-churn: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/74-effect-contracts: 0 go, 0 appear; dump 7 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
-    "crates/hale-codegen/tests/fixtures/examples/91-module-decls: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
     "dna/api: 1 go, 0 appear, 1 move their reason; dump 546 tags, 1345 reclaim, 1 verdicts",
@@ -712,6 +715,7 @@ const PINNED: &[&str] = &[
     "tests/hale/json_escape_runs_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
     "tests/hale/let_block_scope_test.hl: 0 go, 0 appear; dump 5 tags, 0 reclaim, 0 verdicts",
     "tests/hale/local_place_value_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/module_is_a_name_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/open_slices_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/queued_self_cycle_test.hl: 0 go, 0 appear; dump 1 tags, 14 reclaim, 0 verdicts",
     "tests/hale/rest_fallback_test.hl: 0 go, 0 appear; dump 1 tags, 3 reclaim, 0 verdicts",

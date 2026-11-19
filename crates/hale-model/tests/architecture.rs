@@ -1058,7 +1058,7 @@ fn declared_in_covers_the_full_declaration_universe() {
 /// compiler's `top_decl_name` names — not a hand-picked subset:
 /// locus, fn, topic, type, interface, group (specialized sorts)
 /// PLUS const, ring layout, target (opaque
-/// Declaration rows). Module/Claims/Constitution are deliberately
+/// Declaration rows). Claims/Constitution are deliberately
 /// nameless there and absent here. A new nameable TopDecl variant
 /// must extend this test alongside the schema.
 #[test]

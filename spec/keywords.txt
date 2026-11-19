@@ -21,7 +21,6 @@ interface
 let
 locus
 match
-module
 mut
 return
 self

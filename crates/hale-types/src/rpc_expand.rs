@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::api_names::API_SYNTH_BASE;
 use hale_syntax::ast::{
-    flat_decls, Block, Expr, Ident, LifecycleKind, Literal, LocusDecl, LocusMember, ParamDecl, ParamInit,
+    Block, Expr, Ident, LifecycleKind, Literal, LocusDecl, LocusMember, ParamDecl, ParamInit,
     Program, Stmt, StructInit, TopDecl, TypeExpr,
 };
 use hale_syntax::json_gen::Conv;
@@ -138,7 +138,7 @@ pub(crate) fn rows_of_surface(
 ) -> Vec<Row> {
     let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     for p in programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             match d {
                 TopDecl::Locus(l) => {
                     loci.insert(l.name.name.as_str(), l);
@@ -274,7 +274,7 @@ fn digest_of(shapes: &Shapes<'_>, rows: &[Row]) -> u64 {
 pub fn conferring(programs: &[&Program]) -> BTreeMap<String, Vec<String>> {
     let mut includes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             if let TopDecl::Role(r) = d {
                 includes.entry(r.name.name.clone()).or_default().extend(r.includes.iter().map(|i| i.name.clone()));
             }
@@ -714,7 +714,7 @@ const REST_FALLBACK_BASE: u32 = RUNTIME_BASE + 0x0070_0000;
 /// transport gives a `fallback:` (`hale_stdlib::API_REST_FALLBACK_SOURCE`).
 fn inject_rest_fallback(programs: &mut [&mut Program]) {
     let have = programs.iter().any(|p| {
-        flat_decls(&p.items).any(|d| matches!(d, TopDecl::Fn(f) if f.name.name == "__api_rest_fallback_serve"))
+        p.items.iter().any(|d| matches!(d, TopDecl::Fn(f) if f.name.name == "__api_rest_fallback_serve"))
     });
     if have || programs.is_empty() {
         return;
@@ -731,7 +731,7 @@ fn inject_rest_fallback(programs: &mut [&mut Program]) {
 /// Append the runtime to the first program, once.
 fn inject_runtime(programs: &mut [&mut Program]) {
     let have = programs.iter().any(|p| {
-        flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdApiExposure"))
+        p.items.iter().any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdApiExposure"))
     });
     if have || programs.is_empty() {
         return;
@@ -759,7 +759,7 @@ fn inject_runtime(programs: &mut [&mut Program]) {
 fn inject_topics(programs: &mut [&mut Program]) {
     let have = programs
         .iter()
-        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Topic(t) if t.name.name == "__ApiRpcCallT")));
+        .any(|p| p.items.iter().any(|d| matches!(d, TopDecl::Topic(t) if t.name.name == "__ApiRpcCallT")));
     if have || programs.is_empty() {
         return;
     }
@@ -778,7 +778,7 @@ fn inject_topics(programs: &mut [&mut Program]) {
 fn inject_hub(programs: &mut [&mut Program]) {
     let have = programs
         .iter()
-        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdApiWsHub")));
+        .any(|p| p.items.iter().any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdApiWsHub")));
     if have || programs.is_empty() {
         return;
     }
@@ -812,7 +812,7 @@ fn inject_hub(programs: &mut [&mut Program]) {
 fn inject_h2(programs: &mut [&mut Program]) {
     let have = programs
         .iter()
-        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdIoH2Conn")));
+        .any(|p| p.items.iter().any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdIoH2Conn")));
     if have || programs.is_empty() {
         return;
     }
@@ -850,7 +850,7 @@ fn mentions_grpc(programs: &[&mut Program]) -> bool {
 fn inject_grpc(programs: &mut [&mut Program]) {
     let have = programs
         .iter()
-        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdApiGrpcRpc")));
+        .any(|p| p.items.iter().any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdApiGrpcRpc")));
     if have || programs.is_empty() {
         return;
     }
@@ -1004,7 +1004,7 @@ pub fn is_appended_stdlib_pos(pos: u32) -> bool {
 pub(crate) fn inject_observe(programs: &mut [&mut Program]) {
     let have = programs
         .iter()
-        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdObserveScrape")));
+        .any(|p| p.items.iter().any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdObserveScrape")));
     if have || programs.is_empty() {
         return;
     }
@@ -1039,7 +1039,7 @@ impl TcpServeDecls {
     pub fn of(programs: &[&Program]) -> Self {
         let mut out = TcpServeDecls::default();
         for p in programs {
-            for item in flat_decls(&p.items) {
+            for item in p.items.iter() {
                 match item {
                     TopDecl::Locus(l) if is_tcp_serve_pos(l.name.span.start.0) => {
                         out.loci.insert(l.name.name.clone());
@@ -1083,7 +1083,7 @@ const TCP_TOPICS_SRC: &str = "topic __TcpAcceptedT { payload: __StdIoTcpAccepted
 fn inject_tcp_serve(programs: &mut [&mut Program]) {
     let have = programs
         .iter()
-        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdIoTcpRelay")));
+        .any(|p| p.items.iter().any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdIoTcpRelay")));
     if have || programs.is_empty() {
         return;
     }
@@ -1121,7 +1121,7 @@ fn mentions_http_read(programs: &[&mut Program]) -> bool {
 fn inject_http_read(programs: &mut [&mut Program]) {
     let have = programs
         .iter()
-        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdHttpBodyReader")));
+        .any(|p| p.items.iter().any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdHttpBodyReader")));
     if have || programs.is_empty() {
         return;
     }
@@ -1152,7 +1152,7 @@ fn mentions_sha256(programs: &[&mut Program]) -> bool {
 fn inject_sha256(programs: &mut [&mut Program]) {
     let have = programs
         .iter()
-        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdCryptoSha256")));
+        .any(|p| p.items.iter().any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdCryptoSha256")));
     if have || programs.is_empty() {
         return;
     }
@@ -1176,7 +1176,7 @@ fn mentions_tcp_listener(programs: &[&mut Program]) -> bool {
 fn inject_tcp_listener(programs: &mut [&mut Program]) {
     let have = programs
         .iter()
-        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdIoTcpListener")));
+        .any(|p| p.items.iter().any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdIoTcpListener")));
     if have || programs.is_empty() {
         return;
     }
@@ -1200,7 +1200,7 @@ fn inject_tcp_listener(programs: &mut [&mut Program]) {
 pub(crate) fn imported_surface(programs: &[&Program], renames: &[(Vec<String>, String)], alias: &str, name: &str) -> Option<String> {
     let key = format!("{}{name}", crate::mangle::API_KEY);
     let (_, origin) = renames.iter().find(|(path, _)| path.len() == 2 && path[0] == alias && path[1] == key)?;
-    programs.iter().flat_map(|p| flat_decls(&p.items)).find_map(|d| match d {
+    programs.iter().flat_map(|p| p.items.iter()).find_map(|d| match d {
         TopDecl::Api(a) if a.name.name == name && a.origin.as_ref() == Some(origin) => Some(a.name.name.clone()),
         _ => None,
     })
@@ -1218,7 +1218,7 @@ fn resolve_imported_surfaces(programs: &mut [&mut Program], renames: &[(Vec<Stri
     {
         let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
         for p in &ro {
-            for d in flat_decls(&p.items) {
+            for d in p.items.iter() {
                 let TopDecl::Locus(l) = d else { continue };
                 for (_, site) in crate::surfaces::locus_serve_sites(l) {
                     let Expr::Path(qn) = site.surface else { continue };
@@ -1241,7 +1241,7 @@ fn resolve_imported_surfaces(programs: &mut [&mut Program], renames: &[(Vec<Stri
         }
     };
     for p in programs.iter_mut() {
-        hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| {
+        p.items.iter_mut().for_each(|d| {
             let TopDecl::Locus(l) = d else { return };
             for m in &mut l.members {
                 if let LocusMember::Params(pb) = m {
@@ -1261,7 +1261,7 @@ fn resolve_imported_surfaces(programs: &mut [&mut Program], renames: &[(Vec<Stri
 /// is built, so a site the laws refuse is refused for what it is.
 fn type_exposure_params(programs: &mut [&mut Program]) {
     for p in programs.iter_mut() {
-        hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| {
+        p.items.iter_mut().for_each(|d| {
             let TopDecl::Locus(l) = d else { return };
             for m in &mut l.members {
                 let LocusMember::Params(pb) = m else { continue };
@@ -1371,7 +1371,7 @@ pub fn expand(
         let schemas = crate::surfaces::Schemas::of(&ro);
         let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
         for p in &ro {
-            for d in flat_decls(&p.items) {
+            for d in p.items.iter() {
                 if let TopDecl::Locus(l) = d {
                     loci.insert(l.name.name.as_str(), l);
                 }
@@ -1379,7 +1379,7 @@ pub fn expand(
         }
         let mut seen_names: BTreeSet<String> = BTreeSet::new();
         for (pi, p) in ro.iter().enumerate() {
-            for d in flat_decls(&p.items) {
+            for d in p.items.iter() {
                 let TopDecl::Locus(l) = d else { continue };
                 for (param, site) in crate::surfaces::locus_serve_sites(l) {
                     let surface = match site.surface {
@@ -2358,11 +2358,6 @@ fn find_locus_mut<'a>(items: &'a mut [TopDecl], name: &str) -> Option<&'a mut Lo
     for item in items {
         match item {
             TopDecl::Locus(l) if l.name.name == name => return Some(l),
-            TopDecl::Module(m) => {
-                if let Some(l) = find_locus_mut(&mut m.items, name) {
-                    return Some(l);
-                }
-            }
             _ => {}
         }
     }
@@ -3005,7 +3000,7 @@ impl Chain {
 pub(crate) fn loci_by_name<'a>(programs: &[&'a Program]) -> BTreeMap<&'a str, &'a LocusDecl> {
     let mut loci = BTreeMap::new();
     for p in programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             if let TopDecl::Locus(l) = d {
                 loci.insert(l.name.name.as_str(), l);
             }
@@ -3496,7 +3491,6 @@ fn walk_items_exprs_mut(items: &mut [TopDecl], f: &mut dyn FnMut(&mut Expr)) {
         match d {
             TopDecl::Fn(func) => walk_block_mut(&mut func.body, f),
             TopDecl::Const(c) => walk_expr_mut(&mut c.value, f),
-            TopDecl::Module(m) => walk_items_exprs_mut(&mut m.items, f),
             TopDecl::Locus(l) => {
                 for m in &mut l.members {
                     match m {

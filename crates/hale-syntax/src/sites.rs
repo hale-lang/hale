@@ -34,7 +34,6 @@ pub enum SiteKind {
     Failure,
     Const,
     Group,
-    Module,
     Param,
     PlacementEntry,
     BindingEntry,
@@ -157,10 +156,6 @@ macro_rules! walk {
                     TopDecl::Type(t) => type_decl(t, f),
                     TopDecl::Const(c) => const_decl(c, f),
                     TopDecl::Fn(fd) => fn_decl(fd, f),
-                    TopDecl::Module(md) => {
-                        f(SiteKind::Module, md.span, Some(md.name.name.as_str()), & $($m)? md.id);
-                        items(& $($m)? md.items, f);
-                    }
                     TopDecl::Interface(i) => {
                         f(SiteKind::Interface, i.span, Some(i.name.name.as_str()), & $($m)? i.id);
                         for sig in & $($m)? i.methods {

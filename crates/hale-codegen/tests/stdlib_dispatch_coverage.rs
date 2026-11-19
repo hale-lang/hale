@@ -618,7 +618,6 @@ impl CallWalk {
                 self.owner = fd.name.name.clone();
                 self.fn_decl(fd);
             }
-            TopDecl::Module(md) => self.items(&md.items),
             TopDecl::Interface(i) => {
                 for sig in &i.methods {
                     self.params(&sig.params);

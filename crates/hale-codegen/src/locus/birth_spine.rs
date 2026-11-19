@@ -248,9 +248,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// The declaration's `birth_check` clauses.
     pub(crate) fn birth_check_decls(&self, locus_name: &str) -> Vec<BirthCheckDecl> {
-        // GH #884: module nesting flattened — the locus being
-        // instantiated may be declared inside a `module { }`.
-        hale_syntax::ast::flat_decls(&self.program.items)
+        self.program.items.iter()
             .find_map(|item| match item {
                 TopDecl::Locus(l) if l.name.name == locus_name => Some(
                     l.members

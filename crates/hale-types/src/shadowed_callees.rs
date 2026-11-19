@@ -54,7 +54,7 @@ pub(crate) fn rewrite_shadowed_callees(programs: &mut [&mut Program], context: &
     let mut program_fns = BTreeSet::new();
     let mut variants: BTreeMap<(String, String), Vec<TypeExpr>> = BTreeMap::new();
     for p in programs.iter().map(|p| &**p).chain(context.iter().copied()) {
-        for item in flat_decls(&p.items) {
+        for item in p.items.iter() {
             match item {
                 TopDecl::Fn(f) => {
                     program_fns.insert(f.name.name.clone());
@@ -144,11 +144,6 @@ impl Walk<'_> {
             TopDecl::Type(t) => self.type_decl(t),
             TopDecl::Const(c) => self.const_decl(c),
             TopDecl::Fn(fd) => self.fn_decl(fd),
-            TopDecl::Module(md) => {
-                for item in &mut md.items {
-                    self.top_decl(item);
-                }
-            }
             TopDecl::Interface(i) => {
                 for sig in &mut i.methods {
                     self.params(&mut sig.params);

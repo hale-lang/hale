@@ -1291,7 +1291,6 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                     }
                 }
             }
-            TopDecl::Module(m) => collect(&m.items, p),
             TopDecl::Type(td) => {
                 if let TypeDeclBody::Scalar(sd) = &td.body {
                     p.scalar_decls.push((td.name.name.as_str(), sd));

@@ -31,7 +31,7 @@
 
 use std::collections::BTreeMap;
 
-use hale_syntax::ast::{flat_decls, LocusMember, Program, TopDecl, TypeExpr};
+use hale_syntax::ast::{LocusMember, Program, TopDecl, TypeExpr};
 use hale_syntax::{Diag, Span};
 
 use crate::alloc_summary::{AllocSummary, Callee, DeclId, EntryKind, FnKey};
@@ -110,7 +110,7 @@ fn collect(
         },
         stdlib,
     };
-    for item in flat_decls(&program.items) {
+    for item in program.items.iter() {
         match item {
             TopDecl::Fn(f) => {
                 out.insert(FnKey::free_fn(decl(f.id), f.name.name.clone()), row(f.name.name.clone(), f));

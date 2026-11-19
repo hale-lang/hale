@@ -18,7 +18,7 @@
 
 use std::collections::BTreeSet;
 
-use hale_syntax::ast::{flat_decls, FnDecl, LocusMember, TopDecl};
+use hale_syntax::ast::{FnDecl, LocusMember, TopDecl};
 use hale_syntax::{Diag, Span};
 
 use crate::resolve::TopScope;
@@ -90,14 +90,14 @@ pub fn raise_fns(bundle: &Bundle<'_>, top: &TopScope) -> (Vec<RaiseFn>, Vec<Diag
     let user_types: BTreeSet<&str> = bundle
         .programs
         .values()
-        .flat_map(|p| flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .filter_map(|d| match d {
             TopDecl::Type(t) => Some(t.name.name.as_str()),
             _ => None,
         })
         .collect();
     for program in bundle.programs.values() {
-        for decl in flat_decls(&program.items) {
+        for decl in program.items.iter() {
             match decl {
                 TopDecl::Fn(fd) if is_raise_fn(fd) => match judge(fd, top, &user_types) {
                     Ok(Some(f)) => fns.push(f),

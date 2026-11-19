@@ -2906,7 +2906,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// whether a struct is released.
     pub(crate) fn compute_returned_struct_loci(&mut self) {
         let mut rets: Vec<hale_syntax::ast::TypeExpr> = Vec::new();
-        for item in hale_syntax::ast::flat_decls(&self.program.items) {
+        for item in self.program.items.iter() {
             match item {
                 hale_syntax::ast::TopDecl::Fn(f) if f.generics.is_empty() => rets.extend(f.ret.clone()),
                 hale_syntax::ast::TopDecl::Locus(l) if l.generics.is_empty() => {

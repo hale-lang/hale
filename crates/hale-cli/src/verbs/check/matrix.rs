@@ -123,7 +123,7 @@ pub(crate) fn run_matrix(root: &Path, verify: bool) -> ExitCode {
             // comparison below, so a pair loads its seed once. A load
             // that fails has printed why and leaves no snapshot, and the
             // pair is reported by that refusal alone: a seed the check
-            // refuses (a library, an imported or a module-nested `main`)
+            // refuses (a library, or a seed whose only `main` is imported)
             // has no entrypoint for an environment's roles to map, and a
             // constitution it can never deploy under takes no part in
             // the comparison.

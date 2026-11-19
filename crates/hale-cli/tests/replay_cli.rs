@@ -711,39 +711,27 @@ fn same_subject_race_and_nested_republish_replay_exactly() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Round 3, finding 2's negative controls: modules nest top
-/// declarations, and admission must see into them — a module-contained
-/// live effect or transport binding failing open was the review's exact
-/// case. A module-contained binding is now refused by the check before
-/// admission, since it can only sit on a module-nested `main locus`,
-/// which is not the entry (F.40 phase 3, L4): (b) holds that refusal,
-/// and the gate's binding case at the top level.
+/// Round 3, finding 2's negative controls: admission must see a live
+/// effect in a helper fn and a transport binding on the entry. The
+/// assertion is about the GATE — which fires before the build,
+/// deliberately ahead of identity admission, so a program-inherent
+/// refusal is never masked by a recording mismatch. Any valid recording
+/// arms the test.
 #[test]
-fn module_contained_effects_and_bindings_are_refused() {
+fn helper_effects_and_entry_bindings_are_refused() {
     let dir = workdir("modgate");
-    // A module introduces no namespace (spec/semantics.md,
-    // "Declarations inside `module { }`"): its declarations are
-    // reached by their BARE names, and `inner::danger` is a type
-    // error the whole-program check refuses first (GH #911 B2). The
-    // programs here spell the bare names so the type check passes
-    // and the assertion is about the GATE — which fires before the
-    // build, deliberately ahead of identity admission, so a
-    // program-inherent refusal is never masked by a recording
-    // mismatch. Any valid recording arms the test.
     let plain = dir.join("plain.hl");
     std::fs::write(&plain, JOURNALED).unwrap();
     let rec = record(&dir, &plain);
 
-    // (a) module-contained fn with a live effect (subprocess run).
+    // (a) a helper fn with a live effect (subprocess run).
     let prog_fx = dir.join("modfx.hl");
     std::fs::write(
         &prog_fx,
         r#"
-module inner {
-    fn danger() {
-        let out = std::process::run("true") or raise;
-        let c = out.code;
-    }
+fn danger() {
+    let out = std::process::run("true") or raise;
+    let c = out.code;
 }
 type Tick { n: Int = 0; }
 locus Sink {
@@ -773,16 +761,12 @@ fn main() { App { }; }
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("live world"),
-        "module-contained effect passed the gate:\n{}",
+        "a helper's live effect passed the gate:\n{}",
         stderr
     );
 
     // (b) a transport binding. `bindings { }` is main-only (rule 4),
-    // and a `main locus` inside a module is not the entry: a seed whose
-    // only `main locus` is one is refused by the check at its name
-    // (F.40 phase 3, L4), before the gate and before anything is built.
-    // So the binding the gate must see is the entry's, at the top level
-    // (the control), and the module-contained one is the refusal.
+    // so the binding the gate must see is the entry's.
     const BOUND: &str = "\
 type Tick { n: Int = 0; }
 topic Wire { payload: Tick; subject: \"m.wire\"; }
@@ -801,18 +785,6 @@ main locus App {
     let (ok, stderr) = replay("topbind.hl", &format!("{BOUND}fn main() {{ App {{ }}; }}\n"));
     assert!(!ok);
     assert!(stderr.contains("live world"), "the entry's binding passed the gate:\n{}", stderr);
-    let body: String = BOUND.lines().map(|l| format!("    {l}\n")).collect();
-    let (ok, stderr) = replay("modbind.hl", &format!("module wired {{\n{body}}}\nfn main() {{ App {{ }}; }}\n"));
-    assert!(!ok);
-    assert!(
-        stderr.contains(
-            "modbind.hl:4:16: type error: the entry must be top-level: `main locus App` inside `module wired` is \
-             not the program's entry, and nothing else in the seed is — move it out of the module"
-        ),
-        "a module-contained main is refused at its name:\n{}",
-        stderr
-    );
-    assert!(!stderr.contains("live world"), "refused before the gate:\n{}", stderr);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -912,70 +884,6 @@ fn parse_rec(p: &Path) -> (bool, usize, bool) {
         semantic,
         exec_nonzero,
     )
-}
-
-/// Round 4, finding 2's canary, reshaped by a checker fact: the
-/// literal same-name collision CANNOT typecheck — module-scoped
-/// names share the flat top-level namespace ("duplicate top-level
-/// name `Worker`"), so the aliasing shape is unreachable through
-/// any checked path (and `hale replay` checks before admitting).
-/// The qualified summary key stays as defense-in-depth for any
-/// future namespace relaxation and for unchecked callers of the
-/// manifest API. What IS reachable — a module LOCUS whose
-/// lifecycle body carries a live effect — must fail closed as
-/// `unclassified` under its qualified key and be refused.
-#[test]
-fn module_locus_lifecycle_fails_closed_under_qualified_key() {
-    let dir = workdir("modalias");
-    let plain = dir.join("plain.hl");
-    std::fs::write(&plain, JOURNALED).unwrap();
-    let rec = record(&dir, &plain);
-
-    let prog = dir.join("alias.hl");
-    std::fs::write(
-        &prog,
-        r#"
-module inner {
-    locus Worker {
-        params { n: Int = 0; }
-        run() {
-            let result = std::process::run("true") or raise;
-        }
-    }
-}
-type Tick { n: Int = 0; }
-locus Sink {
-    params { seen: Int = 0; }
-    bus { subscribe "a.t" as on_t of type Tick; }
-    fn on_t(t: Tick) { self.seen = self.seen + 1; }
-}
-main locus App {
-    params { s: Sink = Sink { }; w: Worker = Worker { }; }
-    bus { publish "a.t" of type Tick; }
-    run() { "a.t" <- Tick { n: 1 }; }
-}
-fn main() { App { }; }
-"#,
-    )
-    .unwrap();
-    let out = hale()
-        .arg("replay")
-        .arg(&rec)
-        .arg(&prog)
-        .output()
-        .expect("hale replay");
-    assert!(
-        !out.status.success(),
-        "a module locus aliased a pure top-level locus and passed \
-         the gate"
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("live world") && stderr.contains("unclassified"),
-        "wrong refusal:\n{}",
-        stderr
-    );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- phase 5 review-round canaries ---------------------------------

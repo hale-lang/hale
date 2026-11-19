@@ -873,7 +873,6 @@ fn the_omitted_run_moves_no_diagnostic() {
                 TopDecl::Locus(l) => l
                     .members
                     .retain(|m| !matches!(m, LocusMember::Lifecycle(lc) if lc.synthesized)),
-                TopDecl::Module(m) => strip(&mut m.items),
                 _ => {}
             }
         }
@@ -884,7 +883,6 @@ fn the_omitted_run_moves_no_diagnostic() {
                 .members
                 .iter()
                 .any(|m| matches!(m, LocusMember::Lifecycle(lc) if lc.synthesized)),
-            TopDecl::Module(m) => synthesized(&m.items),
             _ => false,
         })
     }

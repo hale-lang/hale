@@ -182,6 +182,9 @@ Filter these reflexes before they cost you time.
 - **No visibility modifiers** (`pub`, `private`). Every
   top-level decl in a seed (one directory) is visible to every
   file in that seed. Decompose by concern, not visibility.
+- **No in-file `module NAME { }` blocks** (F.57). A module is a
+  directory, reached by `import`; within a seed, split code
+  across files at the top level. `module` is an ordinary name.
 - **No `async` / `await`.** Concurrency comes from loci + the
   bus + per-locus thread *placement* declared in `main`'s
   `placement { }` block (F.31): `placement { gateway:

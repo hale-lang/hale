@@ -126,11 +126,6 @@ impl Walk<'_> {
             TopDecl::Type(t) => self.type_decl(t),
             TopDecl::Const(c) => self.const_decl(c),
             TopDecl::Fn(fd) => self.fn_decl(fd),
-            TopDecl::Module(md) => {
-                for item in &md.items {
-                    self.top_decl(item);
-                }
-            }
             TopDecl::Interface(i) => {
                 for sig in &i.methods {
                     self.params(&sig.params);

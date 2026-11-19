@@ -43,7 +43,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use hale_syntax::ast::{flat_decls, Block, Expr, Ident, LocusMember, NodeId, Param, PrimType, Program, Stmt, TopDecl, TypeExpr};
+use hale_syntax::ast::{Block, Expr, Ident, LocusMember, NodeId, Param, PrimType, Program, Stmt, TopDecl, TypeExpr};
 use hale_syntax::error::Diag;
 
 use crate::listener_window::{visit_block, Visited};
@@ -69,7 +69,7 @@ pub(crate) fn param_place_write_diags(bundle: &Bundle<'_>, top: &TopScope) -> Ve
     let writers = || writers_cell.get_or_init(|| world.writers());
     let mut out = Vec::new();
     for (p, ids) in &programs[..user] {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             let params = |ps: &[Param]| -> BTreeMap<Key, Ty> {
                 ps.iter().map(|p| (ids.decl(&p.name), world.ty(&p.ty))).collect()
             };
@@ -230,7 +230,7 @@ impl<'a, 't, 's> World<'a, 't, 's> {
             w.renames.insert(path.join("::"), mangled.clone());
         }
         for (p, ids) in programs {
-            for d in flat_decls(&p.items) {
+            for d in p.items.iter() {
                 if let TopDecl::Fn(f) = d {
                     if f.ffi.is_none() {
                         // a type parameter is its own binding, opaque, never a

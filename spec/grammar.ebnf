@@ -79,7 +79,6 @@ top_decl          = locus_decl
                   | display_type          (* spec/semantics.md § Rendering values as text *)
                   | const_decl
                   | function_decl
-                  | module_decl
                   | interface_decl
                   | topic_decl
                   | ring_layout_decl
@@ -164,14 +163,10 @@ requires_clause   = "requires" , ":" , "[" , [ role_ref , { "," , role_ref } , [
 unit_factor       = INT_LIT , [ "/" , INT_LIT ] , [ IDENTIFIER ]
                   | [ INT_LIT , "/" ] , QUANTITY_LIT ;
 
-(* GH #901 — `target_decl` is the one `top_decl` a module body may
-   NOT hold: it is a program-level build directive, and every
-   consumer of it reads the program's own item list. The parser
-   refuses one at any depth ("`target` is a program-level
-   declaration; move it to the top level"). See spec/semantics.md
-   § "Declarations inside `module { }`". *)
-module_decl       = "module" , IDENTIFIER , "{" ,
-                    { top_decl - target_decl } , "}" ;
+(* F.57 — there is no `module NAME { … }` declaration: a module is a
+   directory, reached by `import`. `module` is an ordinary identifier;
+   the parser refuses the old form at top-level declaration position
+   with one located error (spec/decisions.md F.57). *)
 
 (* GH #409 — a named, composable claimset, declared outside any main
    and adopted by entrypoints. `extends` composes by UNION: a derived

@@ -98,9 +98,7 @@ pub(crate) fn resolve_qualified_bus_subjects(
             _ => {}
         }
     }
-    // GH #884: module nesting flattened — a qualified bus subject
-    // written one brace deeper names the same topic.
-    hale_syntax::ast::for_each_decl_mut(&mut program.items, &mut |item| {
+    program.items.iter_mut().for_each(|item| {
         if let TopDecl::Locus(l) = item {
             for m in &mut l.members {
                 match m {

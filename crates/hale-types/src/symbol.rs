@@ -4,8 +4,7 @@
 //! that the type checker treats as one logical compilation unit.
 //! For milestone 2 we collect all top-level decls across the
 //! bundle into a single `BundleScope` and resolve names against
-//! it. Module-decl scoping is deferred (we flatten module decls
-//! at the top level for now).
+//! it.
 
 use std::collections::BTreeMap;
 

@@ -145,7 +145,6 @@ fn loci(items: &[TopDecl]) -> Vec<&LocusDecl> {
     for it in items {
         match it {
             TopDecl::Locus(l) => out.push(l),
-            TopDecl::Module(m) => out.extend(loci(&m.items)),
             _ => {}
         }
     }
@@ -157,7 +156,6 @@ fn loci_mut(items: &mut [TopDecl]) -> Vec<&mut LocusDecl> {
     for it in items {
         match it {
             TopDecl::Locus(l) => out.push(l),
-            TopDecl::Module(m) => out.extend(loci_mut(&mut m.items)),
             _ => {}
         }
     }
@@ -227,7 +225,6 @@ impl<'a> Index<'a> {
                     TopDecl::Interface(i) => {
                         ix.interfaces.insert(i.name.name.clone());
                     }
-                    TopDecl::Module(m) => walk(&m.items, ix),
                     _ => {}
                 }
             }

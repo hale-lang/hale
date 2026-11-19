@@ -778,8 +778,7 @@ fn env_requires_the_target_to_be_an_entrypoint() {
 
 /// F.40 phase 3, E0: the entry row decides what an entrypoint is, for
 /// `--env` and for the matrix alike. A seed whose only `main locus` is
-/// an imported library's (decision 1) or sits inside a `module { }`
-/// (decision 2) has no entry: `--env` refuses it as it refuses a
+/// an imported library's has no entry: `--env` refuses it as it refuses a
 /// library, and the matrix does not count it as an entrypoint. Before
 /// the row, `--env` took any top-level `main locus` of the merged
 /// program, the library's included.
@@ -789,11 +788,6 @@ fn entry_workspace(tag: &str) -> PathBuf {
     let r = root(tag);
     write(&r, "head/main.hl", HEAD);
     write(&r, "importer/main.hl", "import \"../head\" as h;\nfn main() { }\n");
-    write(
-        &r,
-        "nested/main.hl",
-        "module inner {\n    main locus Head { params { n: Int = 0; } }\n}\nfn main() { }\n",
-    );
     write(
         &r,
         "both/main.hl",
@@ -808,13 +802,13 @@ fn entry_workspace(tag: &str) -> PathBuf {
 }
 
 #[test]
-fn env_refuses_a_seed_whose_only_main_is_imported_or_module_nested() {
+fn env_refuses_a_seed_whose_only_main_is_imported() {
     let r = entry_workspace("entryenv");
     let check = |seed: &str| {
         let dir = r.join(seed);
         hale(&["check".as_ref(), dir.as_os_str(), "--env".as_ref(), "dev".as_ref()])
     };
-    for seed in ["importer", "nested"] {
+    for seed in ["importer"] {
         let (out, code) = check(seed);
         assert_eq!(code, 2, "{seed}: no entry, no deployment target: {out}");
         assert!(
@@ -825,7 +819,7 @@ fn env_refuses_a_seed_whose_only_main_is_imported_or_module_nested() {
             "{seed}: {out}"
         );
     }
-    // The seed's own top-level main is the entry, an imported one beside it
+    // The seed's own main is the entry, an imported one beside it
     // or not.
     for seed in ["head", "both"] {
         let (out, code) = check(seed);
@@ -839,7 +833,7 @@ fn the_matrix_counts_only_seeds_with_an_entry() {
     let r = entry_workspace("entrymatrix");
     let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
     let _ = std::fs::remove_dir_all(&r);
-    assert_eq!(code, 0, "`importer` and `nested` are not entrypoints, so nothing is unbound: {out}");
+    assert_eq!(code, 0, "`importer` is not an entrypoint, so nothing is unbound: {out}");
     assert!(!out.contains("in no environment"), "{out}");
 }
 
@@ -929,45 +923,12 @@ fn a_seed_whose_only_main_is_imported_is_reported_by_its_refusal_alone() {
     assert_eq!(code, 1);
 }
 
-/// As above, for a seed whose only `main locus` is nested in a module.
-/// It declares `audit` where the table, which the entrypoint beside it
-/// matches, maps `ops`; before, both directions of that mismatch were
-/// printed for the refused pair, each with a `(roles)` failure.
-#[test]
-fn a_seed_whose_only_main_is_module_nested_is_reported_by_its_refusal_alone() {
-    let r = root("refusednested");
-    write(&r, "app/main.hl", &format!("role ops;\n{HEAD}"));
-    write(
-        &r,
-        "nested/main.hl",
-        "role audit;\nmodule inner {\n    main locus Head { params { n: Int = 0; } }\n}\nfn main() { }\n",
-    );
-    write(
-        &r,
-        "hale.toml",
-        "[claims]\nno_base = true\n\n\
-         [environments.dev]\nsource_only = true\nentrypoints = [\"app\", \"nested\"]\n\n\
-         [environments.dev.roles]\nops = []\n",
-    );
-    let (out, err, code) = matrix_in(&r);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_eq!(out, "=== ./app @ dev ===\n=== ./nested @ dev ===\n\n");
-    assert_eq!(
-        err,
-        "ok: 1 file(s) typechecked\n\
-         ./nested: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`\n\
-         1 pair(s) failed:\n  nested @ dev\n"
-    );
-    assert_eq!(code, 1);
-}
-
 /// A refused pair's constitution takes no part in the identity
 /// comparison, and the comparison between the healthy pairs stands. The
-/// refused pair is listed first, and its module-nested `main` imports a
-/// third `Core`; before, the matrix adopted that `Core` into the nested
-/// `main` and made it the reference both entrypoints were measured
-/// against, so each was reported as differing from the seed that cannot
-/// deploy. They are measured against each other.
+/// refused pair, a library with no `main locus`, is listed first, and it
+/// imports a third `Core`; it is no reference the entrypoints are
+/// measured against, so neither is reported as differing from the seed
+/// that cannot deploy. They are measured against each other.
 #[test]
 fn a_refused_pair_leaves_the_identity_comparison_to_the_healthy_pairs() {
     let r = root("refusedidentity");
@@ -984,22 +945,22 @@ fn a_refused_pair_leaves_the_identity_comparison_to_the_healthy_pairs() {
     write(&r, "app-b/main.hl", &APP.replace("../lib", "../p2"));
     write(
         &r,
-        "nested/main.hl",
-        "import \"../p3\" as lb;\nmodule inner {\n    main locus Head { params { r: lb::Research = lb::Research { }; } }\n}\nfn main() { }\n",
+        "refused/main.hl",
+        "import \"../p3\" as lb;\nlocus Head { params { r: lb::Research = lb::Research { }; } }\nfn main() { }\n",
     );
     write(
         &r,
         "hale.toml",
-        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"nested\", \"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"refused\", \"app-a\", \"app-b\"]\n",
     );
     let (out, err, code) = matrix_in(&r);
     let _ = std::fs::remove_dir_all(&r);
-    assert_eq!(out, "=== ./nested @ prod ===\n=== ./app-a @ prod ===\n=== ./app-b @ prod ===\n\n");
+    assert_eq!(out, "=== ./refused @ prod ===\n=== ./app-a @ prod ===\n=== ./app-b @ prod ===\n\n");
     let lines: Vec<&str> = err.lines().collect();
     assert_eq!(lines.len(), 7, "{err}");
     assert_eq!(
         lines[0],
-        "./nested: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`"
+        "./refused: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`"
     );
     assert_eq!(lines[1], "ok: 1 file(s) typechecked");
     assert_eq!(lines[2], "ok: 1 file(s) typechecked");
@@ -1011,7 +972,7 @@ fn a_refused_pair_leaves_the_identity_comparison_to_the_healthy_pairs() {
             ),
         "{err}"
     );
-    assert_eq!(&lines[4..], ["2 pair(s) failed:", "  nested @ prod", "  app-b @ prod (constitution identity)"]);
+    assert_eq!(&lines[4..], ["2 pair(s) failed:", "  refused @ prod", "  app-b @ prod (constitution identity)"]);
     assert_eq!(code, 1);
 }
 

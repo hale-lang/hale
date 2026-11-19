@@ -123,7 +123,6 @@ fn a_declarations_dependents_cover_what_a_fresh_check_rederives() {
         ("reveal-chain", REVEAL_CHAIN),
         ("reveal-on-failure", REVEAL_ON_FAILURE),
         ("reveal-initializer", REVEAL_INITIALIZER),
-        ("reveal-module", REVEAL_MODULE),
         ("reveal-index", REVEAL_INDEX),
     ]
     .into_iter()
@@ -230,16 +229,15 @@ fn a_declarations_dependents_cover_what_a_fresh_check_rederives() {
     // print added to `inner` makes it, `mid` and `enc` opaque to the
     // reveal rule, so `Api`'s reveal, two calls away, is refused: only
     // the callgraph's readers, closed, reach it. The same print in an
-    // `enc` called only from `Api`'s `on_failure` handler, only from a
-    // params initializer, or only through a module-nested fn reaches
-    // `Api` through a body that is no fn's row; in an `idx` called only
+    // `enc` called only from `Api`'s `on_failure` handler or only from a
+    // params initializer reaches `Api` through a body that is no fn's
+    // row; in an `idx` called only
     // inside an index expression, through a subexpression the walk does
     // not descend into.
     for (seed, helper) in [
         ("reveal-chain", "inner"),
         ("reveal-on-failure", "enc"),
         ("reveal-initializer", "enc"),
-        ("reveal-module", "enc"),
         ("reveal-index", "idx"),
     ] {
         let edge = format!("{seed} fn `{helper}` (a print added) -> locus `Api`");
@@ -339,15 +337,6 @@ std::bytes::from_string(\"secret=\" + enc(self.token.reveal_text())),\n         
 ) or std::http::ClientResponse {\n                status: 0, headers: \"\", body: b\"\"\n            };\n            \
 1\n        };\n    }\n}\n\n\
 fn main() { let a = Api { }; }\n\n\
-fn enc(s: String) -> String { return s + \"!\"; }\n";
-
-/// The reveal through `wrap`, a module-nested fn, which calls `enc`.
-const REVEAL_MODULE: &str = "locus Api {\n    params { token: std::secret::Credential = std::secret::Credential { vault: \"api\" }; }\n    \
-fn go() -> Bool {\n        \
-let r = std::http::post(\"http://127.0.0.1:1/t\", std::bytes::from_string(\"secret=\" + wrap(self.token.reveal_text())), \"text/plain\") or std::http::ClientResponse { status: 0, headers: \"\", body: b\"\" };\n        \
-return true;\n    }\n}\n\n\
-fn main() { let a = Api { }; }\n\n\
-module codec {\n    fn wrap(s: String) -> String { return enc(s); }\n}\n\n\
 fn enc(s: String) -> String { return s + \"!\"; }\n";
 
 /// The reveal through `pick`, whose transparency rests on `idx`, called

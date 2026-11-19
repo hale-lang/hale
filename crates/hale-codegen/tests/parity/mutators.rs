@@ -154,7 +154,6 @@ pub fn fns(program: &Program) -> Vec<FnSite<'_>> {
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }

@@ -47,7 +47,7 @@ use std::process::Command;
 
 use hale_codegen::{BuildOptions, CodegenError, CompileTarget};
 use hale_graph::shadow::{gate_message, parse_fixture, program_id, Report};
-use hale_syntax::ast::{flat_decls, LocusMember, PlacementSpec, Program, TopDecl, TransportSpec};
+use hale_syntax::ast::{LocusMember, PlacementSpec, Program, TopDecl, TransportSpec};
 use hale_types::capability::{
     derive_capability_matrix, Abi, Capability, CapabilityMatrix, Inversion, Obligation, TargetClass, Transport,
     WASM_FIXED_EXPORTS,
@@ -216,7 +216,7 @@ fn programs() -> Vec<(String, String)> {
 /// locus` `_hale_start` and its methods that are not fallible.
 fn export_set(p: &Program) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    for item in flat_decls(&p.items) {
+    for item in p.items.iter() {
         match item {
             TopDecl::Fn(f) if f.export => {
                 out.insert(f.name.name.clone());
@@ -238,8 +238,8 @@ fn export_set(p: &Program) -> BTreeSet<String> {
 }
 
 fn inversion(p: &Program) -> Option<(Inversion, String)> {
-    let has_main = flat_decls(&p.items).any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main"));
-    for item in flat_decls(&p.items) {
+    let has_main = p.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main"));
+    for item in p.items.iter() {
         if let TopDecl::Locus(l) = item {
             let runs = l.members.iter().any(|m| matches!(m, LocusMember::Fn(f) if f.name.name == "run"));
             if l.export && runs {
@@ -247,7 +247,7 @@ fn inversion(p: &Program) -> Option<(Inversion, String)> {
             }
         }
     }
-    let exports = flat_decls(&p.items).any(|i| matches!(i, TopDecl::Fn(f) if f.export) || matches!(i, TopDecl::Locus(l) if l.export));
+    let exports = p.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.export) || matches!(i, TopDecl::Locus(l) if l.export));
     (exports && !has_main).then(|| (Inversion::ExportOnly, String::new()))
 }
 
@@ -259,7 +259,7 @@ fn inversion(p: &Program) -> Option<(Inversion, String)> {
 /// producer derives them from the resolved graph.
 fn thread_uses(p: &Program) -> BTreeSet<Capability> {
     let mut out = BTreeSet::new();
-    for item in flat_decls(&p.items) {
+    for item in p.items.iter() {
         let TopDecl::Locus(l) = item else { continue };
         for m in &l.members {
             match m {
@@ -386,7 +386,7 @@ impl Shadow {
         // `@ffi("js")`: the build's outcome on each target, against
         // `ForeignAbi(Js)`. A native build declares the fn as an
         // external symbol, so a call to it fails at the native link.
-        let js: Vec<String> = flat_decls(&program.items)
+        let js: Vec<String> = program.items.iter()
             .filter_map(|i| match i {
                 TopDecl::Fn(f) if f.ffi.as_ref().is_some_and(|a| a.abi == "js") => Some(f.name.name.clone()),
                 _ => None,

@@ -9,7 +9,7 @@
 //! `{`, and reported "expected {, got Semi" at the `;`.
 //!
 //! These tests pin the three outcomes that split: the alias
-//! parses (top level, in a module, and as a locus member), the
+//! parses (top level and as a locus member), the
 //! enum form still parses, and a malformed alias still errors.
 
 use hale_syntax::ast::{LocusMember, TopDecl, TypeDeclBody, TypeExpr};
@@ -62,32 +62,6 @@ fn parses_alias_of_a_user_type_and_of_a_generic_instantiation() {
         }
         other => panic!("expected an alias of Vec<String>, got {:?}", other),
     }
-}
-
-#[test]
-fn parses_alias_inside_a_module() {
-    let prog = parse_source(
-        "module geo {\n    type Meters = Int;\n}\n",
-    )
-    .expect("parse");
-    let m = prog
-        .items
-        .iter()
-        .find_map(|i| match i {
-            TopDecl::Module(m) => Some(m),
-            _ => None,
-        })
-        .expect("module decl present");
-    let t = m
-        .items
-        .iter()
-        .find_map(|i| match i {
-            TopDecl::Type(t) => Some(t),
-            _ => None,
-        })
-        .expect("type decl inside the module");
-    assert_eq!(t.name.name, "Meters");
-    assert!(matches!(t.body, TypeDeclBody::Alias(_)));
 }
 
 #[test]

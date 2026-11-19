@@ -546,22 +546,6 @@ fn a_cycle_across_files_needs_the_whole_seed() {
     );
 }
 
-/// The rule reads params inside a `module`, which is where a larger
-/// seed puts its types.
-#[test]
-fn self_containment_inside_a_module_is_reported() {
-    let src = r#"
-        module tree {
-            locus Node {
-                params { n: Int = 0; next: Node = Node { n: 1 }; }
-            }
-        }
-        fn main() { println("ok"); }
-    "#;
-    let ds = diags(src);
-    assert_eq!(containment(&ds).len(), 1, "reported: {:?}", ds);
-}
-
 /// F.40 phase 3, C7: the walk reaches a literal anywhere in a default:
 /// an `if` or `match` arm, or a block's statements. Lowering lowers every
 /// one of them, every branch included, so each is an edge; the walk used

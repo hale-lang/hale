@@ -221,8 +221,7 @@ fn tally(n: StoreNames) -> Int { return st::count(n); }
 
 - **An item names a top-level declaration of the imported seed**: a
   `type` (records, enums and aliases), `locus`, `fn`, `const`,
-  `topic` or `interface`, declared at the top level
-  or in a `module { }` — or a name the imported seed's own import
+  `topic` or `interface` — or a name the imported seed's own import
   lists bring in (below). Any other name is refused, located at the
   item, with what the library provides. There are no globs: every
   name is spelled.

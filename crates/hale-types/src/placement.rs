@@ -43,8 +43,7 @@
 //! [`derive_placement`] runs once per snapshot (`Snapshot::demand_placement`,
 //! counted as `placement`), after the desugar sequence and the mint, so every
 //! site it names is one a mint numbered. It is seeded from the entry row's
-//! root (`EntryRow::root`): the entry, which lowering deploys, or, in a seed
-//! with none, the module-nested `main` the check refuses and still judges.
+//! entry (`EntryRow::entry`), which lowering deploys.
 //! Per construction literal of the root it walks the static tower (the
 //! root's params fields as that literal builds them, then their params
 //! fields, each with the literal that built it), with the adapters of the
@@ -95,7 +94,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
-    flat_decls, AssignOp, Block, ElseBranch, Expr, IfStmt, LValue, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
+    AssignOp, Block, ElseBranch, Expr, IfStmt, LValue, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
     OrDisposition, ParamInit, Pattern, PinAffinity, PlacementConstraint, PlacementSpec, Program,
     RecoveryModifier, Stmt, StructInit, TopDecl, TopologyBlock, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
@@ -375,14 +374,11 @@ pub struct InstanceRow {
 /// The root lowering deploys: the entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootRow {
-    /// `EntryRow::root`: the entry, or the module-nested `main` of a seed
-    /// with none, which the check refuses and still judges.
+    /// `EntryRow::entry`.
     pub decl: MainLocus,
     /// The declaration template, qualified as the user's. Each
     /// construction's instance row carries its own concrete arguments.
     pub realizes: DeclRef,
-    /// False for the refused module-nested `main`, which nothing deploys.
-    pub is_entry: bool,
     /// Every literal of the root declaration in a scope's bodies, each a
     /// template. Empty when no such literal builds the root: its one
     /// template is then the entry's ([`Origin::Entry`]).
@@ -1010,8 +1006,8 @@ fn build<'a>(
         static_literals: BTreeSet::new(),
         held: Vec::new(),
     };
-    if let Some(root) = entry.root() {
-        b.root(bundle, entry, root, &scopes);
+    if let Some(root) = entry.entry() {
+        b.root(bundle, root, &scopes);
     }
     b.entry_literals(&scopes);
     b.handoffs();
@@ -1023,8 +1019,6 @@ fn build<'a>(
 struct DeclEntry<'a> {
     decl: &'a LocusDecl,
     site: SiteRef,
-    /// The modules that enclose it, outermost first.
-    module: Vec<String>,
 }
 
 /// What a written name denotes.
@@ -1093,11 +1087,11 @@ impl<'a> Decls<'a> {
             templates: BTreeMap::new(),
         };
         for program in bundle.programs.values() {
-            d.collect(&program.items, &bundle.snapshot, SiteUniverse::User, &mut Vec::new());
+            d.collect(&program.items, &bundle.snapshot, SiteUniverse::User);
             d.collect_value_reads(&program.items, SiteUniverse::User);
         }
         if let Some((program, ids)) = stdlib {
-            d.collect(&program.items, ids, SiteUniverse::StdlibAnalysis, &mut Vec::new());
+            d.collect(&program.items, ids, SiteUniverse::StdlibAnalysis);
             d.collect_value_reads(&program.items, SiteUniverse::StdlibAnalysis);
         }
         d
@@ -1113,7 +1107,7 @@ impl<'a> Decls<'a> {
         }
     }
 
-    fn collect(&mut self, items: &'a [TopDecl], ids: &Snapshot, universe: SiteUniverse, module: &mut Vec<String>) {
+    fn collect(&mut self, items: &'a [TopDecl], ids: &Snapshot, universe: SiteUniverse) {
         for item in items {
             match item {
                 TopDecl::Locus(l) => {
@@ -1121,7 +1115,7 @@ impl<'a> Decls<'a> {
                         self.templates.insert(l.id.0, l.name.name.as_str());
                     }
                     let Some(id) = ids.site_id(l.id) else { continue };
-                    let entry = DeclEntry { decl: l, site: SiteRef { universe, id }, module: module.clone() };
+                    let entry = DeclEntry { decl: l, site: SiteRef { universe, id } };
                     match universe {
                         SiteUniverse::User => {
                             self.user_by_name.entry(l.name.name.as_str()).or_default().push(self.user.len());
@@ -1154,11 +1148,6 @@ impl<'a> Decls<'a> {
                 }
                 TopDecl::Fn(fd) => {
                     self.fns.insert((universe, fd.name.name.clone()));
-                }
-                TopDecl::Module(m) => {
-                    module.push(m.name.name.clone());
-                    self.collect(&m.items, ids, universe, module);
-                    module.pop();
                 }
                 _ => {}
             }
@@ -1215,11 +1204,10 @@ impl<'a> Decls<'a> {
         }
     }
 
-    /// The user declaration named `name`: the top-level one when a module
-    /// declares the name too, as the flat scope reads it.
+    /// The user declaration named `name`: the first, as the flat scope
+    /// reads it.
     fn user_named(&self, name: &str) -> Option<&DeclEntry<'a>> {
-        let all = self.user_by_name.get(name)?;
-        all.iter().map(|i| &self.user[*i]).min_by_key(|e| e.module.len())
+        self.user_by_name.get(name)?.first().map(|i| &self.user[*i])
     }
 
     fn stdlib_named(&self, name: &str) -> Option<&DeclEntry<'a>> {
@@ -1280,19 +1268,7 @@ impl<'a> Decls<'a> {
                     let mangled = mangled.clone();
                     return self.resolve_at(&[mangled.as_str()], SiteUniverse::User, depth + 1);
                 }
-                // A module-qualified path: the declaration of that name
-                // whose enclosing modules end with the path's head.
-                let (last, head) = segs.split_last().expect("non-empty");
-                let found = self.user_by_name.get(last).and_then(|all| {
-                    all.iter().map(|i| &self.user[*i]).find(|e| {
-                        e.module.len() >= head.len()
-                            && e.module[e.module.len() - head.len()..].iter().map(String::as_str).eq(head.iter().copied())
-                    })
-                });
-                match found {
-                    Some(e) => Named::Locus(e),
-                    None => Named::Unknown,
-                }
+                Named::Unknown
             }
         }
     }
@@ -1580,12 +1556,11 @@ impl<'d, 'a> Builder<'d, 'a> {
         self.table.holes.push(Hole { at, kind });
     }
 
-    fn root(&mut self, bundle: &Bundle<'a>, entry: &EntryRow, root: &MainLocus, scopes: &Scopes<'a>) {
+    fn root(&mut self, bundle: &Bundle<'a>, root: &MainLocus, scopes: &Scopes<'a>) {
         let Some(site) = root.site.map(SiteRef::user) else { return };
         let Some(decl) = self.decls.user.iter().find(|e| e.site == site) else { return };
         let decl: &'d DeclEntry<'a> = decl;
         let l = decl.decl;
-        let is_entry = entry.entry().is_some_and(|e| e.site == root.site);
         let mut entries = RootEntries { decl: site, entries: BTreeMap::new(), topology: None };
         for m in &l.members {
             match m {
@@ -1628,7 +1603,6 @@ impl<'d, 'a> Builder<'d, 'a> {
         self.table.root = Some(RootRow {
             decl: root.clone(),
             realizes: realizes.clone(),
-            is_entry,
             constructions: constructions
                 .iter()
                 .map(|(literal, _, bound, _, _)| Construction { literal: *literal, bound: bound.clone() })
@@ -2490,7 +2464,7 @@ impl<'a> Scopes<'a> {
             counts: Vec::new(),
         };
         for program in bundle.programs.values() {
-            s.collect(&program.items, &bundle.snapshot, SiteUniverse::User, decls, true);
+            s.collect(&program.items, &bundle.snapshot, SiteUniverse::User, decls);
         }
         if let Some((program, ids)) = stdlib {
             // The stdlib's bodies the programs can reach (`stdlib_reach`):
@@ -2505,18 +2479,16 @@ impl<'a> Scopes<'a> {
                 .items
                 .iter()
                 .enumerate()
-                .flat_map(|(i, item)| {
-                    hale_syntax::ast::flat_decls(std::slice::from_ref(item)).filter_map(move |d| match d {
-                        TopDecl::Fn(f) => Some((f.name.name.as_str(), i)),
-                        _ => None,
-                    })
+                .filter_map(|(i, item)| match item {
+                    TopDecl::Fn(f) => Some((f.name.name.as_str(), i)),
+                    _ => None,
                 })
                 .collect();
             let user_scopes = s.scopes.len();
             let user_elsewhere = s.elsewhere.len();
             loop {
                 for i in reach.items() {
-                    s.collect(std::slice::from_ref(&program.items[i]), ids, SiteUniverse::StdlibAnalysis, decls, true);
+                    s.collect(std::slice::from_ref(&program.items[i]), ids, SiteUniverse::StdlibAnalysis, decls);
                 }
                 let beyond: BTreeSet<usize> = s.scopes[user_scopes..]
                     .iter()
@@ -2547,7 +2519,7 @@ impl<'a> Scopes<'a> {
         s
     }
 
-    fn collect(&mut self, items: &'a [TopDecl], ids: &Snapshot, universe: SiteUniverse, decls: &Decls<'a>, top: bool) {
+    fn collect(&mut self, items: &'a [TopDecl], ids: &Snapshot, universe: SiteUniverse, decls: &Decls<'a>) {
         // The positions no scope's bodies reach, walked for their
         // literals alone.
         let mut rest = BodyWalk::new(ids, universe, decls);
@@ -2640,7 +2612,7 @@ impl<'a> Scopes<'a> {
                         }
                     }
                     w.block(&fd.body);
-                    let is_main = top && universe == SiteUniverse::User && fd.name.name == "main";
+                    let is_main = universe == SiteUniverse::User && fd.name.name == "main";
                     self.fns.entry((universe, fd.name.name.clone())).or_insert(self.scopes.len());
                     let mut scope = w.finish(ScopeKind::Fn { name: fd.name.name.clone(), site, is_main });
                     scope.appended = crate::rpc_expand::is_appended_stdlib_pos(fd.name.span.start.0);
@@ -2682,7 +2654,6 @@ impl<'a> Scopes<'a> {
                     scope.appended = crate::rpc_expand::is_appended_stdlib_pos(l.name.span.start.0);
                     self.scopes.push(scope);
                 }
-                TopDecl::Module(m) => self.collect(&m.items, ids, universe, decls, false),
                 _ => {}
             }
         }
@@ -3286,7 +3257,7 @@ pub fn join_lowering(
 /// The merged site of the stdlib locus lowering names `lowered`.
 fn stdlib_decl_named(merged: &Program, merged_ids: &Snapshot, lowered: &str) -> Option<SiteId> {
     let stdlib_seed = merged_ids.seeds.iter().position(|s| s == crate::snapshot::STDLIB_SEED)?;
-    flat_decls(&merged.items).find_map(|item| match item {
+    merged.items.iter().find_map(|item| match item {
         TopDecl::Locus(l) if l.name.name == lowered => {
             merged_ids.site_id(l.id).filter(|id| id.seed.0 as usize == stdlib_seed)
         }

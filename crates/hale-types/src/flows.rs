@@ -154,8 +154,7 @@ pub struct RunRow {
 #[derive(Clone)]
 pub struct FlowRows {
     flows: Vec<Flow>,
-    /// One run row per locus declaration, a module's included, in
-    /// declaration order.
+    /// One run row per locus declaration, in declaration order.
     runs: Vec<RunRow>,
     declared: DeclaredNames,
     renames: Vec<(Vec<String>, String)>,
@@ -360,7 +359,6 @@ fn walk<'a>(
                     });
                 }
             }
-            TopDecl::Module(m) => walk(&m.items, rows, reads, out, runs, concrete),
             _ => {}
         }
     }
@@ -399,16 +397,16 @@ pub fn survey(programs: &[&Program], import_renames: &[(Vec<String>, String)]) -
 
 // === the run()'s drain reads: the watches-drain column (GH #1858) =====
 
-/// The program's free fns by name, a module's included: what a bare call
+/// The program's free fns by name: what a bare call
 /// in a `run()` reaches.
 pub type FreeFns<'a> = BTreeMap<&'a str, &'a hale_syntax::ast::FnDecl>;
 
-/// The free fns of `programs`, a module's included; the first declaration
+/// The free fns of `programs`; the first declaration
 /// of a name wins.
 pub fn free_fns_of<'a>(programs: &[&'a Program]) -> FreeFns<'a> {
     let mut free_fns = FreeFns::new();
     for program in programs {
-        for item in hale_syntax::ast::flat_decls(&program.items) {
+        for item in program.items.iter() {
             if let TopDecl::Fn(f) = item {
                 free_fns.entry(f.name.name.as_str()).or_insert(f);
             }
@@ -460,12 +458,12 @@ impl<'a> DrainReads<'a> {
         }
     }
 
-    /// The rows of `programs`' declarations, a module's included.
+    /// The rows of `programs`' declarations.
     pub fn of(programs: &[&'a Program]) -> Self {
         let mut rows = DrainReads::empty();
         rows.free_fns = free_fns_of(programs);
         for program in programs {
-            for item in hale_syntax::ast::flat_decls(&program.items) {
+            for item in program.items.iter() {
                 match item {
                     TopDecl::Locus(l) => {
                         rows.loci.insert(l.name.name.as_str());
@@ -489,7 +487,7 @@ impl<'a> DrainReads<'a> {
             }
         }
         for program in programs {
-            for item in hale_syntax::ast::flat_decls(&program.items) {
+            for item in program.items.iter() {
                 let TopDecl::Locus(l) = item else { continue };
                 let mut fields = BTreeMap::new();
                 for m in &l.members {
@@ -993,14 +991,12 @@ mod tests {
     /// "Long-running" and "never returns" are two columns: a `run()`
     /// that sleeps once is long-running and returns; a terminal
     /// `while true` is both; an empty `run()` and no `run()` are neither.
-    /// A module's loci have rows too.
     #[test]
     fn long_running_and_never_returns_are_two_columns() {
         let src = "locus Sleeper { run() { std::time::sleep(1min); } }\n\
                    locus Daemon { run() { while true { std::time::sleep(1s); } } }\n\
                    locus Idle { run() { } }\n\
                    locus Plain { params { n: Int = 0; } }\n\
-                   module inner { locus Nested { run() { while true { } } } }\n\
                    fn main() { }\n";
         let p = hale_syntax::parse_source(src).expect("parse");
         let rows = survey(&[&p], &[]);
@@ -1012,7 +1008,6 @@ mod tests {
         assert_eq!(col("Daemon"), (true, true));
         assert_eq!(col("Idle"), (false, false));
         assert_eq!(col("Plain"), (false, false));
-        assert_eq!(col("Nested"), (true, true));
     }
 
     /// GH #1858: the watches-drain column is the `run()`'s own reads of

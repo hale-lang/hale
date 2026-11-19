@@ -2154,9 +2154,8 @@ fn pinned_placement_in_nested_block_in_loop_rejected() {
 #[test]
 fn pinned_placement_in_locus_method_loop_rejected() {
     // The loop lives in a locus method body, not a free fn — the
-    // walker has to reach locus members and module-nested decls, not
-    // just top-level `TopDecl::Fn` (GH #825: a check that stops at the
-    // top level sees half the program).
+    // walker has to reach locus members, not just top-level
+    // `TopDecl::Fn`.
     let src = r#"
 locus Worker {
     params { id: Int = 0; }

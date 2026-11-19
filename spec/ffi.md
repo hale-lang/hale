@@ -410,13 +410,8 @@ both select the same backend and gating):
 target wasm { }
 ```
 
-**Top-level is part of the rule, not a habit.** A `target`
-declaration inside a `module { }` is a parse error (GH #901,
-`spec/semantics.md` § "Declarations inside `module { }`"): every
-consumer of a target reads the program's own item list, so one
-declared at depth used to be accepted and then ignored — the same
-program that this section gates reported `ok` with its `target wasm
-{ }` one brace deeper.
+A `target` declaration is top-level: every consumer of a target reads
+the program's own item list.
 
 **The effective target.** `hale check`, `hale build` and the editor
 act on one target, for analysis and for the artifact alike:

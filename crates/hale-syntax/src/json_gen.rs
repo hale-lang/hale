@@ -568,7 +568,6 @@ pub fn scalar_convs(programs: &[&Program]) -> std::collections::BTreeMap<String,
                         out.insert(name, c);
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }
@@ -758,7 +757,6 @@ fn collect_json_type_names(items: &[TopDecl], out: &mut HashSet<String>) {
                     }
                 }
             }
-            TopDecl::Module(m) => collect_json_type_names(&m.items, out),
             _ => {}
         }
     }
@@ -850,7 +848,6 @@ fn collect_tier2(program: &Program) -> Tier2 {
                     }
                     out.insert(td.name.name.clone(), ok.then(|| JsonEnum::of(&td.name.name, vs, variants)));
                 }
-                TopDecl::Module(m) => walk_enums(&m.items, scalars, aliases, kinds, out),
                 _ => {}
             }
         }
@@ -2671,7 +2668,7 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
 pub(crate) fn next_synth_base<'p>(programs: impl IntoIterator<Item = &'p Program>) -> u32 {
     programs
         .into_iter()
-        .flat_map(|p| crate::ast::flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .map(|d| d.span())
         .filter(|s| is_json_synth_pos(s.start.0))
         .map(|s| s.end.0 + 1)
@@ -2910,7 +2907,6 @@ pub(crate) fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Ex
                     }
                 }
             }
-            TopDecl::Module(m) => rewrite_items(&mut m.items, visit),
             _ => {}
         }
     }
@@ -3188,7 +3184,6 @@ fn collect_record_fields(items: &[TopDecl], out: &mut std::collections::BTreeMap
                     out.insert(td.name.name.clone(), fs.clone());
                 }
             }
-            TopDecl::Module(m) => collect_record_fields(&m.items, out),
             _ => {}
         }
     }
@@ -3209,7 +3204,6 @@ fn collect_positional(items: &[TopDecl], out: &mut std::collections::BTreeMap<St
                     .to_string();
                 out.insert(td.name.name.clone(), shown);
             }
-            TopDecl::Module(m) => collect_positional(&m.items, out),
             _ => {}
         }
     }
@@ -3235,7 +3229,6 @@ fn collect_aliases(items: &[TopDecl], out: &mut std::collections::BTreeMap<Strin
                     out.insert(td.name.name.clone(), t.clone());
                 }
             }
-            TopDecl::Module(m) => collect_aliases(&m.items, out),
             _ => {}
         }
     }
@@ -3544,7 +3537,6 @@ fn collect_enum_kinds(items: &[TopDecl], out: &mut std::collections::BTreeMap<St
                     out.insert(td.name.name.clone(), vs.iter().all(|v| v.fields.is_empty()));
                 }
             }
-            TopDecl::Module(m) => collect_enum_kinds(&m.items, out),
             _ => {}
         }
     }
@@ -3576,7 +3568,6 @@ fn collect_api_enums(
                 }
                 out.push(JsonEnum::of(&td.name.name, vs, variants));
             }
-            TopDecl::Module(m) => collect_api_enums(&m.items, wanted, scalars, aliases, enums, out),
             _ => {}
         }
     }
@@ -3998,7 +3989,6 @@ fn variant_records(e: &JsonEnum) -> Vec<(String, JsonType)> {
 fn items_declare_type(items: &[TopDecl], name: &str) -> bool {
     items.iter().any(|i| match i {
         TopDecl::Type(t) => t.name.name == name,
-        TopDecl::Module(m) => items_declare_type(&m.items, name),
         _ => false,
     })
 }
@@ -4007,7 +3997,6 @@ fn walk_types(items: &[TopDecl], f: &mut dyn FnMut(&str)) {
     for i in items {
         match i {
             TopDecl::Type(d) => f(&d.name.name),
-            TopDecl::Module(m) => walk_types(&m.items, f),
             _ => {}
         }
     }
@@ -4017,7 +4006,6 @@ fn walk_fns(items: &[TopDecl], f: &mut dyn FnMut(&str)) {
     for i in items {
         match i {
             TopDecl::Fn(d) => f(&d.name.name),
-            TopDecl::Module(m) => walk_fns(&m.items, f),
             _ => {}
         }
     }
@@ -4212,7 +4200,6 @@ fn collect_api_types(
                 }
                 out.push(t);
             }
-            TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, records, out),
             _ => {}
         }
     }

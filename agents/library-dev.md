@@ -79,8 +79,9 @@ The list below is not exhaustive but flags the most common
   v1 ships flat-shape helpers only: `std::json::escape_string`
   / `unescape_string`, `find_*_field` on flat objects,
   `ArrayIter` for top-level array elements.
-- Cross-seed module import / `use` — the `module` keyword is
-  reserved with no semantics.
+- A `use` statement or an in-file `module { }` — a module is a
+  directory, reached by `import "path" as name;` (spec/decisions.md
+  F.57).
 - Inline markdown formatting, graphics, UI, embedded shell.
 - Compiler self-introspection (`std::hale::parse(...)`).
 

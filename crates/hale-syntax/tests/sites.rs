@@ -32,9 +32,7 @@ const LIMIT: Int = 3;
 unit ms = 1_000 us;
 interface Store { fn get() -> Int; }
 group workers = { Worker };
-module util {
-    fn helper() -> Int { return 1; }
-}
+fn helper() -> Int { return 1; }
 locus Worker {
     params { n: Int = 0; }
     bus {
@@ -72,8 +70,7 @@ fn one_of_each_kind_in_pre_order() {
         UnitEquation,
         Interface,
         Group,
-        Module,
-        Fn, // util::helper
+        Fn, // helper
         Locus,
         Param,
         Subscribe,
@@ -114,7 +111,7 @@ fn one_of_each_kind_in_pre_order() {
     let seen: BTreeSet<SiteKind> = expected.iter().copied().collect();
     let all: BTreeSet<SiteKind> = [
         Locus, Fn, Topic, Type, Interface, Closure, Lifecycle, Mode, Failure,
-        Const, Group, Module, Param, PlacementEntry,
+        Const, Group, Param, PlacementEntry,
         BindingEntry, Publish, Subscribe, Let, LetTuple, Assign, For, Send,
         StructLiteral, Call, Use, Binder, Unit, UnitEquation,
     ]
@@ -140,7 +137,6 @@ fn idents(p: &Program) -> (usize, usize) {
             .iter()
             .map(|i| match i {
                 TopDecl::RingLayout(r) => format!("{r:?}").matches("Ident(Ident { name: ").count(),
-                TopDecl::Module(m) => ring_values(&m.items),
                 _ => 0,
             })
             .sum()
@@ -210,7 +206,7 @@ fn corpus_walk_reaches_every_identity_field() {
     }
     eprintln!("{} programs, {} sites: {:?}", programs.len(), total, by_kind);
     // Vacuity: every kind turns up somewhere in the corpus.
-    assert_eq!(by_kind.len(), 28, "kinds seen: {:?}", by_kind.keys());
+    assert_eq!(by_kind.len(), 27, "kinds seen: {:?}", by_kind.keys());
 }
 
 /// The same over the syntax crate's own desugars, which synthesize

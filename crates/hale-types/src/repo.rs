@@ -28,7 +28,7 @@
 use std::collections::BTreeSet;
 
 use hale_syntax::ast::{
-    flat_decls, EffectAssert, EffectClass, FnDecl, LocusDecl, LocusMember, Program, TopDecl,
+    EffectAssert, EffectClass, FnDecl, LocusDecl, LocusMember, Program, TopDecl,
     TypeDeclBody, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
@@ -62,7 +62,7 @@ fn plain(t: &str) -> &str {
 fn repo_types(programs: &[&Program]) -> BTreeSet<String> {
     programs
         .iter()
-        .flat_map(|p| flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .filter_map(|d| match d {
             TopDecl::Locus(l) if !l.imported => l.repo.as_ref().map(|r| r.ty.name.clone()),
             _ => None,
@@ -329,14 +329,14 @@ pub fn laws(programs: &[&Program]) -> Vec<Diag> {
         .unwrap_or(&empty);
     let types: Vec<&hale_syntax::ast::TypeDecl> = programs
         .iter()
-        .flat_map(|p| flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .filter_map(|d| match d {
             TopDecl::Type(t) => Some(t),
             _ => None,
         })
         .collect();
     for p in programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             match d {
                 TopDecl::Locus(l) if l.repo.is_some() && l.imported => {
                     let r = l.repo.as_ref().expect("guarded");

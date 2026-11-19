@@ -733,21 +733,18 @@ fn tampered_or_unverifiable_artifacts_are_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Round 5: a module-scoped annotation subject resolves against
-/// the FULL fn universe (`law.fn_universe`), wider than the legacy
-/// `sorts.fns` — the artifact must load through Track A.
+/// Round 5: an annotation subject whose law the walk cannot certify
+/// still emits an artifact, and the artifact must load through Track A.
 #[test]
-fn module_scoped_annotation_subject_admits() {
+fn uncertified_annotation_subject_admits() {
     let dir = workdir("modscope");
     let src = dir.join("app.hl");
     std::fs::write(
         &src,
         r#"
 effect money;
-module billing {
-    @effects(causes: { money })
-    fn poke(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
-}
+@effects(causes: { money })
+fn poke(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
 main locus App {
     params { n: Int = 0; }
     run() { println(1); }
@@ -762,9 +759,7 @@ fn main() { App { }; }
     // call the walk cannot follow, so `causes:` over it is
     // UNCERTIFIED and says so — check is not silent about a law it
     // could not certify. The artifact is still emitted and must
-    // still admit. (The module-scoped body is walked, F.40 phase 3,
-    // E3a part C; before, the module alone made the law
-    // uncertifiable.)
+    // still admit.
     let (artifact, err) = dump_artifact_with_law_errors(&dir, &src);
     assert!(
         err.contains("outside the analyzable universe")
@@ -782,7 +777,7 @@ fn main() { App { }; }
         .unwrap();
     assert!(
         out.status.success(),
-        "a compiler-emitted artifact with a module-scoped          annotation subject must admit: {}",
+        "a compiler-emitted artifact with an uncertified annotation subject must admit: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -2221,10 +2216,9 @@ fn main() { App { }; }
 
 /// Round 8: an implicit lifecycle phase (`@phase_effects(birth:
 /// {})` with no `birth` hook) gets a synthetic Holds certificate —
-/// the compiler's own check-clean artifact admits, a module-scoped
-/// locus's included.
+/// the compiler's own check-clean artifact admits.
 #[test]
-fn implicit_phase_and_module_locus_admit() {
+fn implicit_phase_admits() {
     for (tag, src, expect_verdict) in [
         (
             "implicitphase",
@@ -2232,31 +2226,6 @@ fn implicit_phase_and_module_locus_admit() {
              params { n: Int = 0; }\n}\nmain locus App {\n    \
              params { w: Worker = Worker { }; }\n    run() { \
              println(1); }\n}\nfn main() { App { }; }\n",
-            "holds",
-        ),
-        // Round 10: a MEMBERLESS module locus is vacuously
-        // analyzable — no body to walk means every phase contract
-        // holds by absence (and the flag is recomputable, closing
-        // the memberless flip in both directions).
-        (
-            "modlocusphase",
-            "module inner {\n    @phase_effects(birth: {})\n    \
-             locus Hidden {\n        params { n: Int = 0; }\n    \
-             }\n}\nmain locus App {\n    params { n: Int = 0; }\n    \
-             run() { println(1); }\n}\nfn main() { App { }; }\n",
-            "holds",
-        ),
-        // A module locus WITH executable members is analyzed like a
-        // top-level one (F.40 phase 3, E3a part C: the summary walks
-        // module-nested bodies), so its contract holds too. It was
-        // unanalyzed residue, `uncertified`, before.
-        (
-            "modlocusmember",
-            "module inner {\n    @phase_effects(birth: {})\n    \
-             locus Hidden {\n        params { n: Int = 0; }\n        \
-             fn poke(v: Int) -> Int { return v; }\n    \
-             }\n}\nmain locus App {\n    params { n: Int = 0; }\n    \
-             run() { println(1); }\n}\nfn main() { App { }; }\n",
             "holds",
         ),
     ] {
@@ -2546,8 +2515,7 @@ fn main() { App { }; }
 /// flipping a locus's flag contradicts the hashed function universe.
 /// The flip goes from true to false (to dress `holds` down as
 /// `uncertified`): no locus with an executable member is unanalyzable
-/// since the summary walks module-nested bodies (F.40 phase 3, E3a
-/// part C), so the false-to-true flip this test made has no honest
+/// (F.40 phase 3, E3a part C), so a false-to-true flip has no honest
 /// artifact to start from.
 #[test]
 fn analyzable_flip_is_refused() {
@@ -2556,12 +2524,10 @@ fn analyzable_flip_is_refused() {
     std::fs::write(
         &src,
         r#"
-module inner {
-    @phase_effects(birth: {})
-    locus Hidden {
-        params { n: Int = 0; }
-        fn poke(v: Int) -> Int { return v; }
-    }
+@phase_effects(birth: {})
+locus Hidden {
+    params { n: Int = 0; }
+    fn poke(v: Int) -> Int { return v; }
 }
 main locus App {
     params { n: Int = 0; }
@@ -2723,7 +2689,7 @@ fn main() { App { }; }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Round 10: the MEMBERLESS module-locus flip is closed in both
+/// Round 10: the MEMBERLESS locus flip is closed in both
 /// directions — a memberless locus is vacuously analyzable, so the
 /// honest artifact says analyzable=true/holds, and marking it
 /// analyzable=false (to manufacture `uncertified`) refuses on the
@@ -2735,11 +2701,9 @@ fn memberless_locus_flag_is_recomputable() {
     std::fs::write(
         &src,
         r#"
-module inner {
-    @phase_effects(birth: {})
-    locus Hidden {
-        params { n: Int = 0; }
-    }
+@phase_effects(birth: {})
+locus Hidden {
+    params { n: Int = 0; }
 }
 main locus App {
     params { n: Int = 0; }
@@ -2756,7 +2720,7 @@ fn main() { App { }; }
             "\"name\": \"Hidden\", \"display\": \"Hidden\", \
              \"analyzable\": true"
         ) && raw.contains("\"verdict\": \"clean\""),
-        "a memberless module locus is vacuously analyzable and \
+        "a memberless locus is vacuously analyzable and \
          holds:\n{}",
         raw
     );
@@ -2871,25 +2835,22 @@ fn main() { App { }; }
 }
 
 /// Round 11: the coverage account is typed, not prefix-inferred —
-/// a module-scoped ordinary method named `on_failure_helper` is a
-/// real member: a typed method, analyzed and summarized like any
-/// (the summary walks module-nested bodies, F.40 phase 3, E3a part
-/// C), where a failure handler would be neither. The module locus is
-/// honestly analyzable and its artifact admits.
+/// an ordinary method named `on_failure_helper` is a real member: a
+/// typed method, analyzed and summarized like any, where a failure
+/// handler would be neither. The locus is honestly analyzable and its
+/// artifact admits.
 #[test]
-fn on_failure_helper_module_method_admits() {
+fn on_failure_helper_method_admits() {
     let dir = workdir("onfhelper");
     let src = dir.join("app.hl");
     std::fs::write(
         &src,
         r#"
-module inner {
-    @phase_effects(birth: {})
-    locus Hidden {
-        params { n: Int = 0; }
-        fn on_failure_helper(v: Int) -> Int {
-            return v;
-        }
+@phase_effects(birth: {})
+locus Hidden {
+    params { n: Int = 0; }
+    fn on_failure_helper(v: Int) -> Int {
+        return v;
     }
 }
 main locus App {
@@ -2922,32 +2883,30 @@ fn main() { App { }; }
         .unwrap();
     assert!(
         out.status.success(),
-        "the helper-named module method admits: {}",
+        "the helper-named method admits: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Round 12: a module-scoped locus whose only executable member is
+/// Round 12: a locus whose only executable member is
 /// an `on_failure` handler is vacuously analyzable — the handler
 /// is never analyzed anywhere, so it cannot make the locus
 /// unanalyzable. The builder and admission share ONE typed rule;
 /// the compiler's own artifact admits.
 #[test]
-fn module_failure_only_locus_admits() {
+fn failure_only_locus_admits() {
     let dir = workdir("failonly");
     let src = dir.join("app.hl");
     std::fs::write(
         &src,
         r#"
-module inner {
-    locus Ward { params { k: Int = 0; } }
-    @phase_effects(birth: {})
-    locus Guard {
-        params { n: Int = 0; }
-        on_failure(c: Ward, err: ClosureViolation) {
-            self.n = 1;
-        }
+locus Ward { params { k: Int = 0; } }
+@phase_effects(birth: {})
+locus Guard {
+    params { n: Int = 0; }
+    on_failure(c: Ward, err: ClosureViolation) {
+        self.n = 1;
     }
 }
 main locus App {
@@ -2976,7 +2935,7 @@ fn main() { App { }; }
         .unwrap();
     assert!(
         out.status.success(),
-        "the failure-only module locus admits: {}",
+        "the failure-only locus admits: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -2987,8 +2946,7 @@ fn main() { App { }; }
 /// summarized), so flipping an unanalyzed body's bit to manufacture
 /// a Holds certificate contradicts `sorts.fns`. The unanalyzed body
 /// is an `on_failure` handler's, the one kind the behavior analysis
-/// does not walk (a module-scoped fn was one until the summary
-/// collected module-nested bodies, F.40 phase 3, E3a part C).
+/// does not walk.
 #[test]
 fn coverage_upgrade_is_refused() {
     let dir = workdir("covupgrade");
@@ -3115,60 +3073,6 @@ fn colliding_declarations_both_survive() {
     }
 }
 
-/// Round 13: closures are invisible to the certificate machinery
-/// at EVERY scope (a top-level closure-only locus already
-/// certifies synthetically), so one membership rule applies on
-/// both sides and a module-scoped closure-only locus is vacuously
-/// analyzable — the compiler's own artifact admits.
-#[test]
-fn module_closure_only_locus_admits() {
-    let dir = workdir("closuremod");
-    let src = dir.join("app.hl");
-    std::fs::write(
-        &src,
-        r#"
-module inner {
-    @phase_effects(birth: {})
-    locus Hidden {
-        params { n: Int = 0; }
-        closure heartbeat {
-            self.n ~~ 0 within 0;
-            epoch duration(5ms);
-        }
-    }
-}
-main locus App {
-    params { n: Int = 0; }
-    run() { println(1); }
-}
-fn main() { App { }; }
-"#,
-    )
-    .unwrap();
-    let artifact = dump_artifact(&dir, &src);
-    let raw = std::fs::read_to_string(&artifact).unwrap();
-    assert!(
-        raw.contains(
-            "\"name\": \"Hidden\", \"display\": \"Hidden\", \
-             \"analyzable\": true"
-        ),
-        "one membership rule on both sides:\n{}",
-        raw
-    );
-    let out = hale()
-        .arg("topology")
-        .arg("graph")
-        .arg(&artifact)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "the closure-only module locus admits: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// Round 16: the artifact's typed owner is anchored to the entity
 /// identity too — retagging `Hidden::poke`'s owner to `App` (both
 /// analyzability flags stay consistent: `poke` is analyzed, and a
@@ -3181,12 +3085,10 @@ fn artifact_owner_swap_is_refused() {
     std::fs::write(
         &src,
         r#"
-module inner {
-    @phase_effects(birth: {})
-    locus Hidden {
-        params { n: Int = 0; }
-        fn poke(v: Int) -> Int { return v; }
-    }
+@phase_effects(birth: {})
+locus Hidden {
+    params { n: Int = 0; }
+    fn poke(v: Int) -> Int { return v; }
 }
 main locus App {
     params { n: Int = 0; }

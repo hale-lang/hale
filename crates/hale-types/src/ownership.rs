@@ -140,7 +140,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     AssignOp, Block, ElseBranch, Expr, FnDecl, Ident, IfStmt, LValueSeg,
-    LocusDecl, LocusMember, MatchArmBody, MatchStmt, ModuleDecl, NodeId, OrDisposition, Param, ParamInit, Pattern, Program,
+    LocusDecl, LocusMember, MatchArmBody, MatchStmt, NodeId, OrDisposition, Param, ParamInit, Pattern, Program,
     QualifiedName, RecoveryModifier, Stmt, StructInit, TopDecl, TypeExpr,
 };
 use hale_graph::ids::SiteId;
@@ -1358,9 +1358,7 @@ struct Walks {
 }
 
 /// Every body a binding-fact walk reads, in declaration order, with the
-/// walks it gets and its params. GH #884: module nesting flattened — a
-/// fn or member is lowered whatever its brace depth, so its facts are
-/// computed at that depth too.
+/// walks it gets and its params.
 fn binding_bodies(program: &Program) -> Vec<(Walks, &[Param], &Block)> {
     const FREE_OR_MODE: Walks =
         Walks { returned: true, assign_moved: true, stack_array: true };
@@ -1369,7 +1367,7 @@ fn binding_bodies(program: &Program) -> Vec<(Walks, &[Param], &Block)> {
     const LIFECYCLE: Walks =
         Walks { returned: false, assign_moved: false, stack_array: true };
     let mut out: Vec<(Walks, &[Param], &Block)> = Vec::new();
-    for item in hale_syntax::ast::flat_decls(&program.items) {
+    for item in program.items.iter() {
         match item {
             TopDecl::Fn(f) => out.push((FREE_OR_MODE, &f.params, &f.body)),
             TopDecl::Locus(l) => {
@@ -1811,7 +1809,7 @@ pub fn resolve_owners(
         owner_locus: String::new(),
         returned: ReturnedBindings::default(),
     };
-    r.walk_decls(&program.items, "");
+    r.walk_decls(&program.items);
     Ok(r.table)
 }
 
@@ -1854,7 +1852,6 @@ fn collect_loci(
                 fields.insert(l.name.name.clone(), fs);
                 placed.insert(l.name.name.clone(), placement);
             }
-            TopDecl::Module(m) => collect_loci(&m.items, loci, fields, placed),
             _ => {}
         }
     }
@@ -1906,9 +1903,6 @@ fn refine_field_kinds(
                     }
                     out.insert(l.name.name.clone(), fs);
                 }
-                TopDecl::Module(m) => {
-                    go(&m.items, loci, ifaces, provisional, renames, out)
-                }
                 _ => {}
             }
         }
@@ -1930,7 +1924,7 @@ fn collect_accepts(
     use hale_syntax::ast::LifecycleKind;
     let declared = DeclaredNames::of(&[program]);
     let mut out = BTreeMap::new();
-    for item in hale_syntax::ast::flat_decls(&program.items) {
+    for item in program.items.iter() {
         let TopDecl::Locus(l) = item else { continue };
         for m in &l.members {
             let LocusMember::Lifecycle(lc) = m else { continue };
@@ -1954,7 +1948,6 @@ fn interface_names(items: &[TopDecl]) -> BTreeSet<String> {
                 TopDecl::Interface(i) => {
                     out.insert(i.name.name.clone());
                 }
-                TopDecl::Module(m) => go(&m.items, out),
                 _ => {}
             }
         }
@@ -2218,7 +2211,6 @@ fn fn_value_returns(items: &[TopDecl]) -> BTreeMap<String, TypeExpr> {
                         out.insert(f.name.name.clone(), t.clone());
                     }
                 }
-                TopDecl::Module(m) => go(&m.items, out),
                 _ => {}
             }
         }
@@ -2238,7 +2230,6 @@ fn param_flows(items: &[TopDecl]) -> BTreeMap<String, ParamFlow> {
                         out.insert(f.name.name.clone(), flow);
                     }
                 }
-                TopDecl::Module(m) => go(&m.items, out),
                 _ => {}
             }
         }
@@ -2932,12 +2923,9 @@ pub fn fresh_factories(
     let mut out: FreshFactories = BTreeMap::new();
     loop {
         let mut added = false;
-        // GH #884: module nesting flattened — a factory fn one
-        // brace deeper is lowered and called like any other, so it
-        // has to enter the same fixpoint.
         for item in programs
             .iter()
-            .flat_map(|p| hale_syntax::ast::flat_decls(&p.items))
+            .flat_map(|p| p.items.iter())
         {
             let TopDecl::Fn(f) = item else { continue };
             if out.contains_key(&f.name.name) {
@@ -3085,7 +3073,7 @@ pub fn fresh_factories(
     // instance; a cycle with no way out returns nothing.
     type Candidate = (String, Vec<(String, Vec<String>)>, Vec<String>);
     let mut cand: BTreeMap<String, Candidate> = BTreeMap::new();
-    for item in programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)) {
+    for item in programs.iter().flat_map(|p| p.items.iter()) {
         let TopDecl::Fn(f) = item else { continue };
         if out.contains_key(&f.name.name) {
             continue;
@@ -3536,7 +3524,6 @@ fn collect_fns<'a>(items: &'a [TopDecl], out: &mut Vec<&'a FnDecl>) {
     for item in items {
         match item {
             TopDecl::Fn(f) => out.push(f),
-            TopDecl::Module(m) => collect_fns(&m.items, out),
             _ => {}
         }
     }
@@ -4408,17 +4395,13 @@ impl Resolver<'_> {
         self.returned = saved.returned;
     }
 
-    fn walk_decls(&mut self, items: &[TopDecl], prefix: &str) {
+    fn walk_decls(&mut self, items: &[TopDecl]) {
         for item in items.iter() {
             match item {
-                TopDecl::Fn(f) => self.walk_fn(f, prefix, "fn"),
-                TopDecl::Locus(l) => self.walk_locus(l, prefix),
-                TopDecl::Module(m) => self.walk_module(m, prefix),
+                TopDecl::Fn(f) => self.walk_fn(f, "", "fn"),
+                TopDecl::Locus(l) => self.walk_locus(l),
                 TopDecl::Const(c) => {
-                    let saved = self.open_frame(&format!(
-                        "{}const {}",
-                        prefix, c.name.name
-                    ));
+                    let saved = self.open_frame(&format!("const {}", c.name.name));
                     self.assign(
                         &c.value,
                         Decision::FrameTemp,
@@ -4434,10 +4417,7 @@ impl Resolver<'_> {
                         for f in fields.iter() {
                             let fname = f.name.name.clone();
                             if let Some(d) = &f.default {
-                                let saved = self.open_frame(&format!(
-                                    "{}type {}.{}",
-                                    prefix, name, fname
-                                ));
+                                let saved = self.open_frame(&format!("type {}.{}", name, fname));
                                 self.assign(
                                     d,
                                     Decision::FrameTemp,
@@ -4452,7 +4432,7 @@ impl Resolver<'_> {
                     let iname = i.name.name.clone();
                     for m in i.methods.iter() {
                         let decl =
-                            format!("{}{}.{}", prefix, iname, m.name.name);
+                            format!("{}.{}", iname, m.name.name);
                         self.walk_param_defaults(&m.params, &decl);
                     }
                 }
@@ -4468,11 +4448,6 @@ impl Resolver<'_> {
                 | TopDecl::Fleet(_) => {}
             }
         }
-    }
-
-    fn walk_module(&mut self, m: &ModuleDecl, prefix: &str) {
-        let inner = format!("{}{}::", prefix, m.name.name);
-        self.walk_decls(&m.items, &inner);
     }
 
     fn walk_fn(&mut self, f: &FnDecl, prefix: &str, what: &str) {
@@ -4576,13 +4551,13 @@ impl Resolver<'_> {
         self.accepting = saved_accepting;
     }
 
-    fn walk_locus(&mut self, l: &LocusDecl, prefix: &str) {
+    fn walk_locus(&mut self, l: &LocusDecl) {
         use hale_syntax::ast::{
             BusMember, ClosureClause, EpochSpec, KeyFilter, LifecycleKind,
             ModeKind, TypeDeclBody,
         };
         let lname = l.name.name.clone();
-        let qualified = format!("{}{}", prefix, lname);
+        let qualified = lname.clone();
         if let Some(form) = &l.form {
             let saved = self.open_frame(&format!("{} @form", qualified));
             for a in form.args.iter() {

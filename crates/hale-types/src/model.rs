@@ -228,9 +228,6 @@ impl Model {
                             },
                         );
                     }
-                    TopDecl::Module(md) => {
-                        walk(&md.items, seed_of, decls, phases)
-                    }
                     _ => {}
                 }
             }

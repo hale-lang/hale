@@ -77,7 +77,7 @@ pub struct EffectRow {
     pub direct: EffectSet,
     /// Whether the body observably mutates or reaches what does
     /// (F.36); `None` for a fn the purity walk does not key (a
-    /// lifecycle hook, a module-nested fn, a stdlib body).
+    /// lifecycle hook, a stdlib body).
     pub purity: Option<Purity>,
 }
 

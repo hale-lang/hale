@@ -257,7 +257,6 @@ fn collect_topic_publishers(items: &[TopDecl]) -> std::collections::BTreeSet<Str
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }
@@ -284,7 +283,6 @@ fn collect_topic_subscribers(items: &[TopDecl]) -> std::collections::BTreeSet<St
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }
@@ -329,7 +327,6 @@ fn fill_roles_in_items(
                     }
                 }
             }
-            TopDecl::Module(m) => fill_roles_in_items(&mut m.items, pubs, subs),
             _ => {}
         }
     }
@@ -360,7 +357,6 @@ fn collect_topics(items: &[TopDecl], topics: &mut BTreeMap<String, TopicEntry>) 
                         },
                     );
                 }
-                TopDecl::Module(m) => gather(&m.items, raw),
                 _ => {}
             }
         }
@@ -552,7 +548,6 @@ fn rewrite_items(items: &mut [TopDecl], topics: &Topics, out: &mut Vec<TopicRewr
         match item {
             TopDecl::Locus(l) => rewrite_locus(l, topics, out),
             TopDecl::Fn(f) => rewrite_block(&mut f.body, topics, out),
-            TopDecl::Module(m) => rewrite_items(&mut m.items, topics, out),
             _ => {}
         }
     }
@@ -720,7 +715,6 @@ fn collect_wire_layouts(items: &[TopDecl], out: &mut WireLayouts) {
                     }
                 }
             }
-            TopDecl::Module(m) => collect_wire_layouts(&m.items, out),
             _ => {}
         }
     }
@@ -815,7 +809,6 @@ fn acc_items(items: &mut [TopDecl], w: &WireLayouts) {
                     }
                 }
             }
-            TopDecl::Module(m) => acc_items(&mut m.items, w),
             _ => {}
         }
     }
@@ -1016,7 +1009,7 @@ struct EligibleRewrite {
 /// `std::api::Context` parameter.
 fn context_handlers(items: &[TopDecl]) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
-    for item in crate::ast::flat_decls(items) {
+    for item in items.iter() {
         let TopDecl::Locus(l) = item else { continue };
         for m in &l.members {
             if let LocusMember::Fn(f) = m {
@@ -1277,7 +1270,6 @@ pub fn desugar_intra_locus_topics(
     for item in &mut program.items {
         match item {
             TopDecl::Locus(l) => intra_rewrite_locus(l, &eligible, &mut rewrites),
-            TopDecl::Module(m) => intra_rewrite_module(m, &eligible, &mut rewrites),
             _ => {}
         }
     }
@@ -1287,7 +1279,7 @@ pub fn desugar_intra_locus_topics(
 /// GH #2028: every locus a failure can originate in, by declared name:
 /// one declaring a `closure` or a `birth_check` (the restart rows'
 /// failure column, `hale_types::handler_routing::HandlerRouting::can_fail`,
-/// reads the same two members). Across all module nesting.
+/// reads the same two members).
 fn collect_failable_loci(items: &[TopDecl]) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
     fn walk(items: &[TopDecl], out: &mut std::collections::BTreeSet<String>) {
@@ -1298,7 +1290,6 @@ fn collect_failable_loci(items: &[TopDecl]) -> std::collections::BTreeSet<String
                         out.insert(l.name.name.clone());
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }
@@ -1307,8 +1298,7 @@ fn collect_failable_loci(items: &[TopDecl]) -> std::collections::BTreeSet<String
     out
 }
 
-/// Set of every declared locus type name in the program (across
-/// all module nesting). Used to recognize "this field's type
+/// Set of every declared locus type name in the program. Used to recognize "this field's type
 /// names another locus" without consulting the typechecker.
 fn collect_locus_type_names(items: &[TopDecl]) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
@@ -1318,7 +1308,6 @@ fn collect_locus_type_names(items: &[TopDecl]) -> std::collections::BTreeSet<Str
                 TopDecl::Locus(l) => {
                     out.insert(l.name.name.clone());
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }
@@ -1361,7 +1350,6 @@ fn collect_locus_typed_fields(
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, locus_types, out),
                 _ => {}
             }
         }
@@ -1389,20 +1377,6 @@ fn single_named_locus(
             }
         }
         _ => None,
-    }
-}
-
-fn intra_rewrite_module(
-    m: &mut ModuleDecl,
-    eligible: &BTreeMap<String, EligibleRewrite>,
-    out: &mut Vec<IntraLocusRewrite>,
-) {
-    for item in &mut m.items {
-        match item {
-            TopDecl::Locus(l) => intra_rewrite_locus(l, eligible, out),
-            TopDecl::Module(inner) => intra_rewrite_module(inner, eligible, out),
-            _ => {}
-        }
     }
 }
 
@@ -1549,7 +1523,6 @@ fn collect_adapter_loci(items: &[TopDecl]) -> std::collections::BTreeSet<String>
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }
@@ -1572,7 +1545,6 @@ fn collect_bindings(items: &[TopDecl]) -> std::collections::BTreeSet<String> {
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }
@@ -1622,7 +1594,6 @@ fn collect_pub_sub(
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, pubs, subs),
                 _ => {}
             }
         }
@@ -1672,7 +1643,6 @@ pub fn desugar_omitted_run(program: &mut Program) {
                         }));
                     }
                 }
-                TopDecl::Module(m) => walk(&mut m.items),
                 _ => {}
             }
         }
@@ -1722,7 +1692,6 @@ pub fn desugar_tail_returns(program: &mut Program) {
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&mut m.items),
                 _ => {}
             }
         }

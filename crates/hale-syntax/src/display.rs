@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::ast::{
-    flat_decls, DisplayTemplate, EnumVariant, Expr, Ident, Program, QualifiedName, TemplatePart, TopDecl,
+    DisplayTemplate, EnumVariant, Expr, Ident, Program, QualifiedName, TemplatePart, TopDecl,
     TypeDeclBody,
 };
 use crate::error::Diag;
@@ -304,7 +304,7 @@ struct Templated {
 pub fn generate_displays_in(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) {
     let mut types: BTreeMap<String, Templated> = BTreeMap::new();
     for (i, p) in programs.iter().enumerate() {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             let TopDecl::Type(td) = d else { continue };
             match &td.body {
                 TypeDeclBody::Struct(_) if td.template.is_some() => {
@@ -363,7 +363,7 @@ pub fn generate_displays_in(programs: &mut [&mut Program], renames: &[(Vec<Strin
     }
     let mut existing: HashSet<String> = HashSet::new();
     for p in programs.iter() {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             if let TopDecl::Fn(f) = d {
                 existing.insert(f.name.name.clone());
             }

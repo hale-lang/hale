@@ -268,9 +268,6 @@ pub fn dump_topology_over(
                 TopDecl::Fn(f) => {
                     free_fns.insert(f.name.name.clone());
                 }
-                TopDecl::Module(m) => {
-                    walk(&m.items, loci, topics, free_fns)
-                }
                 _ => {}
             }
         }
@@ -1793,7 +1790,7 @@ pub(crate) fn join_str<'a>(items: impl Iterator<Item = &'a String>) -> String {
 /// its literal writes it, its declaration's default, or `null` when the
 /// source computes it (a read of another param, an environment read).
 fn observe_rows(programs: &[&Program]) -> Vec<String> {
-    let declares = programs.iter().flat_map(|p| flat_decls(&p.items)).any(|item| {
+    let declares = programs.iter().flat_map(|p| p.items.iter()).any(|item| {
         matches!(item, TopDecl::Locus(l) if l.is_main && !crate::observe_expand::backends(l).is_empty())
     });
     if !declares {
@@ -1810,7 +1807,7 @@ fn observe_rows(programs: &[&Program]) -> Vec<String> {
     // the backends are the stdlib's, declared in `observe.hl`
     let stdlib: Option<Program> = hale_syntax::parse_source(hale_stdlib::OBSERVE_SOURCE).ok();
     let decl_default = |locus: &str, field: &str| -> Option<String> {
-        stdlib.iter().flat_map(|p| flat_decls(&p.items)).find_map(|item| match item {
+        stdlib.iter().flat_map(|p| p.items.iter()).find_map(|item| match item {
             TopDecl::Locus(l) if l.name.name == locus => l.members.iter().find_map(|m| match m {
                 LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == field).map(|p| match &p.init {
                     ParamInit::Value(e) => lit(e),
@@ -1823,7 +1820,7 @@ fn observe_rows(programs: &[&Program]) -> Vec<String> {
     };
     let mut rows = Vec::new();
     for p in programs {
-        for item in flat_decls(&p.items) {
+        for item in p.items.iter() {
             let TopDecl::Locus(l) = item else { continue };
             if !l.is_main {
                 continue;

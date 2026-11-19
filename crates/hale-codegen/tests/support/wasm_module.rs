@@ -22,7 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use hale_syntax::ast::{flat_decls, Program, TopDecl};
+use hale_syntax::ast::{Program, TopDecl};
 
 /// One entry of a module's import section.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -333,7 +333,7 @@ pub fn loader_writers(loader: &str) -> Option<BTreeSet<String>> {
 /// The program's declared `@ffi("js")` names: the host imports its own
 /// glue supplies through `run(glue)`.
 pub fn ffi_js_names(program: &Program) -> BTreeSet<String> {
-    flat_decls(&program.items)
+    program.items.iter()
         .filter_map(|i| match i {
             TopDecl::Fn(f) if f.ffi.as_ref().is_some_and(|a| a.abi == "js") => Some(f.name.name.clone()),
             _ => None,

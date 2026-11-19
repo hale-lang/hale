@@ -193,16 +193,6 @@ struct Parser {
     /// declaration, in ordinary source order — is reported; later
     /// occurrences of the SAME word recover silently.
     reserved_as_name: Vec<&'static str>,
-    /// GH #901: how many `module { }` bodies enclose the declaration
-    /// being parsed. Every top-level declaration is admissible at any
-    /// depth (a module is a namespace, not an analysis boundary) with
-    /// ONE exception: `target NAME { }` is a program-level build
-    /// directive, not a declaration a namespace can hold. Honouring
-    /// it at depth would be a behaviour change to the build — the
-    /// wasm gate in `check.rs`, `desugar`'s entry detection and the
-    /// stdlib gating all read `program.items` — so the parser refuses
-    /// it where it is written instead of letting it sit there inert.
-    module_depth: u32,
     /// GH #863: built-in call forms ([`BUILTIN_CALL_FORMS`]) this
     /// parse has already reported as a free `fn` name. Same ledger
     /// idea as `reserved_as_name`, one layer out: the mistake is the
@@ -225,7 +215,6 @@ impl Parser {
             effect_defs: Vec::new(),
             domains: Vec::new(),
             in_fallible_body: false,
-            module_depth: 0,
             reserved_as_name: Vec::new(),
             builtin_named_as_fn: Vec::new(),
         }
@@ -695,6 +684,17 @@ impl Parser {
                 let _ = self.parse_import();
                 continue;
             }
+            // F.57: `module NAME { … }` was removed. A program that still
+            // writes one gets one error at the word, and the braces are
+            // skipped whole so nothing inside them reports again.
+            if self.at_removed_module_decl() {
+                let span = self.peek_token().span;
+                self.diags.push(Diag::parse(span, REMOVED_MODULE_DECL.to_string()));
+                self.bump(); // `module`
+                self.bump(); // its name
+                self.skip_balanced_braces();
+                continue;
+            }
             match self.parse_top_decl() {
                 Ok(item) => items.push(item),
                 Err(d) => {
@@ -721,6 +721,35 @@ impl Parser {
         })
     }
 
+    /// F.57: the removed `module NAME {` form, told from an identifier
+    /// named `module` by the name and the `{` that follow it.
+    fn at_removed_module_decl(&self) -> bool {
+        matches!(self.peek(), TokenKind::Ident(s) if s == "module")
+            && matches!(self.peek_at(1), TokenKind::Ident(_))
+            && matches!(self.peek_at(2), TokenKind::LBrace)
+    }
+
+    /// Consume a `{ … }` group, nested braces included, from its `{` to
+    /// its matching `}` (or to the end of the file when it never closes).
+    fn skip_balanced_braces(&mut self) {
+        let mut depth = 0usize;
+        loop {
+            match self.peek() {
+                TokenKind::Eof => return,
+                TokenKind::LBrace => depth += 1,
+                TokenKind::RBrace => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        self.bump();
+                        return;
+                    }
+                }
+                _ => {}
+            }
+            self.bump();
+        }
+    }
+
     fn recover_to_top_level(&mut self) {
         // Skip until we find a likely top-level start. `Import` is
         // intentionally NOT in this set: imports are only valid at
@@ -739,8 +768,8 @@ impl Parser {
                 | TokenKind::Type
                 | TokenKind::Const
                 | TokenKind::Fn
-                | TokenKind::Module
-        ) {
+        ) && !self.at_removed_module_decl()
+        {
             self.bump();
         }
     }
@@ -1575,7 +1604,6 @@ impl Parser {
             TokenKind::Type => self.parse_type_decl().map(TopDecl::Type),
             TokenKind::Const => self.parse_const_decl().map(TopDecl::Const),
             TokenKind::Fn => self.parse_fn_decl(true).map(TopDecl::Fn),
-            TokenKind::Module => self.parse_module_decl().map(TopDecl::Module),
             TokenKind::Interface => self.parse_interface_decl().map(TopDecl::Interface),
             // `topic` is a contextual keyword recognized only here
             // at top-level decl position. Lexes as `Ident("topic")`
@@ -1593,15 +1621,6 @@ impl Parser {
             // Contextual keyword recognized only at top-level decl
             // position.
             TokenKind::Ident(s) if s == "target" => {
-                // GH #901: and only at the PROGRAM's top level. See
-                // `Parser::module_depth`.
-                if self.module_depth > 0 {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "`target` is a program-level declaration; move \
-                         it to the top level",
-                    ));
-                }
                 self.parse_target_decl().map(TopDecl::Target)
             }
             // Phase 4 (C2): `fleet locus NAME { … }`. `fleet` is a word
@@ -7386,10 +7405,8 @@ impl Parser {
         })
     }
 
-    /// `free` is true for a TOP-LEVEL fn (including one inside a
-    /// `module { }`, whose items resolve into the same global fn
-    /// namespace) and false for a locus member — see GH #863 and
-    /// [`Parser::reject_builtin_call_form_as_fn`].
+    /// `free` is true for a TOP-LEVEL fn and false for a locus member —
+    /// see GH #863 and [`Parser::reject_builtin_call_form_as_fn`].
     fn parse_fn_decl(&mut self, free: bool) -> Result<FnDecl, Diag> {
         self.parse_fn_decl_with_ffi(None, free)
     }
@@ -7537,41 +7554,6 @@ impl Parser {
         let payload_ty = self.parse_type_expr()?;
         self.expect(TokenKind::RParen, ")")?;
         Ok(Some(payload_ty))
-    }
-
-    fn parse_module_decl(&mut self) -> Result<ModuleDecl, Diag> {
-        let kw = self.expect(TokenKind::Module, "module")?;
-        let name = self.expect_ident("module name")?;
-        self.expect(TokenKind::LBrace, "{")?;
-        // GH #901: the body is parsed at depth, and the depth is
-        // restored whether the body parsed or not — an item that
-        // fails here is recovered from at the top level
-        // (`recover_to_top_level`), so leaving the counter raised
-        // would refuse a later top-level `target`.
-        self.module_depth += 1;
-        let body = self.parse_module_items();
-        self.module_depth -= 1;
-        let items = body?;
-        let close = self.expect(TokenKind::RBrace, "}")?;
-        Ok(ModuleDecl {
-            name,
-            items,
-            span: kw.span.merge(close.span),
-            id: NodeId::NONE,
-        })
-    }
-
-    /// A module body's declarations, up to (not including) its `}`.
-    /// Split out of [`Parser::parse_module_decl`] so the depth
-    /// counter is restored on the error path too.
-    fn parse_module_items(&mut self) -> Result<Vec<TopDecl>, Diag> {
-        let mut items = Vec::new();
-        while !self.at(&TokenKind::RBrace)
-            && !matches!(self.peek(), TokenKind::Eof)
-        {
-            items.push(self.parse_top_decl()?);
-        }
-        Ok(items)
     }
 
     // === type expressions ================================
@@ -9930,6 +9912,11 @@ const RETIRED_GATED: &str = "`@gated` is retired: a role requirement is `require
      operation's row, `api NAME { rpc Locus::handler requires: [role]; }` or \
      `@rpc(requires: [role])` on the handler, and on a stream the topic binding's \
      `Topic: self.hub requires: [role];` (spec/api.md)";
+
+/// F.57: the refusal of the removed `module NAME { … }` declaration.
+const REMOVED_MODULE_DECL: &str = "`module` declarations were removed: a module is a directory, \
+     reached by `import \"path\" as name;`. Move the declarations inside `module NAME { }` to the \
+     top level, or into their own file or directory and import it (spec/decisions.md F.57)";
 
 /// GH #1417 (R4): the refusal of `bindings { api: … }`, with its `roles:`,
 /// `serve:`, `http(…)` and the exposed reads it made of `expose` members.

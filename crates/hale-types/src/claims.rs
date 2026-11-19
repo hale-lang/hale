@@ -160,7 +160,6 @@ fn adoption_identities(
         for i in items {
             match i {
                 TopDecl::Constitution(c) => out.push(c),
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }
@@ -601,7 +600,6 @@ pub(crate) fn implicit_group_decls(programs: &[&Program]) -> Vec<&'static GroupD
                         }
                     }
                 }
-                TopDecl::Module(m) => clause_names(&m.items, out),
                 _ => {}
             }
         }
@@ -689,7 +687,6 @@ pub(crate) fn enumerate_clauses<'a>(
                     lib_adopts.extend(cb.adopts.iter().cloned());
                 }
                 TopDecl::Constitution(cd) => consts.push(cd),
-                TopDecl::Module(m) => walk_items(&m.items, groups, top_blocks, consts, lib_adopts),
                 _ => {}
             }
         }
@@ -709,8 +706,8 @@ pub(crate) fn enumerate_clauses<'a>(
     let entry = crate::entry::entry_row_in(programs);
     let has_main = entry.closes_a_world();
     for m in entry.world() {
-        let Some((at, path)) = m.index_in() else { continue };
-        let Some(l) = hale_syntax::ast::locus_at(&programs[at].items, path) else { continue };
+        let Some((at, index)) = m.index_in() else { continue };
+        let Some(TopDecl::Locus(l)) = programs[at].items.get(index) else { continue };
         for member in &l.members {
             if let LocusMember::Claims(cb) = member {
                 claims.extend(cb.entries.iter().cloned());
@@ -1164,9 +1161,6 @@ fn claims_report_inner(
                 }
                 TopDecl::Topic(t) => {
                     topics.insert(t.name.name.clone());
-                }
-                TopDecl::Module(m) => {
-                    index_items(&m.items, loci, fns, topics)
                 }
                 _ => {}
             }

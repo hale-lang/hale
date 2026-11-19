@@ -498,7 +498,7 @@ pub fn derive_alloc_routing(
     let (nonalloc, nonalloc_numeric_ret) = nonalloc_free_fns(&program.items);
     let elidable = elidable_methods(&program.items, &nonalloc, &nonalloc_numeric_ret);
     let mut aliases = BTreeMap::new();
-    for item in hale_syntax::ast::flat_decls(&program.items) {
+    for item in program.items.iter() {
         if let TopDecl::Type(t) = item {
             if let TypeDeclBody::Alias(te) = &t.body {
                 if t.generics.is_empty() {
@@ -521,13 +521,13 @@ pub fn derive_alloc_routing(
         caller_arena_publish: BTreeMap::new(),
         types,
     };
-    rows.caller_arena_publish = hale_syntax::ast::flat_decls(&program.items)
+    rows.caller_arena_publish = program.items.iter()
         .filter_map(|item| match item {
             TopDecl::Fn(f) => Some((f.name.name.clone(), publishes_caller_arena(f, &rows.nonalloc))),
             _ => None,
         })
         .collect();
-    let loci: BTreeMap<String, LocusElision> = hale_syntax::ast::flat_decls(&program.items)
+    let loci: BTreeMap<String, LocusElision> = program.items.iter()
         .filter_map(|item| match item {
             TopDecl::Locus(l) if l.generics.is_empty() => {
                 Some((l.name.name.clone(), locus_elision(l, &rows, &rows.types)))
@@ -921,7 +921,6 @@ fn struct_numeric_field_map(
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }
@@ -991,10 +990,7 @@ fn fnptr_numeric_param_set(params: &[Param]) -> BTreeSet<String> {
 fn nonalloc_free_fns(
     items: &[TopDecl],
 ) -> (BTreeSet<String>, BTreeSet<String>) {
-    // GH #884: module nesting flattened — a module-nested free fn
-    // is declared and lowered like any other, and the fixpoint is
-    // keyed by the bare name the call site spells.
-    let fns: Vec<&FnDecl> = hale_syntax::ast::flat_decls(items)
+    let fns: Vec<&FnDecl> = items.iter()
         .filter_map(|it| match it {
             // GH #1951: a fn returning a `bounded` list copies it into its
             // caller's arena, an allocation whatever its body does.
@@ -1498,9 +1494,7 @@ fn elidable_methods(
     // Program-wide `type` struct numeric-scalar field map — lets a method's
     // `s.value` (scalar field of a struct param) classify as numeric.
     let structs = &struct_numeric_field_map(items);
-    // GH #884: module nesting flattened, as in
-    // the non-allocating free-fn fixpoint.
-    for it in hale_syntax::ast::flat_decls(items) {
+    for it in items.iter() {
         let TopDecl::Locus(l) = it else { continue };
         // Candidates: gate-1-eligible (scalar/Unit return), non-fallible,
         // non-FFI `fn` methods. Heap-returning methods are never elidable and

@@ -582,7 +582,6 @@ pub fn lower_claims_over(
             match item {
                 TopDecl::Fn(f) => out.push(AnnSite::Free(f)),
                 TopDecl::Locus(l) => out.push(AnnSite::Locus(l)),
-                TopDecl::Module(m) => walk_decls(&m.items, out),
                 _ => {}
             }
         }

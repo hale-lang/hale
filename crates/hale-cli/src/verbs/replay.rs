@@ -362,9 +362,6 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
                         _ => false,
                     })
                 }
-                hale_syntax::ast::TopDecl::Module(md) => {
-                    scan_shm_ring(&md.items)
-                }
                 _ => false,
             })
         }
@@ -426,9 +423,6 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         // External transport bindings: any `bindings { }` block
         // makes publishes (and listener startup) touch the real
         // world during re-execution.
-        // Modules nest top declarations arbitrarily deep (round 3,
-        // finding 2) — walk them, or a module-contained binding
-        // fails open.
         fn scan_bindings(items: &[hale_syntax::ast::TopDecl]) -> bool {
             items.iter().any(|item| match item {
                 hale_syntax::ast::TopDecl::Locus(l) => {
@@ -438,9 +432,6 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
                             hale_syntax::ast::LocusMember::Bindings(_)
                         )
                     })
-                }
-                hale_syntax::ast::TopDecl::Module(md) => {
-                    scan_bindings(&md.items)
                 }
                 _ => false,
             })

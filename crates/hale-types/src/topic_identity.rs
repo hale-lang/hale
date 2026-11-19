@@ -73,7 +73,6 @@ fn declared_topics<'a>(slices: &[&'a [TopDecl]]) -> BTreeMap<String, &'a TopicDe
                 TopDecl::Topic(t) => {
                     out.insert(t.name.name.clone(), t);
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }
@@ -365,7 +364,6 @@ impl<'a> Shapes<'a> {
                     TopDecl::Type(t) => {
                         out.insert(t.name.name.as_str(), t);
                     }
-                    TopDecl::Module(m) => collect(&m.items, out),
                     _ => {}
                 }
             }

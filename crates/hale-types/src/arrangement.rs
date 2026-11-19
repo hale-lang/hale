@@ -152,7 +152,7 @@ pub fn project_arrangement<'a>(
     let mut by_node: BTreeMap<u32, &'a LocusDecl> = BTreeMap::new();
     let mut by_name: BTreeMap<&'a str, &'a LocusDecl> = BTreeMap::new();
     for pr in programs {
-        for item in hale_syntax::ast::flat_decls(&pr.items) {
+        for item in pr.items.iter() {
             if let TopDecl::Locus(l) = item {
                 if let Some(id) = snapshot.site_id(l.id) {
                     decl_at.insert(SiteRef::user(id), l);

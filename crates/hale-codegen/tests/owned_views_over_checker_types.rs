@@ -54,7 +54,7 @@ fn owned_in(b: &Block, fn_name: &str, views: &OwnedViews, out: &mut BTreeSet<Str
 /// The owned bindings of every fn and locus method `items` declares.
 fn owned(items: &[TopDecl], views: &OwnedViews) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    for item in hale_syntax::ast::flat_decls(items) {
+    for item in items.iter() {
         match item {
             TopDecl::Fn(f) => owned_in(&f.body, &f.name.name, views, &mut out),
             TopDecl::Locus(l) => {
@@ -305,7 +305,7 @@ fn the_route_chain_copies_no_response() {
     };
     let views = snap.demand_owned_views().expect("the column");
     let stdlib = hale_types::stdlib_bodies::program().expect("the stdlib parses");
-    let chain = hale_syntax::ast::flat_decls(&stdlib.items)
+    let chain = stdlib.items.iter()
         .find_map(|d| match d {
             TopDecl::Fn(f) if f.name.name == "__http_run_chain" => Some(f),
             _ => None,
@@ -538,7 +538,7 @@ fn the_route_chain_under_a_middleware_copies_only_the_context() {
     };
     let views = snap.demand_owned_views().expect("the column");
     let stdlib = hale_types::stdlib_bodies::program().expect("the stdlib parses");
-    let chain = hale_syntax::ast::flat_decls(&stdlib.items)
+    let chain = stdlib.items.iter()
         .find_map(|d| match d {
             TopDecl::Fn(f) if f.name.name == "__http_run_chain" => Some(f),
             _ => None,

@@ -203,14 +203,11 @@ fn causes_judgment_matches_the_evaluator_over_the_corpus() {
                     && r.ordinal == assertion_ordinal
             });
             if !matched {
-                // No oracle for this row. The evaluator's root walk
-                // is non-recursive over modules, so a module-scoped
-                // `causes:` annotation is never enumerated by it —
-                // the documented Change-6 rule that unmigrated rows
-                // bridge to the old engines ONLY where the old walk
-                // demonstrably saw them. Nothing to compare against;
-                // `a_module_scoped_row_has_no_evaluator_outcome`
-                // pins that this is the reason.
+                // No oracle for this row: the evaluator's root walk
+                // did not enumerate it — the documented Change-6 rule
+                // that unmigrated rows bridge to the old engines ONLY
+                // where the old walk demonstrably saw them. Nothing to
+                // compare against.
                 unenumerated += 1;
                 continue;
             }
@@ -1024,54 +1021,6 @@ fn main() { App { }; }
         Verdict::Violated,
         "the site that delivers was collapsed away before the \
          delivery query ran"
-    );
-}
-
-/// The evaluator's root walk does not recurse into modules, so a
-/// module-scoped `causes:` annotation produces no outcome from it at
-/// all — the documented rule that unmigrated rows bridge to the old
-/// engines only where the old walk demonstrably enumerated them.
-///
-/// This is why the corpus differential SKIPS such rows rather than
-/// treating a missing outcome as `holds`: comparing against silence
-/// that means "never looked" would let anything through.
-#[test]
-fn a_module_scoped_row_has_no_evaluator_outcome() {
-    let src = r#"
-effect money;
-module billing {
-    @effects(causes: { money })
-    fn poke(v: Int) -> Int { return v; }
-}
-main locus App {
-    params { n: Int = 0; }
-    run() { println(1); }
-}
-fn main() { App { }; }
-"#;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
-    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top), &hale_types::placement::bundle_placement(&bundle, &top), &hale_types::entry::entry_row(&bundle));
-    let reports = hale_types::frontier::causes_reports(
-        &vec![&program],
-        &hale_types::alloc_summary::derive_alloc_summary(&bundle),
-        &graph,
-    );
-    assert!(
-        reports.is_empty(),
-        "fixture premise: the evaluator never enumerates a \
-         module-scoped annotation: {:?}",
-        reports.iter().map(|r| &r.function).collect::<Vec<_>>()
-    );
-    // …while the model lowers the row and judges it.
-    let model = derive_application_model(&bundle);
-    let table = hale_types::claim_lowering::lower_claims(&bundle, &model);
-    let bases: Vec<u32> = bundle.sources.iter().map(|f| f.base).collect();
-    assert_eq!(
-        hale_types::judgment::judge_causes(&table, &model, &bases).len(),
-        1,
-        "the model judges what the evaluator could not see"
     );
 }
 

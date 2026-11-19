@@ -32,10 +32,9 @@ pub struct RoleDeclRow {
     pub includes: Vec<Ident>,
     /// The declaration's span.
     pub span: Span,
-    /// Its site: the bundle program that holds it, and its item index at
-    /// each depth (a module's contents under the module's index).
+    /// Its site: the bundle program that holds it, and its item index.
     pub program: String,
-    pub path: Vec<usize>,
+    pub index: usize,
 }
 
 /// The role rows of a bundle.
@@ -67,26 +66,19 @@ impl RoleRows {
 /// The role rows' producer: one walk over the bundle's declarations, in
 /// the bundle's program order.
 pub fn role_rows(bundle: &Bundle<'_>) -> RoleRows {
-    fn walk(items: &[TopDecl], program: &str, path: &mut Vec<usize>, rows: &mut RoleRows) {
-        for (i, item) in items.iter().enumerate() {
-            path.push(i);
-            match item {
-                TopDecl::Role(r) => rows.roles.push(RoleDeclRow {
+    let mut rows = RoleRows::default();
+    for (name, p) in &bundle.programs {
+        for (index, item) in p.items.iter().enumerate() {
+            if let TopDecl::Role(r) = item {
+                rows.roles.push(RoleDeclRow {
                     name: r.name.clone(),
                     includes: r.includes.clone(),
                     span: r.span,
-                    program: program.to_string(),
-                    path: path.clone(),
-                }),
-                TopDecl::Module(m) => walk(&m.items, program, path, rows),
-                _ => {}
+                    program: name.to_string(),
+                    index,
+                });
             }
-            path.pop();
         }
-    }
-    let mut rows = RoleRows::default();
-    for (name, p) in &bundle.programs {
-        walk(&p.items, name, &mut Vec::new(), &mut rows);
     }
     rows
 }

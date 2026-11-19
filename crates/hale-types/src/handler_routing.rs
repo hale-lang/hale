@@ -373,15 +373,14 @@ pub enum DeclAt {
 }
 
 impl DeclaredNames {
-    /// The loci and aliases of `programs`, module-nested ones included,
-    /// and the bundled stdlib's loci: every snapshot carries the
+    /// The loci and aliases of `programs`, and the bundled stdlib's loci: every snapshot carries the
     /// stdlib (the checker registers its surface, lowering merges its
     /// declarations), so `std::bytes::BytesBuilder` names the same
     /// locus whether or not the program handed here is the merged one.
     pub fn of(programs: &[&Program]) -> DeclaredNames {
         let mut out = DeclaredNames::default();
         if let Some(std) = crate::stdlib_bodies::program() {
-            for item in hale_syntax::ast::flat_decls(&std.items) {
+            for item in std.items.iter() {
                 if let TopDecl::Locus(l) = item {
                     out.loci.insert(l.name.name.clone());
                     out.decls.entry(l.name.name.clone()).or_insert(DeclAt::Stdlib(l.id));
@@ -390,7 +389,7 @@ impl DeclaredNames {
         }
         let mut own: BTreeSet<String> = BTreeSet::new();
         for p in programs {
-            for item in hale_syntax::ast::flat_decls(&p.items) {
+            for item in p.items.iter() {
                 match item {
                     TopDecl::Locus(l) => {
                         out.loci.insert(l.name.name.clone());
@@ -539,7 +538,7 @@ pub fn handler_rows(
     snapshot: &Snapshot,
 ) -> HandlerRouting {
     rows_over(
-        || programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)),
+        || programs.iter().flat_map(|p| p.items.iter()),
         DeclaredNames::of(programs),
         import_renames,
         snapshot,
@@ -559,7 +558,7 @@ pub fn stdlib_handler_rows(
     import_renames: &[(Vec<String>, String)],
     ids: &Snapshot,
 ) -> HandlerRouting {
-    rows_over(|| hale_syntax::ast::flat_decls(stdlib), DeclaredNames::of(&[merged]), import_renames, ids)
+    rows_over(|| stdlib.iter(), DeclaredNames::of(&[merged]), import_renames, ids)
 }
 
 /// Lowering's handler routing (F.40 phase 4, Q1): the snapshot's rows,

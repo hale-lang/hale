@@ -25,7 +25,7 @@
 //! finding, advisories included, so a suggestion it always reported would
 //! fail every program that has such a ladder.
 
-use hale_syntax::ast::{flat_decls, BinOp, Block, ElseBranch, Expr, IfStmt, Literal, LocusMember, Stmt, TopDecl};
+use hale_syntax::ast::{BinOp, Block, ElseBranch, Expr, IfStmt, Literal, LocusMember, Stmt, TopDecl};
 use hale_syntax::error::Diag;
 use hale_syntax::Span;
 
@@ -43,7 +43,7 @@ pub(crate) fn string_if_chain_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
         if seed == crate::snapshot::STDLIB_SEED {
             continue;
         }
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             match d {
                 TopDecl::Fn(f) => body(&f.body, &mut out),
                 TopDecl::Locus(l) => {

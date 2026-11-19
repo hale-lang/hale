@@ -201,11 +201,6 @@ impl Attach<'_, '_> {
             TopDecl::Type(t) => self.ty(t),
             TopDecl::Const(c) => c.doc = self.take(&c.name),
             TopDecl::Fn(f) => self.func(f),
-            TopDecl::Module(m) => {
-                for item in &mut m.items {
-                    self.top(item);
-                }
-            }
             TopDecl::Interface(i) => {
                 i.doc = self.take(&i.name);
                 for m in &mut i.methods {

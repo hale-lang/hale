@@ -273,15 +273,6 @@ pub fn budget_for_programs(bundle: &Bundle<'_>, table: &PlacementTable, summary:
                     b.bus_subjects.insert(t.name.name.clone());
                 }
                 TopDecl::Locus(l) => collect_subjects(l, &mut b),
-                TopDecl::Module(m) => {
-                    for it in &m.items {
-                        if let TopDecl::Locus(l) = it {
-                            collect_subjects(l, &mut b);
-                        } else if let TopDecl::Topic(t) = it {
-                            b.bus_subjects.insert(t.name.name.clone());
-                        }
-                    }
-                }
                 _ => {}
             }
         }

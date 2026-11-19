@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use hale_graph::ids::{SeedId, SiteId};
 use hale_syntax::ast::{
-    flat_decls, Expr, Literal, PrimType, ScalarClause, ScalarDecl, ScalarKind, TopDecl, TypeDecl, TypeDeclBody,
+    Expr, Literal, PrimType, ScalarClause, ScalarDecl, ScalarKind, TopDecl, TypeDecl, TypeDeclBody,
     TypeExpr, UnaryOp, UnitDecl,
 };
 use hale_syntax::{Diag, Span};
@@ -449,8 +449,8 @@ struct Names<'b> {
 
 /// The `unit_declarations` family's producer: every `unit` and scalar
 /// `type` declaration of the stdlib's seed (the time catalogue and
-/// `Duration` and `Time`, U4), then of the bundle's programs
-/// (module-nested ones included), in program order, each by its
+/// `Duration` and `Time`, U4), then of the bundle's programs, in
+/// program order, each by its
 /// declaration's site in the universe that minted it (the stdlib's
 /// analysis copy's, the snapshot's), every unit a declaration names
 /// resolved by name, and the catalogue closed from the equations whose
@@ -470,7 +470,7 @@ pub fn derive_unit_rows(bundle: &Bundle<'_>) -> UnitRows {
     }
     for (items, universe, ids) in sources {
         let site = |node| ids.site_id(node).map(|id| SiteRef { universe, id });
-        for item in flat_decls(items) {
+        for item in items.iter() {
             match item {
                 // The stdlib's other declarations are no base a program's
                 // scalar may name: only its scalars and units are read.

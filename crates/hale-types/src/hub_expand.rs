@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::api_names::API_SYNTH_BASE;
 use hale_syntax::ast::{
-    flat_decls, Expr, Ident, Literal, LocusDecl, LocusMember, ParamDecl, ParamInit, Program, QualifiedName,
+    Expr, Ident, Literal, LocusDecl, LocusMember, ParamDecl, ParamInit, Program, QualifiedName,
     StructInit, TopDecl, TypeExpr,
 };
 use hale_syntax::{parse_source_at, Span};
@@ -173,7 +173,7 @@ fn hub_literal<'a>(l: &'a LocusDecl, field: &str) -> Option<&'a Expr> {
 /// row was left unexpanded, and its path then failed to resolve).
 pub fn declares_a_hub(programs: &[&mut Program]) -> bool {
     programs.iter().any(|p| {
-        flat_decls(&p.items).any(|d| {
+        p.items.iter().any(|d| {
             matches!(d, TopDecl::Locus(l) if l.members.iter().any(|m| match m {
                 LocusMember::Bindings(bb) => !bb.hubs.is_empty(),
                 LocusMember::Params(pb) => pb.params.iter().any(|p| {
@@ -216,11 +216,6 @@ fn find_locus_mut<'a>(items: &'a mut [TopDecl], name: &str) -> Option<&'a mut Lo
     for item in items {
         match item {
             TopDecl::Locus(l) if l.name.name == name => return Some(l),
-            TopDecl::Module(m) => {
-                if let Some(l) = find_locus_mut(&mut m.items, name) {
-                    return Some(l);
-                }
-            }
             _ => {}
         }
     }
@@ -248,7 +243,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
         let schemas = crate::surfaces::Schemas::of(&ro);
         let mut publishes: BTreeSet<String> = BTreeSet::new();
         for p in &ro {
-            for d in flat_decls(&p.items) {
+            for d in p.items.iter() {
                 match d {
                     TopDecl::Locus(l) => {
                         loci.insert(l.name.name.as_str(), l);
@@ -276,7 +271,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
         }
         let mut seen_names: BTreeSet<String> = BTreeSet::new();
         for (pi, p) in ro.iter().enumerate() {
-            for d in flat_decls(&p.items) {
+            for d in p.items.iter() {
                 let TopDecl::Locus(l) = d else { continue };
                 if !l.is_main {
                     continue;
