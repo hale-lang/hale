@@ -206,6 +206,54 @@ fn a_counted_leaf_loop_is_stopped_at_a_chunk_boundary() {
     }
 }
 
+/// GH #2089 review: a counted loop's shape is read whole, so a body that
+/// writes its bound where a narrower walk would not look — a `match` arm,
+/// an `if` in a `let`'s value — is not chunked (its chunk's end would be
+/// read from the bound once) and keeps the count the loop gives without
+/// the drain. In `fn main` and in a stopping `run()`.
+#[test]
+fn a_counted_loop_that_writes_its_bound_keeps_its_count() {
+    let bodies = [
+        ("arm", "match k { 1 -> { n = n - 1; }, _ -> {}, }"),
+        ("let_if", "let z = if k == 1 { n = n - 1; 1 } else { 0 };"),
+    ];
+    for (name, body) in bodies {
+        let lp = format!("let mut n = 10;\n    let mut i = 0;\n    let k = 1;\n    while i < n {{\n        {body}\n        i = i + 1;\n    }}\n    println(to_string(i) + \" \" + to_string(n));");
+        let main = format!("fn main() {{\n    {lp}\n}}\n");
+        let run = format!("main locus App {{\n    run() {{\n    {lp}\n    }}\n}}\nfn main() {{ App {{ }}; }}\n");
+        for (place, src) in [("fn_main", main), ("run", run)] {
+            let bin = harness::unique_bin(&format!("drain_runtime_bound_{name}_{place}"));
+            build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+            let out = Command::new(&bin).output().expect("run");
+            let _ = std::fs::remove_file(&bin);
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "5 5\n", "{name} in {place}");
+        }
+    }
+}
+
+/// GH #2089 review: a body that can go round without its plain step — a
+/// `continue` or a write of the counter in a `match` arm, a compound step
+/// — is not chunked (a chunk counts steps, and would never reach its end),
+/// so SIGTERM still ends it at its back-edge, cleanly.
+#[test]
+fn a_loop_that_skips_its_step_is_still_stopped() {
+    let bodies = [
+        ("arm_continue", "match k { 0 -> { continue; }, _ -> {}, }\n        i = i + 1;"),
+        ("arm_write", "match k { 0 -> { i = i - 1; }, _ -> {}, }\n        i = i + 1;"),
+        ("compound", "acc = acc + 1;\n        i -= i + 1;"),
+    ];
+    for (name, body) in bodies {
+        let src = format!(
+            "fn main() {{\n    let n = 10;\n    let mut i = 0;\n    let mut acc = 0;\n    let k = 0;\n    println(\"up\");\n    while i < n {{\n        {body}\n    }}\n    println(\"after \" + to_string(acc + k));\n}}\n"
+        );
+        let tag = format!("drain_runtime_skips_step_{name}");
+        let ran = term_after_up(&tag, &src, Duration::from_millis(50), &[]);
+        assert_eq!(ran.status.code(), Some(0), "{tag}: {:?}\n{}", ran.status, ran.stderr);
+        assert!(ran.stopped_in < Duration::from_secs(1), "{tag}: {:?}", ran.stopped_in);
+        assert!(ran.stdout.lines().any(|l| l.starts_with("after")), "{tag}: {}", ran.stdout);
+    }
+}
+
 /// GH #2089: the chunked shape is where it applies and only there. A
 /// counted loop with a leaf body (`while i < n` stepping `i`, `for j in
 /// a..b`) in `fn main` or a stopping `run()` gets an inner loop with no

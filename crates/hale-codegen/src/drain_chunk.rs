@@ -42,7 +42,7 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::values::{InstructionOpcode, IntValue, PointerValue};
 use inkwell::IntPredicate;
 
-use hale_syntax::ast::{BinOp, Block, ElseBranch, Expr, Ident, IfStmt, Literal, Stmt};
+use hale_syntax::ast::{AssignOp, BinOp, Block, ElseBranch, Expr, Ident, IfStmt, LValueSeg, Literal, OrDisposition, Stmt};
 
 use crate::codegen::{BlockEnd, CodegenError, CodegenTy, Cx, LoopFrame, Scope};
 
@@ -61,10 +61,16 @@ pub(crate) struct CountedWhile<'a> {
 
 impl<'a> CountedWhile<'a> {
     /// The counted shape, or `None`: the condition `i < n` with `n` a name
-    /// or an integer literal; the body's last statement `i = i + 1` and no
-    /// other write of `i` or of `n`, no `let` of either, and no `continue`
-    /// (which would skip the step: a chunk counts steps, so a body that
-    /// went round without one could keep a stop out for good).
+    /// or an integer literal, and the body's last statement the plain step
+    /// `i = i + 1`. The rest of the body must be read whole and found to
+    /// leave `i` and `n` alone: the chunked loop computes its chunk's end
+    /// from `n` once and counts steps, so a write of `n` it did not see
+    /// would run the loop past its bound, and a way round that skipped the
+    /// step (a `continue`, a write of `i`) could keep a stop out for good.
+    /// So the walk is a whitelist ([`stmt_keeps`], [`expr_keeps`]): a form
+    /// it does not know — a `match` (an `if let` and a `let … else` desugar
+    /// to one), a `continue`, a loop, a closure — refuses the shape, and the
+    /// loop keeps the latch on every back-edge.
     pub(crate) fn of(cond: &'a Expr, body: &'a Block) -> Option<Self> {
         let Expr::Binary { op: BinOp::Lt, left, right, .. } = cond else { return None };
         let Expr::Ident(var) = left.as_ref() else { return None };
@@ -77,7 +83,7 @@ impl<'a> CountedWhile<'a> {
             return None;
         }
         let (last, rest) = body.stmts.split_last()?;
-        let Stmt::Assign { target, value, .. } = last else { return None };
+        let Stmt::Assign { target, op: AssignOp::Eq, value, .. } = last else { return None };
         let steps = target.head.name == var.name
             && target.tail.is_empty()
             && matches!(value, Expr::Binary { op: BinOp::Add, left, right, .. }
@@ -91,34 +97,69 @@ impl<'a> CountedWhile<'a> {
     }
 }
 
-/// `s` writes none of `names`, binds none of them, and has no `continue`.
+/// `s` is a statement form the walk reads whole, and it neither writes nor
+/// binds any of `names` and never goes round the loop early. Anything else
+/// is refused.
 fn stmt_keeps(s: &Stmt, names: &[&str]) -> bool {
     match s {
-        Stmt::Let { name, .. } => !names.contains(&name.name.as_str()),
-        Stmt::Assign { target, .. } => !names.contains(&target.head.name.as_str()),
+        Stmt::Let { name, value, .. } => !names.contains(&name.name.as_str()) && expr_keeps(value, names),
+        Stmt::Assign { target, value, .. } => {
+            !names.contains(&target.head.name.as_str())
+                && target.tail.iter().all(|seg| match seg {
+                    LValueSeg::Field(_) => true,
+                    LValueSeg::Index(e) => expr_keeps(e, names),
+                })
+                && expr_keeps(value, names)
+        }
         Stmt::If(i) => if_keeps(i, names),
-        Stmt::While { body, .. } | Stmt::For { body, .. } => block_keeps(body, names),
         Stmt::Block(b) => block_keeps(b, names),
-        Stmt::Continue(_) => false,
-        // Any other statement form either cannot write a local (an
-        // expression statement, a `return`, a `break`, a publish) or is
-        // refused for the chunk by the IR check (a loop's body calls).
-        Stmt::LetTuple { .. } => false,
-        _ => true,
+        Stmt::Expr(e) => expr_keeps(e, names),
+        Stmt::Return(e, _) => e.as_ref().map_or(true, |e| expr_keeps(e, names)),
+        Stmt::Break(_) => true,
+        _ => false,
     }
 }
 
 fn block_keeps(b: &Block, names: &[&str]) -> bool {
-    b.stmts.iter().all(|s| stmt_keeps(s, names))
+    b.stmts.iter().all(|s| stmt_keeps(s, names)) && b.tail.as_deref().map_or(true, |e| expr_keeps(e, names))
 }
 
 fn if_keeps(i: &IfStmt, names: &[&str]) -> bool {
-    block_keeps(&i.then_block, names)
+    expr_keeps(&i.cond, names)
+        && block_keeps(&i.then_block, names)
         && match i.else_block.as_deref() {
             None => true,
             Some(ElseBranch::Else(b)) => block_keeps(b, names),
             Some(ElseBranch::ElseIf(inner)) => if_keeps(inner, names),
         }
+}
+
+/// `e` is an expression form the walk reads whole, every statement inside
+/// it (a block's, an `if`'s) kept as [`stmt_keeps`] keeps one. A call
+/// cannot write a caller's `Int` local, so its arguments are only read.
+fn expr_keeps(e: &Expr, names: &[&str]) -> bool {
+    match e {
+        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => true,
+        Expr::Binary { left, right, .. } => expr_keeps(left, names) && expr_keeps(right, names),
+        Expr::Unary { operand, .. } => expr_keeps(operand, names),
+        Expr::Call { callee, args, .. } => expr_keeps(callee, names) && args.iter().all(|a| expr_keeps(a, names)),
+        Expr::Field { receiver, .. } => expr_keeps(receiver, names),
+        Expr::Index { receiver, index, .. } => expr_keeps(receiver, names) && expr_keeps(index, names),
+        Expr::Tuple(parts, _) | Expr::Array(parts, _) => parts.iter().all(|p| expr_keeps(p, names)),
+        Expr::Struct { inits, .. } => inits.iter().all(|i| expr_keeps(&i.value, names)),
+        Expr::Block(b) => block_keeps(b, names),
+        Expr::If(i) => if_keeps(i, names),
+        Expr::Range { lo, hi, .. } => expr_keeps(lo, names) && expr_keeps(hi, names),
+        Expr::Or { inner, disposition, .. } => {
+            expr_keeps(inner, names)
+                && match disposition {
+                    OrDisposition::Substitute(sub) => expr_keeps(sub, names),
+                    OrDisposition::Raise(_) | OrDisposition::Discard(_) => true,
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
 }
 
 /// The blocks a terminator may branch to, a branch on a constant
