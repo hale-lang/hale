@@ -1659,16 +1659,20 @@ bounded slices of 100 ms on `std::time::__idle_wait`: on the main thread
 that is a wait on main's bus queue which a delivery from another thread
 ends at once (the queue's wake descriptor, written by the enqueue, the
 pattern an `async_io` pool's wake descriptor already is), and anywhere
-else it is a `sleep`. A serving `main locus` whose `run()` ends in
+else it is a `sleep`, as it is inside a handler main's drain is running
+(main's handlers do not nest, so nothing that arrives could be run
+there). A serving `main locus` whose `run()` ends in
 `run_until_stopped` therefore answers a call in the time the work takes
 and its cross-pool hops take, not in the next slice of a `sleep` loop. The
 wait never leaves the thread's own scheduling: no thread is added and the
 main thread is still the one that runs main's handlers. A program that
-keeps its own `while !self.draining { sleep(…); }` loop is still correct
-and answers at the latency of its slice, since main's bus queue is
-drained only when its thread next looks at it; a loop that does periodic
-work of its own keeps that loop and gains the park by waiting with
-`h.wait()` only where it has nothing else to do.
+keeps its own `while !self.draining { sleep(…); }` loop answers at the
+same latency since GH #2091: a `sleep` slice on the main thread waits on
+the same wake descriptor, drains main's queue when a call arrives, and
+sleeps on for the rest of the slice (spec/runtime.md § `time::sleep`
+drain semantics). Until then it answered at the latency of its slice,
+100 to 250 ms a call. `h.wait()` stays the shape to write: it says what
+the `run()` waits for, and it ends when the exposure stops.
 
 **Shutdown.** `stop()` (idempotent) closes admission (a request received
 after it is refused `shutting_down`), refuses every queued request
@@ -2019,7 +2023,13 @@ incarnation that ended is never run by the next one, even at an address
 the next one reuses. A receiver that is draining has no subscription to
 hand a call to: the exposure learns it at the handover (the bus reports
 a delivery no subscriber took) and settles that call, and every call
-queued behind it, `unavailable`. A receiver whose stamp the exposure
+queued behind it, `unavailable`. So does one that failed: a held
+receiver stops as it fails (spec/semantics.md § `terminate`), before
+the call it failed in is answered with the server error, so the next
+call handed to it finds no subscriber however soon it comes (until
+GH #2091 the stop came as the failing handler returned, and a call
+handed over in between was dropped at the stop, never answered).
+A receiver whose stamp the exposure
 has not yet learned (it was born before the exposure, or has not
 answered) is asked, and its calls wait queued until it answers or the
 bus reports no subscriber to ask. A receiver found unavailable is asked

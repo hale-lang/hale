@@ -401,6 +401,7 @@ crates/hale-codegen/tests/bus_early_registration.rs#0 c63a50b2699554c7
 crates/hale-codegen/tests/bus_handler_freefn.rs#0 5b49f77969b94d28
 crates/hale-codegen/tests/bus_handler_freefn.rs#2 f7d91364d31ebdc7
 crates/hale-codegen/tests/bus_idle_wait.rs#0 d8337b401c13b23d
+crates/hale-codegen/tests/bus_idle_wait.rs#1 9e432d2bb2a9851c
 crates/hale-codegen/tests/bus_large_payload.rs#0 9e9f2e768b5c002b
 crates/hale-codegen/tests/bus_large_payload.rs#1 de6b62fe96d3bb16
 crates/hale-codegen/tests/bus_payload_arena_cap.rs#0 50cc4aa6770ca1d1
@@ -638,6 +639,7 @@ crates/hale-codegen/tests/factory_return_through_call.rs#0 1c32b1c2bffadfb1
 crates/hale-codegen/tests/factory_returned_binding.rs#0 6c3ca202e982282e
 crates/hale-codegen/tests/factory_returned_binding.rs#1 0ae2e95d06cc8027
 crates/hale-codegen/tests/failed_child_kept_by_owner.rs#0 14d181f86f62a46d
+crates/hale-codegen/tests/failed_child_kept_by_owner.rs#3 22a1db3d546ea8fd
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#0 0cfa26e91a2f2423
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#1 93756fc7f6d36501
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#2 c03de755dbc52e6f
@@ -730,7 +732,7 @@ crates/hale-codegen/tests/fixtures/examples/87-temp-locus-receiver/main.hl f1f26
 crates/hale-codegen/tests/fixtures/examples/88-async-handler-payload/main.hl 5e87294aa1af82db
 crates/hale-codegen/tests/fixtures/examples/89-nested-locus-teardown/main.hl 1e20bf9abb1fa280
 crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions/main.hl a205f1b04387809c
-crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl 19d63a5e4f6050f0
+crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl 4cffe56d6cd99c32
 crates/hale-codegen/tests/fixtures/examples/93-units/main.hl 8d7c23aa1da55add
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl fc7429933db197c9
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl 3e28431eef6c20e2

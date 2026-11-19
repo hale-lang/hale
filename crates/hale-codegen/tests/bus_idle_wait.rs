@@ -2,7 +2,9 @@
 //! The C driver pins the contract: a wait with nothing enqueued returns
 //! at its deadline, and an enqueue from another thread ends a 1 s wait
 //! within a few milliseconds (microseconds on an idle box) with the
-//! cell's handler already run.
+//! cell's handler already run. A sleep's slice on the queue
+//! (`lotus_bus_queue_sleep`, GH #2091) runs a cell enqueued mid-slice when
+//! it arrives and still lasts its whole length.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -63,4 +65,100 @@ fn main() {
         .filter(|l| l.contains("call i64 @next_delay("))
         .count();
     assert_eq!(calls, 1, "one call of the duration fn for the one site:\n{ir}");
+}
+
+/// GH #2091: a handler on main that sleeps, while main's run() sleeps and
+/// another thread posts to main. The run()'s sleep waits on main's queue
+/// and runs a delivery when it arrives; the handler's sleep cannot (main's
+/// handlers do not nest, so what arrives meanwhile waits for the handler to
+/// return) and is a plain sleep. It was a busy loop: its wait woke for the
+/// cell, found it still queued at every look after, and spun out each
+/// slice: ~0.5 s of CPU for this program's 0.9 s of handler sleeps.
+#[test]
+fn a_handler_on_main_that_sleeps_while_run_sleeps_waits_without_spinning() {
+    let src = r#"
+type Tick { n: Int; }
+topic Ticks { payload: Tick; subject: "t.tick"; }
+
+@unbounded
+fn hold_for(ms: Int) {
+    let mut i = 0;
+    while i < ms {
+        std::time::sleep(1ms);
+        i = i + 1;
+    }
+}
+
+locus Slow {
+    params { seen: Int = 0; }
+    bus { subscribe Ticks as on_tick; }
+    fn on_tick(t: Tick) {
+        println("start " + to_string(t.n));
+        hold_for(300);
+        println("end " + to_string(t.n));
+        self.seen = self.seen + 1;
+    }
+}
+
+locus Feeder {
+    bus { publish Ticks; }
+    run() {
+        std::time::sleep(50ms);
+        Ticks <- Tick { n: 1 };
+        std::time::sleep(50ms);
+        Ticks <- Tick { n: 2 };
+        std::time::sleep(50ms);
+        Ticks <- Tick { n: 3 };
+    }
+}
+
+main locus App {
+    params {
+        slow: Slow = Slow { };
+        feeder: Feeder = Feeder { };
+    }
+    placement { feeder: cooperative(pool = feed) where async_io; }
+    run() {
+        while self.slow.seen < 3 { std::time::sleep(10ms); }
+        println("done");
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let bin = harness::unique_bin("lotus_sleep_in_main_handler");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let mut child = Command::new(&bin)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("run the program");
+    let pid = child.id() as libc::pid_t;
+    // wait4, not Child::wait: the child's own CPU time, whatever else this
+    // process runs
+    let mut status: libc::c_int = 0;
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    let start = std::time::Instant::now();
+    loop {
+        let r = unsafe { libc::wait4(pid, &mut status, libc::WNOHANG, &mut usage) };
+        assert!(r >= 0, "wait4 failed");
+        if r == pid {
+            break;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = std::fs::remove_file(&bin);
+            panic!("the program did not end within 30 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = std::fs::remove_file(&bin);
+    let mut out = String::new();
+    std::io::Read::read_to_string(child.stdout.as_mut().expect("stdout"), &mut out).expect("read stdout");
+    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "exit status {status}:\n{out}");
+    // each cell after the handler before it returned, never inside it
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines, ["start 1", "end 1", "start 2", "end 2", "start 3", "end 3", "done"], "{out}");
+    let tv = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
+    let cpu = tv(usage.ru_utime) + tv(usage.ru_stime);
+    assert!(cpu < 0.2, "the handler's sleeps spun: {cpu:.3} s of CPU for 0.9 s of sleeping");
 }
