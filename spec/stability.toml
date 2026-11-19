@@ -1,20 +1,18 @@
-# Stability tiers: what the compatibility promise covers.
+# Stability tiers: which surface is settled and which is still moving.
 #
-# STABILITY.md states the policy; this file is its table. Every stdlib
+# STABILITY.md states the policy; this file is its table. Before 1.0 the
+# table is information, not a rule: any release may change either tier
+# (no deprecation window), and lists the break under Breaking with its
+# migration. At 1.0 the stable tier is what the 1.x promise covers. Every stdlib
 # namespace the stdlib table lists (`hale_types::stdlib_surface::SURFACES`,
 # the namespaces of crates/hale-codegen/tests/fixtures/stdlib_table_answers.txt)
 # and every file under spec/ carries a tier:
 #
-#   stable        a change that breaks a correct program waits for a minor
-#                 release, is warned about for one minor release first
-#                 (a `deprecated` diagnostic), and is listed under the
-#                 release's Breaking heading. At 1.0 this tier is the
+#   stable        settled surface. At 1.0 this tier is the
 #                 source-compatibility promise of 1.x.
-#   experimental  may change in any minor release, still listed under
-#                 Breaking when it does. No deprecation window; no 1.x
-#                 promise until it is promoted to stable.
+#   experimental  new or still moving; each row says why. No 1.x promise
+#                 until it is promoted to stable.
 #
-# A patch release changes neither tier's behaviour for correct programs.
 # A function whose name begins with `__` is a compiler hook, never
 # surface, whatever its namespace's tier.
 #

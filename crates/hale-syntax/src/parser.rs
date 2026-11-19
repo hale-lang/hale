@@ -1066,7 +1066,9 @@ impl Parser {
             let is_form = matches!(&kind_tok, TokenKind::Ident(s) if s == "form");
             let is_locality =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "locality");
-            let is_export = matches!(&kind_tok, TokenKind::Export);
+            // F.47: `export` is no keyword; the annotation reads it after `@`
+            // like every other annotation name.
+            let is_export = matches!(&kind_tok, TokenKind::Ident(s) if s == "export");
             // GH #18 item 1: `@bounded locus …` opts a locus into the
             // memory-bound proof; `@unbounded fn …` carves a free fn
             // out of it. Both are bare `@`-flags (no arglist).

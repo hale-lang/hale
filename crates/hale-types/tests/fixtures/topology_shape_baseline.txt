@@ -2028,6 +2028,7 @@ crates/hale-types/tests/judgment_reachability.rs#43 96108f0cff555359
 crates/hale-types/tests/judgment_reachability.rs#45 54c62ace83f4ed0e
 crates/hale-types/tests/judgment_reachability.rs#51 b6cd715dde39a4f2
 crates/hale-types/tests/judgment_reachability.rs#6 479a2e7f523a306d
+crates/hale-types/tests/let_write_refused.rs#2 b3011636881442f5
 crates/hale-types/tests/library_claims.rs#2 ec2370ca8357a69a
 crates/hale-types/tests/locus_field_store.rs#4 f2cdda92fc0b954a
 crates/hale-types/tests/locus_field_store.rs#5 55a84edddace53d4

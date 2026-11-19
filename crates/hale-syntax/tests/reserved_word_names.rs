@@ -2,14 +2,14 @@
 //! is written.
 //!
 //! Hale reserves a few words — the declaration and statement words
-//! (`match`, `type`, `while`) and the ones held for future use
-//! (`await`, `async`, `macro`, `impl`, `trait`) — and an author who
-//! names a field or a local after one gets a parse error. That is
-//! intended. (Until the 2026-10-12 friction sweep the list also held
-//! ordinary English words — `epoch`, `where`, `rich`, `restart`,
-//! `tier`, `capacity`; those are contextual keywords now, names
-//! everywhere but their one position, and the last section below
-//! holds them to it.) What was
+//! (`match`, `type`, `while`, `else`, `in`, `import`, `interface`) —
+//! and an author who names a field or a local after one gets a parse
+//! error. That is intended. (Until the 2026-10-12 friction sweep the
+//! list also held ordinary English words — `epoch`, `where`, `rich`,
+//! `restart`, `tier`, `capacity`; those are contextual keywords now,
+//! names everywhere but their one position, and the last section below
+//! holds them to it. F.47 freed the five words held for future use,
+//! `trait`, `impl`, `async`, `await` and `macro`, and `export`.) What was
 //! not intended is what the author had to read: the parser abandoned
 //! the whole declaration, so the FIRST line of output was often
 //! something else entirely (a `}` further down reported as a stray
@@ -65,7 +65,7 @@ fn params_field() {
     let src = "\
 locus Counter {
     params {
-        await: Int = 0;
+        else: Int = 0;
     }
     fn value() -> Int { return 1; }
 }
@@ -74,7 +74,7 @@ fn main() { }
     assert_eq!(
         only_diag(src),
         format!(
-            "3:9 `await` is a reserved word and cannot name a params \
+            "3:9 `else` is a reserved word and cannot name a params \
              field; {}",
             TAIL
         )
@@ -83,18 +83,18 @@ fn main() { }
 
 #[test]
 fn local_binding() {
-    // And the use site: `macro` is read back on the next line, which
+    // And the use site: `in` is read back on the next line, which
     // is the same mistake — one diagnostic, not two.
     let src = "\
 fn main() {
-    let macro = 3;
-    println(\"{}\", macro);
+    let in = 3;
+    println(\"{}\", in);
 }
 ";
     assert_eq!(
         only_diag(src),
         format!(
-            "2:9 `macro` is a reserved word and cannot name a \
+            "2:9 `in` is a reserved word and cannot name a \
              variable; {}",
             TAIL
         )
@@ -104,13 +104,13 @@ fn main() {
 #[test]
 fn free_fn_name() {
     let src = "\
-fn impl() { println(\"x\"); }
-fn main() { impl(); }
+fn interface() { println(\"x\"); }
+fn main() { interface(); }
 ";
     assert_eq!(
         only_diag(src),
         format!(
-            "1:4 `impl` is a reserved word and cannot name a \
+            "1:4 `interface` is a reserved word and cannot name a \
              function; {}",
             TAIL
         )
@@ -119,22 +119,22 @@ fn main() { impl(); }
 
 #[test]
 fn locus_method_name_and_its_call() {
-    // The call `w.async()` used to add `expected member name, got
-    // Async` — a second diagnostic, in `{:?}`, about a word the
+    // The call `w.import()` used to add `expected member name, got
+    // Import` — a second diagnostic, in `{:?}`, about a word the
     // author had already been told about.
     let src = "\
 locus Worker {
-    fn async() { println(\"x\"); }
+    fn import() { println(\"x\"); }
 }
 fn main() {
     let w = Worker { };
-    w.async();
+    w.import();
 }
 ";
     assert_eq!(
         only_diag(src),
         format!(
-            "2:8 `async` is a reserved word and cannot name a \
+            "2:8 `import` is a reserved word and cannot name a \
              function; {}",
             TAIL
         )
@@ -150,18 +150,18 @@ fn struct_field_and_its_literal() {
     // no reason to suspect.
     let src = "\
 type Report {
-    trait: Int;
+    else: Int;
     plain: Int;
 }
 fn main() {
-    let r = Report { trait: 1, plain: 2 };
+    let r = Report { else: 1, plain: 2 };
     println(\"{}\", r.plain);
 }
 ";
     assert_eq!(
         only_diag(src),
         format!(
-            "2:5 `trait` is a reserved word and cannot name a field; {}",
+            "2:5 `else` is a reserved word and cannot name a field; {}",
             TAIL
         )
     );
@@ -171,7 +171,7 @@ fn main() {
 fn method_parameter_and_its_body() {
     let src = "\
 locus Ranker {
-    fn rank(await: Int) -> Int { return await + 1; }
+    fn rank(else: Int) -> Int { return else + 1; }
 }
 fn main() {
     let r = Ranker { };
@@ -181,7 +181,7 @@ fn main() {
     assert_eq!(
         only_diag(src),
         format!(
-            "2:13 `await` is a reserved word and cannot name a \
+            "2:13 `else` is a reserved word and cannot name a \
              parameter; {}",
             TAIL
         )
@@ -190,11 +190,11 @@ fn main() {
 
 #[test]
 fn locus_name() {
-    let src = "locus macro { }\nfn main() { }\n";
+    let src = "locus in { }\nfn main() { }\n";
     assert_eq!(
         only_diag(src),
         format!(
-            "1:7 `macro` is a reserved word and cannot name a locus; {}",
+            "1:7 `in` is a reserved word and cannot name a locus; {}",
             TAIL
         )
     );
@@ -202,11 +202,11 @@ fn locus_name() {
 
 #[test]
 fn type_name() {
-    let src = "type impl { n: Int; }\nfn main() { }\n";
+    let src = "type interface { n: Int; }\nfn main() { }\n";
     assert_eq!(
         only_diag(src),
         format!(
-            "1:6 `impl` is a reserved word and cannot name a \
+            "1:6 `interface` is a reserved word and cannot name a \
              type; {}",
             TAIL
         )
@@ -215,11 +215,11 @@ fn type_name() {
 
 #[test]
 fn const_name() {
-    let src = "const async: Int = 1;\nfn main() { }\n";
+    let src = "const import: Int = 1;\nfn main() { }\n";
     assert_eq!(
         only_diag(src),
         format!(
-            "1:7 `async` is a reserved word and cannot name a \
+            "1:7 `import` is a reserved word and cannot name a \
              const; {}",
             TAIL
         )
@@ -230,13 +230,13 @@ fn const_name() {
 fn loop_variable() {
     let src = "\
 fn main() {
-    for trait in 0..3 { println(\"{}\", trait); }
+    for else in 0..3 { println(\"{}\", else); }
 }
 ";
     assert_eq!(
         only_diag(src),
         format!(
-            "2:9 `trait` is a reserved word and cannot name a loop \
+            "2:9 `else` is a reserved word and cannot name a loop \
              variable; {}",
             TAIL
         )
@@ -256,7 +256,7 @@ fn the_rest_of_the_file_still_parses() {
     let src = "\
 locus Counter {
     params {
-        await: Int = 0;
+        else: Int = 0;
     }
     fn value() -> Int { return 1; }
 }
@@ -278,15 +278,15 @@ fn two_different_reserved_words_are_both_reported() {
     // diagnostics. Only the repeat of one word is folded away.
     let src = "\
 fn main() {
-    let macro = 1;
-    let await = 2;
-    println(\"{}{}\", macro, await);
+    let in = 1;
+    let else = 2;
+    println(\"{}{}\", in, else);
 }
 ";
     let ds = diags(src);
     assert_eq!(ds.len(), 2, "one per word; got:\n{}", ds.join("\n"));
-    assert!(ds[0].contains("`macro`"), "got: {}", ds[0]);
-    assert!(ds[1].contains("`await`"), "got: {}", ds[1]);
+    assert!(ds[0].contains("`in`"), "got: {}", ds[0]);
+    assert!(ds[1].contains("`else`"), "got: {}", ds[1]);
 }
 
 #[test]
@@ -295,7 +295,7 @@ fn a_keyword_in_expression_position_keeps_its_own_error() {
     // position with no misnamed declaration behind it is a DIFFERENT
     // mistake, and silently reading it as an identifier would let a
     // nonsense program through the parser.
-    let src = "fn main() { let x = await; }\n";
+    let src = "fn main() { let x = else; }\n";
     let d = only_diag(src);
     assert!(d.contains("expected expression"), "got: {d}");
 }
@@ -465,4 +465,26 @@ fn the_spec_lists_every_reserved_word_the_diagnostic_cites() {
          for, but which it does not mention: {:?}",
         missing
     );
+}
+
+/// F.47: the five words once held for future use, and `export`, are
+/// names now, in every position this file used to refuse them in.
+#[test]
+fn the_future_use_words_and_export_are_names() {
+    let src = "\
+type impl { trait: Int; }
+const async: Int = 1;
+locus macro { }
+locus Worker {
+    params { await: Int = 0; }
+    fn export(trait: Int) -> Int { return trait + self.await; }
+}
+fn impl_of(macro: Int) -> Int { return macro + async; }
+fn main() {
+    let r = impl { trait: 1 };
+    let w = Worker { };
+    for await in 0..2 { println(\"{}\", await + r.trait + w.export(1) + impl_of(2)); }
+}
+";
+    assert_eq!(diags(src), Vec::<String>::new());
 }

@@ -3850,7 +3850,7 @@ fn cross_pool_provenance_table() {
         ),
         ("loop-carried store", "", "let mut w = self.a; let mut i = 0; while i < 2 { w.name = \"main\"; w = self.b; i = i + 1; }", Refused("`w.name = …`")),
         ("long chain", "", LONG_CHAIN, Refused("`w0.name = …`")),
-        ("fresh record from a cross-pool argument", "", "let r = fresh(self.b); r.name = \"main\";", Accepted),
+        ("fresh record from a cross-pool argument", "", "let mut r = fresh(self.b); r.name = \"main\";", Accepted),
         ("fresh record, read", "", "let r = fresh(self.b); let s = r.name;", Accepted),
         // the flow sources
         ("identity fn", "", "let w = id_w(self.b); w.name = \"x\";", Refused("`w.name = …`")),
@@ -3970,12 +3970,12 @@ fn cross_pool_provenance_table() {
         ("free fn storing through a fn value's result", "", "via_free(mk_w);", Refused("`via_free(…)` stores, through a fn value's result")),
         ("free fn returning a fn value's result", "", "let w = make_free(mk_w); w.name = \"x\";", Refused("`w.name = …`")),
         // round 5: a call's result of a data type is a copy
-        ("a record returned by a helper from a cross-pool locus", "", "let r = copy_r(self.b); r.name = \"main\";", Accepted),
+        ("a record returned by a helper from a cross-pool locus", "", "let mut r = copy_r(self.b); r.name = \"main\";", Accepted),
         ("... read", "", "let r = copy_r(self.b); let s = r.name;", Accepted),
         // round 4: a plain record copied in is the receiving locus's own
         ("a record copied into self from a cross-pool locus", "", "self.r = self.b.rec; self.r.name = \"main\";", Accepted),
-        ("a record copied into a local", "", "let r = self.b.rec; r.name = \"main\";", Accepted),
-        ("a record copied through a local handle", "", "let w = self.b; let r = w.rec; r.name = \"main\";", Accepted),
+        ("a record copied into a local", "", "let mut r = self.b.rec; r.name = \"main\";", Accepted),
+        ("a record copied through a local handle", "", "let w = self.b; let mut r = w.rec; r.name = \"main\";", Accepted),
         ("... but a store into the locus's own record", "", "self.b.rec.name = \"main\";", Refused("`self.b.rec.name = …`")),
         // round 6: an instance the walk built is one instance, whichever
         // binding reaches it
@@ -4042,7 +4042,7 @@ fn cross_pool_provenance_table() {
         ("a method's store through a helper handed its field", "", "let h = H3 { ws: [self.b, self.a] }; h.poke_put();", Refused("handing it to `H3`")),
         ("a method's call through a local bound to its field", "", "let h = H3 { ws: [self.b, self.a] }; h.call_alias();", Refused("handing it to `H3`")),
         // a plain record read off an instance the walk built is a copy
-        ("a record field of a built instance holding a cross-pool handle", "", "let h = H4 { ws: [self.b, self.a] }; let r = h.rec; r.name = \"main\";", Refused("handing it to `H4`")),
+        ("a record field of a built instance holding a cross-pool handle", "", "let h = H4 { ws: [self.b, self.a] }; let mut r = h.rec; r.name = \"main\";", Refused("handing it to `H4`")),
         ("... its handle field", "", "let h = H4 { ws: [self.b, self.a] }; let w = h.ws[0]; w.name = \"main\";", Refused("handing it to `H4`")),
         // a receiver whose locus type the walk cannot tell: any method of
         // the name
@@ -4074,7 +4074,7 @@ fn cross_pool_provenance_table() {
         (
             "a record field of a holder taken out of an array",
             "",
-            "let hs = [H4 { ws: [self.b, self.a] }]; let h = hs[0]; let r = h.rec; r.name = \"main\";",
+            "let hs = [H4 { ws: [self.b, self.a] }]; let h = hs[0]; let mut r = h.rec; r.name = \"main\";",
             Refused("handing it to `H4`"),
         ),
         (

@@ -4,29 +4,25 @@ Hale is pre-1.0. What a release may change, and how you hear about it,
 is written down in [`STABILITY.md`](https://github.com/hale-lang/hale/blob/main/STABILITY.md).
 In short:
 
-- A **patch** release (`0.x.Y`) fixes bugs. It never changes what a
-  correct program means. A fix that would change a correct program's
-  observable behaviour waits for the next minor release.
-- A **minor** release (`0.X.0`) may break programs. Every break is
-  listed under the release's **Breaking** heading in the CHANGELOG,
-  with its migration.
-- A form that goes away in the **stable** tier is warned about first
-  (a `deprecated:` warning from `hale check`) for at least one minor
-  release, and refused only after that.
+- Before 1.0, **any release may change the language or the stdlib**.
+  There are no deprecation windows: a form that goes away is refused
+  in the release that removes it, and the error points at what to
+  write instead.
+- Every break is listed under the release's **Breaking** heading in
+  the CHANGELOG, with a one-line migration, and the change migrates
+  the project's own Hale code (the stdlib, DNA, the tests and this
+  book) in the same PR.
 - At **1.0**, the stable tier becomes a promise: a program that builds
   against 1.0 using only stable surface keeps building, with the same
   meaning, on every 1.x.
 
 ## Tiers
 
-Every stdlib namespace and every file of the specification is either
-**stable** or **experimental**:
-
-- **stable**: covered by the deprecation window now and by the 1.x
-  promise later.
-- **experimental**: may change in any minor release without a
-  deprecation window. The change is still listed under Breaking. An
-  experimental surface becomes stable by a CHANGELOG entry.
+Every stdlib namespace and every file of the specification is marked
+**stable** or **experimental**. Before 1.0 the mark is information: it
+says which surface is settled and which is new or still moving (each
+experimental row says why). Both may change in any release. At 1.0 the
+stable tier is what the 1.x promise covers.
 
 A function whose name begins with `__` is a compiler hook, not
 surface, whatever its namespace's tier. The table below is generated
@@ -123,7 +119,9 @@ The graph registry's Reserved families (`runs_under`, `transitions`, `view`) are
 
 ## Keywords
 
-The keyword list is frozen: `spec/keywords.txt` holds every hard and
-contextual keyword, and a test fails on any change to it. Adding,
-removing or reclassifying a keyword takes an RFC (an issue titled
-`RFC: …`), whose decision is recorded in `spec/decisions.md`.
+The keyword list is pinned: `spec/keywords.txt` holds every hard and
+contextual keyword, and a test fails on any change to it, so a change
+is deliberate. Before 1.0 a change needs no RFC: adding, removing or
+reclassifying a keyword takes a decision entry in `spec/decisions.md`
+and a CHANGELOG fragment. F.47 freed `trait`, `impl`, `async`,
+`await`, `macro` and `export`: each is an ordinary name.
