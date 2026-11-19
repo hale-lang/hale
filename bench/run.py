@@ -218,7 +218,8 @@ def bench_http(hale, reps, conns):
                 p50.append(r["p50_us"])
                 p99.append(r["p99_us"])
             out[f"conns_{c}"] = {"rps": summary(rps, 0), "p50_us": summary(p50, 0), "p99_us": summary(p99, 0),
-                                 "errors": sum(r["errors"] for r in runs), "reconnects": sum(r["reconnects"] for r in runs)}
+                                 "errors": sum(r["errors"] for r in runs), "dropped": sum(r["dropped"] for r in runs),
+                                 "reconnects": sum(r["reconnects"] for r in runs)}
     return out
 
 
@@ -255,6 +256,8 @@ def bench_memory(hale, seconds, conns):
         "seconds": seconds,
         "conns": conns,
         "requests": result.get("requests"),
+        "errors": result.get("errors"),
+        "dropped": result.get("dropped"),
         "rss_mib_idle": round(idle / 1024, 1),
         "rss_mib_at_10s": round(pick(10) / 1024, 1),
         "rss_mib_at_end": round(samples[-1][1] / 1024, 1),
@@ -301,10 +304,11 @@ def table(res):
             row("http", f"{c} connections, requests/s", v["rps"], "")
             row("http", f"{c} connections, p50", v["p50_us"], "µs")
             row("http", f"{c} connections, p99", v["p99_us"], "µs")
+            rows.append(f"| http | {c} connections, errors / dropped attempts, all runs | {v['errors']} / {v['dropped']} | |")
     if "memory" in res:
         v = res["memory"]
         rows.append(f"| memory | HTTP server RSS: idle / at 10 s / at {v['seconds']} s | {v['rss_mib_idle']} / {v['rss_mib_at_10s']} / {v['rss_mib_at_end']} MiB | |")
-        rows.append(f"| memory | RSS growth after 10 s ({v['requests']} requests) | {v['growth_kib_per_min_after_10s']} KiB/min | |")
+        rows.append(f"| memory | RSS growth after 10 s ({v['requests']} requests, {v['errors']} errors, {v['dropped']} dropped) | {v['growth_kib_per_min_after_10s']} KiB/min | |")
     if "lsp" in res:
         for k, v in res["lsp"].items():
             rows.append(f"| editor | {k.replace('_', ' ')} ({v['file']}): open, first / done | {v['open_first_ms']} / {v['open_done_ms']} ms | |")

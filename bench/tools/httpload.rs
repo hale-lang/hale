@@ -2,11 +2,15 @@
 //!
 //! Each of `--conns` threads holds one keep-alive connection and sends
 //! `GET <path>` back to back: the next request goes out when the last
-//! response is read whole (by its `Content-Length`). A connection the
-//! server closes is reopened, and the reconnect counts toward that
-//! request's latency. The first `--warmup` seconds are not recorded.
-//! Prints one JSON object: requests, errors, reconnects, seconds,
-//! requests per second, and latency percentiles in microseconds.
+//! response is read whole (by its `Content-Length`). A response that says
+//! `Connection: close` is followed by a new connection, and that reconnect
+//! counts toward the next request's latency (`reconnects`). A request whose
+//! connection fails before its response is complete (a reset, an early
+//! close, a short body) is a `dropped` attempt: counted, then sent again
+//! on a new connection. A response other than 200 is an `error`. The first
+//! `--warmup` seconds are not recorded. Prints one JSON object: requests,
+//! errors, dropped, reconnects, seconds, requests per second, and latency
+//! percentiles in microseconds.
 //!
 //! Build: `rustc -O --edition 2021 bench/tools/httpload.rs -o <out>`
 //! Run:   `<out> --addr 127.0.0.1:8080 --conns 16 --duration 20 --warmup 3`
@@ -104,11 +108,12 @@ fn main() {
         let (addr, req, stop) = (o.addr.clone(), req.clone(), stop.clone());
         handles.push(thread::spawn(move || {
             let mut lat: Vec<u32> = Vec::with_capacity(1 << 20);
-            let (mut errors, mut reconnects) = (0u64, 0u64);
+            let (mut errors, mut dropped, mut reconnects) = (0u64, 0u64, 0u64);
             let mut s = connect(&addr);
             let mut buf = Vec::with_capacity(16384);
             while !stop.load(Ordering::Relaxed) {
                 let t = Instant::now();
+                let mut failed = 0u64;
                 let ok = loop {
                     if s.write_all(req.as_bytes()).is_ok() {
                         if let Some((status, close)) = read_response(&mut s, &mut buf) {
@@ -119,15 +124,17 @@ fn main() {
                             break status == 200;
                         }
                     }
-                    // the server closed between requests: reopen and resend
+                    // the connection failed before a whole response: a
+                    // dropped attempt; reopen and resend
+                    failed += 1;
                     s = connect(&addr);
-                    reconnects += 1;
                     if stop.load(Ordering::Relaxed) {
                         break false;
                     }
                 };
                 let since = start.elapsed();
                 if since >= warm && since < end {
+                    dropped += failed;
                     if ok {
                         lat.push(t.elapsed().as_micros().min(u32::MAX as u128) as u32);
                     } else {
@@ -135,16 +142,17 @@ fn main() {
                     }
                 }
             }
-            (lat, errors, reconnects)
+            (lat, errors, dropped, reconnects)
         }));
     }
     thread::sleep(end);
     stop.store(true, Ordering::Relaxed);
-    let (mut all, mut errors, mut reconnects) = (Vec::new(), 0, 0);
+    let (mut all, mut errors, mut dropped, mut reconnects) = (Vec::new(), 0, 0, 0);
     for h in handles {
-        let (l, e, r) = h.join().unwrap();
+        let (l, e, d, r) = h.join().unwrap();
         all.extend(l);
         errors += e;
+        dropped += d;
         reconnects += r;
     }
     all.sort_unstable();
@@ -155,11 +163,12 @@ fn main() {
         all[((all.len() as f64 * p).ceil() as usize).clamp(1, all.len()) - 1]
     };
     println!(
-        "{{\"conns\":{},\"seconds\":{},\"requests\":{},\"errors\":{},\"reconnects\":{},\"rps\":{:.0},\"p50_us\":{},\"p90_us\":{},\"p99_us\":{},\"p999_us\":{},\"max_us\":{}}}",
+        "{{\"conns\":{},\"seconds\":{},\"requests\":{},\"errors\":{},\"dropped\":{},\"reconnects\":{},\"rps\":{:.0},\"p50_us\":{},\"p90_us\":{},\"p99_us\":{},\"p999_us\":{},\"max_us\":{}}}",
         o.conns,
         o.duration,
         all.len(),
         errors,
+        dropped,
         reconnects,
         all.len() as f64 / o.duration,
         pct(0.50),

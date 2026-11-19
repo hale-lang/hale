@@ -5,7 +5,9 @@ latency, measured on one machine at one revision. **This page sets no
 targets.** It records where the toolchain is so that targets can be chosen
 against measurements and a later release can be compared with this one.
 
-- Revision: `8a3b1857b` (hale 0.35.0), built with `cargo build --release`.
+- Revision: the toolchain built at `8a3b1857b` (hale 0.35.0) with
+  `cargo build --release`; the run's own record names the bench branch's
+  head, which adds only `bench/`.
 - Machine: AMD Ryzen 7 9800X3D, 8 cores / 16 threads, 31 GiB, Linux 6.18,
   otherwise idle (load average about 1).
 - Programs are built by `hale build` with its defaults: release profile,
@@ -35,32 +37,33 @@ times, runtime measurements 5 times.
 
 | Area | Measure | Median | Range |
 |---|---|---|---|
-| build | `hale build` 92-build-an-api, cold | 5.98 s | 5.90 to 6.04 |
-| build | 92-build-an-api, warm, unchanged | 1.82 s | 1.81 to 1.82 |
-| build | 92-build-an-api, after a one-line edit | 1.81 s | 1.81 to 1.85 |
-| build | 92-build-an-api, cold, peak RSS | 214 MiB | 213 to 214 |
-| build | `hale build dna/host`, cold | 20.77 s | 20.70 to 20.77 |
-| build | dna/host, warm, unchanged | 15.84 s | 15.75 to 15.95 |
-| build | dna/host, after a one-line edit | 15.82 s | 15.76 to 15.86 |
+| build | `hale build` 92-build-an-api, cold | 5.94 s | 5.94 to 6.00 |
+| build | 92-build-an-api, warm, unchanged | 1.83 s | 1.83 to 1.83 |
+| build | 92-build-an-api, after a one-line edit | 1.83 s | 1.82 to 1.84 |
+| build | 92-build-an-api, cold, peak RSS | 213 MiB | 213 to 214 |
+| build | `hale build dna/host`, cold | 20.78 s | 20.73 to 20.81 |
+| build | dna/host, warm, unchanged | 15.80 s | 15.75 to 15.86 |
+| build | dna/host, after a one-line edit | 15.82 s | 15.80 to 15.83 |
 | build | dna/host, cold, peak RSS | 1050 MiB | 1049 to 1050 |
-| bus | round trip, same thread | 34 ns | 33 to 34 |
-| bus | round trip, cross pool | 1550 ns | 1459 to 1637 |
-| json | encode, `Order::to_json` (27 allocs/op) | 983 ns/op | 965 to 986 |
-| json | decode, `Order::from_json` (44 allocs/op) | 1956 ns/op | 1925 to 1977 |
-| http | 1 connection: requests/s | 46,932 | 45,797 to 47,075 |
-| http | 1 connection: p50 / p99 | 20 / 28 µs | p99 27 to 31 |
-| http | 16 connections: requests/s | 81,530 | 81,334 to 81,819 |
-| http | 16 connections: p50 / p99 | 193 / 241 µs | p99 239 to 243 |
-| http | 64 connections: requests/s | 81,049 | 80,908 to 82,000 |
-| http | 64 connections: p50 / p99 | 779 / 875 µs | p99 849 to 893 |
-| memory | HTTP server RSS: idle, at 10 s, at 120 s of load | 4.6, 4.6, 4.6 MiB | |
-| memory | RSS growth from 10 s to 120 s (9.7 M requests) | -12 KiB/min (flat) | |
-| editor | small seed: open, to diagnostics | 86 ms | |
-| editor | small seed: edit, to diagnostics, p50 / p95 | 97 / 99 ms | 20 edits |
-| editor | small seed: server peak RSS | 90 MiB | |
-| editor | large seed (`dna/core`): open, to diagnostics | 736 ms | |
-| editor | large seed: edit, to diagnostics, p50 / p95 | 751 / 760 ms | 20 edits |
-| editor | large seed: server peak RSS | 304 MiB | |
+| bus | round trip, same thread | 34 ns | 33 to 37 |
+| bus | round trip, cross pool | 1514 ns | 1129 to 1528 |
+| json | encode, `Order::to_json` (27 allocs/op) | 978 ns/op | 966 to 1014 |
+| json | decode, `Order::from_json` (44 allocs/op) | 1937 ns/op | 1932 to 1974 |
+| http | 1 connection: requests/s | 46,604 | 46,368 to 46,671 |
+| http | 1 connection: p50 / p99 | 21 / 28 µs | p99 27 to 29 |
+| http | 16 connections: requests/s | 80,860 | 80,148 to 81,455 |
+| http | 16 connections: p50 / p99 | 193 / 243 µs | p99 240 to 247 |
+| http | 64 connections: requests/s | 82,136 | 81,213 to 82,499 |
+| http | 64 connections: p50 / p99 | 771 / 866 µs | p99 838 to 878 |
+| http | errors / dropped attempts, every run | 0 / 0 | |
+| memory | HTTP server RSS: idle, at 10 s, at 120 s of load | 4.7, 4.7, 4.7 MiB | |
+| memory | RSS growth from 10 s to 120 s (9.7 M requests, 0 errors, 0 dropped) | -7 KiB/min (flat) | |
+| editor | small seed: open, to diagnostics | 85 ms | |
+| editor | small seed: edit, to diagnostics, p50 / p95 | 97 / 101 ms | 20 edits |
+| editor | small seed: server peak RSS | 91 MiB | |
+| editor | large seed (`dna/core`): open, to diagnostics | 721 ms | |
+| editor | large seed: edit, to diagnostics, p50 / p95 | 751 / 758 ms | 20 edits |
+| editor | large seed: server peak RSS | 303 MiB | |
 
 ## What each measures
 
@@ -102,14 +105,16 @@ connection sends `GET /` as soon as the last response is in, for 10 s after
 2 s of warm-up, at 1, 16 and 64 connections. The server answers each request
 with `Connection: close`, so every request includes a TCP connect, and the
 latency is measured from the request's send to the end of its response,
-reconnect included. The server is a single handler loop, so throughput
+reconnect included. A non-200 response is an *error*; a connection that
+fails before its response is complete is a *dropped* attempt, counted and
+sent again, so a server that loses requests cannot read as error-free. The server is a single handler loop, so throughput
 levels off at about 81,000 requests/s from 16 connections up, and further
 connections only queue (p50 rises in proportion).
 
 **Memory** (`bench/http_serve.hl` under load). The same server under 16
 connections of constant load for 120 s, with its RSS (`/proc/<pid>/status`
 VmRSS) read every second. Growth is the least-squares slope from 10 s to
-the end. It stays at 4.6 MiB across 9.7 million requests.
+the end. It stays at 4.7 MiB across 9.7 million requests.
 
 **Editor** (`bench/tools/lsp_latency.py`). A client drives `hale lsp` over
 stdio: it opens one file of a seed and times the diagnostics that follow,
