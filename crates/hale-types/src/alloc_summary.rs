@@ -3940,6 +3940,11 @@ pub fn summarize_within(
             .flat_map(|p| p.items.iter())
             .filter(|item| match item {
                 TopDecl::Fn(f) => !declared_by_program.contains(&f.name.name),
+                // GH #2090: the class reads which records are plain, and a
+                // program fn may take one of the stdlib's (`IoError`), so
+                // the stdlib's records are beside a program summarized
+                // alone as they are beside one with the copy.
+                TopDecl::Type(_) => true,
                 _ => false,
             });
         let scratch_local = crate::alloc_routing::scratch_local_free_fns(
@@ -8910,11 +8915,14 @@ pub(crate) mod tests {
                 "",
                 "join_n(20)",
             ),
+            // A call outside the scratch-local class (`std::time`) keeps
+            // the fn on its caller's arena; taking a plain record does
+            // not (GH #2090).
             "callers-arena" => (
                 "fn join_n(r: Row, n: Int) -> String {
                     let mut out = \"\";
                     let mut i = 0;
-                    while i < n { out = out + r.text + \"-\" + to_string(i) + \",\"; i = i + 1; }
+                    while i < n { out = out + r.text + \"-\" + to_string(i + 0 * std::time::monotonic_ns()) + \",\"; i = i + 1; }
                     return out;
                 }",
                 "",

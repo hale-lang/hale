@@ -561,16 +561,34 @@ pub fn derive_alloc_routing(
 /// that nothing the body allocates can be reachable from anywhere but the
 /// return value:
 ///   * signature: not fallible, not FFI, not generic, not exported; every
-///     param and the return (if any) a by-value scalar or a String — no
-///     struct, locus, Bytes, array or fn pointer can carry a pointer in
-///     or out;
-///   * body: no struct or locus literal, no method call, no publish, no
-///     `self`; assignments only to bare locals; calls only to other fns
-///     of the class (by name, by import path, or by a `std::` path that
-///     names a Hale-source stdlib fn), to the value-returning builtins in
+///     param a by-value scalar, a String or a *plain record*
+///     ([`plain_records`]: a `type` record whose fields are scalars,
+///     Strings, `bounded` lists of those and plain records, with literal
+///     defaults), and the return (if any) a scalar or a String — no locus,
+///     Bytes, array or fn pointer can carry a pointer in, and nothing but
+///     a scalar or a String comes out. A returned record stays out of the
+///     class: it escapes, and built in the fn's own arena it would be
+///     deep-copied whole at every return (measured 33% slower on a helper
+///     returning a 64-row record per call), where the caller's arena
+///     takes it as it is built;
+///   * body: no locus literal, no method call, no publish, no `self`;
+///     record literals only of plain records; assignments to a bare
+///     local, or to a field of one the body binds with `let` (never a
+///     parameter: a record parameter is the caller's own value, passed by
+///     reference); the `bounded` builtins that write (`push`, `set`,
+///     `clear`, `truncate`) only on a list rooted at such a `let` local,
+///     the reading ones (`at`, `count`) anywhere; `for` over a range or a
+///     field (a `bounded` list); calls only to other fns of the class (by
+///     name, by import path, or by a `std::` path that names a
+///     Hale-source stdlib fn), to the value-returning builtins in
 ///     `SCRATCH_LOCAL_BUILTINS`, or to runtime primitives in the pure
 ///     `std::` namespaces of `SCRATCH_LOCAL_STD_NAMESPACES`.
 /// Anything else demotes the fn to the caller-arena default.
+///
+/// GH #2090: the class used to refuse every record, so a helper that built
+/// a local record with a `bounded` field and returned a count allocated the
+/// record's block in its caller's arena — one block per call that a loop in
+/// `fn main` (which has no per-iteration arena) never got back.
 ///
 /// A Hale-source stdlib fn is held to the class like any other fn, not
 /// waved through by its namespace: `std::str::bytes_view` returns a
@@ -589,7 +607,17 @@ const SCRATCH_LOCAL_BUILTINS: &[&str] = &[
     "eprintln", "print", "eprint",
 ];
 
-fn type_expr_is_scratch_value(ty: &TypeExpr) -> bool {
+/// The `bounded` builtins that read their list (GH #2090): a read retains
+/// nothing.
+const SCRATCH_LOCAL_BOUNDED_READS: &[&str] = &["at", "count"];
+
+/// The `bounded` builtins that write into the list their first argument
+/// names (GH #2090): in the class only when that list is rooted at a local
+/// the body binds with `let`, so the element lands in a block the fn's
+/// own arena holds.
+const SCRATCH_LOCAL_BOUNDED_WRITES: &[&str] = &["push", "set", "clear", "truncate"];
+
+fn type_expr_is_scratch_scalar(ty: &TypeExpr) -> bool {
     matches!(
         ty,
         TypeExpr::Primitive(
@@ -604,11 +632,127 @@ fn type_expr_is_scratch_value(ty: &TypeExpr) -> bool {
     )
 }
 
-/// What a qualified call path names, for the scratch-local classifier:
-/// the fn a stdlib or import path is renamed to, or `None` for a runtime
-/// primitive (a `std::` path with no Hale-source body).
+/// A value a scratch-local fn may take: a scratch scalar, a String, or a
+/// plain record by its bare name.
+fn type_expr_is_scratch_value(ty: &TypeExpr, plain: &BTreeSet<String>) -> bool {
+    type_expr_is_scratch_scalar(ty) || plain_record_name(ty).is_some_and(|n| plain.contains(n))
+}
+
+fn plain_record_name(ty: &TypeExpr) -> Option<&str> {
+    match ty {
+        TypeExpr::Named { path, generic_args, .. }
+            if generic_args.is_empty() && path.segments.len() == 1 =>
+        {
+            Some(path.segments[0].name.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// GH #2090: the plain records — non-generic `type` records whose every
+/// field is a scratch scalar, a String, a plain record or a `bounded` list
+/// of those, and whose defaults are literals (a default runs where the
+/// literal is built). A greatest fixpoint, so records that hold each other
+/// stay in. No locus, no Bytes, no array, no tuple, no fn pointer: a
+/// plain record carries no pointer to anything but its own Strings and
+/// lists.
+fn plain_records(items: &[&TopDecl]) -> BTreeSet<String> {
+    let loci: BTreeSet<&str> = items
+        .iter()
+        .filter_map(|it| match it {
+            TopDecl::Locus(l) => Some(l.name.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    let records: Vec<(&str, &Vec<StructField>)> = items
+        .iter()
+        .filter_map(|it| match it {
+            TopDecl::Type(td) if td.generics.is_empty() && !loci.contains(td.name.name.as_str()) => {
+                match &td.body {
+                    TypeDeclBody::Struct(fields) => Some((td.name.name.as_str(), fields)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    let mut set: BTreeSet<String> = records.iter().map(|(n, _)| n.to_string()).collect();
+    fn field_ok(ty: &TypeExpr, set: &BTreeSet<String>) -> bool {
+        match ty {
+            TypeExpr::Bounded { elem, .. } => field_ok(elem, set),
+            _ => type_expr_is_scratch_value(ty, set),
+        }
+    }
+    loop {
+        let demote: Vec<&str> = records
+            .iter()
+            .filter(|(n, _)| set.contains(*n))
+            .filter(|(_, fields)| {
+                !fields.iter().all(|f| {
+                    field_ok(&f.ty, &set)
+                        && f.default.as_ref().map_or(true, |d| matches!(d, Expr::Literal(..)))
+                })
+            })
+            .map(|(n, _)| *n)
+            .collect();
+        if demote.is_empty() {
+            return set;
+        }
+        for n in demote {
+            set.remove(n);
+        }
+    }
+}
+
+/// What the scratch-local classifier reads beside the body: what a
+/// qualified call path names, the plain records, and, for the fn being
+/// walked, its parameter names and the locals its body binds with `let`.
 struct ScratchPaths<'a> {
     imports: &'a BTreeMap<Vec<String>, String>,
+    plain: &'a BTreeSet<String>,
+    params: BTreeSet<&'a str>,
+    lets: BTreeSet<&'a str>,
+}
+
+impl<'a> ScratchPaths<'a> {
+    /// Whether `name` is a local the body binds with `let` and no
+    /// parameter shares: a place a write may target (GH #2090).
+    fn writable_local(&self, name: &str) -> bool {
+        self.lets.contains(name) && !self.params.contains(name)
+    }
+
+    /// The root identifier of a place expression (`a`, `a.b.c`, `a[i].b`).
+    fn place_root(e: &'a Expr) -> Option<&'a str> {
+        match e {
+            Expr::Ident(id) => Some(id.name.as_str()),
+            Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => Self::place_root(receiver),
+            _ => None,
+        }
+    }
+}
+
+/// The names a body binds with `let` (simple bindings), at any depth.
+fn let_bound_names<'a>(b: &'a Block, out: &mut BTreeSet<&'a str>) {
+    for s in &b.stmts {
+        match s {
+            Stmt::Let { name, .. } => {
+                out.insert(name.name.as_str());
+            }
+            Stmt::If(i) => let_names_if(i, out),
+            Stmt::While { body, .. } | Stmt::For { body, .. } => let_bound_names(body, out),
+            Stmt::Block(b) => let_bound_names(b, out),
+            _ => {}
+        }
+    }
+}
+
+fn let_names_if<'a>(i: &'a IfStmt, out: &mut BTreeSet<&'a str>) {
+    let_bound_names(&i.then_block, out);
+    match i.else_block.as_deref() {
+        None => {}
+        Some(ElseBranch::Else(b)) => let_bound_names(b, out),
+        Some(ElseBranch::ElseIf(inner)) => let_names_if(inner, out),
+    }
 }
 
 impl<'a> ScratchPaths<'a> {
@@ -649,16 +793,18 @@ pub(crate) fn scratch_local_free_fns<'a>(
     imports: &BTreeMap<Vec<String>, String>,
 ) -> BTreeSet<String> {
     SCRATCH_LOCAL_DERIVATIONS.with(|n| n.set(n.get() + 1));
-    let paths = ScratchPaths { imports };
+    let items: Vec<&TopDecl> = items.collect();
+    let plain = plain_records(&items);
     let fns: Vec<&FnDecl> = items
+        .iter()
         .filter_map(|it| match it {
             TopDecl::Fn(f)
                 if f.fallible.is_none()
                     && f.ffi.is_none()
                     && !f.export
                     && f.generics.is_empty()
-                    && f.params.iter().all(|p| type_expr_is_scratch_value(&p.ty))
-                    && f.ret.as_ref().map_or(true, type_expr_is_scratch_value) =>
+                    && f.params.iter().all(|p| type_expr_is_scratch_value(&p.ty, &plain))
+                    && f.ret.as_ref().map_or(true, type_expr_is_scratch_scalar) =>
             {
                 Some(f)
             }
@@ -671,6 +817,14 @@ pub(crate) fn scratch_local_free_fns<'a>(
     let shapes: Vec<(&str, Option<Vec<&str>>)> = fns
         .iter()
         .map(|f| {
+            let mut lets = BTreeSet::new();
+            let_bound_names(&f.body, &mut lets);
+            let paths = ScratchPaths {
+                imports,
+                plain: &plain,
+                params: f.params.iter().map(|p| p.name.name.as_str()).collect(),
+                lets,
+            };
             let mut needs = Vec::new();
             let shaped = scratch_local_block(&f.body, &mut needs, &paths);
             (f.name.name.as_str(), shaped.then_some(needs))
@@ -727,7 +881,12 @@ fn scratch_local_stmt<'a>(s: &'a Stmt, needs: &mut Vec<&'a str>, paths: &Scratch
         Stmt::Let { value, .. } => scratch_local_expr(value, needs, paths),
         Stmt::Assign { target, value, .. } => {
             target.head.name != "self"
-                && target.tail.is_empty()
+                && (target.tail.is_empty()
+                    || (paths.writable_local(&target.head.name)
+                        && target.tail.iter().all(|seg| match seg {
+                            LValueSeg::Field(_) => true,
+                            LValueSeg::Index(i) => scratch_local_expr(i, needs, paths),
+                        })))
                 && scratch_local_expr(value, needs, paths)
         }
         Stmt::Return(e, _) => {
@@ -739,7 +898,7 @@ fn scratch_local_stmt<'a>(s: &'a Stmt, needs: &mut Vec<&'a str>, paths: &Scratch
             scratch_local_expr(cond, needs, paths) && scratch_local_block(body, needs, paths)
         }
         Stmt::For { iter, body, .. } => {
-            matches!(iter, Expr::Range { .. })
+            matches!(iter, Expr::Range { .. } | Expr::Field { .. })
                 && scratch_local_expr(iter, needs, paths)
                 && scratch_local_block(body, needs, paths)
         }
@@ -779,10 +938,21 @@ fn scratch_local_expr<'a>(e: &'a Expr, needs: &mut Vec<&'a str>, paths: &Scratch
                     _ => false,
                 }
         }
+        Expr::Struct { path, inits, .. } => {
+            path.segments.len() == 1
+                && paths.plain.contains(path.segments[0].name.as_str())
+                && inits.iter().all(|i| scratch_local_expr(&i.value, needs, paths))
+        }
         Expr::Call { callee, args, .. } => {
             let callee_ok = match callee.as_ref() {
+                Expr::Ident(id) if SCRATCH_LOCAL_BOUNDED_WRITES.contains(&id.name.as_str()) => args
+                    .first()
+                    .and_then(ScratchPaths::place_root)
+                    .is_some_and(|root| paths.writable_local(root)),
                 Expr::Ident(id) => {
-                    if !SCRATCH_LOCAL_BUILTINS.contains(&id.name.as_str()) {
+                    if !SCRATCH_LOCAL_BUILTINS.contains(&id.name.as_str())
+                        && !SCRATCH_LOCAL_BOUNDED_READS.contains(&id.name.as_str())
+                    {
                         needs.push(&id.name);
                     }
                     true

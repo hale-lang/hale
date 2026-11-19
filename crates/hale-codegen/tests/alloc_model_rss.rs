@@ -486,8 +486,10 @@ fn model_leaks(src: &str) -> Vec<String> {
 // iteration to the next, so it is not reclaimed per iteration
 // (`hale_types::iteration_reclaim`) and stays on run()'s one activation:
 // the frame this rule is about.
+// `Row` holds an array, so it is not a plain record and a fn taking one
+// keeps its caller's arena (a plain record param would not, GH #2090).
 const CALLERS_ARENA: &str = r#"
-    type Row { text: String; }
+    type Row { text: String; pad: [Int; 2] = [0, 0]; }
     fn tag_row(r: Row) -> Int { let t = r.text + "-" + to_string(len(r.text)); return len(t); }
     locus App {
         params { n: Int = 1000000; sink: Int = 0; }
@@ -593,8 +595,10 @@ fn hashmap_small_value_replace_churn_recycles_stays_flat() {
 // its result. `join_n` appends 100 times (a ~1.2 KB result) so the
 // per-call residue is still tens of MB over 10k calls.
 
+// `Row` holds an array, so it is not a plain record and a fn taking one
+// keeps its caller's arena (a plain record param would not, GH #2090).
 const ACCUMULATOR_IN_METHOD: &str = r#"
-    type Row { text: String; }
+    type Row { text: String; pad: [Int; 2] = [0, 0]; }
     fn join_n(r: Row, n: Int) -> String {
         let mut out = "";
         let mut i = 0;
@@ -618,8 +622,10 @@ const ACCUMULATOR_IN_METHOD: &str = r#"
 // iteration to the next, so it is not reclaimed per iteration
 // (`hale_types::iteration_reclaim`) and stays on run()'s one activation:
 // the frame this rule is about.
+// `Row` holds an array, so it is not a plain record and a fn taking one
+// keeps its caller's arena (a plain record param would not, GH #2090).
 const ACCUMULATOR_IN_RUN: &str = r#"
-    type Row { text: String; }
+    type Row { text: String; pad: [Int; 2] = [0, 0]; }
     fn join_n(r: Row, n: Int) -> String {
         let mut out = "";
         let mut i = 0;

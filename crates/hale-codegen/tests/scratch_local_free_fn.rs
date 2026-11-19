@@ -142,27 +142,36 @@ fn main() {{
 /// The class is narrow on purpose: a fn that can reach a value living
 /// beyond the call keeps allocating in its caller's arena. The scanner
 /// allocates from its own arena (and its result, stored into a locus
-/// field, is copied there); a fn taking a `type` value, one that builds
-/// a struct, and one calling a Hale-source stdlib fn that returns a
-/// struct (`std::str::bytes_view`, whose copy of its argument the
-/// caller's arena can skip and a fresh one cannot) stay on the caller's.
+/// field, is copied there), and so, since GH #2090, do a fn taking a
+/// plain `type` value and one building one. A fn writing into its
+/// record parameter's list (the parameter is the caller's value), one
+/// taking a record that holds an array, and one calling a Hale-source
+/// stdlib fn that returns a struct (`std::str::bytes_view`, whose copy
+/// of its argument the caller's arena can skip and a fresh one cannot)
+/// stay on the caller's.
 #[test]
 fn only_fns_that_cannot_leak_an_allocation_get_their_own_arena() {
     let src = format!(
         r#"{SCANNER}
-type Row {{ text: String = ""; }}
+type Row {{ text: String = ""; tags: bounded[Row2; 2]; }}
+type Row2 {{ text: String = ""; }}
+type Framed {{ text: String = ""; pad: [Int; 2] = [0, 0]; }}
 locus Keeper {{
     params {{ last: String = ""; }}
     fn keep(s: String) {{ self.last = s; }}
 }}
 fn takes_type(r: Row) -> String {{ return r.text + "!"; }}
 fn builds_type(s: String) -> String {{ let r = Row {{ text: s + "?" }}; return r.text; }}
+fn fills_param(r: Row) -> Int {{ push(r.tags, Row2 {{ text: r.text + "!" }}) or discard; return count(r.tags); }}
+fn takes_framed(f: Framed) -> String {{ return f.text + "!"; }}
 fn view_len(s: String) -> Int {{ let v = std::str::bytes_view(s); return v.n; }}
 fn main() {{
     let k = Keeper {{ }};
     k.keep(line_at("a\nb\n", 1));
     println(takes_type(Row {{ text: std::str::upper("x") }}));
     println(builds_type(std::str::upper("y")));
+    println(to_string(fills_param(Row {{ text: std::str::upper("w") }})));
+    println(takes_framed(Framed {{ text: std::str::upper("v") }}));
     println(to_string(view_len(std::str::upper("zz"))));
     println(k.last);
 }}
@@ -179,15 +188,182 @@ fn main() {{
         let end = start + ir[start..].find("\n}\n").expect("fn end");
         ir[start..end].to_string()
     };
-    assert!(
-        body("line_at").contains("fn.scratch_local.cur"),
-        "the scanner should allocate from its own arena"
-    );
-    for name in ["takes_type", "builds_type", "view_len"] {
+    for name in ["line_at", "takes_type", "builds_type"] {
+        assert!(
+            body(name).contains("fn.scratch_local.cur"),
+            "{name} should allocate from its own arena"
+        );
+    }
+    for name in ["fills_param", "takes_framed", "view_len"] {
         assert!(
             !body(name).contains("fn.scratch_local.cur"),
             "{name} can reach a value outliving the call and must keep \
              allocating in its caller's arena"
         );
     }
+}
+
+/// GH #2090: a helper that builds a local record holding a `bounded` list
+/// (rows with heap Strings and tags) and returns a count, called 20,000
+/// times. Its records die at its return, whoever calls it: from `fn
+/// main`'s own loop, which has no per-iteration arena, they used to stay
+/// in main's arena, one batch per call (about 120 MiB here); from a locus
+/// method's loop they were already reclaimed with the iteration.
+const ROWS: &str = r#"
+type Tag { name: String = ""; }
+type Row { id: String = ""; tags: bounded[Tag; 4]; }
+type Rows { items: bounded[Row; 64]; }
+fn rows(k: Int) -> Int {
+    let mut rs = Rows { };
+    let mut j = 0;
+    while j < 32 {
+        let mut r = Row { id: f"row-{k}-{j}" };
+        push(r.tags, Tag { name: f"t{j}" }) or discard;
+        push(rs.items, r) or discard;
+        j = j + 1;
+    }
+    let mut n = 0;
+    for r in rs.items { n = n + len(r.id) + count(r.tags); }
+    return n;
+}
+"#;
+
+fn rows_growth(driver: &str, name: &str) -> (String, i64) {
+    let src = format!(
+        r#"{ROWS}
+locus Driver {{
+    params {{ total: Int = 0; }}
+    fn go(calls: Int) {{
+        let mut k = 0;
+        while k < calls {{ self.total = self.total + rows(k); k = k + 1; }}
+    }}
+}}
+fn main() {{
+    let warm = rows(0);
+    let before = std::io::fs::read_file("/proc/self/statm") or "";
+    let mut total = warm * 0;
+    {driver}
+    let after = std::io::fs::read_file("/proc/self/statm") or "";
+    println("total=" + to_string(total));
+    print("before="); println(before);
+    print("after="); println(after);
+}}
+"#
+    );
+    let bin = harness::unique_bin(name);
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+    let (stdout, stderr, ok) = run(&bin);
+    assert!(ok, "stdout={stdout:?} stderr={stderr:?}");
+    let field = |key: &str| -> String {
+        stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .unwrap_or_else(|| panic!("no {key} in {stdout:?}"))
+            .to_string()
+    };
+    let grew = harness::statm_resident_bytes(&field("after=")) as i64
+        - harness::statm_resident_bytes(&field("before=")) as i64;
+    (field("total="), grew)
+}
+
+/// 20,000 calls: each returns the sum over its 32 rows of the id's length
+/// and one tag.
+fn rows_total() -> String {
+    let mut t = 0usize;
+    for k in 0..20000 {
+        for j in 0..32 {
+            t += format!("row-{k}-{j}").len() + 1;
+        }
+    }
+    t.to_string()
+}
+
+#[test]
+fn a_helpers_local_bounded_records_die_at_its_return_from_mains_loop() {
+    let (total, grew) = rows_growth(
+        "let mut k = 0; while k < 20000 { total = total + rows(k); k = k + 1; }",
+        "hale_scratch_local_rows_main",
+    );
+    assert_eq!(total, rows_total());
+    assert!(
+        grew < 16 << 20,
+        "20,000 calls from main's loop grew the resident set by {} MiB — the \
+         helper's records are outliving its calls",
+        grew >> 20
+    );
+}
+
+#[test]
+fn a_helpers_local_bounded_records_die_at_its_return_from_a_locus_loop() {
+    let (total, grew) = rows_growth(
+        "let d = Driver { }; d.go(20000); total = d.total;",
+        "hale_scratch_local_rows_locus",
+    );
+    assert_eq!(total, rows_total());
+    assert!(grew < 16 << 20, "grew {} MiB from a locus method's loop", grew >> 20);
+}
+
+/// The records that escape are left where they were: a fn returning a
+/// record and one writing into its record parameter's list keep their
+/// caller's arena, and a scratch-local fn handed those records (`tagged`)
+/// only reads them. Everything reads back long after the calls, under
+/// ASan.
+#[test]
+fn an_escaping_record_survives_the_callees_arena_under_asan() {
+    let src = r#"
+type Tag { name: String = ""; }
+type Row { id: String = ""; tags: bounded[Tag; 4]; }
+type Rows { items: bounded[Row; 8]; }
+fn make(k: Int) -> Row {
+    let mut r = Row { id: std::str::upper(f"row-{k}") };
+    push(r.tags, Tag { name: f"t{k}" + "!" }) or discard;
+    return r;
+}
+fn relabel(r: Row) -> Row {
+    let mut v = Row { id: r.id + "?" };
+    v.tags = r.tags;
+    push(v.tags, Tag { name: std::str::upper(r.id) }) or discard;
+    return v;
+}
+fn fill(r: Row, k: Int) -> Int {
+    push(r.tags, Tag { name: f"f{k}" + "!" }) or discard;
+    return count(r.tags);
+}
+fn tagged(r: Row) -> String {
+    let mut out = r.id;
+    for t in r.tags { out = out + "/" + t.name; }
+    return out;
+}
+fn main() {
+    let mut keep = Rows { };
+    let mut k = 0;
+    while k < 6 {
+        push(keep.items, relabel(make(k))) or discard;
+        k = k + 1;
+    }
+    let mut late = Row { id: std::str::lower("LATE") };
+    fill(late, 1);
+    fill(late, 2);
+    let mut out = "";
+    for r in keep.items {
+        out = out + r.id;
+        for t in r.tags { out = out + " " + t.name; }
+        out = out + ";";
+    }
+    for t in late.tags { out = out + " " + t.name; }
+    println(out);
+    println(tagged(late));
+}
+"#;
+    let bin = harness::unique_bin("hale_scratch_local_record_asan");
+    harness::build_source_asan(src, &bin);
+    let (stdout, stderr, ok) = run(&bin);
+    assert!(!stderr.contains("AddressSanitizer"), "{stderr}");
+    assert!(ok, "stdout={stdout:?} stderr={stderr:?}");
+    let mut want = String::new();
+    for k in 0..6 {
+        want += &format!("ROW-{k}? t{k}! ROW-{k};");
+    }
+    want += " f1! f2!\nlate/f1!/f2!\n";
+    assert_eq!(stdout, want);
 }

@@ -1386,16 +1386,16 @@ row	Rec@main1	Rec	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#04f73a4e
 row	Rec@main1	Rec	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#e1949f40
+== crates/hale-codegen/tests/alloc_model_rss.rs#4882473b
 row	App@main1	App	main	default
 
 == crates/hale-codegen/tests/alloc_model_rss.rs#7cfb2316
 row	App@main1	App	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#208dafdb
+== crates/hale-codegen/tests/alloc_model_rss.rs#4c4a8ae2
 row	App@main1	App	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#099bb3e9
+== crates/hale-codegen/tests/alloc_model_rss.rs#2298ba02
 row	App@main1	App	main	default
 
 == crates/hale-codegen/tests/alloc_model_rss.rs#47d2a245
@@ -6084,12 +6084,12 @@ dynamic	Small	on main
 == crates/hale-types/tests/alloc_summary_reach.rs#a705abe6
 row	Book@main1	Book	main	default
 
-== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#2b149b94
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#11c81bf3
 -- App@main1	App
 row	~	App	main	default
 row	~.rows	Rows	main	inherited
 
-== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#211d457e
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#e53fe98a
 row	App@main1	App	main	default
 
 == crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#1f1dfacc
@@ -6107,11 +6107,14 @@ row	App@main1	App	main	default
 == crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#962f29e6
 row	App@main1	App	main	default
 
-== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#6090e111
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#d457bf53
 row	App@main1	App	main	default
 dynamic	Conn	on main	in the seed
 
-== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#d1fcd1cc
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#4f4e700c
+row	App@main1	App	main	default
+
+== crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#a52cd44f
 row	App@main1	App	main	default
 
 == crates/hale-types/tests/api_binding_check.rs#08b74fed
