@@ -40,6 +40,10 @@ use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
 use hale_types::alloc_summary::{summarize_identified, AllocSummary, Frame, LeakSite, LoopAt, ReclaimScope};
 
+#[path = "support/site_keys.rs"]
+mod site_keys;
+use site_keys::{leak_key, stable_dump};
+
 /// The summary of `src` alone, minted as `app.hl`.
 fn summarize(src: &str) -> AllocSummary {
     let mut program = hale_syntax::parse_source(src).expect("parse");
@@ -61,25 +65,22 @@ fn old_model(now: &AllocSummary) -> AllocSummary {
     old
 }
 
-fn site(l: &LeakSite) -> String {
-    format!("{} {:?} @{}..{} {:?}", l.owner.display(), l.kind, l.span.start.0, l.span.end.0, l.reason)
-}
-
 /// The leak sites of the program's own fns, now and before.
 fn leaks(now: &AllocSummary) -> (Vec<String>, Vec<String>) {
     let own = |s: &AllocSummary, l: &LeakSite| s.is_own(&l.owner);
-    let is: Vec<String> = now.leak_sites().iter().filter(|l| own(now, l)).map(site).collect();
+    let is: Vec<String> = now.leak_sites().iter().filter(|l| own(now, l)).map(|l| leak_key(now, l)).collect();
     let old = old_model(now);
-    let was: Vec<String> = old.leak_sites().iter().filter(|l| own(&old, l)).map(site).collect();
+    let was: Vec<String> = old.leak_sites().iter().filter(|l| own(&old, l)).map(|l| leak_key(&old, l)).collect();
     assert!(!was.iter().any(|s| s.ends_with("InCallersArena")), "the old model has no caller-arena rule");
     (was, is)
 }
 
-/// The dump's lines of one fn, from its `fn` line to the next.
+/// The dump's lines of one fn, from its `fn` line to the next, each
+/// site by its ordinal (`site_keys::stable_dump`).
 fn fn_block(dump: &str, name: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut inside = false;
-    for l in dump.lines() {
+    for l in stable_dump(dump).lines() {
         if let Some(rest) = l.strip_prefix("fn ") {
             inside = rest.split_whitespace().next() == Some(name);
         }
@@ -128,7 +129,7 @@ fn both_caller_loop_shapes() {
         fn_block(&dump, "shout"),
         [
             "fn shout [invoked-unboundedly, scratch-local]",
-            "alloc string-concat local once-per-invocation reclaim@fn-return @147..154",
+            "alloc string-concat local once-per-invocation reclaim@fn-return #1",
             "call <unresolved: len> loop_depth=0 result=escaping=return",
         ]
     );
@@ -136,13 +137,13 @@ fn both_caller_loop_shapes() {
         fn_block(&dump, "shout_row"),
         [
             "fn shout_row [invoked-unboundedly]",
-            "alloc string-concat local ACCUMULATES-UNBOUNDED reclaim@locus-dissolve @219..231 <-- LEAK",
+            "alloc string-concat local ACCUMULATES-UNBOUNDED reclaim@locus-dissolve #1 <-- LEAK",
             "call <unresolved: len> loop_depth=0 result=escaping=return",
         ]
     );
     let (was, is) = leaks(&now);
     let appear: Vec<&String> = is.iter().filter(|s| !was.contains(s)).collect();
-    assert_eq!(appear, ["shout_row StringConcat @219..231 InCallersArena"]);
+    assert_eq!(appear, ["shout_row StringConcat #1 InCallersArena"]);
     assert!(was.iter().all(|s| is.contains(s)), "nothing goes: {was:?} -> {is:?}");
     // Each shape alone repeats the call.
     for (shape, body) in [
@@ -195,14 +196,14 @@ fn the_fns_own_loop() {
         fn_block(&now.render(), "pad"),
         [
             "fn pad [scratch-local]",
-            "loop while depth=0 @103..158",
-            "alloc string-concat escaping=return once-per-invocation reclaim@locus-dissolve @121..144",
-            "alloc string-concat local per-iteration-reclaim reclaim@fn-return @121..129",
+            "loop while depth=0 #1",
+            "alloc string-concat escaping=return once-per-invocation reclaim@locus-dissolve #1",
+            "alloc string-concat local per-iteration-reclaim reclaim@fn-return #2",
             "call <unresolved: to_string> loop_depth=1 result=local",
         ]
     );
     let (was, is) = leaks(&now);
-    assert_eq!(was, ["pad StringConcat @121..144 InUnboundedLoop", "pad StringConcat @121..129 InUnboundedLoop"]);
+    assert_eq!(was, ["pad StringConcat #1 InUnboundedLoop", "pad StringConcat #2 InUnboundedLoop"]);
     assert!(is.is_empty(), "{is:?}");
 }
 
@@ -267,7 +268,7 @@ fn stores_and_bus_payloads() {
             "fn App::keep [invoked-unboundedly]",
             // GH #1490 (step 4): a concatenation stored whole into a
             // field names the field, as a struct literal's store does.
-            "alloc string-concat escaping=self-store per-iteration-reclaim reclaim@locus-dissolve @155..162 ->self.last",
+            "alloc string-concat escaping=self-store per-iteration-reclaim reclaim@locus-dissolve #1 ->self.last",
         ]
     );
     assert_eq!(dump, old_model(&now).render(), "nothing here moves");

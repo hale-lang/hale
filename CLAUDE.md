@@ -283,6 +283,28 @@ The in-tree `.hl` corpus lives at
 acceptance surface — `crates/hale-syntax/tests/examples.rs`
 parses all of them).
 
+**The allocation-summary pins key a site by its fn, not its bytes.**
+The `alloc_summary_*` tests in `hale-types` pin, per target (the
+corpus, `tests/hale`, the DNA seeds), the leak sites and dump lines a
+correction moves. A leak site is written `<fn> <Kind> #<n> <Reason>`
+(`Provider::submit CollectionInsert("vec") #1 InvokedUnboundedly`),
+`n` counting the fn's sites of that kind in the fn's order, and a dump
+line carries `#<n>` where the summary prints `@<start>..<end>`
+(`crates/hale-types/tests/support/site_keys.rs`). A span is a byte
+range into the merged seed, so an edit anywhere earlier in the seed
+used to move every later pin; the ordinal moves only when the fn
+itself gains, loses or reorders a site of that kind. A pin that fails
+is a real change to a verdict, a count or which sites exist: classify
+it, then take the new value from the assertion's `left:` side. A new
+`tests/hale` program is a new target of three of these tests (the
+run-to-exit count, `CALL_LINES_ONLY`, `per_target_moves`), so run them
+together:
+
+```sh
+cargo nextest run --release -p hale-types --test alloc_summary_correction \
+    --test alloc_summary_construction_correction --test alloc_summary_reclaim_boundary
+```
+
 ## CHANGELOG entries are fragments
 
 A user-visible change gets a CHANGELOG entry, but not in
