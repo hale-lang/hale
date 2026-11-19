@@ -1956,18 +1956,36 @@ class allocates into its own subregion again. A free fn is
 it returns except its return value:
 
 - its signature is not fallible, `@ffi` or `@export`, has no
-  generics, and every parameter and the return (if any) is a
-  by-value scalar (`Int`, `Uint`, `Float`, `Bool`, `Duration`) or
-  a `String` — nothing that can carry a pointer to a longer-lived
-  structure in or out;
-- its body holds no struct or locus literal, no method call, no
-  publish and no `self`; it assigns only bare locals; and it calls
-  only other scratch-local fns (by name, by import path, or by a
-  `std::` path naming a Hale-source stdlib fn, which is held to
-  the same rule), the value builtins (`len`, `to_string`, `min`,
-  `max`, `abs`, `Int`, `Float`, `print`/`println` and their
-  `e`-forms), or runtime primitives under `std::str`, `std::math`,
-  `std::json`, `std::crypto` and `std::env`.
+  generics, every parameter is a by-value scalar (`Int`, `Uint`,
+  `Float`, `Bool`, `Duration`), a `String`, or a *plain record* — a
+  non-generic `type` record whose every field is one of those or a
+  `bounded` list of them, with literal defaults (GH #2090; a locus,
+  `Bytes`, an array, a tuple and a fn pointer are not plain) — and the
+  return (if any) is a scalar or a `String`: nothing that can carry a
+  pointer to a longer-lived structure in, and nothing but a value the
+  epilogue copies cheaply out. A returned record keeps the caller-arena
+  routing: built in the fn's own arena it would be deep-copied whole at
+  every return;
+- its body holds no locus literal, no method call, no publish and no
+  `self`; its record literals are of plain records; it assigns bare
+  locals; and a write through a place — a field assignment, or
+  `push`, `set`, `clear`, `truncate` on a `bounded` list — is rooted,
+  by the binding in scope at the write, at a `let` of the body that
+  holds only values the fn made. A parameter is the caller's value,
+  passed by reference, and a `for` binding over a list is an element
+  of it; a `let` holds the caller's storage when it is given a place
+  rooted at either (or at another such `let`) whose type is a record
+  — a record is held by reference, so `Wrap { inner: r }` holds the
+  caller's `r` — or an element `at` reads from such a list (a scalar,
+  a `String` and a `bounded` list are copied where they are stored).
+  Reading a list (`at`, `count`, `for x in r.items`) is allowed
+  anywhere; and it
+  calls only other scratch-local fns (by name, by import path, or by
+  a `std::` path naming a Hale-source stdlib fn, which is held to the
+  same rule), the value builtins (`len`, `to_string`, `min`, `max`,
+  `abs`, `Int`, `Float`, `print`/`println` and their `e`-forms), or
+  runtime primitives under `std::str`, `std::math`, `std::json`,
+  `std::crypto` and `std::env`.
 
 The class is a greatest fixpoint over the call graph, computed
 once over the program lowering walks as a row of the lowering
@@ -1976,6 +1994,16 @@ per-call subregion; the epilogue deep-copies the return value
 into `__caller_arena` and destroys the subregion, so everything
 else the call made is reclaimed at return. Every other free fn
 keeps the caller-arena routing.
+
+Records joined the class with GH #2090, as parameters and as the fn's
+own locals. Before, a helper that built a local record holding a
+`bounded` list and returned a count allocated the record (its list
+inline) in its caller's arena; called from a loop with no per-iteration
+arena of its own — `fn main`'s — every call left its records there
+until `main` returned (a helper building 32 rows per call grew `main` by
+about 6 KiB a call). In the class, the records die at the helper's
+return, whoever calls it. A helper that returns a record is not in the
+class, so what it builds stays in its caller's arena as before.
 
 The case it closes: a helper that walks a String by re-slicing a
 loop-carried local (`rest = rest[(nl + 1)..]`) makes one

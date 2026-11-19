@@ -2303,9 +2303,10 @@ assume the others in a build:
   (`reclaim@locus-dissolve`), a method's or handler's local at its
   per-call scratch destroy aside, as above. Scratch-local is the class
   lowering gives a subregion of its own, freed at return after the
-  return value is copied out: `String` and scalar params and return, no
-  struct or locus literal, no method call, no publish, no `self`, calls
-  only within the class; the check reads the classification lowering
+  return value is copied out: scalar, `String` and plain-record params,
+  a scalar or `String` return, no locus literal, no method call, no publish, no `self`,
+  writes only to the fn's own `let` locals, calls only within the class
+  (`spec/memory.md` § "Scratch-local free fns"); the check reads the classification lowering
   reads, over the same declarations, so the two never disagree. The
   boundary is judged **relative to the loop analyzed**: a fn's return
   falls inside each iteration of a loop that calls the fn and outside

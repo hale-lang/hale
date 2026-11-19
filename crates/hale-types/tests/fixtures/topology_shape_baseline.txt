@@ -1381,6 +1381,10 @@ crates/hale-codegen/tests/returned_aggregate_of_loci.rs#19 47f3ba2a249a121c
 crates/hale-codegen/tests/returned_aggregate_of_loci.rs#20 30dca96faca9c9e7
 crates/hale-codegen/tests/returned_aggregate_of_loci.rs#21 2d3315edb960b6e5
 crates/hale-codegen/tests/returned_aggregate_of_loci.rs#6 c6db3cebbdad4080
+crates/hale-codegen/tests/scratch_local_free_fn.rs#6 d6deff10af0253e3
+crates/hale-codegen/tests/scratch_local_free_fn.rs#7 c90bffedcf802589
+crates/hale-codegen/tests/scratch_local_free_fn.rs#8 c90bffedcf802589
+crates/hale-codegen/tests/scratch_local_free_fn.rs#9 c90bffedcf802589
 crates/hale-codegen/tests/self_containing_locus.rs#2 36d6cde9e9cbbdd1
 crates/hale-codegen/tests/self_containing_locus.rs#3 d2feb059c03c4831
 crates/hale-codegen/tests/self_containing_locus.rs#4 3b2673645848918f
@@ -1758,6 +1762,7 @@ crates/hale-types/tests/accept_interface.rs#4 fea5ca7870373122
 crates/hale-types/tests/accept_interface.rs#5 761a88edace86511
 crates/hale-types/tests/alloc_summary_reach.rs#0 a07acd3ac5e577da
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#0 07485b203c148070
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#10 8db892c998d3e354
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#2 f7961b180a777bce
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#3 d31e1367cfcf11bb
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#4 5db5d696396d3f99
@@ -1765,7 +1770,7 @@ crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#5 2e2829d7a3a9014a
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#6 d75486175e05c654
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#7 53f2395864c58f0b
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#8 b33e2322084d23f0
-crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#9 8db892c998d3e354
+crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#9 da505cb04e25caa7
 crates/hale-types/tests/api_binding_check.rs#0 8209347d14c8722f
 crates/hale-types/tests/api_binding_check.rs#1 9dbcce1e7ab99412
 crates/hale-types/tests/api_serve_check.rs#0 0a1e9649d34072e7

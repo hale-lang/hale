@@ -105,11 +105,14 @@ fn the_boundary_is_relative_to_the_loop() {
 /// `while` with a counter — around a call: a scratch-local fn's local
 /// allocation is reclaimed at its return, inside the iteration (no
 /// verdict moves, its column does); a caller-arena fn's lands in `run`'s
-/// arena and accumulates (it appears).
+/// arena and accumulates (it appears). `Row` holds an array, so it is not
+/// a plain record and `shout_row` taking one stays on its caller's arena
+/// (a plain record param would not, GH #2090:
+/// `a_plain_record_param_is_reclaimed_at_return`).
 #[test]
 fn both_caller_loop_shapes() {
     let src = r#"
-        type Row { text: String; }
+        type Row { text: String; pad: [Int; 2] = [0, 0]; }
         @form(vec) locus Rows { capacity { heap items of Row; } }
         fn shout(s: String) -> Int { let t = s + "!"; return len(t); }
         fn shout_row(r: Row) -> Int { let t = r.text + "!"; return len(t); }
@@ -152,7 +155,7 @@ fn both_caller_loop_shapes() {
     ] {
         let src = format!(
             r#"
-            type Row {{ text: String; }}
+            type Row {{ text: String; pad: [Int; 2] = [0, 0]; }}
             @form(vec) locus Rows {{ capacity {{ heap items of Row; }} }}
             fn shout_row(r: Row) -> Int {{ let t = r.text + "!"; return len(t); }}
             locus App {{ params {{ rows: Rows = Rows {{ }}; n: Int = 3; total: Int = 0; }} run() {{ {body} }} }}
@@ -164,7 +167,7 @@ fn both_caller_loop_shapes() {
     }
     // A loop whose trip count is a constant bounds the accumulation.
     let bounded = r#"
-        type Row { text: String; }
+        type Row { text: String; pad: [Int; 2] = [0, 0]; }
         fn shout_row(r: Row) -> Int { let t = r.text + "!"; return len(t); }
         locus App { params { total: Int = 0; } run() { let mut i = 0; while i < 100 { self.total = self.total + shout_row(Row { text: "y" }); i = i + 1; } } }
         fn main() { App { }; }
@@ -359,7 +362,7 @@ fn mutually_recursive_frames_keep_the_conservative_boundary() {
 #[test]
 fn a_locus_instance_is_not_in_the_callers_arena() {
     let src = r#"
-        type Row { text: String; }
+        type Row { text: String; pad: [Int; 2] = [0, 0]; }
         locus Conn { params { fd: Int = 0; } }
         fn handle(fd: Int, r: Row) -> Int { let c = Conn { fd: fd }; let p = Row { text: r.text }; return len(p.text); }
         locus App { params { n: Int = 3; t: Int = 0; } run() { let mut i = 0; while i < self.n { self.t = self.t + handle(i, Row { text: "r" }); i = i + 1; } } }
@@ -370,11 +373,41 @@ fn a_locus_instance_is_not_in_the_callers_arena() {
     assert!(is.iter().any(|s| s.starts_with("handle StructLit(\"Row\")") && s.ends_with("InCallersArena")), "{is:?}");
 }
 
+/// GH #2090: a fn taking a plain record (scalars, Strings, `bounded`
+/// lists and plain records, literal defaults) and building one is
+/// scratch-local: its allocations are reclaimed at its return, so a
+/// caller's unbounded loop around it accumulates nothing. One that writes
+/// into its record parameter's list stays on its caller's arena (the
+/// parameter is the caller's value, passed by reference).
+#[test]
+fn a_plain_record_param_is_reclaimed_at_return() {
+    let src = r#"
+        type Tag { name: String = ""; }
+        type Row { text: String = ""; tags: bounded[Tag; 4]; }
+        fn shout_row(r: Row) -> Int {
+            let mut v = Row { text: r.text + "!" };
+            v.tags = r.tags;
+            push(v.tags, Tag { name: r.text + "?" }) or discard;
+            return len(v.text) + count(v.tags);
+        }
+        fn fill(r: Row) -> Int { push(r.tags, Tag { name: r.text + "?" }) or discard; return count(r.tags); }
+        locus App { params { n: Int = 3; t: Int = 0; } run() { let mut i = 0; while i < self.n { self.t = self.t + shout_row(Row { text: "y" }) + fill(Row { text: "z" }); i = i + 1; } } }
+        fn main() { App { }; }
+    "#;
+    let now = summarize(src);
+    let dump = now.render();
+    assert_eq!(fn_block(&dump, "shout_row")[0], "fn shout_row [invoked-unboundedly, scratch-local]");
+    assert!(fn_block(&dump, "fill")[0].starts_with("fn fill [") && !fn_block(&dump, "fill")[0].contains("scratch-local"), "{dump}");
+    let (_, is) = leaks(&now);
+    assert!(!is.iter().any(|s| s.starts_with("shout_row")), "{is:?}");
+    assert!(is.iter().any(|s| s.starts_with("fill ") && s.ends_with("InCallersArena")), "{is:?}");
+}
+
 /// The advisory says where a caller-arena allocation goes.
 #[test]
 fn the_callers_arena_wording() {
     let src = r#"
-        type Row { text: String; }
+        type Row { text: String; pad: [Int; 2] = [0, 0]; }
         fn shout_row(r: Row) -> Int { let t = r.text + "!"; return len(t); }
         locus App { params { n: Int = 3; t: Int = 0; } run() { let mut i = 0; while i < self.n { self.t = self.t + shout_row(Row { text: "y" }); i = i + 1; } } }
         fn main() { App { }; }
@@ -657,6 +690,15 @@ fn per_target_moves() {
 /// `module_is_a_name_test` (F.57) is a new target: two tags of values its
 /// fns hand back move into the caller's arena; no leak site goes or
 /// appears.
+/// GH #2090 widened the scratch-local class to plain records (taken and
+/// built, not returned) and the `bounded` builtins on a fn's own locals, so
+/// more fns free at return: every DNA target and the API, JSON and record
+/// test programs gain `reclaim@fn-return` sites and tags, and the targets
+/// new to this list join on those columns alone. No leak site goes or
+/// appears anywhere (the `go` counts are the ones above); `dna/host` reads
+/// 4 verdicts where it read 2 and `dna/host/verb` 1462 where it read 1478 —
+/// sites the old model judged in their locus that a scratch-local fn's
+/// return now reclaims, and in-loop sites of fns now freeing at return.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -668,63 +710,81 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/65-hashmap-anchor-churn: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/74-effect-contracts: 0 go, 0 appear; dump 7 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
+    "crates/hale-codegen/tests/fixtures/examples/92-build-an-api: 0 go, 0 appear; dump 7 tags, 14 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
-    "dna/api: 1 go, 0 appear, 1 move their reason; dump 546 tags, 1345 reclaim, 1 verdicts",
-    "dna/core: 0 go, 0 appear; dump 408 tags, 1043 reclaim, 0 verdicts",
-    "dna/host: 2 go, 0 appear; dump 599 tags, 1397 reclaim, 2 verdicts",
-    "dna/host/verb: 0 go, 0 appear; dump 599 tags, 1156 reclaim, 1478 verdicts",
+    "dna/api: 1 go, 0 appear, 1 move their reason; dump 673 tags, 2160 reclaim, 1 verdicts",
+    "dna/core: 0 go, 0 appear; dump 453 tags, 1232 reclaim, 0 verdicts",
+    "dna/host: 2 go, 0 appear; dump 658 tags, 1609 reclaim, 4 verdicts",
+    "dna/host/verb: 0 go, 0 appear; dump 658 tags, 1345 reclaim, 1462 verdicts",
     "dna/oidc: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
-    "dna/operations: 0 go, 0 appear; dump 498 tags, 1268 reclaim, 0 verdicts",
-    "dna/organism: 0 go, 0 appear; dump 420 tags, 1064 reclaim, 0 verdicts",
-    "dna/organization_runtime: 0 go, 0 appear; dump 498 tags, 1268 reclaim, 0 verdicts",
-    "dna/organization_source: 0 go, 0 appear; dump 408 tags, 1043 reclaim, 0 verdicts",
+    "dna/operations: 0 go, 0 appear; dump 545 tags, 1464 reclaim, 0 verdicts",
+    "dna/organism: 0 go, 0 appear; dump 465 tags, 1253 reclaim, 0 verdicts",
+    "dna/organization_runtime: 0 go, 0 appear; dump 545 tags, 1464 reclaim, 0 verdicts",
+    "dna/organization_source: 0 go, 0 appear; dump 453 tags, 1232 reclaim, 0 verdicts",
     "dna/reflexes: 0 go, 0 appear; dump 17 tags, 26 reclaim, 0 verdicts",
-    "dna/ui: 0 go, 0 appear; dump 410 tags, 1043 reclaim, 0 verdicts",
+    "dna/ui: 0 go, 0 appear; dump 455 tags, 1232 reclaim, 0 verdicts",
+    "tests/hale/accept_interface_fallible_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/api_bearer_roles_test.hl: 0 go, 0 appear; dump 3 tags, 41 reclaim, 0 verdicts",
     "tests/hale/api_big_reply_test.hl: 0 go, 0 appear; dump 1 tags, 20 reclaim, 0 verdicts",
+    "tests/hale/api_binding_run_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/api_binding_test.hl: 0 go, 0 appear; dump 2 tags, 28 reclaim, 0 verdicts",
-    "tests/hale/api_codec_call_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
+    "tests/hale/api_codec_call_test.hl: 0 go, 0 appear; dump 3 tags, 4 reclaim, 0 verdicts",
+    "tests/hale/api_codec_import_test.hl: 0 go, 0 appear; dump 2 tags, 2 reclaim, 0 verdicts",
     "tests/hale/api_context_test.hl: 0 go, 0 appear; dump 2 tags, 49 reclaim, 0 verdicts",
     "tests/hale/api_decimal_field_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
-    "tests/hale/api_encode_linear_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
+    "tests/hale/api_encode_linear_test.hl: 0 go, 0 appear; dump 2 tags, 3 reclaim, 0 verdicts",
+    "tests/hale/api_enum_field_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/api_json_value_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
-    "tests/hale/api_map_wrong_kind_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 1 verdicts",
-    "tests/hale/api_patch_field_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/api_map_field_test.hl: 0 go, 0 appear; dump 5 tags, 26 reclaim, 0 verdicts",
+    "tests/hale/api_map_wrong_kind_test.hl: 0 go, 0 appear; dump 13 tags, 22 reclaim, 3 verdicts",
+    "tests/hale/api_optional_field_test.hl: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
+    "tests/hale/api_patch_field_test.hl: 0 go, 0 appear; dump 3 tags, 3 reclaim, 0 verdicts",
     "tests/hale/api_positional_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 2 verdicts",
     "tests/hale/api_roles_test.hl: 0 go, 0 appear; dump 4 tags, 42 reclaim, 0 verdicts",
     "tests/hale/api_roles_xseed_test.hl: 0 go, 0 appear; dump 2 tags, 38 reclaim, 0 verdicts",
     "tests/hale/api_serve_test.hl: 0 go, 0 appear; dump 3 tags, 27 reclaim, 0 verdicts",
     "tests/hale/api_sleep_loop_latency_test.hl: 0 go, 0 appear; dump 1 tags, 22 reclaim, 0 verdicts",
+    "tests/hale/api_value_map_test.hl: 0 go, 0 appear; dump 2 tags, 6 reclaim, 0 verdicts",
     "tests/hale/block_string_test.hl: 0 go, 0 appear; dump 1 tags, 1 reclaim, 0 verdicts",
     "tests/hale/block_tail_return_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/bounded_part_result_push_test.hl: 0 go, 0 appear; dump 1 tags, 1 reclaim, 0 verdicts",
     "tests/hale/bus_wire_type_set_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/byte_literals_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/chains_tranche2_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/check_build_parity_shapes_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/codegen_gaps_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
-    "tests/hale/contextual_keywords_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/contextual_keywords_test.hl: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "tests/hale/crypto_sha256_stream_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 5 verdicts",
     "tests/hale/decorator_stack_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/display_test.hl: 0 go, 0 appear; dump 5 tags, 0 reclaim, 0 verdicts",
     "tests/hale/ends_with_own_fn_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/factory_field_owner_test.hl: 2 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
     "tests/hale/float_ieee_compare_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/float_widening_surfaces_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
     "tests/hale/freed_keywords_test.hl: 0 go, 0 appear; dump 6 tags, 0 reclaim, 0 verdicts",
     "tests/hale/identities_and_ranges_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/import_list_test.hl: 0 go, 0 appear; dump 1 tags, 1 reclaim, 0 verdicts",
     "tests/hale/imported_fn_value_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/interface_fallible_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/json_enum_field_test.hl: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
     "tests/hale/json_escape_runs_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/json_lone_escapes_test.hl: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
     "tests/hale/let_block_scope_test.hl: 0 go, 0 appear; dump 5 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/literal_default_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/local_place_value_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/module_is_a_name_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/open_slices_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/optional_field_test.hl: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
     "tests/hale/queued_self_cycle_test.hl: 0 go, 0 appear; dump 1 tags, 14 reclaim, 0 verdicts",
-    "tests/hale/rest_fallback_test.hl: 0 go, 0 appear; dump 1 tags, 3 reclaim, 0 verdicts",
+    "tests/hale/rest_fallback_nested_test.hl: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
+    "tests/hale/rest_fallback_self_test.hl: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",
+    "tests/hale/rest_fallback_test.hl: 0 go, 0 appear; dump 4 tags, 7 reclaim, 0 verdicts",
     "tests/hale/sigterm_drains_pinned_test.hl: 0 go, 0 appear; dump 1 tags, 21 reclaim, 0 verdicts",
     "tests/hale/sigterm_no_live_drain_reader_test.hl: 0 go, 0 appear; dump 3 tags, 13 reclaim, 0 verdicts",
     "tests/hale/sigterm_runs_drain_hook_test.hl: 0 go, 0 appear; dump 1 tags, 15 reclaim, 0 verdicts",
     "tests/hale/str_index_of_from_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/string_append_test.hl: 0 go, 0 appear; dump 3 tags, 0 reclaim, 6 verdicts",
-    "tests/hale/string_len_test.hl: 2 go, 0 appear; dump 3 tags, 0 reclaim, 2 verdicts",
+    "tests/hale/string_len_test.hl: 2 go, 0 appear; dump 5 tags, 3 reclaim, 2 verdicts",
     "tests/hale/tail_value_returns_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
 ];

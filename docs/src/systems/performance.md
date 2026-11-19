@@ -17,7 +17,7 @@ Inside any locus method or bus handler, a scratch sub-region opens on entry and 
 | Pattern | Allocation Behavior | Steady-State Arena Growth |
 |---|---|---|
 | Transient values inside a method or handler | Allocated in per-call scratch region; freed on return | Zero |
-| Scratch-local free `fn` (primitives/`String` in and out, no structs, arrays, or method calls) | Uses its own function-local scratch region | Zero |
+| Scratch-local free `fn` (scalars, `String` and plain records in, a scalar or `String` out; may build records and fill their `bounded` lists locally; no arrays, loci or method calls) | Uses its own function-local scratch region | Zero |
 | Scalar field or array-element write (`self.x = v`, `self.arr[i] = v`) | Overwritten in place | Zero |
 | Whole-field replace in a method or handler (`self.latest = Thing { ... }`) | Old `String`/`Bytes` and nested records/tuples/arrays retire at return and recycle | Bounded by peak value size |
 | Fixed scalar scratch array (`let mut t: [Int; 16] = [0; 16];` indexed via `t[i]`) | Allocated on CPU stack frame (up to 8 KiB per function) | Zero |
