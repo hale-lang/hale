@@ -331,6 +331,17 @@ impl TypeKind {
     pub fn scalar_representation() -> Ty {
         Ty::Prim(hale_syntax::ast::PrimType::Int)
     }
+
+    /// Is this an enum no variant of which carries a payload? Lowering
+    /// lays such an enum out as its `i32` tag, inline in the record, list
+    /// slot or local that holds it, as it does a `Bool`
+    /// (hale-codegen's `EnumInfo::has_payload` is this predicate's
+    /// negation, by the same rule: some variant has fields); an enum
+    /// with a payload is a pointer to a cell of its own (spec/types.md,
+    /// the `Enum` row: "a payload-free enum is stored as its tag").
+    pub fn is_payload_free_enum(&self) -> bool {
+        matches!(self, TypeKind::Enum(vs) if vs.iter().all(|v| v.fields.is_empty()))
+    }
 }
 
 #[derive(Debug, Clone)]

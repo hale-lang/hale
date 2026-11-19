@@ -1,0 +1,62 @@
+// A call's result whose record took a parameter's payload-free enum
+// field (`S { n: r.n, st: r.st }`), pushed into a frame's bounded list
+// (GH #2088). A payload-free enum is its inline tag, as an `Int` is, so
+// the result holds nothing of the argument's: the push keeps it as it
+// is (`hale verify` reports no copy), and neither side's later writes
+// reach the other.
+
+type St = enum { idle, busy, done };
+type R { n: Int = 0; st: St = St::idle; }
+type Rs { items: bounded[R; 8]; }
+type S { n: Int = 0; st: St = St::idle; }
+type Ss { items: bounded[S; 8]; }
+
+fn s_of(r: R) -> S {
+    return S { n: r.n, st: r.st };
+}
+
+fn build(rs: Rs) -> Ss {
+    let mut out = Ss { };
+    for r in rs.items {
+        push(out.items, s_of(r)) or discard;
+    }
+    return out;
+}
+
+fn code(st: St) -> Int {
+    return match st {
+        St::idle -> 0,
+        St::busy -> 1,
+        St::done -> 2,
+    };
+}
+
+fn main() {
+    let mut rs = Rs { };
+    push(rs.items, R { n: 1, st: St::idle }) or discard;
+    push(rs.items, R { n: 2, st: St::busy }) or discard;
+    push(rs.items, R { n: 3, st: St::done }) or discard;
+    let mut out = build(rs);
+    std::test::assert_eq_int(count(out.items), 3, "every row is pushed");
+    let s1 = at(out.items, 1) or S { };
+    std::test::assert_eq_int(s1.n, 2, "the pushed n");
+    std::test::assert_eq_int(code(s1.st), 1, "the pushed state");
+
+    // The source's element rewritten: the pushed value keeps its own.
+    let mut r = at(rs.items, 1) or R { };
+    r.st = St::done;
+    r.n = 20;
+    set(rs.items, 1, r) or discard;
+    let src = at(rs.items, 1) or R { };
+    std::test::assert_eq_int(code(src.st), 2, "the source took the write");
+    let kept = at(out.items, 1) or S { };
+    std::test::assert_eq_int(code(kept.st), 1, "the pushed state is the list's own");
+    std::test::assert_eq_int(kept.n, 2, "the pushed n is the list's own");
+
+    // The pushed element rewritten: the source keeps its own.
+    let mut s = at(out.items, 0) or S { };
+    s.st = St::busy;
+    set(out.items, 0, s) or discard;
+    std::test::assert_eq_int(code((at(out.items, 0) or S { }).st), 1, "the list took the write");
+    std::test::assert_eq_int(code((at(rs.items, 0) or R { }).st), 0, "the source is its own");
+}

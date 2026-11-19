@@ -1790,7 +1790,18 @@ Semantics:
   own copy of them. The survey reports it as `copy: a call's result
   holding another name's block stored into a bounded list`; until GH
   #2067 it carried the first reason, whose advice named a call's
-  result as a value nothing else names. A local's list does not
+  result as a value nothing else names. A part is a block by its
+  layout: a record, a `bounded` list's elements, an enum with
+  payloads. A field that is
+  an inline scalar slot (a number, a `Bool`, a `Time`, a unit or
+  scalar declaration, a payload-free enum, which is its tag) is
+  copied with the record and holds nothing of the argument's, so
+  `fn s_of(r: R) -> S { return S { n: r.n, st: r.st }; }` with `st` a
+  payload-free enum is a fresh result, stored as it is; a `String`
+  field taken whole (`s: r.s`) is a leaf no write reaches, and is
+  stored as it is too. Until GH #2088 a payload-free enum field
+  counted as a block, so that push was reported, and copied, as one
+  holding the argument's block. A local's list does not
   retire what a `set` replaces: the frame's arena frees it with the
   frame. Until 2026-11-12 only a place a locus holds copied: a local's
   list kept the very block it was handed, and a write through either
