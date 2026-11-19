@@ -37120,26 +37120,36 @@ static void lotus_unwind_run(void) {
  * teardown is already running (an assertion in a `dissolve()` it runs is
  * a no-op). */
 void lotus_test_fail_unwind(void) {
-    lotus_drain_stop_raise(LOTUS_DRAIN_TEST);
     if (!lotus_unwind_on_main()) {
-        /* Main's state is main's: ask, and read nothing of it. */
+        /* Main's state is main's: ask, and read nothing of it. The ask
+         * goes up before the stop (GH #2080): main reads the stop's bit
+         * at a sleep slice or a loop's back-edge, and whatever reads the
+         * bit must find the ask beside it, or main ends its loop on the
+         * stop, finds nothing to tear down, and runs on past it. */
         __atomic_store_n(&g_unwind_requested, 1, __ATOMIC_RELEASE);
+        lotus_drain_stop_raise(LOTUS_DRAIN_TEST);
         return;
     }
+    lotus_drain_stop_raise(LOTUS_DRAIN_TEST);
     if (g_unwinding) return;
     lotus_unwind_run();
 }
 
-/* Main's drain point: a failure another thread raised is torn down here. */
+/* Main's drain point: a failure another thread raised is torn down here.
+ * The fence pairs a monotonic read of the stop's bit made before this
+ * call (a back-edge's, a sleep slice's) with the release that raised it,
+ * so the ask stored ahead of the bit is seen (GH #2080). */
 static void lotus_unwind_service(void) {
     if (!lotus_unwind_on_main()) return;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
     if (!__atomic_load_n(&g_unwind_requested, __ATOMIC_ACQUIRE) || g_unwinding) return;
     lotus_unwind_run();
 }
 
-/* A park point on any thread (a sleep slice, `yield;`): on main, the
- * failure another thread raised is torn down here, whether or not the
- * program has a bus to drain. */
+/* A park point on any thread (a sleep slice, `yield;`, a loop's
+ * back-edge that a stop ends): on main, the failure another thread
+ * raised is torn down here, whether or not the program has a bus to
+ * drain. */
 void lotus_unwind_poll(void) {
     lotus_unwind_service();
 }
