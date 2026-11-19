@@ -563,3 +563,5 @@ fn main() {
 - **Wire Record Design & Evolution**: [Designing API Messages](./api-messages.md).
 - **Role Declarations & Hierarchy**: [`spec/types.md` § Roles](https://github.com/hale-lang/hale/blob/main/spec/types.md#roles-gh-1109-1417).
 - **`std::api` Types & Interfaces**: [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md) (`Principal`, `Context`, `RoleSource`, `BearerSource`, `StaticRoles`).
+
+Next: [API Surfaces, RPC, REST, MCP & gRPC](./api.md).

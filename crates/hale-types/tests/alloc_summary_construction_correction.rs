@@ -724,8 +724,10 @@ fn own_entries_run_to_exit_programs() {
     // sources push the parts into a vec the same way (GH #1995 S2, chain
     // sources); 30: `tests/hale/bounded_part_result_push_test.hl`, whose
     // `summaries` stores its own copy of each row's summary and whose
-    // `summary_of` builds the record it returns (GH #2067).
-    assert_eq!(moved, 30, "the run-to-exit programs among the targets that lose a site");
+    // `summary_of` builds the record it returns (GH #2067); 31:
+    // `tests/hale/bounded_inline_enum_result_push_test.hl`, whose `s_of`
+    // builds the record `build` pushes as it is (GH #2088).
+    assert_eq!(moved, 31, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -996,6 +998,10 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/api_value_map_test.hl: main StringConcat #6 InUnboundedLoop",
             "tests/hale/api_value_map_test.hl: main StringConcat #7 InUnboundedLoop",
             "tests/hale/api_value_map_test.hl: main StringConcat #8 InUnboundedLoop",
+            // `tests/hale/bounded_inline_enum_result_push_test.hl`: the record
+            // `s_of` builds and `build` pushes as it is, no `CellCopy` beside
+            // it, since its payload-free enum field is an inline tag (GH #2088)
+            "tests/hale/bounded_inline_enum_result_push_test.hl: s_of StructLit(\"S\") #1 InvokedUnboundedly",
             "tests/hale/bounded_part_result_push_test.hl: summaries CellCopy(\"copy: a call's result holding another name's block stored into a bounded list\") #1 InUnboundedLoop",
             "tests/hale/bounded_part_result_push_test.hl: summary_of StructLit(\"Sum\") #1 InvokedUnboundedly",
             // `tests/hale/bounded_payload_enum_test.hl`: the text its `show` and

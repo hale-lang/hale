@@ -1,4 +1,4 @@
-# Part III: Static Verification & Architecture Laws
+# Part IV: Verification & Architecture Laws
 
 Because `hale check` derives a complete, canonical graph of your program—every locus, ownership edge, bus publish/subscribe edge, function call, and side effect—you can state architectural and capability invariants in source code and enforce them at compile time with zero runtime overhead.
 
@@ -12,8 +12,9 @@ Because `hale check` derives a complete, canonical graph of your program—every
 
 When any contract or claim fails, `hale check` rejects the build and emits a concrete **witness path** naming every function call and topic hop that violated the rule.
 
-## Chapters in Part III
+## Chapters in Part IV
 
+- **[The Application Model](../the-model.md)** — The relational graph the compiler derives from a program (its loci, ownership tree, topics and edges), which every check in this part reads.
 - **[Effect Contracts & Resource Budgets](../effects.md)** — Built-in and user-defined effect classes, domain-indexed effects, allocation ceilings (`@budget`), and lifecycle phase restrictions (`@phase_effects`).
 - **[Architectural Claims & Topology Proofs](../claims.md)** — Group declarations, reachability/gating/bound/coverage claims, secret confinement (`@sealed` + `std::secret`), and topology snapshot diffing (`--dump-topology`, `--check-topology`).
 - **[Constitutions & Multi-Environment Laws](../constitutions.md)** — Writing and extending `constitution` blocks, adopting `std::law::Standard`, and verifying multi-environment matrices (`hale check --matrix`).

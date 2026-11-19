@@ -192,4 +192,4 @@ app_hits 1
 - **Owned storage**: `Registry` owns its internal metric map and histogram list children, so returning a `Registry` by value from a helper function (`build_registry()`) keeps its storage alive as long as the `Registry` lives. (If you explicitly override the `store:` or `histograms:` params on `Registry`, construct those overrides in a scope that outlives every scrape.)
 - **Cross-pool thread safety**: The metric map inside `Registry` uses `sync = serialized`, allowing worker pools to mutate counters, gauges, and histograms concurrently while a scrape server renders `/metrics` on a separate pool or `pinned` thread.
 
-Next: [Observing a program](./observing.md).
+Next: [Observability & Probes](./observing.md).

@@ -169,4 +169,4 @@ The hard keywords, the declaration and statement words (`fn`, `type`, `let`, `if
 
 No word is reserved for future use: `async`, `await`, `trait`, `impl`, `macro` and `export` are ordinary names (F.47), so `let await = 1;` and `fn export()` are fine. (`@export` is an annotation, which reads the name after `@`.)
 
-Next: [Math, Money & Time](./math.md).
+Next: [Functions](./functions.md).

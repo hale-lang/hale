@@ -229,4 +229,4 @@ locus Unrouted {
 }
 ```
 
-Next: [Concurrency & Placement](./concurrency.md).
+Next: [Concurrency & Thread Placement](./concurrency.md).

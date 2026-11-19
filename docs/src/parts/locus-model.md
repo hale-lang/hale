@@ -1,6 +1,6 @@
-# Part II: Concurrency, Services & APIs
+# Part III: Services & Concurrency
 
-Part II covers building concurrent, long-running services, API servers, and multi-binary distributed systems using the **locus model**.
+Part III covers building concurrent, long-running services, API servers, and multi-binary distributed systems using the **locus model**.
 
 ## Core Concepts
 
@@ -12,10 +12,12 @@ Part II covers building concurrent, long-running services, API servers, and mult
 - **Typed API Surfaces (`api` & `@rpc`):** Declare an `api` contract once and serve it over HTTP RPC, REST (`http::Rest`), Unix sockets (`unix::Rpc`), gRPC (`grpc::Rpc`), MCP (`mcp::Rpc`), or WebSockets (`ws::Hub`), or consume external OpenAPI/MCP specs with `hale api import`.
 - **Multi-Binary Fleets (`bindings` & `fleet locus`):** Rebind topics across processes (`unix`, `shm_ring`, broker adapters) and verify multi-binary topologies in source with `fleet locus` and `hale deploy render`.
 
-## Chapters in Part II
+## Chapters in Part III
 
 | Topic | Chapters |
 |---|---|
 | **Lifecycle, Bus & Concurrency** | [Locus Lifecycle](../services/lifecycle.md) · [The Typed Message Bus](../services/bus.md) · [Concurrency & Thread Placement](../services/concurrency.md) · [Ownership, Children & Flow Reclamation](../services/parents-children.md) · [Supervision & Structural Failure](../services/failure.md) |
 | **Boundaries & Data Access** | [Interfaces & Contracts](../services/interfaces.md) · [Seams & Typed Pipelines](../services/seams.md) · [Repositories (`@repo`)](../services/repositories.md) · [Service Composition Patterns](../services/patterns.md) |
-| **APIs & Distributed Systems** | [Tutorial: Build a Typed API](../services/build-an-api.md) · [API Surfaces, RPC, REST, MCP & gRPC](../services/api.md) · [API Wire Schemas & Compatibility](../services/api-messages.md) · [Multi-Binary Systems, Fleets & Deployment](../services/multi-binary.md) · [The Application Model](../the-model.md) |
+| **APIs & Distributed Systems** | [Tutorial: Build a Typed API](../services/build-an-api.md) · [API Surfaces, RPC, REST, MCP & gRPC](../services/api.md) · [API Wire Schemas & Compatibility](../services/api-messages.md) · [Multi-Binary Systems, Fleets & Deployment](../services/multi-binary.md) |
+
+Next: [Locus Lifecycle](../services/lifecycle.md).

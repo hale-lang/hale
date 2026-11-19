@@ -246,4 +246,4 @@ fn describe(m: Inbound) -> String {
 
 A record can take type parameters (`type Envelope<T> { data: T; request_id: String = ""; }`), and so can a locus or a `fn`. See [Generics](./generics.md).
 
-Next: [Generics](./generics.md).
+Next: [Strings & Bytes](../basics/strings.md).

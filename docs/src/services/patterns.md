@@ -275,4 +275,4 @@ locus Gateway {
 - `self.desk` is a **locus hop**: the compiler routes each member of `Inbound` (`NewOrder`, `Cancel`) to the unique `Desk` method accepting that parameter type, failing the build if any member is unhandled or ambiguous.
 - Because `WireError` is a member of `Outbound`, `decode` failures automatically route forward to `self.wire.encode` and become wire replies; unhandled errors are routed via `or end;` or `or violate <closure>;`.
 
-Next: [Seams](./seams.md).
+Next: [Repositories (`@repo`)](./repositories.md).

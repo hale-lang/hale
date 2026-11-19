@@ -887,6 +887,11 @@ impl<'a> Bodies<'a> {
                     }
                     Some(TopSymbol::Type(t)) => match &t.kind {
                         TypeKind::Struct(_) => return Class::Record,
+                        // A payload-free enum is its inline `i32` tag, as
+                        // lowering lays it out: a scalar, which a field or
+                        // slot holds by value, no block of its own (GH
+                        // #2088). One with payloads is a pointer to a cell.
+                        k @ TypeKind::Enum(_) if k.is_payload_free_enum() => return Class::Scalar,
                         TypeKind::Enum(_) => return Class::Value,
                         TypeKind::Alias(t) => cur = t,
                         TypeKind::Scalar(base) => {
@@ -900,6 +905,7 @@ impl<'a> Bodies<'a> {
                     None => {
                         return match self.monos.get(n) {
                             Some(MonoShape::Struct(_)) => Class::Record,
+                            Some(MonoShape::Enum(vs)) if vs.iter().all(Vec::is_empty) => Class::Scalar,
                             Some(MonoShape::Enum(_)) => Class::Value,
                             Some(MonoShape::Locus { form: true, view_form, .. }) => Class::Form(*view_form),
                             Some(MonoShape::Locus { .. }) => Class::Handle,
@@ -953,9 +959,9 @@ impl<'a> Bodies<'a> {
     }
 
     /// What a value of type `ty` may reach (GH #1554): every block it is
-    /// or holds (a record, an enum, an array, a tuple, a locus's storage),
-    /// by type; whether a String or a Bytes leaf; and whether a type the
-    /// pass cannot see into (`Unknown`, a generic parameter, an interface,
+    /// or holds (a record, an enum with payloads, an array, a tuple, a
+    /// locus's storage), by type; whether a String or a Bytes leaf; and
+    /// whether a type the pass cannot see into (`Unknown`, a generic parameter, an interface,
     /// whatever serves it), which may be anything.
     fn reach(&self, ty: &Ty, out: &mut Reach) {
         use hale_syntax::ast::PrimType::{Bytes, BytesView, String as Str, StringView};
@@ -983,6 +989,9 @@ impl<'a> Bodies<'a> {
                             fields.iter().for_each(|f| self.reach(&f.ty, out));
                         }
                     }
+                    // A payload-free enum is an inline tag, no block (GH
+                    // #2088): two types that each hold one share nothing.
+                    k @ TypeKind::Enum(_) if k.is_payload_free_enum() => {}
                     TypeKind::Enum(variants) => {
                         if out.blocks.insert(n.clone()) {
                             variants.iter().flat_map(|v| &v.fields).for_each(|f| self.reach(f, out));
@@ -1002,6 +1011,7 @@ impl<'a> Bodies<'a> {
                 // A monomorph, through its instantiation; a generic
                 // parameter or a name nothing declares may be anything.
                 None => match self.monos.get(n) {
+                    Some(MonoShape::Enum(vs)) if vs.iter().all(Vec::is_empty) => {}
                     Some(shape) => {
                         if out.blocks.insert(n.clone()) {
                             let parts: Vec<&Ty> = match shape {
@@ -1184,13 +1194,14 @@ enum Alias {
 /// What a type is, as the pass needs to know it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
-    /// An enum, a tuple, an array: a value the frame holds (its fields
-    /// view nothing another write replaces).
+    /// An enum with payloads, a tuple, an array: a value the frame holds
+    /// (its fields view nothing another write replaces).
     Value,
     /// A struct: a value, which a `let` from a place binds as a copy.
     Record,
-    /// A primitive (a number, a `Bool`, a `String`, `Bytes`): a value
-    /// nothing writes into, only replaces.
+    /// A primitive (a number, a `Bool`, a `String`, `Bytes`), a scalar
+    /// declaration, a payload-free enum (its inline tag, GH #2088): a
+    /// value nothing writes into, only replaces.
     Scalar,
     /// A value laid out inline in the record holding it (a fixed array
     /// of scalars, a bounded list): a write into it writes the record's
