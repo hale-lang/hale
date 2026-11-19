@@ -1475,9 +1475,8 @@ does and `push(d, 5)` into a `let` `bounded` list does: declare the
 binding `let mut`. The rule is Rust's, and it is what "immutable
 binding" says. A field or element write through a `let` (a plain
 assignment or a compound one, `p.x += 1`, `l.a.y = 3`, `xs[i] = v`) is
-a `deprecated:` warning in v0.35 ("\`p.x\` writes into \`p\`, which is
-declared with \`let\`; declare it \`let mut p\`") and an error from
-v0.36 (STABILITY.md § Deprecation). It is no aliasing rule: a write
+an error at the write ("\`p.x\` writes into \`p\`, which is declared
+with \`let\`; declare it \`let mut p\`"). It is no aliasing rule: a write
 into a local never reaches the place it was read from (§ "A local bound
 from a place is yours"), with or without `mut`.
 
@@ -1487,9 +1486,17 @@ from a place is yours" describes; a write through a parameter of
 caller storage is spec/memory.md's. A binding that holds a locus (a
 handle: `let c = Counter { }; c.n = 4;`, a generic locus's
 `let c: Cell<Int> = …`, through an alias too, or a binding typed as an
-interface a locus is held through) writes the locus's
-state, as `self.n = 4` does, and a cell from a capacity slot names the
-slot: the rule reaches neither.
+interface a locus is held through), or a place on the
+way to the written one that holds a locus (`ls[0].n = 4` through
+`let ls = [Counter { }]`), writes the locus's state, as `self.n = 4`
+does, and a cell from a capacity slot names the
+slot: the rule reaches neither. Nor does it reach a binding whose type
+the check could not settle (its initializer is itself an error, or
+names a declaration the checked files do not hold): such a binding may
+hold a locus, and the error it would raise belongs to the initializer.
+A generic fn's binding of a parameter's type is judged at each
+monomorph, with the argument bound: the write is refused where `T` is
+a record or an array, and is the locus's state where `T` is a locus.
 
 For `params` / locus state, the implicit rule is that fields
 are mutable through `self.x = ...` (per F.3). The locus's

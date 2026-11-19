@@ -1,39 +1,26 @@
 # Stability policy
 
-Hale is pre-1.0. This page says what a release may change, how a change
-reaches you, and what 1.0 will promise. It replaces the earlier rule
-that nothing was promised before 1.0 (GH #1950). It binds the language
-and the standard library. The toolchain's commands and the libraries
-built in Hale (DNA, the habitat) follow the same release rules but
-carry no 1.0 promise of their own.
+Hale is pre-1.0 and still changing quickly. This page says what a
+release may change, how a change reaches you, and what 1.0 will
+promise. It binds the language and the standard library. The
+toolchain's commands and the libraries built in Hale (DNA, the habitat)
+follow the same release rules but carry no 1.0 promise of their own.
 
-## Releases
+## Before 1.0
 
 Hale's version is `0.MINOR.PATCH`.
 
-**A patch release fixes bugs.** It never changes the language or the
-stdlib's meaning for a correct program. It may:
-
-- fix a crash, a miscompile, a leak, a hang or a wrong answer, so that
-  a program does what the spec already says;
-- refuse a program that never worked, such as a program the checker
-  passed and the build then failed on, or one that crashed the compiler;
-- improve a diagnostic, a performance profile, the docs or the tools.
-
-A fix that changes what a correct program observably does waits for the
-next minor release, even if the old behaviour was a mistake. Examples
-are an exit code, a value a stdlib function returns, whether a store
-copies, or the order of an output. "Correct" means the program builds
-and does what the spec of its day says. A program that only worked
-because of a bug the spec contradicts is not covered, but the fix is
-still listed under Breaking when such programs are likely to exist.
-Two patch releases broke this rule and are why it is written down:
-SIGTERM's exit code moved from 143 to 0 in v0.32.8, and bounded
-`push`/`set` started copying in v0.32.13.
-
-**A minor release may break programs.** Each break follows the
-deprecation rule below (stable tier) and is listed under its release's
-Breaking heading with its migration.
+- **Any release may change the language or the stdlib.** A patch
+  release is usually a bug fix, but nothing holds a change back for a
+  minor one.
+- **A change that breaks programs migrates the in-repo code in the same
+  PR** (the stdlib, DNA, iris, the tests, the examples, the book), and
+  is listed under its release's `### Breaking` heading with a one-line
+  migration.
+- **There are no deprecation windows before 1.0.** A form that goes
+  away is refused in the release that removes it, and its error points
+  at the replacement. A change may still warn first when that is the
+  easier migration, but it owes no window.
 
 ## Every release names its breaking changes
 
@@ -53,92 +40,46 @@ a fragment that declares neither, gathers every fragment's Breaking
 bullets under the release's one heading, and drops the `Breaking: none`
 lines.
 
-## Deprecation
-
-A form of the stable tier that is removed, or whose meaning changes,
-goes through a warning before it is refused:
-
-1. **Warn.** In the minor release that introduces the replacement,
-   `hale check`, `build`, `run` and `test` still accept the old form.
-   They emit a warning of the **`deprecated`** class: an ordinary
-   non-fatal diagnostic (`DiagKind::Warn`) whose message begins
-   `deprecated:`. It names the replacement and the release that will
-   refuse the old form, for example `deprecated: ... write ... instead;
-   v0.N+1 refuses this`. The LSP shows it at the use site like any
-   warning. The change is listed under that release's Breaking heading
-   as a deprecation.
-2. **Refuse.** No earlier than the next minor release, the old form
-   becomes an error. The error keeps pointing at the replacement. This
-   release lists the refusal under Breaking again.
-
-The window is at least one minor release. It may be longer, and the
-warning says which release refuses. A deprecation never starts in a
-patch release. The precedent is F.42: a `fn` that may violate and
-returns nothing is warned about until a later release makes the rule
-the law.
-
-The experimental tier has no window. A change to it may land in any
-minor release, and it is still listed under Breaking.
-
 ## Tiers
 
-Every stdlib namespace and every file of `spec/` is **stable** or
-**experimental**. The table is [`spec/stability.toml`](./spec/stability.toml).
-The book renders it in [Stability & Compatibility](./docs/src/stability.md).
+Every stdlib namespace and every file of `spec/` is marked **stable** or
+**experimental** in [`spec/stability.toml`](./spec/stability.toml). The
+book renders it in [Stability & Compatibility](./docs/src/stability.md).
+Before 1.0 the table is information, not a rule: it says which surface
+is settled and which is new or still moving, and each experimental row
+says why. Both tiers change under the rules above. At 1.0 the stable
+tier becomes the 1.x promise (below).
 
-- **stable:** covered by the deprecation rule now, and by the 1.x
-  promise at 1.0.
-- **experimental:** may change in any minor release without a window.
-  Each experimental row says why.
-
-A stable namespace may hold experimental functions (`experimental_fns`).
-A stable spec file may hold experimental sections (`experimental_sections`,
+A stable namespace may hold experimental functions (`experimental_fns`),
+and a stable spec file experimental sections (`experimental_sections`,
 by their `## ` heading). A function whose name begins with `__` is a
-compiler hook, never surface, whatever its tier. The graph registry's
-Reserved families (`spec/registry.md`) are experimental until they have
-a producer.
-
-The first assignment puts the core language in the stable tier: types,
-semantics, memory, forms, tokens, the grammar and the FFI. It also
-holds the stdlib's everyday namespaces, among them `std::str`,
-`std::bytes`, `std::json`, `std::time`, `std::http`, `std::io::*`,
-`std::crypto` and `std::decimal`.
-
-The experimental tier holds the areas that are new or still moving.
-In the stdlib: `std::u256` and `std::i256`, `std::io::h2`,
-`std::observe` and `std::metrics`, `std::api`, the internal transports
-(`std::io::mirror`, `std::ring`, `std::shm`), and the DNA-facing
-namespaces (`std::secret`, `std::tar`, `std::ts`). In the spec: the
-unit dialect (`spec/units.md`), the api binding (`spec/api.md`), the
-canonical model and its registry, `packages.md`, and DNA and the habitat.
+compiler hook, never surface. The graph registry's Reserved families
+(`spec/registry.md`) are experimental until they have a producer.
 
 A new namespace or spec file declares its tier in the same PR.
 `crates/hale-types/tests/stability_tiers.rs` fails on one without a
 tier, on a row that names nothing, and on a book table that has drifted.
-Promoting an entry to stable is a `### Changed` entry in that release's
-CHANGELOG. Demoting a stable entry is a break, and follows the
-deprecation rule.
 
 ## Keywords
 
-The keyword list is frozen. [`spec/keywords.txt`](./spec/keywords.txt)
+The keyword list is pinned. [`spec/keywords.txt`](./spec/keywords.txt)
 holds every hard and contextual keyword.
 `crates/hale-syntax/tests/keyword_freeze.rs` fails when it differs from
 `crates/hale-syntax/src/keywords.rs`, or when the lexer reserves a word
-the list does not name.
+the list does not name, so a change to it is deliberate.
 
-Adding, removing or reclassifying a keyword is a language change and
-needs an RFC. An RFC is an issue titled `RFC: …`, discussed in the open,
-and decided by the maintainers. Its decision is recorded as an F-series
-entry in [`spec/decisions.md`](./spec/decisions.md). The implementing PR
-edits `spec/keywords.txt` and lists the change under Breaking. A new
-hard keyword breaks every program that uses the word as a name. A new
-contextual keyword (F.43) breaks only programs that use the word in its
-new position, which is why a new word is contextual by default.
+Before 1.0 a change needs no RFC. Adding, removing or reclassifying a
+keyword needs a decision entry (an F-series entry in
+[`spec/decisions.md`](./spec/decisions.md)) and a CHANGELOG fragment.
+The implementing PR edits `spec/keywords.txt`, and lists the change
+under Breaking when it can break a program. A new hard keyword breaks
+every program that uses the word as a name. A new contextual keyword
+(F.43) breaks only programs that use the word in its new position,
+which is why a new word is contextual by default.
 
-The five words reserved for future use (`trait`, `impl`, `async`,
-`await`, `macro`) have a proposed decision, F.47 in `spec/decisions.md`,
-awaiting confirmation. It is settled before 1.0.
+F.47 freed the five words once reserved for future use (`trait`,
+`impl`, `async`, `await`, `macro`) and `export`, which is an annotation
+name (`@export`), not a reserved word.
 
 ## Bugs and soundness
 
@@ -153,9 +94,8 @@ issue tracker and not only from PRs:
   enforce, or an ownership or lifecycle rule that a program can break
   without a diagnostic.
 
-A fix for either may ship in a patch release (see Releases). A
-soundness fix that refuses programs which used to build is listed under
-Breaking, even in a patch.
+A soundness fix that refuses programs which used to build is listed
+under Breaking, like any other break.
 
 ## What 1.0 promises
 
@@ -166,7 +106,8 @@ may change that, and each is listed under Breaking with its migration.
 A 1.x minor release may add surface, deprecate a form, which then warns
 for the rest of 1.x, and promote experimental surface to stable. It
 never removes or changes stable surface. A removal waits for 2.0. The
-experimental tier keeps its rules inside 1.x.
+experimental tier may still change in a 1.x minor release, listed under
+Breaking.
 
 **No editions.** Hale 1.x has one language, and a break waits for 2.0.
 Editions exist mainly so a language can claim new keywords, and so
@@ -188,6 +129,11 @@ beyond their documented digests, or the toolchain's performance.
 
 ## The v1 exit gates
 
+> **Draft.** These gates are being redone with the maintainer: what 1.0
+> promises about stability, the performance targets it holds to, the
+> platforms it supports, and its scope. Until that lands, the list below
+> is the previous draft, kept for reference.
+
 Hale is called 1.0 when all of these hold together:
 
 1. **Three consecutive minor releases with no language or stdlib
@@ -202,7 +148,7 @@ Hale is called 1.0 when all of these hold together:
    (1519 cells) and on `lifecycle_matrix.rs`, with every `KNOWN_OPEN`
    entry closed.
 4. **The open questions this policy names are settled**: the reserved
-   keywords (F.47), and a tier for every namespace and spec file. The
-   test keeps the second true.
+   keywords (settled by F.47), and a tier for every namespace and spec
+   file. The test keeps the second true.
 
 GH #1950 tracks the gates.

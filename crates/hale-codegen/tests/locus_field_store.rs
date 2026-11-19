@@ -124,7 +124,7 @@ fn a_store_from_outside_a_locus_never_shares_the_callers_value() {
             put_arr(l, r);
             l.bump();
             show(\"locus wrote\", r);
-            let q = fresh();
+            let mut q = fresh();
             let l2 = L {{ }};
             put_arr(l2, q);
             q.arr[0].k = 5;

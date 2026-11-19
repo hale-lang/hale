@@ -1407,8 +1407,14 @@ fn walk_bundle(
         by_decl.insert(key.clone(), per);
     }
     cx.specialize_generic_bodies();
-    let kept = std::mem::take(&mut cx.kept_specialization_diags);
-    cx.diags.extend(kept);
+    // A finding the ordinary walk already reported (a template's own
+    // write through a `let` of a concrete type, which every monomorph's
+    // walk reaches again) is not reported twice.
+    for d in std::mem::take(&mut cx.kept_specialization_diags) {
+        if !cx.diags.iter().any(|e| e.span == d.span && e.message == d.message) {
+            cx.diags.push(d);
+        }
+    }
     cx.settle_decimal_literals();
     // The walks per monomorph keep their param accesses alone: an access
     // through a value of a parameter type is judged there, against every
@@ -11794,9 +11800,23 @@ struct LocalSym {
     param_place: bool,
     /// GH #2022: declared by a `let` (or a tuple `let`), not a parameter,
     /// a loop variable or a pattern binding. A field or element write
-    /// through a `let` that is not `let mut` is deprecated
-    /// (`deprecations::let_write_warning`).
+    /// through a `let` that is not `let mut` is an error
+    /// ([`let_write_error`]).
     from_let: bool,
+}
+
+/// GH #2022: a field or element write through a binding declared with
+/// `let` (not `let mut`): `let p = Point { … }; p.x = 1;`, `xs[0] = 7`.
+/// Bindings are immutable by default (spec/types.md § Mutability), and a
+/// write into the value a `let` holds, at any depth, is a write the
+/// binding was declared not to permit, as a `push` into a `let`
+/// `bounded` list is. `name` is the binding, `written` the place as
+/// written (`p.x`, `xs[..]`).
+fn let_write_error(name: &str, written: &str) -> String {
+    format!(
+        "`{written}` writes into `{name}`, which is declared with `let`; declare it `let mut {name}`. \
+         A `let` binding is immutable, the value it holds included (spec/types.md § Mutability)"
+    )
 }
 
 /// F.22: where a `Cell<T>` came from: the slot of the locus whose body
@@ -17435,11 +17455,11 @@ impl<'a> Checker<'a> {
                 // immutable. `self.field = ...` is also allowed
                 // because `self` is locus state, not a binding.
                 // GH #2022: a field or element write through a `let`
-                // binding (not `let mut`) is deprecated: `let` makes the
+                // binding (not `let mut`) is an error: `let` makes the
                 // binding immutable, the value it holds included
                 // (spec/types.md § Mutability), as a `push` into a `let`
-                // bounded list already is refused. A warning this minor
-                // (STABILITY.md § Deprecation), a refusal in the next.
+                // bounded list is refused. (v0.35 warned; the pre-1.0
+                // policy, STABILITY.md, made it an error at once.)
                 // Not through a parameter, a loop variable or a pattern
                 // binding (no `mut` spelling exists for them), a cell
                 // (it names a slot, not a value of the binding's own),
@@ -17451,16 +17471,7 @@ impl<'a> Checker<'a> {
                         // (`Counter<Int>` is `Counter_Int`, which the scope
                         // declares as no locus), the template itself, or an
                         // interface a locus is held through.
-                        let locus_handle = match self.through_aliases(sym.ty.clone()) {
-                            Ty::Named(n) => {
-                                matches!(
-                                    self.top.lookup(&n),
-                                    Some(TopSymbol::Locus(_) | TopSymbol::Interface(_))
-                                ) || self.generic_loci.contains_key(n.as_str())
-                                    || self.locus_monomorph_shown(&n).is_some()
-                            }
-                            _ => false,
-                        };
+                        let locus_handle = self.let_write_reaches_a_handle(&sym.ty, &target.tail);
                         if sym.from_let && !sym.is_mut && sym.cell.is_none() && !locus_handle {
                             let mut written = target.head.name.clone();
                             for seg in &target.tail {
@@ -17472,10 +17483,11 @@ impl<'a> Checker<'a> {
                                     _ => written.push_str("[..]"),
                                 }
                             }
-                            self.diags.push(Diag::warn(
-                                *span,
-                                crate::deprecations::let_write_warning(&target.head.name, &written),
-                            ));
+                            // The template walk types a parameter-typed
+                            // binding `Unknown` and leaves its write alone (it
+                            // may hold a locus); a monomorph's walk, with the
+                            // arguments bound, knows, and keeps its refusal.
+                            self.push_or_keep(Diag::ty(*span, let_write_error(&target.head.name, &written)));
                         }
                     }
                 }
@@ -18655,6 +18667,48 @@ impl<'a> Checker<'a> {
             }
         }
         ty
+    }
+
+    /// GH #2022: whether a write through a `let` binding of type `ty` at
+    /// the place `tail` spells lands in a locus's state rather than in the
+    /// binding's value: the binding, or a place on the way to the written
+    /// one (`ls[0]` in `ls[0].r.arr = v`), is a handle (a locus, a generic
+    /// locus's monomorph, which the scope declares as no locus, the
+    /// template itself, or an interface a locus is held through). The
+    /// write is the locus's, as `self.f = …` is. A type the
+    /// check could not settle (an unbound callee, a name the seed declares
+    /// elsewhere when one file is checked alone) may be a handle too, so it
+    /// answers yes: the error never lands on a locus write the checker
+    /// could not see the type of.
+    fn let_write_reaches_a_handle(&self, ty: &Ty, tail: &[hale_syntax::ast::LValueSeg]) -> bool {
+        let mut ty = ty.clone();
+        for seg in tail {
+            match self.through_aliases(ty.clone()) {
+                Ty::Unknown => return true,
+                Ty::Named(n)
+                    if matches!(
+                        self.top.lookup(&n),
+                        Some(TopSymbol::Locus(_) | TopSymbol::Interface(_))
+                    ) || self.generic_loci.contains_key(n.as_str())
+                        || self.locus_monomorph_shown(&n).is_some() =>
+                {
+                    return true;
+                }
+                here => {
+                    ty = match seg {
+                        hale_syntax::ast::LValueSeg::Field(f) => match self.field_ty(&here, &f.name) {
+                            Some(t) => t,
+                            None => return true,
+                        },
+                        _ => match here {
+                            Ty::Array(elem, _) | Ty::Bounded(elem, _) => *elem,
+                            _ => return true,
+                        },
+                    };
+                }
+            }
+        }
+        false
     }
 
     fn self_ty(&self) -> Ty {
@@ -25384,8 +25438,8 @@ impl<'a> Checker<'a> {
                         if is_callee && matches!(name.name.as_str(), "get" | "entry_at") {
                             self.note_cursor(&rt, *span);
                         }
-                        // STABILITY.md § Deprecation: a call of a
-                        // deprecated stdlib method warns, at the call
+                        // A call of a deprecated stdlib method warns,
+                        // at the call
                         // (`deprecations::DEPRECATED_METHODS`).
                         if is_callee && self.specializing.is_none() {
                             if let Some(d) = rt_named(&rt).and_then(|n| crate::deprecations::deprecated_method(n, &name.name)) {

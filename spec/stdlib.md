@@ -1386,7 +1386,7 @@ and escaped, as `string_field` / `string_value` do: `b.field("name",
 "alice")` writes `"name": "alice"`. Before v0.35 both wrote the
 argument raw, as `raw_field` / `raw_value` do, although this section
 always described them as taking a string; v0.33 and v0.34 warned
-`deprecated:` at each call (STABILITY.md § Deprecation). JSON already
+`deprecated:` at each call. JSON already
 encoded (a number formatted by hand, a nested document) goes through
 `raw_field` / `raw_value`.
 

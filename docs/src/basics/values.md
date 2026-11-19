@@ -60,13 +60,13 @@ Immutable means the whole value, not only the name: writing a field or an elemen
 
 ```hale,fragment
 let p = Point { x: 1, y: 2 };
-p.x = 99;                 // deprecated: `p` is declared with `let`
+p.x = 99;                 // error: `p` is declared with `let`
 
 let mut q = Point { x: 1, y: 2 };
 q.x = 99;                 // valid
 ```
 
-The write through a `let` is a `deprecated:` warning in this release and an error from v0.36. A `for` element and a `match` payload have no `mut` spelling and stay writable. A binding holding a locus (`let c = Counter { };`) can still set the locus's fields (`c.n = 4;`), as `self.n = 4` does inside it.
+The write through a `let` is an error that names the binding to declare `let mut`. A `for` element and a `match` payload have no `mut` spelling and stay writable. A binding holding a locus (`let c = Counter { };`) can still set the locus's fields (`c.n = 4;`), as `self.n = 4` does inside it.
 
 ### Scope and Shadowing
 
@@ -165,9 +165,8 @@ Two declaration positions disallow contextual keywords to avoid ambiguity:
 1. **Locus methods cannot use lifecycle hook or mode names:** Writing `fn run()` inside a `locus` is rejected because `run() { ... }` (without `fn`) is the lifecycle hook syntax.
 2. **Free functions cannot use recovery statement names:** Writing `fn restart(...)` is rejected because `restart(x);` at statement start is the supervision recovery command.
 
-Core grammatical keywords and reserved future keywords cannot be used as identifiers anywhere, and Hale has no raw/escaped identifier syntax (full list in `spec/tokens.md`):
+The hard keywords, the declaration and statement words (`fn`, `type`, `let`, `if`, `match`, `while`, `return`, `self` and the rest, listed in `spec/keywords.txt`) and the literals `true`, `false` and `nil`, cannot be used as identifiers anywhere, and Hale has no raw/escaped identifier syntax (`spec/tokens.md` § Reserved words).
 
-- **Active keywords:** `fn`, `type`, `let`, `if`, `else`, `match`, `while`, `for`, `in`, `return`, `self`, `locus`, `const`, `true`, `false`, `or`, `fail`
-- **Reserved words:** `async`, `await`, `trait`, `impl`, `macro`
+No word is reserved for future use: `async`, `await`, `trait`, `impl`, `macro` and `export` are ordinary names (F.47), so `let await = 1;` and `fn export()` are fine. (`@export` is an annotation, which reads the name after `@`.)
 
 Next: [Math, Money & Time](./math.md).

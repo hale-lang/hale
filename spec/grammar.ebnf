@@ -20,8 +20,8 @@
 
    Contextual keywords (decision F.43). A quoted word in a production
    is a keyword only in that production's position. Every word other
-   than the hard keywords of tokens.md (the declaration, statement /
-   expression and future-use words) is CONTEXTUAL: it lexes as an
+   than the hard keywords of tokens.md (the declaration and statement /
+   expression words) is CONTEXTUAL: it lexes as an
    IDENTIFIER, so wherever this grammar writes IDENTIFIER the word is
    admitted too — `run`, `epoch`, `restart`, `capacity`, `of` and
    `where` name fields, params, locals, enum variants and fns. Where a
@@ -1235,8 +1235,9 @@ function_decl     = [ ffi_annotation | export_annotation
    WASM host import ("js"); the body is absent (terminates with
    `;`). `@export` marks a wasm module export the JS host calls by
    name — a real-bodied top-level free fn, no-op on the native
-   target. `export` is a reserved keyword; the two decorators are
-   mutually exclusive (an import is not an export). See
+   target. `export` is no keyword (F.47): like every annotation name it
+   is an identifier read after `@`. The two decorators are mutually
+   exclusive (an import is not an export). See
    `spec/ffi.md` § "WASM host interface".
 
    `@unbounded` (GH #18 item 1) acknowledges an intentionally-

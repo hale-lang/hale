@@ -3041,10 +3041,11 @@ The grammar in v0 does **not** specify:
   tracking is currently a runtime concern enforced by closure
   tests. A future version may move it into the type system as
   effect annotations.
-- **Async / await.** Reserved keywords. Concurrency in v0 is
-  expressed via the lifecycle state machine + bus interface;
-  explicit async functions await a future spec.
-- **Macros.** Reserved keyword `macro`. No grammar surface yet.
+- **Async / await.** Not designed; F.47 unreserved both words.
+  Concurrency is expressed via the lifecycle state machine + bus
+  interface and the pools (F.35).
+- **Macros.** Not designed; F.47 unreserved `macro`. Compile-time
+  generation is the annotation families' desugar sequence.
 - **Pattern guards beyond `if`.** Match arms support `if` guards;
   more sophisticated pattern logic awaits a future version.
 - **First-class modules.** `module IDENTIFIER { ... }` is in the
@@ -3863,12 +3864,15 @@ would drown in them; the checked calls cover the sites that expect a
 failure. *Literal suffixes (`5u256`)*: a unit may be named `u256`, so a
 suffix collides with the unit dialect's literals.
 
-### F.47 — The five future-use words are unreserved before 1.0 (proposed)
+### F.47 — The five future-use words are unreserved before 1.0
 
-**Status: proposed, awaiting confirmation; not implemented.** The
-keyword list is frozen (STABILITY.md § Keywords), so the change, once
-confirmed, lands as its own PR that edits `spec/keywords.txt`, the
-lexer and spec/tokens.md § Reserved for future use together.
+**Status: accepted and implemented (2026-11-18).** Proposed while the
+keyword list was frozen behind an RFC; confirmed under the pre-1.0
+policy (STABILITY.md), which takes a decision entry and a CHANGELOG
+fragment for a keyword change. The implementing PR edited
+`spec/keywords.txt`, the lexer, `keywords.rs`, spec/tokens.md and
+spec/grammar.ebnf together, and unreserved `export` with the five (see
+"`export`" below).
 
 **Problem.** `trait`, `impl`, `async`, `await` and `macro` are hard
 keywords with no grammar (spec/tokens.md § Reserved for future use):
@@ -3877,7 +3881,7 @@ the lexer refuses them as names, and no production uses them. Before
 carried into 1.x is a promise of syntax nobody has designed, kept at
 the price of five ordinary words.
 
-**Decision (proposed).** Unreserve all five: each lexes as an
+**Decision.** Unreserve all five: each lexes as an
 identifier, free as a field, parameter, local or fn name. Each word's
 feature already has a Hale answer that took a different shape:
 
@@ -3914,6 +3918,15 @@ and keep others* (for example, keep `async`/`await` for an
 effect-typed future). Nothing in the effect system (effect classes and
 budgets) needs a keyword at a call site, and the split would need
 a reason per word that none of them has.
+
+**`export`.** `export` was a hard keyword too, but the language only
+ever spells it `@export` (spec/ffi.md § WASM host interface), and an
+annotation name needs no reserved word: `@form`, `@ffi`, `@positional`
+and every other annotation are identifiers read after `@`. The parser
+now reads `@export` the same way, as the identifier `export` after `@`,
+so the annotation is unchanged and `export` is free as a name
+everywhere else. Unreserving it accepts strictly more programs, as the
+five do.
 
 ### F.48 — A body that returns a value ends in one, and its last statement is its value
 
@@ -4081,181 +4094,6 @@ keyword set is frozen (STABILITY.md).
 
 Superseded in part by F.55: perspectives were removed, so an item
 no longer names a `perspective`.
-
-### F.56 — A contextual keyword has a production
-
-**Problem.** `spec/keywords.txt` lists the contextual keywords, and
-the highlighters and the editor colour what it lists. Five of its
-words had stopped being keywords anywhere: `schedule` (the per-locus
-`: schedule …` annotation went with F.31), `http`, `principals` and
-`roles` (the structural `bindings { api: … }` entry they belonged to
-was retired with GH #1417; today `http` is a stdlib module and
-`principals` and `roles` are params of the transports and hubs) and
-`serve` (the call `api::serve( … )` is recognized by its path, as the
-`std::api` fn; the bare word introduces nothing). The list coloured
-them as syntax although the parser reads each as a plain name.
-
-**Decision.** A word is in the contextual list only while the parser
-or the checker recognizes it in some position. The five words leave
-the list. Every other contextual word keeps a live production, named
-in the audit that accompanied this decision. Nothing about a
-program changes: a contextual keyword lexes as an identifier, and
-these five were already read as names everywhere.
-
-**Considered and rejected.** *Drop words a production still reads but
-few programs write* (the recognition sub-modes, the binding
-constraints, the rounding policies). The test is whether the word is
-recognized, not how often it is written: dropping a word whose
-position still parses would leave the list short of the language.
-
-## Deferred & future work
-## Deferred & future work
-
-### semantics — What's deferred
-
-
-- **Formal small-step semantics.** Engineering-grade prose for
-  v0; formal operational rules in v1+ if needed for compiler
-  correctness proofs.
-- **Concurrency-correctness proofs.** Cooperative scheduler
-  + per-locus arena makes most concurrency questions trivial,
-  but full formal modeling deferred.
-- **Memory-model formalization** as a happens-before relation.
-  Currently informal; formal in v1+.
-- **Async / await semantics.** Reserved keywords; no operational
-  semantics in v0.
-
-
-### types — What's deferred
-
-
-Per `notes/open-questions.md` and design-rationale §16:
-
-- **Trait system.** No `trait` keyword in v0 (reserved). The
-  structural `interface` form (F.20) ships as the v1 interface
-  mechanism — both Phase A (typecheck) and Phase B (codegen
-  vtable dispatch) landed 2026-05-11. Full traits with `impl I
-  for L` declarations and generic bounds remain deferred.
-- **Refinement types** (e.g., `int where x > 0`). Deferred.
-- **Effect / capability system.** Substrate-derivation tracking
-  is currently runtime-enforced via closure tests; future
-  version may move into type system as effects.
-- **Async / await.** Reserved keywords; no v0 typing.
-- **Macros.** Reserved keyword; no v0 typing.
-- **Sum-type-typed `self.children`** for multi-accept-type loci.
-  v0 is single-accept-type only (F.11).
-- **Projection-class-annotated translation impls** (per F.14
-  follow-on). Deferred until forced by an example.
-
-
-### memory — Future work
-
-
-- **Region size hints.** Initial chunk sizes per locus are
-  taken from declared params. Per The Design's locus-as-region
-  invariant, the load-bearing property is *lifetime* (wholesale
-  free at dissolve), not *fixed size*. The C-runtime arena
-  grows linked-list chunks on demand: when the head chunk
-  can't fit a request, a fresh chunk is allocated and pushed
-  on the front. Declared params are sizing hints, not
-  ceilings — a locus that out-allocates its declared budget
-  doesn't panic, it just adds chunks. Compaction across
-  long-lived chunked loci stays deferred (see below).
-- **Compaction passes.** For long-running chunked-class loci
-  with high churn, periodic compaction may be needed. Currently
-  free-list reclamation is sufficient for v0; compaction passes
-  are deferred.
-
-
-### forms — Open questions deferred to a future milestone
-
-
-These are spec-level questions that don't block FORM-4 because
-the core surface above is independent of them.
-
-1. **Iteration surface.** `for entry in registry { ... }` is
-   natural but the loop construct's lowering depends on what
-   the existing `for` over capacity slots does — and a hashmap
-   iteration that visits each occupied slot once needs cluster-
-   aware traversal. Deferred.
-2. **Bulk operations.** `clear()`, `extend(other)`,
-   `take(key) -> S fallible(KeyError)` (get + remove fused).
-   Useful but not foundational. Add after a workload demands.
-3. **Additional key types.** `Bytes`, custom structs with a
-   hashable derivation, enum tags. Each adds a `key_type_tag`
-   to the runtime ABI. Workload-driven.
-4. **Capacity hints.** `@form(hashmap, cap = 64)` is rejected
-   in v1; no tuning knobs. Add when a workload demonstrates
-   the 0 → 8 → 16 → ... grow cascade is costing measurable
-   time.
-5. **Set type.** ~~A `@form(set)` would be a hashmap-without-
-   value variant (the cell IS the key). Not part of FORM-4;
-   revisit if a workload needs it.~~ **SHIPPED 2026-08-03**
-   (#353). The trigger fired. It reuses the hashmap slot and
-   the whole `lotus_hashmap_*` runtime — sync disciplines
-   included — and differs only in the synthesized surface:
-   `insert` / `contains` / `remove` / `len` / `is_empty`. The
-   separate surface exists to keep the VALUE off the call
-   site; membership through a hashmap means writing
-   `get(k) or false` everywhere.
-
----
-
-# `@form(ring_buffer)`
-
-A fixed-capacity FIFO with push-back and pop-front semantics.
-The Hale analogue of a bounded circular buffer — same shape as
-a Go channel of capacity N, or a Java `ArrayBlockingQueue`, but
-without the synchronization machinery (the cooperative scheduler
-already serializes access). Shipped as the third form in v1
-via v1.x-FORM-5.
-
-
-### forms — Open questions deferred to a future milestone
-
-
-1. **Iteration surface.** `for x in recent { ... }` is natural
-   but iteration over a ring buffer must respect head/tail wrap
-   — needs the `for` lowering to know about ring shapes.
-   Deferred.
-2. **Bulk operations.** `clear()`, `peek() -> T fallible`,
-   evict-oldest-on-full mode (cyclic-overwrite as a tuning
-   knob). Useful but not foundational; add when a workload
-   demonstrates demand.
-3. **Iteration in pop order without removing.** A "drain" or
-   "iter_pop" that visits elements oldest-first as a one-shot.
-4. **Bench protocol.** A `micro/form_ring_buffer_*` family
-   in `hale-lang/bench`, parallel to vec's and hashmap's.
-   Ships as a separate milestone after a consumer workload
-   surfaces.
-
-# `@form(lru_cache)`
-
-A fixed-capacity keyed cache with least-recently-used eviction.
-The keyed counterpart of `@form(ring_buffer)`: like
-`@form(hashmap)` it is intrusively keyed (the cell carries its own
-key via `indexed_by`), but like `@form(ring_buffer)` it is
-capacity-bounded and NEVER grows. Inserting a new key over `cap`
-silently evicts the least-recently-**used** entry to make room.
-This is the "cap-bounded, never-flagged" keyed form — the
-unbounded-allocation analysis (`spec/verification.md`) treats an
-`@form(lru_cache)` locus as bounded, exactly like `ring_buffer`.
-Shipped as the fourth form in v1 via v1.x-FORM-6.
-
-
-### forms — Open questions deferred to a future milestone
-
-
-1. **TTL eviction.** A `ttl = <duration>` annotation arg to
-   expire entries by age in addition to LRU by capacity. Deferred
-   — v1 evicts by capacity + recency only.
-2. **`remove(k)` / `clear()`.** Explicit eviction of a named key
-   and bulk clear. Add when a workload demonstrates demand.
-3. **Iteration surface.** `key_at` / `entry_at`-style indexed
-   iteration, parallel to `@form(hashmap)`. Deferred.
-4. **Bench protocol.** A `micro/form_lru_cache_*` family in
-   `hale-lang/bench`, parallel to the other forms'. Ships after a
-   consumer workload surfaces.
 
 ### F.52 — Optionality is a property of a record field, not a type
 
@@ -4440,6 +4278,32 @@ replacement; the parse error names that replacement at the site.
 *Keep `perspective` reserved.* The word has no other use, and a hard
 keyword costs every program a field or local of that name.
 
+### F.56 — A contextual keyword has a production
+
+**Problem.** `spec/keywords.txt` lists the contextual keywords, and
+the highlighters and the editor colour what it lists. Five of its
+words had stopped being keywords anywhere: `schedule` (the per-locus
+`: schedule …` annotation went with F.31), `http`, `principals` and
+`roles` (the structural `bindings { api: … }` entry they belonged to
+was retired with GH #1417; today `http` is a stdlib module and
+`principals` and `roles` are params of the transports and hubs) and
+`serve` (the call `api::serve( … )` is recognized by its path, as the
+`std::api` fn; the bare word introduces nothing). The list coloured
+them as syntax although the parser reads each as a plain name.
+
+**Decision.** A word is in the contextual list only while the parser
+or the checker recognizes it in some position. The five words leave
+the list. Every other contextual word keeps a live production, named
+in the audit that accompanied this decision. Nothing about a
+program changes: a contextual keyword lexes as an identifier, and
+these five were already read as names everywhere.
+
+**Considered and rejected.** *Drop words a production still reads but
+few programs write* (the recognition sub-modes, the binding
+constraints, the rounding policies). The test is whether the word is
+recognized, not how often it is written: dropping a word whose
+position still parses would leave the list short of the language.
+
 ## Deferred & future work
 
 ### semantics — What's deferred
@@ -4453,8 +4317,8 @@ keyword costs every program a field or local of that name.
   but full formal modeling deferred.
 - **Memory-model formalization** as a happens-before relation.
   Currently informal; formal in v1+.
-- **Async / await semantics.** Reserved keywords; no operational
-  semantics in v0.
+- **Async / await semantics.** Not designed: concurrency is the locus
+  and the pool (F.35), and F.47 unreserved both words.
 
 
 ### types — What's deferred
@@ -4471,8 +4335,8 @@ Per `notes/open-questions.md` and design-rationale §16:
 - **Effect / capability system.** Substrate-derivation tracking
   is currently runtime-enforced via closure tests; future
   version may move into type system as effects.
-- **Async / await.** Reserved keywords; no v0 typing.
-- **Macros.** Reserved keyword; no v0 typing.
+- **Async / await.** Not designed (F.47 unreserved the words).
+- **Macros.** Not designed (F.47 unreserved the word).
 - **Sum-type-typed `self.children`** for multi-accept-type loci.
   v0 is single-accept-type only (F.11).
 - **Projection-class-annotated translation impls** (per F.14

@@ -371,8 +371,14 @@ Rules (CLAUDE.md has the reasons):
     not rule one out.
   - A step only Linux has (`/proc`) is gated on `uname -s` or
     `cfg(target_os = "linux")`, and says so.
-- New keyword: `hale-syntax/src/keywords.rs`, then
+- New keyword: a decision entry in `spec/decisions.md` first
+  (STABILITY.md § Keywords), then `hale-syntax/src/keywords.rs` and
+  `spec/keywords.txt` (`keyword_freeze.rs`), then
   `UPDATE_KEYWORDS=1 cargo test -p hale-syntax --test keyword_sync`.
+- A change that breaks programs migrates the in-repo Hale code in the
+  same PR (no deprecation window before 1.0, STABILITY.md) and lists
+  each break under its fragment's `### Breaking` with a one-line
+  migration.
 - Never delete a test to make it pass; if the spec changed, update it
   in the same commit and say why.
 
@@ -476,7 +482,7 @@ regression. `--update-baselines` is retired: `./rebaseline.sh [runs]
 
 - `fallible(E)` is the value-error protocol; structural failure is
   closure violation. No `Result` / `Option`. `interface` is
-  structural; `trait` is reserved with no semantics.
+  structural; `trait` is an ordinary name (F.47).
 - No `lotus_*` to `hale_*` rename. No feature flags for staged
   rollout (`LOTUS_NO_*` switches are diagnostics). `unsafe` only
   where inkwell/LLVM or libc FFI demand it.
