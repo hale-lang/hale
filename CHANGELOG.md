@@ -8,6 +8,93 @@ behavior.
 
 ## Unreleased
 
+## v0.36.0 — a smaller language (2026-11-18)
+
+This release removes more than it adds. Perspectives and `module { }` declarations are gone, because other parts of the language already do their jobs. Five words reserved for features that were never designed, plus `export`, are ordinary names again, and so are five contextual keywords that nothing reads any more. A field write through a `let` binding is now an error. Hale is pre-1.0 and still changing quickly, and STABILITY.md now says so plainly: any release may change the language, and every break is listed below with its migration. Alongside the removals: the habitat's forge no longer depends on codeberg.org, there's a first recorded performance baseline, and several fixes to tests and CI, including a teardown race in the runtime.
+
+**Fewer, firmer words.**
+- **Perspectives are removed** (F.55). An `interface` plus generics covers the contract, and the hot-swap path was never completed. `perspective` is an ordinary identifier, and `reperspective`, `serves`, `serialize_as` and `stable_when` are no longer keywords (#2078).
+- **`module NAME { … }` is removed** (F.57). A module is a directory reached by `import`, and a seed's files already share one top-level scope. `module` is an ordinary identifier (#2085).
+- **`trait`, `impl`, `async`, `await`, `macro` and `export` are ordinary identifiers** (F.47, accepted). `@export` parses as before (#2079).
+- **`schedule`, `serve`, `http`, `principals` and `roles` are no longer contextual keywords** (F.56). No production reads them any more, and each was already an ordinary name everywhere (#2081).
+- **A field or element write through a `let` binding is an error.** v0.35 warned (#2079, GH #2022).
+
+**Policy.** STABILITY.md is the pre-1.0 policy:
+- any release may change the language or the stdlib;
+- a change that breaks programs migrates the in-repo code in the same PR, and is listed under the release's Breaking heading with a one-line migration;
+- there are no deprecation windows before 1.0.
+
+The v1 exit gates are marked as a draft being redone, to cover stability, performance targets, platforms and scope (#2079, GH #1950).
+
+**The habitat.** The forge pulls its Forgejo image from `ghcr.io/hale-lang/forgejo`, the project's digest-identical mirror of codeberg's image. A codeberg outage or DNS fault no longer stops `hale habitat up` (#2071, #2076, GH #2064).
+
+**Fixes.**
+- `hale verify` reports a call's result that holds a parameter's `bounded` field under its own reason, which says how to avoid the copy, instead of calling it "a value another name reaches" (#2072, GH #2067).
+- A `std::test` assertion that fails on a pinned thread tears the tree down at main's loop back-edge, so a `run()` loop no longer runs past the failure (#2083, GH #2080).
+- `faces_named_start_test` waits for the faces list instead of reading it once (#2070, GH #2059).
+- The macOS CI job builds and runs bus programs under ASan through the test harness. It runs its fixture without coreutils' `timeout`, and its exit-quiesce test waits on a gate the test opens instead of on time (#2073, #2077, GH #1991, GH #2075).
+
+**Performance baseline.** `bench/` holds a repeatable baseline covering build time, bus round trips, JSON codecs, HTTP throughput and latency, a server's memory under load, and editor latency. `bench/BASELINE.md` has its first recorded numbers. It measures only and sets no targets (#2084).
+
+**Tests and docs.** The allocation-summary pins key each site by its fn, kind and ordinal instead of byte offsets, so unrelated edits no longer move them (#2082). The book calls the strings chapter *Strings & Bytes* everywhere, and the Values page points at `@display` (#2074).
+
+### Breaking
+
+Measured against v0.35.0.
+
+- **Perspectives are removed** (#2078). Migration: a `perspective P { … }` becomes `interface P { … }`, its implementations drop `: serves P`, and a `perspective(P)` field becomes an interface-typed param (`router: Router = RouterV1 { }`), generic where the implementation's type matters. `reperspective` has no replacement.
+- **`module NAME { … }` is removed** (#2085). Migration: move the declarations to the top level of the file (a module never scoped its names), into their own file in the seed, or into a directory you `import` and spell `alias::Name`.
+- **A field or element write through a `let` binding is an error** (#2079). Migration: declare the binding `let mut`, as the error says.
+
+The item-level notes follow.
+
+### Fixed
+- `dna/tests/faces_named_start_test.hl` no longer fails now and then with "both are listed as started". The test now waits, with a deadline, for `.hale/dna/faces` to name both faces, instead of reading the list once right after the faces answer. The body lists each face once its process has started, so a face can answer before its line is written. `spec/dna.md` now says this.
+
+### Changed
+- CI's `mirror-images` workflow now also copies the habitat's pinned Forgejo image from `codeberg.org/forgejo/forgejo` to `ghcr.io/hale-lang/forgejo`. It copies every architecture with the same digest, and checks the copy against that digest afterwards. `dna/core/forgejo.hl` still pulls from codeberg; it switches to the mirror once the mirror exists (GH #2064).
+
+### Fixed
+
+- `hale verify`: a call's result pushed or set into a bounded list, whose record took a parameter's `bounded` field (`v.tags = r.tags; return v;`), was reported as "a value another name reaches" while the advice named a call's result as a value nothing else names. The copy is real: the whole assignment keeps the parameter's elements, so the list takes its own copy of them. It is now reported under its own reason, `copy: a call's result holding another name's block stored into a bounded list`, whose message says how to store the result uncopied, and the general advice says "a call's fresh result" (GH #2067).
+
+### Fixed
+
+- macOS: the CI's macOS job builds bus programs under AddressSanitizer through the test harness and runs them (the registration table grown under a walk, a same-thread delivery, a draining `main`), so a recurrence of the spin reported in GH #1991 fails that job instead of hanging it. The unix:// listener's exit quiesce, the issue's first half, was fixed by #2040 and is confirmed on Apple Silicon.
+
+### Docs
+- The book calls the strings chapter *Strings & Bytes* in its sidebar, heading and links alike, and the Values page says a record or variant can declare how it reads with `@display` (#2074).
+
+### Changed
+- A habitat's forge now pulls its Forgejo image from `ghcr.io/hale-lang/forgejo`, the project's mirror of `codeberg.org/forgejo/forgejo`. The pinned digest is the same, so it is the identical image. A codeberg.org outage or DNS fault no longer stops `hale habitat up` from starting the forge (GH #2064).
+
+### Fixed
+
+- macOS CI: the harness ASan bus step bounds its fixture's run in-process instead of with coreutils' `timeout`, which a macOS runner does not have, and the exit-quiesce tail test holds its reader until the quiesce and ends its run on a gate the test opens, instead of racing a fixed stall against the run (`LOTUS_BUS_TEST_READER_STALL_MS=stop`, test only) (GH #2075).
+
+### Removed
+- Perspectives are gone (F.55): `perspective P { … }` contracts with their `params`, `stable_when`, `serialize_as`, contract fns and `bus` surface; the `locus L : serves P` clause; `perspective(P)` slot types with their program-global slot and designation; and `reperspective`. An interface plus generics cover the contract, and the hot-swap path was never completed. `perspective` is an ordinary identifier again, and `reperspective`, `serves`, `serialize_as` and `stable_when` are no longer keywords. A program that still writes one of the old forms gets a located error naming the replacement.
+- `hale fmt` no longer spaces the colon before `serves`; every `:` is tight-left.
+
+### Changed
+- **Pre-1.0 stability policy.** `STABILITY.md` now says: any release may change the language or the stdlib; a change that breaks programs migrates the in-repo code in the same PR and is listed under the release's `### Breaking` with a one-line migration; there are no deprecation windows before 1.0. The `Breaking:` fragment rule, the bug and soundness labels, the tier table (now information, saying what is experimental) and what 1.0 promises stay; the v1 exit gates are marked a draft being redone. A keyword change needs a decision entry and a fragment, not an RFC.
+- **`trait`, `impl`, `async`, `await`, `macro` and `export` are ordinary identifiers** (F.47, accepted). The five words reserved for future use and `export`, which the language only spells as the `@export` annotation, are no longer hard keywords: each is free as a field, parameter, local, type or fn name. `@export` parses as before. Editors and highlighters stop colouring them.
+
+### Changed
+- `schedule`, `serve`, `http`, `principals` and `roles` are no longer listed as contextual keywords (F.56): no production reads them any more, so the highlighters stop colouring them. Each was already an ordinary name in every position.
+
+### Changed
+- Tests only: the allocation-summary pin tests key each leak site and dump line by its fn, kind and ordinal within the fn, not by byte offsets into the merged seed, so an unrelated edit earlier in a seed no longer moves them.
+
+### Fixed
+- A `std::test` assertion that fails on a pinned thread now tears the tree down at main's loop back-edge as well as at a sleep slice: a `run()` loop that the failure's stop ended no longer runs on past it, and the failure is no longer lost when it lands between main's last park point and the loop's end (#2080).
+
+### Added
+- `bench/`: a repeatable performance baseline (build time, bus round trips, JSON codecs, HTTP throughput and latency, a server's memory under load, editor latency) and its first recorded numbers in `bench/BASELINE.md`. It measures only and sets no targets.
+
+### Removed
+- **`module NAME { … }` declarations** (F.57). A module is a directory, reached by `import "path" as name;`, and a seed's files already share one top-level scope, so the in-file grouping form is gone from the grammar, the checker, every analysis and lowering, along with the rules that existed only for it (the nested `fn main` / `main locus` refusals and the `target`-inside-a-module error). `module` is no longer a keyword: it is an ordinary identifier, free as a local, field, parameter or fn name. A program that still writes `module NAME {` gets one located parse error at the word, naming the migration.
+
 ## v0.35.0 — how a value reads (2026-11-18)
 
 A record or an enum variant now declares how it reads for people, with a `@display` template, and `{x:?}` still shows its structure. `///` doc comments reach every document a surface generates. An admin machine can hold more than one habitat. Most of the remaining work is fixes from a downstream handoff's first-week report: a check that refused at the build, a ring that grew, a publish that was lost, a supervisor that did not restart. Each change that alters a program that built is listed under Breaking with its migration, measured against v0.34.0. `std::json::Builder` now quotes, as v0.33.0 and v0.34.0 announced.
