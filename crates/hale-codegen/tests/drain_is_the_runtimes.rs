@@ -178,6 +178,109 @@ fn a_pure_spin_is_stopped_at_its_back_edge() {
     }
 }
 
+/// GH #2089: a counted loop whose body is a leaf checks the stop once a
+/// chunk of `drain_chunk::DRAIN_CHUNK` iterations, not each one, so LLVM
+/// vectorizes it — and still ends on SIGTERM, on every placement and in
+/// `fn main`. Each loop below would run for decades: what ends it is the
+/// stop, a chunk at most after it is raised.
+#[test]
+fn a_counted_leaf_loop_is_stopped_at_a_chunk_boundary() {
+    let shapes = [
+        ("while", "        let mut i = 0;\n        let mut acc = 7;\n        let n = 9000000000000000000;\n        while i < n { acc = acc ^ i; i = i + 1; }\n        self.n = acc;"),
+        ("range", "        let mut acc = 7;\n        for j in 0..9000000000000000000 { acc = acc ^ j; }\n        self.n = acc;"),
+    ];
+    for (shape, lp) in shapes {
+        for (name, placement) in PLACEMENTS {
+            let body = format!("        println(\"up\");\n{lp}");
+            let tag = format!("drain_runtime_counted_{shape}_{name}");
+            let ran = term_after_up(&tag, &program(placement, "n: Int = 0;", &body), Duration::from_millis(50), &[]);
+            assert_clean(&tag, &ran);
+            assert!(ran.stopped_in < Duration::from_secs(1), "{tag}: {:?}", ran.stopped_in);
+        }
+        let main = format!("fn main() {{\n    println(\"up\");\n{}\n    println(\"after\");\n}}\n", lp.replace("self.n = acc;", "println(to_string(acc));"));
+        let tag = format!("drain_runtime_counted_{shape}_fn_main");
+        let ran = term_after_up(&tag, &main, Duration::from_millis(50), &[]);
+        assert_eq!(ran.status.code(), Some(0), "{tag}: {:?}\n{}", ran.status, ran.stderr);
+        assert!(ran.stopped_in < Duration::from_secs(1), "{tag}: {:?}", ran.stopped_in);
+        assert!(ran.stdout.lines().any(|l| l == "after"), "{tag}: {}", ran.stdout);
+    }
+}
+
+/// GH #2089: the chunked shape is where it applies and only there. A
+/// counted loop with a leaf body (`while i < n` stepping `i`, `for j in
+/// a..b`) in `fn main` or a stopping `run()` gets an inner loop with no
+/// latch and the latch on its chunk's exit; a counted loop whose body
+/// calls, a `while` that is not counted and an inclusive range keep the
+/// latch on every back-edge; optimized, the leaf reduction is vector code.
+#[test]
+fn a_counted_leaf_loop_is_chunked_and_vectorized() {
+    let src = "fn leaf_while(n: Int) -> Int { return n; }\n\
+               fn main() {\n\
+                   let n = 1000 + std::process::pid();\n\
+                   let mut i = 0;\n\
+                   let mut acc = std::process::pid();\n\
+                   while i < n { acc = acc ^ i; i = i + 1; }\n\
+                   let mut r = 0;\n\
+                   for j in 0..n { r = r ^ j; }\n\
+                   let mut c = 0;\n\
+                   let mut k = 0;\n\
+                   while k < n { c = c + leaf_while(k); k = k + 1; }\n\
+                   let mut m = 0;\n\
+                   while m * m < n { m = m + 1; }\n\
+                   let mut q = 0;\n\
+                   for j in 0..=n { q = q ^ j; }\n\
+                   println(to_string(acc + r + c + m + q));\n\
+               }\n";
+    let bin = harness::unique_bin("drain_runtime_chunk_ir");
+    let ll = bin.with_extension("ll");
+    let opt = bin.with_extension("opt.ll");
+    let options = hale_codegen::BuildOptions {
+        dump_ir: Some(ll.clone()),
+        dump_ir_optimized: Some(opt.clone()),
+        ..build_opts::options()
+    };
+    build_opts::build_source(src, &bin, &options).expect("build");
+    let ir = std::fs::read_to_string(&ll).expect("the IR");
+    let optimized = std::fs::read_to_string(&opt).expect("the optimized IR");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&opt);
+    assert!(out.status.success(), "{out:?}");
+    let main_of = |text: &str| -> String {
+        let start = text
+            .split_inclusive('\n')
+            .scan(0usize, |at, l| {
+                let here = *at;
+                *at += l.len();
+                Some((here, l))
+            })
+            .find(|(_, l)| l.starts_with("define") && l.contains(" @main("))
+            .map(|(at, _)| at)
+            .expect("main's definition");
+        text[start..start + text[start..].find("\n}\n").expect("main's end")].to_string()
+    };
+    let main = main_of(&ir);
+    // two chunked loops: the counted `while` and the exclusive range
+    assert_eq!(main.matches(".chunk.exit:").count(), 2, "{main}");
+    assert!(main.contains("while.counted.chunk:") && main.contains("for.range.chunk:"), "{main}");
+    // the calling counted loop, the uncounted `while` and the inclusive
+    // range keep a latch each; the two chunks' exits take one each
+    let latches = main
+        .lines()
+        .filter(|l| {
+            l.strip_prefix("loop.drain_stop")
+                .is_some_and(|rest| rest.starts_with(':') || rest.starts_with(|c: char| c.is_ascii_digit()))
+        })
+        .count();
+    assert_eq!(latches, 5, "{main}");
+    let opt_main = main_of(&optimized);
+    assert!(
+        opt_main.lines().any(|l| l.contains(" xor <") && l.contains(" x i64>")),
+        "the chunked XOR reductions should be vector code:\n{opt_main}"
+    );
+}
+
 /// A `run()` that reads `draining` and stops on it (the shape the check
 /// proves) ends by its own code: what it writes after its loop runs.
 #[test]

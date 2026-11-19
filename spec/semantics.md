@@ -5838,7 +5838,12 @@ compiler places a drain check at the back-edge of every loop the body
 holds lexically — `while` and every `for`, nested ones included; not a
 loop in a fn or method it calls, nor one in a closure. The check is one
 load of the runtime's flag and one branch, weighted cold, on every
-iteration, `@hot` and `@budget` code included. When a stop has begun
+iteration, `@hot` and `@budget` code included — except on a counted
+loop (`for i in a..b`, `while i < n { …; i = i + 1; }`) whose body calls
+nothing and holds no loop, which takes it once every 4096 iterations so
+the loop can be vectorized (`spec/runtime.md` § "Back-edge stops", GH
+#2089): such a loop ends at the end of a chunk, still between two
+iterations. When a stop has begun
 the loop exits there, as a `break` written at the end of the iteration
 would: between two iterations, never inside one, with the iteration's
 state as the iteration left it. A `continue` goes through the same

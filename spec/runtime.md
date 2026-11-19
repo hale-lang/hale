@@ -695,6 +695,32 @@ pays one load and one predicted branch per iteration. A manual
 `run()`, a fn or method, a closure and a standard-library locus get no
 latch.
 
+**A counted leaf loop checks once a chunk** (GH #2089). An atomic load
+in a loop keeps LLVM's vectorizer away, so a tight reduction under the
+per-iteration latch ran scalar (`loop_overhead` 1.86 → 19.9 ms). A
+*counted* loop — `for i in a..b` (exclusive), or `while i < n { …;
+i = i + 1; }` with `n` a name or a literal, `i` stepped only by that
+last statement, neither bound again in the body, and no `continue` —
+whose body is a *leaf* is lowered as two loops (`drain_chunk`): an
+inner one over a chunk of at most `DRAIN_CHUNK` (4096) iterations, with
+no latch, and an outer one that takes the latch at each chunk's end
+(`end = (i < hi && hi - i > K) ? i + K : hi`; the inner loop runs `i <
+end`, then `i < hi` decides between the latch and the exit). The inner
+loop has one exit and a trip count known on entry, which LLVM 18
+vectorizes. A body is a leaf when, read from its own IR after it is
+lowered, it pushed no loop and no block of it that runs and can lead to
+the next iteration calls anything but an LLVM intrinsic or a `noreturn`
+fn (a failure path's call leaves the loop; a branch on a constant is
+followed only where it goes). A stop is then seen at most `DRAIN_CHUNK
+- 1` iterations of such a body later than at the next back-edge:
+straight-line work with no call and no loop, about 1 µs a chunk for an
+XOR reduction and a few hundred µs for a body of a few hundred
+instructions, against the 55–66 ms `fn main`'s loop takes to stop. Any
+other loop — a body that calls or loops, a `while` that is not
+counted, an inclusive range, a collection's `for` — keeps the latch on
+every back-edge, since a chunk of iterations with no bound could hold a
+stop for as long as they take.
+
 **Every park point delivers, on every pool.** A sleep slice and an
 explicit `yield;` are park points, and a park point inside a
 cooperative locus's `run()` delivers the cells already queued for
