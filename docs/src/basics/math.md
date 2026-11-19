@@ -257,3 +257,5 @@ fn main() {
 ```
 
 See [Units, End to End](../units.md) for the complete guide to custom units, affine points, unit splitting (`.split(u)`), and `hale check --units`.
+
+Next: [Units of Measure](../units.md).

@@ -1,4 +1,4 @@
-# Introduction
+# What Is Hale?
 
 Hale is an LLVM-compiled systems and service programming language designed around **hierarchical arena ownership**, **actor-like components (`locus`)**, **typed message channels (`topic`)**, and **compile-time architectural verification (`claims`)**.
 
@@ -93,15 +93,18 @@ locus Matchmaker {
 
 ## Documentation Map
 
-1. **[Part I: Language & Standard Library](./parts/language.md)** — Primitive types, `Decimal` money and `Duration` time, physical units, functions, control flow, `fallible(E)` error handling, records, `@form` collections, and standard library packages (files, JSON, HTTP, sockets, crypto, CLI, logging, metrics, testing).
-2. **[Part II: Concurrency, Services & APIs](./parts/locus-model.md)** — Locus lifecycle (`birth`, `run`, `drain`, `dissolve`), the typed bus, thread placement (`cooperative`, `pinned`, `async_io`), parent-child supervision, seams, `@repo(T)` repositories, `api` surfaces (RPC, REST, MCP, gRPC, WebSockets), and multi-binary `fleet locus` deployments.
-3. **[Part III: Static Verification & Architecture Laws](./parts/what-must-hold.md)** — Effect annotations (`@effects`, `@no_syscall`, `@no_block`, `@deterministic`), whole-program `claims`, and reusable `constitution` rules.
-4. **[Part IV: Systems Programming & Runtime Internals](./parts/systems.md)** — Arena memory layouts, zero-allocation hot paths (`@hot`, `@budget`), zero-copy `shm_ring` messaging, C FFI (`@ffi("c")`), WebAssembly, live topology inspection (`hale iris`), and deterministic replay (`hale replay`).
-5. **[Part V: DNA (Autonomous & Governed Applications)](./parts/organism.md)** — Building self-governing applications with durable PostgreSQL + Git state, NATS event routing, Prometheus health reflexes, Vault secret confinement, and sandboxed agent/human task workflows.
-6. **[Part VI: Multi-Record Control Plane (Habitat)](./parts/habitat.md)** — Managing local and remote multi-service environments with `hale habitat`.
+1. **[Part I: The Language](./parts/language.md)** — Values and types, functions, control flow and pattern matching, records and enums, strings, `Decimal` money and `Duration` time, physical units, `fallible(E)` errors, `@form` collections, generics, a first look at loci, and testing.
+2. **[Part II: The Standard Library](./parts/stdlib.md)** — Arguments and environment, files, JSON, HTTP, sockets and TLS, cryptography, logging, metrics and probes.
+3. **[Part III: Services & Concurrency](./parts/locus-model.md)** — Locus lifecycle (`birth`, `run`, `drain`, `dissolve`), the typed bus, thread placement (`cooperative`, `pinned`, `async_io`), parent-child supervision, seams, `@repo(T)` repositories, `api` surfaces (RPC, REST, MCP, gRPC, WebSockets), and multi-binary `fleet locus` deployments.
+4. **[Part IV: Verification & Architecture Laws](./parts/what-must-hold.md)** — Effect annotations (`@effects`, `@no_syscall`, `@no_block`, `@deterministic`), whole-program `claims`, and reusable `constitution` rules.
+5. **[Part V: Systems & Runtime Internals](./parts/systems.md)** — Arena memory layouts, zero-allocation hot paths (`@hot`, `@budget`), zero-copy `shm_ring` messaging, C FFI (`@ffi("c")`), WebAssembly, live topology inspection (`hale iris`), and deterministic replay (`hale replay`).
+6. **[Part VI: DNA (Autonomous & Governed Applications)](./parts/organism.md)** — Building self-governing applications with durable PostgreSQL + Git state, NATS event routing, Prometheus health reflexes, Vault secret confinement, and sandboxed agent/human task workflows.
+7. **[Part VII: The Habitat](./parts/habitat.md)** — Managing local and remote multi-service environments with `hale habitat`.
 
 ### Next Steps
 
 - **[Install the Toolchain](./getting-started/install.md)** — Download a prebuilt binary or build from source.
 - **[Quickstart & Toolchain](./getting-started/first-run.md)** — Compile and run your first `.hl` program and explore the CLI.
 - **[Tutorial: Build a Job Queue](./tutorial/job-queue.md)** — Evolve a 10-line script into a multi-process service in four steps.
+
+Next: [Install](./getting-started/install.md).

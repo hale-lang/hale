@@ -163,4 +163,4 @@ export LIBRARY_PATH="$(brew --prefix)/lib"
 cargo nextest run --release --workspace
 ```
 
-Next: **[Quickstart & Toolchain](./first-run.md)**.
+Next: [Hello World & the Toolchain](./first-run.md).

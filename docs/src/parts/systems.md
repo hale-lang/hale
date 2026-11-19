@@ -1,6 +1,6 @@
-# Part IV: Systems Programming & Runtime Internals
+# Part V: Systems & Runtime Internals
 
-Part IV covers low-level memory management, zero-allocation hot paths, lock-free shared-memory messaging, C and WebAssembly interoperability, and runtime inspection tools.
+Part V covers low-level memory management, zero-allocation hot paths, lock-free shared-memory messaging, C and WebAssembly interoperability, and runtime inspection tools.
 
 ## Core Systems Capabilities
 
@@ -10,7 +10,7 @@ Part IV covers low-level memory management, zero-allocation hot paths, lock-free
 - **C FFI & WebAssembly:** Bind C libraries directly via `@ffi("c")` with zero-boilerplate struct/slice mapping, or compile `.hl` programs to `wasm32` with generated `.mjs` browser loaders.
 - **Live Observability & Deterministic Replay:** Inspect live locus hierarchies, arena utilization, and bus traffic in real time with `hale iris`, or record and deterministically replay executions with `hale replay`.
 
-## Chapters in Part IV
+## Chapters in Part V
 
 | Area | Chapters |
 |---|---|

@@ -1,4 +1,4 @@
-# Part VI: Multi-Record Control Plane (Habitat)
+# Part VII: The Habitat
 
 While a single DNA organism manages one application and its PostgreSQL/Git record, **Habitat** (`hale habitat`) is the control plane for provisioning, isolating, and connecting **multiple organisms** on a developer laptop or across remote SSH hosts.
 
@@ -9,6 +9,6 @@ While a single DNA organism manages one application and its PostgreSQL/Git recor
 - **Multi-Record Isolation & Deliberate Sharing:** Keeps each organism's database role, NATS subjects, and secrets isolated by default while providing explicit cross-record `connect` and `handoff` protocols.
 - **Remote Host Execution (`hale habitat host`):** Registers SSH targets so `hale habitat graft <name> --on <host>` provisions and supervises organisms on remote Linux servers.
 
-## Chapter in Part VI
+## Chapter in Part VII
 
 - **[Habitat Architecture & CLI (`hale habitat`)](../habitat.md)** — Complete guide to `hale habitat` commands, resource allocation, multi-record security boundaries, and current implementation status.

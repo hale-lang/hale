@@ -113,4 +113,4 @@ fn ship(report: Bytes) fallible(IoError) {
 > [!NOTE]
 > **Decompression Safety Bounds:** Corrupt or truncated archives fail with `err.kind == "invalid"` rather than crashing, and decompression refuses to expand past `1 GiB` in a single call so a zip bomb returns an `IoError` instead of exhausting memory.
 
-Next: [JSON](./json.md).
+Next: [JSON Encoding & Decoding](./json.md).

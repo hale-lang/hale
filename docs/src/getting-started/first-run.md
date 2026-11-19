@@ -1,4 +1,4 @@
-# Quickstart & Toolchain
+# Hello World & the Toolchain
 
 ## 1. Hello World
 
@@ -129,4 +129,4 @@ hale check app.hl --json
 
 This emits one NDJSON object per diagnostic (`file`, `line`, `col`, `severity`, `kind`, `message`) on `stdout`. An empty output stream guarantees a clean check.
 
-Next: **[Tutorial: Build a Job Queue](../tutorial/job-queue.md)** or jump straight to **[Values, Types & Variables](../basics/values.md)**.
+Next: [Your First Program](../basics/first-program.md).

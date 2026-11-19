@@ -328,4 +328,4 @@ The compiler and runtime enforce the following execution invariants across the o
 > - Subscribing loci constructed inside stdlib or imported modules may receive messages during `birth()` rather than queuing them until `birth()` returns.
 > - Unbounded self-publishing inside `birth()` buffers messages in memory without a static cap.
 
-Next: [The Bus](./bus.md).
+Next: [The Typed Message Bus](./bus.md).

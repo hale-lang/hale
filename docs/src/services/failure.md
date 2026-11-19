@@ -187,4 +187,4 @@ locus DbConnection {
 - **Required `fallible(ClosureViolation)` on value-returning methods**: Because a value-returning method that executes `violate` produces no return value after `on_failure` finishes, it must be declared `fallible(ClosureViolation)` so the caller's outer `or` (`or { return; }`, `or fallback`, or `or handler(err)`) handles the aborted call.
 - **Void methods**: A method with no return type that executes `violate` simply returns after `on_failure` (emitting a warning that `fallible(ClosureViolation)` will be required in a future release).
 
-Next: [Multi-Binary Deployment & Fleets](./multi-binary.md).
+Next: [Interfaces & Contracts](./interfaces.md).

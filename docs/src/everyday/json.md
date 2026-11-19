@@ -271,4 +271,4 @@ if !std::json::valid_object(row) {
 > [!TIP]
 > For JSON maps with more than 64 top-level keys, validate syntax with `std::json::valid(doc)` and iterate keys with `object_first` / `obj_key_eq`. For high-throughput binary formats, see [Zero-copy bus](../systems/zero-copy-bus.md) and [Performance](../systems/performance.md).
 
-Next: [HTTP](./http.md).
+Next: [HTTP Servers & Clients](./http.md).

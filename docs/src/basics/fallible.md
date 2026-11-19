@@ -206,4 +206,4 @@ Hale separates failures into two orthogonal channels:
 >
 > Because the runtime invokes these hooks directly rather than a caller frame in your code, there is no call site to attach an `or` clause. Inside a lifecycle hook or bus handler, resolve fallible calls with `or <fallback>`, `or { ... }`, `or discard`, or bridge to the structural channel using an error-check method that executes `violate`.
 
-Next: [Your First Program](./first-program.md).
+Next: [Collections (`@form`)](../everyday/collections.md).

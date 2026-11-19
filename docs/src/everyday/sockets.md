@@ -170,4 +170,4 @@ std::io::udp::set_option_bool(
 
 For TCP sockets, disable Nagle's algorithm with `std::io::tcp::set_nodelay(fd, true) or raise`.
 
-Next: [Hashing, encoding & randomness](./crypto.md).
+Next: [Cryptography, Hashing & Randomness](./crypto.md).
