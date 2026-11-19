@@ -37,33 +37,33 @@ times, runtime measurements 5 times.
 
 | Area | Measure | Median | Range |
 |---|---|---|---|
-| build | `hale build` 92-build-an-api, cold | 5.94 s | 5.94 to 6.00 |
-| build | 92-build-an-api, warm, unchanged | 1.83 s | 1.83 to 1.83 |
-| build | 92-build-an-api, after a one-line edit | 1.83 s | 1.82 to 1.84 |
-| build | 92-build-an-api, cold, peak RSS | 213 MiB | 213 to 214 |
-| build | `hale build dna/host`, cold | 20.78 s | 20.73 to 20.81 |
-| build | dna/host, warm, unchanged | 15.80 s | 15.75 to 15.86 |
-| build | dna/host, after a one-line edit | 15.82 s | 15.80 to 15.83 |
-| build | dna/host, cold, peak RSS | 1050 MiB | 1049 to 1050 |
-| bus | round trip, same thread | 34 ns | 33 to 37 |
-| bus | round trip, cross pool | 1514 ns | 1129 to 1528 |
-| json | encode, `Order::to_json` (27 allocs/op) | 978 ns/op | 966 to 1014 |
-| json | decode, `Order::from_json` (44 allocs/op) | 1937 ns/op | 1932 to 1974 |
-| http | 1 connection: requests/s | 46,604 | 46,368 to 46,671 |
-| http | 1 connection: p50 / p99 | 21 / 28 µs | p99 27 to 29 |
-| http | 16 connections: requests/s | 80,860 | 80,148 to 81,455 |
-| http | 16 connections: p50 / p99 | 193 / 243 µs | p99 240 to 247 |
-| http | 64 connections: requests/s | 82,136 | 81,213 to 82,499 |
-| http | 64 connections: p50 / p99 | 771 / 866 µs | p99 838 to 878 |
+| build | `hale build` 92-build-an-api, cold | 5.97 s | 5.96 to 5.99 |
+| build | 92-build-an-api, warm, unchanged | 1.82 s | 1.82 to 1.84 |
+| build | 92-build-an-api, after a one-line edit | 1.82 s | 1.82 to 1.83 |
+| build | 92-build-an-api, cold, peak RSS | 214 MiB | 213 to 214 |
+| build | `hale build dna/host`, cold | 20.75 s | 20.72 to 20.78 |
+| build | dna/host, warm, unchanged | 15.75 s | 15.75 to 15.82 |
+| build | dna/host, after a one-line edit | 15.83 s | 15.78 to 15.84 |
+| build | dna/host, cold, peak RSS | 1049 MiB | 1049 to 1050 |
+| bus | round trip, same thread | 34 ns | 33 to 34 |
+| bus | round trip, cross pool | 1504 ns | 1375 to 1606 |
+| json | encode, `Order::to_json` (27 allocs/op) | 972 ns/op | 967 to 990 |
+| json | decode, `Order::from_json` (44 allocs/op) | 1940 ns/op | 1925 to 1964 |
+| http | 1 connection: requests/s | 46,730 | 46,121 to 46,756 |
+| http | 1 connection: p50 / p99 | 20 / 28 µs | p99 28 to 29 |
+| http | 16 connections: requests/s | 81,411 | 80,998 to 81,595 |
+| http | 16 connections: p50 / p99 | 194 / 241 µs | p99 239 to 245 |
+| http | 64 connections: requests/s | 81,712 | 80,937 to 82,357 |
+| http | 64 connections: p50 / p99 | 774 / 872 µs | p99 843 to 881 |
 | http | errors / dropped attempts, every run | 0 / 0 | |
-| memory | HTTP server RSS: idle, at 10 s, at 120 s of load | 4.7, 4.7, 4.7 MiB | |
-| memory | RSS growth from 10 s to 120 s (9.7 M requests, 0 errors, 0 dropped) | -7 KiB/min (flat) | |
-| editor | small seed: open, to diagnostics | 85 ms | |
-| editor | small seed: edit, to diagnostics, p50 / p95 | 97 / 101 ms | 20 edits |
-| editor | small seed: server peak RSS | 91 MiB | |
-| editor | large seed (`dna/core`): open, to diagnostics | 721 ms | |
-| editor | large seed: edit, to diagnostics, p50 / p95 | 751 / 758 ms | 20 edits |
-| editor | large seed: server peak RSS | 303 MiB | |
+| memory | HTTP server RSS: idle, at 10 s, at 120 s of load | 4.7, 4.7, 4.6 MiB | |
+| memory | RSS growth from 10 s to 120 s (9.8 M requests, 0 errors, 0 dropped) | -12 KiB/min (flat) | |
+| editor | small seed: open, to diagnostics | 87 ms | |
+| editor | small seed: edit, to diagnostics, p50 / p95 | 96 / 98 ms | 20 edits |
+| editor | small seed: server peak RSS | 90 MiB | |
+| editor | large seed (`dna/core`): open, to diagnostics | 733 ms | |
+| editor | large seed: edit, to diagnostics, p50 / p95 | 752 / 759 ms | 20 edits |
+| editor | large seed: server peak RSS | 304 MiB | |
 
 ## What each measures
 
@@ -106,15 +106,16 @@ connection sends `GET /` as soon as the last response is in, for 10 s after
 with `Connection: close`, so every request includes a TCP connect, and the
 latency is measured from the request's send to the end of its response,
 reconnect included. A non-200 response is an *error*; a connection that
-fails before its response is complete is a *dropped* attempt, counted and
-sent again, so a server that loses requests cannot read as error-free. The server is a single handler loop, so throughput
+fails before its response is complete is a *dropped* attempt, counted at
+the moment it fails (inside the measured window) and sent again, so a
+server that loses requests cannot read as error-free. The server is a single handler loop, so throughput
 levels off at about 81,000 requests/s from 16 connections up, and further
 connections only queue (p50 rises in proportion).
 
 **Memory** (`bench/http_serve.hl` under load). The same server under 16
 connections of constant load for 120 s, with its RSS (`/proc/<pid>/status`
 VmRSS) read every second. Growth is the least-squares slope from 10 s to
-the end. It stays at 4.7 MiB across 9.7 million requests.
+the end. It stays at 4.6 to 4.7 MiB across 9.8 million requests.
 
 **Editor** (`bench/tools/lsp_latency.py`). A client drives `hale lsp` over
 stdio: it opens one file of a seed and times the diagnostics that follow,

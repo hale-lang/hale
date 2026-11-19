@@ -6,8 +6,9 @@
 //! `Connection: close` is followed by a new connection, and that reconnect
 //! counts toward the next request's latency (`reconnects`). A request whose
 //! connection fails before its response is complete (a reset, an early
-//! close, a short body) is a `dropped` attempt: counted, then sent again
-//! on a new connection. A response other than 200 is an `error`. The first
+//! close, a short body) is a `dropped` attempt: counted at the moment it
+//! fails when that falls inside the measured window, then sent again on a
+//! new connection. A response other than 200 is an `error`. The first
 //! `--warmup` seconds are not recorded. Prints one JSON object: requests,
 //! errors, dropped, reconnects, seconds, requests per second, and latency
 //! percentiles in microseconds.
@@ -113,7 +114,6 @@ fn main() {
             let mut buf = Vec::with_capacity(16384);
             while !stop.load(Ordering::Relaxed) {
                 let t = Instant::now();
-                let mut failed = 0u64;
                 let ok = loop {
                     if s.write_all(req.as_bytes()).is_ok() {
                         if let Some((status, close)) = read_response(&mut s, &mut buf) {
@@ -125,8 +125,13 @@ fn main() {
                         }
                     }
                     // the connection failed before a whole response: a
-                    // dropped attempt; reopen and resend
-                    failed += 1;
+                    // dropped attempt, counted when it happens inside the
+                    // measured window (whenever its retry ends); reopen
+                    // and resend
+                    let at = start.elapsed();
+                    if at >= warm && at < end {
+                        dropped += 1;
+                    }
                     s = connect(&addr);
                     if stop.load(Ordering::Relaxed) {
                         break false;
@@ -134,7 +139,6 @@ fn main() {
                 };
                 let since = start.elapsed();
                 if since >= warm && since < end {
-                    dropped += failed;
                     if ok {
                         lat.push(t.elapsed().as_micros().min(u32::MAX as u128) as u32);
                     } else {
