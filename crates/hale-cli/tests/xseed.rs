@@ -9,12 +9,10 @@
 mod cross_seed_arity;
 #[path = "cross_seed_effects.rs"]
 mod cross_seed_effects;
-#[path = "cross_seed_enum_persp.rs"]
-mod cross_seed_enum_persp;
+#[path = "cross_seed_enum_iface.rs"]
+mod cross_seed_enum_iface;
 #[path = "cross_seed_interface_fallible.rs"]
 mod cross_seed_interface_fallible;
-#[path = "cross_seed_qualified_serves.rs"]
-mod cross_seed_qualified_serves;
 #[path = "face_seeds_check.rs"]
 mod face_seeds_check;
 #[path = "form_hashmap_qualified.rs"]

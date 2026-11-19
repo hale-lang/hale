@@ -153,7 +153,6 @@ pub(crate) fn declarations(
 pub fn kind_and_name(item: &TopDecl) -> (&'static str, String) {
     match item {
         TopDecl::Locus(l) => ("locus", l.name.name.clone()),
-        TopDecl::Perspective(p) => ("perspective", p.name.name.clone()),
         TopDecl::Type(t) => ("type", t.name.name.clone()),
         TopDecl::Const(c) => ("const", c.name.name.clone()),
         TopDecl::Fn(f) => ("fn", f.name.name.clone()),

@@ -105,7 +105,7 @@ namespace or spec file cannot land without a tier.
 | [`spec/projects.md`](https://github.com/hale-lang/hale/blob/main/spec/projects.md) | stable |  |
 | [`spec/registry.md`](https://github.com/hale-lang/hale/blob/main/spec/registry.md) | experimental | a generated index of the compiler's own families; it describes the implementation, not the language |
 | [`spec/runtime.md`](https://github.com/hale-lang/hale/blob/main/spec/runtime.md) | stable | experimental: § Observe backends; § Diagnostic + tuning env vars; § Runtime size budget. |
-| [`spec/semantics.md`](https://github.com/hale-lang/hale/blob/main/spec/semantics.md) | stable | experimental: § Probes; § Observe backends (GH #1592); § Perspective hot-load. |
+| [`spec/semantics.md`](https://github.com/hale-lang/hale/blob/main/spec/semantics.md) | stable | experimental: § Probes; § Observe backends (GH #1592). |
 | [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md) | stable |  |
 | [`spec/styleguide.md`](https://github.com/hale-lang/hale/blob/main/spec/styleguide.md) | stable |  |
 | [`spec/testing.md`](https://github.com/hale-lang/hale/blob/main/spec/testing.md) | stable | experimental: § Property-based testing. |

@@ -462,7 +462,7 @@ a name is one slot, so declare it once
 main.hl:2:5: the first declaration
 ```
 
-The same rule holds for a locus's or a perspective's `params`, for
+The same rule holds for a locus's `params`, for
 the named members of a `contract`, and for an `interface`'s methods.
 Before it, the second declaration passed `hale check` and one of the
 two won the slot, with nothing in the source to say which — while
@@ -592,7 +592,7 @@ one may replace its place (`take(match self.e { E::A(s) -> s, E::B ->
 write is a store into the place's field (`self.f.s = ..`, `self.f =
 ..`, through any root), a call whose callee writes it, transitively (a
 method of the locus its receiver's type names, only that locus's; a
-method through an interface or a perspective, any locus's of the name;
+method through an interface, any locus's of the name;
 a method called on the field itself, as a form's `set`), and anything
 that may run other code of the locus: a publish, `yield` and a stdlib
 call that parks on an `async_io` pool write what the program's bus
@@ -609,8 +609,8 @@ checker has no type for a value or no callee for a call, the binding is
 an owned copy. A field
 of a record the frame holds itself is never replaced under a binding of
 it (a write through a local root replaces the field's pointer); a field
-read through a handle is — a value whose type is a locus, an interface
-or a perspective, however it is spelled (an alias, an imported seed's
+read through a handle is — a value whose type is a locus or an
+interface, however it is spelled (an alias, an imported seed's
 `lib::Kid`, a binding's declared type). A write
 inside a loop reaches a use anywhere in the loop when the variable was
 declared before the loop — a local declared outside and rebound inside
@@ -866,8 +866,8 @@ The consequences are all one rule:
   same way, at the target rather than at every use of the alias
   (see "Bare type names" below).
 
-* **Transparent in construction too.** A struct, locus or
-  perspective literal, and an enum-variant path, may be spelled
+* **Transparent in construction too.** A struct or locus
+  literal, and an enum-variant path, may be spelled
   with the alias name: with `type Row2 = Row;`, `Row2 { id: 1 }`
   builds a `Row`, and with `type C2 = Color;`, `C2::Red` is
   `Color::Red` — both where a variant is constructed and where it
@@ -1118,21 +1118,6 @@ typecheck and codegen.
 The checker follows a cell from the slot call that makes it
 (`self.entries.acquire()`) through the `let` bindings that hold it;
 those are the cells its rules see.
-
-## Perspective types
-
-A `perspective P { ... }` declaration introduces a *contract
-type* P — a set of bodyless `fn` signatures (optionally a
-`bus { subscribe/publish ... }` surface) that form a stable ABI
-boundary. Holders program against the **slot type**
-`perspective(P)` — never a concrete impl — and dispatch through a
-single program-global, live-rebindable slot. A locus
-`L : serves P` provides the contract and can be swapped in behind
-the slot at pointer-flip cost via `reperspective`. An optional
-`stable_when { ... }` predicate feeds the (aspirational)
-transport-driven hot-load path. See
-[`semantics.md` § Perspectives](./semantics.md) for the full model
-(contract / `serves` / slot / live swap).
 
 ## Interface types (F.20)
 
@@ -1501,7 +1486,7 @@ from a place is yours" describes; a write through a parameter of
 caller storage is spec/memory.md's. A binding that holds a locus (a
 handle: `let c = Counter { }; c.n = 4;`, a generic locus's
 `let c: Cell<Int> = …`, through an alias too, or a binding typed as an
-interface or perspective a locus is held through), or a place on the
+interface a locus is held through), or a place on the
 way to the written one that holds a locus (`ls[0].n = 4` through
 `let ls = [Counter { }]`), writes the locus's state, as `self.n = 4`
 does, and a cell from a capacity slot names the
@@ -2111,12 +2096,10 @@ type, and a generic body names `T`, so it would print and convert as
 the bare count. A generic fn call that would bind one is refused at
 the callee ("generic fn \`id\`: \`T\` would be \`Money\`, a quantity,
 and a generic body has no unit to print or convert one by"); the
-stdlib's `Duration` and `Time` are primitives and bind. A locus, an
-interface or a perspective binds too: the specialization takes and
-hands back the handle, as a fn declared over the locus, the interface
-or `perspective(P)` does (`let c = id(Counter { n: 3 });`,
-`id(self.router).health()` with `router: perspective(Router)`; GH
-#1974). A locus handed where the interface it is held as is the bound
+stdlib's `Duration` and `Time` are primitives and bind. A locus or an
+interface binds too: the specialization takes and hands back the
+handle, as a fn declared over the locus or the interface does (`let c =
+id(Counter { n: 3 });`; GH #1974). A locus handed where the interface it is held as is the bound
 type (`id(c)` with `c: Job` in a `release(c: Job)`) is passed as that
 interface (GH #1975).
 
@@ -2130,12 +2113,8 @@ generic fn call that binds a parameter to a
 locus where the fn's signature instantiates a generic `type` at that
 parameter (`fn bx<T>(x: T) -> Box<T>` called with an `L`), at the
 callee; the build refused the monomorph with no location. A generic
-locus's monomorph is a locus too (`bx(c)` with `c: Cache<Int, String>`),
-and so is the locus a perspective slot holds: a call binding the
-parameter to `perspective(P)`'s value (`bx(self.router)`) is refused at
-the callee as well, since hale can't compile a generic `type` holding a
-perspective slot yet; a non-generic `type` with a `perspective(P)` field
-holds one (GH #2005). A generic locus (`locus Box<T>`) holds one.
+locus's monomorph is a locus too (`bx(c)` with `c: Cache<Int, String>`).
+A generic locus (`locus Box<T>`) holds one.
 
 An array, a tuple, a `bounded[T; N]` or a function type names no
 monomorph, so a generic fn call whose arguments would bind one is
@@ -2171,7 +2150,6 @@ yet" and a way forward, never by the build after a passing check:
 | a generic fn call whose parameter only an argument with no nameable type could pin (a capacity slot, a call with no value, a `match` arm's binding in a generic body) | the argument | bind the value to a `let` that writes its type |
 | a literal spelled with a generic template's name where no declared type supplies its arguments | the literal | bind it to a `let` that writes them |
 | a generic `type` instantiated at a locus (`Box<L>`, `Box<Cache<Int, String>>`, or a generic fn's `-> Box<T>` called with an `L` or a generic locus's monomorph) | the argument, or the callee | a generic locus, or pass the locus as a parameter |
-| a generic fn's `-> Box<T>` called with a perspective slot's value | the callee | a `type` with a `perspective(P)` field, or pass the value as a `perspective(P)` parameter |
 | a call that leaves out a generic fn's defaulted parameter | the callee | pass the parameter |
 | an empty array literal `[]` with no list type declared where it stands: anywhere but the value of a `let` that declares its type, or a site that declares a `bounded[T; N]` (a `let`, a `return`, an argument, an assignment, a record field; § bounded[T; N]) | the literal | `let xs: [T; 0] = [];`, or `[x; 0]` |
 | a nested pattern inside a tuple pattern (`((1, 2), 3) ->`, `(E::A, 3) ->`) | the nested pattern | bind the part and match the binding (the rule a variant's pattern follows) |
@@ -2353,8 +2331,8 @@ Box<Cfg>` with `type Box<T> { v: T; }` is a ring), an alias to its
 target. The shapes that give a record of its own kind a floor are not
 rings, and build: a `bounded[Cfg; N]` field (it starts empty), and an
 enum whose variants hold one (`child: Link = Link::End` with `type Link =
-enum { End, Next(Cfg) }`); so are a fn type, an interface, a locus and a
-perspective, which hold no record value. The test harness's build judges
+enum { End, Next(Cfg) }`); so are a fn type, an interface and a locus,
+which hold no record value. The test harness's build judges
 this rule too. (Until 2026-11-14 the check said ok and the build
 expanded the default until the compiler's own stack overflowed; a
 record holding its own kind through a `bounded` or an enum overflowed it
@@ -2369,8 +2347,7 @@ author. The compiler treats:
 
 - Hand-declared `= value` → prior, fixed at compile time.
 - `: inferred` → unknown; resolved at compile time if possible
-  (constant propagation), at runtime otherwise (via the
-  perspective-stability machinery).
+  (constant propagation), at runtime otherwise.
 
 Typing-wise, inferred params have the declared type; they're
 just not bound to a value at declaration time.
@@ -2389,8 +2366,8 @@ raise)(4)`, GH #2005). The callee is evaluated once, before the
 arguments, each passed as at a direct call (an array literal for a
 `bounded[T; N]` parameter is that bounded, GH #2005). A fn value
 returns any value type, a view's included: a
-`StringView` comes back through a fn value, an interface method or a
-perspective method as through a direct call.
+`StringView` comes back through a fn value or an interface method as
+through a direct call.
 
 A locus's `fn` member can be a method (takes `self`) or a free
 function within the locus's scope. Lifecycle methods (`birth`,
@@ -2400,7 +2377,7 @@ syntax and don't take `self` (it's implicit).
 A function value is a free fn's name read as a value
 (`apply(dbl, 1)`). A method is not one: it is called on its locus,
 and a `fn(A) -> B` value carries no locus, so `self.dbl` (or
-`h.dbl`, a perspective's or an interface's method) written anywhere
+`h.dbl`, an interface's method) written anywhere
 but a call's callee is a type error at the method's name:
 
 ```
@@ -2637,7 +2614,7 @@ The same rule holds in value position. A bare identifier must name
 something in scope: a local binding, a fn param, a match-arm binder,
 the implicit `err` of an `or` handler, a chain's `it` / `idx`, a
 top-level `const`, or a top-level declaration (`fn`, `locus`,
-`type`, `perspective`, `interface`; a `topic` resolves and is then
+`type`, `interface`; a `topic` resolves and is then
 refused by its own rule — it addresses a channel, it is not a
 value). In a **whole program** — every import resolved, which is
 `hale check` on a seed or a file, every build (`hale build` / `hale run` /
@@ -2673,8 +2650,8 @@ one — one mistake, one message (GH #721).
 
 And the same rule holds in TYPE position. A bare name written where a
 type is expected must name a declaration: a primitive, a `type`
-(struct, enum or alias), a `locus`, an `interface`, a `perspective`,
-a generic parameter of the declaration being checked, or one of the
+(struct, enum or alias), a `locus`, an `interface`, a generic
+parameter of the declaration being checked, or one of the
 types the compiler synthesizes for its own channels (`IoError`,
 `ParseError`, `CryptoError`, `IndexError`, `KeyError`, `EmptyError`,
 `CapacityError`, `BusUnmatchedKey`, `ClosureViolation`). A
@@ -3210,7 +3187,7 @@ so the position reports no type mismatch beside the law's error.
   (not a generic one), an imported or bundled stdlib fn written as
   Hale, and a locus member fn called on `self`, a local or a field of
   `self`. Any other fallible handler (a stdlib path-call, a generic
-  fn, an interface's or a perspective's method, an `@form`-synthesized
+  fn, an interface's method, an `@form`-synthesized
   or an array's method) is refused with the explicit nested spelling
   to write instead. In statement position
   the substituted value is discarded, so the handler's success

@@ -1,7 +1,7 @@
 //! GH #730, second half — a borrow outlives its holder.
 //!
 //! A handle stored into a locus-carrying param field — a `LocusRef`, an
-//! `interface`, a `perspective(P)` — is a **borrow** (F.39: a name in a
+//! `interface` — is a **borrow** (F.39: a name in a
 //! field initialiser is `Owner::Borrowed`; #967 and #730's first half
 //! made the assignment and the same-interface literal forms the same).
 //! The holder never reclaims it, so the borrowed instance has to
@@ -125,7 +125,7 @@ struct CallSite {
 
 struct World {
     loci: BTreeMap<String, LocusFacts>,
-    carriers: BTreeSet<String>, // locus, interface and perspective names
+    carriers: BTreeSet<String>, // locus and interface names
     calls: Vec<CallSite>,
     /// GH #1048: the keeping facts, over the user's loci and the
     /// Hale-source stdlib's (by mangled name)
@@ -158,9 +158,6 @@ impl World {
                 TopDecl::Module(m) => self.gather_items(&m.items),
                 TopDecl::Interface(i) => {
                     self.carriers.insert(i.name.name.clone());
-                }
-                TopDecl::Perspective(pd) => {
-                    self.carriers.insert(pd.name.name.clone());
                 }
                 TopDecl::Locus(l) => {
                     self.carriers.insert(l.name.name.clone());
@@ -241,8 +238,8 @@ struct Kept {
     loci: BTreeSet<String>,
     /// the `@form` loci: containers whose mutators store
     forms: BTreeSet<String>,
-    /// every type that carries a locus handle: loci, interfaces,
-    /// perspectives — only a parameter of one of these is a handle
+    /// every type that carries a locus handle: loci and interfaces
+    /// — only a parameter of one of these is a handle
     carriers: BTreeSet<String>,
     /// free fn -> the locus it returns, so `let r = fresh();` is typed
     fn_returns: BTreeMap<String, String>,
@@ -359,9 +356,6 @@ impl Kept {
                     }
                     TopDecl::Interface(i) => {
                         k.carriers.insert(i.name.name.clone());
-                    }
-                    TopDecl::Perspective(pd) => {
-                        k.carriers.insert(pd.name.name.clone());
                     }
                     _ => {}
                 }

@@ -213,4 +213,4 @@ main locus App {
 }
 ```
 
-Next: [Perspectives & Interfaces](./perspectives.md).
+Next: [Ownership, Children & Flow Reclamation](./parents-children.md).

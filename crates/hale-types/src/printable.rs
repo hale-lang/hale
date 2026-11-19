@@ -73,7 +73,7 @@ pub enum PrintShape<T> {
     /// cannot see.
     Unseen,
     /// No text form: a locus (flow, not shape: rendering one would hand
-    /// out the `params` a `@sealed` locus confines), a perspective, an
+    /// out the `params` a `@sealed` locus confines), an
     /// interface, a function, an unsized array (no length to walk), a
     /// fallible, a cell, a batch.
     NoTextForm,

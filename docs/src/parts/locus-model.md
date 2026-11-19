@@ -17,5 +17,5 @@ Part II covers building concurrent, long-running services, API servers, and mult
 | Topic | Chapters |
 |---|---|
 | **Lifecycle, Bus & Concurrency** | [Locus Lifecycle](../services/lifecycle.md) · [The Typed Message Bus](../services/bus.md) · [Concurrency & Thread Placement](../services/concurrency.md) · [Ownership, Children & Flow Reclamation](../services/parents-children.md) · [Supervision & Structural Failure](../services/failure.md) |
-| **Boundaries & Data Access** | [Interfaces, Contracts & Perspectives](../services/perspectives.md) · [Seams & Typed Pipelines](../services/seams.md) · [Repositories (`@repo`)](../services/repositories.md) · [Service Composition Patterns](../services/patterns.md) |
+| **Boundaries & Data Access** | [Interfaces & Contracts](../services/interfaces.md) · [Seams & Typed Pipelines](../services/seams.md) · [Repositories (`@repo`)](../services/repositories.md) · [Service Composition Patterns](../services/patterns.md) |
 | **APIs & Distributed Systems** | [Tutorial: Build a Typed API](../services/build-an-api.md) · [API Surfaces, RPC, REST, MCP & gRPC](../services/api.md) · [API Wire Schemas & Compatibility](../services/api-messages.md) · [Multi-Binary Systems, Fleets & Deployment](../services/multi-binary.md) · [The Application Model](../the-model.md) |

@@ -797,7 +797,6 @@ impl<'a> Shapes<'a> {
             }
             TypeExpr::Function { .. } => "opaque(fn)".to_string(),
             TypeExpr::Projection { .. } => "opaque(projection)".to_string(),
-            TypeExpr::Perspective { name, .. } => format!("opaque(perspective({}))", name.name),
             TypeExpr::Primitive(..) => unreachable!("a primitive has a flat tag"),
         }
     }

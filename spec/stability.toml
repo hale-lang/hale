@@ -136,7 +136,6 @@ tier = "stable"
 experimental_sections = [
     "Probes",
     "Observe backends (GH #1592)",
-    "Perspective hot-load",
 ]
 
 [spec."memory.md"]

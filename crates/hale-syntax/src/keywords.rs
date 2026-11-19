@@ -24,7 +24,7 @@
 /// Mirrors the match in `lexer.rs` (minus the `true`/`false`/`nil`
 /// literals, which highlighters colour as literals, not keywords).
 pub const HARD_KEYWORDS: &[&str] = &[
-    "locus", "perspective", "type", "const", "fn", "import", "module",
+    "locus", "type", "const", "fn", "import", "module",
     "let", "mut", "if", "else", "match", "for", "in", "while",
     "return", "break", "continue", "self", "interface",
     // F.47: `trait`, `impl`, `async`, `await` and `macro` (reserved for
@@ -37,9 +37,9 @@ pub const HARD_KEYWORDS: &[&str] = &[
 /// matches the strings inline, so this list is for tooling, not parsing.
 pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     // Friction sweep 2026-10-12: the locus-member, lifecycle, mode,
-    // projection, closure, recovery, contract, bus, perspective and
-    // statement words that introduce syntax in one position each and are
-    // names everywhere else (spec/tokens.md § Reserved words).
+    // projection, closure, recovery, contract, bus and statement words
+    // that introduce syntax in one position each and are names everywhere
+    // else (spec/tokens.md § Reserved words).
     "params", "contract", "bus", "capacity", "as_parent_for", "indexed_by",
     // GH #1951 item 3 (F.52): `x?: T clearable`, after an optional
     // field's type only.
@@ -51,7 +51,6 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "restart", "restart_in_place", "quarantine", "reorganize", "bubble",
     "expose", "consume", "inferred",
     "subscribe", "publish", "on", "of",
-    "stable_when", "serialize_as",
     "yield", "terminate", "where",
     "topic", "ring_layout", "as", "main",
     "mode", "bindings", "birth_check", "placement",
@@ -79,7 +78,6 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     // `@rpc`), and a hub binding's `requires:`.
     "rpc", "requires",
     "intra_process", "intra_machine", "cross_machine", "zero_copy",
-    "serves", "reperspective",
     // GH #382: claims surface (phases 1-5) + effect families.
     "group", "claims", "forbid", "reaches", "via", "may_be_empty",
     "domain", "edges", "bound", "require", "cover", "count",

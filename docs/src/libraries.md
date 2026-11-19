@@ -60,7 +60,7 @@ fn buying() -> Side {
 
 `st::ModelRow` keeps working beside the bare `ModelRow`; they are one
 declaration. A list names types (records, enums, aliases), loci, fns,
-consts, topics, interfaces and perspectives; there is no glob.
+consts, topics and interfaces; there is no glob.
 
 **A list re-exports.** What a seed lists is reachable through that
 seed's alias by its own importers. If `api` lists `ModelRow` from

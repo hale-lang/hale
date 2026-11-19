@@ -185,6 +185,6 @@ locus DbConnection {
 
 - **Reading captured state**: `ClosureViolation` exposes fixed metadata fields (`err.locus`, `err.closure`, and `err.diff`). The supervisor reads the fields listed in `captures:` directly off the child parameter passed to `on_failure(c, err)` (e.g., `c.last_error`, not `err.last_error`).
 - **Required `fallible(ClosureViolation)` on value-returning methods**: Because a value-returning method that executes `violate` produces no return value after `on_failure` finishes, it must be declared `fallible(ClosureViolation)` so the caller's outer `or` (`or { return; }`, `or fallback`, or `or handler(err)`) handles the aborted call.
-- **Void and perspective methods**: A method with no return type that executes `violate` simply returns after `on_failure` (emitting a warning that `fallible(ClosureViolation)` will be required in a future release). A method serving a [`perspective`](./perspectives.md) cannot be marked `fallible`, so the compiler emits a warning and callers must not read its return value after a violation.
+- **Void methods**: A method with no return type that executes `violate` simply returns after `on_failure` (emitting a warning that `fallible(ClosureViolation)` will be required in a future release).
 
 Next: [Multi-Binary Deployment & Fleets](./multi-binary.md).

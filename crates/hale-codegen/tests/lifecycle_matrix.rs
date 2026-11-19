@@ -32,8 +32,7 @@
 //!     field of the root (`root_child`); a field of a field
 //!     (`grandchild`, whose owner is the middle locus); a statement
 //!     literal its owner `accept`s (`accepted_child`); a field typed by
-//!     an interface (`iface_field`) or a perspective (`persp_slot`); a
-//!     `pinned(replicas = 2)` field (`replica`); a literal in the
+//!     an interface (`iface_field`); a `pinned(replicas = 2)` field (`replica`); a literal in the
 //!     owner's `on_failure` (`handler_born`); a `let`-bound literal in
 //!     the owner's `run()` (`let_literal`).
 //!   * **domain**: where the subject and its owner run. `main`; `pool`,
@@ -120,10 +119,10 @@
 //!
 //! ## Size
 //!
-//! 6 × 8 × 4 = 192 cells: 121 programs, 59 unwritable, 12 with no
+//! 6 × 7 × 4 = 168 cells: 109 programs, 47 unwritable, 12 with no
 //! path. The default runs a deterministic sample ([`default_sample`])
-//! of sixty programs, ASan included, in about 10 s;
-//! `HALE_MATRIX=full` runs all 121, for a nightly job, in about 12 s
+//! of fifty-two programs, ASan included, in about 10 s;
+//! `HALE_MATRIX=full` runs all 109, for a nightly job, in about 12 s
 //! (ASan stays on the sample; `HALE_MATRIX_ASAN=full` puts it on every
 //! cell run). `HALE_MATRIX_CELL=<id>,<id>` prints the named cells'
 //! programs, plans and traces.
@@ -206,7 +205,6 @@ enum Position {
     Grandchild,
     AcceptedChild,
     IfaceField,
-    PerspSlot,
     Replica,
     HandlerBorn,
     LetLiteral,
@@ -217,7 +215,6 @@ const POSITIONS: &[Position] = &[
     Position::Grandchild,
     Position::AcceptedChild,
     Position::IfaceField,
-    Position::PerspSlot,
     Position::Replica,
     Position::HandlerBorn,
     Position::LetLiteral,
@@ -230,7 +227,6 @@ impl Position {
             Position::Grandchild => "grandchild",
             Position::AcceptedChild => "accepted_child",
             Position::IfaceField => "iface_field",
-            Position::PerspSlot => "persp_slot",
             Position::Replica => "replica",
             Position::HandlerBorn => "handler_born",
             Position::LetLiteral => "let_literal",
@@ -253,7 +249,6 @@ impl Position {
             Position::Grandchild => "a field of the root's field `Mid`, which handles it",
             Position::AcceptedChild => "a statement literal its owner accepts",
             Position::IfaceField => "a field typed by the interface `Probe`",
-            Position::PerspSlot => "a field typed `perspective(Route)`",
             Position::Replica => "a `pinned(replicas = 2)` field",
             Position::HandlerBorn => "a literal in its owner's on_failure",
             Position::LetLiteral => "a let-bound literal in its owner's run()",
@@ -337,17 +332,14 @@ const UNWRITABLE: &[(&str, &str)] = &[
     ("*/replica/pool", "placement rule 15"),
     ("*/replica/cross_pool", "placement rule 15"),
     // Rule 6 judges the locus a pinned row realizes, so the birth
-    // closure behind an interface or a perspective slot is refused too
+    // closure behind an interface slot is refused too
     // (beside rule 3), and rule 6 is the one this table names first
     // (F.40 phase 3, C7).
     ("params_settle/iface_field/pinned", "placement rule 6"),
-    ("params_settle/persp_slot/pinned", "placement rule 6"),
-    // A placement entry names a locus-typed field; an interface or a
-    // perspective is not one.
+    // A placement entry names a locus-typed field; an interface is not
+    // one.
     ("*/iface_field/pinned", "placement rule 3"),
     ("*/iface_field/cross_pool", "placement rule 3"),
-    ("*/persp_slot/pinned", "placement rule 3"),
-    ("*/persp_slot/cross_pool", "placement rule 3"),
     // A pinned locus may not declare a birth-epoch closure.
     ("params_settle/root_child/pinned", "placement rule 6"),
     ("params_settle/replica/pinned", "placement rule 6"),
@@ -482,7 +474,7 @@ fn own_placement(c: Cell) -> Option<String> {
 }
 
 fn subj_decl(c: Cell) -> String {
-    let head = if c.position == Position::PerspSlot { "locus Subj : serves Route {\n" } else { "locus Subj {\n" };
+    let head = "locus Subj {\n";
     let mut body = vec!["    params { n: Int = 0; }\n".to_string()];
     match c.phase {
         Phase::ParamsSettle => body.push("    closure ready { self.n ~~ 1 within 0; epoch birth; }\n".into()),
@@ -530,8 +522,6 @@ const TRIG_DECL: &str = "locus Trig {
 
 const PROBE_DECL: &str = "interface Probe { fn v() -> Int; }\n";
 
-const ROUTE_DECL: &str = "perspective Route { fn v() -> Int; }\n";
-
 const MAKE_SUBJ: &str = "fn make_subj() -> Subj { return Subj { }; }\n";
 
 /// The handler owner's `on_failure` for the subject.
@@ -555,7 +545,6 @@ fn own_members(c: Cell, twin: bool) -> (String, String) {
     match c.position {
         Position::RootChild | Position::Replica => m.push("    params { s: Subj = Subj { }; }\n".into()),
         Position::IfaceField => m.push("    params { s: Probe = Subj { }; }\n".into()),
-        Position::PerspSlot => m.push("    params { s: perspective(Route) = Subj { }; }\n".into()),
         Position::Grandchild => {
             mid = [
                 "locus Mid {\n",
@@ -609,9 +598,6 @@ fn source(c: Cell, twin: bool, header: &str) -> String {
     let mut parts: Vec<String> = vec![header.to_string()];
     if c.position == Position::IfaceField {
         parts.push(PROBE_DECL.into());
-    }
-    if c.position == Position::PerspSlot {
-        parts.push(ROUTE_DECL.into());
     }
     if c.phase == Phase::Handler {
         parts.push(PING_DECL.into());
@@ -741,7 +727,7 @@ fn run_canceled(c: Cell) -> bool {
         return false;
     }
     match c.position {
-        Position::RootChild | Position::Grandchild | Position::IfaceField | Position::PerspSlot => {
+        Position::RootChild | Position::Grandchild | Position::IfaceField => {
             matches!(c.phase, Phase::Run | Phase::Handler | Phase::Drain | Phase::None)
         }
         Position::AcceptedChild => true,
@@ -1056,9 +1042,9 @@ fn dump(id: &str, p: &Program, plan: &Expected, ran: &Ran) {
 // ===================================================================
 
 /// How many programs the default sample aims for.
-const TARGET_SAMPLE: usize = 60;
+const TARGET_SAMPLE: usize = 52;
 
-/// A stride co-prime with 192 = 2^6 · 3.
+/// A stride co-prime with 168 = 2^3 · 3 · 7.
 const FILL_STRIDE: usize = 73;
 
 fn full_mode() -> bool {

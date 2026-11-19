@@ -2635,13 +2635,13 @@ fn find_decl(items: &[hale_syntax::ast::TopDecl], name: &str) -> Option<hale_syn
 }
 
 /// The name of `owner`'s member `member` in `items`: a locus's fn,
-/// param or const, a record's field, a perspective's fn.
+/// param or const, a record's field.
 fn find_member(
     items: &[hale_syntax::ast::TopDecl],
     owner: &str,
     member: &str,
 ) -> Option<hale_syntax::Span> {
-    use hale_syntax::ast::{LocusMember, PerspectiveMember, TopDecl, TypeDeclBody};
+    use hale_syntax::ast::{LocusMember, TopDecl, TypeDeclBody};
     hale_syntax::ast::flat_decls(items).find_map(|d| match d {
         TopDecl::Locus(l) if l.name.name == owner => l.members.iter().find_map(|m| match m {
             LocusMember::Fn(f) if f.name.name == member => Some(f.name.span),
@@ -2657,10 +2657,6 @@ fn find_member(
             }
             _ => None,
         },
-        TopDecl::Perspective(p) if p.name.name == owner => p.members.iter().find_map(|m| match m {
-            PerspectiveMember::Fn(f) if f.name.name == member => Some(f.name.span),
-            _ => None,
-        }),
         _ => None,
     })
 }

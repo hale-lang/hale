@@ -303,7 +303,7 @@ pub struct InterfaceDecl {
 /// A declaration kind that participates in seed membership but has
 /// no structural role elsewhere in the model (yet). The
 /// declaration-universe law: every NAMEABLE top-level declaration
-/// (`top_decl_name` in the compiler: locus, perspective, type,
+/// (`top_decl_name` in the compiler: locus, type,
 /// const, fn, interface, topic, ring layout, target, group) is
 /// representable — as a specialized sort where the model needs its
 /// structure, or as an opaque [`Declaration`] row where seed
@@ -315,7 +315,6 @@ pub struct InterfaceDecl {
 /// cannot depend on the AST, so the mirror is by test, not type).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum DeclKind {
-    Perspective,
     Const,
     RingLayout,
     Target,

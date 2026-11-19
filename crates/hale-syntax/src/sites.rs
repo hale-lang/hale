@@ -32,7 +32,6 @@ pub enum SiteKind {
     Lifecycle,
     Mode,
     Failure,
-    Perspective,
     Const,
     Group,
     Module,
@@ -155,19 +154,6 @@ macro_rules! walk {
             pub(super) fn top_decl(d: & $($m)? TopDecl, f: &mut Visit<'_>) {
                 match d {
                     TopDecl::Locus(l) => locus(l, f),
-                    TopDecl::Perspective(p) => {
-                        f(SiteKind::Perspective, p.span, Some(p.name.name.as_str()), & $($m)? p.id);
-                        generics(& $($m)? p.generics, f);
-                        for member in & $($m)? p.members {
-                            match member {
-                                PerspectiveMember::Params(pb) => params_block(pb, f),
-                                PerspectiveMember::StableWhen(b) => block(b, f),
-                                PerspectiveMember::SerializeAs(t) => ty(t, f),
-                                PerspectiveMember::Fn(fd) => fn_decl(fd, f),
-                                PerspectiveMember::Bus(bb) => bus(bb, f),
-                            }
-                        }
-                    }
                     TopDecl::Type(t) => type_decl(t, f),
                     TopDecl::Const(c) => const_decl(c, f),
                     TopDecl::Fn(fd) => fn_decl(fd, f),
@@ -486,7 +472,7 @@ macro_rules! walk {
                             ty(r, f);
                         }
                     }
-                    TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+                    TypeExpr::Primitive(..) => {}
                 }
             }
 
@@ -568,8 +554,7 @@ macro_rules! walk {
                     Stmt::Break(_)
                     | Stmt::Continue(_)
                     | Stmt::Yield(_)
-                    | Stmt::Terminate(_)
-                    | Stmt::Reperspective { .. } => {}
+                    | Stmt::Terminate(_) => {}
                 }
             }
 

@@ -227,9 +227,9 @@ locus still respects every other substrate invariant
 (arena ownership, dissolve cascade, capacity slot
 discipline).
 
-## Perspectives and forms
+## Structure and forms
 
-> **Perspectives reflect on structure, not on lowering.**
+> **What reflects on a locus sees its structure, not its lowering.**
 
 The form annotation changes how the compiler lays out memory
 and synthesizes methods. It does not change:
@@ -239,8 +239,8 @@ and synthesizes methods. It does not change:
 - The capacity slot declarations.
 - The `closure` / `on_failure` / `bus` blocks.
 
-Perspectives that reflect on a form-lowered locus see the
-*structural* view: the capacity slots, the params, the method
+Whatever reflects on a form-lowered locus — an interface it
+satisfies, the model's rows — sees the *structural* view: the capacity slots, the params, the method
 signatures (synthesized or user-written, treated uniformly).
 They do not see the underlying C struct layout.
 
@@ -681,7 +681,6 @@ A `@form(vec)` locus is a locus in every other respect. It can:
 - Declare `closure { ... }` invariants.
 - Route failures via `on_failure(child, err)`.
 - Participate in a `bus`.
-- Be projected by `perspective` declarations.
 
 These are orthogonal to the form annotation. The form
 *replaces* the literal F.22 heap-slot lowering; it does not
@@ -1486,8 +1485,7 @@ consecutive IDs without all colliding on slot 0.
 A `@form(hashmap)` locus is a locus in every other respect — it
 can have `params`, lifecycle bodies (`birth` / `run` / `drain` /
 `dissolve`), `closure` invariants, `on_failure` routing, bus
-membership, and projection by `perspective` declarations. The
-form annotation *replaces* the literal F.22 pool-slot lowering
+membership. The form annotation *replaces* the literal F.22 pool-slot lowering
 and synthesizes the six methods; it does not replace any other
 locus mechanic.
 
@@ -1752,7 +1750,7 @@ returned when one fits, and nothing on a refused push.
 A `@form(ring_buffer)` locus is a locus in every other respect.
 Same orthogonality as the other forms — `params`, lifecycle
 bodies, closure invariants, `on_failure` routing, bus
-membership, perspective projection all compose unchanged.
+membership all compose unchanged.
 
 ## Anti-patterns
 
@@ -2095,7 +2093,7 @@ and the direction are compile-time constants at each call.
 ## Interaction with the locus tower
 
 As for the other forms: a `@form(heap)` locus can carry params,
-lifecycle bodies, closures, failure routing, bus membership and
-perspectives, and user methods beside the synthesized set (a user
+lifecycle bodies, closures, failure routing, bus membership, and
+user methods beside the synthesized set (a user
 method may not take a synthesized method's name).
 

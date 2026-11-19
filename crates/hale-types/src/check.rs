@@ -107,19 +107,6 @@ fn reserved_member_diag(diags: &mut Vec<Diag>, kind: &str, id: &Ident) {
     ));
 }
 
-/// Phase 3 migration: two loci have the same *footprint* iff their
-/// params (the user-visible state fields) match by name and type in
-/// declaration order. A state-preserving `reperspective` keeps the
-/// current impl's data and swaps only the vtable, so the new impl's
-/// field accesses land on the retained state — sound exactly when
-/// the footprints are identical.
-fn footprints_match(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b.iter())
-            .all(|(x, y)| x.name == y.name && x.ty == y.ty)
-}
-
 /// GH #1995 E3: the statement written at `span` in `b` or a block under
 /// it, if any: what a `let … else`'s completing path ends with.
 fn stmt_at(b: &Block, span: Span) -> Option<&Stmt> {
@@ -275,7 +262,7 @@ fn match_is_exhaustive(
         // typechecker doesn't see them) should be permissive
         // for exhaustiveness, same as Ty::Unknown. Narrowed
         // to "name not in top.symbols" so known structs / loci
-        // / perspectives still require a wildcard / binding arm.
+        // still require a wildcard / binding arm.
         if !top.symbols.contains_key(name) {
             return true;
         }
@@ -914,13 +901,6 @@ fn literal_default_missing_field_diags(bundle: &Bundle<'_>, top: &crate::resolve
                         }
                     }
                 }
-                TopDecl::Perspective(pd) => {
-                    for m in &pd.members {
-                        if let PerspectiveMember::Fn(f) = m {
-                            params(&f.params, &mut out);
-                        }
-                    }
-                }
                 _ => {}
             }
         }
@@ -1008,13 +988,6 @@ fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
                             LocusMember::Failure(fd) => params(&fd.params, &mut out),
                             LocusMember::Type(t) => fields(t, &mut out),
                             _ => {}
-                        }
-                    }
-                }
-                TopDecl::Perspective(pd) => {
-                    for m in &pd.members {
-                        if let PerspectiveMember::Fn(f) = m {
-                            params(&f.params, &mut out);
                         }
                     }
                 }
@@ -2067,7 +2040,7 @@ impl GenericTemplates<'_> {
                     self.spelled(r, known, bindings, rows, names);
                 }
             }
-            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+            TypeExpr::Primitive(..) => {}
         }
     }
 }
@@ -5430,7 +5403,7 @@ fn program_literal_of(
 /// | `For` | its binder is a part of what it walks; condition-free loop to a fixpoint |
 /// | `While` | condition and body iterated to a fixpoint (finite lattice, no cap), then walked once with diagnostics; the state after joins entry and exit |
 /// | `Return`, `Fail`, `Send`, `Recovery`, `Violate`, `ShmWrite`, `Expr` | their expressions walked for effects (a `Return`'s roots feed the summaries) |
-/// | `Yield`, `Break`, `Continue`, `Terminate`, `Reperspective` | no origin |
+/// | `Yield`, `Break`, `Continue`, `Terminate` | no origin |
 /// | `Pattern::Binding` / `Tuple` / `Constructor` | each binder: a part of the scrutinee |
 ///
 /// While summarizing, a `Return`'s (and the body's tail's) origin is the
@@ -6815,8 +6788,7 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
         Stmt::Expr(e) => {
             eval_expr(e, cx);
         }
-        Stmt::Yield(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_)
-        | Stmt::Reperspective { .. } => {}
+        Stmt::Yield(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_) => {}
     }
 }
 
@@ -8149,8 +8121,7 @@ impl<'a> StoreDecls<'a> {
     }
 
     /// Can a value of the type `t` be or hold a locus handle (a locus, an
-    /// interface, a perspective, or a record, tuple, array or enum
-    /// holding one)? A primitive never; a name the declarations do not
+    /// interface, or a record, tuple, array or enum holding one)? A primitive never; a name the declarations do not
     /// know (an interface, a stdlib type) conservatively may.
     fn type_can_hold_locus(&self, t: &TypeExpr, depth: u32) -> bool {
         if depth > 16 {
@@ -8182,7 +8153,6 @@ impl<'a> StoreDecls<'a> {
                 self.can_hold.borrow_mut().insert(n.to_string(), r);
                 r
             }
-            _ => true,
         }
     }
 
@@ -10091,18 +10061,6 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
                     }
                 }
             }
-            TopDecl::Perspective(p) => {
-                for m in &p.members {
-                    if let PerspectiveMember::Params(pb) = m {
-                        once(
-                            "param",
-                            &format!("perspective `{}`", p.name.name),
-                            pb.params.iter().map(|d| (d.name.name.clone(), d.name.span)),
-                            diags,
-                        );
-                    }
-                }
-            }
             _ => {}
         });
     }
@@ -10829,9 +10787,6 @@ fn scan_flood_in_if(i: &IfStmt, locus: &str, diags: &mut Vec<Diag>) {
 pub(crate) fn type_expr_text(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Primitive(p, _) => format!("{:?}", p),
-        TypeExpr::Perspective { name, .. } => {
-            format!("perspective({})", name.name)
-        }
         TypeExpr::Bounded { elem, cap, .. } => {
             format!("bounded[{}; {}]", type_expr_text(elem), cap)
         }
@@ -11067,7 +11022,7 @@ fn payload_carriage(
                 // `Int`, which a bus subject does not carry bare.
                 TypeKind::Scalar(_) => Carriage::NotCarried("wrap it in a user `type`"),
             },
-            // A locus, interface, perspective or topic name in
+            // A locus, interface or topic name in
             // payload position is a different mistake, reported
             // elsewhere (the handler-signature rule names the
             // topic-as-type one).
@@ -11662,9 +11617,7 @@ struct Checker<'a> {
     /// empty there. `hale lsp` bundles a directory's own files with
     /// their `import` lines intact and no rename table at all — which
     /// is why a qualified type or call types as opaque in the editor
-    /// rather than as an error. A qualified perspective path behind
-    /// such an alias gets the same tolerance, so the editor does not
-    /// squiggle a program `hale check` accepts.
+    /// rather than as an error.
     unresolved_import_aliases: &'a std::collections::BTreeSet<String>,
     /// F.40 phase 3, E4: what this walk typed, recorded for the
     /// snapshot's typed-body table (`crate::typed_bodies`).
@@ -12104,11 +12057,6 @@ impl<'a> Checker<'a> {
                     TypeDeclBody::Scalar(_) => {}
                 }
                 self.generic_params = prev_generics;
-            }
-            TopDecl::Perspective(_) => {
-                // Structure already validated by resolver; the
-                // contract's method signatures are checked against
-                // the serving locus at `serves` conformance.
             }
             TopDecl::Interface(_) => {
                 // Interface declarations are pure type-level —
@@ -13188,14 +13136,6 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-        }
-
-        // Phase 2a: `locus L : serves P` conformance — L must
-        // provide every contract method P declares (matching
-        // arity + param + return types), the perspective analog
-        // of interface structural satisfaction.
-        if !decl.serves.is_empty() {
-            self.check_serves_conformance(decl);
         }
 
         // #18.6 — Hale enforces CQRS at the locus boundary:
@@ -15505,27 +15445,14 @@ impl<'a> Checker<'a> {
                             Ty::Prim(PrimType::Bytes)
                         )
                     );
-                    // A param typed as a PERSPECTIVE (or an
-                    // interface) is legitimately initialized with a
-                    // locus that serves/conforms to it — the
-                    // perspective fixtures do exactly this. Plain
-                    // assignability does not know about conformance,
-                    // so ask separately before reporting.
+                    // A param typed as an interface is legitimately
+                    // initialized with a locus that conforms to it. Plain
+                    // assignability does not know about conformance, so
+                    // ask separately before reporting.
                     let conforms = match (&want, &got) {
                         (Ty::Named(w), Ty::Named(g)) => {
-                            let serves_or_iface =
-                                match self.top.symbols.get(g) {
-                                    Some(TopSymbol::Locus(li)) => li
-                                        .serves
-                                        .iter()
-                                        .any(|sv| sv == w)
-                                        || matches!(
-                                            self.top.symbols.get(w),
-                                            Some(TopSymbol::Interface(_))
-                                        ),
-                                    _ => false,
-                                };
-                            serves_or_iface
+                            matches!(self.top.symbols.get(g), Some(TopSymbol::Locus(_)))
+                                && matches!(self.top.symbols.get(w), Some(TopSymbol::Interface(_)))
                         }
                         _ => false,
                     };
@@ -16787,7 +16714,7 @@ impl<'a> Checker<'a> {
         }
         let want = self.lvalue_ty(target);
         let Ty::Named(tname) = &want else { return };
-        // An `interface`- or `perspective(P)`-typed field returns here:
+        // An `interface`-typed field returns here:
         // only an interface VALUE (a param, a field — a fat pointer
         // somebody else owns) can reach such a store, and codegen
         // treats the store as a borrow (GH #967): the field's own
@@ -17001,7 +16928,7 @@ impl<'a> Checker<'a> {
         Ty::Unknown
     }
 
-    /// `self.dbl` (a locus's, a perspective's or an interface's method)
+    /// `self.dbl` (a locus's or an interface's method)
     /// written as a value rather than called: a method is called on its
     /// locus, and a `fn(..)` value carries no locus, so there is no value
     /// to take (the build refused it, "no field `dbl` on locus self",
@@ -17011,10 +16938,6 @@ impl<'a> Checker<'a> {
         let (kind, is_method) = match self.top.lookup(n) {
             Some(TopSymbol::Locus(info)) => (
                 "locus",
-                !info.params.iter().any(|p| p.name == name.name) && info.methods.iter().any(|m| m.name == name.name),
-            ),
-            Some(TopSymbol::Perspective(info)) => (
-                "perspective",
                 !info.params.iter().any(|p| p.name == name.name) && info.methods.iter().any(|m| m.name == name.name),
             ),
             Some(TopSymbol::Interface(info)) => ("interface", info.methods.iter().any(|m| m.name == name.name)),
@@ -17030,32 +16953,6 @@ impl<'a> Checker<'a> {
                  {kind} (`….{m}(…)`), and a `fn(…)` value carries none, so it is not one. Pass a free \
                  fn, or call the method where the value is needed",
                 m = name.name
-            ),
-        ));
-    }
-
-    /// A call to a perspective fn declared `fallible(E)`: a perspective
-    /// call cannot carry a failure yet (F.42's stated gap,
-    /// spec/semantics.md § "Perspectives"), and the build refused one
-    /// ("fallible method call on non-locus value of type Perspective")
-    /// with no location.
-    fn refuse_fallible_perspective_call(&mut self, callee: &Expr) {
-        let Expr::Field { receiver, name, .. } = callee else { return };
-        let mark = self.walk_mark();
-        let rt = self.check_expr(receiver);
-        self.discard_since(mark);
-        let Ty::Named(p) = &rt else { return };
-        let Some(TopSymbol::Perspective(info)) = self.top.lookup(p) else { return };
-        let Some(m) = info.methods.iter().find(|m| m.name == name.name) else { return };
-        let Some(err) = &m.fallible else { return };
-        self.diags.push(Diag::ty(
-            name.span,
-            format!(
-                "`{p}.{}` is `fallible({})`, and a perspective call cannot carry a failure yet (F.42): a \
-                 `fallible` perspective fn is not callable. Declare it, and the methods serving it, \
-                 without `fallible`, or hold the impl through an interface, whose calls carry it",
-                name.name,
-                err.display()
             ),
         ));
     }
@@ -17573,7 +17470,7 @@ impl<'a> Checker<'a> {
                         // A handle: a locus, a generic locus's monomorph
                         // (`Counter<Int>` is `Counter_Int`, which the scope
                         // declares as no locus), the template itself, or an
-                        // interface or perspective a locus is held through.
+                        // interface a locus is held through.
                         let locus_handle = self.let_write_reaches_a_handle(&sym.ty, &target.tail);
                         if sym.from_let && !sym.is_mut && sym.cell.is_none() && !locus_handle {
                             let mut written = target.head.name.clone();
@@ -17779,9 +17676,6 @@ impl<'a> Checker<'a> {
                             .to_string(),
                     ));
                 }
-            }
-            Stmt::Reperspective { field, impl_name, span } => {
-                self.check_reperspective(field, impl_name, *span);
             }
             Stmt::Fail { value, span } => {
                 // v1.x-FORM-1: `fail <expr>;` must appear inside
@@ -18707,11 +18601,9 @@ impl<'a> Checker<'a> {
                     // let outside code CHOOSE the signing key, which is
                     // worse than reading it. A write is a row of its own
                     // kind, so the rule says "writes one from outside".
-                    // A perspective or an interface handle reaches its
-                    // locus through its methods only: a store through
-                    // one has no field to land in (the build refused it,
-                    // "non-addressable type Perspective", with no
-                    // location), as a read through one is refused.
+                    // An interface handle reaches its locus through its
+                    // methods only: a store through one has no field to
+                    // land in, as a read through one is refused.
                     // a `std::json::Value`'s text was validated when it was
                     // built (`parse`, or a codec's read), and the codecs write
                     // it as it is: a store into it would put any text on the
@@ -18730,7 +18622,6 @@ impl<'a> Checker<'a> {
                     }
                     if let Ty::Named(n) = &ty {
                         let handle = match self.top.lookup(n) {
-                            Some(TopSymbol::Perspective(_)) => Some("a perspective"),
                             Some(TopSymbol::Interface(_)) => Some("an interface"),
                             _ => None,
                         };
@@ -18783,8 +18674,8 @@ impl<'a> Checker<'a> {
     /// binding's value: the binding, or a place on the way to the written
     /// one (`ls[0]` in `ls[0].r.arr = v`), is a handle (a locus, a generic
     /// locus's monomorph, which the scope declares as no locus, the
-    /// template itself, or an interface or perspective a locus is held
-    /// through). The write is the locus's, as `self.f = …` is. A type the
+    /// template itself, or an interface a locus is held through). The
+    /// write is the locus's, as `self.f = …` is. A type the
     /// check could not settle (an unbound callee, a name the seed declares
     /// elsewhere when one file is checked alone) may be a handle too, so it
     /// answers yes: the error never lands on a locus write the checker
@@ -18797,7 +18688,7 @@ impl<'a> Checker<'a> {
                 Ty::Named(n)
                     if matches!(
                         self.top.lookup(&n),
-                        Some(TopSymbol::Locus(_) | TopSymbol::Interface(_) | TopSymbol::Perspective(_))
+                        Some(TopSymbol::Locus(_) | TopSymbol::Interface(_))
                     ) || self.generic_loci.contains_key(n.as_str())
                         || self.locus_monomorph_shown(&n).is_some() =>
                 {
@@ -18838,8 +18729,7 @@ impl<'a> Checker<'a> {
 
     /// Look up a named field on a type. Resolves struct fields,
     /// locus params (when accessing a locus handle's exposed
-    /// state — milestone 2 just exposes all params), and
-    /// perspective params.
+    /// state — milestone 2 just exposes all params).
     /// Verify that a locus structurally implements an interface:
     /// for every method the interface declares, the locus has a
     /// method with the same name, same arity, compatible param
@@ -18849,345 +18739,6 @@ impl<'a> Checker<'a> {
     /// Both arguments are top-symbol names. Caller has already
     /// verified that `iface_name` resolves to a TopSymbol::Interface.
     /// `locus_name` may be any TopSymbol — non-locus returns Err.
-    /// GH #724: does this name reference a seed the bundle does not
-    /// hold? True only for a `::`-joined path whose head is an import
-    /// alias still unresolved in this bundle AND which the rename
-    /// table cannot map. A resolvable path never reaches here as a
-    /// path — the import-rename pass collapsed it to the imported
-    /// declaration's mangled name before typecheck — so this is the
-    /// "we genuinely cannot see the declaration" case, kept tolerant
-    /// exactly as an imported struct literal's fields are when its
-    /// declaration is invisible.
-    fn unresolved_alias_path(&self, name: &str) -> bool {
-        let Some((head, _)) = name.split_once("::") else {
-            return false;
-        };
-        if !self.unresolved_import_aliases.contains(head) {
-            return false;
-        }
-        let key: Vec<String> =
-            name.split("::").map(|s| s.to_string()).collect();
-        !self.import_renames.iter().any(|(p, _)| *p == key)
-    }
-
-    /// Phase 2a: verify a `locus L : serves P` provides every
-    /// method of perspective contract `P`. Emits a diagnostic per
-    /// missing / mismatched method (arity, param types, return
-    /// type) — the perspective analog of `check_structural_impl`
-    /// for interfaces, reading the contract's method signatures.
-    fn check_serves_conformance(&mut self, decl: &LocusDecl) {
-        let Some(TopSymbol::Locus(locus)) =
-            self.top.lookup(&decl.name.name)
-        else {
-            return;
-        };
-        for persp_name in &decl.serves {
-            // GH #724: `serves lib::Routing` where this bundle holds
-            // no `lib`. The contract is behind an alias we cannot
-            // see, so there is nothing to conform to — the same
-            // tolerance every other qualified reference already has
-            // in that situation. A path whose head is NOT an
-            // unresolved alias (`lib::Nope` in a bundle that did
-            // resolve `lib`, a bare typo) still reports below.
-            if self.unresolved_alias_path(&persp_name.name) {
-                continue;
-            }
-            let persp = match self.top.lookup(&persp_name.name) {
-                Some(TopSymbol::Perspective(p)) => p,
-                Some(_) => {
-                    self.diags.push(Diag::ty(
-                        persp_name.span,
-                        format!(
-                            "locus `{}` serves `{}`, but `{}` is not a \
-                             perspective contract",
-                            decl.name.name, persp_name.name, persp_name.name
-                        ),
-                    ));
-                    continue;
-                }
-                None => {
-                    self.diags.push(Diag::ty(
-                        persp_name.span,
-                        format!(
-                            "locus `{}` serves unknown perspective `{}`",
-                            decl.name.name, persp_name.name
-                        ),
-                    ));
-                    continue;
-                }
-            };
-            for pm in &persp.methods {
-                // `is_stable` is synthesized on every perspective
-                // (from `stable_when`) — not a contract method the
-                // impl must provide.
-                if pm.name == "is_stable" {
-                    continue;
-                }
-                let lm = locus.methods.iter().find(|lm| lm.name == pm.name);
-                let lm = match lm {
-                    Some(m) => m,
-                    None => {
-                        self.diags.push(Diag::ty(
-                            persp_name.span,
-                            format!(
-                                "locus `{}` serves `{}` but is missing \
-                                 contract method `{}`",
-                                decl.name.name, persp_name.name, pm.name
-                            ),
-                        ));
-                        continue;
-                    }
-                };
-                if lm.params.len() != pm.params.len() {
-                    self.diags.push(Diag::ty(
-                        persp_name.span,
-                        format!(
-                            "locus `{}` method `{}` has {} arg(s) but \
-                             perspective `{}` requires {}",
-                            decl.name.name,
-                            pm.name,
-                            lm.params.len(),
-                            persp_name.name,
-                            pm.params.len()
-                        ),
-                    ));
-                    continue;
-                }
-                for (i, (lp, pp)) in
-                    lm.params.iter().zip(pm.params.iter()).enumerate()
-                {
-                    if !pp.assignable_from(lp) {
-                        self.diags.push(Diag::ty(
-                            persp_name.span,
-                            format!(
-                                "locus `{}` method `{}` arg #{}: perspective \
-                                 `{}` requires `{}`, locus has `{}`",
-                                decl.name.name,
-                                pm.name,
-                                i,
-                                persp_name.name,
-                                pp.display(),
-                                lp.display()
-                            ),
-                        ));
-                    }
-                }
-                if !pm.ret.assignable_from(&lm.ret) {
-                    self.diags.push(Diag::ty(
-                        persp_name.span,
-                        format!(
-                            "locus `{}` method `{}` returns `{}` but \
-                             perspective `{}` requires `{}`",
-                            decl.name.name,
-                            pm.name,
-                            lm.ret.display(),
-                            persp_name.name,
-                            pm.ret.display()
-                        ),
-                    ));
-                }
-                // F.42: a perspective call lowers the perspective fn's
-                // ABI against the impl's body, so a `fallible` impl
-                // behind an infallible fn (or the reverse) reads a
-                // failure path the call never set. Unlike an
-                // interface's, a perspective fn's fallibility is
-                // matched both ways.
-                let fallible = |f: &Option<Ty>| match f {
-                    Some(e) => format!("is `fallible({})`", e.display()),
-                    None => "is not".to_string(),
-                };
-                let clash = match (&pm.fallible, &lm.fallible) {
-                    (None, Some(_)) => true,
-                    (Some(_), None) => true,
-                    (Some(pe), Some(le)) => pe != le,
-                    (None, None) => false,
-                };
-                if clash {
-                    let (impl_name, persp_fn) =
-                        (format!("{}.{}", decl.name.name, pm.name), format!("{}.{}", persp_name.name, pm.name));
-                    let (first, first_is, second, second_is) = if lm.fallible.is_some() {
-                        (impl_name, fallible(&lm.fallible), persp_fn, fallible(&pm.fallible))
-                    } else {
-                        (persp_fn, fallible(&pm.fallible), impl_name, fallible(&lm.fallible))
-                    };
-                    self.diags.push(Diag::ty(
-                        persp_name.span,
-                        format!(
-                            "`{first}` {first_is} but `{second}` {second_is}: a method serving a \
-                             perspective matches its fallibility"
-                        ),
-                    ));
-                }
-            }
-            // Phase 2c: bus-surface conformance — the impl must
-            // subscribe / publish every subject the contract declares.
-            for want in &persp.bus_subscribes {
-                if !locus.bus_subscribes.iter().any(|s| &s.subject == want) {
-                    self.diags.push(Diag::ty(
-                        persp_name.span,
-                        format!(
-                            "locus `{}` serves `{}` but does not subscribe \
-                             the contract subject `{}`",
-                            decl.name.name, persp_name.name, want
-                        ),
-                    ));
-                }
-            }
-            for want in &persp.bus_publishes {
-                if !locus.bus_publishes.iter().any(|s| &s.subject == want) {
-                    self.diags.push(Diag::ty(
-                        persp_name.span,
-                        format!(
-                            "locus `{}` serves `{}` but does not publish \
-                             the contract subject `{}`",
-                            decl.name.name, persp_name.name, want
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-
-    /// Phase 2b: typecheck `reperspective self.<field> as <Impl>;`.
-    ///   - must be inside a locus method (there is a `self`);
-    ///   - `field` must be a `perspective(P)`-typed param of the
-    ///     current locus (the owner holds the slot);
-    ///   - `Impl` must be a locus that `serves P`.
-    fn check_reperspective(
-        &mut self,
-        field: &Ident,
-        impl_name: &Ident,
-        span: hale_syntax::Span,
-    ) {
-        let Some(locus) = self.current_locus else {
-            self.diags.push(Diag::ty(
-                span,
-                "`reperspective` is only valid inside a locus method — it \
-                 re-points a perspective slot the enclosing locus owns"
-                    .to_string(),
-            ));
-            return;
-        };
-        // GH #724: `reperspective self.f as lib::Impl` where this
-        // bundle holds no `lib`. Both ends — the impl and the field's
-        // contract — sit behind an alias we cannot see, so nothing
-        // here is decidable. Every CLI path merges the imported seed
-        // before checking, so this only ever skips in a tool holding
-        // one seed (the LSP).
-        if self.unresolved_alias_path(&impl_name.name) {
-            return;
-        }
-        // Resolve the field's declared perspective contract.
-        let field_ty =
-            locus.params.iter().find(|p| p.name == field.name).map(|p| &p.ty);
-        let persp = match field_ty {
-            Some(Ty::Named(n))
-                if matches!(
-                    self.top.lookup(n),
-                    Some(TopSymbol::Perspective(_))
-                ) =>
-            {
-                n.clone()
-            }
-            Some(_) => {
-                self.diags.push(Diag::ty(
-                    span,
-                    format!(
-                        "`reperspective self.{}`: field `{}` is not a \
-                         `perspective(...)` handle",
-                        field.name, field.name
-                    ),
-                ));
-                return;
-            }
-            None => {
-                self.diags.push(Diag::ty(
-                    span,
-                    format!(
-                        "`reperspective self.{}`: locus `{}` has no field \
-                         `{}`",
-                        field.name, locus.name, field.name
-                    ),
-                ));
-                return;
-            }
-        };
-        // Phase 2c gate: swapping a perspective that has a BUS surface
-        // needs the async mailbox-swap runtime (re-point the current
-        // impl's subscriptions), which is not built yet. Reject with a
-        // clear message rather than silently leaving the old impl's
-        // subscriptions live.
-        // Phase 2c-runtime: a bus-backed perspective now swaps its
-        // subscriptions too (the codegen tombstones the current
-        // impl's registrations on the shared slot data and
-        // re-registers the new impl's handlers). Perspective impls
-        // are designated via a field default, never a `placement`
-        // entry, so they are always cooperative — the re-registration
-        // routes through the global queue, no mailbox hand-off. No
-        // gate needed.
-        // The new impl must be a locus that serves this perspective.
-        match self.top.lookup(&impl_name.name) {
-            Some(TopSymbol::Locus(impl_info)) => {
-                if !impl_info.serves.iter().any(|s| s == &persp) {
-                    self.diags.push(Diag::ty(
-                        span,
-                        format!(
-                            "`reperspective self.{} as {}`: locus `{}` does \
-                             not `serve {}` — only an impl of the same \
-                             perspective can be swapped in",
-                            field.name, impl_name.name, impl_name.name, persp
-                        ),
-                    ));
-                    return;
-                }
-                // Phase 3 migration: the swap preserves state by
-                // keeping the slot's data pointer and re-pointing only
-                // the vtable (the note's layout-identity "zero
-                // migration" — code and state are already separate).
-                // That is layout-safe only if every impl of the
-                // perspective shares the same footprint, so the new
-                // impl's methods interpret the retained state
-                // correctly. A footprint change is the `migrate` case
-                // — deferred; reject it with an actionable message
-                // rather than silently reinterpreting bytes.
-                for (other_name, sym) in &self.top.symbols {
-                    if other_name == &impl_name.name {
-                        continue;
-                    }
-                    if let TopSymbol::Locus(other) = sym {
-                        if other.serves.iter().any(|s| s == &persp)
-                            && !footprints_match(&impl_info.params, &other.params)
-                        {
-                            self.diags.push(Diag::ty(
-                                span,
-                                format!(
-                                    "`reperspective self.{} as {}`: impl `{}` has \
-                                     a different footprint than `{}` (also serving \
-                                     `{}`). A state-preserving swap requires all \
-                                     impls of a perspective to share the same \
-                                     params; a footprint change needs `migrate`, \
-                                     which isn't supported yet.",
-                                    field.name, impl_name.name, impl_name.name,
-                                    other_name, persp
-                                ),
-                            ));
-                            return;
-                        }
-                    }
-                }
-            }
-            _ => {
-                self.diags.push(Diag::ty(
-                    span,
-                    format!(
-                        "`reperspective self.{} as {}`: `{}` is not a locus",
-                        field.name, impl_name.name, impl_name.name
-                    ),
-                ));
-            }
-        }
-    }
-
     /// Whether `got` is a locus that satisfies the interface `want`: the
     /// coercion a bundled stdlib fn's interface parameter takes, as a user
     /// fn's does (`std::api::run_until_stopped(self.web)`, an
@@ -19369,7 +18920,7 @@ impl<'a> Checker<'a> {
     /// death-side bookend, so `T` names what a child can be: a locus, or
     /// an interface the child's locus satisfies (spec/semantics.md §
     /// "Locus instantiation", accept bubbling). Anything else (a
-    /// primitive, a `type`, a perspective) checked clean and lowering
+    /// primitive, a `type`) checked clean and lowering
     /// refused it with no span (`accept() param must be a locus type`).
     /// An interface is not judged here, and neither is a name this
     /// bundle cannot resolve (`Unknown`: a generic parameter, a path
@@ -19991,15 +19542,6 @@ impl<'a> Checker<'a> {
                         .find(|m| m.name == name)
                         .map(method_to_fn_ty)
                 }
-                TopSymbol::Perspective(info) => {
-                    if let Some(p) = info.params.iter().find(|p| p.name == name) {
-                        return Some(p.ty.clone());
-                    }
-                    info.methods
-                        .iter()
-                        .find(|m| m.name == name)
-                        .map(method_to_fn_ty)
-                }
                 // 2026-05-16 — method lookup on an interface-typed
                 // receiver. Resolves `obj.handle(req)` when `obj`
                 // has interface type, so call-site typecheck sees
@@ -20409,13 +19951,12 @@ impl<'a> Checker<'a> {
                 params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
                 ret: Box::new(sig.ret.clone()),
             },
-            // Locus / Type / Perspective / Interface
+            // Locus / Type / Interface
             // names used in expression position resolve
             // to the type (struct-literal, call site,
             // or interface-typed binding).
             TopSymbol::Locus(_)
             | TopSymbol::Type(_)
-            | TopSymbol::Perspective(_)
             | TopSymbol::Interface(_) => Ty::Named(id.name.clone()),
             // Topics aren't values — they only address
             // a bus channel. They appear legally only on
@@ -22037,7 +21578,6 @@ impl<'a> Checker<'a> {
         self.check_generic_arity(te);
         self.check_bounded_element(te);
         self.check_array_size(te);
-        self.check_bare_perspective_type(te);
         if !self.strict_idents {
             return;
         }
@@ -22099,10 +21639,8 @@ impl<'a> Checker<'a> {
                     self.check_type_annotation(r);
                 }
             }
-            // A primitive is resolved by the parser. `perspective(P)`
-            // names a contract, not a type expression's bare name —
-            // its own resolution rules are #724's, unchanged.
-            TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+            // A primitive is resolved by the parser.
+            TypeExpr::Primitive(_, _) => {}
         }
     }
 
@@ -22147,7 +21685,7 @@ impl<'a> Checker<'a> {
     /// GH #1942: why a named type does not cross an `@ffi` boundary,
     /// beyond the matrix's `Named` cell (which admits a user struct, its
     /// C struct kept layout-compatible by the library author): an enum,
-    /// a locus, an interface or a perspective has no C layout at Stage 1,
+    /// a locus or an interface has no C layout at Stage 1,
     /// and the build refused it. `None` for a struct, an identity, a
     /// range or a quantity (its `Int`), and a name this bundle cannot
     /// resolve.
@@ -22168,7 +21706,7 @@ impl<'a> Checker<'a> {
             Some(TopSymbol::Locus(_)) => Some(format!(
                 "`{n}` is a locus, which does not cross the C ABI; pass the values the foreign side needs"
             )),
-            Some(TopSymbol::Interface(_)) | Some(TopSymbol::Perspective(_)) => Some(format!(
+            Some(TopSymbol::Interface(_)) => Some(format!(
                 "`{n}` dispatches to a locus, which does not cross the C ABI; pass the values the foreign \
                  side needs"
             )),
@@ -22226,7 +21764,6 @@ impl<'a> Checker<'a> {
                     TypeKind::Alias(inner) => self.bounded_element_refusal(inner, depth + 1),
                 },
                 Some(TopSymbol::Interface(_)) => Some(format!("`{n}` is an interface")),
-                Some(TopSymbol::Perspective(_)) => Some(format!("`{n}` is a perspective")),
                 _ => None,
             },
             _ => None,
@@ -22276,7 +21813,7 @@ impl<'a> Checker<'a> {
                     self.record_specialized_type(ret);
                 }
             }
-            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+            TypeExpr::Primitive(..) => {}
         }
     }
 
@@ -22341,9 +21878,8 @@ impl<'a> Checker<'a> {
                 }
             }
             // A primitive that is not itself a generic argument is
-            // whatever its own position allows; `perspective(P)` names
-            // a contract and takes no type arguments.
-            TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+            // whatever its own position allows.
+            TypeExpr::Primitive(_, _) => {}
         }
     }
 
@@ -22353,7 +21889,7 @@ impl<'a> Checker<'a> {
     /// The answer must be at least as permissive as codegen's, or the
     /// rule refuses programs `hale build` accepts. The table it
     /// resolves against (`known`) is rebuilt from the top scope, so
-    /// it carries user loci / types / enums / perspectives, every
+    /// it carries user loci / types / enums, every
     /// alias target, and the whole Hale-source stdlib surface
     /// (GH #470) — but not interfaces (registered as their own
     /// symbol), not the compiler-synthesized types, and not the
@@ -22377,7 +21913,6 @@ impl<'a> Checker<'a> {
             Some(
                 TopSymbol::Locus(_)
                     | TopSymbol::Type(_)
-                    | TopSymbol::Perspective(_)
                     | TopSymbol::Interface(_)
                     | TopSymbol::Topic(_)
                     | TopSymbol::RingLayout(_)
@@ -22428,7 +21963,6 @@ impl<'a> Checker<'a> {
                         s,
                         TopSymbol::Locus(_)
                             | TopSymbol::Type(_)
-                            | TopSymbol::Perspective(_)
                             | TopSymbol::Interface(_)
                     )
                 })
@@ -22460,8 +21994,7 @@ impl<'a> Checker<'a> {
     /// reads `u`), for diagnostics.
     /// A generic `type` instantiation inside `te` whose argument is a type
     /// parameter `bindings` binds to a locus: the type's name, the
-    /// parameter and the locus (`perspective(P)` for a perspective `P`,
-    /// whose slot holds a locus).
+    /// parameter and the locus.
     fn generic_type_holding_locus(&self, te: &TypeExpr, bindings: &BTreeMap<String, Ty>) -> Option<(String, String, String)> {
         match te {
             TypeExpr::Named { path, generic_args, .. } => {
@@ -22477,12 +22010,6 @@ impl<'a> Checker<'a> {
                                     // a generic locus's monomorph is a locus too
                                     if let Some(shown) = self.locus_monomorph_shown(n) {
                                         return Some((path.segments[0].name.clone(), g.clone(), shown));
-                                    }
-                                    // a perspective's value is the slot that
-                                    // holds a locus behind it; the build has
-                                    // no monomorph for it either
-                                    if matches!(self.top.lookup(n), Some(TopSymbol::Perspective(_))) {
-                                        return Some((path.segments[0].name.clone(), g.clone(), format!("perspective({n})")));
                                     }
                                 }
                             }
@@ -23001,7 +22528,6 @@ impl<'a> Checker<'a> {
                         s,
                         TopSymbol::Locus(_)
                             | TopSymbol::Type(_)
-                            | TopSymbol::Perspective(_)
                             | TopSymbol::Interface(_)
                     )
                 })
@@ -23486,7 +23012,7 @@ impl<'a> Checker<'a> {
                         Some(TopSymbol::Locus(li)) => {
                             li.methods.iter().any(|m| m.name == name.name) && !li.params.iter().any(|p| p.name == name.name)
                         }
-                        Some(TopSymbol::Perspective(_) | TopSymbol::Interface(_)) => true,
+                        Some(TopSymbol::Interface(_)) => true,
                         _ => false,
                     };
                     if method {
@@ -23606,8 +23132,8 @@ impl<'a> Checker<'a> {
 
     /// The method `m` of a value of type `rt`, as the field arm resolves
     /// it: a form's synthesized operation, a locus's declared method, a
-    /// fn-typed field (a value), a method through an interface or a
-    /// perspective, a stdlib handle's member sugar for its namespace's
+    /// fn-typed field (a value), a method through an interface, a
+    /// stdlib handle's member sugar for its namespace's
     /// fn. Anything else is unresolved.
     fn view_method(&self, rt: &Ty, m: &str) -> crate::typed_bodies::CalleeRef {
         use crate::typed_bodies::CalleeRef;
@@ -23649,7 +23175,7 @@ impl<'a> Checker<'a> {
                     return CalleeRef::Value;
                 }
             }
-            Some(TopSymbol::Interface(_)) | Some(TopSymbol::Perspective(_)) => {
+            Some(TopSymbol::Interface(_)) => {
                 return CalleeRef::Dispatch(m.to_string());
             }
             Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(fields), .. })) => {
@@ -24048,7 +23574,7 @@ impl<'a> Checker<'a> {
                 TypeExpr::Function { params: ps, ret, .. } => {
                     ps.iter().any(|t| mentions(t, params)) || ret.as_ref().is_some_and(|t| mentions(t, params))
                 }
-                TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+                TypeExpr::Primitive(..) => false,
             }
         }
         let (Ty::Named(w), Expr::Struct { inits, span: literal_span, .. }) = (want, value) else { return };
@@ -24438,7 +23964,6 @@ impl<'a> Checker<'a> {
                 }
                 self.check_capacity_slot_call(callee, args, *call_span);
                 self.check_hashmap_bump(callee);
-                self.refuse_fallible_perspective_call(callee);
                 if let Expr::Ident(id) = callee.as_ref() {
                     // GH #1076 (U2, U3): `Session(n)`, `OrderId(n)`,
                     // `Int(id)`, `Bucket(d)`: a conversion, classified and
@@ -25512,19 +25037,6 @@ impl<'a> Checker<'a> {
                                                         name.name
                                                     ),
                                                 )),
-                                            Some(TopSymbol::Perspective(
-                                                pi,
-                                            )) => pi
-                                                .methods
-                                                .iter()
-                                                .find(|m| m.name == name.name)
-                                                .map(|m| (
-                                                    m.required_params(),
-                                                    format!(
-                                                        "method `{}`",
-                                                        name.name
-                                                    ),
-                                                )),
                                             _ => None,
                                         }
                                     }
@@ -25656,8 +25168,7 @@ impl<'a> Checker<'a> {
                         {
                             // Look up param-named symbol; only
                             // check if it actually resolves to an
-                            // interface (not a locus / type /
-                            // perspective).
+                            // interface (not a locus / type).
                             let is_iface = matches!(
                                 self.top.lookup(iface_name),
                                 Some(TopSymbol::Interface(_))
@@ -26062,14 +25573,6 @@ impl<'a> Checker<'a> {
                                         );
                                         candidates.extend(
                                             li.methods.iter().map(|m| m.name.clone()),
-                                        );
-                                    }
-                                    Some(TopSymbol::Perspective(pi)) => {
-                                        candidates.extend(
-                                            pi.params.iter().map(|p| p.name.clone()),
-                                        );
-                                        candidates.extend(
-                                            pi.methods.iter().map(|m| m.name.clone()),
                                         );
                                     }
                                     Some(TopSymbol::Interface(ii)) => {
@@ -27115,19 +26618,11 @@ impl<'a> Checker<'a> {
         // monomorph with no location.
         for te in template.ret.iter().chain(template.params.iter().map(|p| &p.ty)) {
             if let Some((ty_name, g, locus)) = self.generic_type_holding_locus(te, &bindings) {
-                let message = match locus.strip_prefix("perspective(").and_then(|p| p.strip_suffix(')')) {
-                    Some(p) => format!(
-                        "generic fn `{shown}`: this call makes `{g}` the perspective `{p}`, and its signature's \
-                         `{ty_name}<{g}>` would be a generic `type` holding a perspective slot, which hale can't \
-                         compile yet. Declare a `type` with a `perspective({p})` field for it, or pass the value \
-                         where it is used as a `perspective({p})` parameter"
-                    ),
-                    None => format!(
-                        "generic fn `{shown}`: this call makes `{g}` the locus `{locus}`, and its signature's \
-                         `{ty_name}<{g}>` would be a `type` holding it: {}",
-                        generic_type_at_locus_message(&ty_name, &locus)
-                    ),
-                };
+                let message = format!(
+                    "generic fn `{shown}`: this call makes `{g}` the locus `{locus}`, and its signature's \
+                     `{ty_name}<{g}>` would be a `type` holding it: {}",
+                    generic_type_at_locus_message(&ty_name, &locus)
+                );
                 let d = Diag::ty(callee_span, message);
                 self.push_or_keep(d);
                 break;
@@ -27350,7 +26845,7 @@ impl<'a> Checker<'a> {
     }
 
     /// v1.x-FORM-1: if `callee` is a name reference resolving to
-    /// a known fallible fn (or method on a locus / perspective),
+    /// a known fallible fn (or method on a locus),
     /// return the fn's payload type. Returns None for non-fn
     /// callees or non-fallible callees — caller uses the result
     /// to decide whether to wrap the call's return in
@@ -27382,7 +26877,7 @@ impl<'a> Checker<'a> {
             Expr::Path(qn) => self.imported_fn(qn).and_then(|(_, sig)| sig.fallible).map(|p| (p, true)),
             // v1.x-FORM-1 PR3b: method calls like `l.get(i)`. The
             // callee is a Field expression whose receiver resolves
-            // to a locus/perspective; we look up the method by
+            // to a locus; we look up the method by
             // name on that type and inspect its fallibility.
             Expr::Field { receiver, name, .. } => {
                 let rt = self.check_expr_local(receiver);
@@ -27404,12 +26899,6 @@ impl<'a> Checker<'a> {
                         .find(|m| m.name == name.name)
                         .and_then(|m| m.fallible.clone())
                         .map(|p| (p, resolvable)),
-                    TopSymbol::Perspective(info) => info
-                        .methods
-                        .iter()
-                        .find(|m| m.name == name.name)
-                        .and_then(|m| m.fallible.clone())
-                        .map(|p| (p, false)),
                     // GH #732: a call through an interface carries the
                     // method's declared error channel.
                     TopSymbol::Interface(info) => info
@@ -27648,7 +27137,7 @@ impl<'a> Checker<'a> {
     ///
     /// Three deliberate exclusions:
     ///
-    ///   * **loci, perspectives and interfaces stay unprintable.**
+    ///   * **loci and interfaces stay unprintable.**
     ///     A locus is flow, not shape; rendering one would also
     ///     hand out the `params` of a `@sealed` locus, which GH #436
     ///     exists to confine. This is the reason the seal is not
@@ -27689,7 +27178,6 @@ impl<'a> Checker<'a> {
                 },
                 Some(
                     TopSymbol::Locus(_)
-                    | TopSymbol::Perspective(_)
                     | TopSymbol::Interface(_),
                 ) => PrintShape::NoTextForm,
                 // Unresolved names stay permissive (imports /
@@ -27739,7 +27227,7 @@ impl<'a> Checker<'a> {
                      `@sealed` locus confines. Render a field",
                     n
                 )),
-                Some(TopSymbol::Perspective(_) | TopSymbol::Interface(_)) => {
+                Some(TopSymbol::Interface(_)) => {
                     Some(format!("`{}` has no text form", n))
                 }
                 _ => Some(format!("`{}` does not render", n)),
@@ -28147,7 +27635,6 @@ impl<'a> Checker<'a> {
                     TypeKind::Scalar(_) => return None,
                 },
                 Some(TopSymbol::Locus(_)) => OperandClass::Opaque("a locus"),
-                Some(TopSymbol::Perspective(_)) => OperandClass::Opaque("a perspective"),
                 Some(TopSymbol::Interface(_)) => OperandClass::Opaque("an interface"),
                 // a generic type's monomorph (`Value_P` for `Value<P>`): its
                 // template's kind
@@ -28662,32 +28149,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// A perspective is held through its slot type, `perspective(P)`,
-    /// never by its bare name (spec/types.md § "Perspective types"): a
-    /// bare `P` names no type a value has, and the build refused it in
-    /// every position ("unknown type name `P` in signature") with no
-    /// location. Only the outermost name is judged; `accept(c: P)` has a
-    /// rule of its own.
-    fn check_bare_perspective_type(&mut self, te: &TypeExpr) {
-        let TypeExpr::Named { path, generic_args, span } = te else { return };
-        if path.segments.len() != 1 || !generic_args.is_empty() || self.in_accept_params {
-            return;
-        }
-        let name = &path.segments[0].name;
-        if self.generic_params.iter().any(|g| g == name) {
-            return;
-        }
-        if matches!(self.top.lookup(name), Some(TopSymbol::Perspective(_))) {
-            self.diags.push(Diag::ty(
-                *span,
-                format!(
-                    "`{name}` is a perspective, and a perspective is held through its slot type: write \
-                     `perspective({name})`. The bare name is no type a value has"
-                ),
-            ));
-        }
-    }
-
     fn check_generic_arity(&mut self, te: &TypeExpr) {
         match te {
             TypeExpr::Named { path, generic_args, span } => {
@@ -28768,7 +28229,7 @@ impl<'a> Checker<'a> {
                     self.check_generic_arity(r);
                 }
             }
-            TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+            TypeExpr::Primitive(_, _) => {}
         }
     }
 
@@ -28812,7 +28273,6 @@ impl<'a> Checker<'a> {
                     Some(
                         TopSymbol::Locus(_)
                             | TopSymbol::Type(_)
-                            | TopSymbol::Perspective(_)
                     )
                 ) {
                     // Falls through to the full literal validation
@@ -28898,7 +28358,7 @@ impl<'a> Checker<'a> {
         // GH #831: `Row2 { id: 1 }` where `type Row2 = Row;` reached
         // here as `Row { id: 1 }`: the desugar sequence resolved the
         // alias before the check, so everything below — the monomorph
-        // path, the struct / locus / perspective dispatch, the field
+        // path, the struct / locus dispatch, the field
         // validation — runs against the declaration the chain ends at
         // exactly as if the author had written its name.
         let name: &String =
@@ -28992,7 +28452,7 @@ impl<'a> Checker<'a> {
             }
         };
 
-        // 2026-05-16 — loci + perspectives now also enforce
+        // 2026-05-16 — loci now also enforce
         // "missing field" when the param has no default
         // (`has_default: false`). Previously omitted for loci
         // because every param historically carried a default; the
@@ -29024,14 +28484,6 @@ impl<'a> Checker<'a> {
                     .map(|p| (p.name.clone(), p.ty.clone(), p.has_default))
                     .collect(),
                 "locus",
-                true,
-            ),
-            TopSymbol::Perspective(info) => (
-                info.params
-                    .iter()
-                    .map(|p| (p.name.clone(), p.ty.clone(), p.has_default))
-                    .collect(),
-                "perspective",
                 true,
             ),
             _ => {
@@ -29083,8 +28535,8 @@ impl<'a> Checker<'a> {
         )
     }
 
-    /// Shared literal field validation — concrete structs/loci/
-    /// perspectives and (M3 stage 3 tranche 2) substituted generic
+    /// Shared literal field validation — concrete structs/loci
+    /// and (M3 stage 3 tranche 2) substituted generic
     /// monomorphs both land here.
     fn check_literal_fields(
         &mut self,
@@ -29197,74 +28649,6 @@ impl<'a> Checker<'a> {
                     } else {
                         false
                     };
-                    // GH #525 item 2 (2026-09-04): perspective
-                    // designation at a CONSTRUCTION site —
-                    // `App { gw: Gateway { router: RouterV2 { } } }`
-                    // where `router: perspective(Router)`. The
-                    // param-default path already asks `serves`
-                    // (the `conforms` computation in the params
-                    // check); this path only knew about
-                    // interfaces, so `perspective(P)` — a plain
-                    // `Ty::Named(P)` whose symbol is a Perspective,
-                    // not an Interface — fell through to
-                    // `assignable_from` and `P != Impl`. Codegen's
-                    // designation branch already fires for an
-                    // override value, so the checker was the only
-                    // thing refusing it. Note the slot is
-                    // program-global (1-1): an override designates
-                    // the whole program's slot, exactly as a
-                    // default does.
-                    //
-                    // LOCUS literals only. This fn is shared with
-                    // data-type literals, and codegen's
-                    // `populate_user_type_fields` has no designation
-                    // path (`type Holder { r: perspective(P); }` then
-                    // `Holder { r: Impl { } }` fails at build). A
-                    // data-type field keeps the plain mismatch below
-                    // so check and build agree (PR #531 review).
-                    let perspective_designated = if let (
-                        "locus",
-                        Ty::Named(pname),
-                        Ty::Named(arg_name),
-                    ) = (kind_label, want, &got)
-                    {
-                        if matches!(
-                            self.top.lookup(pname),
-                            Some(TopSymbol::Perspective(_))
-                        ) {
-                            match self.top.symbols.get(arg_name) {
-                                Some(TopSymbol::Locus(li)) => {
-                                    if !li.serves.iter().any(|sv| sv == pname) {
-                                        self.diags.push(Diag::ty(
-                                            init.value.span(),
-                                            format!(
-                                                "{} `{}`: field `{}` is \
-                                                 `perspective({})`, but `{}` \
-                                                 does not serve it — declare \
-                                                 `locus {} : serves {}`",
-                                                kind_label,
-                                                name,
-                                                init.name.name,
-                                                pname,
-                                                arg_name,
-                                                arg_name,
-                                                pname
-                                            ),
-                                        ));
-                                    }
-                                    // Reported (or fine) — either way
-                                    // the generic mismatch below would
-                                    // only repeat it.
-                                    true
-                                }
-                                _ => false,
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
                     // A declared field type supplies a bare generic
                     // literal's arguments. Locus overrides now perform
                     // the same rewrite as typed defaults; data-record
@@ -29287,7 +28671,6 @@ impl<'a> Checker<'a> {
                             )
                         );
                     if !interface_satisfied
-                        && !perspective_designated
                         && !monomorph_field
                         && !widening
                         && !self.flows_into(want, &got, &init.value)
@@ -29723,7 +29106,7 @@ fn type_expr_mentions(te: &TypeExpr, g: &str) -> bool {
         TypeExpr::Function { params, ret, .. } => {
             params.iter().any(|t| type_expr_mentions(t, g)) || ret.as_ref().is_some_and(|t| type_expr_mentions(t, g))
         }
-        TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+        TypeExpr::Primitive(..) => false,
     }
 }
 

@@ -28,7 +28,7 @@ use std::collections::BTreeSet;
 
 use hale_syntax::ast::{
     flat_decls, Block, ElseBranch, Expr, FnDecl, IfStmt, Literal, LocusMember, MatchArmBody, MatchForm, MatchStmt,
-    PerspectiveMember, Stmt, TopDecl, TypeExpr,
+    Stmt, TopDecl, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
 
@@ -65,17 +65,6 @@ pub fn definite_return_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
                                 }
                             }
                             _ => {}
-                        }
-                    }
-                }
-                TopDecl::Perspective(p) => {
-                    for m in &p.members {
-                        // a contract signature (`fn route(r: R) -> S;`) has
-                        // no body to judge; a bodied default does
-                        if let PerspectiveMember::Fn(f) = m {
-                            if !f.body.stmts.is_empty() || f.body.tail.is_some() {
-                                fn_diag(&format!("fn `{}.{}`", p.name.name, f.name.name), f, &mut out);
-                            }
                         }
                     }
                 }

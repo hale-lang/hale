@@ -526,7 +526,7 @@ While the compiler today tracks locus ownership (the Σ-tower) and reachable eff
 
 ### Providers are replaceable
 
-External dependencies—LLM backends, databases, OIDC issuers, communication channels, payment rails, accounting ledgers, and compute hosts—bind through Hale interfaces and perspectives ([Perspectives](./services/perspectives.md)). Each provider capability tracks three distinct states: *implemented in code*, *available on the current account*, and *authorized by grant*. Swapping a provider preserves the organization's record, authority structure, and history.
+External dependencies—LLM backends, databases, OIDC issuers, communication channels, payment rails, accounting ledgers, and compute hosts—bind through Hale interfaces ([Interfaces & Contracts](./services/interfaces.md)). Each provider capability tracks three distinct states: *implemented in code*, *available on the current account*, and *authorized by grant*. Swapping a provider preserves the organization's record, authority structure, and history.
 
 ### Financial Capture and Books (Design)
 

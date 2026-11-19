@@ -25,7 +25,7 @@
 //! finding, advisories included, so a suggestion it always reported would
 //! fail every program that has such a ladder.
 
-use hale_syntax::ast::{flat_decls, BinOp, Block, ElseBranch, Expr, IfStmt, Literal, LocusMember, PerspectiveMember, Stmt, TopDecl};
+use hale_syntax::ast::{flat_decls, BinOp, Block, ElseBranch, Expr, IfStmt, Literal, LocusMember, Stmt, TopDecl};
 use hale_syntax::error::Diag;
 use hale_syntax::Span;
 
@@ -54,13 +54,6 @@ pub(crate) fn string_if_chain_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
                             LocusMember::Mode(md) => body(&md.body, &mut out),
                             LocusMember::Failure(fd) => body(&fd.body, &mut out),
                             _ => {}
-                        }
-                    }
-                }
-                TopDecl::Perspective(pd) => {
-                    for m in &pd.members {
-                        if let PerspectiveMember::Fn(f) = m {
-                            body(&f.body, &mut out);
                         }
                     }
                 }

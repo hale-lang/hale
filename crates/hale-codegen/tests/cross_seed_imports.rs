@@ -42,7 +42,6 @@ fn fixtures_dir() -> PathBuf {
 fn top_name(d: &TopDecl) -> Option<&str> {
     match d {
         TopDecl::Locus(l) => Some(&l.name.name),
-        TopDecl::Perspective(p) => Some(&p.name.name),
         TopDecl::Type(t) => Some(&t.name.name),
         TopDecl::Const(c) => Some(&c.name.name),
         TopDecl::Fn(f) => Some(&f.name.name),
@@ -461,17 +460,16 @@ fn method_name_shadowed_by_top_level_fn_resolves() {
     );
 }
 
-/// GH #534 (DNA F.1 / F.10): a library's OWN enum variant paths
-/// (`Color::Red` in expression and pattern position) and its `serves`
-/// lists were not renamed with their declarations, so through
-/// `import` the enum had no arms (exhaustiveness refused; with `_`,
-/// codegen looked up a `Color` that no longer existed) and every
-/// perspective impl served an unknown perspective.
+/// GH #534 (DNA F.1): a library's OWN enum variant paths (`Color::Red`
+/// in expression and pattern position) were not renamed with their
+/// declarations, so through `import` the enum had no arms
+/// (exhaustiveness refused; with `_`, codegen looked up a `Color` that
+/// no longer existed).
 #[test]
-fn library_enum_match_and_perspective_serves_survive_import() {
-    let lib_dir = fixtures_dir().join("lib-enum-persp");
+fn library_enum_match_survives_import() {
+    let lib_dir = fixtures_dir().join("lib-enum-iface");
     let consumer_src_path = fixtures_dir()
-        .join("import-enum-persp-consumer")
+        .join("import-enum-iface-consumer")
         .join("main.hl");
     let consumer_src = std::fs::read_to_string(&consumer_src_path)
         .expect("read consumer main.hl");
@@ -479,23 +477,16 @@ fn library_enum_match_and_perspective_serves_survive_import() {
         parse_source(&consumer_src).expect("parse consumer");
     consumer_prog.imports.clear();
     let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "lib");
-    // The library's own variant paths and `serves` lists must now
-    // carry the mangled names — that is the whole fix.
+    // The library's own variant paths must now carry the mangled
+    // names — that is the whole fix.
     let renamed_enum = renames
         .iter()
         .find(|(k, _)| k == &vec!["lib".to_string(), "Color".to_string()])
         .map(|(_, m)| m.clone())
         .expect("Color is renamed");
     let mut saw_variant_path = false;
-    let mut saw_serves = false;
     for item in &lib_items {
         match item {
-            TopDecl::Locus(l) => {
-                for sv in &l.serves {
-                    assert!(sv.name.starts_with("__lib_"), "serves not renamed: {}", sv.name);
-                    saw_serves = true;
-                }
-            }
             TopDecl::Fn(f) if f.name.name.ends_with("_first") => {
                 let body = format!("{:?}", f.body);
                 assert!(body.contains(&renamed_enum), "variant path head not renamed: {body}");
@@ -504,10 +495,10 @@ fn library_enum_match_and_perspective_serves_survive_import() {
             _ => {}
         }
     }
-    assert!(saw_variant_path && saw_serves, "fixture shape drifted");
+    assert!(saw_variant_path, "fixture shape drifted");
     consumer_prog.items.extend(lib_items);
 
-    let bin = harness::unique_bin(&format!("hale_cross_seed_enum_persp_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_cross_seed_enum_iface_{}", std::process::id()));
     // built from the AST and the table this test made and asserted on: no loaded seed reproduces them
     build_opts::build_program(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
@@ -515,69 +506,9 @@ fn library_enum_match_and_perspective_serves_survive_import() {
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "non-zero exit: {:?} stderr={}", out.status, String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for needle in ["first=red", "green=true", "which=second", "after=second", "label=b", "picked=g"] {
+    for needle in ["first=red", "green=true", "which=second", "label=b", "picked=g"] {
         assert!(stdout.contains(needle), "missing {needle}: {stdout:?}");
     }
-}
-
-/// GH #542: a free fn that shares its name with a PERSPECTIVE contract
-/// method. The seed mangler renamed the contract method (member
-/// position, like a locus method) to the free fn's mangled name, so
-/// every `serves` impl -- whose own method correctly kept its name --
-/// was "missing contract method" once imported.
-#[test]
-fn perspective_contract_method_shadowed_by_top_level_fn_resolves() {
-    let lib_src = r#"
-        perspective P { fn pick() -> String; }
-        locus Impl : serves P { fn pick() -> String { return "impl"; } }
-        locus Holder {
-            params { p: perspective(P) = Impl { }; }
-            fn which() -> String { return self.p.pick(); }
-        }
-        fn pick() -> String { return "free"; }
-    "#;
-    let consumer_src = r#"
-        import "../lib" as lib;
-        fn main() {
-            let h = lib::Holder { };
-            println(h.which(), " ", lib::pick());
-        }
-    "#;
-    let alias = "lib";
-    let mut lib_prog = parse_source(lib_src).expect("parse lib");
-    let seed_renames = {
-        let stem_refs: Vec<(String, &Program)> = vec![("thing".to_string(), &lib_prog)];
-        mangle::build_seed_renames(&stem_refs, alias)
-    };
-    let renames: Vec<(Vec<String>, String)> = seed_renames
-        .iter()
-        .map(|(name, mangled)| (vec![alias.to_string(), name.clone()], mangled.clone()))
-        .collect();
-    mangle::mangle_with_renames(&mut lib_prog, &seed_renames);
-    // The contract method kept its authored name; the free fn moved.
-    for item in &lib_prog.items {
-        if let TopDecl::Perspective(p) = item {
-            for m in &p.members {
-                if let hale_syntax::ast::PerspectiveMember::Fn(f) = m {
-                    assert_eq!(f.name.name, "pick", "contract method must keep its name");
-                }
-            }
-        }
-        if let TopDecl::Fn(f) = item {
-            assert!(f.name.name.starts_with("__lib_"), "free fn must be mangled: {}", f.name.name);
-        }
-    }
-    let mut consumer = parse_source(consumer_src).expect("parse consumer");
-    consumer.imports.clear();
-    consumer.items.extend(lib_prog.items);
-    let bin = harness::unique_bin(&format!("hale_persp_method_shadow_{}", std::process::id()));
-    // the lib is mangled by hand and the mangled AST asserted on above: built from it, not from a loaded seed
-    build_opts::build_program(&consumer, &bin, &renames, &build_opts::options()).expect("build consumer + lib");
-    let out = Command::new(&bin).output().expect("run");
-    let _ = std::fs::remove_file(&bin);
-    assert!(out.status.success(), "exit: {:?} stderr={}", out.status, String::from_utf8_lossy(&out.stderr));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("impl free"), "got: {stdout:?}");
 }
 
 /// GH #542, the bus-handler face: `subscribe Tick as tick;` names a

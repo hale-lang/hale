@@ -154,8 +154,7 @@ fn stmt_names_call_or_struct(s: &Stmt) -> bool {
         Stmt::Break(_)
         | Stmt::Continue(_)
         | Stmt::Yield(_)
-        | Stmt::Terminate(_)
-        | Stmt::Reperspective { .. } => false,
+        | Stmt::Terminate(_) => false,
         Stmt::Fail { value, .. } => e(value),
         Stmt::Block(b) => block_names_call_or_struct(b),
         Stmt::Recovery { args, modifier, .. } => {
@@ -215,7 +214,7 @@ fn or_names_call_or_struct(d: &OrDisposition) -> bool {
 
 fn type_names_call_or_struct(t: &TypeExpr) -> bool {
     match t {
-        TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+        TypeExpr::Primitive(..) => false,
         TypeExpr::Named { generic_args, .. } => generic_args.iter().any(type_names_call_or_struct),
         TypeExpr::Projection { inner, .. } => type_names_call_or_struct(inner),
         TypeExpr::Array { elem, size, .. } => {

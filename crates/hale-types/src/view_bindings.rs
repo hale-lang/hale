@@ -55,7 +55,7 @@
 //!   one the checker resolved (the `views` column's callee row,
 //!   `crate::typed_bodies::CalleeRef`): a locus's method on a receiver
 //!   of that locus's type, only that locus's; a method through an
-//!   interface or a perspective, every body of the name; a free fn, an
+//!   interface, every body of the name; a free fn, an
 //!   imported one and a stdlib handle's member (its receiver the fn's
 //!   first argument) by the declaration it names; and a method called
 //!   on a field (`self.v.set(..)`, a form) writes that field too;
@@ -779,7 +779,7 @@ fn union(a: Keys, b: Keys) -> Keys {
 enum Callee {
     /// A method of the locus that declares it: its bodies alone.
     LocusMethod(String, String),
-    /// A method through an interface or a perspective: every body of the
+    /// A method through an interface: every body of the
     /// name.
     Method(String),
     Fn(String),
@@ -804,7 +804,7 @@ struct Bodies<'a> {
     /// them: what a callee may write through a parameter of.
     param_classes: Vec<Vec<Class>>,
     /// Method name → every body declaring it (a call through an
-    /// interface or a perspective, and a bus handler, reach any).
+    /// interface, and a bus handler, reach any).
     methods: BTreeMap<String, Vec<usize>>,
     /// A fn's declared name → its bodies.
     fns: BTreeMap<String, Vec<usize>>,
@@ -882,7 +882,7 @@ impl<'a> Bodies<'a> {
                     Some(TopSymbol::Locus(_)) if self.form_loci.contains(n) => {
                         return Class::Form(self.view_form_loci.contains(n))
                     }
-                    Some(TopSymbol::Locus(_) | TopSymbol::Interface(_) | TopSymbol::Perspective(_)) => {
+                    Some(TopSymbol::Locus(_) | TopSymbol::Interface(_)) => {
                         return Class::Handle
                     }
                     Some(TopSymbol::Type(t)) => match &t.kind {
@@ -955,8 +955,8 @@ impl<'a> Bodies<'a> {
     /// What a value of type `ty` may reach (GH #1554): every block it is
     /// or holds (a record, an enum, an array, a tuple, a locus's storage),
     /// by type; whether a String or a Bytes leaf; and whether a type the
-    /// pass cannot see into (`Unknown`, a generic parameter, an interface
-    /// or a perspective, whatever serves it), which may be anything.
+    /// pass cannot see into (`Unknown`, a generic parameter, an interface,
+    /// whatever serves it), which may be anything.
     fn reach(&self, ty: &Ty, out: &mut Reach) {
         use hale_syntax::ast::PrimType::{Bytes, BytesView, String as Str, StringView};
         match ty {
@@ -998,7 +998,7 @@ impl<'a> Bodies<'a> {
                         l.params.iter().for_each(|f| self.reach(&f.ty, out));
                     }
                 }
-                Some(TopSymbol::Interface(_) | TopSymbol::Perspective(_)) => out.opaque = true,
+                Some(TopSymbol::Interface(_)) => out.opaque = true,
                 // A monomorph, through its instantiation; a generic
                 // parameter or a name nothing declares may be anything.
                 None => match self.monos.get(n) {
@@ -1100,7 +1100,7 @@ enum Target {
     /// receiver its first argument.
     HandleFn(String),
     /// A method: of the locus that declares it, or (no owner) through an
-    /// interface or a perspective, any body of the name.
+    /// interface, any body of the name.
     Method(Option<String>, String),
     /// A builtin or stdlib leaf: writes nothing of the program's (or
     /// what the bus handlers write, when it publishes or parks).
@@ -1147,7 +1147,7 @@ impl Bodies<'_> {
     /// The method `m` of a value of type `rt` where the checker recorded
     /// no callee (a call the intra-locus rewrite made of a send): a
     /// form's operation, the locus's declared method, a method through an
-    /// interface or a perspective; anything else is unknown.
+    /// interface; anything else is unknown.
     fn method_of(&self, rt: &Ty, m: &str) -> Target {
         match self.named_locus(rt) {
             Some(l) if self.form_loci.contains(&l) && FORM_OPS.contains(&m) && !self.locus_methods.contains_key(&(l.clone(), m.to_string())) => {
@@ -1157,7 +1157,7 @@ impl Bodies<'_> {
             // A locus's member it declares no method of (a fn-typed
             // field): unknown.
             Some(_) => Target::Unknown,
-            // An interface or a perspective: any body of the name.
+            // An interface: any body of the name.
             None if self.classify(rt) == Class::Handle && self.methods.contains_key(m) => Target::Method(None, m.to_string()),
             None => Target::Unknown,
         }
@@ -1196,7 +1196,7 @@ enum Class {
     /// of scalars, a bounded list): a write into it writes the record's
     /// own bytes.
     Inline,
-    /// A locus, an interface, a perspective: its field reads view the
+    /// A locus, an interface: its field reads view the
     /// locus's storage.
     Handle,
     /// An `@form` locus: a handle whose reads may hand back a cell;
@@ -1218,7 +1218,7 @@ impl Class {
     fn may_be_view_form(self) -> bool {
         matches!(self, Class::Form(true) | Class::Unknown)
     }
-    /// Surely a handle: a locus, an interface, a perspective, a form.
+    /// Surely a handle: a locus, an interface, a form.
     fn surely_handle(self) -> bool {
         matches!(self, Class::Handle | Class::Form(_))
     }
@@ -1288,15 +1288,6 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                             }
                         }
                         _ => {}
-                    }
-                }
-            }
-            TopDecl::Perspective(d) => {
-                for m in &d.members {
-                    if let PerspectiveMember::Fn(f) = m {
-                        p.methods.entry(f.name.name.clone()).or_default().push(p.bodies.len());
-                        p.body_locus.resize(p.bodies.len(), None);
-                        p.bodies.push((&f.params, &f.body));
                     }
                 }
             }
@@ -2726,8 +2717,8 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
     }
 
-    /// Does `value` surely hold a handle (a locus, an interface, a
-    /// perspective, a form: by its type)?
+    /// Does `value` surely hold a handle (a locus, an interface, a form:
+    /// by its type)?
     fn surely_handle(&self, value: &Expr) -> bool {
         matches!(value, Expr::KwSelf(_)) || self.class(value).surely_handle()
     }
@@ -2837,8 +2828,8 @@ impl<'p, 'a> Walk<'p, 'a> {
     }
 
     /// May `e` be a handle? `self`, and any value whose type may be one
-    /// (a locus, an interface, a perspective, a form, a type the pass
-    /// cannot place).
+    /// (a locus, an interface, a form, a type the
+    /// pass cannot place).
     /// The keys of a locus's storage, handed as an operand of type `ty`
     /// with keys `keys`: the operand's own (the field of `self` holding the
     /// handle, `self.l`) and every param the locus declares, which its
@@ -3288,11 +3279,6 @@ impl<'p, 'a> Walk<'p, 'a> {
                 let w = self.deliveries();
                 self.write(w, None);
                 self.delivery_reads();
-            }
-            Stmt::Reperspective { .. } => {
-                self.opaque();
-                self.write(Writes::top(), None);
-                self.cell_read(None);
             }
             Stmt::Recovery { args, .. } => {
                 args.iter().for_each(|a| {

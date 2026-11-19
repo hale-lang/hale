@@ -1154,7 +1154,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
             (Status::Shipped, "a pinned locus's owned fields drain on its thread before its drain() (C9, L4)"),
             (
                 Status::Shipped,
-                "an interface- or perspective-typed field drains before its owner's drain, like every owned field (C32, L4)",
+                "an interface-typed field drains before its owner's drain, like every owned field (C32, L4)",
             ),
         ],
     },

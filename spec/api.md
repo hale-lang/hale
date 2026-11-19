@@ -484,8 +484,7 @@ Nothing else runs code at construction: an enum variant's payload has no
 default, a generic parameter is a type, `@form(…)` arguments, capacity
 clauses, an array type's size and a scalar's `range:` are constants the
 compiler reads, `placement`, `topology`, `bindings` and `claims` emit no
-user code, a closure assertion is judged at closure, and a perspective's
-`params` are not lowered. A step that
+user code, and a closure assertion is judged at closure. A step that
 returns is fine. A step that may not return is
 refused, naming it and why ("…its listener (\`App\`'s) is born after
 \`self.server\`, once everything \`App\` builds up to it has finished, and

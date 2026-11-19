@@ -63,8 +63,8 @@ pub(crate) trait LocusDissolve<'ctx> {
     >;
 
     /// GH #871: the cascade arm for a param field that holds an
-    /// owned child WITHOUT naming its type — an `interface` slot or
-    /// a `perspective(P)` handle. Runs one half of the child's
+    /// owned child WITHOUT naming its type — an `interface` slot.
+    /// Runs one half of the child's
     /// teardown through the pair the instantiation recorded in
     /// `__owned_child_reclaim_<f>` (`Cx::contract_teardown_table`):
     /// its drain ([`CONTRACT_DRAIN`], in the owner's drain cascade) or
@@ -443,7 +443,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         let tears_down = field_entries.iter().any(|(fname, _, ty)| {
             !pinned_on_main(self, fname)
                 && match ty {
-                    CodegenTy::Interface(_) | CodegenTy::Perspective(_) => true,
+                    CodegenTy::Interface(_) => true,
                     CodegenTy::LocusRef(n) => self.user_loci.contains_key(n),
                     other => composite_loci(other).is_some_and(|v| v.iter().any(|(_, n)| self.user_loci.contains_key(n))),
                 }
@@ -454,24 +454,22 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             if pinned_on_main(self, &fname) {
                 continue;
             }
-            // GH #871: a field typed by a CONTRACT — an `interface`
-            // or a `perspective(P)` — holds a parent-owned child
-            // just as a `LocusRef` field does, and this walk used to
-            // step straight over it because the declared type is not
+            // GH #871: a field typed by a CONTRACT — an `interface` —
+            // holds a parent-owned child just as a `LocusRef` field
+            // does, and this walk used to step straight over it because the declared type is not
             // `LocusRef`. Nothing else tore those children down: the
             // literal took `lower_locus_instantiation`'s
             // `parent_owns_via_field` no-op branch (so no frame owns
             // it) and the owner's cascade never looked at the field.
             // `Queries { j: Churner { } }` lost the `Churner` AND
-            // the `Rows` `@form(vec)` under it; every perspective
-            // holder lost its designated impl.
+            // the `Rows` `@form(vec)` under it.
             //
             // The teardown is an indirect call because the impl is
             // chosen per instantiation, not per owner type — see
             // `owned_child_reclaim_field_idxs`.
             if matches!(
                 field_ty,
-                CodegenTy::Interface(_) | CodegenTy::Perspective(_)
+                CodegenTy::Interface(_)
             ) {
                 let via_fat_pointer =
                     matches!(field_ty, CodegenTy::Interface(_));
@@ -713,8 +711,8 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
     ///
     /// The `LocusRef` arm of the cascade can emit a static
     /// `__dissolve` / `__reclaim` chain because the field's declared
-    /// type IS the child's type. An `interface` slot and a
-    /// `perspective(P)` handle name a contract instead, and which
+    /// type IS the child's type. An `interface` slot names a
+    /// contract instead, and which
     /// locus satisfies it is an instantiation-site decision
     /// (`Gateway { router: RouterV2 { } }` over a `= RouterV1 { }`
     /// default). The cascade, though, is emitted once per OWNER
@@ -751,8 +749,8 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             match info.owned_child_reclaim_field_idxs.get(fname) {
                 Some(&i) => i,
                 // No slot means the field can't hold an owned child
-                // (declare_locus_struct allots one per interface /
-                // perspective param). Nothing to do.
+                // (declare_locus_struct allots one per interface
+                // param). Nothing to do.
                 None => return Ok(()),
             };
         let ptr_t = self.context.ptr_type(AddressSpace::default());
@@ -849,9 +847,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // An interface field holds a `{data, vtable}` fat pointer
         // (allocated in THIS locus's arena, which is destroyed after
         // this cascade, so the read is in bounds); `data` is the
-        // impl's self pointer. A perspective field holds that self
-        // pointer directly — dispatch goes through the program-global
-        // slot, so the field is there for ownership alone.
+        // impl's self pointer.
         let child = if via_fat_pointer {
             let fat_ty = self.iface_fat_struct_ty();
             let data_gep = self
@@ -1095,7 +1091,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // owned field, through the drain half its instantiation
             // recorded; the rest of its spine runs in the dissolve
             // cascade.
-            if matches!(field_ty, CodegenTy::Interface(_) | CodegenTy::Perspective(_)) {
+            if matches!(field_ty, CodegenTy::Interface(_)) {
                 let via_fat_pointer = matches!(field_ty, CodegenTy::Interface(_));
                 self.emit_owned_contract_child_teardown(
                     info,

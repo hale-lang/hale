@@ -8,8 +8,7 @@
 //! tiers, both structural:
 //!
 //! 1. The user program (every seed, imports merged) declares no topic,
-//!    no perspective, and no locus with a bus block, a bindings block or
-//!    an `accept`.
+//!    and no locus with a bus block, a bindings block or an `accept`.
 //! 2. It reaches no bus-surfaced stdlib declaration: it spells no
 //!    mangled stdlib name (`__Std…`), and either names no `std` path at
 //!    all or names none of the stdlib namespaces whose declarations reach
@@ -31,7 +30,7 @@ pub fn bus_inert(user: &Program) -> bool {
     // GH #884: every declaration, modules flattened — a topic or a bus
     // block one brace deeper is still bus surface.
     let declares_none = hale_syntax::ast::flat_decls(&user.items).all(|it| match it {
-        TopDecl::Topic(_) | TopDecl::Perspective(_) => false,
+        TopDecl::Topic(_) => false,
         TopDecl::Locus(l) => l.members.iter().all(|m| match m {
             LocusMember::Bus(_) | LocusMember::Bindings(_) => false,
             LocusMember::Lifecycle(ld) => ld.kind != LifecycleKind::Accept,
@@ -63,8 +62,7 @@ pub fn bus_inert(user: &Program) -> bool {
 /// The stdlib's bus-taint column: which `std::` namespaces (the second
 /// path segment) can transitively reach a bus-surfaced stdlib
 /// declaration. A fixpoint over the parsed stdlib's declarations: the
-/// seeds are loci with a bus block, a bindings block or an `accept`, and
-/// perspectives; a declaration that names a tainted one is tainted
+/// seeds are loci with a bus block, a bindings block or an `accept`; a declaration that names a tainted one is tainted
 /// (covering a free fn that instantiates a subscriber internally,
 /// `std::http::serve` → `Server`). Tainted declarations map to the
 /// namespaces a program can spell through the stdlib's path renames; one
@@ -87,7 +85,6 @@ pub fn bus_tainted_namespaces() -> &'static [String] {
                         _ => false,
                     }),
                 ),
-                TopDecl::Perspective(p) => (p.name.name.clone(), true),
                 TopDecl::Fn(f) => (f.name.name.clone(), false),
                 TopDecl::Type(t) => (t.name.name.clone(), false),
                 TopDecl::Topic(t) => (t.name.name.clone(), false),

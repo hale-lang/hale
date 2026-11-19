@@ -33,19 +33,8 @@ type Receipt {
     receipt_count: Decimal;
 }
 
-// A serializable parameter bundle within the shared schema.
-// stable_when says: only ship when at least three independent
-// perspectives have validated the kernel (multi-perspective
-// stability commit-rule from the ancient texts).
-perspective KernelPerspective {
-    params {
-        kernel: Kernel;
-        validation_count: Int = 0;
-    }
-
-    stable_when {
-        return self.validation_count >= 3;
-    }
-
-    serialize_as Kernel;
+// The commit rule within the shared schema: only ship a kernel once
+// at least three independent validations have confirmed it.
+fn kernel_is_stable(validation_count: Int) -> Bool {
+    return validation_count >= 3;
 }

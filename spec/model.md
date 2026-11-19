@@ -216,9 +216,8 @@ Three properties are the contract:
   was given and the caller it established, and says so: the identity of
   an exposure is its surface, its digest and its name.
 - **Perspective-invariant (I5).** Every entry is a form claim over
-  the program's declarations, so a `perspective` swap, a placement
-  change or a second deployment describe themselves in the same
-  bytes; two builds of one source produce one description, and a
+  the program's declarations, so a placement change or a second
+  deployment describe themselves in the same bytes; two builds of one source produce one description, and a
   running exposure serves the document the compiler's rows write for
   the caller it names (the Unix `{"describe": true}` and
   `GET /.description` answer it whole).

@@ -141,17 +141,6 @@ impl Walk<'_> {
                     self.locus_member(member);
                 }
             }
-            TopDecl::Perspective(p) => {
-                for member in &mut p.members {
-                    match member {
-                        PerspectiveMember::Params(pb) => self.params_block(pb),
-                        PerspectiveMember::StableWhen(b) => self.block(b),
-                        PerspectiveMember::SerializeAs(t) => self.ty(t),
-                        PerspectiveMember::Fn(fd) => self.fn_decl(fd),
-                        PerspectiveMember::Bus(bb) => self.bus(bb),
-                    }
-                }
-            }
             TopDecl::Type(t) => self.type_decl(t),
             TopDecl::Const(c) => self.const_decl(c),
             TopDecl::Fn(fd) => self.fn_decl(fd),
@@ -358,7 +347,7 @@ impl Walk<'_> {
                     self.ty(r);
                 }
             }
-            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+            TypeExpr::Primitive(..) => {}
         }
     }
 
@@ -449,8 +438,7 @@ impl Walk<'_> {
             | Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => {}
+            | Stmt::Terminate(_) => {}
         }
     }
 

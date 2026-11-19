@@ -7,8 +7,8 @@ typed bus. The capstone example for the Hale language.
 ## Files
 
 - `shared.hl` — types compiled into both binaries: `Observation`,
-  `Kernel`, `Action`, `Receipt`, plus the `KernelPerspective`
-  declaration with `stable_when`.
+  `Kernel`, `Action`, `Receipt`, plus the `kernel_is_stable`
+  commit rule.
 - `fitter.hl` — `FitterL`. Consumes `Observation`; computes a
   fitted `Kernel`; publishes when stable. Resolution-mode regime.
 - `applier.hl` — `ApplierL`. Consumes `Observation` + `Kernel` +
@@ -26,8 +26,8 @@ Every primitive the spec defines:
   counts; mutable through `self.x = ...`; per F.3).
 - **Type declarations** for typed messages (`type Observation`,
   `type Kernel`, `type Action`, `type Receipt`).
-- **Perspective declaration** with `stable_when` predicate
-  and `serialize_as` annotation. Per F.10.
+- **A shared commit rule** (`kernel_is_stable`), a fn of the
+  shared schema the fitter calls before it ships a kernel.
 - **Bus interface** with subscribe + publish across multiple
   channels; transport-agnostic source paired with deployment-
   config transport binding.
@@ -54,9 +54,9 @@ Every primitive the spec defines:
   it's acting on because it has no fitting machinery and no
   path back to the fitter's state. Anchor isolation by
   deployment shape.
-- **Multi-perspective stability operationalized.** Fitter
+- **Multi-validation stability operationalized.** Fitter
   holds many candidate kernels; only ones whose
-  `validation_count >= 3` ship as perspectives. The ancient
+  `validation_count >= 3` ship. The ancient
   texts' N≥3 commit-rule is now a runtime gate.
 - **Cyclic-closure at the applier↔fitter boundary.** The
   applier's `action_receipt_balance` closure asserts every
@@ -90,7 +90,7 @@ Acknowledged gaps that are real but out of scope:
   forced; per F.14 follow-on).
 
 These are intentional simplifications. The fitter/applier pair
-exercises the bus + perspective + closure surface; richer
+exercises the bus + closure surface; richer
 primitives belong to other examples.
 
 ## What the runtime does
@@ -144,7 +144,7 @@ The fitter-applier-pair pulls on every substrate primitive at once:
 
 - Two processes, each opening its own lotus.
 - A schema shared by compilation, not by handshake.
-- A perspective with a commit predicate (`stable_when`).
+- A shared commit predicate (`kernel_is_stable`).
 - A bus carrying typed payloads across processes via the
   m70 wire format.
 - Closure audits with both `tick` and `dissolve` epochs.

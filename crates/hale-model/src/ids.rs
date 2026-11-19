@@ -75,8 +75,8 @@ table_id!(
     InterfaceDeclId
 );
 table_id!(
-    /// A seed-membership-only declaration (perspective, const,
-    /// ring layout, target) — see [`Declaration`].
+    /// A seed-membership-only declaration (const, ring layout,
+    /// target) — see [`Declaration`].
     ///
     /// [`Declaration`]: crate::entity::Declaration
     DeclarationId
@@ -109,7 +109,7 @@ pub enum EntityRef {
     Type(TypeDeclId),
     /// A declared interface.
     Interface(InterfaceDeclId),
-    /// A seed-membership-only declaration (perspective, const,
-    /// ring layout, target).
+    /// A seed-membership-only declaration (const, ring layout,
+    /// target).
     Declaration(DeclarationId),
 }

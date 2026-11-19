@@ -248,42 +248,10 @@ row	Cache@main2	Cache	main	default
 row	Cache@main3	Cache	main	default
 row	Cache@main4	Cache	main	default
 
-== crates/hale-codegen/tests/fixtures/examples/60-perspective-slot/main.hl#3dc2af28
-root	App	the entry
-row	App@literal1	App	main	default
-shared	App@literal1.gw	Gateway #7eef2531
-
-== crates/hale-codegen/tests/fixtures/examples/61-reperspective-swap/main.hl#0c783d9c
-root	App	the entry
-row	App@literal1	App	main	default
-shared	App@literal1.gw	Gateway #7eef2531
-
-== crates/hale-codegen/tests/fixtures/examples/62-perspective-bus-contract/main.hl#be929141
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.router	RouterV1	main	default
-
-== crates/hale-codegen/tests/fixtures/examples/63-reperspective-migrate/main.hl#125dcb4c
-root	App	the entry
-row	App@literal1	App	main	default
--- App@literal1.svc	Service
-row	~	Service	main	default
-row	~.counter	CounterV1	main	inherited
-
-== crates/hale-codegen/tests/fixtures/examples/64-perspective-bus-swap/main.hl#e812eb4c
--- Service@main1	Service
-row	~	Service	main	default
-row	~.router	OrderV1	main	inherited
-
 == crates/hale-codegen/tests/fixtures/examples/65-hashmap-anchor-churn/main.hl#67a4490c
 root	HashmapAnchorChurn	the entry
 row	HashmapAnchorChurn@literal1	HashmapAnchorChurn	main	default
 row	HashmapAnchorChurn@literal1.basis	ChurnMap	main	default
-
-== crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override/main.hl#53ef4cc3
-root	App	the entry
-row	App@literal1	App	main	default
-shared	App@literal1.gw	Gateway #85305e8b
 
 == crates/hale-codegen/tests/fixtures/examples/66-self-field-retire/main.hl#928ac8ae
 root	SelfFieldRetire	the entry
@@ -431,7 +399,7 @@ row	App@literal1.r	Research	main	default
 shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
 shared	dynamic	sites in the seed #a76c74f1
 
-== crates/hale-codegen/tests/fixtures/examples/fitter-applier-demo/main.hl#3fb485a9
+== crates/hale-codegen/tests/fixtures/examples/fitter-applier-demo/main.hl#b6e4696f
 row	ActionLogL@main1	ActionLogL	main	default
 row	ApplierL@main2	ApplierL	main	default
 row	FitterL@main3	FitterL	main	default
@@ -862,26 +830,6 @@ dynamic	<hole>	on main|unresolved declaration `lib::StoreError`	in the seed
 
 == crates/hale-cli/tests/cross_seed_interface_fallible.rs#0b754301
 row	Bad@main1	Bad	main	default
-
-== crates/hale-cli/tests/cross_seed_qualified_serves.rs#bc743bb1
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.r	Triple	main	default
-
-== crates/hale-cli/tests/cross_seed_qualified_serves.rs#089f0792
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.r	Triple	main	default
-
-== crates/hale-cli/tests/cross_seed_qualified_serves.rs#97fc633e
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.r	Triple	main	default
-
-== crates/hale-cli/tests/cross_seed_qualified_serves.rs#a2a5e75b
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.r	Triple	main	default
 
 == crates/hale-cli/tests/dispatch_payload_flat.rs#b7d8e65e
 root	App	the entry
@@ -3013,9 +2961,6 @@ dynamic	<hole>	on main|unresolved declaration `lib::Child`	in the seed
 
 == crates/hale-codegen/tests/cross_seed_imports.rs#f97aae73
 dynamic	<hole>	on main|unresolved declaration `lib::Console`	in the seed
-
-== crates/hale-codegen/tests/cross_seed_imports.rs#f3c882eb
-dynamic	<hole>	on main|unresolved declaration `lib::Holder`	in the seed
 
 == crates/hale-codegen/tests/cross_seed_imports.rs#4ba34a49
 root	App	the entry
@@ -6126,12 +6071,6 @@ dynamic	Small	on main	in the seed
 == crates/hale-codegen/tests/wasm_target.rs#9f9ee9e7
 row	V@main1	V	main	default
 
-== crates/hale-codegen/tests/wasm_target.rs#0e7a1b36
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.h	Holder	main	default
-row	App@literal1.r	Plus	main	default
-
 == crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#60aaaf4b
 dynamic	Conn	on main	in the seed
 -- Gw@main1	Gw
@@ -6738,7 +6677,7 @@ row	L@main1	L	main	default
 row	~	L	main	default
 row	~.s	__StdIoTcpStream	main	inherited
 
-== crates/hale-types/tests/diag_quality.rs#15017ee9
+== crates/hale-types/tests/diag_quality.rs#1ef8c207
 -- L@main1	L
 row	~	L	main	default
 row	~.p	V1	main	inherited
@@ -7163,7 +7102,9 @@ shared	App@literal1.h	Holder #e64fd159
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal2	App	main	default
-shared	App@literal1.gw	Gateway #85305e8b
+-- App@literal1.gw	Gateway
+row	~	Gateway	main	default
+row	~.router	RouterV2	main	inherited
 shared	App@literal2.gw	Gateway #7eef2531
 
 == crates/hale-types/tests/model_arrangement.rs#85075003
@@ -7546,40 +7487,6 @@ dynamic	Kid	on main	in the seed
 root	App	the entry
 row	App@literal1	App	main	default
 dynamic	<hole>	on main|unresolved declaration `lib::Kid`|unresolved declaration `unknown::Kid`	in the seed
-
-== crates/hale-types/tests/perspective_serves.rs#a0f42efe
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.r	RouterV1	main	default
-
-== crates/hale-types/tests/perspective_serves.rs#5a4cb8e1
-root	App	the entry
-row	App@literal1	App	main	default
-shared	App@literal1.gw	Gateway #7eef2531
-
-== crates/hale-types/tests/perspective_serves.rs#de66b97d
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.r	RouterV1	main	default
-
-== crates/hale-types/tests/perspective_serves.rs#90d97feb
-root	App	the entry
-row	App@literal1	App	main	default
--- App@literal1.gw	Gateway
-row	~	Gateway	main	default
-row	~.r	RouterV1	main	inherited
-
-== crates/hale-types/tests/perspective_serves.rs#acb76542
-root	App	the entry
-row	App@literal1	App	main	default
--- App@literal1.s	Service
-row	~	Service	main	default
-row	~.c	CounterV1	main	inherited
-
-== crates/hale-types/tests/perspective_serves.rs#a43e698f
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.r	Triple	main	default
 
 == crates/hale-types/tests/phase_effects.rs#986778b5
 row	A@main1	A	main	default
@@ -8911,22 +8818,6 @@ row	~.b	Boom	main	inherited
 -- dynamic	sites in the seed
 dynamic	Boom	on main
 dynamic	Wrap	on main
-
-== tests/hale/perspective_ctor_override_test.hl
-root	App	the entry
-row	App@literal1	App	main	default
-shared	App@literal1.gw	Gateway #85305e8b
-
-== tests/hale/perspective_hold_test.hl
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.performer	Tripler	main	default
-row	App@literal1.s	Steps	main	default
-row	App@literal1.scaling	__lib_tests__hale__perspective_hold_lib___lib__Thrice	main	default
-row	App@literal1.w	Work	main	default
--- dynamic	sites in the seed
-dynamic	Attempt	on main
-dynamic	__lib_tests__hale__perspective_hold_lib___lib__Step	on main
 
 == tests/hale/pinned_birth_restart_test.hl
 root	App	the entry
@@ -16636,13 +16527,6 @@ row	Org@literal1.reviewer	Reviewer	main	default
 shared	Org@literal1.assurance	Support #2066d0f8
 shared	Org@literal1.support	Support #2066d0f8
 
-== dna/friction/f10-perspective-across-seeds/app
-root	App	the entry
-row	App@literal1	App	main	default
--- App@literal1.r	__lib_dna__friction__f10_x2dperspective_x2dacross_x2dseeds__lib___lib__Router
-row	~	__lib_dna__friction__f10_x2dperspective_x2dacross_x2dseeds__lib___lib__Router	main	default
-row	~.policy	__lib_dna__friction__f10_x2dperspective_x2dacross_x2dseeds__lib___lib__Second	main	inherited
-
 == dna/friction/f19-handler-born-subscriber
 root	App	the entry
 row	App@literal1	App	main	default
@@ -16650,13 +16534,6 @@ row	App@literal1.m	Manager	main	default
 -- dynamic	sites in the seed
 dynamic	Part	on main
 dynamic	Run	on main
-
-== dna/friction/f4-perspective-must-designate
-root	App	the entry
-row	App@literal1	App	main	default
-row	App@literal1.performer	Tripler	main	default
-row	App@literal1.w	Work	main	default
-dynamic	Attempt	on main	in the seed
 
 == dna/friction/f5-bus-reply-at-drain
 root	App	the entry
@@ -18406,10 +18283,6 @@ row	~.buf	__StdBytesBytesBuilder	pool:ws	inherited
 == shared Gateway #7eef2531
 row	~	Gateway	main	default
 row	~.router	RouterV1	main	inherited
-
-== shared Gateway #85305e8b
-row	~	Gateway	main	default
-row	~.router	RouterV2	main	inherited
 
 == shared H #540d0d6c
 row	~	H	main	default

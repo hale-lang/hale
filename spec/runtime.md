@@ -186,8 +186,8 @@ the model: runtime is automatic; stdlib is explicit.
   in from outside is skipped wherever it appears and is torn
   down once, by its real owner.
   A param field typed by a **contract** rather than by the
-  child's locus — an `interface` slot, a `perspective(P)`
-  handle — carries an owned child on the same terms, and the
+  child's locus — an `interface` slot — carries an owned child
+  on the same terms, and the
   cascade reaches it: the declared type names no impl, so the
   instantiation records the child's teardown in a synthetic
   per-field slot, a pair of its drain and the rest of its spine
@@ -1950,27 +1950,6 @@ zero_copy binding produces.
   and `quarantine` (per default; future `clear_violation_on(...)`
   clause may override).
 
-### Perspective infrastructure
-
-- **The global slot.** Each `perspective P` has one program-global
-  `{ data, vtable }` slot (`__persp.<P>`). Every holder of
-  `perspective(P)` dispatches through it — a load plus a predicted
-  indirect call, near-direct cost. A program that declares no
-  perspectives pays nothing.
-- **Live swap (`reperspective`).** Re-points the slot at a new
-  `serves P` impl with a single atomic store, redirecting every
-  call site at once. State-preserving across impls of one footprint:
-  the `{ data, vtable }` split means `data` — the live, arena-backed
-  state — is untouched and only the vtable changes. When the
-  perspective declares a bus surface, the swap also re-points its
-  subscriptions on that same `data`. (See `spec/semantics.md`
-  § Perspectives.)
-- **Wire hot-load (aspirational).** Transport-driven redeploy —
-  decode a serialized perspective against the compiled-in schema,
-  gate on `stable_when`, atomically install with no torn read — is
-  specified but not yet shipped. See `spec/semantics.md`
-  § "Perspective hot-load".
-
 ### Failure handling
 
 - **Failure = `ClosureViolation` propagation.** Any `closure`
@@ -2626,11 +2605,10 @@ its `KNOWN_OPEN` table, which is empty today.
   dissolve cascade): a pinned locus's thread drains its fields
   before its `drain()` (inventory rows C9, C18;
   `l12_pinned_fields_drain.hl` and the lifecycle matrix's pinned
-  grandchild cells), and a field typed by an interface or a
-  perspective drains with the others, before its owner's drain,
-  through the drain half of the teardown its instantiation records
-  (inventory row C32; the matrix's interface-field and
-  perspective-slot cells). Before, a pinned locus's fields were
+  grandchild cells), and a field typed by an interface drains with
+  the others, before its owner's drain, through the drain half of
+  the teardown its instantiation records (inventory row C32; the
+  matrix's interface-field cells). Before, a pinned locus's fields were
   dissolved after the join without a drain, and a contract-typed
   field's whole spine ran after its owner's `dissolve()`.
   An owned field's lifetime is its owner's, so every replica of a
@@ -4880,10 +4858,10 @@ Erlang.
 - **FFI to existing languages.** Generic FFI in stdlib;
   team-specific bindings (e.g. domain-specific typed messages)
   live as third-party packages. Marshalling helpers in stdlib.
-- **Hot-reload of code (not just perspectives).** Erlang
-  supports module-level hot reload. Lotus's perspective
-  hot-reload is more granular and addresses most of the use
-  case; full code hot-reload may not be needed.
+- **Hot-reload of code.** Erlang supports module-level hot
+  reload. A running Hale program's code is fixed: the one live
+  swap the language had, `reperspective`, was removed with
+  perspectives (F.55), and nothing replaces it.
 - **Determinism mode for tests.** Resolved for the single-pool
   case: no mode is needed, because single-pool execution is
   deterministic by construction, and that is now a stated,

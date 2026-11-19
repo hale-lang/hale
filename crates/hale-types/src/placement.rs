@@ -96,7 +96,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
     flat_decls, AssignOp, Block, ElseBranch, Expr, IfStmt, LValue, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
-    OrDisposition, ParamInit, Pattern, PerspectiveMember, PinAffinity, PlacementConstraint, PlacementSpec, Program,
+    OrDisposition, ParamInit, Pattern, PinAffinity, PlacementConstraint, PlacementSpec, Program,
     RecoveryModifier, Stmt, StructInit, TopDecl, TopologyBlock, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
 
@@ -388,8 +388,8 @@ pub struct RootRow {
     /// template is then the entry's ([`Origin::Entry`]).
     pub constructions: Vec<Construction>,
     /// Every other literal of the root declaration: one written where no
-    /// scope's bodies reach (a params default of a locus or a
-    /// perspective, a const, a type's field default, a closure's
+    /// scope's bodies reach (a params default of a locus, a
+    /// const, a type's field default, a closure's
     /// assertion, an adapter's inits). Lowering expands it wherever the
     /// declaration holding it is built, so it is no template of its own,
     /// but it builds the root as surely as a construction does, and a law
@@ -411,9 +411,9 @@ pub struct Expanded {
     /// builds the root, records `Shell { }` built in a loop). A literal
     /// on the way written in a loop inside its default is the end of its
     /// chain, built in a loop. Empty for a position no locus literal
-    /// expands: one lowering emits at every use (`per_use`), once (an
-    /// adapter's inits) or never (a perspective's members); and for a
-    /// default only the entry's own template takes.
+    /// expands: one lowering emits at every use (`per_use`) or once (an
+    /// adapter's inits); and for a default only the entry's own
+    /// template takes.
     pub built_by: Vec<Construction>,
     /// The literals on its chains written where lowering emits them
     /// again at every use, by constructions the table does not record
@@ -1030,7 +1030,7 @@ struct DeclEntry<'a> {
 /// What a written name denotes.
 enum Named<'d, 'a> {
     Locus(&'d DeclEntry<'a>),
-    /// An interface (or perspective): a contract-typed slot, which holds
+    /// An interface: a contract-typed slot, which holds
     /// whichever implementation was built.
     Contract,
     /// A type, a primitive spelled as a name, or anything else that is no
@@ -1049,7 +1049,7 @@ struct Decls<'a> {
     /// `type A = T;` targets, each universe's.
     user_aliases: BTreeMap<&'a str, &'a TypeExpr>,
     stdlib_aliases: BTreeMap<&'a str, &'a TypeExpr>,
-    /// Interface and perspective names, both universes.
+    /// Interface names, both universes.
     contracts: BTreeSet<&'a str>,
     /// Every other declared type name (struct and enum types), both
     /// universes: a literal naming one builds no locus.
@@ -1154,9 +1154,6 @@ impl<'a> Decls<'a> {
                 }
                 TopDecl::Fn(fd) => {
                     self.fns.insert((universe, fd.name.name.clone()));
-                }
-                TopDecl::Perspective(p) => {
-                    self.contracts.insert(p.name.name.as_str());
                 }
                 TopDecl::Module(m) => {
                     module.push(m.name.name.clone());
@@ -1337,8 +1334,8 @@ impl<'a> LocusIndex<'a> {
         }
     }
 
-    /// Whether a type written in `from`'s universe denotes a locus, an
-    /// interface or a perspective: a field holding an instance.
+    /// Whether a type written in `from`'s universe denotes a locus or an
+    /// interface: a field holding an instance.
     pub(crate) fn holds_instance(&self, ty: &TypeExpr, from: SiteUniverse) -> bool {
         let TypeExpr::Named { path, .. } = ty else { return false };
         matches!(self.decls.resolve(&segments(path), from), Named::Locus(_) | Named::Contract)
@@ -2423,7 +2420,7 @@ struct Elsewhere<'a> {
     literal: Literal<'a>,
     /// Where it is written, which says what builds it; `None` where
     /// lowering emits it once (an adapter's inits, by the bindings
-    /// prelude) or never (a perspective's members).
+    /// prelude).
     position: Option<Position<'a>>,
 }
 
@@ -2470,7 +2467,7 @@ struct Scopes<'a> {
     scopes: Vec<Scope<'a>>,
     /// The locus literals written where no scope's bodies reach: a params
     /// default, a const, a type's field default, a closure's assertion, an
-    /// adapter's inits, a perspective's members. Each is lowered wherever
+    /// adapter's inits. Each is lowered wherever
     /// the declaration holding it is built, in a scope no row relates it
     /// to, so it joins no scope.
     elsewhere: Vec<Elsewhere<'a>>,
@@ -2609,29 +2606,6 @@ impl<'a> Scopes<'a> {
                                 }
                             }
                             _ => {}
-                        }
-                    }
-                }
-                TopDecl::Perspective(p) => {
-                    for m in &p.members {
-                        match m {
-                            PerspectiveMember::Params(pb) => {
-                                for p in &pb.params {
-                                    if let ParamInit::Value(e) = &p.init {
-                                        rest.expr(e);
-                                    }
-                                }
-                            }
-                            PerspectiveMember::StableWhen(b) => rest.block(b),
-                            PerspectiveMember::Fn(fd) => {
-                                for p in &fd.params {
-                                    if let Some(d) = &p.default {
-                                        rest.expr(d);
-                                    }
-                                }
-                                rest.block(&fd.body);
-                            }
-                            PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
                         }
                     }
                 }
@@ -3092,7 +3066,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
                 TypeExpr::Tuple(parts, _) => parts.iter().any(|t| depends_on(t, parameters)),
                 TypeExpr::Function { params, ret, .. } => params.iter().any(|t| depends_on(t, parameters))
                     || ret.as_ref().is_some_and(|t| depends_on(t, parameters)),
-                TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+                TypeExpr::Primitive(..) => false,
             }
         }
         let start = self.literals.len();

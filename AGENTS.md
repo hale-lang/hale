@@ -67,7 +67,7 @@ map:                                        ; ⊥ = where the construct's graph 
   projection class    ↔ K-conditioned Π-resolution (rich|chunked|recognition) ; ⊥ the locus
   bus                 ↔ Δ-composed channel, ⋈ when bound to transport ; ⊥ the seed (a library seed closes nothing)
   closure-test        ↔ I3 local check at Σ                 ; ⊥ the locus
-  perspective T       ↔ Π serialized across processes       ; ⊥ the process edge
+  interface I         ↔ Π over a locus's methods (structural) ; ⊥ the holder
   fallible(E)         ↔ value-channel Π↑ (orthogonal to ↑)  ; ⊥ the call
   @form(...)          ↔ K-discipline lowering, application-layer Σ ; ⊥ the locus (the slot's operation set)
   claims | constitution ↔ laws over the derived graph        ; ⊥ the adopting main
@@ -192,6 +192,16 @@ Filter these reflexes before they cost you time.
 - **No `trait` / `impl` blocks.** There's `interface I { ... }`
   with structural satisfaction — any locus whose method set is
   a superset satisfies `I`. No `impl I for L`.
+- **A pluggable implementation is an interface-typed param.**
+  `params { router: Router = RouterV1 { }; }` with `interface
+  Router { fn route(code: Int) -> Int; }`; a construction
+  substitutes another (`Gateway { router: RouterV2 { } }`), and
+  the holder owns it. Where the implementation's own type
+  matters (its fields, a method the interface lacks), make the
+  holder generic: `locus Gateway<R> { params { router: R; } }`.
+  There are no perspectives (`perspective`, `serves`,
+  `reperspective` are refused, F.55) and no live swap of a
+  running implementation.
 - **No parametric collection types** — no `Vec<T>` / `Map<K,V>`
   / `Option<T>` / `Result<T,E>`. Use `@form(vec)` /
   `@form(hashmap)` / `@form(ring_buffer)` on a locus. Errors
@@ -283,7 +293,7 @@ Filter these reflexes before they cost you time.
 
 ## Naming
 
-- Locus, type, perspective, interface: `PascalCase`.
+- Locus, type, interface: `PascalCase`.
 - Method, field, param, free fn: `snake_case`.
 - Constant: `SCREAMING_SNAKE_CASE`.
 - Bus subject (literal form): dot-separated lowercase

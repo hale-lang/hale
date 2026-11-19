@@ -223,8 +223,7 @@ impl Attach<'_, '_> {
                     r.doc = self.take(&r.method);
                 }
             }
-            TopDecl::Perspective(_)
-            | TopDecl::RingLayout(_)
+            TopDecl::RingLayout(_)
             | TopDecl::Target(_)
             | TopDecl::Group(_)
             | TopDecl::Claims(_)

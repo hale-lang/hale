@@ -14,9 +14,8 @@
 //! did.
 //!
 //! 1. The field is typed by a CONTRACT, not by the child's locus:
-//!    an `interface` slot (`j: Counter = Churner { }`) or a
-//!    `perspective(P)` handle (`router: perspective(Router) =
-//!    RouterV1 { }`). `emit_locus_field_dissolves` only ever matched
+//!    an `interface` slot (`j: Counter = Churner { }`).
+//!    `emit_locus_field_dissolves` only ever matched
 //!    `CodegenTy::LocusRef`, so the whole subtree under such a field
 //!    outlived its owner — in `87-temp-locus-receiver`, four
 //!    `Churner`s and the four `Rows` `@form(vec)` children under
@@ -222,68 +221,6 @@ fn a_literal_inside_a_non_locus_field_init_is_fn_scope_owned() {
     assert!(at("done") < at("queries dissolved"), "got:\n{out}");
 }
 
-const PERSP_TREE: &str = r#"
-    perspective Router {
-        fn route(code: Int) -> Int;
-    }
-    locus RouterV1 : serves Router {
-        dissolve() { println("v1 dissolved"); }
-        fn route(code: Int) -> Int { return code + 100; }
-    }
-    locus RouterV2 : serves Router {
-        dissolve() { println("v2 dissolved"); }
-        fn route(code: Int) -> Int { return code + 200; }
-    }
-    locus Gateway {
-        params { router: perspective(Router) = RouterV1 { }; }
-        dissolve() { println("gateway dissolved"); }
-        fn handle(code: Int) -> Int { return self.router.route(code); }
-    }
-"#;
-
-/// A `perspective(P)` field holds the designated impl for ownership
-/// alone — dispatch goes through the program-global slot. Ownership
-/// alone is exactly what was never exercised: the impl's arena
-/// outlived the holder in all six perspective fixtures.
-#[test]
-fn a_designated_perspective_impl_is_reclaimed_with_its_holder() {
-    let (out, _) = run(
-        "persp_default",
-        &format!(
-            "{PERSP_TREE}\n{}\n",
-            r#"
-            fn main() {
-                let g = Gateway { };
-                println("r=", g.handle(7));
-            }
-        "#
-        ),
-    );
-    assert!(out.contains("r=107"), "got:\n{out}");
-    assert_eq!(count(&out, "v1 dissolved"), 1, "got:\n{out}");
-    assert_eq!(count(&out, "gateway dissolved"), 1, "got:\n{out}");
-
-    // The ctor-override spelling (`65-perspective-ctor-override`):
-    // the impl is chosen at the literal, not at the declaration, so
-    // the teardown cannot be keyed on the holder's TYPE.
-    let (out, _) = run(
-        "persp_override",
-        &format!(
-            "{PERSP_TREE}\n{}\n",
-            r#"
-            fn main() {
-                let g = Gateway { router: RouterV2 { } };
-                println("r=", g.handle(7));
-            }
-        "#
-        ),
-    );
-    assert!(out.contains("r=207"), "got:\n{out}");
-    assert_eq!(count(&out, "v2 dissolved"), 1, "got:\n{out}");
-    assert_eq!(count(&out, "v1 dissolved"), 0, "got:\n{out}");
-    assert_eq!(count(&out, "gateway dissolved"), 1, "got:\n{out}");
-}
-
 /// GH #895 — the same interface-typed field, reached through a
 /// FACTORY rather than a literal.
 ///
@@ -383,8 +320,7 @@ fn a_factory_built_interface_child_is_reclaimed_with_its_owner() {
     );
 }
 
-/// The ctor-override shape (`65-perspective-ctor-override`'s twin
-/// for an interface slot): the factory returns an impl that is NOT
+/// The ctor-override shape for an interface slot: the factory returns an impl that is NOT
 /// the one the param's default literal names. The reclaim is chosen
 /// per instantiation, so the slot has to carry `Tally`'s teardown pair
 /// and not the declared default's `Churner`'s — the wrong one

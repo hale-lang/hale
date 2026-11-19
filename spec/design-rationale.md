@@ -243,8 +243,7 @@ params {
 (compile-time-evaluable expression) or `: inferred`. The compiler
 treats hand-declared values as priors and `inferred` values as
 to-be-determined (statically by the compiler if possible,
-otherwise at runtime via the lotus runtime's perspective-stability
-machinery).
+otherwise at runtime).
 
 **`params` is also the locus's state.** Following Ruby's `@foo`
 pattern, Hale collapses the params-vs-state distinction. The
@@ -358,7 +357,7 @@ time.
 programs will need NATS, Kafka, or other transports. Declaring
 the bus interface in source means the language can typecheck the
 messages flowing in/out without committing to a specific runtime.
-This also enables the perspective-shipping contract between
+This also enables the parameter-shipping contract between
 fitter and applier binaries — both compile from the same Hale
 source, both have type-level agreement.
 
@@ -539,51 +538,17 @@ a compile error rather than a silent `Ty::Unknown` slip.
 
 ---
 
-## 10. `perspective` declarations
+## 10. `perspective` declarations (removed)
 
-```
-perspective Kernel<T> {
-    params {
-        scale_row: [decimal; 8];
-        sigma_factor: decimal;
-        regime_id: int;
-    }
-    stable_when {
-        // Held to be stable when ≥3 perspectives have validated
-        // and the closure tests at the producing locus pass.
-        return num_validated >= 3 && closure_status == ok;
-    }
-    serialize_as KernelV1;
-}
-```
-
-**Commits to.** In the transport-driven hot-load model (the
-aspirational path — see `semantics.md` § "Perspective hot-load"; the
-*shipped* perspective is the in-process contract + slot), a
-perspective is a serializable parameter bundle within a shared
-compiled-in schema. Both producer (fitter) and consumer (applier)
-compile from the same Hale source, so the type *is* the contract;
-the bus carries only parameter values.
-
-**Why.** This is the fitter/applier split: one process fits
-parameters from observations; another applies them at high
-frequency. The serialization format isn't a separate concern —
-it's the perspective type. Compile-time type agreement between
-binaries means no protocol-versioning handshake; the schema
-version is the source-code version they both compile from.
-
-`stable_when` is a function-level boolean expression that the
-runtime evaluates to decide whether a perspective is ready to
-ship. This puts multi-perspective-stability into the source.
-
-**Considered and rejected.**
-
-- *Perspectives as tagged structs.* Reject; the `stable_when`
-  function and the `serialize_as` annotation are intrinsic to
-  the perspective concept. A tagged struct loses these.
-- *Run-time-only perspective negotiation (versioning protocol).*
-  Reject; the perspective is the contract, the source is the
-  schema, no negotiation needed.
+Hale had a `perspective P { ... }` declaration: a contract of
+bodyless `fn` signatures behind one program-global slot, which
+`reperspective` re-pointed at another implementation while the
+program ran, plus `stable_when` and `serialize_as` members for a
+transport-driven hot-load that was never completed. F.55 removed
+it. A contract is an `interface`, taken as a param (an
+interface-typed param is substitutable at construction), and
+generics carry the implementation's type where it matters. The
+live swap has no replacement. See `decisions.md` F.55.
 
 ---
 

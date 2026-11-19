@@ -2393,7 +2393,7 @@ fn a_return_in_an_on_failure_body_is_built() {
 }
 
 /// `accept(c: T)` with `T` neither a locus nor an interface (a
-/// primitive, a `type`, a perspective): lowering refused it with no
+/// primitive or a `type`): lowering refused it with no
 /// span ("accept() param must be a locus type"). Accepting a locus
 /// lowers; an interface-typed `accept` is the spec's accept bubbling and
 /// is not judged by the check.
@@ -2404,14 +2404,10 @@ fn a_non_locus_accept_param_is_refused_by_the_check_not_the_build() {
     let record = "type T { a: Int = 0; }\n\
                   locus H { params { n: Int = 0; } accept(c: T) { self.n = c.a; } }\n\
                   fn main() { let h = H { }; println(h.n); }\n";
-    let persp = "perspective P { fn x() -> Int; }\n\
-                 locus H { params { n: Int = 0; } accept(c: P) { } }\n\
-                 fn main() { let h = H { }; println(h.n); }\n";
     assert_refused_by_the_check(
         &[
             (prim, "Int", "`accept(c: Int)`: `accept()` takes a locus or an interface"),
             (record, "T", "`accept(c: T)`: `accept()` takes a locus or an interface"),
-            (persp, "P", "`accept(c: P)`: `accept()` takes a locus or an interface"),
         ],
         "non_locus_accept",
     );
@@ -2972,56 +2968,6 @@ fn a_param_default_read_before_its_param_is_set_is_refused_by_the_check_not_the_
     assert_built(
         "locus L { params { a: Int = 1; b: Int = self.a + 1; } run() { println(self.b); } }\nfn main() { L { }; }\n",
         "hale_cb_param_default_order_ok",
-    );
-}
-
-/// A perspective handle reaches the locus behind it through the
-/// contract's methods, and its type is the slot type: a call to a
-/// `fallible` perspective fn (a perspective call cannot carry a failure
-/// yet, F.42), a field stored through the handle, and a bare `P` as a
-/// type each checked clean and the build refused it ("fallible method
-/// call on non-locus value of type Perspective", "non-addressable type
-/// Perspective", "unknown type name `P` in signature"). The same holder
-/// typed `perspective(P)`, calling an infallible contract fn, builds.
-///
-/// Plain string literals, for the reason given above.
-#[test]
-fn a_perspective_handle_misuse_is_refused_by_the_check_not_the_build() {
-    let named = "perspective Named { fn label() -> String; }\n\
-                 locus V1 : serves Named { params { tag: String = \"a\"; } fn label() -> String { return self.tag; } }\n";
-    let store = format!(
-        "{named}locus Holder {{ params {{ p: perspective(Named) = V1 {{ }}; }} fn go(s: String) {{ self.p.tag = s; }} run() {{ self.go(\"b\"); }} }}\n\
-         fn main() {{ Holder {{ }}; }}\n"
-    );
-    let store_param = format!("{named}fn rename(p: perspective(Named), s: String) {{ p.tag = s; }}\nfn main() {{ println(\"x\"); }}\n");
-    let bare = format!("{named}locus Holder {{ params {{ p: Named = V1 {{ }}; }} }}\nfn main() {{ Holder {{ }}; }}\n");
-    let fallible = "perspective Router { fn route(code: Int) -> Int fallible(ClosureViolation); }\n\
-                    locus RouterV1 : serves Router {\n\
-                    params { k: Int = 0; }\n\
-                    closure c { captures: k; epoch inline; }\n\
-                    fn route(code: Int) -> Int fallible(ClosureViolation) { if code > 5 { violate c; } return code + 100; }\n\
-                    }\n\
-                    locus Gateway {\n\
-                    params { router: perspective(Router) = RouterV1 { }; }\n\
-                    on_failure(r: RouterV1, err: ClosureViolation) { println(err.closure); }\n\
-                    run() { println(self.router.route(1) or 0); }\n\
-                    }\n\
-                    fn main() { Gateway { }; }\n";
-    assert_refused_by_the_check(
-        &[
-            (&store, "tag", "`.tag = …` through a `Named` handle: a perspective reaches the locus behind it"),
-            (&store_param, "tag", "`.tag = …` through a `Named` handle: a perspective reaches the locus behind it"),
-            (&bare, "Named", "`Named` is a perspective, and a perspective is held through its slot type"),
-            (fallible, "route", "`Router.route` is `fallible(ClosureViolation)`, and a perspective call cannot carry a failure yet"),
-        ],
-        "perspective_handle",
-    );
-    assert_built(
-        &format!(
-            "{named}locus Holder {{ params {{ p: perspective(Named) = V1 {{ }}; }} run() {{ println(self.p.label()); }} }}\n\
-             fn main() {{ Holder {{ }}; }}\n"
-        ),
-        "hale_cb_perspective_handle_ok",
     );
 }
 
@@ -3805,8 +3751,8 @@ fn the_codegen_feature_gaps_are_refused_by_the_check_not_the_build() {
 
 /// The parity gate's generics family (GH #1963, #1965, #1966, #1974,
 /// #1975, #1976), the half compiled: `or` over a generic fallible fn, a
-/// generic fn at a stdlib record's field, at a perspective, and at an
-/// interface whose value is the locus behind it (a `release`), a
+/// generic fn at a stdlib record's field, at an interface-typed field,
+/// and at an interface whose value is the locus behind it (a `release`), a
 /// bounded intrinsic over a generic fn's result, a specialization first
 /// reached inside a method's `return` of a record, and a bare `0`
 /// substituted for a Duration. Each checks, builds and runs. (The seed-boundary half, GH #1964, is
@@ -3829,12 +3775,12 @@ fn the_generics_divergences_check_build_and_run() {
             "0\n",
         ),
         (
-            "perspective Router { fn health() -> Int; }\n\
-             locus V1 : serves Router { fn health() -> Int { return 7; } }\n\
-             locus App { params { r: perspective(Router) = V1 { }; } fn probe() -> Int { return id(self.r).health(); } }\n\
+            "interface Router { fn health() -> Int; }\n\
+             locus V1 { fn health() -> Int { return 7; } }\n\
+             locus App { params { r: Router = V1 { }; } fn probe() -> Int { return id(self.r).health(); } }\n\
              fn id<T>(x: T) -> T { return x; }\n\
              fn main() { let a = App { }; println(a.probe()); }\n",
-            "generic_at_a_perspective",
+            "generic_at_an_interface_field",
             "7\n",
         ),
         (
@@ -4147,8 +4093,7 @@ fn the_latent_parity_divergences_check_build_and_run() {
 /// the half refused: a call that leaves out a generic fn's defaulted
 /// parameter (in another fn's default too, whose walk drops what it
 /// finds), a method returning nothing handed to a
-/// generic fn in a specialization only, a generic `type` at a perspective or at a
-/// generic locus, a return a specialization does not type, a value of
+/// generic fn in a specialization only, a generic `type` at a generic locus, a return a specialization does not type, a value of
 /// one interface passed where another is expected (read from an array
 /// element, a `let` or a stdlib interface's parameter, all of which the
 /// check typed as unknown), a locus assigned to an interface place, and
@@ -4173,16 +4118,6 @@ fn the_latent_parity_divergences_are_refused_by_the_check_not_the_build() {
                  fn main() { println(read()); }\n",
                 "read",
                 "generic fn `read` takes 1 argument, got 0: hale can't compile",
-            ),
-            (
-                "perspective Router { fn route(code: Int) -> Int; }\n\
-                 locus RouterV1 : serves Router { fn route(code: Int) -> Int { return code + 100; } }\n\
-                 type Box<T> { v: T; }\n\
-                 fn bx<T>(x: T) -> Box<T> { return Box { v: x }; }\n\
-                 locus Gateway { params { router: perspective(Router) = RouterV1 { }; } run() { println(bx(self.router).v.route(1)); } }\n\
-                 fn main() { Gateway { }; }\n",
-                "bx",
-                "generic fn `bx`: this call makes `T` the perspective `Router`, and its signature's `Box<T>` would be a generic `type` holding a perspective slot",
             ),
             (
                 "locus Cache<K, V> { params { cap: Int = 1; } }\n\

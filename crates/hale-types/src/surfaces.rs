@@ -442,7 +442,6 @@ pub fn type_text(te: &TypeExpr) -> String {
         TypeExpr::Tuple(parts, _) => format!("({})", parts.iter().map(type_text).collect::<Vec<_>>().join(", ")),
         TypeExpr::Function { .. } => "fn".to_string(),
         TypeExpr::Projection { .. } => "projection".to_string(),
-        TypeExpr::Perspective { name, .. } => format!("perspective({})", name.name),
     }
 }
 

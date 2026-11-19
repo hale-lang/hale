@@ -42,12 +42,12 @@ const PROGRAM: &str = r##"
     // A handle spelled through an alias, returned by a fn.
     type Child = Kid;
     fn child(k: Kid) -> Child { return k; }
-    perspective Named {
+    interface Named {
         fn label() -> String;
         fn rename(t: String);
     }
-    locus Badge : serves Named {
-        params { name: String = std::str::upper("old-perspective-label"); }
+    locus Badge {
+        params { name: String = std::str::upper("old-interface-label"); }
         fn label() -> String { return self.name; }
         fn rename(t: String) { self.name = t; }
     }
@@ -56,7 +56,7 @@ const PROGRAM: &str = r##"
             f: F = F { };
             pair: (String, Int) = ("", 0);
             k: Kid = Kid { };
-            badge: perspective(Named) = Badge { };
+            badge: Named = Badge { };
         }
         fn put(text: String) {
             self.f = F {
@@ -204,7 +204,7 @@ const PROGRAM: &str = r##"
             while i < 50 { c.rename(std::str::upper("pad-" + to_string(i))); i = i + 1; }
             return held;
         }
-        fn through_perspective() -> String {
+        fn through_interface() -> String {
             let held = self.badge.label();
             let mut i = 0;
             while i < 50 { self.badge.rename(std::str::upper("new-label-" + to_string(i))); i = i + 1; }
@@ -240,7 +240,7 @@ const PROGRAM: &str = r##"
         println("in_place=" + h.in_place());
         h.k.tag_it(std::str::upper("old-aliased-payload"));
         println("aliased_handle=" + h.aliased_handle());
-        println("through_perspective=" + h.through_perspective());
+        println("through_interface=" + h.through_interface());
         h.put(std::str::upper("old-argument-payload"));
         println("operand_arg=" + h.operand_arg());
         h.put(std::str::upper("old-argument-payload"));
@@ -297,7 +297,7 @@ fn a_binding_held_across_a_replace_reads_the_old_value() {
         "kid=OLD",
         "in_place=OLD",
         "aliased_handle=OLD-ALIASED-PAYLOAD\n",
-        "through_perspective=OLD-PERSPECTIVE-LABEL\n",
+        "through_interface=OLD-INTERFACE-LABEL\n",
         "operand_arg=OLD-ARGUMENT-PAYLOAD!0\n",
         "operand_binary=OLD-ARGUMENT-PAYLOAD0\n",
         "operand_literal=OLD-ARGUMENT-PAYLOAD0/NEW-VALUE-49\n",

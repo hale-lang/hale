@@ -39,7 +39,7 @@ use crate::placement::SiteUniverse;
 
 /// A fn-like declaration's identity (F.40 phase 3, C3): the site the mint
 /// gave the declaration (a fn, a method, a lifecycle hook, a mode, a
-/// failure handler, a perspective's fn), as the universe that minted it
+/// failure handler), as the universe that minted it
 /// and its index there. One counter numbers every seed of a universe, so
 /// the index names the site in it, and a reader holding a declaration's
 /// `NodeId` names its row without the snapshot. The stdlib's analysis
@@ -1391,7 +1391,7 @@ pub struct AllocSummary {
 
 /// A body of the program the reveal rule reads (`secret_reveal`) that is
 /// no fn's row: an `on_failure` handler, a params block's initializers, a
-/// constant's value, a `birth_check`, a perspective's members, a
+/// constant's value, a `birth_check`, a
 /// synthesized hook, each wherever it is declared (a `module { }`'s
 /// included), and every subexpression a walk does not descend into (a
 /// callee that is no name). Each is walked as a row is, and kept
@@ -1403,12 +1403,11 @@ pub struct AllocSummary {
 #[derive(Debug, Clone)]
 pub struct DeclarationBody {
     /// The declaration the body is a member of, by its site: the locus
-    /// for its `on_failure` or params, the perspective for its fn, the
+    /// for its `on_failure` or params, the
     /// declaration of the body a subexpression sits in.
     pub declaration: SiteId,
     /// What the body is (`on_failure`, `params`, `const`, `birth_check`,
-    /// `stable_when`, `fn` (a perspective's), `lifecycle` (a synthesized
-    /// hook), `subexpression`).
+    /// `lifecycle` (a synthesized hook), `subexpression`).
     pub position: &'static str,
     pub summary: FnSummary,
 }
@@ -3803,10 +3802,6 @@ pub fn summarize_within(
         BTreeMap::new();
     let mut locus_methods: BTreeMap<String, BTreeMap<String, usize>> =
         BTreeMap::new();
-    // GH #731: a perspective a held slot dispatches through, with the
-    // loci that `serves` it: the same fan-out, its conformers the
-    // declared servers (a designation may name no other).
-    let mut perspective_servers: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (program, ids) in identified {
         for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
@@ -3825,23 +3820,7 @@ pub fn summarize_within(
                             .collect(),
                     );
                 }
-                TopDecl::Perspective(p) => {
-                    ifaces.insert(
-                        p.name.name.clone(),
-                        p.members
-                            .iter()
-                            .filter_map(|m| match m {
-                                PerspectiveMember::Fn(f) => Some((f.name.name.clone(), f.params.len())),
-                                _ => None,
-                            })
-                            .collect(),
-                    );
-                    perspective_servers.entry(p.name.name.clone()).or_default();
-                }
                 TopDecl::Locus(l) => {
-                    for s in &l.serves {
-                        perspective_servers.entry(s.name.clone()).or_default().push(l.name.name.clone());
-                    }
                     let e = locus_methods
                         .entry(l.name.name.clone())
                         .or_default();
@@ -3861,11 +3840,7 @@ pub fn summarize_within(
     let mut conformers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (iname, methods) in &ifaces {
         let mut who: Vec<&str> = Vec::new();
-        let servers = perspective_servers.get(iname);
         for (lname, lmethods) in &locus_methods {
-            if servers.is_some_and(|s| !s.iter().any(|x| x == lname)) {
-                continue;
-            }
             if methods.iter().all(|(m, arity)| {
                 lmethods.get(m).is_some_and(|a| a == arity)
             }) {
@@ -4456,7 +4431,7 @@ fn resolve_param_provenance(
 /// name or, inside its own seed, the name it is declared under; an
 /// importer's `alias::Name` through the bundle's import renames. Starting
 /// a locus reaches all its members. A declaration that is neither a fn
-/// nor a locus (a type, a perspective, a constant) is not reached through
+/// nor a locus (a type, a constant) is not reached through
 /// a call, so the loci it names are started whatever main does.
 ///
 /// Over-approximate by construction: a name is a start whether or not a
@@ -4698,7 +4673,7 @@ fn param_var_types(params: &[Param]) -> Vec<(String, String)> {
 }
 
 /// A body that is no row, as [`member_bodies_of`] finds it: the key it is
-/// walked under (its enclosing locus or perspective, for `self`), what it
+/// walked under (its enclosing locus, for `self`), what it
 /// is, the block (an expression position is a block of its expressions),
 /// and its parameters.
 struct MemberBody<'p> {
@@ -4710,7 +4685,7 @@ struct MemberBody<'p> {
 
 /// GH #540: the expressions of `item` that are evaluated outside every
 /// body the summary walks: each parameter default of a fn, method, hook,
-/// mode, failure handler or perspective fn, each struct field default and
+/// mode or failure handler, each struct field default and
 /// each closure assertion. A default is built where its fn is CALLED, so
 /// a locus literal in one is a store like any other. Each is a block of
 /// its expressions under the key of the member it sits in.
@@ -4756,17 +4731,6 @@ fn default_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(FnKey, Block, &'p [Pa
                 }
             }
         }
-        TopDecl::Perspective(p) => {
-            for m in &p.members {
-                if let PerspectiveMember::Fn(f) = m {
-                    push(
-                        FnKey::method(DeclId::user(f.id), p.name.name.clone(), f.name.name.clone()),
-                        param_defaults(&f.params),
-                        &f.params,
-                    );
-                }
-            }
-        }
         _ => {}
     }
 }
@@ -4776,9 +4740,9 @@ fn default_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(FnKey, Block, &'p [Pa
 /// The rows are a fn's body and a locus's methods, modes and authored
 /// hooks, a `module { }`'s declarations' included; the caller hands in
 /// those too (`flat_decls`). `item` is the checked programs'; each key
-/// names the member's own declaration (a handler's, a perspective fn's, a
-/// synthesized hook's, a constant's), or the locus's or perspective's
-/// for its params, `birth_check` and `stable_when`.
+/// names the member's own declaration (a handler's, a synthesized
+/// hook's, a constant's), or the locus's for its params and
+/// `birth_check`.
 fn member_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(NodeId, MemberBody<'p>)>) {
     let initializers = |pb: &'p ParamsBlock| -> Vec<&'p Expr> {
         pb.params
@@ -4822,23 +4786,6 @@ fn member_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(NodeId, MemberBody<'p>
                         let es = std::iter::once(&bc.cond).chain(&bc.payload).collect();
                         push(l.id, "birth_check", "birth_check", exprs(es, bc.span), &[])
                     }
-                    _ => {}
-                }
-            }
-        }
-        TopDecl::Perspective(p) => {
-            let perspective = &p.name.name;
-            let mut push = |member: NodeId, name: &str, position: &'static str, body: Block, params: &'p [Param]| {
-                let key = FnKey::method(DeclId::user(member), perspective.clone(), name);
-                out.push((p.id, MemberBody { key, position, body, params }))
-            };
-            for m in &p.members {
-                match m {
-                    PerspectiveMember::Fn(f) => push(f.id, &f.name.name, "fn", f.body.clone(), &f.params),
-                    PerspectiveMember::Params(pb) => {
-                        push(p.id, "params", "params", exprs(initializers(pb), pb.span), &[])
-                    }
-                    PerspectiveMember::StableWhen(b) => push(p.id, "stable_when", "stable_when", b.clone(), &[]),
                     _ => {}
                 }
             }
@@ -4955,9 +4902,7 @@ fn locus_param_field_types(
                 // hide; "a hole beats a false proof of absence"
                 // (spec/model.md). The default-literal fallback stays
                 // for a declared name that is neither a locus nor an
-                // interface (a `perspective(P)` slot, whose program-
-                // global 1-1 designation IS the default until
-                // reperspective — tracked separately).
+                // interface.
                 let concrete_default = match &pd.init {
                     ParamInit::Value(Expr::Struct { path, .. }) => path
                         .segments
@@ -4989,18 +4934,7 @@ fn locus_param_field_types(
                     }
                     (Some(d), _) => Some(d.clone()),
                     (None, Some(c)) => Some(c.clone()),
-                    // GH #731: a `perspective(P)` field with no
-                    // initializer holds the program's slot, which the
-                    // designating holder fills: the receiver is the
-                    // perspective itself, and the dispatch pass fans a
-                    // call through it to every locus that `serves P`
-                    // (the only loci a designation may name).
-                    (None, None) => match (&pd.ty, &pd.init) {
-                        (Some(TypeExpr::Perspective { name, .. }), ParamInit::Inferred) => {
-                            Some(renames.get(&name.name).cloned().unwrap_or_else(|| name.name.clone()))
-                        }
-                        _ => None,
-                    },
+                    (None, None) => None,
                 };
                 if let Some(tn) = resolved {
                     m.insert(pd.name.name.clone(), tn);
@@ -5557,8 +5491,7 @@ fn init_is_scalar_or_static(e: &Expr) -> bool {
 /// one of the others; either against a nominal type). A named type
 /// that is a type alias, a generic parameter, or not a declaration the
 /// bundle names as itself (an import alias's spelling) may be anything,
-/// so it is compatible with everything; so is a projection or a
-/// perspective type. Two named types are always compatible: one type
+/// so it is compatible with everything; so is a projection. Two named types are always compatible: one type
 /// has several spellings across seeds.
 struct FnTypes<'a> {
     aliases: &'a BTreeSet<String>,
@@ -5568,7 +5501,7 @@ struct FnTypes<'a> {
 impl FnTypes<'_> {
     fn compatible(&self, a: &TypeExpr, b: &TypeExpr, generic: &dyn Fn(&str) -> bool) -> bool {
         // A named type the bundle declares as itself: a struct, enum,
-        // locus, interface or perspective, or a stdlib path.
+        // locus or interface, or a stdlib path.
         let nominal = |t: &TypeExpr| match t {
             TypeExpr::Named { path, .. } => {
                 let joined = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
@@ -5583,7 +5516,7 @@ impl FnTypes<'_> {
         };
         let open = |t: &TypeExpr| match t {
             TypeExpr::Named { .. } => !nominal(t),
-            TypeExpr::Projection { .. } | TypeExpr::Perspective { .. } => true,
+            TypeExpr::Projection { .. } => true,
             _ => false,
         };
         if open(a) || open(b) {
@@ -5734,22 +5667,6 @@ fn resolve_function_values<'a>(
                                 LocusMember::Capacity(cb) => {
                                     for slot in &cb.slots {
                                         field_tys.entry(slot.name.name.clone()).or_default().push(None);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    TopDecl::Perspective(p) => {
-                        nominal.insert(p.name.name.clone());
-                        for m in &p.members {
-                            match m {
-                                PerspectiveMember::Fn(f) => {
-                                    methods.insert(f.name.name.clone());
-                                }
-                                PerspectiveMember::Params(pb) => {
-                                    for p in &pb.params {
-                                        field_tys.entry(p.name.name.clone()).or_default().push(p.ty.as_ref());
                                     }
                                 }
                                 _ => {}
@@ -7302,10 +7219,6 @@ impl<'a> Walker<'a> {
             }
             Stmt::Return(Some(e), _) => self.walk_diverging_payload(e),
             Stmt::Return(None, _) => {}
-            // Perspectives Phase 2b: `reperspective` instantiates a
-            // fresh impl (bounded, one per swap) — no expression to
-            // walk for the alloc summary.
-            Stmt::Reperspective { .. } => {}
             Stmt::Fail { value, .. } => self.walk_diverging_payload(value),
             Stmt::Send { subject, value, span, .. } => {
                 // GH #265: a publish is an effect the language
@@ -8180,8 +8093,7 @@ impl Reassigned {
             | Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => {}
+            | Stmt::Terminate(_) => {}
         }
     }
 

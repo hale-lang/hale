@@ -20,7 +20,7 @@
 //! Syntactic, over the program as written, and run once per check: it
 //! costs a program nothing at run time.
 
-use hale_syntax::ast::{flat_decls, Block, Expr, LocusMember, PerspectiveMember, Stmt, TopDecl};
+use hale_syntax::ast::{flat_decls, Block, Expr, LocusMember, Stmt, TopDecl};
 use hale_syntax::error::Diag;
 use hale_syntax::Span;
 
@@ -42,13 +42,6 @@ pub(crate) fn stale_route_params_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
                             LocusMember::Mode(md) => body(&md.body, &mut out),
                             LocusMember::Failure(fd) => body(&fd.body, &mut out),
                             _ => {}
-                        }
-                    }
-                }
-                TopDecl::Perspective(pd) => {
-                    for m in &pd.members {
-                        if let PerspectiveMember::Fn(f) = m {
-                            body(&f.body, &mut out);
                         }
                     }
                 }

@@ -48,7 +48,7 @@
 //! - makes a locus (a literal or a factory call): its instance, its slot
 //!   and the GH #815 per-iteration teardown live past the iteration;
 //! - holds a statement whose teardown runs outside the body's view
-//!   (`reperspective`, a recovery op, `violate`, a shared-memory write).
+//!   (a recovery op, `violate`, a shared-memory write).
 //!
 //! Names are resolved lexically: a `let` (or a `for` binder) inside the
 //! body shadows the outside binding from there on, and holds what its
@@ -71,7 +71,7 @@ use hale_syntax::ast::*;
 pub enum OuterLocal {
     /// An Int, Float, Bool, Duration, Decimal or Time: no arena memory.
     Scalar,
-    /// A locus (or interface, perspective) reference: an assignment
+    /// A locus (or interface) reference: an assignment
     /// re-points it, and a store through it copies into that locus.
     Locus,
     /// Anything that may point into an arena.
@@ -289,7 +289,7 @@ impl Walk<'_> {
             Stmt::Block(b) => self.block(b).is_some(),
             Stmt::Expr(e) => self.expr(e).is_some(),
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => true,
-            Stmt::Reperspective { .. } | Stmt::Recovery { .. } | Stmt::Violate { .. } | Stmt::ShmWrite { .. } => false,
+            Stmt::Recovery { .. } | Stmt::Violate { .. } | Stmt::ShmWrite { .. } => false,
         }
     }
 
@@ -658,7 +658,6 @@ mod tests {
                 | Stmt::Fail { .. }
                 | Stmt::Yield(_)
                 | Stmt::Terminate(_)
-                | Stmt::Reperspective { .. }
                 | Stmt::Block(_)
                 | Stmt::Recovery { .. }
                 | Stmt::Violate { .. }

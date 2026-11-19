@@ -56,8 +56,7 @@ locus ApplierL {
 
     fn on_kernel(k: Kernel) {
         // Hot-load: replace current kernel atomically. Per
-        // F.7 and the perspective hot-load mechanism, the
-        // swap is torn-read-free.
+        // F.7, the swap is torn-read-free.
         self.current_kernel = k;
         self.kernels_received = self.kernels_received + 1;
     }

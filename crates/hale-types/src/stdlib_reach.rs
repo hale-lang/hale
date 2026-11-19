@@ -12,7 +12,7 @@
 //! reached item (the program's own first) names:
 //!
 //! - a declaration's own name: a fn, a locus, a type, an interface, a
-//!   perspective, a topic, a constant, a unit. A call into the stdlib is
+//!   topic, a constant, a unit. A call into the stdlib is
 //!   to a fn by its name, or to a method of a value whose type some
 //!   reached item names (a parameter's, a field's, a return's, a
 //!   literal's), so the locus declaring the method is reached through
@@ -23,8 +23,8 @@
 //!   the handle is sugar for the namespace's fn (`f.write_line(x)` is
 //!   `std::io::file::write_line(f, x)`), so every name a reached item
 //!   spells is tried as one;
-//! - a method named like one of an interface's or a perspective's, of
-//!   one reached or declared by the program: a call through either fans
+//! - a method named like one of an interface's, of
+//!   one reached or declared by the program: a call through one fans
 //!   out to every locus declaring a method of the name.
 //!
 //! Reaching a locus reaches every member, hook, mode and handler it
@@ -43,7 +43,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::OnceLock;
 
-use hale_syntax::ast::{BusMember, LocusMember, PerspectiveMember, Program, TopDecl};
+use hale_syntax::ast::{BusMember, LocusMember, Program, TopDecl};
 use hale_syntax::names::{for_each_spelled_in_item, Spelled};
 
 /// A set of the stdlib analysis copy's top-level items, by their index in
@@ -92,13 +92,12 @@ impl StdlibReach {
         for p in programs {
             for item in hale_syntax::ast::flat_decls(&p.items) {
                 // The program's own bus handlers are delivered to as the
-                // stdlib's are, and its interfaces and perspectives
-                // dispatch to every method of their methods' names.
+                // stdlib's are, and its interfaces dispatch to
+                // every method of their methods' names.
                 let mut members: Vec<&str> = Vec::new();
                 match item {
                     TopDecl::Locus(l) => members.extend(handler_names(l)),
                     TopDecl::Interface(i) => members.extend(i.methods.iter().map(|m| m.name.name.as_str())),
-                    TopDecl::Perspective(p) => members.extend(perspective_fns(p)),
                     _ => {}
                 }
                 for m in members {
@@ -144,8 +143,8 @@ impl StdlibReach {
 }
 
 /// What one item of the copy names: the items it refers to (a
-/// declaration's name, a path, the methods of its interfaces' and
-/// perspectives' method names) and the names it spells (for the handle
+/// declaration's name, a path, the methods of its interfaces'
+/// method names) and the names it spells (for the handle
 /// rule). Read the first time a closure reaches the item, so a program
 /// pays for the items it reaches, not for every one of the copy's.
 #[derive(Default)]
@@ -161,8 +160,7 @@ struct Index {
     /// A declaration's name → the items declaring it (a module's
     /// declarations are its item's).
     declares: HashMap<&'static str, Vec<usize>>,
-    /// A member fn's name → the items declaring one (a locus's or a
-    /// perspective's).
+    /// A member fn's name → the items declaring one (a locus's).
     methods: HashMap<&'static str, Vec<usize>>,
     /// A public path → the mangled name it is the spelling of.
     renames: HashMap<&'static [&'static str], &'static str>,
@@ -205,11 +203,6 @@ fn index() -> &'static Index {
                             if let LocusMember::Fn(f) = m {
                                 note(&mut methods, &f.name.name, i);
                             }
-                        }
-                    }
-                    TopDecl::Perspective(p) => {
-                        for f in perspective_fns(p) {
-                            note(&mut methods, f, i);
                         }
                     }
                     _ => {}
@@ -282,7 +275,6 @@ impl Index {
             for d in hale_syntax::ast::flat_decls(std::slice::from_ref(item)) {
                 let dispatched: Vec<&str> = match d {
                     TopDecl::Interface(it) => it.methods.iter().map(|m| m.name.name.as_str()).collect(),
-                    TopDecl::Perspective(p) => perspective_fns(p).collect(),
                     _ => Vec::new(),
                 };
                 for m in dispatched {
@@ -308,21 +300,12 @@ fn declared_name(d: &TopDecl) -> Option<&str> {
     Some(match d {
         TopDecl::Fn(x) => &x.name.name,
         TopDecl::Locus(x) => &x.name.name,
-        TopDecl::Perspective(x) => &x.name.name,
         TopDecl::Interface(x) => &x.name.name,
         TopDecl::Type(x) => &x.name.name,
         TopDecl::Topic(x) => &x.name.name,
         TopDecl::Const(x) => &x.name.name,
         TopDecl::Unit(x) => &x.name.name,
         _ => return None,
-    })
-}
-
-/// A perspective's member fns, by name.
-fn perspective_fns(p: &hale_syntax::ast::PerspectiveDecl) -> impl Iterator<Item = &str> {
-    p.members.iter().filter_map(|m| match m {
-        PerspectiveMember::Fn(f) => Some(f.name.name.as_str()),
-        _ => None,
     })
 }
 
@@ -448,22 +431,6 @@ mod tests {
         for (path, mangled) in hale_stdlib::PATH_RENAMES {
             assert_eq!(path.first(), Some(&"std"), "`{mangled}`'s public path");
         }
-    }
-
-    /// The copy declares no perspective: a perspective's fns are no rows
-    /// of the allocation summary, so the summary's reach reads loci and
-    /// fns alone (`summarize_within`'s out-of-reach declarations). A
-    /// perspective added to the stdlib is added there too.
-    #[test]
-    fn the_copy_declares_no_perspective() {
-        let program = crate::stdlib_bodies::program().expect("the stdlib parses");
-        let perspectives: Vec<&str> = hale_syntax::ast::flat_decls(&program.items)
-            .filter_map(|d| match d {
-                TopDecl::Perspective(p) => Some(p.name.name.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(perspectives.is_empty(), "the stdlib declares {perspectives:?}");
     }
 
     /// A program reaches what it names and no more: hello world reaches

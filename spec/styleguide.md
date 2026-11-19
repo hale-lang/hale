@@ -985,8 +985,7 @@ this list — run the tool:
   trailing operator) get one level.
 - Binary operators spaced; unary `-`/`!` tight; `.`/`::`/`..`
   tight; nothing inside `(` `)` `[` `]`; literal braces spaced
-  (`Rec { key: 1 }`, `{ }`); `:` tight-left except the spaced
-  `locus X : serves P` conformance colon; generics tight
+  (`Rec { key: 1 }`, `{ }`); `:` tight-left; generics tight
   (`Holder<Int>`); lifecycle parens tight (`run()`).
 - Blank lines collapse to at most one; no alignment padding
   (`let x   = 1;` becomes single-spaced — don't build alignment

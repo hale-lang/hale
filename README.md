@@ -169,17 +169,8 @@ This isn't aspirational: the same source runs as a test, one binary, or a
 mesh of binaries wired over sockets and shared memory, with the loci
 themselves oblivious to how they're deployed. Only `main` changes.
 
-You can also redeploy a system **while it runs.** A `perspective` is a live,
-swappable handle to a contract; `reperspective` re-points it at a new
-implementation with a single atomic store: hot code-swap at pointer-flip
-cost, no restart, the running state carried across:
-
-```hale
-reperspective self.router as RouterV2;   // every caller sees V2 on its next call
-```
-
-`topology { }` to describe the machine, `placement { }` to map components
-onto its cores and memory, `reperspective` to redeploy them live: Kubernetes-shaped, in a single address space, at nanosecond cost.
+`topology { }` describes the machine and `placement { }` maps components
+onto its cores and memory: Kubernetes-shaped, in a single address space.
 
 It all comes from one idea, **you declare intent and the compiler picks
 the mechanism**, applied on every axis where other languages make you

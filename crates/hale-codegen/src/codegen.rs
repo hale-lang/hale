@@ -190,19 +190,6 @@ pub(crate) enum CodegenTy {
     /// dispatch loads vtable[i] and indirect-calls with data
     /// as the implicit self arg.
     Interface(String),
-    /// Phase 2a (perspectives): a `perspective(P)` slot handle.
-    /// The string carries the perspective contract name; the
-    /// contract's method order lives on the `perspective` AST
-    /// decl. Lowered as a single `ptr` at the LLVM level (the
-    /// current impl's self pointer, stored in the holder's field
-    /// for ownership/teardown). Dispatch does NOT read the field
-    /// — it loads the program-global slot `__persp.<P>` (a
-    /// `{ i8* data, i8* vtable }` reusing the interface fat-pointer
-    /// layout) so every holder funnels through one indirection.
-    /// Designation (a `perspective(P) = Impl { }` field default)
-    /// sets that global slot; Phase 2b `reperspective` re-points
-    /// it with one atomic store.
-    Perspective(String),
     /// F.22 capacity-slot cell handle. `acquire()` / `alloc()`
     /// return one of these; `release(cell)` / `free(cell)`
     /// accept one. The boxed `CodegenTy` is the cell's element
@@ -257,7 +244,6 @@ impl std::fmt::Display for CodegenTy {
             | CodegenTy::TypeRef(n)
             | CodegenTy::Enum(n)
             | CodegenTy::Interface(n) => f.write_str(n),
-            CodegenTy::Perspective(n) => write!(f, "perspective({n})"),
             CodegenTy::Array(elem, n) => write!(f, "[{elem}; {n}]"),
             CodegenTy::Tuple(parts) => write!(f, "({})", list(parts)),
             CodegenTy::FnPtr { args, ret } => match ret {
@@ -848,7 +834,6 @@ fn stdlib_decl_names() -> &'static std::collections::HashSet<String> {
                 TopDecl::Fn(f) => Some(f.name.name.clone()),
                 TopDecl::Locus(l) => Some(l.name.name.clone()),
                 TopDecl::Type(t) => Some(t.name.name.clone()),
-                TopDecl::Perspective(p) => Some(p.name.name.clone()),
                 TopDecl::Const(c) => Some(c.name.name.clone()),
                 TopDecl::Interface(i) => Some(i.name.name.clone()),
                 _ => None,
@@ -2200,9 +2185,6 @@ fn build_resolved_lowered(
         anchor_record_slot: None,
         reserve_child_next: None,
         reserve_exit_slots: Vec::new(),
-        perspectives_holdable: BTreeSet::new(),
-        perspectives_held: BTreeMap::new(),
-        perspectives_designated: BTreeSet::new(),
         placement_for_field: None,
         numa_node_for_next_locus_instantiation: None,
         params_init_self: None,
@@ -4962,7 +4944,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// GH #921 A3, commit 2: the owner of a locus literal codegen
     /// SYNTHESISES, stated at the site because there is no source
     /// expression for a table row to key on — the `@export`
-    /// singleton's prelude, a `reperspective` swap, the `bindings { }`
+    /// singleton's prelude, the `bindings { }`
     /// transport / adapter / codec preludes. One-shot, taken at the
     /// top of `lower_locus_instantiation` beside `owner_site`.
     pub(crate) declared_owner: Option<crate::ownership::Owner>,
@@ -5016,17 +4998,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// a slot still holds (`emit_frame_teardown`), which is a scope whose
     /// construction an initializer's propagated failure left part-way.
     pub(crate) reserve_exit_slots: Vec<(inkwell::values::FunctionValue<'ctx>, PointerValue<'ctx>)>,
-    /// GH #731: the perspectives some declared holder may hold WITHOUT
-    /// designating (`p: perspective(P);`). Filled as the loci are
-    /// declared, so every call through one of them — lowered later —
-    /// checks the slot before it dispatches.
-    pub(crate) perspectives_holdable: BTreeSet<String>,
-    /// GH #731: the perspectives a lowered instantiation holds without
-    /// designating, each with its first such field as `Locus.field`.
-    pub(crate) perspectives_held: BTreeMap<String, String>,
-    /// GH #731: the perspectives a lowered instantiation designates
-    /// (a `= Impl { }` default or a constructor override).
-    pub(crate) perspectives_designated: BTreeSet<String>,
     /// F.31 (2026-05-23): the placement a `placement { }` entry
     /// gives one field, as `(entry, class)`.
     ///
@@ -5313,7 +5284,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     pub(crate) current_fn_skip_exit_drain: bool,
     /// Static drain elision (2026-08-03): true when the merged
     /// program can never enqueue a bus cell (no topics, no bus
-    /// blocks, no bindings, no accepts, no perspectives) — every
+    /// blocks, no bindings, no accepts) — every
     /// emitted drain would be a no-op, so `emit_bus_drain` /
     /// `emit_pinned_mailbox_drain_pending` emit nothing. Computed
     /// once by the frontend (`hale_types::bus_inert`, on the lowering
@@ -5924,8 +5895,7 @@ fn count_self_fields_in_stmt(
             count_self_fields_in_block(body, counts, depth);
         }
         Stmt::Expr(e) => count_self_fields_in_expr(e, counts, depth),
-        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_)
-        | Stmt::Reperspective { .. } => {}
+        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
     }
 }
 
@@ -6383,15 +6353,15 @@ pub(crate) struct LocusInfo<'ctx> {
     /// position within `__locus_ref_owned_mask`. Built in
     /// declaration order over the locus's params (filtering on
     /// the field types that can HOLD a locus — `LocusRef`, and,
-    /// since GH #871, `Interface` / `Perspective`). Used by the
+    /// since GH #871, `Interface`). Used by the
     /// cascade emitters to branch on ownership and by the
     /// field-init loop to set the bit when the initializing
     /// expression produced a parent-owned locus literal.
     pub(crate) locus_ref_bit_per_field: BTreeMap<String, u32>,
     /// GH #871: index of the synthetic `__owned_child_reclaim_<f>:
     /// ptr` field, one per param field whose declared type carries
-    /// a locus WITHOUT naming it — an `interface` slot or a
-    /// `perspective(P)` handle. Keys are those field names.
+    /// a locus WITHOUT naming it — an `interface` slot. Keys are
+    /// those field names.
     ///
     /// The cascade tears a child down by calling its
     /// `__reclaim_<Impl>`, and for a `LocusRef` field the impl is
@@ -6754,12 +6724,6 @@ pub(crate) enum DefaultInit {
     /// `lower_locus_instantiation` errors with a clear message
     /// otherwise.
     Required,
-    /// GH #731 (dna/FRICTION.md F.4): a `perspective(P)` param with no
-    /// initializer HOLDS the program's slot without designating it.
-    /// Omitted at the instantiation, the field stores no impl (null),
-    /// owns nothing and leaves `__persp.<P>` as the designating holder
-    /// set it; calls through the field dispatch through that slot.
-    HoldsSlot,
 }
 
 /// Compiled user `type` (a plain data record). No methods, no
@@ -8224,7 +8188,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///
     /// Wire format (per F-design "compile-time agreement, no
     /// runtime negotiation"; versioning is open-question #13's
-    /// `serialize_as TypeV1` future, NOT in m70):
+    /// future, NOT in m70):
     /// - Field order = declared order. No padding on wire.
     /// - Int / Float / Bool / Time / Duration: 8 bytes,
     ///   little-endian (matches in-memory layout on x86_64).
@@ -8603,10 +8567,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// C32 (line 12): the recorded teardown of an owned child behind a
-    /// contract-typed field (an `interface` slot, a `perspective(P)`
-    /// handle), for its impl `L`: a constant pair `{ __drain_<L>,
-    /// __reclaim_drained_<L> }` the instantiation stores in the field's
-    /// slot, so the owner's drain cascade drains the child before the
+    /// contract-typed field (an `interface` slot), for its impl `L`: a
+    /// constant pair `{ __drain_<L>, __reclaim_drained_<L> }` the
+    /// instantiation stores in the field's slot, so the owner's drain cascade drains the child before the
     /// owner's own drain, as every owned field is, and its dissolve
     /// cascade runs the rest of the child's spine after the owner's
     /// dissolve. Declared on first use; the bodies are emitted by
@@ -11392,23 +11355,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let _ = ptr_t;
         self.in_main = false;
         self.current_fn = None;
-        // GH #731: a perspective held without a designation needs one
-        // somewhere in the program; with none, every call through it
-        // would reach the empty slot.
-        for (persp, holder) in &self.perspectives_held {
-            if !self.perspectives_designated.contains(persp) {
-                return Err(CodegenError::Unsupported(format!(
-                    "perspective `{}`: `{}` holds its slot without designating it, \
-                     and nothing in the program designates it — give one holder \
-                     an impl (`{}: perspective({}) = Impl {{ }}` or a constructor \
-                     override)",
-                    persp,
-                    holder,
-                    holder.rsplit('.').next().unwrap_or(holder),
-                    persp
-                )));
-            }
-        }
         // The unwind registry's teardowns, once every body has lowered
         // and whether an assertion outside main's frame was lowered is
         // known (`locus/unwind.rs`); before the contract teardowns, whose
@@ -13945,7 +13891,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             export: template.export,
             generics: Vec::new(),
             annotations: template.annotations.clone(),
-            serves: template.serves.clone(),
             form: template.form.clone(),
             locality: template.locality.clone(),
             bounded: template.bounded,
@@ -14235,15 +14180,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     span,
                 })
             }
-            // A perspective (GH #1974): the specialization takes and hands
-            // back the `perspective(P)` handle, as a fn declared over
-            // `perspective(P)` does.
-            Ty::Named(n)
-                if hale_syntax::ast::flat_decls(&self.program.items)
-                    .any(|d| matches!(d, TopDecl::Perspective(p) if p.name.name == *n)) =>
-            {
-                Ok(TypeExpr::Perspective { name: Ident::new(n.clone(), span), span })
-            }
             // The check refuses a generic call whose argument names no
             // monomorph (an array, a tuple, a fn type), at the call
             // (`refuse_unnameable_generic_args`); this is that rule for a
@@ -14419,7 +14355,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 TypeExpr::Tuple(parts, _) => parts.iter().any(|t| mentions_parameter(t, names)),
                 TypeExpr::Function { params, ret, .. } => params.iter().any(|t| mentions_parameter(t, names))
                     || ret.as_ref().is_some_and(|t| mentions_parameter(t, names)),
-                TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+                TypeExpr::Primitive(..) => false,
             }
         }
         // GH #884: module nesting flattened — a generic
@@ -14531,10 +14467,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         requests,
                     )?;
                 }
-                TopDecl::Perspective(_) | TopDecl::Module(_) => {
-                    /* Perspective type-bearing positions could grow
-                     * into this when that feature lands in v0.1
-                     * codegen. A Module carries nothing of its own:
+                TopDecl::Module(_) => {
+                    /* A Module carries nothing of its own:
                      * GH #884 made the loop above flatten it, so its
                      * declarations have already been visited as
                      * themselves by the time this arm sees the node. */
@@ -14848,9 +14782,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 requests,
             )?,
             TypeExpr::Primitive(_, _)
-            | TypeExpr::Function { .. }
-            // Phase 2a: `perspective(P)` carries no generic args.
-            | TypeExpr::Perspective { .. } => {}
+            | TypeExpr::Function { .. } => {}
         }
         Ok(())
     }
@@ -15144,7 +15076,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | Some(CodegenTy::Tuple(_))
                 | Some(CodegenTy::FnPtr { .. })
                 | Some(CodegenTy::Interface(_))
-                | Some(CodegenTy::Perspective(_))
                 | Some(CodegenTy::Cell(_, _))
                 | Some(CodegenTy::Drain(_)) => self
                     .context
@@ -15747,13 +15678,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Bounded(_, _) => {
                 return Err(CodegenError::Unsupported(format!(
                     "@ffi fn `{}` param `{}`: bounded[T; N] has no \
-                     portable C mapping",
-                    fn_name, param_name
-                )));
-            }
-            CodegenTy::Perspective(_) => {
-                return Err(CodegenError::Unsupported(format!(
-                    "@ffi fn `{}` param `{}`: a perspective handle has no \
                      portable C mapping",
                     fn_name, param_name
                 )));
@@ -20499,7 +20423,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     && matches!(target.tail[0], LValueSeg::Field(_))
                 {
                     // GH #967: a handle written into a contract-typed
-                    // field (`interface` / `perspective(P)`) is a
+                    // field (`interface`) is a
                     // BORROW — F.39's rule for a name in a field
                     // initialiser, applied to assignment. The child
                     // the field owned until now is reclaimed here
@@ -20514,7 +20438,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if matches!(op, AssignOp::Eq)
                         && matches!(
                             slot_ty,
-                            CodegenTy::Interface(_) | CodegenTy::Perspective(_)
+                            CodegenTy::Interface(_)
                         )
                     {
                         if let LValueSeg::Field(f) = &target.tail[0] {
@@ -20714,10 +20638,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         recovery_word(*other)
                     ))),
                 }
-            }
-            Stmt::Reperspective { field, impl_name, .. } => {
-                self.lower_reperspective(&field.name, &impl_name.name, scope)?;
-                Ok(BlockEnd::Open)
             }
             Stmt::Send { subject, value, or_disposition, .. } => {
                 self.lower_send(subject, value, or_disposition.as_ref(), scope, None)?;
@@ -21861,7 +21781,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::LocusRef(_)
             | CodegenTy::FnPtr { .. }
             | CodegenTy::Interface(_)
-            | CodegenTy::Perspective(_)
             | CodegenTy::Cell(..)
             | CodegenTy::Drain(_) => PrintShape::NoTextForm,
         }
@@ -25758,7 +25677,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Array(_, _)
             | CodegenTy::Tuple(_)
             | CodegenTy::Interface(_)
-            | CodegenTy::Perspective(_)
             | CodegenTy::Cell(_, _)
             | CodegenTy::Drain(_) => {
                 self.context.ptr_type(AddressSpace::default()).into()
@@ -29284,13 +29202,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     return Err(CodegenError::Unsupported(format!(
                         "println of the locus `{}`: a locus has no printed form; print \
                          its fields",
-                        name
-                    )));
-                }
-                CodegenTy::Perspective(name) => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "println of a perspective handle (`{}`) — call a \
-                         contract method instead",
                         name
                     )));
                 }
@@ -33203,21 +33114,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 scope,
             );
         }
-        // Phase 2a: dispatch through a perspective's global slot.
-        // Unlike an interface (a per-value fat pointer), a
-        // perspective is 1-1 with ONE program-global slot that every
-        // holder funnels through — so we ignore the receiver value
-        // and load `__persp.<P>`. That is what makes a Phase-2b swap
-        // a single atomic store that redirects the whole program.
-        if let CodegenTy::Perspective(persp_name) = &recv_ty {
-            let persp_name = persp_name.clone();
-            return self.lower_perspective_method_call(
-                &persp_name,
-                method_name,
-                args,
-                scope,
-            );
-        }
         // v1.x-8: `record.field(args)` where `field` is a
         // fn-pointer field on a user struct lowers as a struct
         // GEP-load of the fn pointer followed by an indirect
@@ -34342,303 +34238,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some((v, rt))
             }
         })
-    }
-
-    /// Phase 2a: dispatch `holder.method(args)` through perspective
-    /// `P`'s program-global slot `__persp.<P>` = `{ data, vtable }`.
-    /// Load data + vtable from the global (not from the receiver —
-    /// every holder shares the one slot), GEP the vtable at the
-    /// contract-method index, and indirect-call with data as the
-    /// implicit self. Same mechanics as `lower_iface_method_call`;
-    /// only the source of `{data, vtable}` differs (a loaded global
-    /// vs a per-value fat pointer). The typechecker has verified the
-    /// impl conforms, so the vtable slot's callee matches the
-    /// contract signature.
-    fn lower_perspective_method_call(
-        &mut self,
-        persp_name: &str,
-        method_name: &str,
-        args: &[Expr],
-        scope: &Scope<'ctx>,
-    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
-        // Contract method order + the target method's signature.
-        // GH #884: module nesting flattened.
-        let persp_decl = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-                TopDecl::Perspective(p) if p.name.name == persp_name => {
-                    Some(p.clone())
-                }
-                _ => None,
-            })
-            .ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "perspective `{}` not declared",
-                    persp_name
-                ))
-            })?;
-        let contract_fns: Vec<&FnDecl> = persp_decl
-            .members
-            .iter()
-            .filter_map(|m| match m {
-                PerspectiveMember::Fn(f) => Some(f),
-                _ => None,
-            })
-            .collect();
-        let (method_idx, method_fn) = contract_fns
-            .iter()
-            .enumerate()
-            .find(|(_, f)| f.name.name == method_name)
-            .map(|(i, f)| (i, (*f).clone()))
-            .ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "perspective `{}` has no contract method `{}`",
-                    persp_name, method_name
-                ))
-            })?;
-        if args.len() != method_fn.params.len() {
-            return Err(CodegenError::Unsupported(format!(
-                "{}.{} (perspective): expected {} arg(s), got {}",
-                persp_name,
-                method_name,
-                method_fn.params.len(),
-                args.len()
-            )));
-        }
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let fat_struct_ty = self.iface_fat_struct_ty();
-        let slot = self.ensure_perspective_slot(persp_name);
-        let slot_ptr = slot.as_pointer_value();
-        // Load data (impl self) + vtable from the global slot.
-        let data_slot_ptr = self
-            .builder
-            .build_struct_gep(fat_struct_ty, slot_ptr, 0, "persp.data.gep")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let data_ptr = self
-            .builder
-            .build_load(ptr_t, data_slot_ptr, "persp.data")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
-        let vtable_slot_ptr = self
-            .builder
-            .build_struct_gep(fat_struct_ty, slot_ptr, 1, "persp.vtable.gep")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let vtable_ptr = self
-            .builder
-            .build_load(ptr_t, vtable_slot_ptr, "persp.vtable")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
-        // GH #731: a perspective some holder holds without designating
-        // can be called before anything designated it. The call stops
-        // the program with the perspective named instead of jumping
-        // through an empty slot. A perspective every holder designates
-        // pays nothing: its slot is set before any holder can call.
-        if self.perspectives_holdable.contains(persp_name) {
-            self.emit_perspective_slot_check(persp_name, vtable_ptr, method_name)?;
-        }
-        let vtable_ty = ptr_t.array_type(contract_fns.len() as u32);
-        let i32_t = self.context.i32_type();
-        let zero = i32_t.const_zero();
-        let idx = i32_t.const_int(method_idx as u64, false);
-        let fn_slot_ptr = unsafe {
-            self.builder
-                .build_in_bounds_gep(
-                    vtable_ty,
-                    vtable_ptr,
-                    &[zero, idx],
-                    &format!("persp.{}.{}.slot", persp_name, method_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-        };
-        let fn_ptr = self
-            .builder
-            .build_load(ptr_t, fn_slot_ptr, "persp.fn")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_pointer_value();
-        // Lower args (self first), matching the contract signature.
-        let mut llvm_args: Vec<BasicMetadataValueEnum<'ctx>> =
-            Vec::with_capacity(args.len() + 1);
-        let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
-            Vec::with_capacity(args.len() + 1);
-        llvm_args.push(data_ptr.into());
-        llvm_param_tys.push(ptr_t.into());
-        for (i, a) in args.iter().enumerate() {
-            let (v, ty) = self.lower_expr(a, scope)?;
-            let want = self.type_expr_to_codegen_ty(&method_fn.params[i].ty)?;
-            let (v, ty) = if view_coerces_to(&ty, &want) {
-                (self.unpack_view_if_needed(v, &ty)?, want.clone())
-            } else {
-                (v, ty)
-            };
-            if ty != want {
-                return Err(CodegenError::Unsupported(format!(
-                    "{}.{} (perspective) arg {} type mismatch: expected {}, got {}",
-                    persp_name, method_name, i, want, ty
-                )));
-            }
-            llvm_args.push(v.into());
-            llvm_param_tys.push(self.llvm_basic_type(&want).into());
-        }
-        let ret_codegen_ty = match &method_fn.ret {
-            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
-            None => None,
-        };
-        let fn_ty = match &ret_codegen_ty {
-            None => self.context.void_type().fn_type(&llvm_param_tys, false),
-            // Any value type, a view's `{ptr, i64}` struct included (GH #1942).
-            Some(rt) => self.llvm_basic_type(rt).fn_type(&llvm_param_tys, false),
-        };
-        self.emit_set_caller_arena_for(args, scope)?;
-        let call = self
-            .builder
-            .build_indirect_call(
-                fn_ty,
-                fn_ptr,
-                &llvm_args,
-                &format!("persp.{}.{}.call", persp_name, method_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok(match ret_codegen_ty {
-            None => None,
-            Some(rt) => {
-                let v = call
-                    .try_as_basic_value()
-                    .left()
-                    .expect("non-void perspective dispatch yields a value");
-                Some((v, rt))
-            }
-        })
-    }
-
-    /// Perspectives: lower `reperspective self.<field> as <Impl>;` —
-    /// the live redeploy. Phase 3 makes this a STATE-PRESERVING swap
-    /// (the note's layout-identity "zero migration"): code and state
-    /// are already separate — the slot's `data` pointer is the state
-    /// (an arena-backed struct), the `vtable` is the code. So the
-    /// swap is a single store of the new impl's vtable into the
-    /// slot's vtable half, keeping `data` untouched:
-    ///
-    ///   slot.vtable = vtable(Impl, P)   // redirect every call site
-    ///   slot.data   = unchanged         // the running state carries
-    ///
-    /// The typechecker guarantees all impls of the perspective share
-    /// one footprint, so the new impl's field offsets land on the
-    /// retained state. No re-instantiation, no fresh birth defaults,
-    /// and nothing to tear down — the old code was never state. (A
-    /// footprint-CHANGING swap is the `migrate` case — rejected at
-    /// typecheck for now.) The holder's field still points at the
-    /// same `data`, so it needs no update.
-    fn lower_reperspective(
-        &mut self,
-        field: &str,
-        impl_name: &str,
-        _scope: &mut Scope<'ctx>,
-    ) -> Result<(), CodegenError> {
-        let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
-            CodegenError::Unsupported(
-                "`reperspective`: no enclosing locus self".into(),
-            )
-        })?;
-        // Resolve the perspective contract P from the field's type.
-        let persp_name = match cs.fields.get(field) {
-            Some((_, CodegenTy::Perspective(p))) => p.clone(),
-            _ => {
-                return Err(CodegenError::Unsupported(format!(
-                    "`reperspective self.{}`: field is not a perspective \
-                     handle",
-                    field
-                )));
-            }
-        };
-        let fat_struct_ty = self.iface_fat_struct_ty();
-        let slot = self.ensure_perspective_slot(&persp_name);
-        let slot_ptr = slot.as_pointer_value();
-
-        // Swap ONLY the vtable half of the slot — the `data` half
-        // (the current impl's live state) is preserved. This is the
-        // pointer flip that redirects every call site to the new
-        // impl's methods while they keep operating on the same state.
-        let vtable = self.ensure_perspective_vtable(impl_name, &persp_name)?;
-        let vt_gep = self
-            .builder
-            .build_struct_gep(fat_struct_ty, slot_ptr, 1, "reperspective.vtable.gep")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(vt_gep, vtable.as_pointer_value())
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // Phase 2c-runtime: re-point the perspective's BUS
-        // subscriptions to the new impl's handlers. The old impl
-        // registered them under `slot.data` (its self ptr); Phase 3
-        // keeps that same `data`, so we tombstone every subscription
-        // on it (`quarantine_self`) and re-register each of the new
-        // impl's subscriptions on the SAME `data`. Published messages
-        // now land on the new impl's handler, operating on the shared
-        // preserved state — the async counterpart of the sync vtable
-        // flip. (A bounded per-swap cost: tombstoned entries are
-        // skipped, not compacted.)
-        let impl_info = self.user_loci.get(impl_name).cloned();
-        if let Some(impl_info) = impl_info {
-            if !impl_info.subscriptions.is_empty() {
-                let ptr_t = self.context.ptr_type(AddressSpace::default());
-                let data_gep = self
-                    .builder
-                    .build_struct_gep(fat_struct_ty, slot_ptr, 0, "reperspective.data.gep")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let data = self
-                    .builder
-                    .build_load(ptr_t, data_gep, "reperspective.data")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .into_pointer_value();
-                let quar = self
-                    .module
-                    .get_function("lotus_bus_quarantine_self")
-                    .expect("lotus_bus_quarantine_self declared");
-                self.builder
-                    .build_call(quar, &[data.into()], "reperspective.bus.deregister")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                // Register the new impl's handlers. Set `current_self`
-                // to the new impl over the shared `data` so a subscribe
-                // key-filter's `self.X` resolves against it.
-                let prev_self = self.current_self.clone();
-                self.current_self = Some(SelfCx {
-                    locus_name: impl_name.to_string(),
-                    struct_ty: impl_info.struct_ty,
-                    self_ptr: data,
-                    fields: impl_info.fields.clone(),
-                });
-                for (subject, handler_name, payload_type, key_filter) in
-                    &impl_info.subscriptions
-                {
-                    let handler_fn =
-                        impl_info.user_methods.get(handler_name).copied().ok_or_else(
-                            || {
-                                CodegenError::Unsupported(format!(
-                                    "reperspective: impl `{}` subscribes `{}` \
-                                     with handler `{}` but no such method",
-                                    impl_name, subject, handler_name
-                                ))
-                            },
-                        )?;
-                    // Match the instantiation path: prefer the
-                    // handler-reclaim wrapper when one was synthesized.
-                    let reg_handler = self
-                        .handler_reclaim_wrappers
-                        .get(&(impl_name.to_string(), handler_name.clone()))
-                        .copied()
-                        .unwrap_or(handler_fn);
-                    self.emit_bus_register(
-                        subject,
-                        data,
-                        reg_handler,
-                        None,
-                        payload_type,
-                        key_filter.as_ref(),
-                    )?;
-                }
-                self.current_self = prev_self;
-            }
-        }
-        Ok(())
     }
 
     /// Lower one closure assertion `left ~~ right within tol` as
@@ -36558,155 +36157,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.context.struct_type(&[ptr_t.into(), ptr_t.into()], false)
     }
 
-    /// Phase 2a: the program-global slot for perspective contract
-    /// `P` — a single `{ i8* data, i8* vtable }` cell (the interface
-    /// fat-pointer layout) that EVERY holder of `perspective(P)`
-    /// funnels through. Zero-initialized; designation
-    /// (`perspective(P) = Impl { }`) stores `{impl_self, vtable}`
-    /// into it, and Phase 2b `reperspective` re-points it with one
-    /// atomic store. Idempotent (get-or-create by name).
-    /// GH #731: stop the program, naming the perspective, when its
-    /// slot holds no impl at a call through it.
-    fn emit_perspective_slot_check(
-        &mut self,
-        persp_name: &str,
-        vtable_ptr: PointerValue<'ctx>,
-        method_name: &str,
-    ) -> Result<(), CodegenError> {
-        let func = self
-            .builder
-            .get_insert_block()
-            .and_then(|b| b.get_parent())
-            .ok_or_else(|| CodegenError::LlvmEmit("perspective call outside a function".into()))?;
-        let empty = self
-            .builder
-            .build_is_null(vtable_ptr, "persp.empty")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let empty_bb = self.context.append_basic_block(func, "persp.empty");
-        let ok_bb = self.context.append_basic_block(func, "persp.designated");
-        self.builder
-            .build_conditional_branch(empty, empty_bb, ok_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder.position_at_end(empty_bb);
-        let i32_t = self.context.i32_type();
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let fflush_fn = self.module.get_function("fflush").expect("fflush declared");
-        self.builder
-            .build_call(fflush_fn, &[ptr_t.const_null().into()], "persp.empty.fflush")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let msg = self.global_string(&format!(
-            "runtime error: perspective `{}`: `{}` was called before anything designated the perspective\n",
-            persp_name, method_name
-        ));
-        let dprintf_fn = self.module.get_function("dprintf").expect("dprintf declared");
-        self.builder
-            .build_call(
-                dprintf_fn,
-                &[i32_t.const_int(2, false).into(), msg.into()],
-                "persp.empty.dprintf",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let exit_fn = self.module.get_function("exit").expect("exit declared");
-        self.builder
-            .build_call(exit_fn, &[i32_t.const_int(1, false).into()], "persp.empty.exit")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_unreachable()
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder.position_at_end(ok_bb);
-        Ok(())
-    }
-
-    pub(crate) fn ensure_perspective_slot(
-        &mut self,
-        persp_name: &str,
-    ) -> inkwell::values::GlobalValue<'ctx> {
-        let global_name = format!("__persp.{}", persp_name);
-        if let Some(g) = self.module.get_global(&global_name) {
-            return g;
-        }
-        let fat_ty = self.iface_fat_struct_ty();
-        let g = self.module.add_global(fat_ty, None, &global_name);
-        g.set_initializer(&fat_ty.const_zero());
-        g.set_linkage(inkwell::module::Linkage::Internal);
-        g
-    }
-
-    /// Phase 2a: the vtable for `(impl_locus, perspective)` — a
-    /// const array of the impl's method pointers in the contract's
-    /// declaration order. Mirrors `ensure_vtable` (interfaces) but
-    /// reads method order from the `perspective` decl's contract
-    /// `fn`s. Idempotent (get-or-create by name).
-    pub(crate) fn ensure_perspective_vtable(
-        &mut self,
-        locus_name: &str,
-        persp_name: &str,
-    ) -> Result<inkwell::values::GlobalValue<'ctx>, CodegenError> {
-        let global_name = format!("__vt.{}.{}", locus_name, persp_name);
-        if let Some(g) = self.module.get_global(&global_name) {
-            return Ok(g);
-        }
-        let method_names = self.perspective_contract_methods(persp_name)?;
-        let info = self.user_loci.get(locus_name).cloned().ok_or_else(|| {
-            CodegenError::Unsupported(format!(
-                "perspective vtable synth: locus `{}` not declared",
-                locus_name
-            ))
-        })?;
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let mut entries: Vec<inkwell::values::PointerValue<'ctx>> =
-            Vec::with_capacity(method_names.len());
-        for method_name in &method_names {
-            let func = info.user_methods.get(method_name).ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "perspective vtable synth: locus `{}` has no method `{}` \
-                     (perspective `{}`)",
-                    locus_name, method_name, persp_name
-                ))
-            })?;
-            entries.push(func.as_global_value().as_pointer_value());
-        }
-        let array_ty = ptr_t.array_type(entries.len() as u32);
-        let init = ptr_t.const_array(&entries);
-        let g = self.module.add_global(array_ty, None, &global_name);
-        g.set_initializer(&init);
-        g.set_linkage(inkwell::module::Linkage::Internal);
-        g.set_constant(true);
-        Ok(g)
-    }
-
-    /// Phase 2a: the contract-method names of perspective `P` in
-    /// declaration order — the bodyless `fn` sigs (`is_stable`,
-    /// synthesized from `stable_when`, is not a contract method
-    /// the impl provides, so it's excluded).
-    pub(crate) fn perspective_contract_methods(
-        &self,
-        persp_name: &str,
-    ) -> Result<Vec<String>, CodegenError> {
-        // GH #884: module nesting flattened.
-        hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-                TopDecl::Perspective(p) if p.name.name == persp_name => Some(
-                    p.members
-                        .iter()
-                        .filter_map(|m| match m {
-                            PerspectiveMember::Fn(f) => {
-                                Some(f.name.name.clone())
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                ),
-                _ => None,
-            })
-            .ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "perspective `{}` not declared",
-                    persp_name
-                ))
-            })
-    }
-
 
     /// Allocate `size` bytes through the lotus region allocator.
     /// 8-byte alignment, matching the natural alignment for every
@@ -37705,10 +37155,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         let prev_arena = self.current_arena_override;
         self.current_arena_override = Some(self_arena);
-        // GH #921 A2: a `reperspective` swap builds the new impl from
-        // the statement, not from a locus literal the pre-pass walked.
+        // GH #921 A2: a reassign builds the new child from the
+        // statement, not from a locus literal the pre-pass walked.
         self.owner_site = Some(crate::ownership::Site::Synthesized(
-            "a `reperspective` swap",
+            "a reassigned child field",
         ));
         self.declared_owner = Some(crate::ownership::Owner::Field {
             owner: crate::ownership::ExprId::DECLARED,
@@ -39344,7 +38794,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// at its activation boundary, which flushes the owner's pending
     /// retires; so does this store, so a free fn storing into a
     /// long-lived locus in a loop reuses the blocks it replaces. A
-    /// handle slot (a child, an interface, a perspective, a cell) is
+    /// handle slot (a child, an interface, a cell) is
     /// stored as it is. The checker refuses such a store into a locus
     /// that may run on another pool (F.31), so the owner's arena is
     /// only ever written from its own thread.
@@ -39469,7 +38919,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             slot_ty,
             CodegenTy::LocusRef(_)
                 | CodegenTy::Interface(_)
-                | CodegenTy::Perspective(_)
                 | CodegenTy::Cell(_, _)
         ) {
             self.builder
