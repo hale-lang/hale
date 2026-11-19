@@ -65,7 +65,7 @@ Two parts of `Shop` will form our external API:
 - **`Shop::on_order`** takes an `OrderRequest` and returns an `OrderResponse`. When added to an `api` surface, this method becomes a callable RPC endpoint. Domain-level rejections (such as insufficient stock returning `order_id: 0`, or a declared `fallible(E)` error type) are returned as structured responses.
 - **`Shipments`** is a published bus topic. When bound to a streaming hub in Step 7, external clients can subscribe to live `Shipment` events.
 
-Note that `App` places `shop` on an `async_io` worker pool (`work`) and runs a sleep loop on the main thread until the process drains, because an `async_io` pool does not keep the process alive by itself.
+Note that `App` places `shop` on an `async_io` worker pool (`work`) and runs a sleep loop on the main thread until the process drains, because an `async_io` pool does not keep the process alive by itself. Once `App` serves an API (step 2), its `run()` parks on the exposure's `wait()` instead.
 
 Run `hale check` to verify the program:
 
@@ -100,7 +100,7 @@ main locus App {
     }
     placement { shop: cooperative(pool = work) where async_io; }
     run() {
-        while !self.draining { std::time::sleep(100ms); }
+        self.sock.wait();
         self.sock.stop();
     }
 }
@@ -111,6 +111,7 @@ Key parameters of `api::serve`:
 - **`unix::Rpc { path: "/tmp/shop.sock" }`**: Binds a Unix domain stream socket at startup. If the socket path cannot be bound, the process exits with a diagnostic.
 - **`as: "counter"`**: Assigns an exposure name within the application.
 - **`bound: 64, on_full: refuse`**: Caps in-flight (accepted but unanswered) requests at 64 and refuses additional requests when full.
+- **`self.sock.wait()`**: Parks the main thread until the exposure stops or the process begins draining, and wakes for each call as it arrives, so a call is answered in the time the handler takes. Write it in place of step 1's sleep loop: a `main locus` that holds an exposure needs nothing else to stay alive, and if it writes no `run()` at all the compiler generates this wait.
 - **`self.sock.stop()`**: Completes in-flight requests, refuses queued requests as `shutting_down`, and closes the listener socket cleanly.
 
 ### Inspecting the Static API Inventory
@@ -545,7 +546,7 @@ main locus App {
         Shipments: self.hub requires: [clerk], bound: 64, on_full: drop_old;
     }
     run() {
-        while !self.draining { std::time::sleep(100ms); }
+        self.sock.wait();
         self.sock.stop();
         self.web.stop();
     }

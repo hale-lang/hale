@@ -1664,11 +1664,13 @@ else it is a `sleep`. A serving `main locus` whose `run()` ends in
 and its cross-pool hops take, not in the next slice of a `sleep` loop. The
 wait never leaves the thread's own scheduling: no thread is added and the
 main thread is still the one that runs main's handlers. A program that
-keeps its own `while !self.draining { sleep(…); }` loop is still correct
-and answers at the latency of its slice, since main's bus queue is
-drained only when its thread next looks at it; a loop that does periodic
-work of its own keeps that loop and gains the park by waiting with
-`h.wait()` only where it has nothing else to do.
+keeps its own `while !self.draining { sleep(…); }` loop answers at the
+same latency since GH #2091: a `sleep` slice on the main thread waits on
+the same wake descriptor, drains main's queue when a call arrives, and
+sleeps on for the rest of the slice (spec/runtime.md § `time::sleep`
+drain semantics). Until then it answered at the latency of its slice,
+100 to 250 ms a call. `h.wait()` stays the shape to write: it says what
+the `run()` waits for, and it ends when the exposure stops.
 
 **Shutdown.** `stop()` (idempotent) closes admission (a request received
 after it is refused `shutting_down`), refuses every queued request

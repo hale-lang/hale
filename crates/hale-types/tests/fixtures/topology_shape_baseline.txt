@@ -730,7 +730,7 @@ crates/hale-codegen/tests/fixtures/examples/87-temp-locus-receiver/main.hl f1f26
 crates/hale-codegen/tests/fixtures/examples/88-async-handler-payload/main.hl 5e87294aa1af82db
 crates/hale-codegen/tests/fixtures/examples/89-nested-locus-teardown/main.hl 1e20bf9abb1fa280
 crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions/main.hl a205f1b04387809c
-crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl 19d63a5e4f6050f0
+crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl 4cffe56d6cd99c32
 crates/hale-codegen/tests/fixtures/examples/93-units/main.hl 8d7c23aa1da55add
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl fc7429933db197c9
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl 3e28431eef6c20e2

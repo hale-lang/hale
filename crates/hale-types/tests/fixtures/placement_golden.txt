@@ -351,7 +351,7 @@ shared	Provider@main3	Provider #349f5211
 shared	Provider@main6	Provider #349f5211
 shared	Provider@main7	Provider #349f5211
 
-== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#8aa694b6
+== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#e43f19fb
 root	App
 domain	pool:work	async_io
 domain	pool:__api_ws	async_io
@@ -8384,6 +8384,11 @@ shared	Proc@main3	Proc #b18b3dc0
 shared	dynamic	sites in the seed #8c882889
 
 == tests/hale/api_serve_test.hl
+shared	Api@main2	Api #a23e2495
+shared	Proc@main1	Proc #b18b3dc0
+shared	dynamic	sites in the seed #8c882889
+
+== tests/hale/api_sleep_loop_latency_test.hl
 shared	Api@main2	Api #a23e2495
 shared	Proc@main1	Proc #b18b3dc0
 shared	dynamic	sites in the seed #8c882889

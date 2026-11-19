@@ -110,7 +110,7 @@ main locus App {
         Shipments: self.hub requires: [clerk], bound: 64, on_full: drop_old;
     }
     run() {
-        while !self.draining { std::time::sleep(100ms); }
+        self.sock.wait();
         self.sock.stop();
         self.web.stop();
     }

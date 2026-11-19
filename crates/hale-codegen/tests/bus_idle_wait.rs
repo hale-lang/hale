@@ -2,7 +2,9 @@
 //! The C driver pins the contract: a wait with nothing enqueued returns
 //! at its deadline, and an enqueue from another thread ends a 1 s wait
 //! within a few milliseconds (microseconds on an idle box) with the
-//! cell's handler already run.
+//! cell's handler already run. A sleep's slice on the queue
+//! (`lotus_bus_queue_sleep`, GH #2091) runs a cell enqueued mid-slice when
+//! it arrives and still lasts its whole length.
 
 use std::path::PathBuf;
 use std::process::Command;

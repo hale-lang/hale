@@ -7,7 +7,10 @@
  *     not long after);
  *   - an enqueue from another thread ends a 1 s wait promptly and the
  *     wait runs the cell's handler before it returns;
- *   - a cell already queued when the wait begins does not wait at all.
+ *   - a cell already queued when the wait begins does not wait at all;
+ *   - a sleep's slice on the queue (lotus_bus_queue_sleep, GH #2091)
+ *     runs a cell a foreign thread enqueues mid-slice when it arrives,
+ *     and still lasts its whole length.
  */
 
 #include <assert.h>
@@ -25,6 +28,7 @@ void lotus_bus_queue_enqueue(lotus_bus_queue_t *q, void *handler,
                              void *self_ptr, const void *payload_src,
                              size_t payload_size);
 void lotus_bus_queue_idle_wait(lotus_bus_queue_t *q, int64_t ns);
+void lotus_bus_queue_sleep(lotus_bus_queue_t *q, int64_t ns);
 void lotus_bus_mark_pinned(void);
 
 static volatile int g_ran = 0;
@@ -36,10 +40,13 @@ static int64_t now_ns(void) {
     return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
 }
 
+static int64_t g_ran_at = 0;
+
 static void handler(void *self, void *payload) {
     (void)self;
     (void)payload;
     g_ran++;
+    g_ran_at = now_ns();
 }
 
 static void *producer(void *arg) {
@@ -82,7 +89,29 @@ int main(void) {
     assert(now_ns() - t0 < 100 * 1000000LL);
     assert(g_ran == 2);
 
+    /* A sleep's slice: the cell enqueued 50 ms into a 300 ms slice runs
+     * when it arrives, and the slice still lasts its 300 ms. */
+    pthread_create(&th, NULL, producer, q);
+    t0 = now_ns();
+    lotus_bus_queue_sleep(q, 300 * 1000000LL);
+    t1 = now_ns();
+    pthread_join(th, NULL);
+    assert(g_ran == 3);
+    int64_t slice_wake_ns = g_ran_at - g_enqueued_at;
+    assert(slice_wake_ns < 5 * 1000000LL);
+    assert(t1 - t0 >= 299 * 1000000LL);
+    assert(t1 - t0 < 800 * 1000000LL);
+
+    /* Nothing enqueued: the slice is its length. */
+    t0 = now_ns();
+    lotus_bus_queue_sleep(q, 30 * 1000000LL);
+    waited = now_ns() - t0;
+    assert(waited >= 29 * 1000000LL);
+    assert(waited < 500 * 1000000LL);
+    assert(g_ran == 3);
+
     lotus_bus_queue_destroy(q);
-    printf("ok wake_us=%lld\n", (long long)(wake_ns / 1000));
+    printf("ok wake_us=%lld slice_wake_us=%lld\n", (long long)(wake_ns / 1000),
+           (long long)(slice_wake_ns / 1000));
     return 0;
 }

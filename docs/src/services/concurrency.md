@@ -56,6 +56,7 @@ run() {
 ```
 
 - Sleep slicing drains queued **bus deliveries** on the pool, but does not start another locus's queued `run()` mid-sleep.
+- On the main thread, a slice wakes when another thread delivers work for main (an API call, a cell from a pinned publisher or a transport), handles it at once, and sleeps on for the rest of the slice. A serving `main locus` whose `run()` sleeps in a loop answers each call as it arrives, though `self.<exposure>.wait()` is the clearer way to write that `run()` (see [The API surface](./api.md)).
 - On a `pinned` thread, `std::time::sleep` slices drain that locus's own mailbox.
 - On a `where async_io` pool, `std::time::sleep` parks the coroutine on the epoll timer rather than slicing.
 

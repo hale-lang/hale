@@ -657,6 +657,25 @@ threads, pinned publishers via `lotus_bus_local_dispatch`, etc.
 The drain is idempotent, so existing code with `sleep; yield;`
 stays correct.
 
+**On the main thread a slice wakes for work** (GH #2091). There
+the slice is not a `clock_nanosleep` but a wait on main's bus
+queue for the slice's whole length (`lotus_bus_sleep_slice_main`,
+`lotus_bus_queue_sleep`): an enqueue from another thread writes the
+queue's wake descriptor, as it does for `std::api`'s
+`Handle.wait()` (spec/api.md § Parking), the wait ends, the queue
+is drained, and the wait resumes for what is left of the slice.
+So a cell another thread delivers for main — an exposure's call, a
+reader thread's message, a pinned publisher's cell — is handled
+when it arrives rather than when the slice ends, and a serving
+`main locus` whose `run()` polls `self.draining` with a `sleep`
+answers a call in the time the call takes. The slice still lasts
+its length, so a sleep's total is unchanged, and the drain's cut
+of a sleep stays at the slice's head (below). Off the main thread,
+or with no bus queue, the slice is the `clock_nanosleep` above.
+Until GH #2091 a main-thread slice slept through, and each call to
+a program served that way waited for the slice's end: 100 to 250
+ms a call.
+
 **The process drain's check.** Each slice begins with a load of
 `lotus_process_draining_flag`; while a drain is up the sleep ends
 there (still taking that slice's bus drain, so a poll loop keeps
@@ -799,8 +818,9 @@ direct calls, but two bus paths used to violate it under load
    reclaim).
 
 Consequences: a main-pool subscriber's handlers run **only on
-`main`** (at sleep-slice / yield / scope-exit drains — worst-case
-~100ms after a cross-thread publish, per the slicing above);
+`main`** (at sleep-slice / yield / scope-exit drains; a sleeping
+main wakes for the cell, GH #2091, so the wait is for the main
+thread's current step, not for the slice's end);
 pool subscribers run only on their pool's worker; pinned
 subscribers only on their own thread. Flat (pointer-free POD)
 payloads are exempt from rule 2 — a verbatim byte copy writes no
