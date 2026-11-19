@@ -8,7 +8,7 @@
 //! and then failed on the other (a codegen panic, "method declared in
 //! pass A2", when the HTTP server's per-connection locus reused the
 //! client's `__StdHttpConn`). The duplicate is refused here, located,
-//! naming both declarations (spec/semantics.md § "Declarations inside `module { }`").
+//! naming both declarations (spec/semantics.md § "One top-level scope").
 
 use std::collections::BTreeMap;
 
@@ -41,7 +41,6 @@ fn shape(d: &TopDecl) -> String {
 fn declared<'p>(items: &'p [TopDecl], out: &mut Vec<(String, Span, &'static str, &'p TopDecl)>) {
     for item in items {
         match item {
-            TopDecl::Module(m) => declared(&m.items, out),
             TopDecl::Locus(l) => out.push((l.name.name.clone(), l.name.span, "locus", item)),
             TopDecl::Type(t) => out.push((t.name.name.clone(), t.name.span, "type", item)),
             TopDecl::Interface(i) => out.push((i.name.name.clone(), i.name.span, "interface", item)),

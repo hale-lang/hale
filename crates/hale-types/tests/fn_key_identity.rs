@@ -154,12 +154,8 @@ fn the_stdlib_copy_is_its_own_universe() {
 #[test]
 fn two_declarations_sharing_a_name_are_two_rows() {
     let src = r#"
-        module a {
-            fn f(x: Int) -> Int { return x + 1; }
-        }
-        module b {
-            fn f(x: Int) -> Int { return x * 2; }
-        }
+        fn f(x: Int) -> Int { return x + 1; }
+        fn f(x: Int) -> Int { return x * 2; }
         fn g() -> Int { return f(1); }
         fn main() { println(g()); }
     "#;

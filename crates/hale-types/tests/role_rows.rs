@@ -59,7 +59,6 @@ fn the_roles_an_environment_maps_are_a_projection_of_the_rows() {
                 hale_syntax::ast::TopDecl::Role(r) => {
                     out.insert(r.name.name.clone());
                 }
-                hale_syntax::ast::TopDecl::Module(m) => declared(&m.items, out),
                 _ => {}
             }
         }

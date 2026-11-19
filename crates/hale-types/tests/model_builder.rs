@@ -1171,18 +1171,12 @@ fn main() { App { }; }
 
 /// P1 (round 7): an on_failure body the behavior analysis never
 /// walks HOLES OUT — the entity exists, its behavior is
-/// typed-unknown, and the capabilities go false. A module-scoped
-/// body is walked like a top-level one (F.40 phase 3, E3a part C: a
-/// module is a namespace, not an analysis boundary), so the module
-/// fn beside it is analyzed and does not.
+/// typed-unknown, and the capabilities go false.
 #[test]
 fn unanalyzed_bodies_hole_out() {
     let src = r#"
 type T { n: Int = 0; }
 topic Evt { payload: T; subject: "evt"; }
-module hidden {
-    fn sneaky(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
-}
 locus Child {
     params { n: Int = 0; }
     fn poke(v: Int) { self.n = v; }
@@ -1205,8 +1199,7 @@ fn main() { App { }; }
 "#;
     let m = derive(src);
     let e = &m.entities;
-    // The module fn and the failure handler EXIST as entities…
-    assert!(e.functions.iter().any(|f| f.name == "sneaky"));
+    // The failure handler EXISTS as an entity…
     let handler = e
         .functions
         .iter()
@@ -1218,8 +1211,7 @@ fn main() { App { }; }
         handler.kind,
         hale_model::FunctionKind::FailureHandler
     );
-    // …the failure handler holes out as UnanalyzedBody, the module fn
-    // does not…
+    // …the failure handler holes out as UnanalyzedBody…
     let unanalyzed: Vec<String> = m
         .holes
         .iter()
@@ -1231,13 +1223,6 @@ fn main() { App { }; }
             _ => None,
         })
         .collect();
-    assert!(
-        !unanalyzed.iter().any(|n| n == "sneaky"),
-        "a module body is analyzed: {:?}",
-        unanalyzed
-    );
-    let sneaky = e.functions.iter().find(|f| f.name == "sneaky").unwrap();
-    assert!(sneaky.analyzed && sneaky.summarized);
     assert!(
         unanalyzed.iter().any(|n| n.contains("on_failure")),
         "failure body holes out: {:?}",
@@ -1301,10 +1286,9 @@ fn main() { App { }; }
 /// would be absent, and a boundary claim would miss a concrete
 /// cross-group call. The callee here is an `@ffi` declaration, which
 /// has no body to walk; the summary keys it with an empty one, so the
-/// edge resolves and the callee is a summarized entity. (This was a
-/// module-scoped callee until the summary collected module-nested
-/// bodies, F.40 phase 3, E3a part C; every declared fn now has a row,
-/// so no source program has a callable unanalyzed callee.)
+/// edge resolves and the callee is a summarized entity. (Every
+/// declared fn has a row, so no source program has a callable
+/// unanalyzed callee.)
 #[test]
 fn direct_call_into_a_bodiless_callee_is_a_known_edge() {
     let src = r#"
@@ -1554,16 +1538,14 @@ fn main() {
 
 /// P1 (round 10): unresolved calls resolve BY SHAPE. A typed method
 /// miss (`w.tick()`) must never wire to a same-named free fn; a
-/// method on a module-scoped locus resolves to `RecvTy::method` in
-/// the declaration universe.
+/// method on a locus resolves to `RecvTy::method` in the declaration
+/// universe.
 #[test]
 fn unresolved_method_calls_resolve_by_shape() {
     let src = r#"
-module hidden {
-    locus Store {
-        params { n: Int = 0; }
-        fn get(k: Int) -> Int { return self.n + k; }
-    }
+locus Store {
+    params { n: Int = 0; }
+    fn get(k: Int) -> Int { return self.n + k; }
 }
 fn tick() -> Int { return 1; }
 locus W {
@@ -1582,7 +1564,7 @@ fn main() { App { }; }
     let e = &m.entities;
     let fname =
         |id: hale_model::FunctionId| e.functions[id.index()].name.clone();
-    // The typed method miss on the module locus resolves to the raw
+    // The typed method call on the locus resolves to the raw
     // qualified method…
     assert!(
         m.relations.calls.iter().any(|c| fname(c.from) == "poke"
@@ -1605,11 +1587,9 @@ fn main() { App { }; }
 /// (`p::helper`) resolves to its raw imported identity in the
 /// universe.
 #[test]
-fn qualified_calls_into_unanalyzed_imports_resolve_raw() {
+fn qualified_calls_into_imports_resolve_raw() {
     let lib = r#"
-module m {
-    fn __lib_e_events_helper(v: Int) -> Int { return v; }
-}
+fn __lib_e_events_helper(v: Int) -> Int { return v; }
 "#;
     let main_src = r#"
 fn caller(v: Int) -> Int { return p::helper(v); }

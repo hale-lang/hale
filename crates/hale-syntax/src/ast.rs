@@ -152,7 +152,6 @@ pub enum TopDecl {
     Type(TypeDecl),
     Const(ConstDecl),
     Fn(FnDecl),
-    Module(ModuleDecl),
     Interface(InterfaceDecl),
     Topic(TopicDecl),
     /// shm-ring-interop Proposal B (2026-06-06): `ring_layout Name
@@ -273,7 +272,6 @@ impl TopDecl {
             TopDecl::Type(t) => t.span,
             TopDecl::Const(c) => c.span,
             TopDecl::Fn(f) => f.span,
-            TopDecl::Module(m) => m.span,
             TopDecl::Interface(i) => i.span,
             TopDecl::Topic(t) => t.span,
             TopDecl::RingLayout(r) => r.span,
@@ -285,103 +283,6 @@ impl TopDecl {
             TopDecl::Unit(u) => u.span,
             TopDecl::Api(a) => a.span,
             TopDecl::Fleet(f) => f.span,
-        }
-    }
-}
-
-/// Every declaration in `items`, with `module { … }` nesting
-/// flattened to any depth.
-///
-/// A module is a NAMESPACE, not a boundary: `resolve` registers a
-/// module's declarations under their BARE names, so a `type`, an
-/// enum, a `locus` or a `fn` one brace deeper is an ordinary member
-/// of the bundle, spelled the same way at every use site. Any pass
-/// that collects declarations by kind reads this rather than
-/// `items.iter()` — the top-level-only shape is what made the same
-/// program analyzed at the top level and invisible one brace deeper
-/// (GH #764 the hot-path lint, GH #825 the checker's bundle-level
-/// checks, GH #884 / GH #854 codegen's declaration collection and
-/// the mangler).
-///
-/// The `TopDecl::Module` node itself is yielded, immediately before
-/// its contents, so a consumer that wants the module node still
-/// sees one; a consumer matching on a declaration kind ignores it.
-pub fn flat_decls(items: &[TopDecl]) -> FlatDecls<'_> {
-    FlatDecls { stack: vec![items.iter()] }
-}
-
-/// The iterator [`flat_decls`] returns.
-pub struct FlatDecls<'a> {
-    stack: Vec<std::slice::Iter<'a, TopDecl>>,
-}
-
-impl<'a> Iterator for FlatDecls<'a> {
-    type Item = &'a TopDecl;
-
-    fn next(&mut self) -> Option<&'a TopDecl> {
-        loop {
-            let top = self.stack.last_mut()?;
-            match top.next() {
-                Some(d) => {
-                    if let TopDecl::Module(m) = d {
-                        self.stack.push(m.items.iter());
-                    }
-                    return Some(d);
-                }
-                None => {
-                    self.stack.pop();
-                }
-            }
-        }
-    }
-}
-
-/// The locus declaration at `path` in `items`: the item index at each
-/// depth, every index but the last naming a `module { }`. How a row that
-/// names a declaration by where it is (the entry row's) is followed
-/// back to it.
-pub fn locus_at<'a>(items: &'a [TopDecl], path: &[usize]) -> Option<&'a LocusDecl> {
-    let (last, modules) = path.split_last()?;
-    let mut items = items;
-    for i in modules {
-        let TopDecl::Module(m) = items.get(*i)? else { return None };
-        items = &m.items;
-    }
-    match items.get(*last)? {
-        TopDecl::Locus(l) => Some(l),
-        _ => None,
-    }
-}
-
-/// [`locus_at`], for a pass that writes into the declaration.
-pub fn locus_at_mut<'a>(items: &'a mut [TopDecl], path: &[usize]) -> Option<&'a mut LocusDecl> {
-    let (last, modules) = path.split_last()?;
-    let mut items = items;
-    for i in modules {
-        let TopDecl::Module(m) = items.get_mut(*i)? else { return None };
-        items = &mut m.items;
-    }
-    match items.get_mut(*last)? {
-        TopDecl::Locus(l) => Some(l),
-        _ => None,
-    }
-}
-
-/// [`flat_decls`] for a pass that REWRITES declarations in place.
-///
-/// The module node is descended into rather than handed to `f`,
-/// which is what keeps the walk to one mutable borrow at a time. A
-/// rewrite pass has no use for the module node itself: a module
-/// carries no name a use site can spell and nothing but its items.
-pub fn for_each_decl_mut(
-    items: &mut [TopDecl],
-    f: &mut impl FnMut(&mut TopDecl),
-) {
-    for item in items {
-        if let TopDecl::Module(m) = item {
-            for_each_decl_mut(&mut m.items, f);
-        } else {
-            f(item);
         }
     }
 }
@@ -3197,15 +3098,6 @@ pub struct FnDecl {
     pub id: NodeId,
     /// GH #1674: the `///` doc comment before it.
     pub doc: Doc,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ModuleDecl {
-    pub name: Ident,
-    pub items: Vec<TopDecl>,
-    pub span: Span,
-    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
-    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]

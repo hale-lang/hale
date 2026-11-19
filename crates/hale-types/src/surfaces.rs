@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    flat_decls, Block, ElseBranch, Expr, FnDecl, LifecycleKind, LocusDecl, LocusMember, MatchArmBody, ModeKind,
+    Block, ElseBranch, Expr, FnDecl, LifecycleKind, LocusDecl, LocusMember, MatchArmBody, ModeKind,
     ParamDecl, ParamInit, Program, ServeSite, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
@@ -734,7 +734,7 @@ pub fn select_members(
         }
     };
     for p in programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             match d {
                 TopDecl::Api(a) => {
                     for r in &a.rows {
@@ -872,7 +872,7 @@ pub fn surface_rows(
 
     let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     for p in &programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             if let TopDecl::Locus(l) = d {
                 loci.insert(l.name.name.as_str(), l);
             }
@@ -948,7 +948,7 @@ pub fn surface_rows(
     // response as the row writes them (spec/api.md § Imported surfaces).
     let mut signatures: BTreeMap<(String, String), (Span, &hale_syntax::ast::RpcSignature)> = BTreeMap::new();
     for p in &programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             if let TopDecl::Api(a) = d {
                 for r in &a.rows {
                     if let Some(sig) = &r.signature {
@@ -1016,7 +1016,7 @@ pub fn surface_rows(
     // a block with no rows is still a surface
     let mut surface_docs: BTreeMap<String, String> = BTreeMap::new();
     for p in &programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             if let TopDecl::Api(a) = d {
                 surface_spans.entry(a.name.name.clone()).or_insert(a.span);
                 if let Some(doc) = a.doc.text() {
@@ -1076,7 +1076,7 @@ pub fn surface_rows(
     let mut hubs: Vec<Hub> = Vec::new();
     let publishes: BTreeSet<String> = programs
         .iter()
-        .flat_map(|p| flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .filter_map(|d| match d {
             TopDecl::Locus(l) => Some(l),
             _ => None,
@@ -1095,7 +1095,7 @@ pub fn surface_rows(
         })
         .collect();
     for p in &programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             let TopDecl::Locus(l) = d else { continue };
             let params = param_types(l);
             let sites = locus_serve_sites(l);
@@ -1253,7 +1253,7 @@ pub fn surface_rows(
     let core_digest = format!("{:016x}", crate::topology::fnv1a64(CORE_FACE_SOURCE.as_bytes()));
     let type_names: BTreeSet<&str> = programs
         .iter()
-        .flat_map(|p| flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .filter_map(|d| match d {
             TopDecl::Type(t) => Some((t.name.name.as_str(), t.span.start.0)),
             _ => None,
@@ -1318,7 +1318,7 @@ fn socket_transport(l: &LocusDecl, transport: Option<&Expr>) -> Option<&'static 
 pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
     let mut diags = Vec::new();
     for p in programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             let TopDecl::Locus(l) = d else { continue };
             // A serve site whose exposure the expansion could not build:
             // over a transport this compiler does not ship yet.
@@ -1669,7 +1669,7 @@ pub fn surface_laws(
     // all name shapes.
     let mut imported: BTreeMap<&str, Span> = BTreeMap::new();
     for p in &programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             if let TopDecl::Api(a) = d {
                 if let Some(src) = &a.source {
                     imported.entry(a.name.name.as_str()).or_insert(src.span);
@@ -2017,7 +2017,7 @@ pub fn serve_laws(
     // the topics some locus publishes: the ones a stream can carry
     let published: BTreeSet<String> = programs
         .iter()
-        .flat_map(|p| flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .filter_map(|d| match d {
             TopDecl::Locus(l) => Some(l),
             _ => None,
@@ -2036,7 +2036,7 @@ pub fn serve_laws(
         })
         .collect();
     for p in &programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             match d {
                 TopDecl::Fn(f) => {
                     let mut out = Vec::new();

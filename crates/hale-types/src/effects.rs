@@ -103,7 +103,6 @@ pub(crate) fn fns_carrying_a_user_class(
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, carries_user, out),
                 _ => {}
             }
         }
@@ -1780,48 +1779,25 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
             inferred: Vec::new(),
         });
     };
-    // GH #296 review round 3: modules nest top declarations
-    // arbitrarily deep, and a module-contained fn or locus whose
-    // effects never reached a manifest row was invisible to both
-    // the committed-baseline diff and `hale replay`'s safety
-    // admission — the same fail-open shape twice.
-    fn walk_items(
-        items: &[TopDecl],
-        prefix: &str,
-        push: &mut dyn FnMut(String, &hale_syntax::ast::FnDecl),
-    ) {
+    fn walk_items(items: &[TopDecl], push: &mut dyn FnMut(String, &hale_syntax::ast::FnDecl)) {
         for item in items {
             match item {
                 TopDecl::Fn(fd) if crate::rpc_expand::is_runtime_pos(fd.name.span.start.0) => {}
                 TopDecl::Locus(l) if crate::rpc_expand::is_runtime_pos(l.name.span.start.0) => {}
-                TopDecl::Fn(fd) => push(
-                    format!("{}{}", prefix, fd.name.name),
-                    fd,
-                ),
+                TopDecl::Fn(fd) => push(fd.name.name.clone(), fd),
                 TopDecl::Locus(l) => {
                     for m in &l.members {
                         if let LocusMember::Fn(fd) = m {
-                            push(
-                                format!(
-                                    "{}{}::{}",
-                                    prefix, l.name.name, fd.name.name
-                                ),
-                                fd,
-                            );
+                            push(format!("{}::{}", l.name.name, fd.name.name), fd);
                         }
                     }
-                }
-                TopDecl::Module(md) => {
-                    let inner =
-                        format!("{}{}::", prefix, md.name.name);
-                    walk_items(&md.items, &inner, push);
                 }
                 _ => {}
             }
         }
     }
     for p in programs {
-        walk_items(&p.items, "", &mut push);
+        walk_items(&p.items, &mut push);
     }
     rows.sort_by(|a, b| a.func.cmp(&b.func));
     rows
@@ -1841,23 +1817,12 @@ pub fn effect_manifest_with_inference(
         .map(|r| (r.func.clone(), r))
         .collect();
     let mut rows: Vec<EffectManifestRow> = Vec::new();
-    // `row` is the declaration's row, `None` inside a module.
-    let mut add = |name: String, row: Option<FnKey>| {
-        // Round 3 (GH #296): a missing summary key infers PURE,
-        // which turned a module-contained subprocess call
-        // invisible. Inside a module, a body is rendered
-        // `unclassified` ("may do anything"): fail closed, and
-        // scoped so non-module rows are untouched. The summary
-        // holds module-nested bodies now (F.40 phase 3), each by
-        // its declaration's identity; this manifest does not read
-        // those rows yet, so they stay `unclassified`.
-        let inferred = match &row {
-            None => vec!["unclassified".to_string()],
-            Some(key) => crate::frontier::render_effects_named(
-                effects.row(key).map_or(crate::stdlib_surface::EffectSet::PURE, |r| r.effects),
-                names,
-            ),
-        };
+    // `row` is the declaration's row.
+    let mut add = |name: String, row: FnKey| {
+        let inferred = crate::frontier::render_effects_named(
+            effects.row(&row).map_or(crate::stdlib_surface::EffectSet::PURE, |r| r.effects),
+            names,
+        );
         let mut row = declared.get(&name).cloned().unwrap_or(
             EffectManifestRow {
                 func: name.clone(),
@@ -1880,17 +1845,7 @@ pub fn effect_manifest_with_inference(
         }
         rows.push(row);
     };
-    // Round 3 (GH #296): recurse through modules — a
-    // module-contained fn or lifecycle body absent from these rows
-    // was invisible to both the baseline diff and replay's safety
-    // admission. A module fn is `unclassified`, which is the
-    // fail-closed answer.
-    fn walk_infer(
-        items: &[TopDecl],
-        prefix: &str,
-        add: &mut dyn FnMut(String, Option<FnKey>),
-    ) {
-        let in_module = !prefix.is_empty();
+    fn walk_infer(items: &[TopDecl], add: &mut dyn FnMut(String, FnKey)) {
         for item in items {
             match item {
                 // The appended api runtime is stdlib source: the manifest
@@ -1898,33 +1853,17 @@ pub fn effect_manifest_with_inference(
                 TopDecl::Fn(fd) if crate::rpc_expand::is_runtime_pos(fd.name.span.start.0) => {}
                 TopDecl::Locus(l) if crate::rpc_expand::is_runtime_pos(l.name.span.start.0) => {}
                 TopDecl::Fn(fd) => {
-                    let n = format!("{}{}", prefix, fd.name.name);
-                    let row = (!in_module).then(|| FnKey::free_fn(DeclId::user(fd.id), n.clone()));
+                    let n = fd.name.name.clone();
+                    let row = FnKey::free_fn(DeclId::user(fd.id), n.clone());
                     add(n, row);
                 }
-                TopDecl::Module(md) => {
-                    let inner =
-                        format!("{}{}::", prefix, md.name.name);
-                    walk_infer(&md.items, &inner, add);
-                }
                 TopDecl::Locus(l) => {
-                    // Round 4, finding 2: a module-nested
-                    // `inner::Worker::run` must not read an unrelated
-                    // top-level `Worker::run`'s summary and inherit its
-                    // (possibly pure) effects; it fails closed as
-                    // `unclassified`.
-                    let row = |id, name: &str| {
-                        (!in_module).then(|| FnKey::method(DeclId::user(id), l.name.name.clone(), name))
-                    };
+                    let row = |id, name: &str| FnKey::method(DeclId::user(id), l.name.name.clone(), name);
                     for m in &l.members {
                         match m {
-                            LocusMember::Fn(fd) => add(
-                                format!(
-                                    "{}{}::{}",
-                                    prefix, l.name.name, fd.name.name
-                                ),
-                                row(fd.id, &fd.name.name),
-                            ),
+                            LocusMember::Fn(fd) => {
+                                add(format!("{}::{}", l.name.name, fd.name.name), row(fd.id, &fd.name.name))
+                            }
                             // Lifecycle hooks belong in the
                             // fingerprint too. Leaving them out made
                             // the manifest miss most of what a
@@ -1940,13 +1879,7 @@ pub fn effect_manifest_with_inference(
                             // nothing to fingerprint.
                             LocusMember::Lifecycle(lc) if !lc.synthesized => {
                                 let phase = lifecycle_name(lc.kind);
-                                add(
-                                    format!(
-                                        "{}{}::{}",
-                                        prefix, l.name.name, phase
-                                    ),
-                                    row(lc.id, phase),
-                                )
+                                add(format!("{}::{}", l.name.name, phase), row(lc.id, phase))
                             }
                             _ => {}
                         }
@@ -1957,7 +1890,7 @@ pub fn effect_manifest_with_inference(
         }
     }
     for p in programs {
-        walk_infer(&p.items, "", &mut add);
+        walk_infer(&p.items, &mut add);
     }
     rows.sort_by(|a, b| a.func.cmp(&b.func));
     rows

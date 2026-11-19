@@ -271,36 +271,6 @@ fn a_direct_allocation_is_visible_to_attributed_alloc() {
 }
 
 // ---------------------------------------------------------------
-// P1: the universals must see declarations inside modules.
-// ---------------------------------------------------------------
-
-#[test]
-fn require_sealed_sees_a_sealed_locus_inside_a_module() {
-    // The failing direction is the false POSITIVE, not the missed
-    // violation: `sealed_loci_of` was top-level-only, so a sealed
-    // locus inside a module read as unsealed and the claim reported
-    // a violation that is not real. An unsealed-in-module test would
-    // pass on the broken build and prove nothing.
-    let src = "
-        module secrets {
-            @sealed locus Vault { params { k: Int = 1; }
-                fn f() -> Int { return self.k; } }
-        }
-        group vaults = { Vault };
-        main locus App {
-            params { v: Vault = Vault { }; }
-            claims { confined: require sealed(all vaults); }
-        }
-        fn main() { App { }; }
-    ";
-    assert!(
-        errors(src).is_empty(),
-        "a sealed locus in a module must satisfy the claim: {:?}",
-        errors(src)
-    );
-}
-
-// ---------------------------------------------------------------
 // P1/P2: `require sealed` must not hold over a group with no loci.
 // ---------------------------------------------------------------
 

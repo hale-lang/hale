@@ -24,7 +24,7 @@
 /// Mirrors the match in `lexer.rs` (minus the `true`/`false`/`nil`
 /// literals, which highlighters colour as literals, not keywords).
 pub const HARD_KEYWORDS: &[&str] = &[
-    "locus", "type", "const", "fn", "import", "export", "module",
+    "locus", "type", "const", "fn", "import", "export",
     "let", "mut", "if", "else", "match", "for", "in", "while",
     "return", "break", "continue", "self",
     "trait", "impl", "interface", "async", "await", "macro",

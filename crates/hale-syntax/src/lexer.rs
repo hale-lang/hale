@@ -84,7 +84,6 @@ pub enum TokenKind {
     Fn,
     Import,
     Export,
-    Module,
 
     // GH friction sweep 2026-10-12 ("can't the compiler be smart
     // about context?"): the locus-member, lifecycle, mode, projection,
@@ -203,7 +202,6 @@ impl TokenKind {
             TokenKind::Fn => "fn",
             TokenKind::Import => "import",
             TokenKind::Export => "export",
-            TokenKind::Module => "module",
             TokenKind::Let => "let",
             TokenKind::Mut => "mut",
             TokenKind::If => "if",
@@ -446,7 +444,6 @@ impl<'a> Lexer<'a> {
             "fn" => TokenKind::Fn,
             "import" => TokenKind::Import,
             "export" => TokenKind::Export,
-            "module" => TokenKind::Module,
             // `topic` is contextually keyworded — recognized only
             // in top-level declaration position (see
             // `parse_top_decl`). Lexing it always as Ident frees

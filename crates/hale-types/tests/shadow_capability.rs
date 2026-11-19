@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 
 use hale_graph::shadow::{gate_message, parse_fixture, program_id, Report};
 use hale_syntax::ast::{
-    flat_decls, Ident, LocusMember, PlacementConstraint, Program, TargetDecl, TopDecl,
+    Ident, LocusMember, PlacementConstraint, Program, TargetDecl, TopDecl,
 };
 use hale_syntax::sites::{for_each_site, SiteKind};
 use hale_syntax::Span;
@@ -275,7 +275,7 @@ impl Shadow {
         calls.sort();
         calls.dedup();
         let mut async_io: Vec<(String, usize)> = Vec::new();
-        for item in flat_decls(&program.items) {
+        for item in program.items.iter() {
             if let TopDecl::Locus(l) = item {
                 for m in &l.members {
                     if let LocusMember::Placement(b) = m {
@@ -434,7 +434,7 @@ impl Shadow {
     fn ffi(&mut self, id: &str, host: &Checked) {
         let mut old = Vec::new();
         let mut new: Vec<(String, FfiTypeClass, Abi)> = Vec::new();
-        for item in flat_decls(&host.program.items) {
+        for item in host.program.items.iter() {
             let TopDecl::Fn(f) = item else { continue };
             let (attr, abi) = match (&f.ffi, f.export) {
                 (Some(a), _) => ("@ffi", Abi::of(&a.abi)),

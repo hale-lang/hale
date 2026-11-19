@@ -171,9 +171,6 @@ The **hot-path lint** is asked for, not default: `hale check --warn-hot-path` sh
 - **Allocating socket reads in loops**: Calling `recv`, `recv_bytes`, or `recv_with_source` inside a loop. Use `recv_into` with a hoisted `BytesBuilder` instead.
 - **Appends that copy the whole text**: An appending assignment (`out += row`) in a loop that also passes `out` to a call, binds, stores or returns it, or an append to a place other than a local or a `self` field (`rec.body = rec.body + row`). Each iteration copies the whole String; read the local after the loop, build in a local, or use a `BytesBuilder`.
 
-> [!NOTE]
-> `module { ... }` blocks are purely namespace boundaries; functions and locus methods inside modules undergo the exact same escape and `@hot` analysis as top-level declarations.
-
 ### Stage 2: `@bounded_by` and `@unbounded`
 
 When a function or lifecycle hook intentionally accumulates state in memory:

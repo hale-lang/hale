@@ -1,0 +1,34 @@
+// F.57: `module` is no keyword. The `module NAME { … }` declaration was
+// removed (a module is a directory, reached by `import`), and the word is
+// an ordinary identifier: a record field, a locus param, a fn, a
+// parameter and a local may all be named `module`.
+
+type Package { module: String; version: Int = 1; }
+
+fn module(n: Int) -> Int { return n * 10; }
+
+fn bumped(module: Int) -> Int { return module + 1; }
+
+locus Loader {
+    params { module: String = "core"; loads: Int = 0; }
+    fn load(name: String) -> String {
+        self.loads = self.loads + 1;
+        self.module = name;
+        return self.module;
+    }
+}
+
+fn main() {
+    let module = module(4);
+    std::test::assert_eq_int(module, 40, "a local named `module`, bound from the fn of that name");
+    std::test::assert_eq_int(bumped(module), 41, "a parameter named `module`");
+
+    let p = Package { module: "geo" };
+    std::test::assert_eq_str(p.module, "geo", "a record field named `module`");
+    std::test::assert_eq_int(p.version, 1, "beside a defaulted field");
+
+    let l = Loader { };
+    std::test::assert_eq_str(l.module, "core", "a locus param named `module`, from its default");
+    std::test::assert_eq_str(l.load("net"), "net", "written and read through `self.module`");
+    std::test::assert_eq_int(l.loads, 1, "the method ran once");
+}

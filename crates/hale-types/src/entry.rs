@@ -2,36 +2,22 @@
 //! program's `main`, by identity, as one row.
 //!
 //! Before this row the entry had twelve definitions that disagreed on
-//! two shapes. The row settles both, and they are the family's
-//! invariants (`spec/registry.md`, `entrypoint`):
-//!
-//! 1. **An imported `main` is not the entry.** A library's `main
-//!    locus` is a declaration the importing seed does not run; the
-//!    entry is the importing seed's own. A seed whose only `main` is
-//!    imported has no entry.
-//! 2. **A module-nested `main` is not the entry.** The entry is a
-//!    top-level `main locus` of the seed's own files, as a seed's
-//!    entry point is its top-level `fn main` (`spec/semantics.md`
-//!    § "Declarations inside `module { }`"), so rule 9's closed world
-//!    is the top-level one. A seed whose only `main` is module-nested
-//!    has no entry; a seed with both keeps the top-level one.
+//! which `main locus` a seed runs. The row settles it, and it is the
+//! family's invariant (`spec/registry.md`, `entrypoint`): **an imported
+//! `main` is not the entry.** A library's `main locus` is a declaration
+//! the importing seed does not run; the entry is the importing seed's
+//! own. A seed whose only `main` is imported has no entry.
 //!
 //! The row keeps every `main locus` the bundle declares, each with the
-//! two facts the decisions read ([`MainLocus::imported`],
-//! [`MainLocus::module_nested`]): the witness of why a declaration is
-//! or is not the entry, and what the one-main rule (rule 1) counts,
-//! which a module-nested `main` still joins (GH #825).
+//! fact the decision reads ([`MainLocus::imported`]): the witness of why
+//! a declaration is or is not the entry, and what the one-main rule
+//! (rule 1) counts.
 //!
 //! Lowering reads the entry (F.40 phase 3, L4): the `main locus` it
 //! deploys and every comparison it makes against "the main locus" are
 //! the row's entry, by identity, and the row's `fn main` column
 //! ([`EntryRow::fn_main`]) is the body lowering emits as the process's
-//! entry point. A seed whose only `main locus` is module-nested has no
-//! entry, and the check refuses it ([`EntryRow::refused`],
-//! `lowering_laws`), so no program reaches lowering with a root that is
-//! not the entry. The checks still judge that refused `main`: the
-//! placement table is seeded from [`EntryRow::root`], the entry or,
-//! failing one, the refused `main` (GH #825).
+//! entry point.
 
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{FnDecl, LocusDecl, TopDecl};
@@ -52,51 +38,36 @@ pub struct MainLocus {
     /// piece 5). The mark is the one definition; the `__lib_…` name it
     /// also gives is spelling, not a second test.
     pub imported: bool,
-    /// Declared inside a `module { }`, at any depth.
-    pub module_nested: bool,
-    /// The bundle program that holds it, and the item index at each
-    /// depth: what [`MainLocus::decl`] follows back to the declaration.
-    at: (String, Vec<usize>),
+    /// The bundle program that holds it, and its item index: what
+    /// [`MainLocus::decl`] follows back to the declaration.
+    at: (String, usize),
+}
+
+/// The locus declaration at item `index` of `items`.
+fn locus_at(items: &[TopDecl], index: usize) -> Option<&LocusDecl> {
+    match items.get(index)? {
+        TopDecl::Locus(l) => Some(l),
+        _ => None,
+    }
 }
 
 impl MainLocus {
     /// The declaration this row names, in the bundle it was read from.
     pub fn decl<'b>(&self, bundle: &Bundle<'b>) -> Option<&'b LocusDecl> {
-        let (program, path) = &self.at;
-        hale_syntax::ast::locus_at(&bundle.programs.get(program)?.items, path)
+        let (program, index) = &self.at;
+        locus_at(&bundle.programs.get(program)?.items, *index)
     }
 
     /// Where this declaration is in the programs a row built by
     /// [`entry_row_in`] read: the program's index and the declaration's
-    /// path in it (for [`hale_syntax::ast::locus_at`]). `None` for a
-    /// bundle's row, whose programs are named by path.
-    pub fn index_in(&self) -> Option<(usize, &[usize])> {
-        Some((self.at.0.parse().ok()?, &self.at.1))
-    }
-
-    /// Whether the decisions let this declaration be the entry: the
-    /// seed's own, at the top level.
-    pub fn may_be_the_entry(&self) -> bool {
-        !self.imported && !self.module_nested
-    }
-
-    /// The modules that enclose the declaration, outermost first: empty
-    /// at the top level.
-    pub fn modules<'b>(&self, bundle: &Bundle<'b>) -> Vec<&'b str> {
-        let (program, path) = &self.at;
-        let mut out = Vec::new();
-        let Some(mut items) = bundle.programs.get(program).map(|p| &p.items[..]) else { return out };
-        for i in path.split_last().map_or(&[][..], |(_, modules)| modules) {
-            let Some(TopDecl::Module(m)) = items.get(*i) else { break };
-            out.push(m.name.name.as_str());
-            items = &m.items;
-        }
-        out
+    /// item index in it. `None` for a bundle's row, whose programs are
+    /// named by path.
+    pub fn index_in(&self) -> Option<(usize, usize)> {
+        Some((self.at.0.parse().ok()?, self.at.1))
     }
 }
 
-/// The seed's `fn main`: the top-level one, the process's entry point
-/// (GH #911: a `fn main` inside a module is not, and is refused).
+/// The seed's `fn main`: the top-level one, the process's entry point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnMain {
     /// The declaration's site, as the snapshot minted it. `None` only on
@@ -133,18 +104,15 @@ pub fn top_level_fn_main(items: &[TopDecl]) -> Option<(usize, &FnDecl)> {
 pub enum NoEntry {
     /// No `main locus` at all: a library, or a bare `fn main` script.
     NoMain,
-    /// Every `main locus` came in through an `import` (decision 1).
+    /// Every `main locus` came in through an `import`.
     OnlyImported,
-    /// The seed's own `main locus` is inside a `module { }` (decision 2).
-    OnlyModuleNested,
 }
 
 /// The `entrypoint` row of one bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryRow {
     /// Every `main locus` the bundle declares, in the bundle's program
-    /// order and each program's declaration order (a module's contents
-    /// after the module): the witness.
+    /// order and each program's declaration order: the witness.
     pub mains: Vec<MainLocus>,
     entry: Result<usize, NoEntry>,
     /// The seed's top-level `fn main`, which lowering emits as the
@@ -156,7 +124,7 @@ pub struct EntryRow {
 }
 
 impl EntryRow {
-    /// The entry: the seed's own top-level `main locus`. With more than
+    /// The entry: the seed's own `main locus`. With more than
     /// one (rule 1's error), the last, as the checker's pool map always
     /// took it.
     pub fn entry(&self) -> Option<&MainLocus> {
@@ -168,49 +136,21 @@ impl EntryRow {
         self.entry.err()
     }
 
-    /// The `main locus` declarations the entry is chosen from: the
-    /// seed's own, at the top level. One in a program rule 1 accepts.
-    pub fn candidates(&self) -> impl Iterator<Item = &MainLocus> {
-        self.mains.iter().filter(|m| m.may_be_the_entry())
-    }
-
-    /// The seed's own `main locus` declarations, module-nested ones
-    /// included: what rule 1 counts.
+    /// The seed's own `main locus` declarations, the ones the entry is
+    /// chosen from: what rule 1 counts. One in a program rule 1 accepts.
     pub fn own(&self) -> impl Iterator<Item = &MainLocus> {
         self.mains.iter().filter(|m| !m.imported)
     }
 
-    /// The module-nested `main locus` of a seed with no entry for that
-    /// reason (decision 2): the first of the seed's own, which the check
-    /// refuses at its name, since nothing else in the seed is the entry
-    /// (`lowering_laws`, F.40 phase 3, L4). `None` whenever there is an
-    /// entry: a module-nested `main` beside one is not deployed and is
-    /// not refused for it (rule 1 counts it).
-    pub fn refused(&self) -> Option<&MainLocus> {
-        match self.entry {
-            Err(NoEntry::OnlyModuleNested) => self.own().next(),
-            _ => None,
-        }
-    }
-
-    /// The `main locus` the placement table is seeded from: the entry,
-    /// else the refused module-nested one ([`EntryRow::refused`]), so the
-    /// rules that read the table still judge it as they judge a top-level
-    /// one (GH #825). A program that reaches lowering has no refused
-    /// `main`, so there it is the entry, which lowering deploys.
-    pub fn root(&self) -> Option<&MainLocus> {
-        self.entry().or_else(|| self.refused())
-    }
-
     /// The world tier: the `main locus` declarations whose inline
     /// `claims { }` are the bundle's world law. Every one the bundle
-    /// declares, in the witness's order: the entry's, a module-nested
-    /// one's, and an imported application's, whose inline claims travel
-    /// with it and are re-evaluated in the closing world (GH #733), with
-    /// the importer's own `main locus` beside it or without one. The
-    /// world is wider than the entry on purpose: decisions 1 and 2 say
-    /// which declaration the seed RUNS, and an application's law does
-    /// not stop binding because another seed runs it.
+    /// declares, in the witness's order: the entry's and an imported
+    /// application's, whose inline claims travel with it and are
+    /// re-evaluated in the closing world (GH #733), with the importer's
+    /// own `main locus` beside it or without one. The world is wider than
+    /// the entry on purpose: the entry says which declaration the seed
+    /// RUNS, and an application's law does not stop binding because
+    /// another seed runs it.
     pub fn world(&self) -> impl Iterator<Item = &MainLocus> {
         self.mains.iter()
     }
@@ -226,24 +166,23 @@ impl EntryRow {
 /// The row of programs no snapshot has minted yet, each program named by
 /// its index in `programs`, so [`MainLocus::index_in`] says where a
 /// declaration is. The producer's row, over the programs as they stand:
-/// what lands in the entry, or in the root lowering deploys, before the
+/// what lands in the entry lowering deploys, before the
 /// mint writes there (an environment's constitutions, `--api`'s entry,
 /// GH #1106's generated binding), and a reader handed programs and no
 /// bundle reads there. An injection adds
 /// members to a locus and top-level items after
-/// the existing ones, never a `main locus` or a module, so what it finds
+/// the existing ones, never a `main locus`, so what it finds
 /// is what the snapshot's row names after the mint.
 pub fn entry_row_in(programs: &[&hale_syntax::ast::Program]) -> EntryRow {
     entry_row(&Bundle::new(programs.iter().enumerate().map(|(i, p)| (format!("{i:08}"), *p)).collect()))
 }
 
-/// The root's declaration in `programs` ([`EntryRow::root`]: the entry,
-/// which lowering deploys, else a refused module-nested `main`), by
-/// [`entry_row_in`].
-pub fn root_decl<'p>(programs: &[&'p hale_syntax::ast::Program]) -> Option<&'p LocusDecl> {
+/// The entry's declaration in `programs` ([`EntryRow::entry`], which
+/// lowering deploys), by [`entry_row_in`].
+pub fn entry_decl<'p>(programs: &[&'p hale_syntax::ast::Program]) -> Option<&'p LocusDecl> {
     let row = entry_row_in(programs);
-    let (at, path) = row.root()?.index_in()?;
-    hale_syntax::ast::locus_at(&programs[at].items, path)
+    let (at, index) = row.entry()?.index_in()?;
+    locus_at(&programs[at].items, index)
 }
 
 /// The `entrypoint` family's producer: one walk over the bundle's
@@ -253,38 +192,24 @@ pub fn root_decl<'p>(programs: &[&'p hale_syntax::ast::Program]) -> Option<&'p L
 /// checker's test entries, sync inference's single-program bundle)
 /// builds its own.
 pub fn entry_row(bundle: &Bundle<'_>) -> EntryRow {
-    fn walk(
-        items: &[TopDecl],
-        program: &str,
-        path: &mut Vec<usize>,
-        bundle: &Bundle<'_>,
-        out: &mut Vec<MainLocus>,
-    ) {
-        for (i, item) in items.iter().enumerate() {
-            path.push(i);
+    let mut mains = Vec::new();
+    for (name, program) in &bundle.programs {
+        for (i, item) in program.items.iter().enumerate() {
             match item {
-                TopDecl::Locus(l) if l.is_main => out.push(MainLocus {
+                TopDecl::Locus(l) if l.is_main => mains.push(MainLocus {
                     site: bundle.snapshot.site_id(l.id),
                     name: l.name.name.clone(),
                     span: l.span,
                     imported: l.imported,
-                    module_nested: path.len() > 1,
-                    at: (program.to_string(), path.clone()),
+                    at: (name.to_string(), i),
                 }),
-                TopDecl::Module(m) => walk(&m.items, program, path, bundle, out),
                 _ => {}
             }
-            path.pop();
         }
     }
-    let mut mains = Vec::new();
-    for (name, program) in &bundle.programs {
-        walk(&program.items, name, &mut Vec::new(), bundle, &mut mains);
-    }
-    let entry = match mains.iter().rposition(MainLocus::may_be_the_entry) {
+    let entry = match mains.iter().rposition(|m| !m.imported) {
         Some(i) => Ok(i),
         None if mains.is_empty() => Err(NoEntry::NoMain),
-        None if mains.iter().any(|m| !m.imported) => Err(NoEntry::OnlyModuleNested),
         None => Err(NoEntry::OnlyImported),
     };
     // An imported seed's `fn main` is renamed with its seed, so the name

@@ -300,7 +300,6 @@ impl World {
         fn declared(items: &[TopDecl], w: &mut World, aliases: &mut Vec<(String, TypeExpr)>) {
             for item in items {
                 match item {
-                    TopDecl::Module(m) => declared(&m.items, w, aliases),
                     TopDecl::Locus(l) => {
                         w.loci.insert(l.name.name.clone());
                         for m in &l.members {
@@ -345,7 +344,6 @@ impl World {
         fn collect(key: &str, items: &[TopDecl], w: &mut World) {
             for item in items {
                 match item {
-                    TopDecl::Module(m) => collect(key, &m.items, w),
                     TopDecl::Fn(fd) => {
                         w.fns.insert(fd.name.name.clone(), info(key, fd));
                         if let Some(r) = fd.ret.as_ref().and_then(|t| w.key_of(t)).filter(|t| w.loci.contains(t)) {
@@ -388,7 +386,6 @@ impl World {
         fn free_bodies<'p>(items: &'p [TopDecl], out: &mut Vec<(String, &'p [Param], &'p Block)>) {
             for item in items {
                 match item {
-                    TopDecl::Module(m) => free_bodies(&m.items, out),
                     TopDecl::Fn(fd) => out.push((fd.name.name.clone(), &fd.params, &fd.body)),
                     _ => {}
                 }
@@ -857,7 +854,6 @@ fn walk_fn(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl, diags: &m
 fn walk_items(world: &World, key: &str, items: &[TopDecl], diags: &mut Vec<Diag>) {
     for item in items {
         match item {
-            TopDecl::Module(m) => walk_items(world, key, &m.items, diags),
             TopDecl::Fn(fd) => walk_fn(world, key, None, fd, diags),
             TopDecl::Const(c) => {
                 let mut b = Body::new(world, None, Context::Const(c.name.name.clone()), &[], Deferral::None, diags);

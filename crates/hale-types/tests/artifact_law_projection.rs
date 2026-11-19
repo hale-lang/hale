@@ -706,18 +706,14 @@ fn main() { App { }; }
 /// one diagnostic anchor, so when a diagnostic exists neither row
 /// can claim it. The subject here calls through a fn-typed
 /// parameter (#353) that no function value of the program can be, a
-/// call the walk cannot follow. (It used to be a module-scoped body,
-/// which the summary did not walk until it collected module-nested
-/// bodies, F.40 phase 3, E3a part C; and `run` passed it `id`, which
-/// the call resolves to since F.40 E5.)
+/// call the walk cannot follow. (`run` used to pass it `id`, which the
+/// call resolves to since F.40 E5.)
 #[test]
 fn unenumerated_and_ambiguous_rows_stay_uncertified() {
     let src = r#"
 effect money;
-module billing {
-    @effects(causes: { money })
-    fn poke(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
-}
+@effects(causes: { money })
+fn poke(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
 main locus App {
     params { n: Int = 0; }
     run() { println(1); }

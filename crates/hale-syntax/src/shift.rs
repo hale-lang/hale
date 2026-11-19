@@ -192,7 +192,6 @@ impl Shift for TopDecl {
             TopDecl::Type(x) => x.shift(d),
             TopDecl::Const(x) => x.shift(d),
             TopDecl::Fn(x) => x.shift(d),
-            TopDecl::Module(x) => x.shift(d),
             TopDecl::Interface(x) => x.shift(d),
             TopDecl::Topic(x) => x.shift(d),
             TopDecl::RingLayout(x) => x.shift(d),
@@ -719,7 +718,6 @@ shift_struct!(FnDecl {
     doc,
 });
 shift_struct!(RpcAttr { requires, span });
-shift_struct!(ModuleDecl { name, items, span, id });
 shift_struct!(GenericParam { name, bound, span });
 shift_struct!(Param { name, ty, default, secret, span, doc });
 

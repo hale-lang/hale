@@ -1115,9 +1115,8 @@ impl ViewTypes {
 
 /// Every node of `item` a `views` row may name, in one fixed order: each
 /// body's parameters' names and every expression, binding name and
-/// assignment target of the body (a fn's, a locus member's, a
-/// module's items' in turn). Two parses of one
-/// declaration visit their nodes pairwise.
+/// assignment target of the body (a fn's, a locus member's, in turn). Two
+/// parses of one declaration visit their nodes pairwise.
 pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
     fn params(ps: &[hale_syntax::ast::Param], out: &mut Vec<usize>) {
         for p in ps {
@@ -1289,7 +1288,6 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
                 }
             }
         }
-        TopDecl::Module(m) => m.items.iter().for_each(|i| view_nodes(i, out)),
         _ => {}
     }
 }
@@ -1942,7 +1940,7 @@ struct Declared<'a> {
 
 impl<'a> Declared<'a> {
     fn add(&mut self, items: &'a [TopDecl]) {
-        for item in hale_syntax::ast::flat_decls(items) {
+        for item in items.iter() {
             match item {
                 TopDecl::Locus(l) if l.generics.is_empty() && !l.id.is_none() => {
                     self.loci.push((l.id, l.name.name.as_str()))
@@ -2022,7 +2020,7 @@ impl<'v, 'a> Visit<'v, 'a> {
 pub fn for_each_type_spelling<'a>(items: &'a [TopDecl], f: &mut dyn FnMut(TypeSpelling<'a>, &[String])) {
     let mut visitor = Visit { f, parameters: Vec::new() };
     let f = &mut visitor;
-    for item in hale_syntax::ast::flat_decls(items) {
+    for item in items.iter() {
         match item {
             TopDecl::Type(t) => f.with_parameters(&t.generics, |f| type_body(&t.body, f)),
             TopDecl::Fn(fd) => fn_decl(fd, f),

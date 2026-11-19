@@ -17,7 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    flat_decls, ClosureClause, ClosureDecl, LocusDecl, LocusMember, RecoveryEvent, RecoveryEvents, RecoveryOp, TopDecl,
+    ClosureClause, ClosureDecl, LocusDecl, LocusMember, RecoveryEvent, RecoveryEvents, RecoveryOp, TopDecl,
 };
 use hale_syntax::{Diag, SpanOrigin};
 
@@ -75,13 +75,13 @@ pub struct ClosureEventRows<'b> {
 }
 
 /// The `closures` family's clause rows: every `persists_through(...)` and
-/// `resets_on(...)` clause of every locus the bundle's programs declare
-/// (module-nested ones included), in program order, then declaration
+/// `resets_on(...)` clause of every locus the bundle's programs declare,
+/// in program order, then declaration
 /// order, then clause order.
 pub fn closure_event_rows<'b>(bundle: &Bundle<'b>) -> ClosureEventRows<'b> {
     let mut rows = Vec::new();
     for program in bundle.programs.values().copied() {
-        for item in flat_decls(&program.items) {
+        for item in program.items.iter() {
             let TopDecl::Locus(locus) = item else { continue };
             for member in &locus.members {
                 let LocusMember::Closure(closure) = member else { continue };
@@ -338,7 +338,7 @@ fn unreached_events(reach: &Reach<'_, '_>, out: &mut Vec<Violation>) {
         .bundle
         .programs
         .values()
-        .flat_map(|p| flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .filter_map(|d| match d {
             TopDecl::Locus(l) => Some((l.name.name.as_str(), l.generics.iter().map(|g| g.name.name.as_str()).collect())),
             _ => None,

@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use hale_syntax::ast::{flat_decls, Expr, Literal, LocusMember, ParamInit, TopDecl};
+use hale_syntax::ast::{Expr, Literal, LocusMember, ParamInit, TopDecl};
 
 /// What the runtime serves on a `std::observe::Probes` port.
 pub(crate) const LIVENESS_PATH: &str = "/healthz";
@@ -690,7 +690,7 @@ fn probes_of(seed: &Path, name: &str, notes: &mut Vec<String>) -> Option<i64> {
         else {
             continue;
         };
-        for d in flat_decls(&prog.items) {
+        for d in prog.items.iter() {
             let TopDecl::Locus(l) = d else { continue };
             if !l.is_main {
                 continue;

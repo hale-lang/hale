@@ -157,7 +157,6 @@ fn items(items_: &mut [TopDecl], n: &mut usize) {
                     }
                 }
             }
-            TopDecl::Module(m) => items(&mut m.items, n),
             _ => {}
         }
     }

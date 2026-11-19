@@ -1,10 +1,9 @@
 //! F.40 phase 3, the entry row's consumers: the corrections each reader
 //! of `main` made when it switched to the row, as `hale check` says
 //! them. E0 decided the shapes (`check_entry_decisions.rs`): an imported
-//! `main locus` is not the entry, a module-nested one is not either, and
-//! with several the entry is the last; the placement-safety rules read
-//! the row's lowering root, the `main locus` lowering deploys (the
-//! first of the seed's own, a module-nested one included). Each test
+//! `main locus` is not the entry, and with several the entry is the
+//! last; the placement-safety rules read the row's entry, the `main
+//! locus` lowering deploys. Each test
 //! here pins one reader's answer on one of those shapes, beside a
 //! control that shows the reading still fires where it should. Section
 //! 1 is the checker's readers; section 2 the retired `--api` flag and
@@ -82,21 +81,6 @@ fn the_async_io_advisory_reads_the_deployed_root_only() {
     ));
     assert!(other.contains("more than one `main` locus declared"), "{other}");
     assert!(!other.contains(ADVISORY), "the other main's pool is not spawned: {other}");
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// A module-nested `main locus` is not the entry, but lowering deploys
-/// it and spawns its pools, so the advisory reads its placement (the
-/// placement-safety side of E0's decision 2). Before the row, only a
-/// top-level `main locus` was read, and the nested one's pool went
-/// unadvised.
-#[test]
-fn the_async_io_advisory_reads_a_module_nested_root() {
-    let root = scratch("implied_nested");
-    let body: String =
-        format!("main locus App {{\n{PLACED_ON_WEB}}}\n").lines().map(|l| format!("    {l}\n")).collect();
-    let out = check(&seed(&root, "nested", &format!("{BLOCKING_WORKER}\nmodule inner {{\n{body}}}\n\nfn main() {{ App {{ }}; }}\n")));
-    assert!(out.contains(ADVISORY), "the deployed nested main's pool is advised on: {out}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

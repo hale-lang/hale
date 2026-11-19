@@ -20,7 +20,7 @@
 //! Syntactic, over the program as written, and run once per check: it
 //! costs a program nothing at run time.
 
-use hale_syntax::ast::{flat_decls, Block, Expr, LocusMember, Stmt, TopDecl};
+use hale_syntax::ast::{Block, Expr, LocusMember, Stmt, TopDecl};
 use hale_syntax::error::Diag;
 use hale_syntax::Span;
 
@@ -31,7 +31,7 @@ use crate::symbol::Bundle;
 pub(crate) fn stale_route_params_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     let mut out = Vec::new();
     for p in bundle.programs.values() {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             match d {
                 TopDecl::Fn(f) => body(&f.body, &mut out),
                 TopDecl::Locus(l) => {

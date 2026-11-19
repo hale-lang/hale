@@ -118,7 +118,7 @@ pub fn is_fleet_seed(path: &Path) -> bool {
             .ok()
             .and_then(|src| hale_syntax::parse_source(&src).ok())
             .is_some_and(|p| {
-                hale_syntax::ast::flat_decls(&p.items).any(|d| matches!(d, TopDecl::Fleet(_)))
+                p.items.iter().any(|d| matches!(d, TopDecl::Fleet(_)))
             })
     })
 }
@@ -208,7 +208,7 @@ pub fn check_fleet_seed(
                 let row = hale_types::entry::entry_row_in(&progs);
                 let main = row.entry().map(|m| m.name.clone());
                 for p in theirs.values() {
-                    for d in hale_syntax::ast::flat_decls(&p.items) {
+                    for d in p.items.iter() {
                         match d {
                             TopDecl::Locus(l) => {
                                 let kind = if main.as_deref() == Some(l.name.name.as_str()) {
@@ -299,7 +299,7 @@ pub fn check_fleet_seed(
         None => (BTreeMap::new(), Vec::new(), Vec::new()),
     };
     let merged: Vec<&TopDecl> =
-        linked.values().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)).collect();
+        linked.values().flat_map(|p| p.items.iter()).collect();
     // The seed a merged declaration is in: the alias's own when the file
     // is that single-file seed, else the file's directory.
     let seed_of = |pos: u32| -> Option<PathBuf> {
@@ -369,9 +369,7 @@ pub fn check_fleet_seed(
                 let is_main = match hale_frontend::frontend::parse_checkable(&seed, &disk) {
                     Ok((_, _, theirs, _, their_bases, _)) => {
                         let progs: Vec<&hale_syntax::ast::Program> = theirs.values().collect();
-                        let row = hale_types::entry::entry_row_in(&progs);
-                        hale_types::entry::root_decl(&progs)
-                            .filter(|_| row.entry().is_some())
+                        hale_types::entry::entry_decl(&progs)
                             .and_then(|m| at(m.name.span.start.0, &their_bases))
                             == Some(here)
                     }

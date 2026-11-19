@@ -350,7 +350,6 @@ impl<'p> UseScopes<'p, '_> {
                         self.locus_member(m);
                     }
                 }
-                TopDecl::Module(md) => self.items(&md.items),
                 TopDecl::Const(c) => self.detached(&c.value),
                 TopDecl::Type(t) => self.type_decl(t),
                 TopDecl::Interface(_)
@@ -702,10 +701,6 @@ fn origins_of(p: &Program, out: &mut BTreeMap<u32, Origin>) {
                 TopDecl::Type(t) if t.synthetic && t.name.name == "JsonError" => {
                     Some(Origin::JsonParsers)
                 }
-                TopDecl::Module(md) => {
-                    items(&md.items, out);
-                    None
-                }
                 _ => None,
             };
             if let Some(origin) = origin {
@@ -730,7 +725,6 @@ fn origins_of(p: &Program, out: &mut BTreeMap<u32, Origin>) {
                         }
                     }
                 }
-                TopDecl::Module(md) => synthesized_hooks(&md.items, out),
                 _ => {}
             }
         }

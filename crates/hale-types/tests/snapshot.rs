@@ -142,11 +142,9 @@ fn a_pre_numbered_node_keeps_its_id_and_the_counter_continues_past_it() {
 }
 
 #[test]
-fn nested_modules_and_generated_declarations_are_sites() {
+fn generated_declarations_are_sites() {
     let src = r#"
-module m {
-    locus Inner { params { n: Int = 0; } }
-}
+locus Inner { params { n: Int = 0; } }
 type Order { id: Int; }
 fn main() { let o = Order { id: 1 }; }
 "#;
@@ -165,7 +163,7 @@ fn main() { let o = Order { id: 1 }; }
         for_each_site(&plain, &mut |k, _, _| out.push(k));
         out
     };
-    assert!(kinds.contains(&SiteKind::Module) && kinds.contains(&SiteKind::Locus));
+    assert!(kinds.contains(&SiteKind::Locus));
 }
 
 /// The sites of `item`, by index.

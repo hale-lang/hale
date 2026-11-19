@@ -177,17 +177,6 @@ fn main() { App { }; }
     assert!(log.inferred.is_none(), "inference reads hashmap forms only");
 }
 
-#[test]
-fn a_module_nested_form_has_a_row_and_no_inference() {
-    let r = rows(&two_writers("").replace(
-        "@form(hashmap)\nlocus Registry {\n    capacity { pool entries of Entry indexed_by k; }\n}",
-        "module store {\n@form(hashmap)\nlocus Registry {\n    capacity { pool entries of Entry indexed_by k; }\n}\n}",
-    ));
-    let row = r.named("Registry").expect("a nested form has its row");
-    assert!(row.module_nested);
-    assert_eq!(row.effective, Discipline::None, "inference reads the top level, as it always has");
-}
-
 /// `App` reads its `Registry`, placed on another pool, and a `Writer`
 /// on a third pool writes the same instance, handed it as `self.reg`. A
 /// source the placement table cannot link (`self.reg`) is reached from

@@ -252,7 +252,7 @@ fn a_users_row_never_reaches_a_stdlib_expression_at_its_span() {
 #[test]
 fn a_user_fn_named_like_the_stdlib_converts() {
     let stdlib = hale_types::stdlib_bodies::program().expect("the stdlib parses");
-    let taken = hale_syntax::ast::flat_decls(&stdlib.items)
+    let taken = stdlib.items.iter()
         .find_map(|item| match item {
             hale_syntax::ast::TopDecl::Fn(f) if f.name.name.starts_with("__") => Some(f.name.name.clone()),
             _ => None,

@@ -194,7 +194,7 @@ fn an_accept_of_the_births_specialization_owns_it() {
 #[test]
 fn two_loci_of_one_name_judge_the_first_declaration() {
     let program = format!(
-        "{}module b {{\n    locus Child {{ params {{ id: Int = 0; }} }}\n}}\n{MAIN}",
+        "{}locus Child {{ params {{ id: Int = 0; }} }}\n{MAIN}",
         handler_birth(CHILD, "", "Child { id: 1 };")
     );
     let out = assert_unowned("duplicate", &program, "Child", "the first declaration is judged");

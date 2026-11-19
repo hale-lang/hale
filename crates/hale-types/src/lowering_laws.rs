@@ -22,7 +22,6 @@ use hale_syntax::ast::{
 use hale_syntax::{Diag, Span, SpanOrigin};
 
 use crate::binding_rows::BindingRows;
-use crate::entry::EntryRow;
 use crate::law::{Law, RuleId, Severity, Violation, WitnessStep};
 use crate::ownership_graph::{ExpandedLiteral, OtherPosition, OwnershipGraph};
 use crate::placement::{Decision, DomainKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
@@ -37,9 +36,6 @@ pub struct LoweringLawInputs<'a> {
     pub placement: &'a PlacementTable,
     /// The binding rows: the topic an adapter's binding entry names.
     pub bindings: &'a BindingRows,
-    /// The entry row: whether the seed's only `main locus` is
-    /// module-nested, which lowering does not deploy.
-    pub entry: &'a EntryRow,
     /// The ownership graph, on request: which instantiation sites bubble
     /// to an owner on another thread. Asked for only when the placement
     /// table runs something off the main thread.
@@ -62,8 +58,6 @@ const RULE_6: RuleId = RuleId::registered("semantics/placement", "6");
 const RULE_17: RuleId = RuleId::registered("semantics/placement", "17");
 /// Rule 18, every placement entry is consumed by a locus literal.
 const RULE_18: RuleId = RuleId::registered("semantics/placement", "18");
-/// Decision 2: the entry is top-level.
-const TOP_LEVEL_ENTRY: RuleId = RuleId::registered("verification/structural", "module-nested-main");
 /// A cross-pool spawn is fire-and-forget.
 const CROSS_POOL_VALUE: RuleId = RuleId::registered("verification/structural", "cross-pool-spawn-as-a-value");
 /// GH #1942: a cross-pool child is born from a marshaled payload.
@@ -76,8 +70,7 @@ const SELF_CONTAINING_RECORD: RuleId = RuleId::registered("verification/structur
 /// Every law that replaced a lowering backstop, over `bundle`.
 pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec<Diag> {
     let rows = LawRows { bundle, inputs };
-    let mut diags = Law { rule: TOP_LEVEL_ENTRY, eval: module_nested_main_is_not_the_entry }.diags(&rows);
-    diags.extend(Law { rule: RULE_6, eval: pinned_features }.diags(&rows));
+    let mut diags = Law { rule: RULE_6, eval: pinned_features }.diags(&rows);
     diags.extend(Law { rule: RULE_17, eval: pinned_root_in_a_loop }.diags(&rows));
     diags.extend(Law { rule: RULE_18, eval: placement_entry_consumed }.diags(&rows));
     diags.extend(Law { rule: CROSS_POOL_VALUE, eval: cross_pool_spawn_used_as_a_value }.diags(&rows));
@@ -85,33 +78,6 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
     diags.extend(Law { rule: SELF_CONTAINING, eval: self_containing_locus }.diags(&rows));
     diags.extend(Law { rule: SELF_CONTAINING_RECORD, eval: self_containing_record }.diags(&rows));
     diags
-}
-
-/// Decision 2 (F.40 phase 3, E0): a `main locus` inside a `module { }`
-/// is not the entry, as a `fn main` inside one is not the entry point
-/// (`spec/semantics.md`, "The entry locus"). Lowering deploys the entry
-/// and nothing else (L4), so a seed whose only `main locus` is
-/// module-nested would build a program whose `main locus` never runs;
-/// it is refused instead, once, at that locus's name. One more
-/// diagnostic, never a replacement: every other rule still judges the
-/// declaration and its members as it judges a top-level one (GH #825),
-/// so a program refused today for another reason is refused for both.
-/// A module-nested `main` beside an entry is not refused here (rule 1
-/// counts it).
-fn module_nested_main_is_not_the_entry(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
-    let (bundle, inputs) = (rows.bundle, rows.inputs);
-    let Some(main) = inputs.entry.refused() else { return };
-    let Some(decl) = main.decl(bundle) else { return };
-    out.push(Violation::error(
-        TOP_LEVEL_ENTRY,
-        decl.name.span,
-        format!(
-            "the entry must be top-level: `main locus {}` inside `module {}` is not the program's \
-             entry, and nothing else in the seed is — move it out of the module",
-            main.name,
-            main.modules(bundle).join("::"),
-        ),
-    ));
 }
 
 /// A cross-pool spawn is fire-and-forget (spec/semantics.md, "accept
@@ -337,7 +303,6 @@ fn cross_pool_child_shape(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) 
                 TopDecl::Locus(l) => {
                     out.entry(l.name.name.as_str()).or_insert(l);
                 }
-                TopDecl::Module(m) => collect(&m.items, out),
                 _ => {}
             }
         }
@@ -428,7 +393,7 @@ fn cross_pool_child_shape(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) 
 /// literal builds the root, and the entry's template takes its defaults);
 /// both spellings are judged, and a default every literal overrides is
 /// dead text, not a dropped placement. Read off the placement table: the
-/// root is the entry row's root, and its literals are every literal of the
+/// root is the entry row's entry, and its literals are every literal of the
 /// root declaration as resolved (an imported seed's `main` is not the
 /// root, and a literal of another locus that shares its name is not one
 /// of them): the table's constructions, written in a scope's bodies, and
@@ -625,7 +590,6 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
                 }
                 TopDecl::Const(c) => self.expr(&c.value),
                 TopDecl::Type(td) => self.type_defaults(td),
-                TopDecl::Module(m) => self.items(&m.items),
                 _ => {}
             }
         }
@@ -850,8 +814,7 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
 /// iteration.
 ///
 /// Read off the placement table: each of the root's constructions
-/// (every literal of the root declaration, resolved, a module-qualified
-/// one included) whose bound says it is written inside a loop body, and
+/// (every literal of the root declaration, resolved) whose bound says it is written inside a loop body, and
 /// whose template holds a row a `pinned` entry decides. A factory called
 /// in a loop is not one (its literal is not in a loop, and each call
 /// joins its own thread at the factory's exit), nor is an adapter, which
@@ -1129,7 +1092,6 @@ fn declarations<'a>(bundle: &'a Bundle<'a>) -> BTreeMap<SiteRef, &'a LocusDecl> 
                         out.insert(site(id), l);
                     }
                 }
-                TopDecl::Module(m) => collect(&m.items, ids, site, out),
                 _ => {}
             }
         }
@@ -1225,10 +1187,10 @@ type ContainmentEdge = (ContainmentState, Option<String>);
 /// together — the gating every other cross-file rule uses, arrived at
 /// by having nothing to say rather than by a flag; a build checks the
 /// whole seed. Keying a locus by its bare name is sound because loci
-/// share one namespace across a seed's modules (two of one name are
-/// refused as a duplicate top-level name), and a literal through a
-/// module or import path names a locus the seed's own check refuses or
-/// one whose own seed's check judges it.
+/// share one namespace across a seed's files (two of one name are
+/// refused as a duplicate top-level name), and a literal through an
+/// import path names a locus the seed's own check refuses or one whose
+/// own seed's check judges it.
 fn self_containing_locus(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
     let bundle = rows.bundle;
     fn collect<'a>(
@@ -1240,7 +1202,6 @@ fn self_containing_locus(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) {
                 TopDecl::Locus(l) => {
                     out.entry(l.name.name.as_str()).or_insert(l);
                 }
-                TopDecl::Module(m) => collect(&m.items, out),
                 _ => {}
             }
         }
@@ -1496,7 +1457,6 @@ fn self_containing_record(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>) 
                 TopDecl::Type(t) => {
                     out.entry(t.name.name.as_str()).or_insert(t);
                 }
-                TopDecl::Module(m) => collect(&m.items, out),
                 _ => {}
             }
         }

@@ -221,7 +221,6 @@ fn resolve_alias_targets(
                         }
                     }
                 }
-                TopDecl::Module(m) => collect(&m.items, out, scalars),
                 _ => {}
             }
         }
@@ -554,7 +553,7 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
 fn interface_aliases(bundle: &Bundle<'_>, scope: &TopScope) -> BTreeMap<String, String> {
     let mut targets: BTreeMap<String, String> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in hale_syntax::ast::flat_decls(&program.items) {
+        for item in program.items.iter() {
             let TopDecl::Type(td) = item else { continue };
             let TypeDeclBody::Alias(TypeExpr::Named { path, generic_args, .. }) = &td.body else { continue };
             if path.segments.len() == 1 && generic_args.is_empty() {
@@ -620,7 +619,6 @@ fn bundle_uses_form_machinery(bundle: &Bundle<'_>) -> bool {
                 }
                 _ => false,
             },
-            TopDecl::Module(m) => scan_items(&m.items),
             _ => false,
         })
     }
@@ -638,7 +636,6 @@ fn bundle_uses_fail_topics(bundle: &Bundle<'_>) -> bool {
                 t.on_unmatched,
                 Some(hale_syntax::ast::UnmatchedPolicy::Fail)
             ),
-            TopDecl::Module(m) => scan_items(&m.items),
             _ => false,
         })
     }
@@ -650,7 +647,7 @@ fn bundle_uses_fail_topics(bundle: &Bundle<'_>) -> bool {
 /// gates `BusUnmatchedKey`: no program without a range sees the name.
 fn bundle_declares_a_range(bundle: &Bundle<'_>) -> bool {
     bundle.programs.values().any(|p| {
-        flat_decls(&p.items).any(|item| {
+        p.items.iter().any(|item| {
             matches!(item, TopDecl::Type(t) if matches!(&t.body, TypeDeclBody::Scalar(s)
                 if s.clauses.iter().any(|c| matches!(c, ScalarClause::Range { .. }))))
         })
@@ -662,7 +659,7 @@ fn bundle_declares_a_range(bundle: &Bundle<'_>) -> bool {
 /// injection: no program without one sees the name.
 fn bundle_declares_a_quantity(bundle: &Bundle<'_>) -> bool {
     bundle.programs.values().any(|p| {
-        flat_decls(&p.items).any(|item| {
+        p.items.iter().any(|item| {
             matches!(item, TopDecl::Type(t) if matches!(&t.body, TypeDeclBody::Scalar(s)
                 if matches!(s.kind, Some(hale_syntax::ast::ScalarKind::Quantity | hale_syntax::ast::ScalarKind::Point))
                     || s.denom.is_some()))
@@ -683,10 +680,6 @@ fn collect_type_names(
             TopDecl::Interface(i) => ("interface", &i.name),
             TopDecl::Topic(t) => ("topic", &t.name),
             TopDecl::RingLayout(r) => ("ring layout", &r.name),
-            TopDecl::Module(m) => {
-                collect_type_names(&m.items, known, kinds, diags);
-                continue;
-            }
             _ => continue,
         };
         insert_name(known, kinds, kind, name, diags);
@@ -840,9 +833,6 @@ fn register_top_decls(
             TopDecl::Type(t) => register_type(t, known, scope, diags),
             TopDecl::Const(c) => register_const(c, known, scope, diags),
             TopDecl::Fn(f) => register_fn(f, known, scope, diags),
-            TopDecl::Module(m) => {
-                register_top_decls(&m.items, known, topics, scope, diags);
-            }
             TopDecl::Interface(i) => register_interface(i, known, scope, diags),
             TopDecl::Topic(t) => register_topic(t, known, topics, scope, diags),
             TopDecl::RingLayout(r) => register_ring_layout(r, scope, diags),
@@ -1681,7 +1671,7 @@ pub(crate) fn resolve_type_expr_with(
                 // sealed stdlib loci are registered (see
                 // `resolve_bundle`), so every other qualified path —
                 // builtin namespaces with no Hale source, unsealed
-                // stdlib loci, cross-module paths — still lands on
+                // stdlib loci, cross-seed paths — still lands on
                 // `Unknown` exactly as before.
                 //
                 // GH #833: the same rule for a CROSS-SEED path. When
@@ -2445,9 +2435,6 @@ fn scan_items_for_stdlib_usage(items: &[TopDecl], out: &mut StdlibErrorUsage) {
                 }
             }
             TopDecl::Fn(f) => scan_block_for_stdlib_usage(&f.body, out),
-            TopDecl::Module(m) => {
-                scan_items_for_stdlib_usage(&m.items, out)
-            }
             _ => {}
         }
     }

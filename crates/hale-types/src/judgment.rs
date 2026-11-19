@@ -4937,7 +4937,6 @@ pub fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
                         _ => false,
                     })
             }
-            TopDecl::Module(m) => walk(&m.items),
             _ => false,
         })
     }

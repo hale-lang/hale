@@ -147,8 +147,15 @@ would collide with the syntax the word introduces at the use site:
 
 ```
 locus           type            const           fn
-import          export          module          interface
+import          export          interface
 ```
+
+`module` is not a keyword (F.57): the `module NAME { … }` declaration
+was removed, and `module` lexes as an ordinary identifier, so a local,
+a field, a parameter or a fn may be named `module`. A program that
+still writes `module NAME {` at top-level declaration position is
+refused there with one located error (a module is a directory,
+reached by `import`).
 
 `interface` (F.20) declares a structural interface — a named set
 of method signatures. Any locus whose method set is a superset
@@ -1048,9 +1055,7 @@ The rule is on the **declaration**, not the name. A locus
 method and an `interface` method may both still be called `sum`, `len` or `contains` — they are
 reached through a receiver (`self.sum()`, `b.len()`), which no
 builtin claims, and the standard library's own `mirror_ring.hl`
-and `bytes_builder.hl` declare `fn len()`. A `module { }` item
-is a free fn (its items resolve into the same global fn
-namespace) and is refused.
+and `bytes_builder.hl` declare `fn len()`.
 
 Everything else in this section's table stays available to a
 free `fn`. `B`, `c`, `sigma`, `phi`, `k_max`, `span_max`,

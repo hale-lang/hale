@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use hale_syntax::ast::{flat_decls, Expr, Program, QualifiedName, TopDecl, TypeDeclBody, TypeExpr};
+use hale_syntax::ast::{Expr, Program, QualifiedName, TopDecl, TypeDeclBody, TypeExpr};
 use hale_syntax::Diag;
 
 use crate::listener_window::{for_each_expression_root, visit_block, visit_expr, Root, Visited};
@@ -54,7 +54,7 @@ pub fn json_codec_laws(bundle: &Bundle<'_>) -> Vec<Diag> {
     let shapes = Shapes::of_all(&slices);
     let mut types: BTreeMap<&str, &hale_syntax::ast::TypeDecl> = BTreeMap::new();
     for p in &programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             if let TopDecl::Type(td) = d {
                 types.entry(td.name.name.as_str()).or_insert(td);
             }
@@ -157,7 +157,7 @@ pub fn json_tag_laws(programs: &[&Program]) -> Vec<Diag> {
     let shapes = Shapes::of_all(&slices);
     let mut diags = Vec::new();
     for p in programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             let TopDecl::Type(td) = d else { continue };
             if let TypeDeclBody::Enum(vs) = &td.body {
                 enum_tag_laws(&td.name.name, vs, &shapes, &mut diags);

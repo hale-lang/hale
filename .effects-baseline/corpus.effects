@@ -359,16 +359,6 @@ call_through  does={alloc}
 churn  does={alloc}
 main  does={syscall,alloc,stdio}
 serve  does={alloc}
-### 91-module-decls
-App::run  does={syscall,publish,alloc,stdio}
-devices::Counter::bump  does={unclassified}
-devices::Sensor::value  does={unclassified}
-geo::manhattan  does={unclassified}
-main  does={alloc}
-outer::inner::larger  does={unclassified}
-outer::inner::twice  does={unclassified}
-vocabulary::read_through  does={unclassified}
-wiring::Listener::on_ping  does={unclassified}
 ### 92-build-an-api
 App::run  does={syscall,block,publish,time,alloc}
 Shop::__rpc_call_1  does={syscall,publish,alloc,stdio}

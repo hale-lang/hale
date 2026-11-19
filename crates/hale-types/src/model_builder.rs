@@ -336,7 +336,6 @@ pub fn derive_application_model_over(
                     t.name.name.as_str(),
                     t.name.span,
                 )),
-                TopDecl::Module(m) => walk_decls(&m.items, out),
                 _ => {}
             }
         }
@@ -371,7 +370,6 @@ pub fn derive_application_model_over(
                     TopDecl::Type(t) => {
                         out.insert(t.name.name.as_str(), t);
                     }
-                    TopDecl::Module(m) => walk_types(&m.items, out),
                     _ => {}
                 }
             }
@@ -660,17 +658,13 @@ pub fn derive_application_model_over(
     // A handler nothing minted keys by its name, in `fn_rows`.
     let mut handler_fn_rows: BTreeMap<u32, (String, FnInfo)> = BTreeMap::new();
     {
-        // A declaration inside a module is analyzed like one at the top
-        // level: the behavior summary collects module-nested bodies
-        // (F.40 phase 3, E3a part C), so they no longer hole out as
-        // unanalyzed (review round 7's Change 2 shape).
         let mut frees = Vec::new();
-        let mut mod_loci = Vec::new();
+        let mut loci = Vec::new();
         for pr in &programs {
-            for item in hale_syntax::ast::flat_decls(&pr.items) {
+            for item in pr.items.iter() {
                 match item {
                     TopDecl::Fn(f) => frees.push((f.name.name.as_str(), f.name.span, f.id)),
-                    TopDecl::Locus(l) => mod_loci.push(l),
+                    TopDecl::Locus(l) => loci.push(l),
                     _ => {}
                 }
             }
@@ -688,7 +682,7 @@ pub fn derive_application_model_over(
                 },
             );
         }
-        for l in &mod_loci {
+        for l in &loci {
             let ld = l.name.name.clone();
             let ld_display = name(&ld);
             for m in &l.members {
@@ -1340,10 +1334,8 @@ pub fn derive_application_model_over(
                         // The summary resolves callees against its
                         // own analyzed-body set only, so a direct
                         // call to a declared fn it holds no row for
-                        // arrives Unresolved (a module-scoped fn's
-                        // did until the summary collected
-                        // module-nested bodies, F.40 phase 3) — but
-                        // the DECLARATION universe knows the target.
+                        // arrives Unresolved — but the DECLARATION
+                        // universe knows the target.
                         // The edge is authored fact and must exist
                         // ("a concrete path beats a hole" is
                         // impossible if the path is dropped); a
@@ -1584,7 +1576,6 @@ pub fn derive_application_model_over(
                             }
                         }
                     }
-                    TopDecl::Module(m) => walk_members(&m.items, out),
                     _ => {}
                 }
             }
@@ -2152,10 +2143,8 @@ pub fn derive_application_model_over(
     // Round 10: a locus is UNANALYZABLE only when it carries
     // executable members the engines never walked, and the flag is
     // recomputable at admission from the member coverage. Every
-    // member body is walked (a module-nested locus's included since
-    // the behavior summary collects module-nested bodies, E3a part
-    // C; failure handlers do not count), so every locus is
-    // analyzable.
+    // member body is walked (failure handlers do not count), so every
+    // locus is analyzable.
     for (n, row) in &locus_rows {
         let pid = intern_span(&mut records, row.span);
         e.loci.push(LocusDecl {
@@ -2734,7 +2723,6 @@ pub fn derive_application_model_over(
                 for item in items {
                     match item {
                         TopDecl::Locus(l) => f(l),
-                        TopDecl::Module(md) => walk(&md.items, f),
                         _ => {}
                     }
                 }

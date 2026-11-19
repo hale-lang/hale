@@ -200,7 +200,6 @@ fn normalize_unit_return_annotations(items: &mut [TopDecl]) {
                     }
                 }
             }
-            TopDecl::Module(m) => normalize_unit_return_annotations(&mut m.items),
             _ => {}
         }
     }

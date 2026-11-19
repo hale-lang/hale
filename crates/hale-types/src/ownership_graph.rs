@@ -304,7 +304,7 @@ pub enum ExpandedLiteral {
 }
 
 /// One locus declaration, in the bundle's declaration order (programs
-/// in bundle order, then items in source order, modules flattened).
+/// in bundle order, then items in source order).
 /// Two declarations may share a name; each is its own row.
 #[derive(Debug, Clone)]
 pub struct LocusDeclRow {
@@ -1130,7 +1130,6 @@ fn free_fn_names(bundle: &Bundle<'_>) -> BTreeMap<SiteId, String> {
                         out.insert(id, f.name.name.clone());
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, ids, out),
                 _ => {}
             }
         }
@@ -1577,9 +1576,6 @@ fn collect_ownership_walk(
                     collect_other(&c.value, usize::MAX, OtherPosition::PerUse(PerUsePosition::Const), other)
                 }
                 TopDecl::Type(td) => collect_type_defaults(td, usize::MAX, other),
-                TopDecl::Module(m) => {
-                    walk(&m.items, cx, facts, declarations, accept_rows, free_fn_sites, binding_sites, other)
-                }
                 _ => {}
             }
         }

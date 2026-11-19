@@ -114,7 +114,7 @@ fn holds(target: &str) -> Seen {
 /// the model's.
 #[test]
 fn the_stdlibs_row_is_lowerings_alone_where_the_program_does_not_name_it() {
-    let s = holds("crates/hale-codegen/tests/fixtures/examples/91-module-decls");
+    let s = holds("crates/hale-codegen/tests/fixtures/examples/74-effect-contracts");
     assert!(s.plan.subjects.iter().any(|p| p.subject == "log.**"), "the plan dispatches the logger's subject");
     assert!(!s.model.subjects.iter().any(|p| p.subject == "log.**"), "the model names no `log.**`");
     assert!(!s.dumped.contains("log.**"));

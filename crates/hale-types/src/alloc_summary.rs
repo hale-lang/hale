@@ -189,12 +189,12 @@ fn stdlib_locus_facts() -> &'static (BTreeSet<String>, BTreeSet<String>) {
         let mut loci = BTreeSet::new();
         let mut fns = BTreeSet::new();
         if let Some(p) = crate::stdlib_bodies::program() {
-            for item in flat_decls(&p.items) {
+            for item in p.items.iter() {
                 if let TopDecl::Locus(l) = item {
                     loci.insert(l.name.name.clone());
                 }
             }
-            for item in flat_decls(&p.items) {
+            for item in p.items.iter() {
                 if let TopDecl::Fn(f) = item {
                     if f.ret.as_ref().and_then(type_expr_name).is_some_and(|t| loci.contains(&t)) {
                         fns.insert(f.name.name.clone());
@@ -1110,8 +1110,8 @@ pub struct FnSummary {
     /// The row is a `mode` body.
     pub mode: bool,
     /// The declaration's position in the order the summary walks the
-    /// programs' declarations: program by program, a module's in place,
-    /// a locus's members in order.
+    /// programs' declarations: program by program, a locus's members in
+    /// order.
     pub decl_index: usize,
     /// The struct literals stored whole into a `self` field with every
     /// init scalar or static (`self.f = P { x: 1 }`): codegen copies
@@ -1392,8 +1392,7 @@ pub struct AllocSummary {
 /// A body of the program the reveal rule reads (`secret_reveal`) that is
 /// no fn's row: an `on_failure` handler, a params block's initializers, a
 /// constant's value, a `birth_check`, a
-/// synthesized hook, each wherever it is declared (a `module { }`'s
-/// included), and every subexpression a walk does not descend into (a
+/// synthesized hook, each wherever it is declared, and every subexpression a walk does not descend into (a
 /// callee that is no name). Each is walked as a row is, and kept
 /// beside the rows rather than among them, so the judgments over the rows
 /// see what they saw; the declaration dependents relation
@@ -2475,7 +2474,7 @@ fn collect_sync_holding_loci(
     out: &mut BTreeSet<String>,
 ) {
     for program in programs {
-        for item in flat_decls(&program.items) {
+        for item in program.items.iter() {
             let TopDecl::Locus(l) = item else { continue };
             for m in &l.members {
                 let LocusMember::Params(pb) = m else { continue };
@@ -2504,7 +2503,7 @@ impl AllocSummary {
     /// engine reads both: the summary holds none of the program's own.
     pub fn add_sync_forms(&mut self, programs: &[&Program], forms: &crate::form_rows::FormRows) {
         for program in programs {
-            for item in flat_decls(&program.items) {
+            for item in program.items.iter() {
                 if let TopDecl::Locus(l) = item {
                     if forms.synchronizes(l) {
                         self.sync_forms.insert(l.name.name.clone());
@@ -2523,7 +2522,7 @@ impl AllocSummary {
         programs: &[&Program],
         forms: &crate::form_rows::FormRows,
     ) -> std::borrow::Cow<'_, AllocSummary> {
-        let adds = programs.iter().flat_map(|p| flat_decls(&p.items)).any(|item| {
+        let adds = programs.iter().flat_map(|p| p.items.iter()).any(|item| {
             matches!(item, TopDecl::Locus(l)
                 if forms.synchronizes(l) && !self.sync_forms.contains(&l.name.name))
         });
@@ -2556,7 +2555,7 @@ fn interface_admits_by_name(programs: &[&Program]) -> BTreeMap<String, BTreeSet<
     let mut loci: Vec<(&str, BTreeSet<&str>)> = Vec::new();
     let mut aliases: BTreeMap<&str, &str> = BTreeMap::new();
     for program in programs {
-        for item in flat_decls(&program.items) {
+        for item in program.items.iter() {
             match item {
                 TopDecl::Interface(i) => {
                     ifaces.push((&i.name.name, i.methods.iter().map(|m| m.name.name.as_str()).collect()))
@@ -2696,7 +2695,6 @@ pub fn summarize_within(
                     TopDecl::Fn(f) => {
                         out.insert(f.name.name.clone());
                     }
-                    TopDecl::Module(m) => collect_fns(&m.items, out),
                     _ => {}
                 }
             }
@@ -2720,17 +2718,12 @@ pub fn summarize_within(
     // itself (`hale check` over a stdlib file) declares what the analysis
     // copy beside it declares; the program's declaration is the row, and
     // the copy's of the same name stays out.
-    //
-    // Every declaration pass below walks `module { … }` nesting
-    // (`flat_decls`): a module is a namespace, not an analysis boundary
-    // (GH #764), and the resolver keys a nested declaration by its bare
-    // name, so the summary keys it the same way.
     let mut declared_by_program: BTreeSet<String> = BTreeSet::new();
     for (program, ids) in identified {
         if is_stdlib_copy(ids) {
             continue;
         }
-        for item in flat_decls(&program.items) {
+        for item in program.items.iter() {
             match item {
                 TopDecl::Fn(f) => declared_by_program.insert(f.name.name.clone()),
                 TopDecl::Locus(l) => declared_by_program.insert(l.name.name.clone()),
@@ -2762,23 +2755,24 @@ pub fn summarize_within(
     let classes = crate::effect_classes::EffectClassTable::of(programs);
     // The copy's declarations outside the reach, whose rows lack the
     // column's copies. A body's declaration is its fn's, or for a locus
-    // member its locus's; each is in one top-level item of the copy.
+    // member its locus's; each is a top-level item of the copy.
     let mut beyond_items: BTreeMap<u32, usize> = BTreeMap::new();
     let mut beyond_loci: BTreeMap<String, usize> = BTreeMap::new();
     if let Some(reach) = reach {
         for (program, ids) in identified.iter().filter(|(_, ids)| is_stdlib_copy(ids)) {
-            for (top, outer) in program.items.iter().enumerate().filter(|(top, _)| !reach.contains(*top)) {
-                for item in flat_decls(std::slice::from_ref(outer)).filter(|item| !shadowed(ids, item)) {
-                    match item {
-                        TopDecl::Fn(f) => {
-                            beyond_items.insert(f.id.0, top);
-                        }
-                        TopDecl::Locus(l) => {
-                            beyond_items.insert(l.id.0, top);
-                            beyond_loci.insert(l.name.name.clone(), top);
-                        }
-                        _ => {}
+            for (top, item) in program.items.iter().enumerate().filter(|(top, _)| !reach.contains(*top)) {
+                if shadowed(ids, item) {
+                    continue;
+                }
+                match item {
+                    TopDecl::Fn(f) => {
+                        beyond_items.insert(f.id.0, top);
                     }
+                    TopDecl::Locus(l) => {
+                        beyond_items.insert(l.id.0, top);
+                        beyond_loci.insert(l.name.name.clone(), top);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -2832,7 +2826,7 @@ pub fn summarize_within(
     // conformer instead of binding to the default literal.
     let mut interface_names: BTreeSet<String> = BTreeSet::new();
     for p in programs {
-        for item in flat_decls(&p.items) {
+        for item in p.items.iter() {
             match item {
                 TopDecl::Locus(l) => {
                     locus_type_names.insert(l.name.name.clone());
@@ -2889,7 +2883,7 @@ pub fn summarize_within(
     // bound instead of ranking as a runtime `while`.
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     for program in programs {
-        for item in flat_decls(&program.items) {
+        for item in program.items.iter() {
             if let TopDecl::Const(c) = item {
                 if let Some(v) =
                     const_int_eval(&c.value, &const_ints)
@@ -2928,7 +2922,7 @@ pub fn summarize_within(
     // The flow loci: every type a `release(c: T)` clause names.
     let mut flow_loci: BTreeSet<String> = BTreeSet::new();
     for program in programs {
-        for item in flat_decls(&program.items) {
+        for item in program.items.iter() {
             let TopDecl::Locus(l) = item else { continue };
             for member in &l.members {
                 if let LocusMember::Lifecycle(lc) = member {
@@ -2998,7 +2992,7 @@ pub fn summarize_within(
             }
         }
         for program in programs {
-            for item in flat_decls(&program.items) {
+            for item in program.items.iter() {
                 let TopDecl::Locus(l) = item else { continue };
                 all.insert(l.name.name.clone());
                 if l.is_main {
@@ -3065,7 +3059,7 @@ pub fn summarize_within(
             }
         }
         for program in programs {
-            for item in flat_decls(&program.items) {
+            for item in program.items.iter() {
                 if let TopDecl::Fn(f) = item {
                     scan_lets(&f.body, &mut deferred);
                 }
@@ -3097,7 +3091,7 @@ pub fn summarize_within(
         // snapshot's rows, which the effects engine adds
         // (`add_sync_forms`), so nothing here reads a `sync =` argument.
         let copy_forms = is_stdlib_copy(ids).then(crate::stdlib_bodies::forms).flatten();
-        for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
+        for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Fn(decl) => {
                     let beyond = outside(ids, decl.id);
@@ -3306,7 +3300,7 @@ pub fn summarize_within(
             continue;
         }
         let mut found = Vec::new();
-        for item in flat_decls(&program.items) {
+        for item in program.items.iter() {
             member_bodies_of(item, &mut found);
         }
         for (decl, body) in found {
@@ -3446,9 +3440,6 @@ pub fn summarize_within(
                             elems.insert(l.name.name.clone(), m);
                         }
                     }
-                    TopDecl::Module(md) => {
-                        collect_maps(&md.items, structs, elems)
-                    }
                     _ => {}
                 }
             }
@@ -3486,11 +3477,6 @@ pub fn summarize_within(
                             }
                         }
                     }
-                    TopDecl::Module(m) => collect_ret(
-                        &m.items,
-                        locus_type_names,
-                        out,
-                    ),
                     _ => {}
                 }
             }
@@ -3743,7 +3729,7 @@ pub fn summarize_within(
                 continue;
             }
             let mut found = Vec::new();
-            for item in flat_decls(&program.items) {
+            for item in program.items.iter() {
                 default_bodies_of(item, &mut found);
             }
             defaults.extend(found.into_iter().map(|(k, b, p)| (k, b, p, *ids)));
@@ -3803,7 +3789,7 @@ pub fn summarize_within(
     let mut locus_methods: BTreeMap<String, BTreeMap<String, usize>> =
         BTreeMap::new();
     for (program, ids) in identified {
-        for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
+        for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Interface(i) => {
                     if is_stdlib_copy(ids) {
@@ -3951,7 +3937,7 @@ pub fn summarize_within(
         let stdlib_items = crate::stdlib_bodies::program()
             .filter(|_| !copy_beside)
             .into_iter()
-            .flat_map(|p| flat_decls(&p.items))
+            .flat_map(|p| p.items.iter())
             .filter(|item| match item {
                 TopDecl::Fn(f) => !declared_by_program.contains(&f.name.name),
                 _ => false,
@@ -3959,7 +3945,7 @@ pub fn summarize_within(
         let scratch_local = crate::alloc_routing::scratch_local_free_fns(
             identified
                 .iter()
-                .flat_map(|(program, ids)| flat_decls(&program.items).filter(move |item| !shadowed(ids, item)))
+                .flat_map(|(program, ids)| program.items.iter().filter(move |item| !shadowed(ids, item)))
                 .chain(stdlib_items),
             &imports,
         );
@@ -3995,7 +3981,7 @@ pub fn summarize_within(
         let mut started: BTreeSet<String> = BTreeSet::new();
         let mut pending: Vec<String> = Vec::new();
         for (program, ids) in identified {
-            for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
+            for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
                 let TopDecl::Locus(l) = item else { continue };
                 let held = param_starts.entry(l.name.name.clone()).or_default();
                 for m in &l.members {
@@ -4464,7 +4450,7 @@ fn loci_started_from_main(
     let mut loci: BTreeSet<String> = BTreeSet::new();
     let mut spelled_as: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (p, _) in identified {
-        for item in flat_decls(&p.items) {
+        for item in p.items.iter() {
             if let TopDecl::Locus(l) = item {
                 let full = l.name.name.clone();
                 let bare = if full.starts_with("__lib_") { full.rsplit("__").next().unwrap_or(&full).to_string() } else { full.clone() };
@@ -4504,7 +4490,7 @@ fn loci_started_from_main(
     for (p, ids) in identified {
         let copy = is_copy(ids);
         let universe = if copy { SiteUniverse::StdlibAnalysis } else { SiteUniverse::User };
-        for item in flat_decls(&p.items) {
+        for item in p.items.iter() {
             match item {
                 TopDecl::Fn(f) => {
                     fn_items.insert(FnKey::free_fn(DeclId::of(universe, f.id), f.name.name.clone()), item);
@@ -4521,7 +4507,6 @@ fn loci_started_from_main(
                         pending.push(l.name.name.clone());
                     }
                 }
-                TopDecl::Module(_) => {}
                 // the stdlib's declarations start nothing of their own
                 _ if copy => {}
                 _ => pending.extend(named_in(item)),
@@ -4738,8 +4723,7 @@ fn default_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(FnKey, Block, &'p [Pa
 /// The bodies of `item` the reveal rule walks that are no row (a
 /// [`DeclarationBody`] each), with the declaration each is a member of.
 /// The rows are a fn's body and a locus's methods, modes and authored
-/// hooks, a `module { }`'s declarations' included; the caller hands in
-/// those too (`flat_decls`). `item` is the checked programs'; each key
+/// hooks; the caller hands in those too. `item` is the checked programs'; each key
 /// names the member's own declaration (a handler's, a synthesized
 /// hook's, a constant's), or the locus's for its params and
 /// `birth_check`.
@@ -5160,7 +5144,7 @@ pub fn unbounded_uses(
     let universes = programs.iter().map(|p| (*p, false)).chain(copy.map(|p| (p, true)));
     for (p, copy) in universes {
         let decl = |id| if copy { DeclId::stdlib(id) } else { DeclId::user(id) };
-        for item in flat_decls(&p.items) {
+        for item in p.items.iter() {
             match item {
                 TopDecl::Fn(f) if silenced(f) => {
                     push(FnKey::free_fn(decl(f.id), f.name.name.clone()), written(f), &f.bounded_by, copy);
@@ -5331,7 +5315,7 @@ impl AuthorPositions {
         let origin = |id: hale_syntax::ast::NodeId| ids.site_id(id).and_then(|s| ids.origin(s));
         let mut synthesized = BTreeMap::new();
         for p in programs {
-            for item in flat_decls(&p.items) {
+            for item in p.items.iter() {
                 match item {
                     TopDecl::Fn(f) => {
                         if let Some(o) = origin(f.id) {
@@ -5412,7 +5396,6 @@ fn slot_locus(
     }
     match renames.get(&segs.join("::")) {
         Some(mangled) => locus_types.contains(mangled).then(|| mangled.clone()),
-        // A module-nested locus is declared and looked up by its bare name.
         None => struct_locus(path, locus_types)
             .or_else(|| segs.last().filter(|n| locus_types.contains(**n)).map(|n| n.to_string())),
     }
@@ -5575,8 +5558,7 @@ struct ValueScope<'a> {
 /// enumerable: every name read as a value anywhere in the bundle (the
 /// stdlib's analysis copy included), resolved as a `let` binding of it
 /// resolves — a fn of the reading program's scope, an imported fn
-/// through the import renames, a module-nested fn by its bare name, a
-/// builtin or a registered stdlib path as the unresolved leaf a direct
+/// through the import renames, a builtin or a registered stdlib path as the unresolved leaf a direct
 /// call of it is. The one written call becomes one edge per value whose
 /// fn takes as many parameters as the call passes (a leaf of unknown
 /// arity matches every call), tagged with a dispatch group so counting
@@ -5597,14 +5579,6 @@ fn resolve_function_values<'a>(
     mut next_group: u32,
 ) {
     use crate::fn_values::ValueName;
-    fn each_decl<'a>(item: &'a TopDecl, f: &mut dyn FnMut(&'a TopDecl)) {
-        f(item);
-        if let TopDecl::Module(m) = item {
-            for i in &m.items {
-                each_decl(i, f);
-            }
-        }
-    }
     // Every free fn's and locus method's declaration, by its row's key (a
     // value's signature, and an indirect call's enclosing declaration,
     // whose function-typed parameter types it).
@@ -5640,8 +5614,8 @@ fn resolve_function_values<'a>(
                     }
                 }
             }
-            each_decl(item, &mut |d| {
-                match d {
+            {
+                match *item {
                     TopDecl::Fn(f) => {
                         decls.insert(FnKey::free_fn(DeclId::of(universe, f.id), f.name.name.clone()), f);
                     }
@@ -5675,7 +5649,7 @@ fn resolve_function_values<'a>(
                     }
                     _ => {}
                 }
-            });
+            }
         }
     }
     // Each value: its callee, its declaration when it is a fn of the

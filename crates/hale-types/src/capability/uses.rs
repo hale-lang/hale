@@ -50,7 +50,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    flat_decls, Block, ElseBranch, Expr, IfStmt, LValueSeg, LifecycleKind, LocusDecl, LocusMember, MatchArmBody,
+    Block, ElseBranch, Expr, IfStmt, LValueSeg, LifecycleKind, LocusDecl, LocusMember, MatchArmBody,
     MatchStmt, OrDisposition, ParamInit, Pattern, PlacementConstraint, PlacementSpec, Program, QualifiedName, Stmt,
     TopDecl, TransportSpec, TypeExpr,
 };
@@ -242,7 +242,7 @@ impl<'a> Graph<'a> {
             .map(|p| (*p, SiteUniverse::User))
             .chain(stdlib.map(|p| (p, SiteUniverse::StdlibAnalysis)));
         for (p, universe) in universes {
-            for item in flat_decls(&p.items) {
+            for item in p.items.iter() {
                 let TopDecl::Locus(l) = item else { continue };
                 if g.own_locus(&l.name.name) || members.contains_key(&l.name.name) {
                     continue;
@@ -572,8 +572,8 @@ fn merged(name: &str) -> bool {
 /// The use rows of the programs a bundle holds, over the bundle's
 /// allocation summary (`target_capability`'s producer for uses).
 pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary) -> CapabilityUses {
-    // The bundle's authoritative summary already includes module-nested
-    // bodies and resolved function-value alternatives. Read those rows.
+    // The bundle's authoritative summary already includes resolved
+    // function-value alternatives. Read those rows.
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let g = Graph::new(summary, &bundle.import_renames, &programs);
     let req = g.requirements();
@@ -639,7 +639,7 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
     // handlers. (A locus beyond the horizon carries its own to every
     // construction of it: `Graph::members`.)
     for p in &programs {
-        for item in flat_decls(&p.items) {
+        for item in p.items.iter() {
             let TopDecl::Locus(l) = item else { continue };
             if !g.own_locus(&l.name.name) {
                 continue;
@@ -692,7 +692,7 @@ pub fn derive_capability_uses(bundle: &crate::Bundle<'_>, summary: &AllocSummary
         .iter()
         .any(|p| p.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main")));
     for p in &programs {
-        for item in flat_decls(&p.items) {
+        for item in p.items.iter() {
             match item {
                 TopDecl::Fn(f) => {
                     if f.export {

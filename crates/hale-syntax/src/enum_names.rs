@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::ast::{flat_decls, EnumVariant, Expr, Ident, NodeId, Program, QualifiedName, TopDecl, TypeDeclBody};
+use crate::ast::{EnumVariant, Expr, Ident, NodeId, Program, QualifiedName, TopDecl, TypeDeclBody};
 use crate::json_gen::{hale_str, json_tag_key, json_tag_options, next_synth_base, rewrite_items, variant_wire_name};
 
 /// The four names, in the order the RFC lists them.
@@ -332,7 +332,7 @@ fn target(qn: &QualifiedName, enums: &BTreeMap<String, EnumDecl>, renames: &[(Ve
 pub fn generate_enum_names_in(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) {
     let mut enums: BTreeMap<String, EnumDecl> = BTreeMap::new();
     for (i, p) in programs.iter().enumerate() {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             let TopDecl::Type(td) = d else { continue };
             let TypeDeclBody::Enum(vs) = &td.body else { continue };
             enums.entry(td.name.name.clone()).or_insert_with(|| EnumDecl {
@@ -380,7 +380,7 @@ pub fn generate_enum_names_in(programs: &mut [&mut Program], renames: &[(Vec<Str
     let mut by_program: BTreeMap<usize, String> = BTreeMap::new();
     let mut existing: HashSet<String> = HashSet::new();
     for p in programs.iter() {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             if let TopDecl::Fn(f) = d {
                 existing.insert(f.name.name.clone());
             }

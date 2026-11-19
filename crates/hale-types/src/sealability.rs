@@ -53,7 +53,7 @@ pub fn survey(programs: &[&Program], rows: &TypedBodies) -> Vec<Sealable> {
     }
     let mut by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in programs {
-        for item in hale_syntax::ast::flat_decls(&p.items) {
+        for item in p.items.iter() {
             if let TopDecl::Locus(l) = item {
                 let blockers = by_name.entry(l.name.name.clone()).or_default();
                 blockers.extend(by_decl.get(&l.id.0).into_iter().flatten().cloned());

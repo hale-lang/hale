@@ -3,8 +3,7 @@
 //! found through the families' rows and never through the text.
 //!
 //! The unit is a top-level declaration of a snapshot program
-//! ([`Declaration`]): a `module { }` is one, its members inside it. A
-//! declaration is named by its own minted site; one the mint gives no
+//! ([`Declaration`]). A declaration is named by its own minted site; one the mint gives no
 //! site (a `target`, a `role`, a top-level `claims` block) has none.
 //!
 //! The relation is the union of the families' edges, each joined to the
@@ -156,7 +155,6 @@ pub fn kind_and_name(item: &TopDecl) -> (&'static str, String) {
         TopDecl::Type(t) => ("type", t.name.name.clone()),
         TopDecl::Const(c) => ("const", c.name.name.clone()),
         TopDecl::Fn(f) => ("fn", f.name.name.clone()),
-        TopDecl::Module(m) => ("module", m.name.name.clone()),
         TopDecl::Interface(i) => ("interface", i.name.name.clone()),
         TopDecl::Topic(t) => ("topic", t.name.name.clone()),
         TopDecl::RingLayout(r) => ("ring_layout", r.name.name.clone()),
@@ -210,8 +208,8 @@ impl DependencyIndex {
             .chain(f.summary.declaration_bodies.iter().map(|b| &b.summary))
             .flat_map(|fs| fs.calls.iter().map(|e| (e.span.start.0, e.span.end.0)))
             .collect();
-        // Each declaration's own items, modules flattened: what a name
-        // in a family row joins to.
+        // Each declaration by its name: what a name in a family row
+        // joins to.
         let mut loci: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         let mut fns: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         let mut topics: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
@@ -219,14 +217,14 @@ impl DependencyIndex {
         let mut always = BTreeSet::new();
         for (i, d) in f.decls.iter().enumerate() {
             let item = &f.programs[&d.program].items[d.index];
-            for decl in hale_syntax::ast::flat_decls(std::slice::from_ref(item)) {
-                let into = match decl {
-                    TopDecl::Locus(_) => &mut loci,
-                    TopDecl::Fn(_) => &mut fns,
-                    TopDecl::Topic(_) => &mut topics,
-                    _ => continue,
-                };
-                into.entry(kind_and_name(decl).1).or_default().insert(i);
+            let into = match item {
+                TopDecl::Locus(_) => Some(&mut loci),
+                TopDecl::Fn(_) => Some(&mut fns),
+                TopDecl::Topic(_) => Some(&mut topics),
+                _ => None,
+            };
+            if let Some(into) = into {
+                into.entry(kind_and_name(item).1).or_default().insert(i);
             }
             for_each_site_in_item(item, &mut |kind, span, id| {
                 if !id.is_none() {

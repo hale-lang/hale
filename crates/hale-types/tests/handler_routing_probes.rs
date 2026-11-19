@@ -291,7 +291,7 @@ fn an_unminted_handler_joins_its_row_by_span() {
 
 #[test]
 fn specialization_preserves_handler_sites_and_resolves_each_child_declaration() {
-    use hale_syntax::ast::{flat_decls, LocusMember, TopDecl, TypeExpr};
+    use hale_syntax::ast::{LocusMember, TopDecl, TypeExpr};
     use hale_types::placement::SiteRef;
     let src = "
 locus Alpha { }
@@ -327,7 +327,7 @@ locus Second {
         }
     }
     let snapshot = hale_types::snapshot::mint([("main.hl", &mut program)], &[]);
-    let loci = flat_decls(&program.items).filter_map(|d| match d {
+    let loci = program.items.iter().filter_map(|d| match d {
         TopDecl::Locus(l) => Some((l.name.name.as_str(), l)),
         _ => None,
     }).collect::<std::collections::BTreeMap<_, _>>();
@@ -405,7 +405,7 @@ locus Cell<T> { params { value: T; n: Int = 0; } closure boom { captures: n; epo
 /// is the last literal of the same entries, so the two are one fact.
 #[test]
 fn every_for_bound_is_an_entry_lowering_reads_by_the_statements_span() {
-    use hale_syntax::ast::{flat_decls, LocusMember, Stmt, TopDecl};
+    use hale_syntax::ast::{LocusMember, Stmt, TopDecl};
     use hale_types::handler_routing::RetryBound;
     let src = "
 locus Worker { params { n: Int = 0; } closure boom { captures: n; epoch inline; } }
@@ -423,7 +423,7 @@ locus App {
     assert_eq!(row.retry_bound, Some(3), "the model's bound is the last literal");
     assert_eq!(row.bounds.len(), 2, "the unbounded restart states none: {:?}", row.bounds);
 
-    let handler = flat_decls(&program.items)
+    let handler = program.items.iter()
         .find_map(|d| match d {
             TopDecl::Locus(l) if l.name.name == "App" => l.members.iter().find_map(|m| match m {
                 LocusMember::Failure(fd) => Some(fd),
@@ -454,7 +454,7 @@ locus App {
 /// specialization, and an unminted declaration by its name.
 #[test]
 fn a_concrete_locus_is_keyed_by_its_declaration_and_specialization() {
-    use hale_syntax::ast::{flat_decls, LocusMember, NodeId, TopDecl};
+    use hale_syntax::ast::{LocusMember, NodeId, TopDecl};
     use hale_types::handler_routing::InstanceKey;
     let src = "
 locus Alpha { }
@@ -468,7 +468,7 @@ locus Holder {
 ";
     let mut program = hale_syntax::parse_source(src).expect("parse");
     let snapshot = hale_types::snapshot::mint([("main.hl", &mut program)], &[]);
-    let loci = flat_decls(&program.items).filter_map(|d| match d {
+    let loci = program.items.iter().filter_map(|d| match d {
         TopDecl::Locus(l) => Some((l.name.name.as_str(), l)),
         _ => None,
     }).collect::<std::collections::BTreeMap<_, _>>();
@@ -524,7 +524,7 @@ fn main() { App { }; }
 /// locus its receiver names and the statement's text.
 fn recoveries(src: &str) -> Vec<(Option<String>, RecoveryOp, bool, Option<String>, String)> {
     use hale_frontend::snapshot::{Config, Snapshot};
-    use hale_syntax::ast::{flat_decls, TopDecl};
+    use hale_syntax::ast::{TopDecl};
     let program = hale_syntax::parse_source(src).expect("parses");
     let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else { panic!("snapshot") };
     let checked = s.demand_check().unwrap_or_else(|_| panic!("checked"));
@@ -533,7 +533,7 @@ fn recoveries(src: &str) -> Vec<(Option<String>, RecoveryOp, bool, Option<String
     let table = s.demand_typed_bodies().unwrap_or_else(|_| panic!("the table"));
     let p = s.program().unwrap();
     let name_of = |r: &hale_types::typed_bodies::LocusRef| {
-        flat_decls(&p.items).find_map(|d| match d {
+        p.items.iter().find_map(|d| match d {
             TopDecl::Locus(l) if l.id.0 == r.decl.0 => Some(l.name.name.clone()),
             _ => None,
         })
@@ -619,7 +619,7 @@ fn the_stdlib_states_no_recovery_bound_and_declares_no_handler() {
 fn the_views_rows_answer_as_the_merged_programs_did() {
     use hale_frontend::frontend::LoadMode;
     use hale_frontend::snapshot::{Config, Snapshot, Target};
-    use hale_syntax::ast::{flat_decls, LocusDecl, TopDecl, TypeExpr};
+    use hale_syntax::ast::{LocusDecl, TopDecl, TypeExpr};
     use hale_types::handler_routing::{HandlerRouting, HandlerRow};
 
     let d = std::env::temp_dir().join(format!("hale-handler-fold-{}", std::process::id()));
@@ -636,7 +636,7 @@ fn the_views_rows_answer_as_the_merged_programs_did() {
     let mut lowered = view.handlers.clone();
     let mut merged = handler_rows(&[&view.merged], &view.import_renames, &view.snapshot);
 
-    let loci: Vec<&LocusDecl> = flat_decls(&view.merged.items)
+    let loci: Vec<&LocusDecl> = view.merged.items.iter()
         .filter_map(|i| match i {
             TopDecl::Locus(l) => Some(l),
             _ => None,

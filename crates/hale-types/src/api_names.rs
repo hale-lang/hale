@@ -223,7 +223,6 @@ pub fn reserved_for(slices: &[&[TopDecl]]) -> BTreeSet<String> {
                         topic_names(d, out);
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, out),
                 _ => {}
             }
         }

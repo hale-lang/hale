@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
-    BindingEntry, BusMember, BusSubject, LocusDecl, LocusMember, TopDecl, TransportRole,
+    BindingEntry, BusMember, BusSubject, LocusMember, TopDecl, TransportRole,
     TransportSpec,
 };
 use hale_syntax::Span;
@@ -50,8 +50,6 @@ pub struct BindingRow {
     pub is_main: bool,
     /// Merged from an imported seed: the entry binds nothing here.
     pub imported: bool,
-    /// Declared inside a `module { }`, at any depth.
-    pub module_nested: bool,
     /// The topic as the entry names it, and where.
     pub topic: String,
     pub topic_span: Span,
@@ -82,9 +80,9 @@ pub struct BindingRow {
     /// handles: a `unix` entry's, by role. `None` for the transports with
     /// no locus of their own to name.
     pub loss_locus: Option<&'static str>,
-    /// Where the entry is in the bundle: the program, the path of item
-    /// indices to the locus, the member and the entry.
-    at: (String, Vec<usize>, usize, usize),
+    /// Where the entry is in the bundle: the program, the locus's item
+    /// index, the member and the entry.
+    at: (String, usize, usize, usize),
 }
 
 impl BindingRow {
@@ -96,30 +94,18 @@ impl BindingRow {
 
     /// The entry this row describes, in the bundle it was read from.
     pub fn entry<'b>(&self, bundle: &Bundle<'b>) -> Option<&'b BindingEntry> {
-        let (program, path, member, entry) = &self.at;
-        match locus_at(bundle, program, path)?.members.get(*member)? {
+        let (program, index, member, entry) = &self.at;
+        let TopDecl::Locus(l) = bundle.programs.get(program)?.items.get(*index)? else { return None };
+        match l.members.get(*member)? {
             LocusMember::Bindings(bb) => bb.entries.get(*entry),
             _ => None,
         }
     }
 }
 
-fn locus_at<'b>(bundle: &Bundle<'b>, program: &str, path: &[usize]) -> Option<&'b LocusDecl> {
-    let mut items: &'b [TopDecl] = &bundle.programs.get(program)?.items;
-    let (last, modules) = path.split_last()?;
-    for i in modules {
-        let TopDecl::Module(m) = items.get(*i)? else { return None };
-        items = &m.items;
-    }
-    match items.get(*last)? {
-        TopDecl::Locus(l) => Some(l),
-        _ => None,
-    }
-}
-
 /// The `bindings` rows of one bundle, in the bundle's program order and
-/// each program's declaration order (a module's contents after the
-/// module), an entry after the entries before it.
+/// each program's declaration order, an entry after the entries before
+/// it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BindingRows {
     pub rows: Vec<BindingRow>,
@@ -191,7 +177,7 @@ pub fn derive_binding_rows(bundle: &Bundle<'_>, top: &TopScope) -> BindingRows {
     let mut subs: BTreeSet<String> = BTreeSet::new();
     let mut literal_pubs: BTreeSet<String> = BTreeSet::new();
     for program in bundle.programs.values() {
-        for item in hale_syntax::ast::flat_decls(&program.items) {
+        for item in program.items.iter() {
             let TopDecl::Locus(l) = item else { continue };
             for member in &l.members {
                 let LocusMember::Bus(bb) = member else { continue };
@@ -213,26 +199,10 @@ pub fn derive_binding_rows(bundle: &Bundle<'_>, top: &TopScope) -> BindingRows {
         }
     }
 
-    fn walk(
-        items: &[TopDecl],
-        program: &str,
-        path: &mut Vec<usize>,
-        f: &mut impl FnMut(&LocusDecl, &str, &[usize]),
-    ) {
-        for (i, item) in items.iter().enumerate() {
-            path.push(i);
-            match item {
-                TopDecl::Locus(l) => f(l, program, path),
-                TopDecl::Module(m) => walk(&m.items, program, path, f),
-                _ => {}
-            }
-            path.pop();
-        }
-    }
-
     let mut rows = Vec::new();
-    for (name, program) in &bundle.programs {
-        walk(&program.items, name, &mut Vec::new(), &mut |l, program, path| {
+    for (program, p) in &bundle.programs {
+        for (index, item) in p.items.iter().enumerate() {
+            let TopDecl::Locus(l) = item else { continue };
             for (mi, member) in l.members.iter().enumerate() {
                 let LocusMember::Bindings(bb) = member else { continue };
                 for (ei, e) in bb.entries.iter().enumerate() {
@@ -265,7 +235,6 @@ pub fn derive_binding_rows(bundle: &Bundle<'_>, top: &TopScope) -> BindingRows {
                         locus_site: bundle.snapshot.site_id(l.id),
                         is_main: l.is_main,
                         imported: l.imported,
-                        module_nested: path.len() > 1,
                         topic: e.topic.name.clone(),
                         topic_span: e.topic.span,
                         wire: wire.clone(),
@@ -277,11 +246,11 @@ pub fn derive_binding_rows(bundle: &Bundle<'_>, top: &TopScope) -> BindingRows {
                         codec: e.codec.as_ref().map(|c| c.locus.name.clone()),
                         producer: publishes || literal_pubs.contains(k),
                         loss_locus,
-                        at: (program.to_string(), path.to_vec(), mi, ei),
+                        at: (program.to_string(), index, mi, ei),
                     });
                 }
             }
-        });
+        }
     }
     BindingRows { rows }
 }

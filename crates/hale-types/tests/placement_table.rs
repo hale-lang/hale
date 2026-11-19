@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_frontend::source::Disk;
-use hale_syntax::ast::{flat_decls, Expr, LocusDecl, LocusMember, ParamInit, Program, Stmt, TopDecl};
+use hale_syntax::ast::{Expr, LocusDecl, LocusMember, ParamInit, Program, Stmt, TopDecl};
 use hale_syntax::sites::SiteKind;
 use hale_types::placement::{
     join_lowering, provenance, Bound, Construction, Decision, DeclRef, DomainId, DomainKind, Enclosing, HoleAt, HoleKind,
@@ -96,7 +96,7 @@ fn pool_name(t: &PlacementTable, d: DomainId) -> Option<&str> {
 }
 
 fn locus<'p>(program: &'p Program, name: &str) -> &'p LocusDecl {
-    flat_decls(&program.items)
+    program.items.iter()
         .find_map(|i| match i {
             TopDecl::Locus(l) if l.name.name == name => Some(l),
             _ => None,
@@ -375,34 +375,6 @@ fn a_generic_locus_field_is_refused_before_any_consumer() {
     assert_eq!((c.lowered.as_str(), d.lowered.as_str()), ("Cache_Int_String", "Cache_Int_Int"));
     assert_eq!((c.args.len(), d.args.len()), (2, 2));
     assert_ne!(c, d);
-}
-
-/// Case 7: a module-qualified field resolves; a seed whose only `main`
-/// is module-nested is refused, since it is not the entry and nothing
-/// else is (F.40 phase 3, L4), and still has rows, rooted at it with
-/// `is_entry` false, so every other rule judges it as a top-level one
-/// (GH #825).
-#[test]
-fn a_module_nested_main_is_the_root_and_not_the_entry() {
-    let s = clean("module_qualified.hl");
-    let t = table(&s);
-    assert_eq!(lowered(one(t, "k").1), "K");
-    assert!(t.root.as_ref().unwrap().is_entry);
-
-    let s = check(&fixture("module_nested_main.hl"));
-    let e = errors(&s);
-    assert_eq!(
-        e,
-        ["the entry must be top-level: `main locus App` inside `module app` is not the program's entry, and \
-          nothing else in the seed is — move it out of the module"],
-        "refused, and nothing else"
-    );
-    let t = table(&s);
-    let root = t.root.as_ref().expect("the refused main is still judged");
-    assert!(!root.is_entry);
-    assert!(root.decl.module_nested);
-    let (_, w) = one(t, "w");
-    assert!(is_pinned(t, w.domain));
 }
 
 /// Case 8: an imported `main` is never the root.
@@ -701,7 +673,7 @@ fn a_root_built_in_a_params_default_is_recorded_as_expanded() {
     let ids = s.identities();
     let site = |id| SiteRef::user(ids.site_id(id).expect("minted"));
     let programs: Vec<&Program> = s.programs().values().collect();
-    let decl = |name: &str| programs.iter().find_map(|p| flat_decls(&p.items).find_map(|i| match i {
+    let decl = |name: &str| programs.iter().find_map(|p| p.items.iter().find_map(|i| match i {
         TopDecl::Locus(l) if l.name.name == name => Some(l),
         _ => None,
     }));
@@ -1046,7 +1018,7 @@ fn the_table_names_each_universe_and_joins_lowering_once() {
 }
 
 /// The fixtures every law test walks: those that check clean.
-const CLEAN: [&str; 19] = [
+const CLEAN: [&str; 18] = [
     "claims_only.hl",
     "library_alone.hl",
     "verbs.hl",
@@ -1055,7 +1027,6 @@ const CLEAN: [&str; 19] = [
     "overrides.hl",
     "qualified.hl",
     "aliased.hl",
-    "module_qualified.hl",
     "imported/no_own_main",
     "imported/own_main",
     "adapter.hl",
@@ -1089,7 +1060,7 @@ fn the_table_keeps_its_laws_over_every_fixture() {
         let accepting: BTreeSet<String> = s
             .programs()
             .values()
-            .flat_map(|p| flat_decls(&p.items))
+            .flat_map(|p| p.items.iter())
             .filter_map(|i| match i {
                 TopDecl::Locus(l)
                     if l.members.iter().any(|m| {

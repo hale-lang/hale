@@ -181,34 +181,3 @@ fn the_entrys_binding_makes_the_program_off_thread() {
     assert!(flags.iter().all(|f| f == "0"), "off-thread: no_pinned=0 everywhere: {flags:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
-
-/// The same `main locus` inside `module wired`: it is not the entry and
-/// nothing else in the seed is, so it is refused at its name and no
-/// binary is built (F.40 phase 3, L4). This test pinned, while lowering
-/// still deployed a module-nested `main`, that its binding made the
-/// program off-thread (the old term scanned top-level items only: the
-/// GH #468 shape, one brace deeper); the shape now never reaches
-/// lowering, and the entry's binding is the control above.
-#[test]
-fn a_module_nested_bound_main_is_refused_and_builds_nothing() {
-    let body: String = BOUND_MAIN.lines().map(|l| format!("    {l}\n")).collect();
-    let text = format!("module wired {{\n{body}}}\n\nfn main() {{ App {{ }}; }}\n");
-    let (line, col) = text
-        .lines()
-        .enumerate()
-        .find_map(|(i, l)| l.find("main locus App").map(|c| (i + 1, c + 1 + "main locus ".len())))
-        .expect("the nested main");
-    let d = bound_seed("nested", &text);
-    let bin = d.join("app.bin");
-    let built = Command::new(env!("CARGO_BIN_EXE_hale")).arg("build").arg(&d).arg("-o").arg(&bin).output().expect("hale build");
-    let out = format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
-    assert!(!built.status.success(), "refused: {out}");
-    let refused = format!(
-        "main.hl:{line}:{col}: type error: the entry must be top-level: `main locus App` inside `module wired` is \
-         not the program's entry, and nothing else in the seed is — move it out of the module"
-    );
-    assert!(out.contains(&refused), "the located refusal: {out}");
-    assert_eq!(out.matches("type error").count(), 1, "alone: {out}");
-    assert!(!bin.exists(), "no binary is built");
-    let _ = std::fs::remove_dir_all(&d);
-}

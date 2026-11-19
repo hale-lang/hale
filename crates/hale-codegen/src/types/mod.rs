@@ -1234,8 +1234,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         iface_name: &str,
     ) -> Result<bool, CodegenError> {
-        // GH #884: module nesting flattened.
-        let decls = || hale_syntax::ast::flat_decls(&self.program.items);
+        let decls = || self.program.items.iter();
         let Some(iface) = decls().find_map(|item| match item {
             TopDecl::Interface(i) if i.name.name == iface_name => Some(i.id),
             _ => None,

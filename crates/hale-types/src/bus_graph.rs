@@ -120,7 +120,7 @@ pub(crate) fn collect_bus_walk<'p>(
 
     fn walk(items: &[TopDecl], w: &mut BusWalk, topics: &TopicRows, at: &mut LocusDeclRow) {
         for (i, item) in items.iter().enumerate() {
-            at.path.push(i);
+            at.index = i;
             match item {
                 TopDecl::Locus(l) => {
                     let locus = l.name.name.clone();
@@ -212,14 +212,8 @@ pub(crate) fn collect_bus_walk<'p>(
                         }
                     }
                 }
-                TopDecl::Module(md) => {
-                    at.modules.push(md.name.name.clone());
-                    walk(&md.items, w, topics, at);
-                    at.modules.pop();
-                }
                 _ => {}
             }
-            at.path.pop();
         }
     }
     for (name, items) in programs {
@@ -235,13 +229,9 @@ pub(crate) fn collect_bus_walk<'p>(
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocusDeclRow {
     pub name: String,
-    /// The `module { }` path it is declared under, outermost first;
-    /// empty at the top level.
-    pub modules: Vec<String>,
-    /// The bundle program that holds it, and its item index at each
-    /// depth (a module's contents under the module's index).
+    /// The bundle program that holds it, and its item index.
     pub program: String,
-    pub path: Vec<usize>,
+    pub index: usize,
     /// An imported seed's declaration (`LocusDecl::imported`).
     pub imported: bool,
     /// Its `publish` subjects, in member order.
@@ -269,13 +259,7 @@ impl LocusDeclRow {
     /// The declaration this row names, in the bundle the graph was
     /// built over.
     pub fn decl<'b>(&self, bundle: &Bundle<'b>) -> Option<&'b LocusDecl> {
-        let mut items: &'b [TopDecl] = &bundle.programs.get(&self.program)?.items;
-        let (last, modules) = self.path.split_last()?;
-        for i in modules {
-            let TopDecl::Module(m) = items.get(*i)? else { return None };
-            items = &m.items;
-        }
-        match items.get(*last)? {
+        match bundle.programs.get(&self.program)?.items.get(self.index)? {
             TopDecl::Locus(l) => Some(l),
             _ => None,
         }
@@ -464,7 +448,7 @@ pub(crate) fn publishes_before_their_subscriber(bundle: &Bundle<'_>, top: &TopSc
     }
     let mut bodies: Vec<&Block> = Vec::new();
     for program in bundle.programs.values() {
-        for item in hale_syntax::ast::flat_decls(&program.items) {
+        for item in program.items.iter() {
             match item {
                 TopDecl::Fn(f) => bodies.push(&f.body),
                 TopDecl::Locus(l) if !l.imported => {
@@ -761,7 +745,6 @@ fn ingress_sites(items: &[TopDecl], out: &mut Vec<Ingress>) {
     for d in items {
         match d {
             TopDecl::Fn(f) => block(&f.body, out),
-            TopDecl::Module(m) => ingress_sites(&m.items, out),
             TopDecl::Locus(l) => {
                 for m in &l.members {
                     match m {
@@ -1761,7 +1744,7 @@ fn resolve_payload(top: &TopScope, locus: &str, key: &str) -> String {
 // lifetime-identical between the direct and deferred lowerings.
 
 /// Locate locus `locus`'s method `handler` FnDecl anywhere in the
-/// bundle (walking nested modules). `None` ⟹ not found ⟹ caller bails.
+/// bundle. `None` ⟹ not found ⟹ caller bails.
 fn find_handler_fn<'a>(
     bundle: &Bundle<'a>,
     locus: &str,
@@ -1781,11 +1764,6 @@ fn find_handler_fn<'a>(
                                 return Some(f);
                             }
                         }
-                    }
-                }
-                TopDecl::Module(md) => {
-                    if let Some(f) = search(&md.items, locus, handler) {
-                        return Some(f);
                     }
                 }
                 _ => {}

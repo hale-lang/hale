@@ -1240,10 +1240,9 @@ fn certs_for_unanalyzed_subjects_are_refused() {
 /// (if any) unanalyzable. The model stays lawful.
 ///
 /// The coverage tests below need an unanalyzed ordinary fn or
-/// member, and no program has one: the summary collects
-/// module-nested bodies (F.40 phase 3, E3a part C), which is how
-/// these tests used to get one, an `@ffi` fn is summarized with an
-/// empty body, and a stdlib call is not an entity. The one body left
+/// member, and no program has one: the summary walks every
+/// declaration's body (F.40 phase 3, E3a part C), an `@ffi` fn is
+/// summarized with an empty body, and a stdlib call is not an entity. The one body left
 /// unanalyzed is an `on_failure` handler, which carries no
 /// annotation and never counts toward its locus's coverage.
 fn mark_unanalyzed(
@@ -1287,11 +1286,9 @@ fn mark_unanalyzed(
     idx
 }
 
-const MODULE_ANNOTATED_SRC: &str = r#"
-module inner {
-    @effects(none: { syscall })
-    fn f(v: Int) -> Int { return v; }
-}
+const ANNOTATED_SRC: &str = r#"
+@effects(none: { syscall })
+fn f(v: Int) -> Int { return v; }
 main locus App {
     params { n: Int = 0; }
     run() { println(1); }
@@ -1305,9 +1302,9 @@ fn main() { App { }; }
 /// fails `ApplicationModel::validate` on `analyzed ⇒ summarized`.
 #[test]
 fn function_coverage_upgrade_fails_model_validation() {
-    let program = hale_syntax::parse_source(MODULE_ANNOTATED_SRC)
+    let program = hale_syntax::parse_source(ANNOTATED_SRC)
         .expect("parse");
-    let bundle = bundle_of(MODULE_ANNOTATED_SRC, &program);
+    let bundle = bundle_of(ANNOTATED_SRC, &program);
     let mut model = derive_application_model(&bundle);
     model.validate().expect("the honest model is lawful");
     let idx = mark_unanalyzed(&mut model, "f");
@@ -1334,9 +1331,9 @@ fn function_coverage_upgrade_fails_model_validation() {
 /// (analyzed AND summarized), so the judgment refuses.
 #[test]
 fn function_coverage_upgrade_cannot_manufacture_holds() {
-    let program = hale_syntax::parse_source(MODULE_ANNOTATED_SRC)
+    let program = hale_syntax::parse_source(ANNOTATED_SRC)
         .expect("parse");
-    let bundle = bundle_of(MODULE_ANNOTATED_SRC, &program);
+    let bundle = bundle_of(ANNOTATED_SRC, &program);
     let mut model = derive_application_model(&bundle);
     let idx = mark_unanalyzed(&mut model, "f");
     let table = lower_claims(&bundle, &model);
@@ -1372,13 +1369,11 @@ fn function_coverage_upgrade_cannot_manufacture_holds() {
     );
 }
 
-const MODULE_LOCUS_METHOD_SRC: &str = r#"
-module inner {
-    @phase_effects(birth: {})
-    locus Hidden {
-        params { n: Int = 0; }
-        fn poke(v: Int) -> Int { return v; }
-    }
+const LOCUS_METHOD_SRC: &str = r#"
+@phase_effects(birth: {})
+locus Hidden {
+    params { n: Int = 0; }
+    fn poke(v: Int) -> Int { return v; }
 }
 main locus App {
     params { n: Int = 0; }
@@ -1394,9 +1389,9 @@ fn main() { App { }; }
 #[test]
 fn locus_coverage_upgrade_fails_model_validation() {
     let program =
-        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+        hale_syntax::parse_source(LOCUS_METHOD_SRC)
             .expect("parse");
-    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle = bundle_of(LOCUS_METHOD_SRC, &program);
     let mut model = derive_application_model(&bundle);
     model.validate().expect("the honest model is lawful");
     mark_unanalyzed(&mut model, "Hidden::poke");
@@ -1405,7 +1400,7 @@ fn locus_coverage_upgrade_fails_model_validation() {
         .loci
         .iter()
         .position(|l| l.display == "Hidden")
-        .expect("module locus");
+        .expect("the locus");
     model.entities.loci[idx].analyzable = true;
     assert!(
         matches!(
@@ -1424,10 +1419,10 @@ fn locus_coverage_upgrade_fails_model_validation() {
 #[test]
 fn locus_coverage_upgrade_cannot_manufacture_holds() {
     let program =
-        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+        hale_syntax::parse_source(LOCUS_METHOD_SRC)
             .expect("parse");
-    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
-    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle = bundle_of(LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(LOCUS_METHOD_SRC, &program);
     let mut model = derive_application_model(&bundle);
     mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
@@ -1436,7 +1431,7 @@ fn locus_coverage_upgrade_cannot_manufacture_holds() {
         .loci
         .iter()
         .position(|l| l.display == "Hidden")
-        .expect("module locus");
+        .expect("the locus");
     model.entities.loci[idx].analyzable = true;
     // Manufacture against the upgraded model: derivation now
     // synthesizes the implicit-phase Holds certificate (the
@@ -1470,10 +1465,10 @@ fn locus_coverage_upgrade_cannot_manufacture_holds() {
 #[test]
 fn deleted_membership_is_refused_everywhere() {
     let program =
-        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+        hale_syntax::parse_source(LOCUS_METHOD_SRC)
             .expect("parse");
-    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
-    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle = bundle_of(LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(LOCUS_METHOD_SRC, &program);
     let mut model = derive_application_model(&bundle);
     mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
@@ -1482,13 +1477,13 @@ fn deleted_membership_is_refused_everywhere() {
         .functions
         .iter()
         .position(|f| f.display == "Hidden::poke")
-        .expect("module method");
+        .expect("the method");
     let lid = model
         .entities
         .loci
         .iter()
         .position(|l| l.display == "Hidden")
-        .expect("module locus");
+        .expect("the locus");
     model
         .relations
         .member_of
@@ -1536,10 +1531,10 @@ fn deleted_membership_is_refused_everywhere() {
 #[test]
 fn coordinated_ownership_laundering_is_refused() {
     let program =
-        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+        hale_syntax::parse_source(LOCUS_METHOD_SRC)
             .expect("parse");
-    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
-    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle = bundle_of(LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(LOCUS_METHOD_SRC, &program);
     let mut model = derive_application_model(&bundle);
     mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
@@ -1548,13 +1543,13 @@ fn coordinated_ownership_laundering_is_refused() {
         .functions
         .iter()
         .position(|f| f.display == "Hidden::poke")
-        .expect("module method");
+        .expect("the method");
     let hidden = model
         .entities
         .loci
         .iter()
         .position(|l| l.display == "Hidden")
-        .expect("module locus");
+        .expect("the locus");
     let app = model
         .entities
         .loci
@@ -1608,10 +1603,10 @@ fn coordinated_ownership_laundering_is_refused() {
 #[test]
 fn moved_membership_is_refused_everywhere() {
     let program =
-        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+        hale_syntax::parse_source(LOCUS_METHOD_SRC)
             .expect("parse");
-    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
-    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle = bundle_of(LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(LOCUS_METHOD_SRC, &program);
     let mut model = derive_application_model(&bundle);
     mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
@@ -1620,13 +1615,13 @@ fn moved_membership_is_refused_everywhere() {
         .functions
         .iter()
         .position(|f| f.display == "Hidden::poke")
-        .expect("module method");
+        .expect("the method");
     let hidden = model
         .entities
         .loci
         .iter()
         .position(|l| l.display == "Hidden")
-        .expect("module locus");
+        .expect("the locus");
     let app = model
         .entities
         .loci

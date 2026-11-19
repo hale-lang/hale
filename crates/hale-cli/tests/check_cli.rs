@@ -53,10 +53,10 @@ mod check_unknown_identifier;
 mod check_unowned_subscriber;
 #[path = "check_units.rs"]
 mod check_units;
+#[path = "entry_pinned_controls.rs"]
+mod entry_pinned_controls;
 #[path = "form_sync_none_readers.rs"]
 mod form_sync_none_readers;
-#[path = "nested_main_transition.rs"]
-mod nested_main_transition;
 #[path = "sibling_file_topic_check.rs"]
 mod sibling_file_topic_check;
 #[path = "source_map.rs"]

@@ -234,7 +234,6 @@ impl LiteralWalk<'_> {
                         }
                     }
                 }
-                TopDecl::Module(m) => self.items(&m.items, false),
                 _ => {}
             }
         }

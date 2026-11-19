@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::api_names::API_SYNTH_BASE;
 use hale_syntax::ast::{
-    flat_decls, Expr, Ident, LocusMember, ParamDecl, ParamInit, Program, QualifiedName, StructInit,
+    Expr, Ident, LocusMember, ParamDecl, ParamInit, Program, QualifiedName, StructInit,
     TopDecl, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
@@ -246,7 +246,7 @@ fn client_rows(
     // a surface the program consumes: its signature rows, as written
     let mut consumed = false;
     for p in ro {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             let TopDecl::Api(a) = d else { continue };
             if a.name.name != surface {
                 continue;
@@ -398,7 +398,7 @@ fn plan(
     };
     let declared = ro
         .iter()
-        .flat_map(|p| flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .any(|d| matches!(d, TopDecl::Api(a) if a.name.name == surface))
         || !crate::rpc_expand::rows_of_surface(ro, &surface, renames, default_surface).is_empty();
     if !declared {
@@ -533,7 +533,7 @@ fn outcome_src(r: &ClientRow) -> String {
 /// Whether any program spells an `api::client(…)` param.
 fn client_params(programs: &[&mut Program]) -> bool {
     programs.iter().any(|p| {
-        flat_decls(&p.items).any(|d| match d {
+        p.items.iter().any(|d| match d {
             TopDecl::Locus(l) => l.members.iter().any(|m| match m {
                 LocusMember::Params(pb) => pb
                     .params
@@ -565,7 +565,7 @@ pub fn expand(
         let slices: Vec<&[TopDecl]> = ro.iter().map(|p| p.items.as_slice()).collect();
         let shapes = Shapes::of_all(&slices);
         for (pi, p) in ro.iter().enumerate() {
-            for d in flat_decls(&p.items) {
+            for d in p.items.iter() {
                 let TopDecl::Locus(l) = d else { continue };
                 for m in &l.members {
                     let LocusMember::Params(pb) = m else { continue };
@@ -590,7 +590,7 @@ pub fn expand(
     // ---- the generated source: the family, the outcomes, the loci ----
     let have: BTreeSet<String> = programs
         .iter()
-        .flat_map(|p| flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .filter_map(|d| match d {
             TopDecl::Locus(l) => Some(l.name.name.clone()),
             _ => None,
@@ -636,7 +636,7 @@ pub fn expand(
     }
     // ---- the params: built as the client locus, or left for the law ----
     for (pi, p) in programs.iter_mut().enumerate() {
-        hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| {
+        p.items.iter_mut().for_each(|d| {
             let TopDecl::Locus(l) = d else { return };
             let locus = l.name.name.clone();
             for m in &mut l.members {
@@ -705,7 +705,7 @@ fn named(name: &str, sp: Span) -> TypeExpr {
 /// Append the client runtime to the first program, once.
 fn inject_runtime(programs: &mut [&mut Program]) {
     let have = programs.iter().any(|p| {
-        flat_decls(&p.items)
+        p.items.iter()
             .any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdApiHttpClient"))
     });
     if have {
@@ -744,7 +744,7 @@ pub fn client_laws(
     // the callee of each call a param's literal is, by where it starts
     let mut sites: BTreeSet<u32> = BTreeSet::new();
     for p in programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             let TopDecl::Locus(l) = d else { continue };
             for m in &l.members {
                 let LocusMember::Params(pb) = m else { continue };

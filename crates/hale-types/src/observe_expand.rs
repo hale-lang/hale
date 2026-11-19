@@ -30,7 +30,7 @@
 //! The pass is idempotent: a literal already numbered is left alone.
 
 use hale_syntax::ast::{
-    flat_decls, Expr, Ident, Literal, LocusDecl, LocusMember, ParamInit, Program, QualifiedName, StructInit,
+    Expr, Ident, Literal, LocusDecl, LocusMember, ParamInit, Program, QualifiedName, StructInit,
     TopDecl, TypeExpr,
 };
 
@@ -96,7 +96,7 @@ pub fn backends(l: &LocusDecl) -> Vec<BackendParam<'_>> {
 
 /// Whether any main locus of `items` holds a backend of `kind`.
 pub fn holds_backend(items: &[TopDecl], kind: &str) -> bool {
-    flat_decls(items)
+    items.iter()
         .any(|d| matches!(d, TopDecl::Locus(l) if l.is_main && backends(l).iter().any(|b| b.kind == kind)))
 }
 
@@ -104,7 +104,7 @@ pub fn holds_backend(items: &[TopDecl], kind: &str) -> bool {
 /// source to a program that holds one.
 pub fn expand(programs: &mut [&mut Program]) {
     let holds = programs.iter().any(|p| {
-        flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.is_main && !backends(l).is_empty()))
+        p.items.iter().any(|d| matches!(d, TopDecl::Locus(l) if l.is_main && !backends(l).is_empty()))
     });
     if !holds {
         return;
@@ -119,7 +119,6 @@ pub fn expand(programs: &mut [&mut Program]) {
 fn number_items(items: &mut [TopDecl], next: &mut i64) {
     for item in items {
         match item {
-            TopDecl::Module(m) => number_items(&mut m.items, next),
             TopDecl::Locus(l) if l.is_main => {
                 for m in l.members.iter_mut() {
                     let LocusMember::Params(pb) = m else { continue };

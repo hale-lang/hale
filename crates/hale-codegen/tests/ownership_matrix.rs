@@ -32,9 +32,8 @@
 //!     an interface-typed child, one whose
 //!     `bounded` lists hold an enum with payloads);
 //!   * **context** — the frame the payload runs in (`fn main`, a
-//!     free fn, a locus METHOD, a `while` loop of four iterations, a
-//!     fn inside `module { }`, and an early-`return` guard both
-//!     taken and not taken).
+//!     free fn, a locus METHOD, a `while` loop of four iterations,
+//!     and an early-`return` guard both taken and not taken).
 //!
 //! The context matters as much as the position: `main`'s arena is
 //! destroyed at process exit, so a leak there is invisible to a
@@ -87,7 +86,7 @@
 //!
 //! ## Size
 //!
-//! The full matrix (31 × 7 × 7 = 1519 cells, ~150 s on seven threads)
+//! The full matrix (31 × 7 × 6 = 1302 cells, ~130 s on seven threads)
 //! is behind `HALE_MATRIX=full`, for a nightly job. The per-PR
 //! default runs a deterministic sample (~90 cells, ~17 s) that
 //! always contains one
@@ -143,7 +142,7 @@ const KNOWN_OPEN: &[(&str, &str)] = &[];
 /// How many cells the per-PR sample aims for.
 const TARGET_SAMPLE: usize = 60;
 
-/// A stride co-prime with the cell count (31 · 7 · 7 = 1519 = 7²·31),
+/// A stride co-prime with the cell count (31 · 7 · 6 = 1302 = 2·3·7·31),
 /// so topping the sample up visits the space evenly and
 /// deterministically.
 const FILL_STRIDE: usize = 101;
@@ -807,7 +806,6 @@ const CONTEXTS: &[Context] = &[
     Context { id: "free_fn", repeat: 1 },
     Context { id: "method", repeat: 1 },
     Context { id: "loop", repeat: 4 },
-    Context { id: "module", repeat: 1 },
     Context { id: "guard_taken", repeat: 1 },
     Context { id: "guard_untaken", repeat: 1 },
 ];
@@ -850,17 +848,6 @@ fn wrap(ctx: &Context, stmts: &str, fallible: bool) -> (String, String) {
                 "\n        mx_i = mx_i + 1;\n    }",
             ]
             .concat(),
-        ),
-        "module" => (
-            [
-                "module mx {\n    fn mx_work()",
-                fal,
-                " {\n",
-                &body2,
-                "\n    }\n}\n",
-            ]
-            .concat(),
-            ["    mx_work()", orr, ";"].concat(),
         ),
         "guard_taken" | "guard_untaken" => (
             [
@@ -1427,11 +1414,6 @@ fn matrix_in_a_loop() {
 }
 
 #[test]
-fn matrix_in_a_module() {
-    run_context("module");
-}
-
-#[test]
 fn matrix_behind_a_taken_guard() {
     run_context("guard_taken");
 }
@@ -1451,10 +1433,10 @@ fn matrix_behind_an_untaken_guard() {
 fn the_matrix_is_rectangular_and_non_vacuous() {
     assert_eq!(POSITIONS.len(), 31, "position axis changed size");
     assert_eq!(SHAPES.len(), 7, "type axis changed size");
-    assert_eq!(CONTEXTS.len(), 7, "context axis changed size");
+    assert_eq!(CONTEXTS.len(), 6, "context axis changed size");
 
     let all = all_cells();
-    assert_eq!(all.len(), 31 * 7 * 7);
+    assert_eq!(all.len(), 31 * 7 * 6);
     let ids: BTreeSet<String> = all.iter().map(|c| cell_id(*c)).collect();
     assert_eq!(ids.len(), all.len(), "two cells share an id");
 

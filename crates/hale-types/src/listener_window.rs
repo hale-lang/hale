@@ -63,7 +63,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    flat_decls, Block, BusMember, ElseBranch, Expr, IfStmt, KeyFilter, LifecycleKind, LocusDecl, LocusMember,
+    Block, BusMember, ElseBranch, Expr, IfStmt, KeyFilter, LifecycleKind, LocusDecl, LocusMember,
     MatchArmBody, MatchStmt, OrDisposition, Param, ParamDecl, ParamInit, PlacementSpec, Program, RecoveryModifier,
     Stmt, StructField, TypeDecl, TypeDeclBody, TypeExpr, LValueSeg,
 };
@@ -273,7 +273,7 @@ pub fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl], f: &
             }
         }
     };
-    for d in flat_decls(items) {
+    for d in items.iter() {
         match d {
             TopDecl::Fn(func) => {
                 defaults(&func.params, f);
@@ -332,8 +332,7 @@ pub fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl], f: &
                     }
                 }
             }
-            // `flat_decls` opens a module; the rest hold no expression
-            // a program evaluates
+            // the rest hold no expression a program evaluates
             _ => {}
         }
     }
@@ -542,7 +541,7 @@ impl<'a> Window<'a> {
             }
         };
         for p in programs {
-            for d in flat_decls(&p.items) {
+            for d in p.items.iter() {
                 match d {
                     hale_syntax::ast::TopDecl::Fn(f) => {
                         bodies.insert((None, f.name.name.clone()), &f.body);

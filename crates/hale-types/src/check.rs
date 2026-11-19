@@ -299,7 +299,6 @@ fn collect_generic_fns<'a>(
             TopDecl::Fn(f) if !f.generics.is_empty() => {
                 out.insert(f.name.name.clone(), f);
             }
-            TopDecl::Module(m) => collect_generic_fns(&m.items, out),
             _ => {}
         }
     }
@@ -315,7 +314,6 @@ fn collect_generic_types<'a>(
             TopDecl::Type(t) if !t.generics.is_empty() => {
                 out.insert(t.name.name.clone(), t);
             }
-            TopDecl::Module(m) => collect_generic_types(&m.items, out),
             _ => {}
         }
     }
@@ -336,7 +334,6 @@ fn collect_generic_loci<'a>(
             TopDecl::Locus(l) if !l.generics.is_empty() => {
                 out.insert(l.name.name.clone(), l);
             }
-            TopDecl::Module(m) => collect_generic_loci(&m.items, out),
             _ => {}
         }
     }
@@ -885,7 +882,7 @@ fn literal_default_missing_field_diags(bundle: &Bundle<'_>, top: &crate::resolve
     };
     let mut out = Vec::new();
     for p in bundle.programs.values() {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             match d {
                 TopDecl::Fn(f) => params(&f.params, &mut out),
                 TopDecl::Type(t) => fields(t, &mut out),
@@ -968,7 +965,7 @@ fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     };
     let mut out = Vec::new();
     for p in bundle.programs.values() {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             match d {
                 TopDecl::Fn(f) => params(&f.params, &mut out),
                 TopDecl::Type(t) => fields(t, &mut out),
@@ -1143,13 +1140,6 @@ fn walk_bundle(
     monomorph_table(bundle, known, &templates, &mut typed.monomorphs);
     // GH #255: bundle-wide set of transport-bound topic names,
     // for the `or wait` legality check at publish sites.
-    //
-    // GH #825: this one fails the other way. Every other walk in the
-    // issue loses a finding when it stops at the top level; this one
-    // INVENTS one — a binding it cannot see reads as "this topic has
-    // no transport", so a legal `or wait` is REFUSED. A correct
-    // program with its `bindings { }` block one brace deeper did not
-    // compile.
     let bound_topics = inputs.bindings.bound_names();
     // The topics a raw `BytesView` payload can travel on: bound to an
     // `shm_ring` (whose `layout:` is judged at the entry), or carried by
@@ -1192,7 +1182,7 @@ fn walk_bundle(
         collect_generic_loci(&program.items, &mut generic_loci);
     }
     for program in bundle.programs.values().copied().chain(crate::stdlib_bodies::program()) {
-        for decl in hale_syntax::ast::flat_decls(&program.items) {
+        for decl in program.items.iter() {
             match decl {
                 TopDecl::Fn(f) => {
                     fn_decls.entry(f.name.name.clone()).or_insert(f);
@@ -1214,7 +1204,7 @@ fn walk_bundle(
     let mut user_loci: BTreeSet<*const LocusDecl> = BTreeSet::new();
     let mut type_decls: BTreeMap<String, &TypeDecl> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for decl in hale_syntax::ast::flat_decls(&program.items) {
+        for decl in program.items.iter() {
             match decl {
                 TopDecl::Fn(f) => {
                     user_fns.insert(f as *const FnDecl);
@@ -1241,7 +1231,7 @@ fn walk_bundle(
     // Duration = 0ns` on `std::process::SpawnOptions`) has the row
     // lowering emits it from, as one in a program's own type does.
     if let Some(program) = crate::stdlib_bodies::program() {
-        for decl in hale_syntax::ast::flat_decls(&program.items) {
+        for decl in program.items.iter() {
             if let TopDecl::Type(t) = decl {
                 type_decls.entry(t.name.name.clone()).or_insert(t);
             }
@@ -1258,7 +1248,7 @@ fn walk_bundle(
         let rows = crate::ownership::extended_factory_rows(&programs, &bundle.snapshot, &bundle.import_renames);
         let fns: BTreeMap<&str, &FnDecl> = programs
             .iter()
-            .flat_map(|p| hale_syntax::ast::flat_decls(&p.items))
+            .flat_map(|p| p.items.iter())
             .filter_map(|d| match d {
                 TopDecl::Fn(f) => Some((f.name.name.as_str(), f)),
                 _ => None,
@@ -1266,7 +1256,7 @@ fn walk_bundle(
             .collect();
         let fn_named = |n: &str| fns.get(n).copied();
         for program in &programs {
-            for decl in hale_syntax::ast::flat_decls(&program.items) {
+            for decl in program.items.iter() {
                 let TopDecl::Fn(f) = decl else { continue };
                 // GH #1569: a fn handing back a tuple or an array of loci
                 // builds every locus part, or hands back one it was given
@@ -1495,9 +1485,6 @@ pub fn check_bundle_rules(
     //   - bindings entries reference declared topics
     //   - duplicate bindings for the same topic are forbidden
     check_main_and_bindings(bundle, inputs, &mut diags);
-    // GH #911 (B6): and the entry point is top-level only, which the
-    // build path has always assumed and check did not say.
-    check_entry_point_placement(bundle, &mut diags);
     // Phase 3 routing-keys (2026-05-25): bundle-level checks
     //   - `on_unmatched: fallback` topics must have at least one
     //     `where key == _` subscriber program-wide.
@@ -1519,15 +1506,12 @@ pub fn check_bundle_rules(
     // pins a field is not built in a loop), rule 18 (GH #890, every
     // placement entry is consumed by a locus literal), the cross-pool
     // spawn, which is fire-and-forget, and GH #813 (a locus that builds
-    // itself through its own param defaults); and, before them, decision
-    // 2's refusal (F.40 phase 3, L4): a seed whose only `main locus` is
-    // module-nested has no entry for lowering to deploy.
+    // itself through its own param defaults).
     diags.extend(crate::lowering_laws::lowering_laws(
         bundle,
         &crate::lowering_laws::LoweringLawInputs {
             placement: inputs.placement,
             bindings: inputs.bindings,
-            entry: inputs.entry,
             ownership: &|| Some(inputs.ownership),
             omitted: crate::typed_bodies::OmittedView { by_call: &walk.record.omitted_args, by_path: &walk.record.calls_by_path },
         },
@@ -1648,7 +1632,7 @@ pub fn check_bundle_rules(
         // for the certificate evidence.
         let (mut flat, groups) = crate::effects::effect_report_grouped(
             &programs_vec,
-            inputs.entry.root().and_then(|m| m.decl(bundle)),
+            inputs.entry.entry().and_then(|m| m.decl(bundle)),
             inputs.alloc_summary,
             inputs.forms,
         );
@@ -1833,7 +1817,7 @@ impl<'a> GenericTemplates<'a> {
             }
         };
         for program in bundle.programs.values() {
-            for item in hale_syntax::ast::flat_decls(&program.items) {
+            for item in program.items.iter() {
                 match item {
                     TopDecl::Type(t) if !t.generics.is_empty() => {
                         let k = key(t.id);
@@ -2515,8 +2499,8 @@ fn find_blocking_in_expr(expr: &Expr) -> Option<(String, Span)> {
 // see `check_cooperative_pool_blocking`.)
 
 /// The fns that hold a classic cooperative pool's worker, keyed as the
-/// effect rows key them: a module's fns by their bare names, a locus's
-/// methods under the locus. A row's BLOCK class includes
+/// effect rows key them: a free fn by its name, a locus's methods under
+/// the locus. A row's BLOCK class includes
 /// `std::time::sleep`, which yields the worker between slices, so the
 /// class alone is not the answer: a fn holds the worker when its own
 /// BLOCK comes from a leaf `stdlib_surface::holds_cooperative_worker`
@@ -2966,32 +2950,6 @@ fn hot_factory_locus(c: &crate::alloc_summary::CallEdge, top: &TopScope) -> Opti
     }
 }
 
-/// Every declaration in `items`, with `module { … }` nesting
-/// flattened: the module itself is yielded, then each of its items,
-/// recursively.
-///
-/// GH #764: a module is a NAMESPACE, not an analysis boundary. The
-/// resolver's `register_top_decls` recurses through modules and keys
-/// `TopScope` by the BARE name, so a fn or locus inside one is an
-/// ordinary member of the bundle everywhere except in a check that
-/// walks `program.items` and stops. A declaration-shaped check that
-/// does that silently sees half the program.
-///
-/// The `'a` on the yielded reference is load-bearing (GH #825): most
-/// of the bundle-level checks build a name → `&LocusDecl` index in
-/// one pass and consult it in the next, so the borrow handed to the
-/// visitor has to outlive the walk. Without the named lifetime the
-/// closure is higher-ranked over it and nothing it sees can be
-/// stored.
-fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
-    // GH #884: the walk itself moved to `hale_syntax::ast` when
-    // codegen needed the same one. Same order, same yield of the
-    // module node before its contents.
-    for item in hale_syntax::ast::flat_decls(items) {
-        f(item);
-    }
-}
-
 /// The hot-path allocation lint, a law over the allocation summary's
 /// rows (F.40 phase 3, E3a part C): the program's own fns, a mode's
 /// body aside, each with its sites and calls where they are written
@@ -3319,10 +3277,8 @@ fn check_decorator_stacks(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             );
         }
     }
-    // A module nests top declarations arbitrarily deep; a decorator
-    // inside one is still a decorator — `walk_decls` flattens them.
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| match item {
+        program.items.iter().for_each(|item| match item {
             TopDecl::Fn(fd) => check_fn(fd, diags),
             TopDecl::Locus(l) => {
                 for m in &l.members {
@@ -3345,7 +3301,7 @@ fn check_decorator_stacks(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 /// through the fns it calls, is refused at that `put`, with the chain.
 fn check_lru_hook_puts(bundle: &Bundle<'_>, summary: &crate::alloc_summary::AllocSummary, diags: &mut Vec<Diag>) {
     for p in bundle.programs.values() {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             let TopDecl::Locus(l) = d else { continue };
             if !l.form.as_ref().is_some_and(|f| f.name.name == "lru_cache") {
                 continue;
@@ -3424,10 +3380,8 @@ fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, dia
     }
     // The law reads the flow rows: the release clauses a locus declares
     // are the rows' clauses that sit inside it.
-    // GH #825: a daemon-shaped locus inside a `module { … }` leaks
-    // accepted children exactly as one at the top level does.
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             let TopDecl::Locus(l) = item else { return };
             let mut accepts: Vec<(&LifecycleDecl, String)> = Vec::new();
             // the child types this locus releases, by last segment
@@ -3525,9 +3479,6 @@ fn check_cooperative_pool_blocking<'r>(
     fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
     found: &mut Vec<Violation>,
 ) -> BTreeSet<String> {
-    // GH #825: the rows key a module's fns by their bare names, as the
-    // resolver does, so a module-nested helper that blocks is in the
-    // set and a top-level `run()` calling it does not look clean.
     let mut holding: Option<BTreeSet<&crate::alloc_summary::FnKey>> = None;
 
     // Pools where the dead-receiver ERROR fired — the pool-
@@ -4167,7 +4118,7 @@ fn check_subscriber_torn_down_at_its_statement(rows: &ScopeLocalSubscriberRows<'
     let mut runs: BTreeSet<&str> = BTreeSet::new();
     let mut holds: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             if let TopDecl::Locus(l) = item {
                 let written = |kind: LifecycleKind| {
                     l.members.iter().any(|m| {
@@ -4313,7 +4264,7 @@ fn check_drain_not_honoured(rows: &DrainHonourRows<'_, '_>, out: &mut Vec<Violat
     let free_fns = crate::flows::free_fns_of(&programs);
     let mut reported: BTreeSet<(usize, usize)> = BTreeSet::new();
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             let TopDecl::Locus(l) = item else { return };
             if l.name.name.starts_with("__Std") || !flows.run_of(l).is_some_and(|r| r.manual_drain) {
                 return;
@@ -4396,7 +4347,7 @@ fn root_field_placements<'a>(
     let Some(root_decl) = root.decl.decl(bundle) else { return out };
     let mut decls: BTreeMap<SiteRef, &'a LocusDecl> = BTreeMap::new();
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             if let TopDecl::Locus(l) = item {
                 if let Some(id) = bundle.snapshot.site_id(l.id) {
                     decls.insert(SiteRef::user(id), l);
@@ -4463,13 +4414,9 @@ fn check_nested_long_running_child(
 ) {
     // Build a name → LocusDecl index across the bundle so we can
     // resolve params-field locus types to their target body.
-    // GH #825: both passes flatten `module { … }`. The index is half
-    // the rule — a TOP-LEVEL parent holding a module-nested child
-    // resolves the child's type through it, and an index that stops
-    // at the top level answers "not long-running" for every one.
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             if let TopDecl::Locus(l) = item {
                 local_loci.insert(l.name.name.as_str(), l);
             }
@@ -4477,7 +4424,7 @@ fn check_nested_long_running_child(
     }
 
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             let TopDecl::Locus(parent) = item else {
                 return;
             };
@@ -4630,10 +4577,7 @@ impl PoolId {
 ///   names the pool without an affinity is compatible with any.
 fn check_pool_affinity(bundle: &Bundle<'_>, entry: &crate::entry::EntryRow, diags: &mut Vec<Diag>) {
     // Every `main locus` the bundle declares, the entry row's witness:
-    // each declaration's own block is validated, deployed or not. GH
-    // #825: a `main locus` inside a `module { … }` declares the same
-    // placement block, and an affinity with no named pool is just as
-    // meaningless there.
+    // each declaration's own block is validated, deployed or not.
     for l in entry.mains.iter().filter_map(|m| m.decl(bundle)) {
         let mut declared: BTreeMap<String, (PinAffinity, Span)> =
             BTreeMap::new();
@@ -4716,7 +4660,7 @@ fn check_placement_single_thread(
     // The user declarations by site, for the receiver's name.
     let mut decl_names: BTreeMap<crate::placement::SiteRef, String> = BTreeMap::new();
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             if let TopDecl::Locus(l) = item {
                 if let Some(id) = bundle.snapshot.site_id(l.id) {
                     decl_names.insert(crate::placement::SiteRef::user(id), l.name.name.clone());
@@ -4756,7 +4700,7 @@ fn check_placement_single_thread(
     let mut cross_pool_safe_loci: BTreeSet<String> = BTreeSet::new();
     let mut form_bearing_loci: BTreeSet<String> = BTreeSet::new();
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             if let TopDecl::Locus(l) = item {
                 if l.form.is_some() {
                     form_bearing_loci.insert(l.name.name.clone());
@@ -4796,7 +4740,7 @@ fn check_placement_single_thread(
         let mut all: Vec<(BodyKey, Option<&LocusDecl>, &FnDecl)> = Vec::new();
         let mut roots: BTreeSet<String> = BTreeSet::new();
         for program in bundle.programs.values() {
-            walk_decls(&program.items, &mut |item| match item {
+            program.items.iter().for_each(|item| match item {
                 TopDecl::Fn(f) => all.push((BodyKey::Fn(f.name.name.clone()), None, f)),
                 TopDecl::Locus(l) => {
                     let walked = bundle
@@ -4903,7 +4847,7 @@ fn check_placement_single_thread(
     };
 
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             if let TopDecl::Locus(l) = item {
                 let instances = bundle
                     .snapshot
@@ -8089,7 +8033,7 @@ impl<'a> StoreDecls<'a> {
             holds_handles: std::cell::RefCell::new(BTreeMap::new()),
         };
         for program in bundle.programs.values() {
-            walk_decls(&program.items, &mut |item| match item {
+            program.items.iter().for_each(|item| match item {
                 TopDecl::Locus(l) => {
                     d.loci.insert(l.name.name.clone(), l);
                 }
@@ -9151,10 +9095,8 @@ fn check_bounded_bus(
     placement: &crate::placement::PlacementTable,
     diags: &mut Vec<Diag>,
 ) {
-    // GH #825: a `topic` and a subscriber inside a `module { … }` are
-    // ordinary bundle members, so both walks descend into modules.
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             if let TopDecl::Topic(t) = item {
                 match (t.bounded, t.on_full_fail) {
                     (Some((_, bspan)), None) => diags.push(Diag::ty(
@@ -9179,7 +9121,7 @@ fn check_bounded_bus(
     // The table is read only when a subscriber is bounded.
     let mut placements: Option<BTreeMap<String, crate::bus_graph::Placement>> = None;
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             let TopDecl::Locus(l) = item else { return };
             for member in &l.members {
                 let LocusMember::Bus(bb) = member else { continue };
@@ -9240,15 +9182,11 @@ fn check_phase3_fallback_subscribers(
             return false;
         }
         let tname = &path.segments[0].name;
-        // GH #825: the payload struct can be declared in a module
-        // too, and a payload this lookup cannot find reads as "not a
-        // String key", which decides the `where key == replica` rule.
-        // First declaration wins, exactly as the nested `for` it
-        // replaces did — a second one of the same name is a
+        // First declaration wins — a second one of the same name is a
         // duplicate the resolver reports.
         let mut answer: Option<bool> = None;
         for program in bundle.programs.values() {
-            walk_decls(&program.items, &mut |item| {
+            program.items.iter().for_each(|item| {
                 if answer.is_some() {
                     return;
                 }
@@ -9287,7 +9225,7 @@ fn check_phase3_fallback_subscribers(
         }
     }
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             let TopDecl::Locus(l) = item else { return };
             for m in &l.members {
                 let LocusMember::Bus(bb) = m else { continue };
@@ -9406,55 +9344,10 @@ fn check_phase3_fallback_subscribers(
     }
 }
 
-/// GH #911 (B6): the entry point is TOP-LEVEL only.
-///
-/// A module is a namespace and not an analysis boundary, so nearly
-/// every declaration means the same thing one brace deeper (GH #825,
-/// GH #884). The entry point is the exception `spec/semantics.md`
-/// § "Declarations inside `module { }`" names: codegen looks for
-/// `fn main` in `program.items` and nowhere else — a module-nested
-/// one is not the program's entry point, and promoting it there
-/// would make codegen the only layer that thinks so.
-///
-/// What it was NOT is a reason for `check` to stay quiet. A seed whose
-/// only `fn main` sits inside a module checked clean and then failed
-/// to build with codegen's spanless `program has no `fn main()``, so
-/// the two layers disagreed about a program (the ruling on GH #911,
-/// 2026-09-20). They agree here instead, with the position of the
-/// declaration that has to move.
-fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
-    fn walk(items: &[TopDecl], module: Option<&str>, diags: &mut Vec<Diag>) {
-        for item in items {
-            match item {
-                TopDecl::Fn(f) if f.name.name == "main" => {
-                    let Some(m) = module else { continue };
-                    diags.push(Diag::ty(
-                        f.name.span,
-                        format!(
-                            "the entry point must be top-level: a `fn \
-                             main` inside `module {}` does not start the \
-                             program — move it out of the module, or \
-                             rename it if it is an ordinary function",
-                            m
-                        ),
-                    ));
-                }
-                TopDecl::Module(m) => walk(&m.items, Some(&m.name.name), diags),
-                _ => {}
-            }
-        }
-    }
-    for program in bundle.programs.values() {
-        walk(&program.items, None, diags);
-    }
-}
-
 fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags: &mut Vec<Diag>) {
     let (top, effects, entry, bindings) = (inputs.top, inputs.effects, inputs.entry, inputs.bindings);
     // Rule 1 counts the entry row's witness (F.40 phase 3, E0): the
-    // seed's own `main locus` declarations, module-nested ones
-    // included (GH #825: a count that skips half the declarations is
-    // not a count). An imported seed's main locus is not this
+    // seed's own `main locus` declarations. An imported seed's main locus is not this
     // program's entry and does not count: a composed head imports the
     // standalone head, main locus and all (GH #1104 piece 5).
     let mains: Vec<(&str, Span)> = entry.own().map(|m| (m.name.as_str(), m.span)).collect();
@@ -9467,9 +9360,8 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
     // never builds them).
     let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
 
-    // GH #825: a `bindings { }` block inside a `module { … }` is an
-    // ordinary bundle member: the rows cover every entry the bundle
-    // declares. An imported main's bindings are inert (GH #1104
+    // The rows cover every entry the bundle declares. An imported
+    // main's bindings are inert (GH #1104
     // piece 5): they bind nothing here and count toward nothing — not
     // "already bound", not a role to infer.
     for row in bindings.rows.iter().filter(|r| !r.imported) {
@@ -9771,14 +9663,14 @@ fn check_wire_maps(programs: &[&Program], diags: &mut Vec<Diag>) {
     let uncarried = hale_syntax::json_gen::uncarried_wire_maps(programs);
     let mut types: std::collections::HashMap<String, &TypeDecl> = std::collections::HashMap::new();
     for p in programs {
-        walk_decls(&p.items, &mut |item| {
+        p.items.iter().for_each(|item| {
             if let TopDecl::Type(t) = item {
                 types.insert(t.name.name.clone(), t);
             }
         });
     }
     for p in programs {
-        walk_decls(&p.items, &mut |item| {
+        p.items.iter().for_each(|item| {
             let TopDecl::Type(t) = item else { return };
             let TypeDeclBody::Struct(fields) = &t.body else { return };
             for f in fields {
@@ -9975,7 +9867,7 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
         }
     }
     for p in programs {
-        walk_decls(&p.items, &mut |item| match item {
+        p.items.iter().for_each(|item| match item {
             TopDecl::Type(t) => match &t.body {
                 TypeDeclBody::Struct(fields) => {
                     once(
@@ -10111,8 +10003,8 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
     let BusLawRows { bundle, top, entry, bus, placement, .. } = *rows;
     // Closed-world gate: only a complete program (one with an entry,
     // F.40 phase 3, E0) has both ends of every channel in-bundle. A
-    // seed whose only `main locus` is imported or module-nested has
-    // none, and is checked as a library is.
+    // seed whose only `main locus` is imported has none, and is
+    // checked as a library is.
     if entry.entry().is_none() {
         return;
     }
@@ -10488,19 +10380,8 @@ fn check_bus_cycles(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
         if !reported.insert(nodes.into_iter().collect::<Vec<_>>().join("|")) {
             continue;
         }
-        // Each declaration by its name; two of one name by their module
-        // paths, so the list says which two.
-        let mut loci: Vec<String> = decls
-            .iter()
-            .map(|d| {
-                let row = &bus.decls[*d];
-                if decls.iter().filter(|o| bus.decls[**o].name == row.name).count() > 1 {
-                    row.modules.iter().chain([&row.name]).cloned().collect::<Vec<_>>().join("::")
-                } else {
-                    row.name.clone()
-                }
-            })
-            .collect();
+        // Each declaration by its name.
+        let mut loci: Vec<String> = decls.iter().map(|d| bus.decls[*d].name.clone()).collect();
         loci.sort();
         out.push(Violation::warning(
             RULE_10,
@@ -10914,7 +10795,6 @@ fn check_bus_subject_types(
                         }
                     }
                 }
-                TopDecl::Module(md) => walk(&md.items, known, subjects),
                 _ => {}
             }
         }
@@ -11280,7 +11160,7 @@ fn check_bus_payload_carriable(
     // place. Said once per payload type, at the first clause naming it.
     let mut wire_reported: BTreeSet<String> = BTreeSet::new();
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             let TopDecl::Locus(l) = item else { return };
             for m in &l.members {
                 let LocusMember::Bus(bb) = m else { continue };
@@ -11337,7 +11217,7 @@ fn check_bus_payload_carriable(
         });
     }
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             let TopDecl::Locus(l) = item else { return };
             for m in &l.members {
                 let LocusMember::Bus(bb) = m else { continue };
@@ -11417,7 +11297,6 @@ fn check_bus_backpressure(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                         }
                     }
                 }
-                TopDecl::Module(md) => walk(&md.items, diags),
                 _ => {}
             }
         }
@@ -11919,11 +11798,6 @@ impl<'a> Checker<'a> {
                             got.display()
                         ),
                     ));
-                }
-            }
-            TopDecl::Module(m) => {
-                for item in &m.items {
-                    self.check_top_decl(item);
                 }
             }
             TopDecl::Type(t) => {
@@ -28938,15 +28812,12 @@ fn locus_has_unsynchronized_state(
     rows: &crate::form_rows::FormRows,
     locus_ty: &str,
 ) -> Option<String> {
-    // GH #825: `forms` decides whether each field of the aliased
-    // locus is behind a `sync` discipline. A `@form` locus this walk
-    // cannot see is simply absent from the map, and an absent entry
-    // reads as "not an unsynchronized form" — so a module-nested
-    // form silenced the finding for a top-level alias too.
+    // `forms` decides whether each field of the aliased locus is
+    // behind a `sync` discipline.
     let mut decl: Option<&LocusDecl> = None;
     let mut forms: BTreeMap<String, bool> = BTreeMap::new();
     for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
+        program.items.iter().for_each(|item| {
             let TopDecl::Locus(l) = item else { return };
             if l.name.name == locus_ty {
                 decl = Some(l);

@@ -41,7 +41,7 @@ Adding `target wasm { }` at the top level of a file marks the program as a WebAs
 | `hale run client/main.hl` | Rejected (`wasm32` binaries execute in a WebAssembly host, not directly on the OS). |
 
 > [!IMPORTANT]
-> `target wasm { }` must appear at the top level of a file. Placing a `target` block inside a `module { }` block is a syntax error. To typecheck a file that omits `target wasm { }` against browser restrictions, run `hale check --target wasm32 app.hl`.
+> `target wasm { }` is a top-level declaration of a file. To typecheck a file that omits `target wasm { }` against browser restrictions, run `hale check --target wasm32 app.hl`.
 
 ### Transitive Capability Checking
 

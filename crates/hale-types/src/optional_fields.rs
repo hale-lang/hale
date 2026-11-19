@@ -115,7 +115,6 @@ fn each_struct<'a>(items: &'a [TopDecl], f: &mut dyn FnMut(&'a str, &'a [StructF
                     f(&t.name.name, fields);
                 }
             }
-            TopDecl::Module(m) => each_struct(&m.items, f),
             _ => {}
         }
     }
@@ -129,7 +128,6 @@ fn each_struct_mut(items: &mut [TopDecl], f: &mut dyn FnMut(&str, &mut Vec<Struc
                     f(&t.name.name, fields);
                 }
             }
-            TopDecl::Module(m) => each_struct_mut(&mut m.items, f),
             _ => {}
         }
     }

@@ -27,9 +27,7 @@ use hale_syntax::names::{for_each_spelled, for_each_spelled_in_item, Spelled};
 /// The verdict for `user`, the user's program after the desugars and
 /// before the stdlib is merged into it.
 pub fn bus_inert(user: &Program) -> bool {
-    // GH #884: every declaration, modules flattened — a topic or a bus
-    // block one brace deeper is still bus surface.
-    let declares_none = hale_syntax::ast::flat_decls(&user.items).all(|it| match it {
+    let declares_none = user.items.iter().all(|it| match it {
         TopDecl::Topic(_) => false,
         TopDecl::Locus(l) => l.members.iter().all(|m| match m {
             LocusMember::Bus(_) | LocusMember::Bindings(_) => false,
@@ -146,10 +144,6 @@ mod tests {
         );
         assert!(!inert("fn main() { __StdLogSink { }; }\n"), "a mangled stdlib name");
         assert!(!inert("type P { n: Int; }\ntopic T { payload: P; }\nfn main() { }\n"), "a topic");
-        assert!(
-            !inert("module m {\n  type P { n: Int; }\n  topic T { payload: P; }\n}\nfn main() { }\n"),
-            "a topic one module deep"
-        );
     }
 
     fn bus_inert_namespace_is(ns: &str) -> bool {

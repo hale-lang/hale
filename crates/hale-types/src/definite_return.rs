@@ -27,7 +27,7 @@
 use std::collections::BTreeSet;
 
 use hale_syntax::ast::{
-    flat_decls, Block, ElseBranch, Expr, FnDecl, IfStmt, Literal, LocusMember, MatchArmBody, MatchForm, MatchStmt,
+    Block, ElseBranch, Expr, FnDecl, IfStmt, Literal, LocusMember, MatchArmBody, MatchForm, MatchStmt,
     Stmt, TopDecl, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
@@ -47,7 +47,7 @@ pub struct FallThrough {
 pub fn definite_return_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     let mut out = Vec::new();
     for program in bundle.programs.values() {
-        for item in flat_decls(&program.items) {
+        for item in program.items.iter() {
             match item {
                 TopDecl::Fn(f) => fn_diag(&format!("fn `{}`", f.name.name), f, &mut out),
                 TopDecl::Locus(l) => {

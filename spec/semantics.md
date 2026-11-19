@@ -3549,51 +3549,32 @@ The `shm_ring(...)` transport variant above satisfies `zero_copy`
 the payload's flat layout. Existing bindings without a `where`
 clause continue to work unchanged.
 
-**The entry locus.** A program's entry is its seed's own top-level
-`main locus`; the checker reads it from one row (`hale_types::entry`,
-the registry's `entrypoint` family) for rule 1's count and rule 9's
-closed world, and `--env` and `--matrix` read the same row for what an
-entrypoint is. Two shapes are not the entry (F.40 phase 3, E0):
-
-- **An imported `main locus`** — a library's, renamed with its seed —
-  is a declaration the importing seed does not run. A seed whose only
-  `main locus` is imported has no entry and checks as a seed with no
-  `main` does: the library's placement seeds nothing, and the world
-  is not closed.
-- **A `main locus` inside a `module { }`** is not the entry either, as
-  a `fn main` inside one is not the entry point (§ "Declarations
-  inside `module { }`"). A seed with both keeps the top-level one, and
-  rule 1 still counts the module-nested one (GH #825). A seed whose
-  only `main locus` is module-nested has no entry, and is **refused**,
-  by `hale check` as by the build, with one located error at that
-  locus's name:
-
-  ```text
-  main.hl:2:16: type error: the entry must be top-level: `main locus App` inside `module inner` is not the program's entry, and nothing else in the seed is — move it out of the module
-  ```
+**The entry locus.** A program's entry is its seed's own `main
+locus`; the checker reads it from one row (`hale_types::entry`, the
+registry's `entrypoint` family) for rule 1's count and rule 9's closed
+world, and `--env` and `--matrix` read the same row for what an
+entrypoint is. **An imported `main locus`** — a library's, renamed
+with its seed — is not the entry (F.40 phase 3, E0): it is a
+declaration the importing seed does not run. A seed whose only `main
+locus` is imported has no entry and checks as a seed with no `main`
+does: the library's placement seeds nothing, and the world is not
+closed.
 
 With more than one candidate (rule 1's error) the checker reads the
 last.
 
 The build deploys the entry and nothing else (F.40 phase 3, L4): its
-placement, its bindings, its pinned threads. The refusal above is one
-more diagnostic, never a replacement: the placement-safety rules (the
-pool map behind the cross-pool method call error, `spec/types.md` §
-"Single-threaded-method invariant (F.31)", the pinned-in-a-loop rule,
-placement rule 17, the instance-aliasing warning, one locus shared by
-two of the root's fields placed apart, #334, which reads where each
-field runs from the placement table, and the async_io advisory,
-`spec/verification.md` § "Placement-implied contracts") and every
-other rule still judge a refused module-nested `main locus` and its
-members as they judge the same declarations at the top level, so a
-program refused for another reason is refused for both. The api
-binding is generated into the same root, the entry or a refused
-module-nested `main`, and the editor's `hale/placement` view and the
-model's `entrypoint` name it (`main` when there is none, as for a seed
-whose only `main locus` is imported). Until L4 the build deployed the
-first `main locus` of the seed's own, a module-nested one included;
-the refusal is what changed for the one seed that ran differently,
-whose only `main locus` is module-nested.
+placement, its bindings, its pinned threads. The placement-safety
+rules (the pool map behind the cross-pool method call error,
+`spec/types.md` § "Single-threaded-method invariant (F.31)", the
+pinned-in-a-loop rule, placement rule 17, the instance-aliasing
+warning, one locus shared by two of the root's fields placed apart,
+#334, which reads where each field runs from the placement table, and
+the async_io advisory, `spec/verification.md` § "Placement-implied
+contracts") judge the entry. The api binding is generated into the
+entry, and the editor's `hale/placement` view and the model's
+`entrypoint` name it (`main` when there is none, as for a seed whose
+only `main locus` is imported).
 
 The entry is started by the seed's top-level `fn main`, which
 instantiates it; a `main locus` does not start itself. A seed that
@@ -4252,15 +4233,14 @@ main locus App {
    diagnostic keeps its precision. Rules 7 and 8, the pool-starvation
    warning and the birth-order trap read where each field runs from
    the placement table: they judge the `main locus` lowering deploys,
-   the entry, or the refused module-nested one of a seed with none
-   (one lowering does not deploy, imported or beside the entry, spawns
+   the entry (one lowering does not deploy, an imported one, spawns
    nothing and is not judged), and each field by the locus it
    realizes, an alias or an imported seed's qualified path
    included (a stdlib locus's `run()` is judged by the
    known-long-running list, as before).
 9. **Orphan bus topic (warning).** In a closed-world program (one
-   with an entry: the seed's own top-level `main locus`; an imported
-   or a module-nested one is not the entry: "The entry locus", §
+   with an entry: the seed's own `main locus`; an imported one is not
+   the entry: "The entry locus", §
    "Phase 2: hierarchy, subjects, bindings, closed-world
    optimization"),
    a bus subject — a declared `topic` or a
@@ -4444,10 +4424,8 @@ main locus App {
     reclaim policy to pick. `placement { }` is main-only (rule 1),
     so the shape this rejects is the deployment root booted once per
     iteration, and the placement it reads is the deployment root's
-    (an imported `main locus` is not deployed and pins nothing; a
-    module-nested one that is the seed's only `main locus` is refused
-    as not the entry, and judged here too, as a top-level one would
-    be: "The entry locus", § "Phase 2: hierarchy, subjects, bindings,
+    (an imported `main locus` is not deployed and pins nothing: "The
+    entry locus", § "Phase 2: hierarchy, subjects, bindings,
     closed-world optimization").
     The fix is to instantiate it once outside the loop;
     a loop that *calls a fn* holding the literal is unaffected and
@@ -4550,7 +4528,7 @@ main locus App {
     an `accept` edge of the ownership graph. The judgment reads the
     graph's edges, which are keyed by declaration identity: an
     `accept` that names the subscriber's declaration through an
-    alias, a module path or a generic specialization owns it; a name
+    alias, an import path or a generic specialization owns it; a name
     that merely matches the declaration's last segment, or its
     template, does not. When two declarations share a name, the graph
     orders them by declaration order and the diagnostic names the
@@ -6471,17 +6449,24 @@ Both paths preserve the framework's vertical-only-flow: every
 failure exits through the top of the recursion, never
 laterally.
 
-## Declarations inside `module { }`
+## One top-level scope
 
-`module NAME { <top_decl>* }` (grammar `module_decl`) groups
-declarations for the reader. It introduces **no namespace of its
-own**: the resolver registers a module's declarations in the
-bundle's one flat top-level scope, under their **bare** names, at
-any nesting depth. `module geo { type Point { x: Int; } }` makes
-`Point` — not `geo::Point` — the name every use site spells, two
-modules declaring the same name are the ordinary duplicate-name
-error, and the module's name is not itself a value, a type, or a
-path head.
+A seed's declarations share one flat top-level scope: every file of
+the seed directory declares into it, under the names it writes, and
+two declarations of one name are the ordinary duplicate-name error.
+There is no in-file namespace form. A module is a directory, reached
+by `import "<path>" as <alias>;` (§ "Cross-seed namespace
+resolution"); the `module NAME { … }` declaration that once grouped
+declarations inside a file was removed (spec/decisions.md F.57), and
+a program that still writes one is refused at the word `module` with
+one located error:
+
+```text
+main.hl:1:1: parse error: `module` declarations were removed: a module is a directory, reached by `import "path" as name;`. Move the declarations inside `module NAME { }` to the top level, or into their own file or directory and import it (spec/decisions.md F.57)
+```
+
+`module` is an ordinary identifier everywhere else: a local, a field,
+a parameter or a fn may be named `module`.
 
 The bundled stdlib's declarations share that one scope, under their
 internal names (`std::http::Server` is the locus `__StdHttpServer`).
@@ -6494,99 +6479,8 @@ library's names reach an importer mangled (`__lib_…`), so only a
 library checked on its own can meet one. The stdlib itself declares
 each name once, which its own test holds it to.
 
-The consequence is a rule, not an implementation detail:
-
-> A declaration inside a `module { }` is **first class**. It is
-> resolved, typed, mangled, lowered and linked exactly as the same
-> declaration written at the top level.
-
-This holds for each kind: a `type` (struct, enum or alias), a
-`locus`, an `interface`, a `topic`, a `const`, a
-generic template, and a free `fn`. It holds through an `import`
-in both directions: a library's module-nested declaration gets a
-mangled name and a rename-table row like any other, so the
-importer reaches it as `alias::Name`, and a qualified path the
-importer writes *inside* a module — a type in a signature, a
-call, a struct literal, an enum variant — resolves as it would at
-the top level.
-
-Two things a module still does not change, because neither is a
-name lookup:
-
-- **The entry point.** A seed's entry point is its **top-level**
-  `fn main` (or the `main locus` that one instantiates). A `fn
-  main` written inside a module does not start the program — and is
-  **refused**, by `hale check` as well as by the build, with a
-  located error at the declaration:
-
-  ```text
-  main.hl:2:8: type error: the entry point must be top-level: a `fn main` inside `module inner` does not start the program — move it out of the module, or rename it if it is an ordinary function
-  ```
-
-  Reading it as an ordinary free fn named `main` was the
-  alternative, and it made a seed whose only `fn main` was one
-  brace deeper check clean and then fail to build (codegen's
-  spanless `program has no fn main()`). The two layers say the same
-  thing now (2026-09-20, GH #911).
-
-  A `main locus` written inside a module is not the entry either
-  (F.40 phase 3, E0): rule 1 counts it, but the entry is the seed's
-  top-level `main locus`, so a module-nested one does not close the
-  world, is not a deployment target for `--env`, and is not what the
-  build deploys ("The entry locus", § "Phase 2: hierarchy, subjects,
-  bindings, closed-world optimization"). Beside a top-level one it is
-  rule 1's error. Where it is the seed's only `main locus` nothing in
-  the seed is the entry, and the seed is **refused** at its name, as
-  a nested `fn main` is (F.40 phase 3, L4):
-
-  ```text
-  main.hl:2:16: type error: the entry must be top-level: `main locus App` inside `module inner` is not the program's entry, and nothing else in the seed is — move it out of the module
-  ```
-
-  The refusal is one more diagnostic: every other rule still judges
-  that `main locus` and its members as it would at the top level.
-- **Scoping of locals.** Ordinary lexical scope is unchanged; a
-  module is not a scope.
-
-One declaration is not admissible inside a module at all:
-
-- **`target NAME { }`** is a program-level build directive, not a
-  declaration a namespace can hold, and the **parser** refuses it
-  at depth:
-
-  ```text
-  main.hl:2:5: parse error: `target` is a program-level declaration; move it to the top level
-  ```
-
-  Every consumer of a target reads
-  `program.items` — the checker's capability gate, the wasm-entry
-  detection in `desugar`, the stdlib gating — so one declared
-  inside a module used to be silently INERT: the same program that
-  was gated at the top level reported `ok` one brace deeper.
-  Honouring it at any depth instead would have changed what the
-  build does rather than what a diagnostic says, which is why the
-  refusal was taken (2026-09-20, GH #901). The grammar's
-  `module_decl = "module" , IDENTIFIER , "{" , { top_decl } , "}"`
-  is therefore read with `target_decl` excluded.
-
-**Analysis is on the same line, one check at a time.** The rule
-above is about resolution and lowering, and it holds without
-exception. The bundle-level *checks* are being brought to it
-individually: the hot-path allocation lint and the decorator-stack
-check reach inside a module (GH #764, `verification.md`), while
-several siblings in `check.rs` still stop at the top level and are
-tracked by GH #825 — there, a declaration one brace deeper can
-escape a check the identical top-level declaration would fail.
-The behavior summary that effect inference, the allocation analyses
-and the certificate engines read collects module-nested bodies like
-top-level ones (F.40 phase 3): a module-nested fn has a row, a call
-into it resolves, and what it does is in its callers' effect sets.
-
-(GH #764 for the lint; GH #884 and GH #854 for codegen's
-declaration collection, the cross-seed mangler and the pre-typecheck
-rename pass. Before those, the same program was accepted at the top
-level and either silently unanalyzed or unbuildable one brace
-deeper.)
+A seed's entry point is its `fn main` (or the `main locus` that one
+instantiates).
 
 ## Cross-seed namespace resolution (v1.x-IMPORT)
 

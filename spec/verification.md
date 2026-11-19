@@ -18,22 +18,6 @@ Most checks run in the bundle-level passes of
 ones run in `crates/hale-types/src/resolve.rs`; cell slot-of-origin is
 a codegen-time check. Each entry names the enforcing pass.
 
-**Every bundle-level check applies inside `module { … }`, at any
-nesting depth** (GH #825, 2026-09-20). A module is a NAMESPACE, not an
-analysis boundary — the resolver registers a module's declarations
-under their bare names, so a fn, locus, topic or `bindings` entry one
-brace deeper is an ordinary member of the bundle. Findings carry the
-same message, the same span and the same severity as the identical
-declaration written at the top level, and whole-bundle facts (the
-at-most-one-`main` count, the pool map seeded from the `main` locus's
-placement block, the transport-bound topic set, the `@form`
-sync-discipline index) count module-nested declarations too. The
-behavior summary the effect, allocation and certificate analyses read
-collects module-nested bodies as well (F.40 phase 3), so a
-module-nested fn is never an unanalyzed body: a call into one
-resolves, its effects are in its callers' sets, and a law through it
-can be certified.
-
 ## Concurrency & placement safety
 
 The bus + cooperative-pool model is the substrate; these checks keep a
@@ -59,7 +43,7 @@ interprocedural — the high-stakes diagnostic stays precise. See
 **The warning's horizon.** The helpers that block are read off the
 effect rows: a fn blocks when its own `block` leaf holds the worker
 (below), or when any fn it calls blocks, transitively over the rows'
-resolved call targets — a module's fns by their bare names, a
+resolved call targets — a
 qualified cross-seed call, a stdlib body behind a handle method and
 another locus's method included. The `run()` walk consults that set at
 two call shapes only: a bare call `pump()` (a free fn) and
@@ -1015,7 +999,7 @@ decls do (#334); claim names are never mangled.
 
 **The world is every `main locus` the bundle declares.** World law
 is read from a column of the entry row (`EntryRow::world`): the
-entry's `claims { }` block, a module-nested main's, and an imported
+entry's `claims { }` block and an imported
 application's, each in declaration order. The column is wider than
 the entry on purpose. Which declaration a seed runs is the entry's
 question (`spec/semantics.md` § Bundle-wide rules: an imported `main
@@ -1198,10 +1182,9 @@ environment and nothing about the base being shared.
 environment contributes any constitution: an environment binds law to
 a deployment target, and a `source_only` environment with no base
 would otherwise check a library and report success. An entrypoint is
-a seed with an entry, its own top-level `main locus`
+a seed with an entry, its own `main locus`
 (`spec/semantics.md`, "The entry locus"): a seed whose only `main
-locus` is an imported library's, or sits inside a `module { }`, is
-refused as a library is, and `--matrix` does not count it among the
+locus` is an imported library's is refused as a library is, and `--matrix` does not count it among the
 entrypoints it requires an environment for.
 
 **Roles (GH #1109).** `[environments.<name>.roles]` is the deployment's
@@ -1249,7 +1232,7 @@ environment, all entrypoints must resolve each constitution to the
 same closure digest.
 
 A listed seed the check refuses (one with no entry: a library, or a
-seed whose only `main locus` is imported or inside a `module { }`) is
+seed whose only `main locus` is imported) is
 reported by that refusal alone, and its pair fails. It has no
 entrypoint for the environment's roles to be mapped to, so no role
 coverage is reported for it, and a constitution it can never deploy
@@ -2113,7 +2096,6 @@ manifest. `hale verify` fails on these as on any advisory.
 | **Unreached recovery event** | in a closed world (the program has an entry), a recovery event a closure of the program's own seed names that no handler and no recovery statement applies to its locus, read from the handler rows and from the recovery statements outside the handlers as the checker types them, each on the locus its receiver's type names, a generic body's per specialization (a spent `restart(c) for N` bound is `quarantine`). The witness is each handler and statement that names the locus, with the events it applies, or the locus when none does. Not judged for an imported locus, nor for an event some recovery applies to a child no row names (a generic supervisor's handler's type parameter, or a receiver of a type parameter in a generic body no specialization binds) | warning | `unreached_events` (closure events) |
 | **Persistence with no accumulator** | `persists_through(...)` on a closure whose assertion has no `sum`, `count` or `mean`: there is nothing to keep. Reported at the clause, with the assertion as its witness | warning | `nothing_to_keep` (closure events) |
 | **Sealed confinement** | a read or a write of a `@sealed` locus's `params` field from outside that locus's own members (`self.signer.key` in its parent), naming the methods to call instead; see § "Secrets — confine, classify, claim". Judged over the param-access rows the checker records for every access through a locus-typed receiver, sealed or not, which the `--sealable` survey reads too. A parameter's default is judged where it is evaluated, at each call that leaves it, with that caller as the reader, and refused once, at the default. A receiver typed as a generic locus's specialization (`b: Box<Int>`) reaches the generic locus's `params`, and is judged against its `@sealed`. A generic body is judged in each of its specializations, so an access through a value of a parameter type (`self.inner.key`, `inner: T`) is refused where it is written when a specialization binds that type to a sealed locus, once however many do, through a chain of fields of any depth (`self.h.s.key`, `h: Holder<T>`) | error | `outside_access` (sealed access) |
-| **Module-nested entry** | a seed whose only `main locus` sits inside a `module { }`: it is not the entry (`spec/semantics.md` § "The entry locus"), and nothing else in the seed is, so the program would build with a `main locus` that never runs. Reported once, at that locus's name, read from the entry row; every other rule still judges the declaration | error | `module_nested_main_is_not_the_entry` (lowering laws) |
 | **Cross-pool spawn as a value** | a locus literal used as a value (let-bound, an argument, a field, a sub-expression) where the ownership graph's bubble plan posts it to an owner on another thread: a cross-pool spawn is fire-and-forget (`spec/semantics.md` § "accept bubbling"), so it may only be a bare statement. A member body's literal whose enclosing locus runs both on the owner's thread and off it (a `Mixed` edge: a same-tower birth in some instances, a post in others) is refused the same way, naming the instances and their threads. Judged at every place lowering builds the literal, a default's expansions included, from the ownership graph's sites and expansions and the typed bodies' omitted arguments | error | `cross_pool_spawn_used_as_a_value` (lowering laws) |
 | **Cross-pool child shape** | a locus the ownership graph's bubble plan posts to an owner on another thread is born there from a marshaled copy of its params (`spec/semantics.md` § "accept bubbling"), so each param is a type the spawn marshals (a scalar of `Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`; a `String`; a `Bytes`; a struct whose fields the bus carries; a fixed array of those) and the child keeps no work the far side would schedule (a non-empty `run()`, bus subscriptions, closures, capacity slots, an `accept`). Judged once per child, at the first literal that crosses (GH #1942: the build refused both, after a passing check) | error | `cross_pool_child_shape` (lowering laws) |
 | **Self-containing locus** | a locus whose params defaults construct one of its own kind by value, by a literal or through a fresh-factory call, so its construction has no floor (`spec/types.md` § "A locus may not contain itself by value"). Reported at the param that closes the cycle, naming the ring | error | `self_containing_locus` (lowering laws) |
@@ -2741,13 +2723,7 @@ assume the others in a build:
   annotations cannot: a handler that quietly starts doing filesystem
   I/O shows up as `+ Api::emit … does={syscall,publish,alloc}` in
   review even though no annotation changed. Regenerate deliberately
-  with the dump flag when the change is intended. Rows recurse
-  through `module` declarations (GH #296 review: a module-contained
-  fn absent from the rows was invisible to both this gate and
-  `hale replay`'s safety admission); an inline-module fn the
-  callgraph summarizer cannot yet resolve renders `does={unclassified}`
-  — fail-closed, and scoped to modules so non-module manifests are
-  unchanged. The inferred sets are the snapshot's effect rows, the
+  with the dump flag when the change is intended. The inferred sets are the snapshot's effect rows, the
   walk `hale replay`'s live-effects gate reads too: a call into an
   imported seed resolves through the import renames (the names codegen
   resolves), so a fn's `does={…}` includes what it does through the
@@ -3034,9 +3010,8 @@ assume the others in a build:
 
   **The pools are the deployed root's** (F.40 phase 3, the entry's
   consumers). The async_io pools read are those of the `main locus`
-  the build deploys, the entry row's root, the entry
-  (`spec/semantics.md` § "The entry locus"), or a seed's refused
-  module-nested `main`, which the check still judges; another `main
+  the build deploys, the entry row's entry
+  (`spec/semantics.md` § "The entry locus"); another `main
   locus` (rule 1's error, the entry being the last) and an imported
   library's are not deployed, and their `placement { }` entries imply
   nothing.
@@ -3148,15 +3123,6 @@ assume the others in a build:
   local declared inside the loop starts afresh and is silent. Read
   from the allocation summary's `quadratic_appends` rows
   (`hale_types::string_append`).
-
-  **The lint reaches inside `module { … }`** (GH #764, 2026-09-20). A
-  module is a NAMESPACE, not an analysis boundary: the resolver
-  registers a module's declarations under their bare names, so a fn or
-  a locus method one brace deeper is an ordinary member of the bundle.
-  Its bodies are walked, and its findings carry the same severity, as
-  if it had been written at the top level — including the `@hot`
-  promotion to a hard error. (Before #764 the lint stopped at the top
-  level, so wrapping a program in a module silenced it.)
 
   **The lint is a law over the allocation summary's rows** (F.40 phase
   3). It walks no body of its own: each finding is a row's site or call
@@ -3313,8 +3279,7 @@ assume the others in a build:
     adapter of the root's `bindings { }` is one thread, counted once
     whatever the root's bound. A nested instance runs on its anchor's
     thread and adds none. Only the deployed root's rows count: an
-    imported `main` or a module-nested one, which lowering does not
-    deploy, costs nothing.
+    imported `main`, which lowering does not deploy, costs nothing.
   - **Cooperative pools** (`cooperative_pools`) are worker pools: one per
     named pool however many instances it holds, and an affinity is a
     property of its pool, never a thread. `main` is the program's own

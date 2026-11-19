@@ -155,7 +155,6 @@ impl World {
     fn gather_items(&mut self, items: &[TopDecl]) {
         for item in items {
             match item {
-                TopDecl::Module(m) => self.gather_items(&m.items),
                 TopDecl::Interface(i) => {
                     self.carriers.insert(i.name.name.clone());
                 }
@@ -346,7 +345,6 @@ impl Kept {
         fn declared(items: &[TopDecl], k: &mut Kept) {
             for item in items {
                 match item {
-                    TopDecl::Module(m) => declared(&m.items, k),
                     TopDecl::Locus(l) => {
                         k.carriers.insert(l.name.name.clone());
                         k.loci.insert(l.name.name.clone());
@@ -367,7 +365,6 @@ impl Kept {
         fn collect<'p>(items: &'p [TopDecl], k: &mut Kept, bodies: &mut Vec<(String, String, Vec<Option<String>>, &'p Block)>) {
             for item in items {
                 match item {
-                    TopDecl::Module(m) => collect(&m.items, k, bodies),
                     TopDecl::Fn(fd) => {
                         if let Some(r) = fd.ret.as_ref().and_then(|t| k.key_of(t)).filter(|t| k.loci.contains(t)) {
                             k.fn_returns.insert(fd.name.name.clone(), r);
@@ -856,7 +853,6 @@ impl<'a> Walk<'a> {
     fn items(&mut self, items: &[TopDecl]) {
         for item in items {
             match item {
-                TopDecl::Module(m) => self.items(&m.items),
                 TopDecl::Fn(fd) => {
                     self.ctx = Some(Ctx {
                         locus: None,
@@ -1479,7 +1475,6 @@ impl<'a> CallCollector<'a> {
     fn items(&mut self, items: &[TopDecl]) {
         for item in items {
             match item {
-                TopDecl::Module(m) => self.items(&m.items),
                 TopDecl::Fn(fd) => {
                     self.ctx = Some(Ctx {
                         locus: None,
@@ -1722,7 +1717,6 @@ fn keyed_in_birth(programs: &[&Program]) -> Vec<Diag> {
     fn go(items: &[TopDecl], diags: &mut Vec<Diag>) {
         for item in items {
             match item {
-                TopDecl::Module(m) => go(&m.items, diags),
                 TopDecl::Locus(l) => {
                     // the fields a `where key == self.f` reads
                     let mut keyed: BTreeMap<String, String> = BTreeMap::new();

@@ -278,7 +278,6 @@ impl<'a> WireDecls<'a> {
                     TopDecl::Interface(i) => {
                         handles.insert(i.name.name.as_str());
                     }
-                    TopDecl::Module(m) => collect(&m.items, types, handles),
                     _ => {}
                 }
             }

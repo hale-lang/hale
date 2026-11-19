@@ -394,7 +394,7 @@ Corpus oracles:
   a literal: a literal lives in static memory, so reading it after its
   locus's arena is freed is not a use-after-free and ASan says
   nothing. That is how #1065's test missed the bug #1067 fixed.
-- `ownership_matrix.rs`: 31 positions × 7 types × 7 contexts = 1519
+- `ownership_matrix.rs`: 31 positions × 7 types × 6 contexts = 1302
   cells, four oracles (dissolve tags, residency, ASan, inline-vs-`let`
   differential); ~90-cell sample by default, `HALE_MATRIX=full` for
   all. `KNOWN_OPEN` is empty. A listed cell must FAIL: a regression

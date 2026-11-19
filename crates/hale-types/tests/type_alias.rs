@@ -135,9 +135,8 @@ fn a_literal_through_an_alias_is_checked_against_the_target() {
     );
 }
 
-/// The four spellings the rule has to reach: a chain of aliases, an
-/// alias declared inside a `module` (one flat top-level namespace),
-/// an alias of a LOCUS, and an alias of an ENUM in a variant path.
+/// The three spellings the rule has to reach: a chain of aliases, an
+/// alias of a LOCUS, and an alias of an ENUM in a variant path.
 /// Each is one program so a failure names which shape broke.
 #[test]
 fn a_chain_of_aliases_constructs_the_declaration_it_ends_at() {
@@ -147,21 +146,6 @@ fn a_chain_of_aliases_constructs_the_declaration_it_ends_at() {
         type Row3 = Row2;
         fn main() {
             let r = Row3 { id: 1 };
-            println(r.id);
-        }
-    "#;
-    assert!(diags(src).is_empty(), "{:?}", diags(src));
-}
-
-#[test]
-fn an_alias_declared_in_a_module_constructs() {
-    let src = r#"
-        type Row { id: Int; }
-        module geo {
-            type Row2 = Row;
-        }
-        fn main() {
-            let r = Row2 { id: 1 };
             println(r.id);
         }
     "#;

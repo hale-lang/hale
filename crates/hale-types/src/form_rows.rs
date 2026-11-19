@@ -102,9 +102,6 @@ pub struct FormRow {
     pub id: NodeId,
     /// The form's kind: `hashmap`, `vec`, `ring_buffer`, ...
     pub form: String,
-    /// Declared inside a `module { }`, at any depth. Inference reads the
-    /// top level only, as it always has.
-    pub module_nested: bool,
     pub config: SyncConfig,
     /// The discipline the form gets: the written one, else inference's
     /// pick, else none.
@@ -218,34 +215,23 @@ impl FormRows {
     /// declaration nothing inferred over reads (the bundled stdlib's,
     /// which no user call site configures).
     pub fn configured<'a>(items: impl IntoIterator<Item = &'a TopDecl>) -> FormRows {
-        fn walk(items: &[TopDecl], module_nested: bool, rows: &mut FormRows) {
-            for item in items {
-                match item {
-                    TopDecl::Module(m) => walk(&m.items, true, rows),
-                    TopDecl::Locus(l) => {
-                        let Some(form) = &l.form else { continue };
-                        let config = sync_config(form);
-                        rows.push(FormRow {
-                            locus: l.name.name.clone(),
-                            id: l.id,
-                            form: form.name.name.clone(),
-                            module_nested,
-                            config,
-                            effective: match config {
-                                SyncConfig::Explicit(d) => d,
-                                SyncConfig::Omitted | SyncConfig::Invalid => Discipline::None,
-                            },
-                            inferred: None,
-                            cap: form_cap(form),
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
         let mut rows = FormRows::default();
         for item in items {
-            walk(std::slice::from_ref(item), false, &mut rows);
+            let TopDecl::Locus(l) = item else { continue };
+            let Some(form) = &l.form else { continue };
+            let config = sync_config(form);
+            rows.push(FormRow {
+                locus: l.name.name.clone(),
+                id: l.id,
+                form: form.name.name.clone(),
+                config,
+                effective: match config {
+                    SyncConfig::Explicit(d) => d,
+                    SyncConfig::Omitted | SyncConfig::Invalid => Discipline::None,
+                },
+                inferred: None,
+                cap: form_cap(form),
+            });
         }
         rows
     }
@@ -305,9 +291,7 @@ pub fn form_rows(bundle: &Bundle<'_>, top: &TopScope, placement: &PlacementTable
     }
     let inferred = crate::sync_inference::infer_sync_for_bundle(bundle, top, placement, &rows);
     for row in &mut rows.rows {
-        // Inference keys its candidates by name over the top level: a
-        // module's form of the same name is not one of them.
-        if row.config != SyncConfig::Omitted || row.module_nested {
+        if row.config != SyncConfig::Omitted {
             continue;
         }
         let Some(inf) = inferred.get(&row.locus) else { continue };

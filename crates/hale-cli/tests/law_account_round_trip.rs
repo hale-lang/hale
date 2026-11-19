@@ -61,9 +61,10 @@ use hale_model::VerdictIr;
 ///   not accept as the row's — it wants the row to retain it;
 /// * a certificate row whose subject is analyzed but which the
 ///   engines produced no certificate for (an undeclared `@budget`
-///   class; an annotated function inside a `module` nothing calls):
-///   the judgment writes it with no certificates, and admission
-///   requires the count its law generates.
+///   class): the judgment writes it with no certificates, and
+///   admission requires the count its law generates. (An annotated
+///   function inside a `module { }` nothing called was the second such
+///   program until F.57 removed the declaration.)
 const KNOWN_OPEN: &[(&str, &str, usize)] = &[
     (
         "crates/hale-cli/tests/law_selection_reaches_the_artifact.rs",
@@ -74,7 +75,7 @@ const KNOWN_OPEN: &[(&str, &str, usize)] = &[
     (
         "crates/hale-types/tests/judgment_certificates.rs",
         "carries 0 certificates, its law generates 1",
-        2,
+        1,
     ),
 ];
 

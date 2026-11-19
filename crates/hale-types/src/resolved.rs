@@ -226,8 +226,8 @@ pub struct LoweringView {
 /// not subscribe has none: nothing could post to one.
 pub fn route_anchors(table: &crate::placement::PlacementTable, merged: &Program) -> BTreeSet<String> {
     use crate::placement::DomainKind;
-    use hale_syntax::ast::{flat_decls, BusMember, LocusMember};
-    let subscribers: BTreeSet<&str> = flat_decls(&merged.items)
+    use hale_syntax::ast::{BusMember, LocusMember};
+    let subscribers: BTreeSet<&str> = merged.items.iter()
         .filter_map(|d| match d {
             TopDecl::Locus(l)
                 if l.members.iter().any(|m| {

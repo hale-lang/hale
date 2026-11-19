@@ -307,8 +307,8 @@ pub struct InterfaceDecl {
 /// const, fn, interface, topic, ring layout, target, group) is
 /// representable — as a specialized sort where the model needs its
 /// structure, or as an opaque [`Declaration`] row where seed
-/// membership is the only fact. `Module`, `Claims`, and
-/// `Constitution` are deliberately nameless there and are NOT
+/// membership is the only fact. `Claims` and `Constitution` are
+/// deliberately nameless there and are NOT
 /// declarations here either. A new nameable TopDecl variant must
 /// extend one side or the other — the universe canary in
 /// tests/architecture.rs mirrors the compiler's list (this crate

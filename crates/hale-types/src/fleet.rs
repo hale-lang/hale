@@ -16,7 +16,7 @@
 //! instance's artifact to derive the deployment's rows.
 
 use hale_syntax::ast::{
-    flat_decls, ClaimForm, ClaimSet, CountCmp, FleetDecl, FleetPlacementSpec, ParamInit, Program,
+    ClaimForm, ClaimSet, CountCmp, FleetDecl, FleetPlacementSpec, ParamInit, Program,
     TopDecl, TransportSpec, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
@@ -131,7 +131,7 @@ pub fn fleet_source(
 ) -> (Option<FleetSource>, Vec<Diag>) {
     let all: Vec<&FleetDecl> = own
         .iter()
-        .flat_map(|p| flat_decls(&p.items))
+        .flat_map(|p| p.items.iter())
         .filter_map(|d| match d {
             TopDecl::Fleet(f) => Some(f),
             _ => None,
@@ -155,7 +155,7 @@ pub fn fleet_source(
     // never runs, so nothing in it is built — its instances are, each
     // from its own seed.
     for p in own {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             if matches!(d, TopDecl::Fleet(_)) {
                 continue;
             }

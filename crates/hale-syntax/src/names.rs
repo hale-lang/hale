@@ -81,11 +81,6 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
         TopDecl::Type(t) => type_decl(t, f),
         TopDecl::Const(c) => const_decl(c, f),
         TopDecl::Fn(fd) => fn_decl(fd, f),
-        TopDecl::Module(m) => {
-            let ModuleDecl { name: n, items, span: _, id: _ } = m;
-            name(n, f);
-            for_each_spelled(items, f);
-        }
         TopDecl::Interface(i) => {
             let InterfaceDecl { doc: _, name: n, methods, span: _, id: _ } = i;
             name(n, f);

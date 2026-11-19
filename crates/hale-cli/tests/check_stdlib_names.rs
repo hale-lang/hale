@@ -1,5 +1,5 @@
 //! A name the stdlib declares is declared once (spec/semantics.md
-//! § "Declarations inside `module { }`"), as `hale check` says it. The CLI
+//! § "One top-level scope"), as `hale check` says it. The CLI
 //! demangles the stdlib's internal names in a message, so the refusal is
 //! worded to read true after that: a program locus spelling
 //! `__StdIoTcpStream` is told it took the internal name of the stdlib's

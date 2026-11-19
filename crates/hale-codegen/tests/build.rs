@@ -1,4 +1,4 @@
-//! The `build` integration-test binary: 12 test files of this area, kept
+//! The `build` integration-test binary: 11 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -17,8 +17,6 @@ mod ir_size_band;
 mod library_shape_2026_05_16;
 #[path = "library_shape_http_json.rs"]
 mod library_shape_http_json;
-#[path = "module_decls.rs"]
-mod module_decls;
 #[path = "multi_file_build.rs"]
 mod multi_file_build;
 #[path = "qualified_locus_type_coop_pool.rs"]

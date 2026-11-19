@@ -33,7 +33,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use hale_syntax::ast::{flat_decls, Expr, Literal, LocusMember, Program, TopDecl, TypeDeclBody, TypeExpr};
+use hale_syntax::ast::{Expr, Literal, LocusMember, Program, TopDecl, TypeDeclBody, TypeExpr};
 use hale_syntax::Span;
 
 use crate::listener_window::{for_each_expression_root, visit_block, visit_expr, Root, Visited};
@@ -146,7 +146,7 @@ pub fn secret_reads(programs: &[&Program], renames: &[(Vec<String>, String)]) ->
     let mut consts: BTreeMap<String, String> = BTreeMap::new();
     let mut aliases: BTreeMap<String, Kind> = BTreeMap::new();
     for p in programs {
-        for d in flat_decls(&p.items) {
+        for d in p.items.iter() {
             match d {
                 TopDecl::Const(c) => {
                     if let Expr::Literal(Literal::String(s), _) = &c.value {

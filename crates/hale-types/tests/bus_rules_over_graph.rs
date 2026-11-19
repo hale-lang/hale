@@ -335,60 +335,6 @@ fn cycles(msgs: &[String]) -> Vec<&String> {
     msgs.iter().filter(|m| m.contains("bus cycle")).collect()
 }
 
-const TWO_OF_ONE_NAME: &str = r#"
-type Tick { n: Int; }
-topic A { payload: Tick; subject: "a"; }
-topic B { payload: Tick; subject: "b"; }
-
-module left {
-    locus W {
-        bus { subscribe A as on_a; publish B; }
-        fn on_a(x: Tick) { B <- Tick { n: 1 }; }
-    }
-}
-module right {
-    locus W {
-        bus { subscribe B as on_b; publish A; }
-        fn on_b(x: Tick) { A <- Tick { n: 1 }; }
-    }
-}
-
-main locus App {
-    params { l: left::W = left::W { }; r: right::W = right::W { }; }
-}
-
-fn main() { App { }; }
-"#;
-
-/// Two loci of one name (the duplicate is its own error) each wrote one
-/// edge: `A → B` in `left::W`, `B → A` in `right::W`. The loop crosses
-/// two declarations, so it is the cross-locus warning, naming both by
-/// their module paths. Before the migration rule 10 merged the edges by
-/// name and reported "locus `W` has a re-entrant synchronous bus cycle".
-#[test]
-fn two_loci_of_one_name_have_their_own_edges() {
-    let msgs = check(TWO_OF_ONE_NAME);
-    assert!(msgs.iter().any(|m| m.contains("duplicate top-level name `W`")), "{msgs:?}");
-    assert_eq!(
-        cycles(&msgs),
-        ["bus cycle `A → B → A` across loci (left::W, right::W): a cell can re-trigger its \
-          own publish, spinning the cooperative queue. Break the loop or add a terminating \
-          condition."],
-        "{msgs:?}"
-    );
-    let g = graph(TWO_OF_ONE_NAME);
-    let by_decl: Vec<(Vec<String>, &str, &str)> = g
-        .edges
-        .iter()
-        .map(|e| (g.decls[e.decl].modules.clone(), e.from.as_str(), e.to.as_str()))
-        .collect();
-    assert_eq!(
-        by_decl,
-        [(vec!["left".to_string()], "a", "b"), (vec!["right".to_string()], "b", "a")],
-        "each edge is its own declaration's, between wire subjects"
-    );
-}
-
 const NAME_SENT_LITERAL_SUBSCRIBED: &str = r#"
 type Tick { n: Int; }
 topic T { payload: Tick; subject: "t"; }

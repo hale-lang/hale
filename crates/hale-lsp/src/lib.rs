@@ -2193,9 +2193,9 @@ fn hover_text(
 
 /// GH #1674: the doc comment of the param `param` of the locus `locus`.
 fn locus_param_doc(snap: &Snapshot, locus: &str, param: &str) -> Option<String> {
-    use hale_syntax::ast::{flat_decls, LocusMember, TopDecl};
+    use hale_syntax::ast::{LocusMember, TopDecl};
     for prog in snap.programs().values() {
-        for d in flat_decls(&prog.items) {
+        for d in prog.items.iter() {
             let TopDecl::Locus(l) = d else { continue };
             if l.name.name != locus {
                 continue;
@@ -2215,9 +2215,9 @@ fn locus_param_doc(snap: &Snapshot, locus: &str, param: &str) -> Option<String> 
 /// GH #1674: the doc comment of the top-level declaration named `name` in
 /// the editor's seed.
 fn top_decl_doc(snap: &Snapshot, name: &str) -> Option<String> {
-    use hale_syntax::ast::{flat_decls, TopDecl};
+    use hale_syntax::ast::{TopDecl};
     for prog in snap.programs().values() {
-        for d in flat_decls(&prog.items) {
+        for d in prog.items.iter() {
             let (n, doc) = match d {
                 TopDecl::Fn(f) => (&f.name, &f.doc),
                 TopDecl::Locus(l) => (&l.name, &l.doc),
@@ -2627,10 +2627,9 @@ fn under_location(
     }
 }
 
-/// The name of a declaration called `name` in `items`, nested modules
-/// included.
+/// The name of a declaration called `name` in `items`.
 fn find_decl(items: &[hale_syntax::ast::TopDecl], name: &str) -> Option<hale_syntax::Span> {
-    hale_syntax::ast::flat_decls(items)
+    items.iter()
         .find_map(|d| top_decl_name(d).filter(|n| n.name == name).map(|n| n.span))
 }
 
@@ -2642,7 +2641,7 @@ fn find_member(
     member: &str,
 ) -> Option<hale_syntax::Span> {
     use hale_syntax::ast::{LocusMember, TopDecl, TypeDeclBody};
-    hale_syntax::ast::flat_decls(items).find_map(|d| match d {
+    items.iter().find_map(|d| match d {
         TopDecl::Locus(l) if l.name.name == owner => l.members.iter().find_map(|m| match m {
             LocusMember::Fn(f) if f.name.name == member => Some(f.name.span),
             LocusMember::Const(c) if c.name.name == member => Some(c.name.span),
@@ -2734,7 +2733,7 @@ fn top_decl_name(
 fn unit_decl_span(snap: &Snapshot, word: &str) -> Option<hale_syntax::Span> {
     use hale_syntax::ast::TopDecl;
     snap.programs().values().find_map(|p| {
-        hale_syntax::ast::flat_decls(&p.items).find_map(|d| match d {
+        p.items.iter().find_map(|d| match d {
             TopDecl::Unit(u) if u.name.name == word => Some(u.name.span),
             _ => None,
         })
@@ -2968,8 +2967,8 @@ fn placement(
 }
 
 /// `hale/placement` over one snapshot: the `main locus` lowering
-/// deploys (the entry row's lowering root, F.40 phase 3: never an
-/// imported library's, a module-nested one included), its params and
+/// deploys (the entry row's entry, F.40 phase 3: never an imported
+/// library's), its params and
 /// its `placement` block. A seed with a hole has no scope, and no main
 /// locus to read.
 fn placement_of(snap: &Snapshot) -> Value {
@@ -2978,7 +2977,7 @@ fn placement_of(snap: &Snapshot) -> Value {
     }
     use hale_syntax::ast::LocusMember;
     let bundle = snap.bundle();
-    let root = snap.demand_entry().ok().and_then(|row| row.root()).and_then(|m| m.decl(&bundle));
+    let root = snap.demand_entry().ok().and_then(|row| row.entry()).and_then(|m| m.decl(&bundle));
     let Some(l) = root else {
         return json!({ "fields": [], "noMainLocus": true });
     };
@@ -3305,12 +3304,10 @@ fn main() { App { }; }\n";
     }
 
     /// F.40 phase 3: `hale/placement` shows the `main locus` lowering
-    /// deploys, the entry row's lowering root: the seed's own (never an
-    /// imported library's, whose placement places nothing here), a
-    /// module-nested one included. Before the row it showed the first
-    /// top-level `main locus` of the merged program, so a seed whose only
-    /// `main` is imported showed the library's, and a nested root showed
-    /// nothing.
+    /// deploys, the entry row's entry: the seed's own, never an imported
+    /// library's, whose placement places nothing here. Before the row it
+    /// showed the first `main locus` of the merged program, so a seed
+    /// whose only `main` is imported showed the library's.
     #[test]
     fn the_placement_view_is_the_deployed_roots() {
         let dir = std::env::temp_dir().join(format!("hale_lsp_placement_root_{}", std::process::id()));
@@ -3323,14 +3320,11 @@ fn main() { App { }; }\n";
         seed("alib", "main locus Head { params { n: Int = 0; } }\nfn main() { Head { }; }\n");
         let own = seed("own", "import \"../alib\" as lib;\nmain locus Own { params { m: Int = 0; } }\nfn main() { Own { }; }\n");
         let bare = seed("bare", "import \"../alib\" as lib;\nfn main() { }\n");
-        let nested = seed("nested", "module inner {\n    main locus App { params { k: Int = 0; } }\n}\nfn main() { }\n");
         let v = placement_of(&load(&own));
         assert_eq!(v["mainLocus"], "Own", "{v}");
         assert_eq!(v["fields"][0]["field"], "m", "{v}");
         let v = placement_of(&load(&bare));
         assert_eq!(v["noMainLocus"], true, "an imported main is deployed by nothing here: {v}");
-        let v = placement_of(&load(&nested));
-        assert_eq!(v["mainLocus"], "App", "the nested root lowering deploys: {v}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

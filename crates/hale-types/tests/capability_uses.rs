@@ -193,16 +193,6 @@ fn a_wrapper_is_refused_once_inside_it() {
     );
 }
 
-/// A use inside a module-nested fn is read from the bundle's summary,
-/// which includes nested declarations without a second producer.
-#[test]
-fn nested_and_failure_bodies_are_walked() {
-    refused_on_wasm32(
-        "module inner {\n    fn danger() {\n        std::process::exit(1);\n    }\n}\n\nfn main() { danger(); }\n",
-        &[(3, 9, &format!("`std::process::exit` is unavailable under {{selector}}: {PROCESS}"))],
-    );
-}
-
 /// A call in an index operand is a use: the summary walks the subscript
 /// as any operand (the review of #1318: the admission read the summary's
 /// call rows, and `xs[std::process::pid()]` reached neither a row nor a

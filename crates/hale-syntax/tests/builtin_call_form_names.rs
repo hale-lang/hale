@@ -183,15 +183,6 @@ fn generic_and_decorated_declarations_are_refused_too() {
     assert!(d.starts_with("1:4 `max` is a built-in call form"), "got: {d}");
 }
 
-#[test]
-fn a_module_fn_is_a_free_fn() {
-    // `module { }` items resolve into the same global fn namespace
-    // (resolve.rs flattens them), so the same call site claims them.
-    let src = "module m {\n    fn sum(a: Int) -> Int { return a; }\n}\nfn main() { }\n";
-    let d = only_diag(src);
-    assert!(d.starts_with("2:8 `sum` is a built-in call form"), "got: {d}");
-}
-
 // === what stays legal ========================================
 
 #[test]
@@ -396,27 +387,6 @@ fn unclaimed_bare_builtin_names_stay_free() {
                 diags(&src)
             );
         }
-    }
-}
-
-#[test]
-fn a_module_fn_is_refused_for_every_claimed_name() {
-    // `module { }` items flatten into the same global fn namespace,
-    // so the call site claims them exactly as it claims a top-level
-    // declaration. Pinned per name because the module path reaches
-    // `parse_fn_decl_with_ffi` through its own call site.
-    for (word, why) in CLAIMED {
-        let src = format!(
-            "module m {{\n    fn {w}(a: Int) -> Int {{ return a; }}\n}}\n\
-             fn main() {{ }}\n",
-            w = word
-        );
-        let d = only_diag(&src);
-        let want = expected_at(2, word, *why);
-        // The module body is indented four spaces, so the name
-        // starts at column 8 rather than 4.
-        let want = want.replacen("2:4", "2:8", 1);
-        assert_eq!(d, want, "word: {word}");
     }
 }
 

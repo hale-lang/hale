@@ -1,5 +1,5 @@
 //! A top-level name the stdlib declares is declared once (spec/semantics.md
-//! § "Declarations inside `module { }`"). The stdlib's loci, types and fns
+//! § "One top-level scope"). The stdlib's loci, types and fns
 //! are merged into every program under their internal names, so a second
 //! declaration of one —
 //! a user seed spelling it, or a second stdlib file declaring it — met the
@@ -78,20 +78,15 @@ fn the_stdlibs_own_declaration_and_ordinary_names_are_clean() {
 }
 
 /// One namespace, as the program's own duplicate rule has: a fn may not
-/// take a stdlib locus's name either, and a declaration nested in a
-/// `module { }` is a top-level declaration.
+/// take a stdlib locus's name either.
 #[test]
-fn a_fn_or_a_module_nested_decl_reusing_a_stdlib_name_is_refused() {
-    for (what, src) in [
-        ("a fn", "fn __StdHttpConn() -> Int { return 1; }\nfn main() { print(__StdHttpConn()); }\n"),
-        ("a module-nested locus", "module m {\n    locus __StdHttpConn { params { n: Int = 0; } }\n}\nfn main() { print(1); }\n"),
-    ] {
-        let prog = parse_source(src).expect("parse");
-        let refused = check_program(&prog)
-            .into_iter()
-            .any(|d| d.is_error() && d.message.contains("is the stdlib's internal name for its locus `__StdHttpConn`"));
-        assert!(refused, "{what} is refused");
-    }
+fn a_fn_reusing_a_stdlib_name_is_refused() {
+    let src = "fn __StdHttpConn() -> Int { return 1; }\nfn main() { print(__StdHttpConn()); }\n";
+    let prog = parse_source(src).expect("parse");
+    let refused = check_program(&prog)
+        .into_iter()
+        .any(|d| d.is_error() && d.message.contains("is the stdlib's internal name for its locus `__StdHttpConn`"));
+    assert!(refused, "a fn is refused");
 }
 
 /// The invariant behind the rule's stdlib half: the stdlib that ships

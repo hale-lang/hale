@@ -838,8 +838,8 @@ impl Snapshot {
             // a constitution. Checking this only while injecting meant
             // an environment with nothing to inject checked nothing,
             // and a matrix counted a library path as a covered pair.
-            // The entry row answers (an imported or a module-nested
-            // `main locus` is not the entry).
+            // The entry row answers (an imported `main locus` is not
+            // the entry).
             if !matches!(snap.demand_entry(), Ok(row) if row.entry().is_some()) {
                 return Err(LoadError::Refused(format!(
                     "{}: `--env` names a deployment target, and a \
@@ -1761,8 +1761,7 @@ impl Snapshot {
     /// literal that builds it, its domain and what decided it; and every
     /// locus literal outside the tower, with the domains its enclosing
     /// scope runs in and its bound ([`hale_types::placement`]). Seeded
-    /// from the entry row's root (its entry, or a refused module-nested
-    /// `main` the check still judges), after the sequence and the
+    /// from the entry row's entry, after the sequence and the
     /// mint, so every site it names is one a mint numbered. Blocked with
     /// the scope; it reads declarations and bodies, and of types only the
     /// first walk's (which reads no placement): the places plain
@@ -2119,7 +2118,6 @@ impl Snapshot {
         let inputs = hale_types::lowering_laws::LoweringLawInputs {
             placement: self.demand_placement().map_err(Clone::clone)?,
             bindings: self.demand_bindings().map_err(Clone::clone)?,
-            entry: self.demand_entry().map_err(Clone::clone)?,
             ownership: &ownership,
             omitted: self.demand_typed_bodies().map_err(Clone::clone)?.omitted_args(),
         };
@@ -2430,8 +2428,8 @@ pub fn adopt_into_root(programs: &mut [&mut Program], names: &[String]) {
         let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
         hale_types::entry::entry_row_in(&ro)
     };
-    let Some((at, item)) = row.root().and_then(|m| m.index_in()) else { return };
-    if let Some(l) = hale_syntax::ast::locus_at_mut(&mut programs[at].items, item) {
+    let Some((at, item)) = row.entry().and_then(|m| m.index_in()) else { return };
+    if let Some(hale_syntax::ast::TopDecl::Locus(l)) = programs[at].items.get_mut(item) {
         for name in names {
             inject_adopt(l, name);
         }
@@ -2898,13 +2896,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// The entry row (F.40 phase 3, E0): the seed's own top-level `main
-    /// locus`, by the site the load minted; the three ways to have none
-    /// (no `main`, only an imported one, only a module-nested one), and
-    /// a seed with an imported, a module-nested and a top-level one
-    /// keeping the top-level one. Demanded twice, built once. Beside
-    /// each, the root the placement table is seeded from (the entry, or
-    /// the refused module-nested `main` of a seed with none) and the
+    /// The entry row (F.40 phase 3, E0): the seed's own `main locus`, by
+    /// the site the load minted; the two ways to have none (no `main`,
+    /// only an imported one), and a seed with an imported and its own one
+    /// keeping its own. Demanded twice, built once. Beside each, the
     /// seed's `fn main`, by its minted site.
     #[test]
     fn the_entry_row_is_the_seeds_own_top_level_main_locus() {
@@ -2939,50 +2934,32 @@ mod tests {
         let none = row_of("none", "fn main() { }\n");
         assert_eq!(none.no_entry(), Some(NoEntry::NoMain));
         assert!(none.mains.is_empty());
-        assert!(none.root().is_none());
-        let root = |row: &hale_types::entry::EntryRow| row.root().map(|m| m.name.clone());
+        assert!(none.entry().is_none());
 
         let imported = row_of("imported", "import \"../lib\" as lib;\nfn main() { }\n");
         assert_eq!(imported.no_entry(), Some(NoEntry::OnlyImported), "decision 1: {imported:?}");
         assert_eq!(imported.mains.len(), 1);
-        assert!(imported.mains[0].imported && !imported.mains[0].module_nested);
+        assert!(imported.mains[0].imported);
         assert!(imported.mains[0].name.starts_with("__lib_"), "the rename pass marked what it renamed");
-        assert_eq!(root(&imported), None, "lowering deploys no library's main");
-
-        let nested = row_of("nested", "module inner {\n    main locus App { params { n: Int = 0; } }\n}\nfn main() { }\n");
-        assert_eq!(nested.no_entry(), Some(NoEntry::OnlyModuleNested), "decision 2: {nested:?}");
-        assert!(nested.mains[0].module_nested && !nested.mains[0].imported);
-        assert_eq!(nested.refused().map(|m| m.name.as_str()), Some("App"), "refused");
-        assert_eq!(root(&nested).as_deref(), Some("App"), "no entry, and still the table's root, so it is judged");
+        assert!(imported.entry().is_none(), "lowering deploys no library's main");
 
         let all = row_of(
             "all",
             "import \"../lib\" as lib;\n\
-             module inner {\n    main locus Other { params { n: Int = 0; } }\n}\n\
              main locus App { params { n: Int = 0; } }\n\
              fn main() { App { }; }\n",
         );
-        let entry = all.entry().expect("the top-level one is the entry");
+        let entry = all.entry().expect("the seed's own one is the entry");
         assert_eq!(entry.name, "App");
-        assert!(!entry.imported && !entry.module_nested);
-        assert_eq!(all.mains.len(), 3, "the witness keeps every declaration: {all:?}");
-        assert_eq!(all.candidates().count(), 1);
-        assert_eq!(all.own().count(), 2, "rule 1 counts the module-nested one");
-        // The root is the entry, not the first `main` in declaration
-        // order (rule 1 refuses the program before it builds), and the
-        // module-nested one beside it is not refused for it.
-        assert_eq!(root(&all).as_deref(), Some("App"), "{all:?}");
-        assert!(all.refused().is_none());
+        assert!(!entry.imported);
+        assert_eq!(all.mains.len(), 2, "the witness keeps every declaration: {all:?}");
+        assert_eq!(all.own().count(), 1, "rule 1 counts the seed's own");
         let _ = std::fs::remove_dir_all(&d);
     }
 
     /// The lowering view carries the snapshot's entry row (F.40 phase 3,
     /// L4), and lowering reads which `main locus` it deploys from the
-    /// row. A seed whose only `main` is module-nested has no entry
-    /// (decision 2), and no view: the check refuses it at the locus's
-    /// name, and the harness's lowering view, which is not gated on the
-    /// check, is blocked by the same refusal, so no program reaches
-    /// lowering with a root that is not the entry.
+    /// row.
     #[test]
     fn the_lowering_view_carries_the_entry_row() {
         let d = scratch("view_entry");
@@ -2998,17 +2975,6 @@ mod tests {
         let view = s.demand_lowering().unwrap_or_else(|b| panic!("the view is blocked: {:?}", b.because));
         assert_eq!(view.entry(), Some(&row), "the view carries the snapshot's row");
         assert_eq!(row.entry().map(|m| m.name.as_str()), Some("App"));
-        let nested =
-            seed_of("nested", "module inner {\n    main locus App { params { n: Int = 0; } }\n}\nfn main() { App { }; }\n");
-        let refused = "the entry must be top-level: `main locus App` inside `module inner` is not the program's \
-                       entry, and nothing else in the seed is — move it out of the module";
-        for config in [Config::check(true, false), Config::harness(Target::host())] {
-            let s = load(&nested, &Disk, config);
-            assert!(s.demand_entry().unwrap().entry().is_none(), "decision 2: no entry");
-            let b = s.demand_lowering().err().expect("no view of a seed with no entry");
-            let because: Vec<&str> = b.because.iter().map(|d| d.message.as_str()).collect();
-            assert_eq!(because, [refused], "blocked by the refusal");
-        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -3057,7 +3023,7 @@ mod tests {
         for r in &rows.rows {
             assert!(r.site.is_some(), "{}: the load minted the entry", r.topic);
             assert_eq!(r.entry(&s.bundle()).expect("the row names its entry").topic.name, r.topic);
-            assert!(r.is_main && !r.imported && !r.module_nested);
+            assert!(r.is_main && !r.imported);
         }
         assert_eq!((row("Out").transport, row("Out").role), (Transport::Unix, Some(TransportRole::Connect)));
         assert_eq!(row("Out").key(), "demo.out");

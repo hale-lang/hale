@@ -88,7 +88,7 @@ pub fn documents(files: &[PathBuf], only: Option<&str>) -> Result<String, String
         let text = std::fs::read_to_string(f)
             .map_err(|e| format!("could not read {}: {e}", f.display()))?;
         let p = parse(&text, &f.display().to_string())?;
-        for d in hale_syntax::ast::flat_decls(&p.items) {
+        for d in p.items.iter() {
             let TopDecl::Api(api) = d else { continue };
             let Some(src) = &api.source else { continue };
             if only.is_some_and(|o| o != api.name.name) {
@@ -446,11 +446,11 @@ pub fn drift(files: &[PathBuf], only: Option<&str>) -> Result<Vec<Report>, Strin
     let types = types_of(
         programs
             .iter()
-            .flat_map(|(_, p)| hale_syntax::ast::flat_decls(&p.items)),
+            .flat_map(|(_, p)| p.items.iter()),
     );
     let mut reports = Vec::new();
     for (file, p) in &programs {
-        for d in hale_syntax::ast::flat_decls(&p.items) {
+        for d in p.items.iter() {
             let TopDecl::Api(api) = d else { continue };
             let Some(src) = &api.source else { continue };
             if only.is_some_and(|o| o != api.name.name) {
@@ -466,8 +466,8 @@ pub fn drift(files: &[PathBuf], only: Option<&str>) -> Result<Vec<Report>, Strin
                 .map_err(|e| format!("`{}`: {e}", api.name.name))?;
             let text = render_checked(&fresh)?;
             let now = parse(&text, "the source's surface")?;
-            let now_types = types_of(hale_syntax::ast::flat_decls(&now.items));
-            let now_api = hale_syntax::ast::flat_decls(&now.items)
+            let now_types = types_of(now.items.iter());
+            let now_api = now.items.iter()
                 .find_map(|d| match d {
                     TopDecl::Api(a) => Some(a),
                     _ => None,

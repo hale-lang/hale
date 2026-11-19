@@ -3053,7 +3053,9 @@ The grammar in v0 does **not** specify:
   § "Declarations inside `module { }`"). What is *not* specified
   is a module NAMESPACE: a module introduces no scope of its own,
   so there is no `geo::Point` spelling, no per-module export
-  control, and no module loading.
+  control, and no module loading. (Superseded by F.57: the
+  declaration was removed; a module is a directory, reached by
+  `import`.)
 Each of these is a known extension point. Closing them off in v0
 keeps the spec tractable; opening them later is a non-breaking
 addition.
@@ -4439,6 +4441,57 @@ the slot machinery through a minor release for forms with a direct
 replacement; the parse error names that replacement at the site.
 *Keep `perspective` reserved.* The word has no other use, and a hard
 keyword costs every program a field or local of that name.
+
+### F.57 — A module is a directory; `module { }` is removed
+
+**Status: accepted and implemented (2026-11-18).**
+
+**Problem.** Hale had two forms for the same idea. A module is a
+directory: a seed is the `.hl` files of one directory, and another seed
+reaches it by `import "<path>" as <alias>;`, through which its names
+are spelled `alias::Name` (spec/projects.md, spec/semantics.md §
+"Cross-seed namespace resolution"). `module NAME { … }` declared a
+second, in-file namespace beside it, with rules of its own: its
+declarations were registered under their bare names in the seed's one
+flat scope, so it grouped without scoping; a `fn main` or a `main
+locus` inside one was refused as not the entry; a `target` inside one
+was a parse error. Every pass that collects declarations had to
+recurse into module bodies (GH #764, #825, #854, #884, #901, #911),
+and each one that forgot was a program analyzed at the top level and
+unanalyzed one brace deeper.
+
+**Decision.** The `module NAME { … }` declaration is removed from the
+grammar, the AST, resolution, the checker, every analysis and lowering.
+A module is a directory, reached by `import`; within a seed,
+declarations live at the top level of its files. `module` stops being
+a hard keyword: it lexes as an ordinary identifier, so a local, a
+field, a parameter or a fn may be named `module` (`spec/keywords.txt`
+and `crates/hale-syntax/src/keywords.rs` drop it). The removal follows
+the pre-1.0 policy (STABILITY.md): the break migrates the repository's
+own code in the same change and takes no deprecation step.
+
+**What a program now gets.** `module NAME {` at top-level declaration
+position is refused with one located parse error at the word `module`,
+and the braced body is skipped whole, so nothing inside it reports
+again:
+
+```text
+parse error: `module` declarations were removed: a module is a directory, reached by `import "path" as name;`. Move the declarations inside `module NAME { }` to the top level, or into their own file or directory and import it (spec/decisions.md F.57)
+```
+
+**Migration.** Move the declarations out of the braces to the top
+level of the file (a module never scoped its names, so every use site
+already spells them bare), or into a file of their own in the same
+seed directory, which shares the seed's scope; for a namespace that
+does scope its names, put them in a directory of their own and
+`import` it, spelling each `alias::Name`. A `main locus` or `fn main`
+that sat inside a module is the seed's entry once it is moved to the
+top level.
+
+**Considered and rejected.** *A deprecation warning for a release.*
+The pre-1.0 policy migrates the repository's own code in the change
+that breaks it. *Keeping `module` as a reserved word.* Nothing is
+planned for it, and a hard keyword costs every program the name.
 
 ## Deferred & future work
 

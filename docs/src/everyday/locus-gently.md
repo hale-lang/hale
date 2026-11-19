@@ -115,31 +115,32 @@ fn main() {
 }
 ```
 
-## Grouping Code with `module` Blocks
+## Grouping Code into Files and Modules
 
-A `module NAME { ... }` block visually groups related top-level declarations inside a file without introducing a namespace prefix:
+A seed is a directory: every `.hl` file in it shares one top-level scope, so
+splitting a long file into several is just moving declarations between files.
+A **module** is a directory of its own, reached by `import`:
+
+```text
+app/
+  main.hl        import "../geo" as geo;
+geo/
+  point.hl       type Point { x: Int = 0; y: Int = 0; }
+                 fn manhattan(p: Point) -> Int { return p.x + p.y; }
+```
 
 ```hale
-module geo {
-    type Point { x: Int = 0; y: Int = 0; }
-
-    fn manhattan(p: Point) -> Int { return p.x + p.y; }
-}
+import "../geo" as geo;
 
 fn main() {
-    let p = Point { x: 4, y: 5 };   // referenced as `Point`, never `geo::Point`
-    println(manhattan(p));          // 9
+    let p = geo::Point { x: 4, y: 5 };
+    println(geo::manhattan(p));          // 9
 }
 ```
 
-Declarations inside a `module` block behave identically to top-level declarations:
-- They are registered under their plain names (`Point`, `manhattan`) across the seed, and exported across `import "lib" as lib;` as `lib::Point`.
-- Duplicate declarations across two `module` blocks in the same seed fail with the standard duplicate-name error.
-- Hot-path lints, `@effects` / `causes:` checks, and bus topic routing inspect declarations inside `module` blocks identically to top-level items.
-
-> [!WARNING]
-> Two program-level constructs must remain at the **top level** and are rejected inside a `module` block:
-> 1. **Program entry points:** `fn main()` and the entry `main locus App` must be declared at the top level outside any `module`.
-> 2. **Target directives:** `target wasm { ... }` applies to the whole build and must appear at the top level.
+There is no in-file `module NAME { ... }` block: `hale check` refuses one at
+the word `module` and says to move its declarations to the top level, or into
+their own file or directory. `module` itself is an ordinary name, free for a
+local, a field or a fn.
 
 Next: [Lists & Maps](./collections.md).

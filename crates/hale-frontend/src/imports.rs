@@ -521,14 +521,13 @@ fn self_import_message(
 
 /// GH #1951 item 6 (F.51): the top-level names of one seed that an
 /// import list may bind against, with each name's span, by name: its
-/// declarations of the listable kinds, module-nested ones included
-/// (a module shares the seed's one namespace).
+/// declarations of the listable kinds.
 pub fn listable_decls(
     items: &[hale_syntax::ast::TopDecl],
 ) -> BTreeMap<String, hale_syntax::Span> {
     use hale_syntax::ast::TopDecl as T;
     let mut out = BTreeMap::new();
-    for d in hale_syntax::ast::flat_decls(items) {
+    for d in items.iter() {
         let name = match d {
             T::Locus(l) => &l.name,
             T::Type(t) => &t.name,
@@ -548,7 +547,7 @@ pub fn listable_decls(
 pub fn declared_names(items: &[hale_syntax::ast::TopDecl]) -> BTreeMap<String, hale_syntax::Span> {
     use hale_syntax::ast::TopDecl as T;
     let mut out = listable_decls(items);
-    for d in hale_syntax::ast::flat_decls(items) {
+    for d in items.iter() {
         let name = match d {
             T::RingLayout(r) => &r.name,
             T::Target(t) => &t.name,
@@ -1239,7 +1238,7 @@ pub fn resolve_imports(
             // A surface's identity, as its row in the seed's rename table
             // (`mangle::API_KEY`) names it: what an importer's
             // `alias::Name` serve site is resolved by (`rpc_expand`).
-            hale_syntax::ast::for_each_decl_mut(&mut pf.program.items, &mut |d| {
+            pf.program.items.iter_mut().for_each(|d| {
                 if let hale_syntax::ast::TopDecl::Api(a) = d {
                     a.origin = Some(hale_types::mangle::api_origin(&lib_id, &pf.stem, &a.name.name));
                 }

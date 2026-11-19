@@ -90,7 +90,7 @@ impl StdlibReach {
             closure.add(i);
         }
         for p in programs {
-            for item in hale_syntax::ast::flat_decls(&p.items) {
+            for item in p.items.iter() {
                 // The program's own bus handlers are delivered to as the
                 // stdlib's are, and its interfaces dispatch to
                 // every method of their methods' names.
@@ -157,8 +157,7 @@ struct ItemRefs {
 struct Index {
     /// The copy's items.
     items: &'static [TopDecl],
-    /// A declaration's name → the items declaring it (a module's
-    /// declarations are its item's).
+    /// A declaration's name → the items declaring it.
     declares: HashMap<&'static str, Vec<usize>>,
     /// A member fn's name → the items declaring one (a locus's).
     methods: HashMap<&'static str, Vec<usize>>,
@@ -192,21 +191,20 @@ fn index() -> &'static Index {
             }
         };
         for (i, item) in items.iter().enumerate() {
-            for d in hale_syntax::ast::flat_decls(std::slice::from_ref(item)) {
-                if let Some(n) = declared_name(d) {
-                    note(&mut declares, n, i);
-                }
-                match d {
-                    TopDecl::Locus(l) => {
-                        handlers.extend(handler_names(l));
-                        for m in &l.members {
-                            if let LocusMember::Fn(f) = m {
-                                note(&mut methods, &f.name.name, i);
-                            }
+            let d = item;
+            if let Some(n) = declared_name(d) {
+                note(&mut declares, n, i);
+            }
+            match d {
+                TopDecl::Locus(l) => {
+                    handlers.extend(handler_names(l));
+                    for m in &l.members {
+                        if let LocusMember::Fn(f) = m {
+                            note(&mut methods, &f.name.name, i);
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
         let renames: HashMap<&'static [&'static str], &'static str> =
@@ -272,14 +270,13 @@ impl Index {
                     }
                 }
             });
-            for d in hale_syntax::ast::flat_decls(std::slice::from_ref(item)) {
-                let dispatched: Vec<&str> = match d {
-                    TopDecl::Interface(it) => it.methods.iter().map(|m| m.name.name.as_str()).collect(),
-                    _ => Vec::new(),
-                };
-                for m in dispatched {
-                    to.extend(self.methods.get(m).into_iter().flatten());
-                }
+            let d = item;
+            let dispatched: Vec<&str> = match d {
+                TopDecl::Interface(it) => it.methods.iter().map(|m| m.name.name.as_str()).collect(),
+                _ => Vec::new(),
+            };
+            for m in dispatched {
+                to.extend(self.methods.get(m).into_iter().flatten());
             }
             ItemRefs { refs: to.into_iter().collect(), names: spelled.into_iter().collect() }
         })
