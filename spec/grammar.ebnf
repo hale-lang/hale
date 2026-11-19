@@ -883,6 +883,7 @@ key_filter_rhs    = "_"
 capacity_block    = "capacity" , "{" , { capacity_slot } , "}" ;
 capacity_slot     = slot_kind , IDENTIFIER , "of" , type_expr ,
                     [ "indexed_by" , IDENTIFIER ] ,
+                    [ "ordered_by" , ( "min" | "max" ) , IDENTIFIER ] ,
                     [ "as_parent_for" , IDENTIFIER ] , ";" ;
 slot_kind         = "pool" | "heap" ;
 
@@ -891,7 +892,10 @@ slot_kind         = "pool" | "heap" ;
    as the key for `@form(hashmap)` lowering. Only valid on a
    `pool` slot in a `@form(hashmap)` locus; rejected at typecheck
    elsewhere. `indexed_by` is a contextual keyword, recognized in
-   this clause position (F.43). *)
+   this clause position (F.43). `ordered_by min|max <field>` names
+   the priority field of a `heap` slot on a `@form(heap)` locus
+   (`heap jobs of Job ordered_by min priority;`); it is contextual
+   in the same position. *)
 
 
 (* === 6. Lifecycle blocks ======================================= *)

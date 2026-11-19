@@ -58,7 +58,7 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "topology", "node", "l3", "reserve", "replicas",
     // Phase 4 (C2): `fleet locus NAME { … }` and its placement's `host("…")`.
     "fleet", "host",
-    "schedule", "fixed_cell", "shared_slab", "spillover", "summary_only", "cap",
+    "fixed_cell", "shared_slab", "spillover", "summary_only", "cap",
     "payload", "subject",
     "captures", "inline", "tick", "duration", "explicit", "approx", "within",
     "with", "violate", "fail", "until",
@@ -70,10 +70,8 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     // GH #1106, #1417: the surface path's knobs (`api::serve(…, bound:,
     // on_full:)`).
     "api", "bound", "on_full", "refuse",
-    // GH #1137, #1135: what the entry serves, and its HTTP transport.
-    "serve", "http", "principals",
-    // GH #1109: roles at the boundary.
-    "includes", "roles",
+    // GH #1109: a role's hierarchy (`role trader includes viewer;`).
+    "includes",
     // GH #1417: a surface's rows (`api NAME { rpc L::f requires: [r]; }`,
     // `@rpc`), and a hub binding's `requires:`.
     "rpc", "requires",

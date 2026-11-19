@@ -88,7 +88,6 @@ half_up
 harmonic
 heap
 host
-http
 includes
 indexed_by
 inferred
@@ -116,7 +115,6 @@ pinned
 placement
 point
 pool
-principals
 prod
 projection
 publish
@@ -141,13 +139,10 @@ restart_in_place
 rich
 ring_layout
 role
-roles
 round
 rpc
 run
-schedule
 seed
-serve
 shared_slab
 shm_ring
 slot_count
