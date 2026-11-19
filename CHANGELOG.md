@@ -8,6 +8,45 @@ behavior.
 
 ## Unreleased
 
+## v0.36.1 — fixes from the first full bench run (2026-11-19)
+
+This patch fixes the problems that the first full run of the benchmark suite on v0.36.0 turned up, plus a `hale verify` false positive. Nothing a correct program does changes, apart from using less memory and getting faster.
+
+- **A helper's local records are freed when it returns.** A free `fn` that builds a local record (scalars, Strings, `bounded` lists) and returns a scalar or a `String` used to leave that record in `fn main`'s arena until main returned, one block per call. A main loop calling such a helper 20,000 times went from 147 MB to 3 MB (#2095, GH #2090).
+- **Tight counted loops in `fn main` and `run()` vectorize again.** The drain check that #1874 added to every loop iteration is now made once per chunk of up to 4096 iterations for a counted loop with no calls. A loop still stops promptly on SIGTERM. Loops the check can't fully read, such as ones containing a `match`, keep the per-iteration check (#2097, GH #2089).
+- **A serving `main` whose `run()` sleeps in a loop answers each call as it arrives.** A sleep slice on main now wakes for a queued call and resumes, instead of holding the call until the slice ends: 50 sequential calls took 10.4 s and now take 6 ms. A sleep still lasts its full length. A held child that fails now stops where it fails, so the next call to it is answered `unavailable` instead of waiting. The build-an-API tutorial parks on `self.sock.wait()` (#2096, GH #2091).
+- **`hale verify` treats a payload-free enum field as an inline scalar.** A call's result that took such a field from its parameter is no longer reported as holding another name's block. The build no longer makes an extra copy of the record in that shape either (#2092, GH #2088).
+- **Docs:** the book's navigation reads as a progression, and every page through Part III links to the next (#2093). The v1 performance baseline now lives in hale-lang/bench (#2087).
+
+### Breaking
+
+None.
+
+The item-level notes follow.
+
+### Changed
+
+- The v1 performance baseline moved to [hale-lang/bench](https://github.com/hale-lang/bench): `bench/` is gone from this repository, and its build, HTTP, memory and editor measures are that suite's `gates/`, its bus round trips and JSON encode its microbenches.
+
+### Fixed
+
+- `hale verify`: a call's result pushed or set into a bounded list, whose callee set a payload-free enum field from its parameter (`S { n: r.n, st: r.st }`), was reported as `copy: a call's result holding another name's block stored into a bounded list`, and `hale build` copied the record for it on every store. A payload-free enum is its inline tag, as an `Int` or a `Time` is, so the result holds nothing of the argument's: the store keeps it as it is, and nothing is reported. A record field and an enum with payloads still hold the argument's block and are still reported (GH #2088).
+
+### Docs
+- The book's navigation reads as a progression: Getting Started is five pages in order, Part I is the language and Part II the standard library (with an overview page of its own), and every page through Part III ends with a link to the next (#2093).
+
+### Fixed
+
+- A free `fn` that takes or builds a local record (a `type` of scalars, Strings and `bounded` lists) and returns a scalar or a `String` now frees that record when it returns. A loop in `fn main` that called such a helper used to keep one block per call until `main` returned (GH #2090).
+
+### Fixed
+- A serving `main locus` whose `run()` sleeps in a loop answers each call as it arrives: a sleep slice on main now wakes for a queued bus cell and resumes, instead of holding the call until the slice ends (100–250 ms a call). The build-an-API tutorial parks on `self.sock.wait()` (#2096, GH #2091).
+- A child its owner holds stops as it fails, not when the handler it failed in returns: a delivery published after the failure (an exposure's next call, sent as soon as the receiver's server error was answered) could reach the failed child, or be dropped at the stop and never answered (#2096).
+
+### Fixed
+
+- Tight counted loops in `fn main` and in a `run()` vectorize again. Since v0.33.0, the drain check on every loop iteration (GH #1858) kept loops like `while i < n { acc = acc ^ i; i = i + 1; }` and `for j in 0..n { … }` scalar, about 10× slower. A counted loop whose body makes no call and holds no loop now checks once every 4096 iterations, and still stops between two iterations on SIGTERM (GH #2089).
+
 ## v0.36.0 — a smaller language (2026-11-18)
 
 This release removes more than it adds. Perspectives and `module { }` declarations are gone, because other parts of the language already do their jobs. Five words reserved for features that were never designed, plus `export`, are ordinary names again, and so are five contextual keywords that nothing reads any more. A field write through a `let` binding is now an error. Hale is pre-1.0 and still changing quickly, and STABILITY.md now says so plainly: any release may change the language, and every break is listed below with its migration. Alongside the removals: the habitat's forge no longer depends on codeberg.org, there's a first recorded performance baseline, and several fixes to tests and CI, including a teardown race in the runtime.
