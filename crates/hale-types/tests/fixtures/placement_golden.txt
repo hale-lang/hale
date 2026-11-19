@@ -7051,6 +7051,9 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.a	A	main	default
 
+== crates/hale-types/tests/let_write_refused.rs#dbf982c1
+row	L@main1	L	main	default
+
 == crates/hale-types/tests/locus_field_store.rs#0c9c6eac
 dynamic	Conn	on main	in the seed
 -- Server@main1	Server
