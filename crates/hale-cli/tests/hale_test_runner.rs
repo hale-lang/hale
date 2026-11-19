@@ -743,6 +743,10 @@ enum FailSite {
     /// A pinned child's `run()`, while main's `run()` sleeps: another
     /// thread, which asks main to tear down at its next park point.
     Pinned,
+    /// A pinned child's `run()`, while main's `run()` spins in a loop
+    /// with no park point: the loop's back-edge, where the stop ends it,
+    /// is where main tears down (GH #2080).
+    PinnedSpin,
 }
 
 /// The GH #717 fixture's owned resources (a `sleep 30` child and a
@@ -827,6 +831,30 @@ fn main() {{
 }}
 "#
         ),
+        FailSite::PinnedSpin => format!(
+            r#"locus Checker {{
+    run() {{
+        std::time::sleep(20ms);
+        std::test::assert(false, "deliberate failure outside main's frame");
+    }}
+}}
+main locus App {{
+    params {{ c: Checker = Checker {{ }}; }}
+    placement {{ c: pinned; }}
+    run() {{
+        // no park point: only the back-edge sees the failure
+        let mut i = 0;
+        while i < 1000000000000 {{ i = i + 1; }}
+        println("UNREACHABLE: main's run() outlived the failure");
+    }}
+}}
+fn main() {{
+{prelude}    let f = Fixture {{ pid: c.pid, dir: dir }};
+    App {{ }};
+    println("UNREACHABLE: main continued");
+}}
+"#
+        ),
     };
     format!("{fixture}{rest}")
 }
@@ -874,4 +902,16 @@ fn a_failed_assertion_in_a_main_locus_method_tears_its_tree_down() {
 #[test]
 fn a_failed_assertion_on_a_pinned_thread_tears_the_tree_down_at_mains_next_park_point() {
     assert_nested_failure_tears_down("nested_pinned", FailSite::Pinned);
+}
+
+/// GH #2080: main's `run()` ends its loop at the back-edge when a pinned
+/// thread's assertion fails. The back-edge is main's park point then: it
+/// tears down there, and nothing after the loop runs. The loop here has no
+/// other park point, so before the back-edge served the failure every run
+/// printed both UNREACHABLE lines (the sleeping loop above did so only
+/// when the failure landed between main's last park point and its
+/// back-edge).
+#[test]
+fn a_failed_assertion_on_a_pinned_thread_tears_down_at_mains_loop_back_edge() {
+    assert_nested_failure_tears_down("nested_pinned_spin", FailSite::PinnedSpin);
 }

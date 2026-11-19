@@ -682,7 +682,8 @@ The compiler emits the registry's upkeep only in a program that has an
 assertion outside `main`'s frame. An assertion that fails on another
 thread — a pinned locus's, a pool's worker — raises the drain and asks
 `main` to tear down at its next park point (a sleep slice, a `yield`,
-a drain): the body that failed runs on to its end (its later
+a drain, or the back-edge of a loop the drain ends, before anything
+after the loop runs): the body that failed runs on to its end (its later
 assertions are no-ops), so the joins complete; and if `main` reaches
 an exit first, the exit code is still 1. Teardown of what another
 thread's own frames hold is that thread's lifecycle's, which the
