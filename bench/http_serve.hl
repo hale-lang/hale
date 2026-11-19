@@ -1,0 +1,26 @@
+// http_serve — the book's minimal HTTP server, for load.
+//
+// `std::http::Server` over a handler that answers every path with a
+// short text body and counts its hits. The port is the first argument.
+// Runs until stopped (SIGTERM drains it).
+
+locus Api {
+    params { hits: Int = 0; }
+
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if req.path == "/health" {
+            return std::http::Response { status: 200, body: "ok\n", content_type: "text/plain" };
+        }
+        self.hits = self.hits + 1;
+        return std::http::Response {
+            status: 200,
+            body: f"hello, hit #{self.hits}\n",
+            content_type: "text/plain",
+        };
+    }
+}
+
+fn main() {
+    let port = std::str::parse_int(std::env::arg_or(1, "8080")) or 8080;
+    std::http::Server { port: port, handler: Api { } };
+}
