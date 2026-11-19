@@ -172,4 +172,4 @@ To preserve static single-thread lowering, `hale check` rejects two hop targets:
 - Set types: `spec/types.md` § Set types
 - Style guide rules: `spec/styleguide.md` §§ 2.9–2.10
 
-Next: [Repositories](./repositories.md).
+Next: [Service Composition Patterns](./patterns.md).

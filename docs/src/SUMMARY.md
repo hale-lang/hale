@@ -1,39 +1,45 @@
 # Summary
 
-[Introduction](./introduction.md)
-[Install](./getting-started/install.md)
-[Quickstart & Toolchain](./getting-started/first-run.md)
-[Tutorial: Build a Job Queue](./tutorial/job-queue.md)
+# Getting Started
 
-# Part I: Language & Standard Library
+- [What Is Hale?](./introduction.md)
+- [Install](./getting-started/install.md)
+- [Hello World & the Toolchain](./getting-started/first-run.md)
+- [Your First Program](./basics/first-program.md)
+- [Tutorial: Build a Job Queue](./tutorial/job-queue.md)
 
-- [Language Overview](./parts/language.md)
+# Part I: The Language
+
+- [Overview](./parts/language.md)
 - [Values, Types & Variables](./basics/values.md)
-- [Numbers, Money & Time](./basics/math.md)
-- [Units of Measure](./units.md)
 - [Functions](./basics/functions.md)
 - [Control Flow & Pattern Matching](./basics/control-flow.md)
-- [Strings & Bytes](./basics/strings.md)
-- [Error Handling (`fallible`)](./basics/fallible.md)
-- [Program Structure & `main`](./basics/first-program.md)
-- [Introduction to Loci](./everyday/locus-gently.md)
 - [Records, Enums & Set Types](./everyday/records.md)
-- [Generics](./everyday/generics.md)
+- [Strings & Bytes](./basics/strings.md)
+- [Numbers, Money & Time](./basics/math.md)
+- [Units of Measure](./units.md)
+- [Error Handling (`fallible`)](./basics/fallible.md)
 - [Collections (`@form`)](./everyday/collections.md)
+- [Generics](./everyday/generics.md)
+- [Introduction to Loci](./everyday/locus-gently.md)
+- [Testing & Benchmarking](./everyday/testing.md)
+
+# Part II: The Standard Library
+
+- [Overview](./parts/stdlib.md)
+- [CLI Arguments & Environment](./everyday/cli-config.md)
 - [Filesystem I/O](./everyday/files.md)
 - [JSON Encoding & Decoding](./everyday/json.md)
 - [HTTP Servers & Clients](./everyday/http.md)
 - [TCP, UDP, Unix Sockets & TLS](./everyday/sockets.md)
 - [Cryptography, Hashing & Randomness](./everyday/crypto.md)
-- [CLI Arguments & Environment](./everyday/cli-config.md)
 - [Structured Logging](./everyday/logging.md)
 - [Metrics](./everyday/metrics.md)
 - [Observability & Probes](./everyday/observing.md)
-- [Testing & Benchmarking](./everyday/testing.md)
 
-# Part II: Concurrency, Services & APIs
+# Part III: Services & Concurrency
 
-- [The Locus Model](./parts/locus-model.md)
+- [Overview](./parts/locus-model.md)
 - [Locus Lifecycle](./services/lifecycle.md)
 - [The Typed Message Bus](./services/bus.md)
 - [Concurrency & Thread Placement](./services/concurrency.md)
@@ -41,24 +47,24 @@
 - [Supervision & Structural Failure](./services/failure.md)
 - [Interfaces & Contracts](./services/interfaces.md)
 - [Seams & Typed Pipelines](./services/seams.md)
-- [Repositories (`@repo`)](./services/repositories.md)
 - [Service Composition Patterns](./services/patterns.md)
+- [Repositories (`@repo`)](./services/repositories.md)
 - [Tutorial: Build a Typed API](./services/build-an-api.md)
 - [API Surfaces, RPC, REST, MCP & gRPC](./services/api.md)
 - [API Wire Schemas & Compatibility](./services/api-messages.md)
 - [Multi-Binary Systems, Fleets & Deployment](./services/multi-binary.md)
+
+# Part IV: Verification & Architecture Laws
+
+- [Overview](./parts/what-must-hold.md)
 - [The Application Model](./the-model.md)
-
-# Part III: Static Verification & Architecture Laws
-
-- [Compile-Time Guarantees](./parts/what-must-hold.md)
 - [Effect Contracts & Resource Budgets](./effects.md)
 - [Architectural Claims & Topology Proofs](./claims.md)
 - [Constitutions & Multi-Environment Laws](./constitutions.md)
 
-# Part IV: Systems Programming & Runtime Internals
+# Part V: Systems & Runtime Internals
 
-- [Systems Control](./parts/systems.md)
+- [Overview](./parts/systems.md)
 - [Arena Memory & Lifetimes](./systems/memory.md)
 - [Zero-Allocation Hot Paths](./systems/performance.md)
 - [Collection Forms Internals](./systems/forms.md)
@@ -70,9 +76,9 @@
 - [Iris: Live Topology & Arena Inspector](./systems/iris.md)
 - [Deterministic Record & Replay](./systems/replay.md)
 
-# Part V: DNA (Autonomous & Governed Applications)
+# Part VI: DNA (Autonomous & Governed Applications)
 
-- [DNA Overview](./parts/organism.md)
+- [Overview](./parts/organism.md)
 - [Architecture of a DNA System](./dna/index.md)
 - [DNA Quickstart](./dna/getting-started.md)
 - [End-to-End Task Lifecycle](./dna/workflow.md)
@@ -91,12 +97,12 @@
 - [DNA Troubleshooting](./dna/troubleshooting.md)
 - [DNA CLI & Schema Reference](./dna/reference.md)
 
-# Part VI: Multi-Record Control Plane (Habitat)
+# Part VII: The Habitat
 
-- [Habitat Overview](./parts/habitat.md)
+- [Overview](./parts/habitat.md)
 - [Habitat Architecture & CLI (`hale habitat`)](./habitat.md)
 
----
+# Reference
 
 - [Language & CLI Reference](./reference.md)
 - [Stability & Compatibility](./stability.md)

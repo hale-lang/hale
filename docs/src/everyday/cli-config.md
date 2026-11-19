@@ -129,4 +129,4 @@ fn main() {
 - `std::io::stdin::read_byte(timeout_ms)` reads a single byte (`0..255`), returning `-1` if `timeout_ms` elapses without input or `-2` on `EOF`.
 - `std::io::stdout::write_bytes(s)` flushes stdio (`fflush`) before writing raw bytes so unbuffered terminal draws stay ordered with `println` calls.
 
-Next: [Logging](./logging.md).
+Next: [Filesystem I/O](./files.md).

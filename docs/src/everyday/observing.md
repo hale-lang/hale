@@ -122,3 +122,5 @@ fn main() { App { }; }
 - **No unintended shared memory**: Declaring `Scrape` or `Otlp` enables internal runtime counters without creating the local shared-memory segment; external local tools cannot attach unless `LOTUS_OBS=1` is also set.
 - **Separation of logs and lifecycle events**: `std::log` records remain on `std::log` sinks; `Otlp` carries only structural locus lifecycle transitions.
 - **Zero cost when unused**: If a program declares no `std::observe::*` backend parameters, backend implementations, global registry tables, and the lifecycle event ring are excluded from compilation and linking (`spec/runtime.md` § Observe backends). A program declaring only `Probes` samples its queues once per second on the probe thread with zero instrumentation on hot paths.
+
+Next: [Part III: Services & Concurrency](../parts/locus-model.md).

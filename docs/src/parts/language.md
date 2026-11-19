@@ -1,6 +1,6 @@
-# Part I: Language & Standard Library
+# Part I: The Language
 
-Part I covers Hale's core syntax, type system, error handling, data structures, and built-in standard library (`std::*`). Everything in this part works in standalone scripts, CLI tools, and long-lived services alike.
+Part I covers the language itself: values and types, functions, control flow and pattern matching, records and enums, text, numbers and units, error handling, collections, generics, a first look at loci, and testing. Everything in this part works in standalone scripts, CLI tools, and long-lived services alike. The `std::*` modules for I/O, networking and telemetry are in [Part II](./stdlib.md).
 
 ```hale
 fn main() {
@@ -19,7 +19,8 @@ fn main() {
 
 | Section | Chapters |
 |---|---|
-| **Core Language** | [Values, Types & Variables](../basics/values.md) · [Numbers, Money & Time](../basics/math.md) · [Units of Measure](../units.md) · [Functions](../basics/functions.md) · [Control Flow & Pattern Matching](../basics/control-flow.md) · [Strings & Bytes](../basics/strings.md) · [Error Handling (`fallible`)](../basics/fallible.md) · [Program Structure & `main`](../basics/first-program.md) |
-| **Data & Components** | [Introduction to Loci](../everyday/locus-gently.md) · [Records, Enums & Set Types](../everyday/records.md) · [Collections (`@form`)](../everyday/collections.md) |
-| **I/O, Networking & Web** | [Filesystem I/O](../everyday/files.md) · [JSON Encoding & Decoding](../everyday/json.md) · [HTTP Servers & Clients](../everyday/http.md) · [TCP, UDP, Unix Sockets & TLS](../everyday/sockets.md) · [Cryptography, Hashing & Randomness](../everyday/crypto.md) |
-| **CLI, Telemetry & Testing** | [CLI Arguments & Environment](../everyday/cli-config.md) · [Structured Logging](../everyday/logging.md) · [Metrics](../everyday/metrics.md) · [Observability & Probes](../everyday/observing.md) · [Testing & Benchmarking](../everyday/testing.md) |
+| **Basics** | [Values, Types & Variables](../basics/values.md) · [Functions](../basics/functions.md) · [Control Flow & Pattern Matching](../basics/control-flow.md) · [Records, Enums & Set Types](../everyday/records.md) |
+| **Data** | [Strings & Bytes](../basics/strings.md) · [Numbers, Money & Time](../basics/math.md) · [Units of Measure](../units.md) · [Error Handling (`fallible`)](../basics/fallible.md) · [Collections (`@form`)](../everyday/collections.md) · [Generics](../everyday/generics.md) |
+| **Components & Testing** | [Introduction to Loci](../everyday/locus-gently.md) · [Testing & Benchmarking](../everyday/testing.md) |
+
+Next: [Values, Types & Variables](../basics/values.md).

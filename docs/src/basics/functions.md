@@ -166,4 +166,4 @@ The compiler resolves bare calls to its built-in functions before checking user 
 >
 > The `bounded[T; N]` intrinsics (`count`, `clear`, `truncate`, `push`, `at`, `set`) are dispatched only when the first argument is a `bounded[T; N]`. You may declare your own free functions with those names, and a signature matching a specific `bounded[T; N]` (such as `fn count(xs: bounded[Int; 8]) -> Int`) overrides the intrinsic for that exact type and capacity.
 
-Next: [Control Flow](./control-flow.md).
+Next: [Control Flow & Pattern Matching](./control-flow.md).

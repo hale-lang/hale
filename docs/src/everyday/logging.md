@@ -162,4 +162,4 @@ fn main() { App { }; }
 
 For a complete overview of runtime observability backends, see [Observing a program](./observing.md) and [Metrics](./metrics.md).
 
-Next: [The lifecycle](../services/lifecycle.md).
+Next: [Metrics](./metrics.md).

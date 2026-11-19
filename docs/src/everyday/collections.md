@@ -284,4 +284,4 @@ The text sources `std::str::split(s, sep)`, `std::str::lines(s)` and `std::str::
 > [!NOTE]
 > Chain stages and terminals (`map`, `filter`, `count`, `find`, `first`) are recognized only after `.`, so you can freely define top-level functions with those names. Only bare compiler builtins (`sum`, `prod`, `min`, `max`, `abs`, `len`, `to_string`, `print`, `println`) are reserved at free-function position—and even those remain valid as locus method names (`fn sum()`).
 
-Next: [Records & Data](./records.md).
+Next: [Generics](./generics.md).
