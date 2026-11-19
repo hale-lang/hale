@@ -5,19 +5,31 @@
 // the slice's wait as it ends `Handle.wait()`'s, the queue is drained,
 // and the sleep goes on for the rest of its length. Before, each call
 // waited for main's slice to end: 100 to 250 ms a call.
+//
+// A main that wakes that fast sends the call after a receiver's failure
+// at once: the receiver stops as it fails, so that call is answered
+// `unavailable`, never handed to the failed receiver and dropped (the
+// hang GH #2091 first showed on CI).
 
 fn app_source(sock: String) -> String {
     return "type Ping { n: Int; }\n"
         + "type Pong { n: Int; }\n"
         + "locus Echo {\n"
-        + "    fn on_ping(p: Ping) -> Pong { return Pong { n: p.n + 1 }; }\n"
+        + "    params { seen: Int = 0; }\n"
+        + "    closure sane { captures: seen; epoch inline; }\n"
+        + "    fn on_ping(p: Ping) -> Pong fallible(ClosureViolation) {\n"
+        + "        if p.n < 0 { violate sane; }\n"
+        + "        self.seen = self.seen + 1;\n"
+        + "        return Pong { n: p.n + 1 };\n"
+        + "    }\n"
         + "}\n"
         + "api Public { rpc Echo::on_ping; }\n"
         + "main locus App {\n"
-        + "    params { echo: Echo = Echo { }; h: api::Exposure = api::serve(Public, unix::Rpc { path: \""
+        + "    params { failed: Int = 0; echo: Echo = Echo { }; h: api::Exposure = api::serve(Public, unix::Rpc { path: \""
         + sock
         + "\" }, as: \"public\", receivers: { Echo: self.echo }, bound: 4, on_full: refuse); }\n"
         + "    placement { echo: cooperative(pool = work) where async_io; }\n"
+        + "    on_failure(e: Echo, err: ClosureViolation) { self.failed = self.failed + 1; }\n"
         + "    run() {\n"
         + "        while !self.draining { std::time::sleep(100ms); }\n"
         + "        self.h.stop();\n"
@@ -141,6 +153,20 @@ fn main() {
     std::test::assert(
         took_ms < 1000,
         "twenty calls take " + to_string(took_ms) + " ms; each waited for main's sleep slice",
+    );
+
+    // The receiver fails in a call: that call is the server's error, and
+    // the next one, sent the moment the error is read, is `unavailable`
+    // (it was handed to the failed receiver, and never answered).
+    let failed = api.call(-1);
+    std::test::assert(
+        std::str::contains(failed, "\"refusal\":{\"kind\":\"server\""),
+        "the call the receiver failed in is the server's error: " + failed,
+    );
+    let after = api.call(30);
+    std::test::assert(
+        std::str::contains(after, "\"refusal\":{\"kind\":\"unavailable\""),
+        "the call after the failure is answered unavailable: " + after,
     );
 
     p.stop();

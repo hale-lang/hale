@@ -2141,6 +2141,13 @@ row	App@literal1.r	Ran	main	default
 row	Src@main2	Src	main	default
 row	Worker@main1	Worker	main	default
 
+== crates/hale-codegen/tests/bus_idle_wait.rs#4c1bf25c
+root	App
+domain	pool:feed	async_io
+row	App@literal1	App	main	default
+row	App@literal1.feeder	Feeder	pool:feed	entry	off owner
+row	App@literal1.slow	Slow	main	default
+
 == crates/hale-codegen/tests/bus_large_payload.rs#9f6565d9
 row	Publisher@main2	Publisher	main	default
 row	Subscriber@main1	Subscriber	main	default
@@ -3125,6 +3132,12 @@ dynamic	Buf	on main	in the seed
 == crates/hale-codegen/tests/factory_returned_binding.rs#f6549d7f
 row	Engine@main1	Engine	main	default
 dynamic	Buf	on main	in the seed
+
+== crates/hale-codegen/tests/failed_child_kept_by_owner.rs#1be695e8
+root	App
+domain	pool:work	async_io
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pool:work	entry	off owner
 
 == crates/hale-codegen/tests/fallible_method_scratch_order.rs#cc323ecd
 row	Model@main1	Model	main	default
