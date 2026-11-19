@@ -1968,11 +1968,18 @@ it returns except its return value:
   every return;
 - its body holds no locus literal, no method call, no publish and no
   `self`; its record literals are of plain records; it assigns bare
-  locals, and fields of a local it binds with `let` (never of a
-  parameter: a record parameter is the caller's value, passed by
-  reference); it writes a `bounded` list (`push`, `set`, `clear`,
-  `truncate`) only when the list is rooted at such a `let` local,
-  and reads one (`at`, `count`, `for x in r.items`) anywhere; and it
+  locals; and a write through a place — a field assignment, or
+  `push`, `set`, `clear`, `truncate` on a `bounded` list — is rooted,
+  by the binding in scope at the write, at a `let` of the body that
+  holds only values the fn made. A parameter is the caller's value,
+  passed by reference, and a `for` binding over a list is an element
+  of it; a `let` holds the caller's storage when it is given a place
+  rooted at either (or at another such `let`) whose type is a record
+  — a record is held by reference, so `Wrap { inner: r }` holds the
+  caller's `r` — or an element `at` reads from such a list (a scalar,
+  a `String` and a `bounded` list are copied where they are stored).
+  Reading a list (`at`, `count`, `for x in r.items`) is allowed
+  anywhere; and it
   calls only other scratch-local fns (by name, by import path, or by
   a `std::` path naming a Hale-source stdlib fn, which is held to the
   same rule), the value builtins (`len`, `to_string`, `min`, `max`,

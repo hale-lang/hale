@@ -156,6 +156,8 @@ fn only_fns_that_cannot_leak_an_allocation_get_their_own_arena() {
 type Row {{ text: String = ""; tags: bounded[Row2; 2]; }}
 type Row2 {{ text: String = ""; }}
 type Framed {{ text: String = ""; pad: [Int; 2] = [0, 0]; }}
+type Wrap {{ inner: Row; }}
+type Rows {{ items: bounded[Row; 2]; }}
 locus Keeper {{
     params {{ last: String = ""; }}
     fn keep(s: String) {{ self.last = s; }}
@@ -165,6 +167,9 @@ fn builds_type(s: String) -> String {{ let r = Row {{ text: s + "?" }}; return r
 fn fills_param(r: Row) -> Int {{ push(r.tags, Row2 {{ text: r.text + "!" }}) or discard; return count(r.tags); }}
 fn takes_framed(f: Framed) -> String {{ return f.text + "!"; }}
 fn view_len(s: String) -> Int {{ let v = std::str::bytes_view(s); return v.n; }}
+fn wraps_param(r: Row) -> Int {{ let mut w = Wrap {{ inner: r }}; push(w.inner.tags, Row2 {{ text: r.text + "!" }}) or discard; return count(w.inner.tags); }}
+fn shadows_let(rs: Rows) -> Int {{ let mut r = Row {{ }}; for r in rs.items {{ push(r.tags, Row2 {{ text: r.text + "!" }}) or discard; }} return count(r.tags); }}
+fn let_after_for(rs: Rows) -> Int {{ let mut n = 0; for r in rs.items {{ n = n + len(r.text); }} let mut r = Row {{ text: "x" }}; push(r.tags, Row2 {{ text: "y" + to_string(n) }}) or discard; return count(r.tags); }}
 fn main() {{
     let k = Keeper {{ }};
     k.keep(line_at("a\nb\n", 1));
@@ -173,6 +178,9 @@ fn main() {{
     println(to_string(fills_param(Row {{ text: std::str::upper("w") }})));
     println(takes_framed(Framed {{ text: std::str::upper("v") }}));
     println(to_string(view_len(std::str::upper("zz"))));
+    let mut rs = Rows {{ }};
+    push(rs.items, Row {{ text: std::str::upper("u") }}) or discard;
+    println(to_string(wraps_param(Row {{ text: std::str::upper("t") }}) + shadows_let(rs) + let_after_for(rs)));
     println(k.last);
 }}
 "#
@@ -188,13 +196,13 @@ fn main() {{
         let end = start + ir[start..].find("\n}\n").expect("fn end");
         ir[start..end].to_string()
     };
-    for name in ["line_at", "takes_type", "builds_type"] {
+    for name in ["line_at", "takes_type", "builds_type", "let_after_for"] {
         assert!(
             body(name).contains("fn.scratch_local.cur"),
             "{name} should allocate from its own arena"
         );
     }
-    for name in ["fills_param", "takes_framed", "view_len"] {
+    for name in ["fills_param", "takes_framed", "view_len", "wraps_param", "shadows_let"] {
         assert!(
             !body(name).contains("fn.scratch_local.cur"),
             "{name} can reach a value outliving the call and must keep \
@@ -366,4 +374,90 @@ fn main() {
     }
     want += " f1! f2!\nlate/f1!/f2!\n";
     assert_eq!(stdout, want);
+}
+
+/// GH #2090 review: a write is only the fn's own when its root is a value
+/// the fn made. A `let` local whose record literal holds a parameter
+/// (`Wrap { inner: r }` holds the caller's `r` by reference), and a `for`
+/// binding over a parameter's list that reuses a `let` name, are the
+/// caller's storage: a fn writing through either keeps its caller's
+/// arena, so what it pushes outlives the call. Each pushed name is read
+/// back after a second call reuses whatever the first one freed, under
+/// ASan.
+#[test]
+fn a_write_through_the_callers_storage_keeps_the_callers_arena_under_asan() {
+    let cases = [
+        (
+            "literal_holding_a_param",
+            r#"
+type Tag { name: String = ""; }
+type Row { tags: bounded[Tag; 4]; }
+type Wrap { inner: Row; }
+fn add(r: Row, k: Int) -> Int {
+    let mut w = Wrap { inner: r };
+    push(w.inner.tags, Tag { name: f"tag-{k}" }) or discard;
+    return count(w.inner.tags);
+}
+fn main() {
+    let mut r = Row { };
+    add(r, 1);
+    add(r, 2);
+    for t in r.tags { println(t.name); }
+}
+"#,
+        ),
+        (
+            "for_binding_reusing_a_let_name",
+            r#"
+type Tag { name: String = ""; }
+type Row { tags: bounded[Tag; 4]; }
+type Rows { items: bounded[Row; 4]; }
+fn add(rs: Rows, k: Int) -> Int {
+    let mut r = Row { };
+    for r in rs.items { push(r.tags, Tag { name: f"tag-{k}" }) or discard; }
+    return 0;
+}
+fn main() {
+    let mut rs = Rows { };
+    push(rs.items, Row { }) or discard;
+    add(rs, 1);
+    add(rs, 2);
+    for r in rs.items { for t in r.tags { println(t.name); } }
+}
+"#,
+        ),
+        (
+            "element_read_from_a_params_list",
+            r#"
+type Tag { name: String = ""; }
+type Row { tags: bounded[Tag; 4]; }
+type Rows { items: bounded[Row; 4]; }
+type Holder { row: Row; }
+fn add(rs: Rows, k: Int) -> Int {
+    let mut h = Holder { row: at(rs.items, 0) or Row { } };
+    push(h.row.tags, Tag { name: f"tag-{k}" }) or discard;
+    return count(h.row.tags);
+}
+fn main() {
+    let mut rs = Rows { };
+    push(rs.items, Row { }) or discard;
+    add(rs, 1);
+    add(rs, 2);
+    let mut n = 0;
+    for r in rs.items { for t in r.tags { n = n + len(t.name); } }
+    println(to_string(n));
+}
+"#,
+        ),
+    ];
+    for (name, src) in cases {
+        let bin = harness::unique_bin(&format!("hale_scratch_local_write_root_{name}"));
+        harness::build_source_asan(src, &bin);
+        let (stdout, stderr, ok) = run(&bin);
+        assert!(!stderr.contains("AddressSanitizer"), "{name}: {stderr}");
+        assert!(ok, "{name}: stdout={stdout:?} stderr={stderr:?}");
+        if name != "element_read_from_a_params_list" {
+            assert_eq!(stdout, "tag-1\ntag-2\n", "{name}");
+        }
+    }
 }
