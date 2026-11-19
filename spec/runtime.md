@@ -671,7 +671,11 @@ when it arrives rather than when the slice ends, and a serving
 answers a call in the time the call takes. The slice still lasts
 its length, so a sleep's total is unchanged, and the drain's cut
 of a sleep stays at the slice's head (below). Off the main thread,
-or with no bus queue, the slice is the `clock_nanosleep` above.
+or with no bus queue, the slice is the `clock_nanosleep` above; so
+is a slice inside a handler that main's drain is running (a handler
+on main that sleeps): handlers on main do not nest, so a cell that
+arrives during it waits for the handler to return, and the slice
+neither wakes for it nor polls the queue in a loop.
 Until GH #2091 a main-thread slice slept through, and each call to
 a program served that way waited for the slice's end: 100 to 250
 ms a call.

@@ -1659,7 +1659,9 @@ bounded slices of 100 ms on `std::time::__idle_wait`: on the main thread
 that is a wait on main's bus queue which a delivery from another thread
 ends at once (the queue's wake descriptor, written by the enqueue, the
 pattern an `async_io` pool's wake descriptor already is), and anywhere
-else it is a `sleep`. A serving `main locus` whose `run()` ends in
+else it is a `sleep`, as it is inside a handler main's drain is running
+(main's handlers do not nest, so nothing that arrives could be run
+there). A serving `main locus` whose `run()` ends in
 `run_until_stopped` therefore answers a call in the time the work takes
 and its cross-pool hops take, not in the next slice of a `sleep` loop. The
 wait never leaves the thread's own scheduling: no thread is added and the
