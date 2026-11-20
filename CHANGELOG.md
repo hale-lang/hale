@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+## v0.36.5 — one entry rule, one spec (2026-11-20)
+
+This patch closes a check/build divergence and corrects the habitat spec. Nothing a correct program means changes.
+
+- **`hale check` refuses a `main locus` nothing starts.** A seed with its own `main locus` and no `fn main` passed the check and failed the build. The check, the editor and every build path now report it at the locus's name with the same text, and the parity gate draws seeds with `fn main` removed or moved so a divergence of this kind is caught (#2113, GH #2108).
+- **spec/habitat.md says what is built:** a habitat on this machine or another reached over SSH, joined hosts, several per admin machine, and organisms grafted with the `local` or `remote-body` profile. Only the `hosted` profile is not built (#2114).
+
+### Breaking
+
+None.
+
+The item-level notes follow.
+
+### Fixed
+- `hale check` refuses a seed that declares its own `main locus` and no `fn main`, at the locus's name and in the build's words (``a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }` ``), so a seed the check accepts no longer fails `hale build` there. It is a build rule, reported by `hale check`, the editor and every build path, so the seed's laws are still judged; `*_test.hl` files are held to it, `*_bench.hl` files (whose `fn main` is `hale bench`'s driver) and `@export` modules are not. An application another seed imports is still started by its importer; checked alone, it needs a `fn main` of its own. The parity gate's new `entry_shape` mutator drops `fn main` from a seed with a `main locus`, so a refusal of this kind the build makes alone is caught (GH #2108).
+
+### Docs
+- spec/habitat.md opens with what is built: a habitat on this machine or another reached over SSH, joined hosts, several per admin machine, organisms grafted with the `local` or `remote-body` profile; only the `hosted` profile is not built (#2114).
+
 ## v0.36.4 — a store that cleans up after itself (2026-11-20)
 
 This patch fixes the memory growth left from #2102's deep copies, and lets `hale api call` send a single-value request. A whole store into a `bounded` field of a record local (`q.tags = r.tags`), repeated in a loop, used to keep every copy it replaced. Nothing a correct program means changes.
