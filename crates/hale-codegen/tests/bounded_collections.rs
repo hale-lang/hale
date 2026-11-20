@@ -658,3 +658,92 @@ fn a_bounded_returned_in_a_record_outlives_its_fn_under_asan() {
     assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "a49|B49|c49|3\n");
 }
+
+/// GH #2099: a bounded list of records holding nested blocks, copied by
+/// each spelling (a field assigned whole, a record literal's field, from
+/// a record local and from a locus's field), gives the copy its own
+/// elements all the way down. A write below an element of the copy,
+/// through a local read with `at` or through a callee it is handed to,
+/// never shows in the source, and the locus replacing its row whole
+/// (retiring the elements it held) leaves the copy whole. Under
+/// AddressSanitizer (chunk recycling off, as an ASan build defaults), a
+/// copy still sharing a retired element's blocks would be a
+/// use-after-free at the read.
+#[test]
+fn a_nested_record_list_copied_whole_is_its_own_under_asan() {
+    let src = r#"
+        type Meta { notes: bounded[String; 4]; }
+        type Tag { name: String = ""; notes: bounded[String; 4]; meta: Meta; }
+        type Row { tags: bounded[Tag; 4]; }
+        fn grow(t: Tag, k: Int) {
+            push(t.notes, "n" + to_string(k)) or discard;
+            push(t.meta.notes, "m" + to_string(k)) or discard;
+        }
+        fn grow_first(q: Row, k: Int) {
+            grow(at(q.tags, 0) or Tag { meta: Meta { } }, k);
+        }
+        fn deep(r: Row) -> Int {
+            let t = at(r.tags, 0) or Tag { meta: Meta { } };
+            return count(t.notes) * 10 + count(t.meta.notes);
+        }
+        fn last_note(r: Row) -> String {
+            let t = at(r.tags, 0) or Tag { meta: Meta { } };
+            return at(t.meta.notes, count(t.meta.notes) - 1) or "";
+        }
+        fn seed(k: Int) -> Row {
+            let mut r = Row { };
+            let mut m = Meta { };
+            push(m.notes, "seed " + to_string(k)) or discard;
+            push(r.tags, Tag { name: "t" + to_string(k), meta: m }) or discard;
+            return r;
+        }
+        locus L {
+            params { row: Row = Row { }; }
+            fn fill(k: Int) { self.row = seed(k); }
+            fn copied(k: Int) -> Row {
+                let mut q = Row { };
+                q.tags = self.row.tags;
+                grow_first(q, k);
+                let mut t = at(q.tags, 0) or Tag { meta: Meta { } };
+                push(t.meta.notes, "local " + to_string(k)) or discard;
+                set(q.tags, 0, t) or discard;
+                return q;
+            }
+            fn own() -> Int { return deep(self.row); }
+        }
+        fn main() {
+            let l = L { };
+            let mut k = 0;
+            let mut kept = Row { };
+            let mut sum = 0;
+            while k < 40 {
+                l.fill(k);
+                kept = l.copied(k);
+                sum = sum + l.own();
+                l.fill(k + 100);
+                let r = seed(k);
+                let mut q = Row { };
+                q.tags = r.tags;
+                grow_first(q, k);
+                let mut w = Row { tags: r.tags };
+                grow_first(w, k);
+                sum = sum + deep(r);
+                k = k + 1;
+            }
+            println(sum, " ", deep(kept), " ", last_note(kept), " ", l.own());
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_nested_copy_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    // The locus's row and each seeded source with their seed note alone,
+    // 40 × (1 + 1) (a write of a copy's showing in either would add the
+    // callee's notes); the copy kept with its own writes (one `n`; the
+    // seed's, the callee's and the local's notes); the locus's row as it
+    // was last filled.
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "80 13 local 39 1\n");
+}

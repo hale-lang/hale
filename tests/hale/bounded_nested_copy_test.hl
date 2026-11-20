@@ -1,0 +1,156 @@
+// Every spelling of a copy of a bounded list of records holding nested
+// blocks gives the copy its own elements, all the way down (GH #2099). A
+// write below an element of the copy (a push into the element's own
+// list, or into a list of a record it holds) never shows in the source,
+// and the copy keeps what was written once it is set back.
+//
+// Two things used to let it through: `q.tags = r.tags` copied the count
+// and the slots but kept each element's blocks, and a push into a list
+// under a local read with `at` (`push(t.meta.notes, x)`) wrote the
+// element the list still held instead of the local's own copy, as
+// `t.meta.notes = …` copies it first.
+
+type Meta { notes: bounded[String; 4]; }
+type Tag { name: String = ""; notes: bounded[String; 4]; meta: Meta; }
+type Row { tags: bounded[Tag; 4]; }
+type Box { tags: bounded[Tag; 4]; n: Int = 0; }
+
+fn seed() -> Row {
+    let mut r = Row { };
+    push(r.tags, Tag { name: "t0", meta: Meta { } }) or discard;
+    return r;
+}
+
+fn first(r: Row) -> Tag {
+    return at(r.tags, 0) or Tag { meta: Meta { } };
+}
+
+fn deep(r: Row) -> Int {
+    return count(first(r).meta.notes);
+}
+
+fn flat(r: Row) -> Int {
+    return count(first(r).notes);
+}
+
+// The first element's lists written through a local read with `at`, and
+// the local set back.
+fn write_back(q: Row) {
+    let mut t = at(q.tags, 0) or Tag { meta: Meta { } };
+    push(t.notes, "n") or discard;
+    push(t.meta.notes, "m") or discard;
+    set(q.tags, 0, t) or discard;
+}
+
+// The same, through a parameter the element is handed to.
+fn grow(t: Tag) {
+    push(t.notes, "n") or discard;
+    push(t.meta.notes, "m") or discard;
+}
+
+fn grow_first(q: Row) {
+    grow(at(q.tags, 0) or Tag { meta: Meta { } });
+}
+
+// The issue's shape: a field store in a callee, written below an
+// element, the count handed back.
+fn store_in_callee(r: Row, k: Int) -> Int {
+    let mut q = Row { };
+    q.tags = r.tags;
+    let mut t = at(q.tags, 0) or Tag { meta: Meta { } };
+    push(t.meta.notes, f"note-{k}") or discard;
+    return count(t.meta.notes);
+}
+
+fn main() {
+    // A field assigned whole.
+    let r1 = seed();
+    let mut q1 = Row { };
+    q1.tags = r1.tags;
+    write_back(q1);
+    std::test::assert_eq_int(deep(r1), 0, "field store: the source's nested list");
+    std::test::assert_eq_int(flat(r1), 0, "field store: the source's element list");
+    std::test::assert_eq_int(deep(q1), 1, "field store: the copy took the write");
+
+    // A field assigned whole, written through a parameter below it.
+    let r2 = seed();
+    let mut q2 = Row { };
+    q2.tags = r2.tags;
+    grow_first(q2);
+    std::test::assert_eq_int(deep(r2), 0, "field store, callee write: the source");
+    std::test::assert_eq_int(deep(q2), 1, "field store, callee write: the copy");
+
+    // The issue's shape, twice: the source is untouched each time.
+    let r3 = seed();
+    std::test::assert_eq_int(store_in_callee(r3, 1), 1, "the callee's copy took one note");
+    std::test::assert_eq_int(store_in_callee(r3, 2), 1, "and only its own");
+    std::test::assert_eq_int(deep(r3), 0, "the caller's row has none");
+
+    // A field assigned whole from another record's field of another type.
+    let r4 = seed();
+    let mut b4 = Box { };
+    b4.tags = r4.tags;
+    let mut q4 = Row { tags: b4.tags };
+    write_back(q4);
+    std::test::assert_eq_int(deep(r4), 0, "two hops: the source");
+    let e4 = at(b4.tags, 0) or Tag { meta: Meta { } };
+    std::test::assert_eq_int(count(e4.meta.notes), 0, "two hops: the middle copy");
+    std::test::assert_eq_int(deep(q4), 1, "two hops: the last copy");
+
+    // A record literal's field.
+    let r5 = seed();
+    let mut q5 = Row { tags: r5.tags };
+    write_back(q5);
+    std::test::assert_eq_int(deep(r5), 0, "literal: the source");
+    std::test::assert_eq_int(deep(q5), 1, "literal: the copy");
+
+    // A local bound from the field.
+    let r6 = seed();
+    let mut l6 = r6.tags;
+    let mut t6 = at(l6, 0) or Tag { meta: Meta { } };
+    push(t6.meta.notes, "m") or discard;
+    set(l6, 0, t6) or discard;
+    std::test::assert_eq_int(deep(r6), 0, "let from a field: the source");
+    std::test::assert_eq_int(
+        count((at(l6, 0) or Tag { meta: Meta { } }).meta.notes),
+        1,
+        "let from a field: the copy",
+    );
+
+    // A record bound whole, and assigned whole.
+    let r7 = seed();
+    let mut q7 = r7;
+    write_back(q7);
+    std::test::assert_eq_int(deep(r7), 0, "let of a record: the source");
+    std::test::assert_eq_int(deep(q7), 1, "let of a record: the copy");
+    let r8 = seed();
+    let mut q8 = Row { };
+    q8 = r8;
+    write_back(q8);
+    std::test::assert_eq_int(deep(r8), 0, "record assigned whole: the source");
+    std::test::assert_eq_int(deep(q8), 1, "record assigned whole: the copy");
+
+    // An element pushed, and set.
+    let r9 = seed();
+    let mut q9 = Row { };
+    push(q9.tags, at(r9.tags, 0) or Tag { meta: Meta { } }) or discard;
+    write_back(q9);
+    std::test::assert_eq_int(deep(r9), 0, "push: the source");
+    std::test::assert_eq_int(deep(q9), 1, "push: the copy");
+    let r10 = seed();
+    let mut q10 = seed();
+    set(q10.tags, 0, at(r10.tags, 0) or Tag { meta: Meta { } }) or discard;
+    write_back(q10);
+    std::test::assert_eq_int(deep(r10), 0, "set: the source");
+    std::test::assert_eq_int(deep(q10), 1, "set: the copy");
+
+    // A local read with `at`, written below and never set back: the list
+    // keeps its element as it was, at either depth.
+    let r11 = seed();
+    let mut t11 = at(r11.tags, 0) or Tag { meta: Meta { } };
+    push(t11.notes, "n") or discard;
+    push(t11.meta.notes, "m") or discard;
+    std::test::assert_eq_int(flat(r11), 0, "an element read: its own list");
+    std::test::assert_eq_int(deep(r11), 0, "an element read: its nested list");
+    std::test::assert_eq_int(count(t11.meta.notes), 1, "the local took the write");
+}

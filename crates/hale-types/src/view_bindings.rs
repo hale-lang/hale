@@ -355,11 +355,13 @@ pub mod reasons {
 
     /// A call's result stored into a bounded list the frame holds that is
     /// fresh at its top level but holds, in a part, a block another name
-    /// reaches (GH #2067): `fn summary_of(r: Row) -> Sum { let mut v = Sum
-    /// { }; v.tags = r.tags; return v; }` hands back `r`'s own elements in
-    /// `v.tags` (a whole assignment copies the count and the slots, and
-    /// keeps an element already in the arena it runs in), so the slot
-    /// takes its own copy of the value, as for [`BOUNDED_STORED`].
+    /// reaches (GH #2067): `fn wrap_of(r: Row) -> Wrap { return Wrap { t:
+    /// r.t }; }` hands back `r`'s own `Tag` block in `t` (a record field
+    /// given a place's record holds that block), so the slot takes its own
+    /// copy of the value, as for [`BOUNDED_STORED`]. A `bounded` field given
+    /// a place's list (`v.tags = r.tags`, `Sum { tags: r.tags }`) copies its
+    /// elements deeply and holds none of them (GH #2099), so a result built
+    /// that way is fresh.
     pub const BOUNDED_STORED_PART: &str = "copy: a call's result holding another name's block stored into a bounded list";
 
     /// Is the reason a store's own copy of its value (into a part of a
@@ -956,6 +958,13 @@ impl<'a> Bodies<'a> {
         let Some(TopSymbol::Type(t)) = self.top.lookup(st) else { return None };
         let TypeKind::Struct(fields) = &t.kind else { return None };
         fields.iter().find(|f| f.name == field).map(|f| self.classify(&f.ty))
+    }
+
+    /// Is the field `field` of the struct `st` a `bounded[T; N]`?
+    fn struct_field_bounded(&self, st: &str, field: &str) -> bool {
+        let Some(TopSymbol::Type(t)) = self.top.lookup(st) else { return false };
+        let TypeKind::Struct(fields) = &t.kind else { return false };
+        fields.iter().find(|f| f.name == field).is_some_and(|f| self.resolves_bounded(&f.ty))
     }
 
     /// What a value of type `ty` may reach (GH #1554): every block it is
@@ -1752,6 +1761,21 @@ fn is_place_marker(k: &str) -> bool {
     k.starts_with(AT) || k.starts_with(PART) || k.starts_with(RET)
 }
 
+/// Does a `bounded[T; N]` field given `value` whole (`q.tags = value`,
+/// `Row { tags: value }`) hold none of `value`'s blocks? Codegen copies a
+/// value read from a place element by element, deeply
+/// (`copy_bounded_elems_in`, GH #2099), and keeps a fresh one's elements
+/// as they are: a literal, an operator's result, or a call's other than
+/// `at`'s, which may hand back a place's elements and so keeps its
+/// markers.
+fn bounded_copy_is_deep(value: &Expr) -> bool {
+    match value {
+        Expr::Literal(..) | Expr::Struct { .. } | Expr::Array(..) | Expr::Binary { .. } => false,
+        Expr::Call { callee, .. } => matches!(callee.as_ref(), Expr::Ident(i) if i.name == "at"),
+        _ => true,
+    }
+}
+
 /// A struct literal's keys with its place markers turned into part
 /// markers: one per field whose init may hold a place's value.
 fn literal_part_markers(keys: Keys, parts: &[(String, Vec<String>)]) -> Keys {
@@ -2426,8 +2450,11 @@ impl<'p, 'a> Walk<'p, 'a> {
             .iter()
             .map(|i| {
                 let plain = self.plain_field(st.as_deref(), &i.name.name, &i.value);
+                // A bounded field given a place's list is a deep copy of it.
+                let copied = bounded_copy_is_deep(&i.value)
+                    && st.as_deref().is_some_and(|st| self.p.struct_field_bounded(st, &i.name.name));
                 let places = match &i.value {
-                    _ if plain => Vec::new(),
+                    _ if plain || copied => Vec::new(),
                     Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. } => places_of(&self.part_keys(&i.value)),
                     Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. } => Vec::new(),
                     // A call's result is fresh unless the call may hand back a
@@ -2591,6 +2618,13 @@ impl<'p, 'a> Walk<'p, 'a> {
         if let Some(LValueSeg::Field(f)) = target.tail.first() {
             let class = self.p.classify(self.views.place(f));
             if target.tail.len() == 1 && (class == Class::Scalar || class.surely_handle()) {
+                return;
+            }
+        }
+        // A bounded field assigned whole from a place's list takes a deep
+        // copy of its elements (GH #2099): the local holds none of them.
+        if let Some(LValueSeg::Field(f)) = target.tail.last() {
+            if bounded_copy_is_deep(value) && self.p.resolves_bounded(self.views.place(f)) {
                 return;
             }
         }
@@ -4222,6 +4256,13 @@ impl<'p, 'a> Walk<'p, 'a> {
                         let at = self.tick();
                         self.list_writes.push((place, at));
                     }
+                    // GH #2099: a list under a local (`push(t.notes, x)`,
+                    // `push(t.meta.notes, x)`) is written in place, as
+                    // `t.notes = …` writes it: the local's write, which the
+                    // local-place rule copies first when the local was bound
+                    // from a place (`let mut t = at(r.tags, 0) or …`). Without
+                    // it the push went into the element the list still held.
+                    self.field_list_write(other, start, span);
                 }
             }
         }
@@ -4244,6 +4285,53 @@ impl<'p, 'a> Walk<'p, 'a> {
         let block = (self.stmt_call == Some(at) || self.stmt_or_call == Some(at)).then(|| self.block_stack.last().copied()).flatten();
         self.store_backs.push(StoreBack { from: start, at: 0, place, var, block, slot: Some(slot), value_use, span: at });
         Some(self.store_backs.len() - 1)
+    }
+
+    /// A bounded intrinsic writing the list `list`, a field path below a
+    /// local (`t.notes`, `t.meta.notes`): the write `t.notes = …` is, for
+    /// the local-place and cell-read rules (`AssignWrite`, keyed by the
+    /// root identifier's id, which `bounded_receiver_cow` looks up), and
+    /// the in-place write of the block holding the list (`root_writes`),
+    /// which a binding of that block made before would see. The write is
+    /// the call's own, at its start: a value it stores is not a use of the
+    /// local after the store (`live_after`).
+    fn field_list_write(&mut self, list: &Expr, start: u32, span: Span) {
+        // The path's field expressions, outermost first.
+        let mut fields: Vec<&Expr> = Vec::new();
+        let mut cur = list;
+        let root = loop {
+            match cur {
+                Expr::Field { receiver, .. } => {
+                    fields.push(cur);
+                    cur = receiver;
+                }
+                Expr::Ident(id) => break id,
+                _ => return,
+            }
+        };
+        fields.reverse();
+        let Some(&first) = fields.first() else { return };
+        let Expr::Field { name: first_name, .. } = first else { return };
+        let Some(Some(v)) = self.lookup(&root.name) else { return };
+        // The block written: the path short of its last segment.
+        if let Some(place) = self.place_of(fields.get(fields.len().wrapping_sub(2)).copied().unwrap_or(cur)) {
+            let at = self.tick();
+            self.root_writes.push((place, at, false));
+        }
+        if self.from_param[v] {
+            self.writes_params = true;
+        }
+        let inline_first = self.class(first) == Class::Inline;
+        self.assigns.push(AssignWrite {
+            var: v,
+            first: Some(first_name.name.clone()),
+            inline_first,
+            depth: fields.len(),
+            id: root.id.0,
+            span,
+            at: start,
+            blocks: self.block_stack.clone(),
+        });
     }
 
     /// The slot index a bounded `at` or `set` is handed, when two can be

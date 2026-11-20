@@ -1776,6 +1776,9 @@ row	L@main1	L	main	default
 == crates/hale-codegen/tests/bounded_collections.rs#36eac4b1
 row	L@main1	L	main	default
 
+== crates/hale-codegen/tests/bounded_collections.rs#9203eb35
+row	L@main1	L	main	default
+
 == crates/hale-codegen/tests/bounded_field_retire.rs#4307609f
 root	App
 row	App@literal1	App	main	default

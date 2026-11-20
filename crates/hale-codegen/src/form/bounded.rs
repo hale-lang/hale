@@ -267,12 +267,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// takes its own copy, unless its flag says the frame owns it already
     /// (`OwnedViews::cow_write`, keyed by the receiver's identifier): the
     /// write never reaches the place it was read from (spec/types.md § A
-    /// local bound from a place is yours). Any other receiver, and a read
-    /// (`count`, `at`), has no row and emits nothing.
+    /// local bound from a place is yours). A list under a local
+    /// (`push(t.notes, …)`, `push(t.meta.notes, …)`, GH #2099) is a write
+    /// into that local, as `t.notes = …` is: its row is keyed by the root
+    /// identifier and names the part to copy (`""`, the whole value). Any
+    /// other receiver, and a read (`count`, `at`), has no row and emits
+    /// nothing.
     pub(crate) fn bounded_receiver_cow(&mut self, recv: &Expr, scope: &Scope<'ctx>) -> Result<(), CodegenError> {
-        if let Expr::Ident(i) = recv {
-            if self.owned_views.cow_write(i.id).is_some() {
-                self.emit_local_cow(&i.name, scope)?;
+        let mut root = recv;
+        while let Expr::Field { receiver, .. } = root {
+            root = receiver;
+        }
+        if let Expr::Ident(i) = root {
+            if let Some(field) = self.owned_views.cow_write(i.id) {
+                let field = field.to_string();
+                if field.is_empty() {
+                    self.emit_local_cow(&i.name, scope)?;
+                } else {
+                    self.emit_cell_part_cow(&i.name, &field, scope)?;
+                }
             }
         }
         Ok(())
@@ -1280,6 +1293,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Enum(n) => self.user_enums.get(n.as_str()).is_some_and(|i| i.has_payload),
             _ => false,
         }
+    }
+
+    /// A bounded value copied whole into `slot` (its storage, count and
+    /// slots, already there): each live pointer-shaped element made the
+    /// place's own. A value read from a place — a field, a local, a
+    /// parameter, an element — is another name's, so every element is
+    /// copied deeply, with every block below it (`cell_owned_clone`); a
+    /// fresh value's (an array literal, a call's result) are kept in
+    /// `arena` as they are. One rule for every spelling of the copy: a
+    /// record literal's field (`Row { tags: r.tags }`), a field assigned
+    /// whole (`q.tags = r.tags`), as `push` and `set` copy what they
+    /// store. Until GH #2099 the whole assignment kept an element already
+    /// in `arena`, so the two lists shared each element's nested blocks
+    /// and a write through a parameter below one showed in the other.
+    /// `owned` forces the deep copy for a fresh value too (a place a
+    /// locus holds owns its elements outright).
+    pub(crate) fn copy_bounded_elems_in(
+        &mut self,
+        slot: PointerValue<'ctx>,
+        elem: &CodegenTy,
+        cap: u64,
+        arena: PointerValue<'ctx>,
+        value: &Expr,
+        owned: bool,
+        site: &str,
+    ) -> Result<(), CodegenError> {
+        let deep = owned || !Self::expr_is_fresh_value(value);
+        let prev = self.cell_owned_clone;
+        self.cell_owned_clone = prev || deep;
+        let res = self.anchor_bounded_elems_in_place(slot, elem, cap, arena, site);
+        self.cell_owned_clone = prev;
+        res
     }
 
     /// Anchor every LIVE slot of a bounded storage in place — a

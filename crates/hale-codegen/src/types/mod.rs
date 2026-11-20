@@ -983,13 +983,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     self.emit_memcpy_call(slot, src.into_pointer_value(), size, &format!("{type_name}.{fname}.bounded.init"))?;
                     let arena = self.current_arena_ptr()?;
-                    let prev = self.cell_owned_clone;
-                    if !Self::expr_is_fresh_value(init) {
-                        self.cell_owned_clone = true;
-                    }
-                    let anchored = self.anchor_bounded_elems_in_place(slot, &belem, bn, arena, "bounded.field.init");
-                    self.cell_owned_clone = prev;
-                    anchored?;
+                    self.copy_bounded_elems_in(slot, &belem, bn, arena, init, false, "bounded.field.init")?;
                     continue;
                 }
                 self.builder
