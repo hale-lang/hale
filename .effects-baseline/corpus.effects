@@ -361,6 +361,7 @@ main  does={syscall,alloc,stdio}
 serve  does={alloc}
 ### 92-build-an-api
 App::run  does={syscall,block,publish,time,alloc}
+Shop::__on_stop  does={publish,alloc}
 Shop::__rpc_call_1  does={syscall,publish,alloc,stdio}
 Shop::__rpc_call_2  does={syscall,publish,alloc,stdio}
 Shop::__rpc_decode_1  does={alloc}
