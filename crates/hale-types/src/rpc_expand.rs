@@ -2684,6 +2684,13 @@ fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &Pb
             "fn __rpc_err(exposure: Int, rid: Int, slot: Int, class: Int, body: String) {\n    __ApiRpcEventT <- std::api::RpcEvent { exposure: exposure, rid: rid, slot: slot, kind: 1, stamp: self.__rpc_stamp, body: body, class: class };\n}\n",
         );
     }
+    // GH #2098: the compiler calls `__on_stop` when a failure stops the
+    // receiver, or a quarantine ends it, while it is live. Its queued
+    // cells are dropped unrun from then on (a call handed over and not
+    // started among them), so each exposure is told what `dissolve()`
+    // tells it: this incarnation is gone. A restart is a `birth()`, which
+    // announces the next.
+    fns.push_str(&format!("fn __on_stop() {{\n{dissolve}}}\n"));
     let src = format!(
         "locus __Tmp {{\n params {{ {params} }}\n bus {{ {bus} }}\n {fns}\n birth() {{ {birth} }}\n dissolve() {{ {dissolve} }}\n}}\n"
     );

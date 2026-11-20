@@ -1238,10 +1238,19 @@ locus __StdApiExposure {
             return;
         }
         if ev.kind == 6 {
-            // an incarnation went: the one the exposure knows, or an older
+            // an incarnation went (its `dissolve()`, or a failure's stop or a
+            // quarantine, GH #2098): the one the exposure knows, or an older
             // one a successor has already replaced (whose departure is news
-            // to nobody)
+            // to nobody). What it was handed and had not started is dropped
+            // unrun, and what is queued for it will never reach it.
             if ev.stamp != self.slot_stamp[ev.slot] {
+                // Still asking who is there: the incarnation that went may
+                // have taken the question with it (a hello queued for it is
+                // dropped unrun), so ask again. A successor answers; nobody
+                // there, and the bus says so at once.
+                if self.slot_state[ev.slot] == 0 && self.hello_sent[ev.slot] == 1 {
+                    self.hello(ev.slot);
+                }
                 return;
             }
             self.slot_state[ev.slot] = 2;

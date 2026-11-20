@@ -18747,16 +18747,21 @@ static uint64_t bus_incarnation_register(void *p) {
 }
 
 /* The incarnation at `p` ended (`stopped`: a failed child's stop, which
- * a restart may undo); its queued cells are dropped from here on. */
-static void bus_incarnation_end(void *p, int stopped) {
-    if (!p) return;
+ * a restart may undo); its queued cells are dropped from here on. 1 when
+ * it was live until now: the first stop of a failure, not the wrapper's
+ * repeat of it, nor a quarantine of a child already stopped (GH #2098). */
+static int bus_incarnation_end(void *p, int stopped) {
+    if (!p) return 0;
+    int was_live = 0;
     pthread_mutex_lock(&g_bus_inc_lock);
     bus_inc_t *r = bus_inc_find_or_add(p);
     if (r && r->state != BUS_INC_DEAD) {
+        was_live = r->state == BUS_INC_LIVE;
         r->state = stopped ? BUS_INC_STOPPED : BUS_INC_DEAD;
         __atomic_add_fetch(&g_bus_inc_ended, 1, __ATOMIC_RELEASE);
     }
     pthread_mutex_unlock(&g_bus_inc_lock);
+    return was_live;
 }
 
 /* A restart: the stopped incarnation at `p` is live again, its
@@ -19419,8 +19424,9 @@ void lotus_bus_dispatch_flat(lotus_bus_queue_t *queue,
 /* `keep`: set each subject aside for a restart to put back (a failed
  * child's stop) rather than dropping it for good (a quarantine, a
  * reclaim). */
-static void lotus_bus_retire_self(void *self_ptr, int keep) {
+static int lotus_bus_retire_self(void *self_ptr, int keep) {
     int subscribed = 0;
+    int ended = 0;
     /* Under the registration lock: a reuse rewrites a free entry under
      * it, so the self an entry names is the one it names here. A final
      * retire frees the entry for a later registration. */
@@ -19441,7 +19447,7 @@ static void lotus_bus_retire_self(void *self_ptr, int keep) {
     /* GH #703: cells already queued for this self are dropped at
      * materialization, on their consumer's thread — see
      * `bus_cell_stale`. Only a self that ever subscribed can have one. */
-    if (subscribed) bus_incarnation_end(self_ptr, keep);
+    if (subscribed) ended = bus_incarnation_end(self_ptr, keep);
     /* R52: the reclaim reads the run tickets past this point (its
      * guards, the hold wait), and a pool worker takes its handler's
      * hold before it reads the dead set: with a fence on each side,
@@ -19450,10 +19456,14 @@ static void lotus_bus_retire_self(void *self_ptr, int keep) {
     atomic_thread_fence(memory_order_seq_cst);
     /* Decision line 6: and the cells it parked before it was ready. */
     lotus_bus_ready_forget(self_ptr);
+    return ended;
 }
 
-void lotus_bus_quarantine_self(void *self_ptr) {
-    lotus_bus_retire_self(self_ptr, 0);
+/* 1 when this ended a live incarnation of `self_ptr` (GH #2098): its
+ * cells still queued are dropped unrun from here on, and the compiler
+ * tells whoever handed it one (`__on_stop`, a `std::api` receiver's). */
+int lotus_bus_quarantine_self(void *self_ptr) {
+    return lotus_bus_retire_self(self_ptr, 0);
 }
 
 /* GH #1069: a failed child its owner holds stops — no delivery reaches
@@ -19462,8 +19472,8 @@ void lotus_bus_quarantine_self(void *self_ptr) {
  * decided (the failure is posted to the owner's thread, and the child's
  * worker runs its other cells while it waits): the stop is undone by a
  * restart, never by anything else. */
-void lotus_bus_stop_failed_self(void *self_ptr) {
-    lotus_bus_retire_self(self_ptr, 1);
+int lotus_bus_stop_failed_self(void *self_ptr) {
+    return lotus_bus_retire_self(self_ptr, 1);
 }
 
 /* A restart (`__restart_<L>`): the child is live again, so the

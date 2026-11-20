@@ -1,0 +1,316 @@
+// GH #2098 (spec/api.md § Receiver failure and generations) — every call an
+// exposure accepted is answered when its receiver fails, the calls already
+// queued for the receiver included.
+//
+// A held receiver stops as it fails (GH #2091): a call handed to it after
+// that finds no subscriber and is answered `unavailable`. A call handed to it
+// BEFORE it failed, and still queued behind the work it failed in, is dropped
+// unrun at the stop; nothing used to tell the exposure, so that caller, and
+// every call queued in the exposure behind it, waited for ever. The stop now
+// announces what a `dissolve()` announces, and the exposure settles them all
+// `unavailable`.
+//
+// One exposure, bound 16, four receivers, each on a pool of its own:
+//
+//   * `Inline` fails in the first of four calls sent back to back: that call
+//     is the server's error and the three queued behind it are `unavailable`;
+//   * `Held`, `Back` and `Gone` fail in `run()` while it holds their pool's
+//     thread, after the exposure has handed each a call (so the cell is
+//     queued behind the `run()`) and queued two more. Their owner absorbs
+//     `Held`'s failure, restarts `Back` and quarantines `Gone`; in each case
+//     the three calls are `unavailable` and none of them ever runs;
+//   * a call accepted under the failed incarnation is not run by a restarted
+//     one: `Back`'s three stay `unavailable` though `Back` is alive again,
+//     and the next call is served by the new generation;
+//   * nothing is left pending, so the exposure's stop has nothing to wait for
+//     or to abandon.
+
+type Req { n: Int; }
+type Res { n: Int; }
+
+// holds the thread of the pool it runs on, without yielding to its queue
+@unbounded
+fn spin_for(ms: Int) {
+    let until = std::time::monotonic_ns() + ms * 1000000;
+    let mut now = std::time::monotonic_ns();
+    while now < until { now = std::time::monotonic_ns(); }
+}
+
+locus Inline {
+    params { ran: Int = 0; }
+    closure fuse { captures: ran; epoch inline; }
+    fn ping(r: Req) -> Res fallible(ClosureViolation) {
+        if r.n < 0 { violate fuse; }
+        self.ran = self.ran + 1;
+        return Res { n: r.n };
+    }
+}
+
+// `run()` waits to be armed, says it is holding the thread, holds it for a
+// second (the test hands it a call meanwhile) and fails; once only.
+locus Held {
+    params {
+        ran: Int = 0;
+        runs: Int = 0;
+        armed: Bool = false;
+        holding: Bool = false;
+        failed: Bool = false;
+    }
+    closure fuse { captures: ran; epoch inline; }
+    run() {
+        self.runs = self.runs + 1;
+        if self.runs == 1 {
+            let mut i = 0;
+            while !self.armed && i < 10000 { std::time::sleep(1ms); i = i + 1; }
+            self.holding = true;
+            spin_for(1000);
+            self.failed = true;
+            violate fuse;
+        }
+    }
+    fn ping(r: Req) -> Res {
+        self.ran = self.ran + 1;
+        return Res { n: r.n };
+    }
+}
+
+locus Back {
+    params {
+        ran: Int = 0;
+        runs: Int = 0;
+        births: Int = 0;
+        armed: Bool = false;
+        holding: Bool = false;
+        failed: Bool = false;
+    }
+    closure fuse { captures: ran; epoch inline; }
+    birth() { self.births = self.births + 1; }
+    run() {
+        self.runs = self.runs + 1;
+        if self.runs == 1 {
+            let mut i = 0;
+            while !self.armed && i < 10000 { std::time::sleep(1ms); i = i + 1; }
+            self.holding = true;
+            spin_for(1000);
+            self.failed = true;
+            violate fuse;
+        }
+    }
+    fn ping(r: Req, ctx: std::api::ServedContext) -> Res {
+        self.ran = self.ran + 1;
+        return Res { n: ctx.generation };
+    }
+}
+
+locus Gone {
+    params {
+        ran: Int = 0;
+        runs: Int = 0;
+        armed: Bool = false;
+        holding: Bool = false;
+        failed: Bool = false;
+    }
+    closure fuse { captures: ran; epoch inline; }
+    run() {
+        self.runs = self.runs + 1;
+        if self.runs == 1 {
+            let mut i = 0;
+            while !self.armed && i < 10000 { std::time::sleep(1ms); i = i + 1; }
+            self.holding = true;
+            spin_for(1000);
+            self.failed = true;
+            violate fuse;
+        }
+    }
+    fn ping(r: Req) -> Res {
+        self.ran = self.ran + 1;
+        return Res { n: r.n };
+    }
+}
+
+api S {
+    rpc Inline::ping;
+    rpc Held::ping;
+    rpc Back::ping;
+    rpc Gone::ping;
+}
+
+main locus App {
+    params {
+        inline: Inline = Inline { };
+        held: Held = Held { };
+        back: Back = Back { };
+        gone: Gone = Gone { };
+        fixture: std::api::test::Rpc = std::api::test::Rpc { };
+        failures: Int = 0;
+        probes: Int = 0;
+        h: api::Exposure = api::serve(
+            S,
+            self.fixture,
+            as: "svc",
+            receivers: { Inline: self.inline, Held: self.held, Back: self.back, Gone: self.gone },
+            bound: 16,
+            on_full: refuse
+        );
+    }
+    placement {
+        inline: cooperative(pool = inline_pool) where async_io;
+        held: cooperative(pool = held_pool) where async_io;
+        back: cooperative(pool = back_pool) where async_io;
+        gone: cooperative(pool = gone_pool) where async_io;
+    }
+    on_failure(c: Inline, err: ClosureViolation) { self.failures = self.failures + 1; }
+    on_failure(c: Held, err: ClosureViolation) { self.failures = self.failures + 1; }
+    on_failure(c: Back, err: ClosureViolation) {
+        self.failures = self.failures + 1;
+        restart(c) for 3;
+    }
+    on_failure(c: Gone, err: ClosureViolation) {
+        self.failures = self.failures + 1;
+        quarantine(c);
+    }
+
+    // The exposure handles what the fixture sends in order: once a line sent
+    // after some calls is answered, those calls were admitted, and the first
+    // of them handed to its receiver.
+    fn settled() {
+        self.probes = self.probes + 1;
+        let p = -100 - self.probes;
+        self.fixture.send(p, "probe");
+        std::test::assert_eq_str(
+            self.fixture.await_outcome(p, 3000),
+            "refusal:malformed",
+            "the exposure took in the calls sent before the probe",
+        );
+    }
+
+    fn three(first: Int, member: String) {
+        let f = self.fixture;
+        f.call_as_peer(first, member, "{\"n\":" + to_string(first) + "}", 1000);
+        f.call_as_peer(first + 1, member, "{\"n\":" + to_string(first + 1) + "}", 1000);
+        f.call_as_peer(first + 2, member, "{\"n\":" + to_string(first + 2) + "}", 1000);
+    }
+
+    fn all_unavailable(first: Int, who: String) {
+        let f = self.fixture;
+        let mut c = first;
+        while c < first + 3 {
+            std::test::assert_eq_str(
+                f.await_outcome(c, 5000),
+                "refusal:unavailable",
+                who + ": call " + to_string(c) + " was queued for the receiver when it failed",
+            );
+            std::test::assert_eq_int(f.outcomes_of(c), 1, who + ": answered once");
+            c = c + 1;
+        }
+    }
+
+    run() {
+        let f = self.fixture;
+
+        // every receiver serves, so the exposure knows each incarnation
+        f.call_as_peer(1, "Inline::ping", "{\"n\":1}", 1000);
+        f.call_as_peer(2, "Held::ping", "{\"n\":2}", 1000);
+        f.call_as_peer(3, "Back::ping", "{\"n\":3}", 1000);
+        f.call_as_peer(4, "Gone::ping", "{\"n\":4}", 1000);
+        std::test::assert_eq_str(f.await_outcome(1, 3000), "result", "Inline serves");
+        std::test::assert_eq_str(f.await_outcome(2, 3000), "result", "Held serves");
+        std::test::assert_eq_str(f.await_outcome(3, 3000), "result", "Back serves");
+        std::test::assert(
+            std::str::contains(f.line(3), "\"value\":{\"n\":1}"),
+            "in its first generation",
+        );
+        std::test::assert_eq_str(f.await_outcome(4, 3000), "result", "Gone serves");
+
+        // Inline: the first of four calls sent back to back fails
+        f.call_as_peer(10, "Inline::ping", "{\"n\":-1}", 1000);
+        self.three(11, "Inline::ping");
+        std::test::assert_eq_str(
+            f.await_outcome(10, 5000),
+            "server_error",
+            "Inline: the call it failed in is the server's error",
+        );
+        self.all_unavailable(11, "Inline");
+        std::test::assert_eq_int(self.inline.ran, 1, "Inline: none of the three ran");
+
+        // Held, Back, Gone: a call handed over and two queued behind it while
+        // `run()` holds the thread it would run on; then `run()` fails
+        self.held.armed = true;
+        self.back.armed = true;
+        self.gone.armed = true;
+        let mut i = 0;
+        while i < 5000 && !(self.held.holding && self.back.holding && self.gone.holding) {
+            std::time::sleep(1ms);
+            i = i + 1;
+        }
+        std::test::assert(
+            self.held.holding && self.back.holding && self.gone.holding,
+            "each run() holds its pool's thread",
+        );
+        self.three(20, "Held::ping");
+        self.three(30, "Back::ping");
+        self.three(40, "Gone::ping");
+        self.settled();
+        std::test::assert(
+            !self.held.failed && !self.back.failed && !self.gone.failed,
+            "the calls were handed over before the receivers failed",
+        );
+
+        self.all_unavailable(20, "Held (absorbed)");
+        self.all_unavailable(30, "Back (restarted)");
+        self.all_unavailable(40, "Gone (quarantined)");
+        std::test::assert_eq_int(self.failures, 4, "the owner heard each failure");
+
+        // Back is alive again, and the calls of the failed incarnation still
+        // never run there
+        i = 0;
+        while i < 3000 && self.back.births < 2 { std::time::sleep(1ms); i = i + 1; }
+        std::test::assert_eq_int(self.back.births, 2, "Back restarted");
+        std::time::sleep(50ms);
+        std::test::assert_eq_int(self.held.ran, 1, "Held ran none of the three");
+        std::test::assert_eq_int(
+            self.back.ran,
+            1,
+            "Back ran none of the three, in either generation",
+        );
+        std::test::assert_eq_int(self.gone.ran, 1, "Gone ran none of the three");
+
+        // the next call runs in Back's new generation; the stopped receivers
+        // are refused at once
+        f.call_as_peer(50, "Back::ping", "{\"n\":50}", 1000);
+        std::test::assert_eq_str(
+            f.await_outcome(50, 3000),
+            "result",
+            "the restarted receiver serves",
+        );
+        std::test::assert(
+            std::str::contains(f.line(50), "\"value\":{\"n\":2}"),
+            "in its second generation",
+        );
+        f.call_as_peer(51, "Held::ping", "{\"n\":51}", 1000);
+        std::test::assert_eq_str(
+            f.await_outcome(51, 3000),
+            "refusal:unavailable",
+            "Held stays stopped",
+        );
+        f.call_as_peer(52, "Gone::ping", "{\"n\":52}", 1000);
+        std::test::assert_eq_str(
+            f.await_outcome(52, 3000),
+            "refusal:unavailable",
+            "Gone stays quarantined",
+        );
+
+        // every call accepted was answered: the stop has nothing to wait for
+        // and abandons nothing
+        std::test::assert_eq_int(self.h.pending(), 0, "nothing is pending");
+        let t0 = std::time::monotonic_ns();
+        self.h.stop();
+        std::test::assert(
+            (std::time::monotonic_ns() - t0) / 1000000 < 1000,
+            "the stop waited for nothing",
+        );
+        std::test::assert_eq_int(f.closed, 0, "no call was abandoned unanswered");
+    }
+}
+
+fn main() { App { }; }

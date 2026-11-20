@@ -1523,6 +1523,15 @@ subscription it had before it failed, so a bound receiver restarted
 after the call it was executing returned is served again (spec/api.md
 § Receiver failure and generations).
 
+A delivery queued for the child before it stopped, and not yet begun,
+is dropped unrun when its turn comes, unless a restart has put the child
+back by then, in which case the restarted child is delivered it. A
+dropped delivery is announced to nobody, except that a `std::api`
+receiver's stop (and a quarantine that ends a receiver still live)
+tells each exposure bound to it that its incarnation is gone, as its
+`dissolve()` does, so the calls it was handed and had not started are
+answered `unavailable` rather than never (GH #2098).
+
 ### `release(c)` and flow children
 
 `release(c: Child) { ... }` is the death-side
