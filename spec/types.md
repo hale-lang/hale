@@ -1818,7 +1818,26 @@ Semantics:
   counted as a block, so that push was reported, and copied, as one
   holding the argument's block. A local's list does not
   retire what a `set` replaces: the frame's arena frees it with the
-  frame. Until 2026-11-12 only a place a locus holds copied: a local's
+  frame. A whole assignment into a record local's field does retire
+  the copy it replaces, when no other name can reach it (GH #2105):
+  the copy is made in an arena of the field's own, and the next such
+  store frees it. Only those stores allocate there, so a block that
+  reached the field any other way (a `push` of a String a local still
+  holds, a fresh value bound as it is) is never freed by it. A store
+  keeps the frame's arena when a name in scope where it runs may hold
+  a block of an earlier copy: a binding read from the field (`let t =
+  at(q.tags, 0) or …`, a `for` over it, `let w = q`), or, transitively,
+  a place such a value was stored into, pushed into or handed to a
+  callee beside. None of the local's stores into the field retire when
+  such a value lands in another field of the local or the local is
+  handed whole to a callee, and no store retires that sits inside an
+  expression, whose value reads the field, or that is in no loop of its
+  body (it runs once per call, with no earlier copy of its own to free:
+  `v.tags = r.tags; return v;` is copied as before)
+  (`hale_types::field_retire`).
+  Until GH #2105 every whole assignment's copy stayed in the frame's
+  arena until the frame ended: `q.tags = r.tags` 200,000 times over a
+  local declared before the loop held 117 MB. Until 2026-11-12 only a place a locus holds copied: a local's
   list kept the very block it was handed, and a write through either
   name showed through the other (GH #1918).
 - A pointer-shaped element `push`ed or `set` into a bounded place under

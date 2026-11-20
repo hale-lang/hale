@@ -232,6 +232,10 @@ pub struct OwnedViews {
     /// span start: whether the slot may keep the value itself or takes
     /// its own copy ([`BoundedStore`]).
     bounded_stores: HashMap<(u32, u32), BoundedStore>,
+    /// GH #2105: the whole stores into a local's `bounded` field (by the
+    /// assignment's id) that may free the elements they replace
+    /// (`crate::field_retire`).
+    retiring_stores: HashSet<u32>,
 }
 
 /// What a bounded `push(list, v)` or `set(list, i, v)` into a list the
@@ -578,6 +582,7 @@ impl OwnedViews {
             }
         }
         self.param_writes.extend(other.param_writes.into_iter().filter_map(&id));
+        self.retiring_stores.extend(other.retiring_stores.into_iter().filter_map(&id));
         self.mixed_owners.extend(other.mixed_owners);
         // A store both hold answers by the one that copies more.
         for ((c, at), kind) in other.bounded_stores {
@@ -598,6 +603,14 @@ impl OwnedViews {
     /// (the argument starting at `arg_start`) into a list the frame holds
     /// ([`BoundedStore`]). A call the column has no row for stores a
     /// copy.
+    /// GH #2105: may the whole store `assign` into a local's `bounded`
+    /// field free the elements it replaces: does no other binding in scope
+    /// there reach a block of the field's earlier copies
+    /// (`crate::field_retire`)?
+    pub fn retires_field(&self, assign: NodeId) -> bool {
+        !assign.is_none() && self.retiring_stores.contains(&assign.0)
+    }
+
     pub fn bounded_store(&self, call: NodeId, arg_start: u32) -> BoundedStore {
         if call.is_none() {
             return BoundedStore::Copy;
@@ -1333,6 +1346,7 @@ impl From<Found> for OwnedViews {
             param_writes: found.param_writes,
             mixed_owners: found.mixed_owners,
             bounded_stores: found.bounded_stores,
+            retiring_stores: found.retiring_stores,
         }
     }
 }
@@ -1350,6 +1364,7 @@ struct Found {
     param_writes: HashSet<u32>,
     mixed_owners: Vec<MixedOwners>,
     bounded_stores: HashMap<(u32, u32), BoundedStore>,
+    retiring_stores: HashSet<u32>,
 }
 
 /// Per body, what its calls reach, transitively: the fields it may
@@ -1578,6 +1593,8 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Res
         w.in_locus(p.body_locus[b].clone());
         w.block(body);
         w.finish(&mut out[p.body_program[b]]);
+        let user_fn = |n: &str| p.fns.contains_key(n);
+        out[p.body_program[b]].retiring_stores.extend(crate::field_retire::retiring_stores(params, body, &user_fn));
     }
     Ok(out)
 }

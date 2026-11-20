@@ -311,6 +311,68 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             })
     }
 
+    /// GH #2105: the arena the copy a whole store `target = value` makes
+    /// into a local's `bounded` field goes in, when the store retires what
+    /// it replaces (`OwnedViews::retires_field`: no other name in scope
+    /// reaches the field's earlier copies) and copies (a fresh value is
+    /// bound as it is): the field's own arena, made fresh here by
+    /// `lotus_arena_iteration_enter`, which frees (or empties in place)
+    /// the one the previous such store copied into. Only those stores
+    /// allocate in it, so what it frees is exactly the elements they made;
+    /// a block that reached the field any other way lies elsewhere and is
+    /// never freed by it.
+    ///
+    /// The arena is owned by the frame's own arena (outside any iteration
+    /// arena: a local declared in a loop's body keeps it from one
+    /// iteration to the next, where the next store frees it) and its slot
+    /// is an entry-block alloca of this function per local and field. A
+    /// store the column does not name, or one with no declaration, keeps
+    /// the current arena (`None`).
+    pub(crate) fn field_copy_arena(
+        &mut self,
+        target: &hale_syntax::ast::LValue,
+        assign: hale_syntax::ast::NodeId,
+        value: &Expr,
+    ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
+        use hale_syntax::ast::LValueSeg;
+        if Self::expr_is_fresh_value(value) || !self.owned_views.retires_field(assign) {
+            return Ok(None);
+        }
+        let Some(func) = self.current_fn else { return Ok(None) };
+        let Some((decl, _)) = hale_types::iteration_reclaim::decl_of(self.uses)(assign) else { return Ok(None) };
+        let mut path = Vec::new();
+        for seg in &target.tail {
+            match seg {
+                LValueSeg::Field(f) => path.push(f.name.clone()),
+                LValueSeg::Index(_) => return Ok(None),
+            }
+        }
+        let key = (func, decl, path.join("."));
+        let slot = match self.field_arenas.get(&key) {
+            Some(slot) => *slot,
+            None => {
+                let slot = self.deferred_dissolve_slot_alloca("field.arena")?;
+                self.field_arenas.insert(key, slot);
+                slot
+            }
+        };
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let owner = self.outside_iteration_arenas(|cx| cx.current_arena_ptr())?;
+        let prev = self.builder.build_load(ptr_t, slot, "field.arena.prev").map_err(e)?;
+        let enter = self.module.get_function("lotus_arena_iteration_enter").expect("lotus_arena_iteration_enter declared");
+        let arena = self
+            .builder
+            .build_call(enter, &[prev.into(), owner.into()], "field.arena")
+            .map_err(e)?
+            .try_as_basic_value()
+            .left()
+            .expect("iteration_enter returns ptr")
+            .into_pointer_value();
+        self.builder.build_store(slot, arena).map_err(e)?;
+        Ok(Some(arena))
+    }
+
     /// Lower a value that leaves the frame (`return`, `fail`) outside
     /// every iteration arena.
     pub(crate) fn outside_iteration_arenas<T>(&mut self, lower: impl FnOnce(&mut Self) -> T) -> T {

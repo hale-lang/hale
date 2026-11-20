@@ -2168,6 +2168,7 @@ fn build_resolved_lowered(
         iter_arenas: Vec::new(),
         iter_arena_suspended: 0,
         or_error_leaves_frame: false,
+        field_arenas: HashMap::new(),
         iter_arena_leaves: Vec::new(),
         current_method_caller_arena: None,
         current_user_fn_exit_bb: None,
@@ -4845,6 +4846,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// error a fallible primitive in it builds leaves the frame, so its
     /// payload is built outside the iteration arenas ([`Cx::error_payload`]).
     pub(crate) or_error_leaves_frame: bool,
+    /// GH #2105: each retiring local field's arena slot, by the function
+    /// it is lowered in, the local's declaration and the field's path
+    /// (`Cx::field_copy_arena`).
+    pub(crate) field_arenas: HashMap<(FunctionValue<'ctx>, u32, String), PointerValue<'ctx>>,
     /// The slots of the iteration arenas a loop being lowered opened,
     /// whose last iteration the loop's exit frees (`lower_loop_stmt`).
     pub(crate) iter_arena_leaves: Vec<PointerValue<'ctx>>,
@@ -19837,7 +19842,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         if target.tail.is_empty() && target.head.name != "self" {
                             return self.lower_bounded_local_assign(target, &elem, cap, value, *assign_id, scope);
                         }
-                        return self.lower_bounded_whole_assign(target, &elem, cap, value, scope);
+                        return self.lower_bounded_whole_assign(target, &elem, cap, value, *assign_id, scope);
                     }
                 }
                 // WS1#4: `self.<locusfield> = <LocusLiteral>` is a
@@ -36289,6 +36294,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         elem: &CodegenTy,
         cap: u64,
         value: &Expr,
+        assign_id: NodeId,
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         let e = |err: inkwell::builder::BuilderError| CodegenError::LlvmEmit(err.to_string());
@@ -36322,7 +36328,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // (`Cx::member_param_arena`).
             None => match self.member_param_arena(&target.head.name, scope)? {
                 Some(arena) => arena,
-                None => self.current_arena_ptr()?,
+                // GH #2105: a local's field whose earlier copies no other
+                // name reaches takes this copy in an arena of its own,
+                // freeing the one the previous copy was made in.
+                None => match self.field_copy_arena(target, assign_id, value)? {
+                    Some(arena) => arena,
+                    None => self.current_arena_ptr()?,
+                },
             },
         };
         let st = self.llvm_bounded_storage_type(elem, cap);

@@ -87,6 +87,8 @@ When a method or bus handler overwrites a field on `self` (`self.latest = Thing 
 
 For `String` and `Bytes` fields whose lengths vary across writes, retired blocks are retained at their size-class capacity and reused by future stores. As a result, repeated whole-field replacement inside handlers or methods keeps the locus arena flat at the high-water mark of the largest stored value.
 
+A `bounded` field of a record local stored whole works the same way when nothing else can reach what it replaces: `q.tags = r.tags` in a loop keeps one copy of the elements, not one per store. A store keeps the old copy instead when a name in scope may still hold part of it, such as a binding read from the field (`let t = at(q.tags, 0) or …`, a `for` over it, `let w = q`) or a place a value read from it was stored into. Pushing a String a local still holds into the field never puts that String at risk: only the field's own copies are freed.
+
 > [!TIP]
 > In-place scalar mutation (`self.latest.count = v`, `self.arr[i] = v`) avoids the clone-and-retire cycle altogether and is required inside tight loops in `run()` that do not cross a method or handler activation boundary: a loop iteration frees its own values, but the retires of a field it replaces flush only when the activation ends.
 

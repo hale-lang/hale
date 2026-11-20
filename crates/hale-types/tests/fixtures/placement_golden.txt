@@ -4121,6 +4121,9 @@ row	Stateless@main1	Stateless	main	default
 == crates/hale-codegen/tests/library_shape_http_json.rs#4312175b
 row	FdSet@main1	FdSet	main	default
 
+== crates/hale-codegen/tests/local_field_retire.rs#52f06597
+row	Holder@main1	Holder	main	default
+
 == crates/hale-codegen/tests/local_place_value.rs#2b732bd2
 row	H@main1	H	main	default
 
