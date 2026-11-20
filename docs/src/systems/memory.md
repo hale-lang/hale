@@ -58,7 +58,7 @@ Not every allocation inside a locus belongs to its long-lived arena:
 | Allocation Scope | Where It Allocates | When It Frees |
 |---|---|---|
 | Method / handler transient values | Per-activation scratch sub-region | Immediately when the method or handler returns |
-| A method's loop body that keeps nothing past its iteration | Per-iteration region | When the next iteration starts, or the loop is left |
+| A loop body that keeps nothing past its iteration (in a method, a free `fn` or `fn main`) | Per-iteration region | When the next iteration starts, or the loop is left |
 | Scratch-local free `fn` | Function-local scratch region | Immediately when the free function returns |
 | Non-scratch free `fn` | Caller's active region | When the caller's activation or scope ends |
 | Persisted field (`self.field = val`) | Locus lifetime arena | When the locus dissolves (or on field replacement retirement) |
@@ -66,7 +66,7 @@ Not every allocation inside a locus belongs to its long-lived arena:
 
 ### Per-Iteration Loop Regions
 
-A loop in a method, a handler or a lifecycle hook (`run()` included) frees what each iteration makes when the iteration ends, so a `run()` that loops for its locus's whole life holds one iteration's values at a time, not every one it ever made:
+A loop in a method, a handler, a lifecycle hook (`run()` included), a free function or `fn main` frees what each iteration makes when the iteration ends, so a `run()` that loops for its locus's whole life, or a `main` that loops until the program ends, holds one iteration's values at a time, not every one it ever made:
 
 ```hale,fragment
 run() {
@@ -79,7 +79,7 @@ run() {
 }
 ```
 
-Each iteration gets a region of its own when the loop body keeps nothing past the iteration. The one thing that can is a binding declared before the loop: a body that assigns such a binding a value that is not a scalar or a locus reference (`last = c`, `acc = acc + s`, `arr[i] = s`) runs on the method's scratch as before, and so does a body that hands a call anything but the iteration's own values, scalars and bare locus references (an outside record, a field of `self` or of another locus, an element of an outside array: a free function, a function value held in a field or a method could write into it), and a body that makes a locus or uses a `bounded[T; N]` or `BytesMut` declared outside it. The downloader's calls (`body.chunk()`, `h.update(c)`, `out.write_bytes(c)`) are fine, and so are builtins that only read (`len`, `println`). Everything else an iteration hands on keeps the lifetime it has anyway: a value stored into `self` is copied into the locus, a sent value into the payload arena, a returned one into the caller's. `hale verify` names the call or literal of a loop that still keeps one value per iteration. Free functions and `main` keep their loops on the frame's region.
+Each iteration gets a region of its own when the loop body keeps nothing past the iteration. The one thing that can is a binding declared before the loop: a body that assigns such a binding a value that is not a scalar or a locus reference (`last = c`, `acc = acc + s`, `arr[i] = s`) runs on the frame's region as before, and so does a body that hands a call anything but the iteration's own values, scalars and bare locus references (an outside record, a field of `self` or of another locus, an element of an outside array: a free function, a function value held in a field or a method could write into it), and a body that makes a locus or uses a `bounded[T; N]` or `BytesMut` declared outside it. The downloader's calls (`body.chunk()`, `h.update(c)`, `out.write_bytes(c)`) are fine, and so are builtins that only read (`len`, `println`). Everything else an iteration hands on keeps the lifetime it has anyway: a value stored into `self` is copied into the locus, a sent value into the payload arena, a returned one into the caller's. `hale verify` names the call or literal of a loop that still keeps one value per iteration. In `fn main` that region is the program's, which lasts until the program exits, so a main loop the rule refuses keeps every iteration's values until then.
 
 ### Whole-Field Replacement Retirement
 

@@ -695,3 +695,549 @@ fn what_a_free_fn_writes_into_an_outside_record_survives_under_asan() {
         }
     }
 }
+
+/// `fn main`'s loops take the rule too (GH #2094): main allocates into
+/// the program's arena, which owns the iteration arenas and lives until
+/// the process exits. Each program is a shape the issue measured, its
+/// loop in `fn main`; each kept every iteration until `main` returned
+/// (peaks of 8 to 31 MiB at these trip counts) and holds one iteration
+/// now: a helper building and summarizing records (hale-lang/bench
+/// `bounded_records`, driven from main), a `to_json` encode, an
+/// `@display` render and the f-string it desugars to, and the GH #2099
+/// whole copy of a nested-record list into a record the body makes.
+const MAIN_LOOPS: &[(&str, &str)] = &[
+    (
+        "records",
+        r#"
+type Tag { name: String = ""; }
+type Row { id: String = ""; tags: bounded[Tag; 4]; }
+type Rows { items: bounded[Row; 64]; }
+type Sum { id: String = ""; tags: bounded[Tag; 4]; }
+type Out { items: bounded[Sum; 64]; }
+
+fn summary_of(r: Row) -> Sum {
+    let mut v = Sum { id: r.id };
+    v.tags = r.tags;
+    return v;
+}
+
+fn summaries(rs: Rows) -> Out {
+    let mut out = Out { };
+    for r in rs.items {
+        push(out.items, summary_of(r)) or discard;
+    }
+    return out;
+}
+
+fn round(k: Int) -> Int {
+    let mut rs = Rows { };
+    let mut j = 0;
+    while j < 32 {
+        let mut r = Row { id: f"row-{k}-{j}" };
+        push(r.tags, Tag { name: f"t{j}" }) or discard;
+        push(rs.items, r) or discard;
+        j = j + 1;
+    }
+    let out = summaries(rs);
+    let mut n = 0;
+    for s in out.items {
+        n = n + len(s.id) + count(s.tags);
+    }
+    return n;
+}
+
+fn main() {
+    let mut total = 0;
+    let mut k = 0;
+    while k < 2000 {
+        total = total + round(k);
+        k = k + 1;
+    }
+    println(total);
+}
+"#,
+    ),
+    (
+        "to_json",
+        r#"
+type Quote {
+    sym: String `json:"sym"`;
+    bid: Int    `json:"bid"`;
+    seq: Int    `json:"seq"`;
+}
+
+fn main() {
+    let mut total = 0;
+    let mut i = 0;
+    while i < 60000 {
+        let q = Quote { sym: "BTCUSD", bid: 50000, seq: i };
+        let s = Quote::to_json(q);
+        total = total + len(s);
+        i = i + 1;
+    }
+    println(total);
+}
+"#,
+    ),
+    (
+        "display",
+        r#"
+@display("${dollars}.{cents:0>2} {currency}")
+type Money { dollars: Int; cents: Int; currency: String; }
+
+fn main() {
+    let mut total = 0;
+    let mut i = 0;
+    while i < 100000 {
+        let m = Money { dollars: 12, cents: i % 100, currency: "USD" };
+        let s = f"{m}";
+        let t = f"${m.dollars}.{m.cents:0>2} {m.currency}";
+        total = total + len(s) + len(t);
+        i = i + 1;
+    }
+    println(total);
+}
+"#,
+    ),
+    (
+        "whole_copy",
+        r#"
+type Meta { note: String = ""; }
+type Tag { name: String = ""; meta: Meta = Meta { }; }
+type Row { id: String = ""; tags: bounded[Tag; 4]; }
+
+fn main() {
+    let mut r = Row { id: "r" };
+    let mut j = 0;
+    while j < 4 {
+        push(r.tags, Tag { name: f"t{j}", meta: Meta { note: f"n{j}" } }) or discard;
+        j = j + 1;
+    }
+    let mut total = 0;
+    let mut i = 0;
+    while i < 50000 {
+        let mut q = Row { id: "q" };
+        q.tags = r.tags;
+        total = total + count(q.tags);
+        i = i + 1;
+    }
+    println(total);
+}
+"#,
+    ),
+];
+
+#[test]
+fn a_fn_main_loop_is_reclaimed_per_iteration() {
+    for (name, src) in MAIN_LOOPS {
+        let (peak, out) = peak_of(&format!("main_{name}"), src, &[]);
+        assert!(!out.trim().is_empty(), "{name}: printed nothing");
+        assert!(peak < MIB, "{name}: main's loop kept its iterations: chunk_bytes_peak={peak}");
+    }
+}
+
+/// What a `fn main` loop hands on survives it, read after the loop, plainly
+/// and under AddressSanitizer with the chunk pool off: a value stored into
+/// a locus field directly and through a method, a record and a `bounded`
+/// list stored whole into a locus, a String pushed into a `@form(vec)`, a
+/// value sent through a publisher's method, a nested `while` and a `for`
+/// over an outside list. A body that makes a locus (let-bound and at
+/// statement position) keeps the loop on main's arena, as in a method, and
+/// a `return` from inside the loop leaves its iteration to the program's
+/// arena.
+const MAIN_HANDS_ON: &str = r#"
+type Tag { name: String = ""; }
+type Msg { text: String = ""; }
+type Row { id: String = ""; tags: bounded[Tag; 4]; }
+
+locus Keeper {
+    params {
+        last: String = "";
+        direct: String = "";
+        n: Int = 0;
+        tags: bounded[Tag; 8];
+        row: Row = Row { };
+    }
+    fn keep(s: String) { self.last = s; self.n = self.n + 1; }
+    fn add(t: Tag) { push(self.tags, t) or discard; }
+    fn first() -> String { return (at(self.tags, 0) or Tag { }).name; }
+}
+
+@form(vec)
+locus Names { capacity { heap cells of String; } }
+
+locus Sink {
+    params { got: String = ""; seen: Int = 0; }
+    bus { subscribe "hand.msg" as on_msg of type Msg; }
+    fn on_msg(m: Msg) { self.got = m.text; self.seen = self.seen + 1; }
+}
+
+locus Pub {
+    bus { publish "hand.msg" of type Msg; }
+    fn send(s: String) { "hand.msg" <- Msg { text: s }; }
+}
+
+locus Child {
+    params { name: String = ""; }
+    fn shout() -> String { return self.name + "!"; }
+}
+
+fn label(i: Int) -> String { return f"v{i}"; }
+
+fn main() {
+    let k = Keeper { };
+    let names = Names { };
+    let sink = Sink { };
+    let p = Pub { };
+    let mut src = Row { id: "src" };
+    push(src.tags, Tag { name: f"s{1}" }) or discard;
+    let mut kept = 0;
+    let mut i = 0;
+    while i < 50 {
+        k.keep(f"keep-{i}");
+        k.direct = f"direct-{i}";
+        if i < 8 { k.add(Tag { name: f"tag-{i}" }); }
+        let mut r = Row { id: label(i) };
+        push(r.tags, Tag { name: f"rt-{i}" }) or discard;
+        k.row = r;
+        k.row.tags = src.tags;
+        names.push(f"name-{i}");
+        p.send(f"msg-{i}");
+        for t in src.tags {
+            let u = f"{t.name}-{i}";
+            kept = kept + len(u);
+        }
+        let mut j = 0;
+        while j < 3 {
+            let w = f"inner-{i}-{j}";
+            kept = kept + len(w);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    std::time::sleep(50ms);
+    println("last=", k.last, " direct=", k.direct, " n=", k.n);
+    println("first=", k.first(), " row=", k.row.id, " row_tag=", (at(k.row.tags, 0) or Tag { }).name);
+    println("names=", names.len(), " ", names.get(0) or "none", " ", names.get(49) or "none");
+    println("got=", sink.got, " seen=", sink.seen, " kept=", kept);
+    let mut n = 0;
+    while n < 3 {
+        let c = Child { name: f"c{n}" };
+        println(c.shout());
+        Child { name: f"stmt{n}" };
+        n = n + 1;
+    }
+    let mut m = 0;
+    while m < 10 {
+        let z = f"z{m}";
+        if m == 5 {
+            println("returned ", z);
+            return;
+        }
+        m = m + 1;
+    }
+    println("unreached");
+}
+"#;
+
+#[test]
+fn what_a_fn_main_loop_hands_on_survives_it_under_asan() {
+    plain_and_asan(
+        "main_hands_on",
+        MAIN_HANDS_ON,
+        &[
+            "last=keep-49 direct=direct-49 n=50",
+            "first=tag-0 row=v49 row_tag=s1",
+            "names=50 name-0 name-49",
+            "got=msg-49 seen=50 kept=",
+            "c0!\nc1!\nc2!",
+            "returned z5",
+        ],
+    );
+}
+
+/// The program above runs its first loop, the nested `while` and `for`
+/// in it, and the returning loop on iteration arenas, and the loop making
+/// a locus on main's arena: four enters in `main`, so what the run reads
+/// after each loop was handed on from a reclaimed iteration.
+#[test]
+fn a_fn_main_loop_making_no_locus_takes_an_iteration_arena() {
+    let bin = harness::unique_bin("loop_iteration_reclaim_main_ir");
+    let ir = harness::build_source_ir_text(MAIN_HANDS_ON, &bin).expect("build");
+    let _ = std::fs::remove_file(&bin);
+    let main = ir
+        .split("\ndefine ")
+        .find(|f| f.contains(" @main("))
+        .expect("the program's main in the IR");
+    let main = &main[..main.find("\n}\n").unwrap_or(main.len())];
+    let enters = main.matches("call ptr @lotus_arena_iteration_enter(").count();
+    assert_eq!(enters, 4, "main's loops on iteration arenas");
+}
+
+/// An error an `or raise` (or `or fail`) propagates leaves the frame, so
+/// the payload a fallible primitive builds for it is made outside the
+/// iteration arenas, as a `fail`'s value is: the loop a fallible fn
+/// leaves by `or raise` hands the caller a payload whose input String the
+/// iteration made, read after the fn returned. An error an `or` handles in
+/// place (`v.get(j) or 100` past the end) stays in its iteration. A call
+/// through a fn value is handed the iteration's arena when a fn of its
+/// type that allocates is named as a value (`label_len`). Plainly and
+/// under AddressSanitizer with the chunk pool off.
+const ERRORS_AND_FN_VALUES: &str = r#"
+@form(vec)
+locus IntVec { capacity { heap items of Int; } }
+
+fn shown(e: ParseError) -> Int { println("caught input=", e.input); return -1; }
+
+fn sum_parsed(n: Int) -> Int fallible(ParseError) {
+    let mut i = 0;
+    let mut t = 0;
+    while i < n {
+        let text = f"{i}" + (if i == 7 { "x" } else { "" });
+        let v = std::str::parse_int(text) or raise;
+        t = t + v;
+        i = i + 1;
+    }
+    return t;
+}
+
+fn twice(x: Int) -> Int { return x * 2; }
+fn label_len(x: Int) -> Int { let s = f"label-{x}"; return len(s); }
+
+fn main() {
+    println("ok=", sum_parsed(5) or shown(err));
+    println("failed=", sum_parsed(10) or shown(err));
+    let v = IntVec { };
+    let mut i = 0;
+    while i < 10 { v.push(i); i = i + 1; }
+    let mut acc = 0;
+    let mut j = 0;
+    while j < 12 {
+        acc = acc + (v.get(j) or 100);
+        j = j + 1;
+    }
+    println("acc=", acc);
+    let f: fn(Int) -> Int = if std::process::pid() > 0 { twice } else { label_len };
+    let g: fn(Int) -> Int = label_len;
+    let mut k = 0;
+    let mut s = 0;
+    while k < 1000 {
+        s = s + f(k) + g(k);
+        k = k + 1;
+    }
+    println("s=", s);
+}
+"#;
+
+#[test]
+fn a_raised_error_and_a_fn_value_call_survive_their_iteration_under_asan() {
+    plain_and_asan(
+        "errors_and_fn_values",
+        ERRORS_AND_FN_VALUES,
+        &["ok=10", "caught input=7x", "failed=-1", "acc=245", "s=1007890"],
+    );
+}
+
+/// A loop whose only allocation is the error it raises (`v.get(j) or
+/// raise`, whose error branch a proven bound leaves dead), or whose only
+/// calls are of fns that allocate nothing, directly or through a fn value
+/// naming only such fns, opens no iteration arena: no enter call stands
+/// in it to keep LLVM from vectorizing it, or to cost a call per
+/// iteration (GH #2094's bench: `form_vec_get`, `vec_amortized`,
+/// `fn_call`).
+#[test]
+fn a_loop_that_keeps_nothing_in_its_iteration_opens_no_arena() {
+    let src = r#"
+@form(vec)
+locus IntVec { capacity { heap items of Int; } }
+
+fn step(x: Int) -> Int { return x * 2 + 1; }
+fn step_odd(x: Int) -> Int { return x * 2 + 3; }
+
+fn main() {
+    let v = IntVec { };
+    let mut i = 0;
+    while i < 1000 { v.push(i); i = i + 1; }
+    let mut acc = 0;
+    for j in 0..v.len() {
+        acc = acc ^ (v.get(j) or raise);
+    }
+    let mut k = 0;
+    while k < 1000 {
+        acc = acc + (v.get(k) or raise);
+        k = k + 1;
+    }
+    let f: fn(Int) -> Int = if std::process::pid() % 2 == 0 { step } else { step_odd };
+    let mut n = 0;
+    while n < 1000 {
+        acc = acc + f(n) + step(n);
+        n = n + 1;
+    }
+    println(acc);
+}
+"#;
+    let bin = harness::unique_bin("loop_iteration_reclaim_no_arena_ir");
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
+    let _ = std::fs::remove_file(&bin);
+    let main = ir.split("\ndefine ").find(|f| f.contains(" @main(")).expect("the program's main in the IR");
+    let main = &main[..main.find("\n}\n").unwrap_or(main.len())];
+    assert_eq!(main.matches("call ptr @lotus_arena_iteration_enter(").count(), 0, "no loop of main keeps anything in its iteration");
+}
+
+/// A free fn's loops take iteration arenas owned by its per-call
+/// subregion, which its epilogue destroys after the copy-out (GH #2094).
+/// What each hands on survives, read after the fn returned: stores through
+/// a locus parameter (a method storing a String, a record holding a
+/// `bounded` list, a String pushed into a `@form(vec)`), a String and a
+/// record made in the iteration and returned from inside the loop, a
+/// failure made in it, a loop recursing into its own fn, and free fns
+/// called from a method's loop. Plainly and under AddressSanitizer with the
+/// chunk pool off; the IR test below holds every one of these loops to its
+/// iteration arena.
+const FREE_FN_HANDS_ON: &str = r#"
+type Tag { name: String = ""; }
+type Entry { name: String = ""; tags: bounded[Tag; 2]; }
+
+locus Keeper {
+    params { last: String = ""; n: Int = 0; }
+    fn keep(s: String) { self.last = s; self.n = self.n + 1; }
+}
+
+@form(vec)
+locus Names { capacity { heap cells of String; } }
+
+locus Reg {
+    params { last: Entry = Entry { }; n: Int = 0; }
+    fn add(e: Entry) { self.last = e; self.n = self.n + 1; }
+}
+
+fn feed(k: Keeper, names: Names, reg: Reg, n: Int) {
+    let mut i = 0;
+    while i < n {
+        k.keep(f"fed-{i}");
+        names.push(f"nm-{i}");
+        let mut e = Entry { name: f"e-{i}" };
+        push(e.tags, Tag { name: f"et-{i}" }) or discard;
+        reg.add(e);
+        i = i + 1;
+    }
+}
+
+fn find(n: Int) -> String {
+    let mut i = 0;
+    while i < 100 {
+        let s = f"found-{i}";
+        if i == n { return s; }
+        i = i + 1;
+    }
+    return "none";
+}
+
+fn find_entry(n: Int) -> Entry {
+    let mut i = 0;
+    while i < 100 {
+        let mut e = Entry { name: f"entry-{i}" };
+        push(e.tags, Tag { name: f"tag-{i}" }) or discard;
+        if i == n { return e; }
+        i = i + 1;
+    }
+    return Entry { };
+}
+
+fn shown(e: String) -> String { return "caught:" + e; }
+
+fn check(n: Int) -> String fallible(String) {
+    let mut i = 0;
+    while i < 100 {
+        let msg = f"bad-{i}";
+        if i == n { fail msg; }
+        i = i + 1;
+    }
+    return "passed";
+}
+
+fn depth(n: Int) -> Int {
+    if n == 0 { return 0; }
+    let mut i = 0;
+    let mut t = 0;
+    while i < 3 {
+        let s = f"d{n}-{i}";
+        t = t + len(s) + depth(n - 1);
+        i = i + 1;
+    }
+    return t;
+}
+
+fn sum_lens(n: Int) -> Int {
+    let mut i = 0;
+    let mut t = 0;
+    while i < n {
+        let s = f"piece-{i}";
+        t = t + len(s);
+        i = i + 1;
+    }
+    return t;
+}
+
+locus Driver {
+    params { got: String = ""; total: Int = 0; }
+    fn go(n: Int) {
+        let mut i = 0;
+        while i < n {
+            self.got = find(i % 7);
+            self.total = self.total + sum_lens(5);
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let k = Keeper { };
+    let names = Names { };
+    let reg = Reg { };
+    feed(k, names, reg, 30);
+    println("fed ", k.last, " ", k.n, " ", names.len(), " ", names.get(29) or "?", " ", reg.last.name, " ", (at(reg.last.tags, 0) or Tag { }).name);
+    println(find(42));
+    let e = find_entry(17);
+    println(e.name, " ", (at(e.tags, 0) or Tag { }).name);
+    println(check(9) or shown(err));
+    println(check(500) or shown(err));
+    println("depth ", depth(4));
+    let d = Driver { };
+    d.go(20);
+    println("driver ", d.got, " ", d.total);
+}
+"#;
+
+#[test]
+fn what_a_free_fn_loop_hands_on_survives_it_under_asan() {
+    plain_and_asan(
+        "free_fn_hands_on",
+        FREE_FN_HANDS_ON,
+        &[
+            "fed fed-29 30 30 nm-29 e-29 et-29",
+            "found-42",
+            "entry-17 tag-17",
+            "caught:bad-9",
+            "passed",
+            "depth 480",
+            "driver found-5 700",
+        ],
+    );
+}
+
+#[test]
+fn a_free_fn_loop_takes_an_iteration_arena() {
+    let bin = harness::unique_bin("loop_iteration_reclaim_free_fn_ir");
+    let ir = harness::build_source_ir_text(FREE_FN_HANDS_ON, &bin).expect("build");
+    let _ = std::fs::remove_file(&bin);
+    for name in ["feed", "find", "find_entry", "check", "depth", "sum_lens"] {
+        let head = format!(" @{name}(");
+        let body = ir
+            .split("\ndefine ")
+            .find(|f| f.lines().next().is_some_and(|l| l.contains(&head)))
+            .unwrap_or_else(|| panic!("`{name}` in the IR"));
+        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        assert_eq!(body.matches("call ptr @lotus_arena_iteration_enter(").count(), 1, "`{name}`'s loop on an iteration arena");
+    }
+}

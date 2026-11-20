@@ -790,6 +790,13 @@ fn verdict_changes() {
     // live swap is gone, so `work_system.hl` moves the core's later spans
     // by -1128 bytes and `performers.hl`'s comment by -75; nothing else
     // changes.
+    // GH #2094: free fns' loops reclaim per iteration, so six advisory
+    // sites go: `forgejo_healthy`'s poll loop (its request, response, two
+    // byte literals and a concatenation, all the iteration's own) and the
+    // `dna::Row` `append_lines` builds per line before batching it. They
+    // are among 8 fewer `per-iteration-reclaim -> ACCUMULATES-UNBOUNDED`
+    // moves (2924 -> 2916): sites a free fn's loop keeps within the
+    // iteration are reclaimed per iteration with or without the correction.
     pinned(
         "dna/host/verb",
         5069,
@@ -871,7 +878,7 @@ fn verdict_changes() {
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 59),
             ("once-per-invocation -> per-iteration-reclaim", 32),
-            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2924),
+            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2916),
         ],
         &[
             "__lib_dna__core___batch__PlannedOn::read StructLit(\"__lib_dna__core___journal__Event\") #1 InvokedUnboundedly",
@@ -1639,11 +1646,6 @@ fn verdict_changes() {
             "__lib_dna__host___holes__hole_rows StringConcat #3 InvokedUnboundedly",
             "__lib_dna__host___holes__nursery_sources_verb StringConcat #1 InUnboundedLoop",
             "__lib_dna__host___holes__nursery_sources_verb StringConcat #2 InUnboundedLoop",
-            "__lib_dna__host___infra__forgejo_healthy BytesLit #1 InUnboundedLoop",
-            "__lib_dna__host___infra__forgejo_healthy BytesLit #2 InUnboundedLoop",
-            "__lib_dna__host___infra__forgejo_healthy StringConcat #1 InUnboundedLoop",
-            "__lib_dna__host___infra__forgejo_healthy StructLit(\"std::http::ClientRequest\") #1 InUnboundedLoop",
-            "__lib_dna__host___infra__forgejo_healthy StructLit(\"std::http::ClientResponse\") #1 InUnboundedLoop",
             "__lib_dna__host___main__join_words StringConcat #1 InUnboundedLoop",
             "__lib_dna__host___main__join_words StringConcat #2 InUnboundedLoop",
             "__lib_dna__host___main__rest_args StringConcat #1 InUnboundedLoop",
@@ -1687,7 +1689,6 @@ fn verdict_changes() {
             "__lib_dna__host___projection__insert_sorted StringConcat #7 InvokedUnboundedly",
             "__lib_dna__host___record__append_as_at StringConcat #1 InvokedUnboundedly",
             "__lib_dna__host___record__append_as_at StringConcat #2 InvokedUnboundedly",
-            "__lib_dna__host___record__append_lines StructLit(\"dna::Row\") #1 InUnboundedLoop",
             "__lib_dna__host___record__append_lines StructLit(\"dna::Row\") #2 InUnboundedLoop",
             "__lib_dna__host___record__body_holder StringConcat #2 InvokedUnboundedly",
             "__lib_dna__host___record__body_lease_read StructLit(\"__lib_dna__host___record__BodyLease\") #1 InvokedUnboundedly",

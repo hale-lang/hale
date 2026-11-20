@@ -67,9 +67,11 @@ fn build_and_rss(name: &str, src: &str) -> i64 {
 }
 
 /// A struct allocated directly every iteration of a (model-unbounded)
-/// loop. The loop terminates at runtime, but the model sees `while cond`
-/// as unbounded and the allocations accumulate — so RSS climbs with the
-/// trip count. 2M × a 3-field struct ≈ tens of MB.
+/// loop and kept past it in a binding declared before the loop. The loop
+/// terminates at runtime, but the model sees `while cond` as unbounded and
+/// the allocations accumulate — so RSS climbs with the trip count. A loop
+/// that keeps nothing past its iteration reclaims per iteration (GH #2094,
+/// [`RECLAIMED`]); `keep` is what this one keeps.
 ///
 /// (Step 2 is intra-procedural: the model flags an alloc *directly* in a
 /// loop. An alloc inside a free fn *called* in the loop accumulates just
@@ -82,6 +84,32 @@ fn build_and_rss(name: &str, src: &str) -> i64 {
 // the genuine unbounded case: the model can't statically bound the trips,
 // and at runtime the 3M iterations still accumulate ~190 MB.
 const ACCUMULATING: &str = r#"
+    type Q { a: Int; b: Int; c: Int; d: Int; e: Int; f: Int; g: Int; h: Int; }
+    fn work(n: Int) -> Int {
+        let mut s = 0;
+        let mut keep = Q { a: 0, b: 0, c: 0, d: 0, e: 0, f: 0, g: 0, h: 0 };
+        let mut i = 0;
+        while i < n {
+            let q = Q { a: i, b: i, c: i, d: i, e: i, f: i, g: i, h: i };
+            keep = q;
+            s = s + keep.a + keep.h;
+            i = i + 1;
+        }
+        return s;
+    }
+    fn main() {
+        let s = work(3000000);
+        print("sum=");
+        println(s);
+        print("rss_statm=");
+        println(std::io::fs::read_file("/proc/self/statm") or "");
+    }
+"#;
+
+/// The same loop keeping nothing past its iteration: its body allocates
+/// into an arena of its own per iteration (GH #2094), so the model finds
+/// no accumulating site and RSS stays at the alloc-free control's.
+const RECLAIMED: &str = r#"
     type Q { a: Int; b: Int; c: Int; d: Int; e: Int; f: Int; g: Int; h: Int; }
     fn work(n: Int) -> Int {
         let mut s = 0;
@@ -136,6 +164,10 @@ fn model_unbounded_verdict_matches_growing_rss() {
         !model_has_unbounded_site(FLAT),
         "model must NOT flag the alloc-free loop (no false unbounded)"
     );
+    assert!(
+        !model_has_unbounded_site(RECLAIMED),
+        "model must NOT flag a loop reclaimed per iteration (GH #2094)"
+    );
 
     // Runtime side: RSS confirms the verdicts. Assert *relative* to the
     // control — what's invariant is that the 3M accumulated structs add
@@ -147,6 +179,14 @@ fn model_unbounded_verdict_matches_growing_rss() {
     // builds' floor is ~4 MB. GH #772.)
     let acc_rss = build_and_rss("accumulating", ACCUMULATING);
     let flat_rss = build_and_rss("flat", FLAT);
+    let reclaimed_rss = build_and_rss("reclaimed", RECLAIMED);
+    assert!(
+        reclaimed_rss < flat_rss + 20,
+        "a loop the model calls reclaimed per iteration should stay near the \
+         alloc-free control: reclaimed={}MB, flat={}MB",
+        reclaimed_rss,
+        flat_rss
+    );
 
     assert!(
         flat_rss < 200,

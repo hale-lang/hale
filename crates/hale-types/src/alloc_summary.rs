@@ -5987,15 +5987,13 @@ struct Walker<'a> {
 
 impl<'a> Walker<'a> {
     /// Does this loop `body` reclaim per iteration, as lowering decides
-    /// (`crate::iteration_reclaim`)? Only a locus member's frame has the
-    /// per-call scratch the iteration arenas hang off. The bindings
-    /// outside the body are judged by their declarations
+    /// (`crate::iteration_reclaim`)? In every frame: a locus member's
+    /// iteration arenas hang off its per-call scratch, a free fn's off its
+    /// own subregion, `fn main`'s off the program's arena (GH #2094). The
+    /// bindings outside the body are judged by their declarations
     /// ([`Walker::outer_kinds`]), a locus by its literal or a free fn
     /// returning one.
     fn loop_reclaims(&self, body: &Block) -> bool {
-        if self.enclosing_locus.is_none() {
-            return false;
-        }
         let kinds = self.outer_kinds();
         let outer = |n: &str| kinds.get(n).copied();
         let produces_locus = |e: &Expr| self.makes_locus(e);
@@ -8744,10 +8742,12 @@ pub(crate) mod tests {
     fn local_struct_in_loop_is_local_with_depth() {
         let src = r#"
             type P { x: Int; }
-            fn run_it() {
+            fn run_it(seed: P) {
+                let mut keep = seed;
                 let mut i = 0;
                 while i < 10 {
                     let p = P { x: i };
+                    keep = p;
                     i = i + 1;
                 }
             }
@@ -8760,7 +8760,9 @@ pub(crate) mod tests {
         assert_eq!(st.loop_depth, 1);
         // `while i < 10 { … i = i + 1 }` is a const-bounded counter
         // (loop-ranking), so the loop ranks WhileCounter and the in-loop
-        // struct accumulates by a constant, not unboundedly.
+        // struct, kept past its iteration by `keep` (GH #2094: a loop that
+        // keeps nothing reclaims per iteration), accumulates by a
+        // constant, not unboundedly.
         assert!(f.loops.iter().any(|l| matches!(l.kind, LoopKind::WhileCounter)));
         assert_eq!(st.verdict(), SiteVerdict::AccumulatesBoundedLoop);
     }
@@ -8776,11 +8778,13 @@ pub(crate) mod tests {
                 .expect("struct site")
                 .verdict()
         };
+        // Each loop keeps its value past the iteration (`keep`), so none
+        // reclaims per iteration (GH #2094) and the ranking decides.
         // (a) const init + only positive const increment → bounded.
         assert_eq!(
             verdict(
                 r#"type Q { a: Int; }
-                   fn run_it() { let mut i = 0; while i < 100 { let q = Q { a: i }; let _ = q; i = i + 1; } }
+                   fn run_it(seed: Q) { let mut keep = seed; let mut i = 0; while i < 100 { let q = Q { a: i }; keep = q; i = i + 1; } }
                    fn main() { }"#
             ),
             SiteVerdict::AccumulatesBoundedLoop,
@@ -8790,7 +8794,7 @@ pub(crate) mod tests {
         assert_eq!(
             verdict(
                 r#"type Q { a: Int; }
-                   fn run_it() { let mut i = 0; while i < 100 { let q = Q { a: i }; let _ = q; if i == 50 { i = 0; } i = i + 1; } }
+                   fn run_it(seed: Q) { let mut keep = seed; let mut i = 0; while i < 100 { let q = Q { a: i }; keep = q; if i == 50 { i = 0; } i = i + 1; } }
                    fn main() { }"#
             ),
             SiteVerdict::AccumulatesUnbounded,
@@ -8800,7 +8804,7 @@ pub(crate) mod tests {
         assert_eq!(
             verdict(
                 r#"type Q { a: Int; }
-                   fn run_it(step: Int) { let mut i = 0; while i < 100 { let q = Q { a: i }; let _ = q; i = i + step; } }
+                   fn run_it(seed: Q, step: Int) { let mut keep = seed; let mut i = 0; while i < 100 { let q = Q { a: i }; keep = q; i = i + step; } }
                    fn main() { }"#
             ),
             SiteVerdict::AccumulatesUnbounded,
@@ -8810,7 +8814,7 @@ pub(crate) mod tests {
         assert_eq!(
             verdict(
                 r#"type Q { a: Int; }
-                   fn run_it(start: Int) { let mut i = start; while i < 100 { let q = Q { a: i }; let _ = q; i = i + 1; } }
+                   fn run_it(seed: Q, start: Int) { let mut keep = seed; let mut i = start; while i < 100 { let q = Q { a: i }; keep = q; i = i + 1; } }
                    fn main() { }"#
             ),
             SiteVerdict::AccumulatesUnbounded,
@@ -9806,10 +9810,11 @@ pub(crate) mod tests {
         let src = r#"
             type Q { a: Int; }
             type E { code: Int; }
-            fn pump(n: Int) -> Int fallible(E) {
+            fn pump(seed: Q, n: Int) -> Int fallible(E) {
+                let mut keep = seed;
                 while true {
                     let q = Q { a: n };
-                    let _ = q.a;
+                    keep = q;
                     if n == 1 { fail E { code: n }; }
                 }
             }
@@ -9835,7 +9840,7 @@ pub(crate) mod tests {
     fn struct_in_bounded_for_is_bounded() {
         let src = r#"
             type Q { a: Int; }
-            fn work() { for i in 0..100 { let q = Q { a: i }; } }
+            fn work(seed: Q) { let mut keep = seed; for i in 0..100 { let q = Q { a: i }; keep = q; } }
             fn main() { }
         "#;
         let s = summarize(src);
@@ -10209,9 +10214,9 @@ pub(crate) mod tests {
     fn a_site_with_no_author_position_is_dropped_and_nothing_else() {
         let src = r#"
             type Q { a: Int; }
-            fn __json_parse_Q() { while true { let q = Q { a: 1 }; } }
-            fn author_fn() { while true { let q = Q { a: 2 }; } }
-            locus C { run { __json_parse_Q(); author_fn(); } }
+            fn __json_parse_Q(seed: Q) { let mut keep = seed; while true { let q = Q { a: 1 }; keep = q; } }
+            fn author_fn(seed: Q) { let mut keep = seed; while true { let q = Q { a: 2 }; keep = q; } }
+            locus C { run { __json_parse_Q(Q { a: 0 }); author_fn(Q { a: 0 }); } }
             fn main() { }
         "#;
         let (program, ids) = minted(src);

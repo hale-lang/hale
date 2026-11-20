@@ -4287,6 +4287,28 @@ shared	dynamic	sites in the seed #9f0a18e6
 row	Probe@main1	Probe	main	default
 shared	dynamic	sites in the seed #9f0a18e6
 
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#534245c1
+template	Child@main5	unbounded (built in a loop)
+template	Child@main6	unbounded (built in a loop)
+row	Child@main5	Child	main	default
+row	Child@main6	Child	main	default
+row	Keeper@main1	Keeper	main	default
+row	Names@main2	Names	main	default
+row	Pub@main4	Pub	main	default
+row	Sink@main3	Sink	main	default
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#d6a0474d
+row	IntVec@main1	IntVec	main	default
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#9029d920
+row	IntVec@main1	IntVec	main	default
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#7bbf6e14
+row	Driver@main4	Driver	main	default
+row	Keeper@main1	Keeper	main	default
+row	Names@main2	Names	main	default
+row	Reg@main3	Reg	main	default
+
 == crates/hale-codegen/tests/main_locus_deferred_pool_join.rs#ff751d39
 root	App
 domain	pool:side

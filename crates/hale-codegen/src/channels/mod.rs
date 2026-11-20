@@ -791,6 +791,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
         value_discarded: bool,
     ) -> Result<(Option<BasicValueEnum<'ctx>>, Option<CodegenTy>), CodegenError> {
+        // GH #2094: an error this `or` propagates leaves the frame, so the
+        // primitive's payload for it is built outside the iteration arenas
+        // (`Cx::error_payload`); an `or` nested in the operand decides its
+        // own.
+        let leaves = matches!(disposition, OrDisposition::Raise(_) | OrDisposition::Fail(..));
+        let prev = std::mem::replace(&mut self.or_error_leaves_frame, leaves);
+        let out = self.lower_or_expr_in(inner, disposition, scope, value_discarded);
+        self.or_error_leaves_frame = prev;
+        out
+    }
+
+    fn lower_or_expr_in(
+        &mut self,
+        inner: &Expr,
+        disposition: &OrDisposition,
+        scope: &Scope<'ctx>,
+        value_discarded: bool,
+    ) -> Result<(Option<BasicValueEnum<'ctx>>, Option<CodegenTy>), CodegenError> {
         // GH #793 — does this `or` hand back a proven-fresh factory's
         // locus? Decided from the AST BEFORE the inner call is
         // lowered: the value this expression produces is the INNER
@@ -1736,7 +1754,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Users hitting this either rename their type or use the
     /// `std::str::ParseError` path-rename for the stdlib's
     /// shape.
-    pub(crate) fn emit_parse_error_alloc(
+    ///
+    /// Built outside the iteration arena when the `or` handling the error
+    /// takes it out of the frame ([`Cx::error_payload`]).
+    pub(crate) fn emit_parse_error_alloc(&mut self, input_str_ptr: BasicValueEnum<'ctx>, kind_tag: &str) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.error_payload(|cx| cx.emit_parse_error_alloc_in(input_str_ptr, kind_tag))
+    }
+
+    fn emit_parse_error_alloc_in(
         &mut self,
         input_str_ptr: BasicValueEnum<'ctx>,
         kind_tag: &str,
@@ -1896,7 +1921,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `type CryptoError` missing the stdlib's expected `kind:
     /// String` / `detail: String` fields into a clean codegen-time
     /// diagnostic instead of a runtime panic.
-    pub(crate) fn emit_crypto_error_alloc(
+    ///
+    /// Built outside the iteration arena when the `or` handling the error
+    /// takes it out of the frame ([`Cx::error_payload`]).
+    pub(crate) fn emit_crypto_error_alloc(&mut self, detail_str_ptr: BasicValueEnum<'ctx>, kind_tag: &str) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.error_payload(|cx| cx.emit_crypto_error_alloc_in(detail_str_ptr, kind_tag))
+    }
+
+    fn emit_crypto_error_alloc_in(
         &mut self,
         detail_str_ptr: BasicValueEnum<'ctx>,
         kind_tag: &str,
@@ -2430,7 +2462,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `lotus_io_error_kind(errno)` — both immediately after the
     /// failing primitive call (POSIX errno is sticky until the
     /// next syscall sets it).
-    pub(crate) fn emit_io_error_alloc(
+    ///
+    /// Built outside the iteration arena when the `or` handling the error
+    /// takes it out of the frame ([`Cx::error_payload`]).
+    pub(crate) fn emit_io_error_alloc(&mut self, path_str_ptr: BasicValueEnum<'ctx>) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.error_payload(|cx| cx.emit_io_error_alloc_in(path_str_ptr))
+    }
+
+    fn emit_io_error_alloc_in(
         &mut self,
         path_str_ptr: BasicValueEnum<'ctx>,
     ) -> Result<PointerValue<'ctx>, CodegenError> {

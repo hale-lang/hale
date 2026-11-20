@@ -1067,9 +1067,9 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/optional_field_test.hl: __api_decode_Ticker StructLit(\"JsonError\") #18 InUnboundedLoop",
             "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat #20 InUnboundedLoop",
             "tests/hale/optional_field_test.hl: __api_encode_Ticker StringConcat #21 InUnboundedLoop",
-            // `tests/hale/ring_buffer_push_flat_test.hl`: the records its loops
-            // build to push, and the fallback a pop in a loop builds (GH #2024)
-            "tests/hale/ring_buffer_push_flat_test.hl: main StructLit(\"Sample\") #1 InUnboundedLoop",
+            // `tests/hale/ring_buffer_push_flat_test.hl`: the record `take`
+            // builds to push (GH #2024); the ones `main`'s loop builds are
+            // reclaimed per iteration since GH #2094
             "tests/hale/ring_buffer_push_flat_test.hl: Names::take StructLit(\"Named\") #1 InvokedUnboundedly",
             // `tests/hale/str_chain_sources_test.hl` (GH #1995 S2, chain sources): the
             // pushes of its `into` / `sort_into` / `reverse_into` chains and its
@@ -1375,7 +1375,10 @@ fn startable_only_the_verb_program_runs_to_exit() {
                 "dna__core: 520",
                 "dna__core__pond__pq: 16",
                 "dna__core__pond__realtime__nats: 2",
-                "dna__host: 824",
+                // GH #2094: 6 fewer in the host, the sites its free fns'
+                // loops make and keep within an iteration
+                // (`forgejo_healthy`'s poll, `append_lines`' row)
+                "dna__host: 818",
                 "dna__operations: 262",
                 "the stdlib's copy: 1",
             ])

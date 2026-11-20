@@ -1045,7 +1045,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// Allocate + populate a `CapacityError { cap: Int, count: Int }`
     /// in the current arena. Mirror of `emit_index_error_alloc`.
-    pub(crate) fn emit_capacity_error_alloc(
+    ///
+    /// Built outside the iteration arena when the `or` handling the error
+    /// takes it out of the frame ([`Cx::error_payload`]).
+    pub(crate) fn emit_capacity_error_alloc(&mut self, cap: u64, count: inkwell::values::IntValue<'ctx>) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.error_payload(|cx| cx.emit_capacity_error_alloc_in(cap, count))
+    }
+
+    fn emit_capacity_error_alloc_in(
         &mut self,
         cap: u64,
         count: inkwell::values::IntValue<'ctx>,
