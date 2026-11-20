@@ -8,6 +8,26 @@ behavior.
 
 ## Unreleased
 
+## v0.36.2 — every call answered, every copy whole (2026-11-20)
+
+This patch fixes two bugs that came up while reviewing v0.36.1. Neither changes what a correct program means.
+
+- **Every `std::api` call the exposure accepted gets an answer.** When a call had been handed to a receiver that then failed, and was still queued behind the work the receiver failed in, the receiver's stop dropped it unrun. The calls queued behind it were dropped too, so those callers waited until their own timeouts and a shutdown waited out its grace. Now a stopping receiver announces that it's gone: the failing call gets the server's error, and every call that was pending gets `unavailable` in its transport's own form (Unix, HTTP 503, MCP, gRPC, the hub). Calls accepted before a failure never run under a restarted receiver (#2101, GH #2098).
+- **A `bounded` list copied whole no longer shares its elements' nested records.** `q.tags = r.tags` now copies each element with everything below it, as `Row { tags: r.tags }`, `push` and `set` already did. Before, a write below an element of the copy could show up in the source (#2102, GH #2099).
+
+### Breaking
+
+None.
+
+The item-level notes follow.
+
+### Fixed
+- A `std::api` call handed to a receiver that then failed, and still queued behind the work it failed in (its `run()`, or another exposure's call), is answered `unavailable`, and so is every call queued behind it. Before, the receiver's stop dropped it unrun and nobody told the exposure, so those callers waited until their own timeouts. Calls accepted before the failure are not run by a restarted receiver; calls sent after the restart are served (#2101, GH #2098).
+
+### Fixed
+
+- A `bounded` list of records copied whole no longer shares its elements' nested records with the source. `q.tags = r.tags` now copies each element with everything below it, as `Row { tags: r.tags }`, `push` and `set` already did. Before, a write below an element of the copy could show in the source, for example a callee pushing into a list the element holds. A `push`, `set`, `clear` or `truncate` of a list below a local (`push(t.notes, x)`, `push(t.meta.notes, x)`) is now a write into that local, as `t.notes = …` is: on a local read with `at`, it copies the local first instead of writing the list's element. A function that builds its result with `v.tags = r.tags; return v;` now hands back a fresh value, which `push` stores without the copy `hale verify` used to report (GH #2099).
+
 ## v0.36.1 — fixes from the first full bench run (2026-11-19)
 
 This patch fixes the problems that the first full run of the benchmark suite on v0.36.0 turned up, plus a `hale verify` false positive. Nothing a correct program does changes, apart from using less memory and getting faster.
