@@ -78,6 +78,9 @@ pub(crate) struct Row {
     takes_ctx: bool,
     served_ctx: bool,
     pub(crate) request: Option<TypeExpr>,
+    /// GH #2109: the request parameter's name, which the description gives
+    /// a request that is no record (`"param"`), as `surface_doc::member` does.
+    pub(crate) request_param: Option<String>,
     pub(crate) response: Option<TypeExpr>,
     pub(crate) error: Option<TypeExpr>,
     pub(crate) server_error: bool,
@@ -183,6 +186,7 @@ pub(crate) fn rows_of_surface(
             takes_ctx,
             served_ctx,
             request: value.first().map(|p| p.ty.clone()),
+            request_param: value.first().map(|p| p.name.name.clone()),
             response,
             error: f.fallible.clone(),
             server_error,
@@ -2557,12 +2561,19 @@ fn description_src(
         }
         let response = ty(&r.response);
         let error = if r.server_error { jstr("ClosureViolation") } else { ty(&r.error) };
+        // GH #2109: a request that is no record names its parameter
+        let param = match &r.request {
+            Some(te) if !matches!(schemas.type_ref(te, &mut BTreeMap::new()), crate::surfaces::FieldSchema::Ref(_)) => {
+                format!(",\"param\":{}", jstr(r.request_param.as_deref().unwrap_or("request")))
+            }
+            _ => String::new(),
+        };
         let req: Vec<String> = r.requires.iter().map(|x| jstr(x)).collect();
         // a routed row states its route (`METHOD /path/:param STATUS`)
         let route = canonical(r).map_or(String::new(), |c| format!(",\"route\":{}", jstr(&c)));
         let doc = r.doc.as_ref().map_or(String::new(), |d| format!(",\"description\":{}", jstr(d)));
         docs.push(format!(
-            "{{\"name\":{},\"digest\":{},\"request\":{request},\"response\":{response},\"error\":{error},\"requires\":[{}]{route}{doc}}}",
+            "{{\"name\":{},\"digest\":{},\"request\":{request}{param},\"response\":{response},\"error\":{error},\"requires\":[{}]{route}{doc}}}",
             jstr(&r.member),
             jstr(digest),
             req.join(",")

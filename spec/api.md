@@ -1215,8 +1215,8 @@ and the encoding.
   made self-contained (a type it reaches under `$defs`), `x-hale-requires`
   the roles. A caller holding no role sees the members that require none.
   A member whose request is not an object (an MCP tool's input is one)
-  has no tool; the wrapped form `--mcp` prints needs the handler's
-  parameter name, which a description does not carry, so `hale mcp --app`
+  has no tool, though its description names the parameter the wrapped
+  form `--mcp` prints would key it under (`"param"`), and `hale mcp --app`
   over a description lists the same tools (§ The clients, Open points).
 - **`tools/call` is a call.** `params.name` is the tool and
   `params.arguments` the payload, which goes through admission exactly as
@@ -3068,7 +3068,11 @@ caller's `Context` under that exposure's role source:
 - the caller: the principal the exposure established, and the roles it
   holds among those the exposure's rows and streams require;
 - the **members** the caller may call: name, the member's digest (§ The
-  contract digest), request, response and error schemas, and `requires`; a member whose error type is
+  contract digest), request, response and error schemas, and `requires`;
+  a member whose request is one value and no record (`fn submit(id: Int)`)
+  names the handler's parameter, `"param": "id"`, after `request` (a
+  signature row, which names no fn, `"request"`), which a record's request
+  does not, its fields naming themselves (GH #2109); a member whose error type is
   `ClosureViolation` carries the string `"ClosureViolation"` in place
   of an error schema (§ Surfaces and their rows);
 - the **streams** of the hubs at that listener the caller may subscribe
@@ -3823,7 +3827,28 @@ field's schema:
 | a record, a list | JSON checked against the schema, nested records and lists included (a record: every required field, no unknown field, each field of its type; a list: every item of the item type, and no more items than its `maxItems` nor fewer than its `minItems`; an optional field may be absent): `--items '[1,2]'`, `--ship '{"city": "Oslo"}'` |
 
 `--field=value` is `--field value`; a field's `_` may be written `-`. A field
-not required and not given is not sent. The typed form is refused before
+not required and not given is not sent.
+
+**A request that is one value** (`fn submit(id: Int)`, no record; GH #2109) is
+given by its parameter's name, the description's `"param"`, as a flag of that
+name, `--id 7`, and sent as that value alone, as `--json 7` sends it, over
+either transport; the readable `describe` row shows it as a field, `Svc::submit(id:
+Int) -> Int`. The flag is typed as a field of its schema is, and its text is
+also held to what the codec reads (§ Codecs) before anything is sent: a
+payload-free enum's value is one of the wire names its schema lists (`--c Green`),
+an instant (`Time`) is RFC 3339 in UTC with the `Z` (`--at
+2026-10-12T03:04:05.25Z`), a `Duration` or a quantity is its count in its
+denomination (`--d 1500000000`, `--m 125`), and a `Decimal<S>` a JSON number
+(an exponent applied) with no nonzero digit past `S`, sent as the JSON number it
+reads as when a double carries it exactly and otherwise as its digits in a JSON
+string, which the decoder reads to the digit, so no digit is lost. (A record's
+field is typed as the table says and no further, its text sent as before.) Any
+other flag than the parameter, the parameter twice, or no flag at all is refused
+before anything is sent (exit 5) with the way to give it: "Svc::submit takes one
+Int, `id`: pass `--id <int>`, or its JSON with --json". A description that names
+no parameter (one served before GH #2109) takes the value as `--json`. There is
+no positional form: the short form `hale call` already reads a bare payload after
+the member as `--json` (`hale call <sock> Svc::submit 7`). The typed form is refused before
 anything is sent (exit 5, the field and its schema in the message) when a
 required field is missing, a flag names no field of the member's payload, a flag
 is given twice or a value does not parse as its field's type (a record or list value is checked recursively; the message names the path, `ship.city` or `items[0]`); so is `--json`
@@ -4079,11 +4104,11 @@ values).
   runtime primitive to read the process's own standard input (§ The MCP
   transport).
 - **The wrapped MCP input over a description**: an rpc whose request is
-  not an object has no tool in `hale mcp --app` (as over `mcp::Rpc`),
-  because the tool's wrapping property is the handler's parameter name,
-  which neither a description nor a row carries; carrying it would add a
-  field to every description, which the R0 documents a consumer built
-  against do not have.
+  not an object has no tool over `mcp::Rpc`, nor in `hale mcp --app`,
+  which lists the same tools. The description names the handler's
+  parameter, the wrapping property, as `"param"` since GH #2109 (on such a
+  member only, so a document with none is the R0 one byte for byte), so
+  both could serve the wrapped tool `--mcp` prints; neither does yet.
 - **The roles manifest**: `[environments.<env>.roles]` and the `--matrix`
   coverage check have no consumer at run time since the compiler stopped
   baking the table (`StaticRoles` takes a `table` param or
