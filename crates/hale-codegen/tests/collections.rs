@@ -1,4 +1,4 @@
-//! The `collections` integration-test binary: 18 test files of this area, kept
+//! The `collections` integration-test binary: 19 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -37,6 +37,8 @@ mod f22_cell_field_io;
 mod hashmap;
 #[path = "hashmap_cell_alias.rs"]
 mod hashmap_cell_alias;
+#[path = "local_field_retire.rs"]
+mod local_field_retire;
 #[path = "recpool.rs"]
 mod recpool;
 #[path = "recpool_codegen.rs"]

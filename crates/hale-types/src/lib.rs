@@ -23,6 +23,7 @@
 pub mod alloc_routing;
 pub mod arrangement;
 pub mod alloc_summary;
+pub mod field_retire;
 pub mod iteration_reclaim;
 pub mod string_append;
 pub mod binding_rows;

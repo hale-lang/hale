@@ -1409,6 +1409,25 @@ surveys the fresh String or Bytes a call in a locus member's loop
 returns (`AllocKind::CallResult`): a loop that still keeps one per
 iteration is reported at the call.
 
+**A local's `bounded` field stored whole (GH #2105).** `q.tags =
+r.tags` copies every element (spec/types.md § `bounded[T; N]`), and a
+loop repeating it over a local declared before the loop assigns a
+binding from outside the iteration, so it gets no iteration region:
+each copy stayed in the frame's arena until the frame ended (117 MB
+over 200,000 stores of four nested-record elements). A store the
+column admits (`OwnedViews::retires_field`, from
+`hale_types::field_retire`) makes its copy in a region of the field's
+own instead, through `lotus_arena_iteration_enter` on a slot per
+local and field: the call frees (or empties in place) the region the
+previous such store copied into and makes the next. The region is
+owned by the frame's arena outside any iteration region, so it ends
+with the frame at the latest, and a local declared in a loop's body
+keeps it across iterations, where the next store frees it. Only those
+stores allocate in it, so it holds nothing another binding was handed
+some other way; the column admits a store only when no name in scope
+there may hold a block of an earlier copy (spec/types.md lists the
+conditions). The same shapes stay at 4.5 MB.
+
 Locus instantiation routing is unchanged. Child locus structs
 allocate via their own routes (parent arena if parent accepts
 them, lazy-global if the fn returns the child type, otherwise
