@@ -71,3 +71,9 @@ main locus ChatServer {
         std::time::sleep(10ms);
     }
 }
+
+// Checked alone, the seed is a program: its `fn main` starts the
+// application (GH #2108). An importer starts it with its own.
+fn main() {
+    ChatServer { };
+}

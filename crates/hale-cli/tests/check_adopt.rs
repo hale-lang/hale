@@ -29,6 +29,8 @@ main locus App {
         h: api::Exposure = api::serve(Desk, self.f, as: \"desk\", receivers: { Counter: self.counter }, bound: 8, on_full: refuse);
     }
 }
+
+fn main() { App { }; }
 ";
 
 const VIOLATED: &str = "claim `logs_structured` violated: `program` reaches `effects(stdio)` — witness: `Counter::bump`";

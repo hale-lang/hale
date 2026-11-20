@@ -1740,6 +1740,15 @@ fn main() {\n    println(total(1));\n}\n",
     ),
 ];
 
+/// The unstarted-entry parity seed
+/// (`lsp_and_check_refuse_a_main_locus_nothing_starts`, GH #2108): a
+/// `main locus` in one file and no `fn main` in any, which `hale build`
+/// refuses at the locus's name.
+const UNSTARTED: Files = &[
+    ("a_app.hl", "main locus App {\n    run() {\n        println(helper());\n    }\n}\n"),
+    ("b_util.hl", "fn helper() -> Int {\n    return 1;\n}\n"),
+];
+
 /// Every parity seed: its tag, its files and its library's.
 const PARITY: &[(&str, Files, Files)] = &[
     ("plain", PLAIN, &[]),
@@ -1749,6 +1758,7 @@ const PARITY: &[(&str, Files, Files)] = &[
     ("laws", LAWS, LAWS_LIB),
     ("effects", EFFECTS, &[]),
     ("units", UNITS, &[]),
+    ("unstarted", UNSTARTED, &[]),
 ];
 
 /// The unit-law parity fixture (GH #1076): the unit laws and the quantity
@@ -1770,6 +1780,27 @@ fn lsp_and_check_agree_over_a_seed_with_unit_laws() {
         let (f, l, c, _) = found[0];
         assert_eq!((f.as_str(), *l, *c), ("b_app.hl", line, col), "{want}");
     }
+}
+
+/// GH #2108: a `main locus` nothing starts is the check's finding, at the
+/// locus's name, in the build's words: `hale check <dir>`, the editor on
+/// disk and the editor's buffers give it once, in the file that declares
+/// the locus. The seed's `fn main` is read across its files: with one in
+/// the other file, the finding goes.
+#[test]
+fn lsp_and_check_refuse_a_main_locus_nothing_starts() {
+    let check = agree_three_ways("unstarted", UNSTARTED, &[]);
+    let want = "a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }`";
+    let found: Vec<&Finding> = check.iter().filter(|(.., m)| m == want).collect();
+    assert_eq!(found.len(), 1, "one finding: {check:?}");
+    let (f, line, col, _) = found[0];
+    assert_eq!((f.as_str(), *line, *col), ("a_app.hl", 1, 12), "the locus's name");
+    let started: &[(&str, &str)] = &[
+        UNSTARTED[0],
+        ("b_util.hl", "fn helper() -> Int {\n    return 1;\n}\n\nfn main() {\n    App { };\n}\n"),
+    ];
+    let check = agree_three_ways("started", started, &[]);
+    assert!(check.iter().all(|(.., m)| m != want), "a `fn main` in the other file starts it: {check:?}");
 }
 
 /// The laws parity fixture (F.40 phase 3, X1): a program that breaks a
@@ -1931,7 +1962,7 @@ fn the_check_is_its_typing_stage_followed_by_its_laws_stage() {
         }
 
         let bundle = s.bundle();
-        let tail: Vec<hale_syntax::Diag> = hale_types::build_rule_diags(&bundle, &s.demand_ownership_graph().expect("the graph").rows)
+        let tail: Vec<hale_syntax::Diag> = hale_types::build_rule_diags(&bundle, &s.demand_ownership_graph().expect("the graph").rows, s.demand_entry().expect("the entry row"))
             .into_iter()
             .chain(hale_types::unbounded_alloc_warnings(&bundle, s.demand_alloc_summary().expect("the summary"), true))
             .collect();
@@ -1980,7 +2011,7 @@ fn the_check_is_its_typing_stage_followed_by_its_laws_stage() {
             .iter()
             .cloned()
             .chain(hale_types::unbounded_alloc_warnings(&c_bundle, c.demand_alloc_summary().expect("the summary"), true))
-            .chain(hale_types::build_rule_diags(&c_bundle, &c.demand_ownership_graph().expect("the graph").rows))
+            .chain(hale_types::build_rule_diags(&c_bundle, &c.demand_ownership_graph().expect("the graph").rows, c.demand_entry().expect("the entry row")))
             .collect();
         assert_eq!(sorted(diag_keys(&cli)), sorted(diag_keys(&check)), "{tag}: hale check's findings are the editor's");
         let _ = std::fs::remove_dir_all(&root);

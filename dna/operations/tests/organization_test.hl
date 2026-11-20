@@ -4,7 +4,7 @@
 import "../../core" as dna;
 import ".." as ops;
 
-const SOURCE: String = "type Notice { text: String = \"\"; }\ntopic Notices { payload: Notice; subject: \"organization.équipe\"; }\nlocus Reviewer { params { seen: Int = 0; } bus { subscribe Notices as on_notice; } fn on_notice(n: Notice) { self.seen = self.seen + 1; } }\nlocus Support { params { reviewer: Reviewer = Reviewer { }; } }\nlocus Reserve { params { slots: Int = 1; } }\nlocus Metrics { params { total: Int = 0; } }\ngroup positions = { Reviewer };\nmain locus Org { params { support: Support = Support { }; assurance: Support = Support { }; reviewer: Reviewer = Reviewer { }; metrics: Metrics = Metrics { }; } bus { publish Notices; } }\n";
+const SOURCE: String = "type Notice { text: String = \"\"; }\ntopic Notices { payload: Notice; subject: \"organization.équipe\"; }\nlocus Reviewer { params { seen: Int = 0; } bus { subscribe Notices as on_notice; } fn on_notice(n: Notice) { self.seen = self.seen + 1; } }\nlocus Support { params { reviewer: Reviewer = Reviewer { }; } }\nlocus Reserve { params { slots: Int = 1; } }\nlocus Metrics { params { total: Int = 0; } }\ngroup positions = { Reviewer };\nmain locus Org { params { support: Support = Support { }; assurance: Support = Support { }; reviewer: Reviewer = Reviewer { }; metrics: Metrics = Metrics { }; } bus { publish Notices; } }\nfn main() { Org { }; }\n";
 
 locus OrganizationFixture {
     params { root: String = ""; compiler: String = "hale"; }

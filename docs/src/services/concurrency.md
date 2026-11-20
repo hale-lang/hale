@@ -37,7 +37,7 @@ Placement entries are declared on `main locus` and keyed by the parameter **fiel
 
 > [!NOTE]
 > **Starting a `main locus`**
-> A `main locus` defines the deployment topology, and `fn main() { App { }; }` instantiates it. A library seed with a `main locus` and no `fn main()` passes `hale check` so other seeds can import it, but `hale build` and `hale run` require `fn main()`.
+> A `main locus` defines the deployment topology, and `fn main() { App { }; }` instantiates it. A seed with a `main locus` and no `fn main()` has nothing that starts it, so `hale check`, `hale build` and `hale run` all refuse it at the locus's name: *a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }`*. Another seed can still import the application and start it from its own `fn main()`; the imported seed's `fn main()` is not run there.
 
 ## Cooperative Pools & Automatic Sleep Slicing
 

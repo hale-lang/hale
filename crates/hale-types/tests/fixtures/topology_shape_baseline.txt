@@ -50,7 +50,7 @@ crates/hale-cli/tests/fixtures/claims-program/policy/policy.hl 5c26d41736ae0271
 crates/hale-cli/tests/fixtures/claims-program/shout/shout.hl 33515435be967f5c
 crates/hale-cli/tests/fixtures/deploy/bare/main.hl de659712f90cbb84
 crates/hale-cli/tests/fixtures/deploy/demo/fleet.hl af67c9605fa68550
-crates/hale-cli/tests/fixtures/deploy/served/main.hl d0090adc79fbcc82
+crates/hale-cli/tests/fixtures/deploy/served/main.hl ffb36284c9b02cff
 crates/hale-cli/tests/fixtures/deploy/svc/main.hl 46b8947fb81faf9c
 crates/hale-cli/tests/fixtures/fleet-locus/prod/fleet.hl af67c9605fa68550
 crates/hale-cli/tests/fixtures/fleet-locus/shared/topics.hl eacb157deb62e37c
@@ -76,14 +76,14 @@ crates/hale-cli/tests/fixtures/imported-main-claims/app-lib-missing/main.hl d1bb
 crates/hale-cli/tests/fixtures/imported-main-claims/app-missing-collision/main.hl d1bbb79fdd8fd29a
 crates/hale-cli/tests/fixtures/imported-main-claims/app-missing/main.hl d4275fdcef4d5b13
 crates/hale-cli/tests/fixtures/imported-main-claims/app/main.hl d4275fdcef4d5b13
-crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl a8d4b5452cdba64a
+crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl 9c49ff1f432a4b3d
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-policy/policy.hl af67c9605fa68550
-crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl a8d4b5452cdba64a
+crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl 9c49ff1f432a4b3d
 crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl 1d500adb8e506048
 crates/hale-cli/tests/fixtures/p3-namespace-method-lib/grid.hl 83dd3572f7c59f69
 crates/hale-cli/tests/fixtures/qualified-type-fwd-app/main.hl cacd1cb351f514df
 crates/hale-cli/tests/fixtures/qualified-type-fwd-lib/main.hl af67c9605fa68550
-crates/hale-cli/tests/fixtures/requirements/api/main.hl d805c188afc9ec6d
+crates/hale-cli/tests/fixtures/requirements/api/main.hl 3951c9dee739fb7a
 crates/hale-cli/tests/fixtures/run-loop-reclaim/reclaimed.hl 163ab572b34c3cfc
 crates/hale-cli/tests/fixtures/run-loop-reclaim/still_grows.hl 1137b4b1a1d9bdda
 crates/hale-cli/tests/fixtures/sha256-stream/app.hl ec0a30b3147fad21

@@ -3595,20 +3595,40 @@ only `main locus` is imported).
 
 The entry is started by the seed's top-level `fn main`, which
 instantiates it; a `main locus` does not start itself. A seed that
-declares its own top-level `main locus` and no `fn main` checks clean
-— an application another seed imports and starts is checked alone that
-way — but nothing in it starts the locus, so `hale build` and `hale
-run` refuse it with one located error at the locus's name (until
-2026-10-14 the build's spanless `program has no fn main()`):
+declares its own top-level `main locus` and no `fn main` has nothing
+that starts the locus, so `hale check`, the editor, `hale build`, `hale
+run` and `hale test` refuse it with one located error at the locus's
+name (until GH #2108 `hale check` accepted it and only the build
+refused it; until 2026-10-14 the build's error was the spanless
+`program has no fn main()`). It is one of the rules a build refuses
+beside the check (`hale_types::build_rule_diags`, which `hale check`
+runs too), not an error of the typing, so the seed still denotes its
+model and its laws are judged while its `fn main` is missing:
 
 ```text
-main.hl:1:12: codegen error: a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }`
+main.hl:1:12: type error: a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }`
 ```
 
+An application another seed imports and starts is checked through
+that importer, where its `main locus` is imported and not the entry.
+Checked alone it is a program like any other, and starts its `main
+locus` with a `fn main` of its own; an importer runs its own `fn
+main`, never the imported seed's, which is renamed with its seed.
+
+Two programs start somewhere other than a `fn main` of their own, and
+the rule does not apply to them: a module that `@export`s, the wasm
+entry inversion's (an export-only module needs no `fn main`:
+`spec/ffi.md` § "`@export` — exports"; a native target refuses the
+inversion itself), and a `*_bench.hl` file, which declares no `fn
+main` because `hale bench` appends its driver's (`spec/testing.md`). A
+`*_test.hl` file is a program `hale test` builds as it stands, so the
+rule holds there. A seed whose `fn main` does not instantiate its
+`main locus` checks and builds: the locus is a declaration nothing
+runs.
+
 A program with neither says `program has no fn main(): a native
-program starts at its top-level fn main`. A module that `@export`s is
-the wasm entry inversion's instead (an export-only module needs no `fn
-main`: `spec/ffi.md` § "`@export` — exports").
+program starts at its top-level fn main` when it is built; it checks
+clean, as a library seed does.
 
 Whether a thread runs beside the bus's main drain, so that the bus
 queue takes its lock, is decided from what the build deploys (F.40

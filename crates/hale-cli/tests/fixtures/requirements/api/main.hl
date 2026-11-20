@@ -42,3 +42,7 @@ main locus App {
         }
     }
 }
+
+fn main() {
+    App { };
+}

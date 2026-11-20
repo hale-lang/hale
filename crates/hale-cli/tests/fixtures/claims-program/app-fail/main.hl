@@ -16,3 +16,7 @@ main locus App {
         shout::shout(3);
     }
 }
+
+fn main() {
+    App { };
+}
